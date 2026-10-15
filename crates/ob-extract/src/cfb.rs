@@ -138,7 +138,7 @@ impl Cfb {
                 continue;
             }
             let name_len = u16le(chunk, 64)? as usize;
-            let name = if name_len >= 2 && name_len <= 64 {
+            let name = if (2..=64).contains(&name_len) {
                 let units: Vec<u16> = chunk[0..name_len - 2]
                     .chunks_exact(2)
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
@@ -332,22 +332,21 @@ mod tests {
         }
         // Directory at sector 1 (file offset 2*512).
         let dir_off = sector * 2;
-        let mut entry =
-            |file: &mut Vec<u8>, idx: usize, name: &str, ty: u8, start: u32, size: u32| {
-                let base = dir_off + idx * 128;
-                let units: Vec<u16> = name.encode_utf16().collect();
-                for (i, u) in units.iter().enumerate() {
-                    file[base + i * 2..base + i * 2 + 2].copy_from_slice(&u.to_le_bytes());
-                }
-                file[base + 64..base + 66]
-                    .copy_from_slice(&(((units.len() + 1) * 2) as u16).to_le_bytes());
-                file[base + 66] = ty;
-                file[base + 68..base + 72].copy_from_slice(&NO_STREAM.to_le_bytes());
-                file[base + 72..base + 76].copy_from_slice(&NO_STREAM.to_le_bytes());
-                file[base + 76..base + 80].copy_from_slice(&NO_STREAM.to_le_bytes());
-                file[base + 116..base + 120].copy_from_slice(&start.to_le_bytes());
-                file[base + 120..base + 124].copy_from_slice(&size.to_le_bytes());
-            };
+        let entry = |file: &mut Vec<u8>, idx: usize, name: &str, ty: u8, start: u32, size: u32| {
+            let base = dir_off + idx * 128;
+            let units: Vec<u16> = name.encode_utf16().collect();
+            for (i, u) in units.iter().enumerate() {
+                file[base + i * 2..base + i * 2 + 2].copy_from_slice(&u.to_le_bytes());
+            }
+            file[base + 64..base + 66]
+                .copy_from_slice(&(((units.len() + 1) * 2) as u16).to_le_bytes());
+            file[base + 66] = ty;
+            file[base + 68..base + 72].copy_from_slice(&NO_STREAM.to_le_bytes());
+            file[base + 72..base + 76].copy_from_slice(&NO_STREAM.to_le_bytes());
+            file[base + 76..base + 80].copy_from_slice(&NO_STREAM.to_le_bytes());
+            file[base + 116..base + 120].copy_from_slice(&start.to_le_bytes());
+            file[base + 120..base + 124].copy_from_slice(&size.to_le_bytes());
+        };
         entry(&mut file, 0, "Root Entry", 5, 2, 64);
         entry(&mut file, 1, "Big", 2, 3, 1000);
         entry(&mut file, 2, "Small", 2, 0, 11);

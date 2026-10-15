@@ -99,8 +99,11 @@ Plans and order of work: [ROADMAP.md](ROADMAP.md).
 
 ## Run it
 
-There is no installer yet (see above). Building from source needs Rust
-1.80+ (install via rustup), then:
+On Windows there is a ready bundle: one zip holding the app, its PDF
+reader, and the PDF library in a single folder. Unzip it anywhere and
+run `openbulletin.exe`; there is nothing to install. (Bundles are
+attached to releases and to the "Windows bundle" workflow runs.)
+Building from source needs Rust 1.80+ (install via rustup), then:
 
 ```sh
 # Desktop app
@@ -139,11 +142,13 @@ desktop app, CLI, or (someday) web.
 Honest labels, in plain words:
 
 - **OpenBulletin `.obd` files open today**, fully.
-- **Old bulletin PDFs open today**, as drafts: on the Start step,
-  "Open a PDF bulletin..." reads the words out with a helper program
-  and rebuilds them as boxes you can edit, with each old page kept
-  underneath as a picture to check against. Pieces are labeled Good,
-  Check this, or Picture only before you accept anything.
+- **Old bulletins open today through one door**: on the Start step,
+  "Open an old bulletin..." takes a PDF, a Publisher file, or an
+  InDesign (IDML) file and works out which it is. A helper program
+  reads PDFs (and Publisher files converted by way of LibreOffice)
+  and rebuilds the words as boxes you can edit, with each old page
+  kept underneath as a picture to check against. Pieces are labeled
+  Good, Check this, or Picture only before you accept anything.
   Three or more old PDFs can also teach the app your church's
   template (Start step, "Learn from your old bulletins").
 - **InDesign files open through IDML**, InDesign's own export:
@@ -162,8 +167,9 @@ Honest labels, in plain words:
   `.indd` reading stays out of scope.
 - **One limit that will never change:** we will never copy fonts out of
   old PDFs. Those fonts are usually partial copies, and the law usually
-  does not allow it. Instead, imports will swap in a look-alike font
-  with the same letter widths. That swap is planned, not built.
+  does not allow it. Instead, imports swap in a free font with the
+  same letter widths where one exists (Arial to Liberation Sans, for
+  example), and flag the piece Check this where none does.
 
 We will help you get your text and pictures out of old files. We will not
 pretend any tool opens Publisher files perfectly.

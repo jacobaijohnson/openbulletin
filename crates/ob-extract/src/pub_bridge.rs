@@ -129,13 +129,26 @@ pub fn convert_pub_to_pdf_with_timeout(
 
     // LibreOffice wants its profile as a file URL.
     let profile_dir = out_dir.join("lo-profile");
-    let profile_url = format!(
-        "file:///{}",
-        profile_dir
-            .to_string_lossy()
-            .replace('\\', "/")
-            .trim_start_matches('/')
-    );
+    let raw_path = profile_dir
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_string();
+    // Percent-encode anything a file URL cannot carry raw (a
+    // church PC's user folder can hold spaces and more).
+    let mut encoded = String::with_capacity(raw_path.len());
+    for ch in raw_path.chars() {
+        match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '/' | '.' | '_' | '-' | ':' => encoded.push(ch),
+            _ => {
+                let mut buf = [0u8; 4];
+                for b in ch.encode_utf8(&mut buf).as_bytes() {
+                    encoded.push_str(&format!("%{b:02X}"));
+                }
+            }
+        }
+    }
+    let profile_url = format!("file:///{encoded}");
 
     let mut child = Command::new(soffice)
         .arg(format!("-env:UserInstallation={profile_url}"))

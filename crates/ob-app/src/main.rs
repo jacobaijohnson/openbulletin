@@ -2738,13 +2738,22 @@ impl App {
                 let workdir = std::env::temp_dir()
                     .join(format!("openbulletin-import-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&workdir);
-                ob_extract::helper::render_pdf(&helper, &pdf, &workdir.join("assets"))?;
+                let pictured =
+                    ob_extract::helper::render_pdf(&helper, &pdf, &workdir.join("assets")).is_ok();
                 let out = ob_extract::draft::document_from_dump(&dump, profile, true);
                 Ok(ImportReview {
                     doc: out.doc,
                     items: out.items,
                     workdir: Some(workdir),
-                    note: None,
+                    note: if pictured {
+                        None
+                    } else {
+                        Some(
+                            "The words came over, but the old pages could not be \
+                             pictured underneath the draft this time."
+                                .into(),
+                        )
+                    },
                     source_name: pdf
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
@@ -2810,7 +2819,7 @@ impl App {
                          and it is not installed on this computer. Two ways forward: \
                          install LibreOffice from libreoffice.org and try again, or \
                          open the file in Publisher, choose File, then Save As, and \
-                         save it as a PDF; then use \"Open a PDF bulletin...\" above \
+                         save it as a PDF; then open that PDF here with \"Open an old bulletin...\" \
                          with that PDF."
                         .into());
                 };
@@ -2820,19 +2829,27 @@ impl App {
                 let pdf = ob_extract::pub_bridge::convert_pub_to_pdf(&soffice, &path, &workdir)?;
                 let helper = ob_extract::helper::resolve_helper(None);
                 let dump = ob_extract::helper::dump_pdf(&helper, &pdf)?;
-                ob_extract::helper::render_pdf(&helper, &pdf, &workdir.join("assets"))?;
+                let pictured =
+                    ob_extract::helper::render_pdf(&helper, &pdf, &workdir.join("assets")).is_ok();
                 let out = ob_extract::draft::document_from_dump(&dump, profile, true);
+                let note = if pictured {
+                    "This came from your Publisher file by way of LibreOffice, \
+                     so small layout differences from the original are normal. \
+                     Check each page against its picture underneath."
+                        .to_string()
+                } else {
+                    "This came from your Publisher file by way of LibreOffice, \
+                     so small layout differences from the original are normal. \
+                     The old pages could not be pictured underneath the \
+                     draft this time."
+                        .to_string()
+                };
                 Ok(ImportReview {
                     doc: out.doc,
                     items: out.items,
                     workdir: Some(workdir),
                     source_name: name,
-                    note: Some(
-                        "This came from your Publisher file by way of LibreOffice, \
-                         so small layout differences from the original are normal. \
-                         Check each page against its picture underneath."
-                            .into(),
-                    ),
+                    note: Some(note),
                 })
             })();
             let _ = tx.send(result);
@@ -3048,15 +3065,32 @@ impl App {
             let result = (|| -> Result<AnalyzerReview, String> {
                 let helper = ob_extract::helper::resolve_helper(None);
                 let mut dumps = Vec::new();
+                let mut skipped: Vec<String> = Vec::new();
                 for pdf in &pdfs {
-                    dumps.push(ob_extract::helper::dump_pdf(&helper, pdf)?);
+                    match ob_extract::helper::dump_pdf(&helper, pdf) {
+                        Ok(d) => dumps.push(d),
+                        Err(_) => skipped.push(
+                            pdf.file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| pdf.display().to_string()),
+                        ),
+                    }
+                }
+                if dumps.len() < 3 {
+                    return Err(format!(
+                        "Only {} of the picked files could be read ({} could not: {}). \
+                         Pick at least three readable PDF bulletins.",
+                        dumps.len(),
+                        skipped.len(),
+                        skipped.join(", ")
+                    ));
                 }
                 let out = ob_extract::analyzer::analyze(&dumps, profile)?;
                 let workdir = std::env::temp_dir()
                     .join(format!("openbulletin-template-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&workdir);
                 if let Some(base) = pdfs.iter().find(|p| p.to_string_lossy() == out.base_source) {
-                    ob_extract::helper::render_pdf(&helper, base, &workdir.join("assets"))?;
+                    let _ = ob_extract::helper::render_pdf(&helper, base, &workdir.join("assets"));
                 }
                 Ok(AnalyzerReview {
                     doc: out.doc,
@@ -3064,6 +3098,15 @@ impl App {
                     family: out.family,
                     corpus: out.corpus,
                     workdir,
+                    note: if skipped.is_empty() {
+                        None
+                    } else {
+                        Some(format!(
+                            "{} file(s) could not be read and were left out: {}",
+                            skipped.len(),
+                            skipped.join(", ")
+                        ))
+                    },
                 })
             })();
             let _ = tx.send(result);
@@ -3135,6 +3178,12 @@ impl App {
                     review.corpus,
                     review.family,
                 ));
+                if let Some(note) = &review.note {
+                    ui.label(
+                        egui::RichText::new(note)
+                            .color(egui::Color32::from_rgb(0xB0, 0x30, 0x30)),
+                    );
+                }
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
@@ -3854,7 +3903,7 @@ impl eframe::App for App {
         self.journal_tick();
         self.recovery_window(ctx);
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.heading("OpenBulletin");
                 if ui.button("New bulletin").clicked() {
                     self.goto_step(0);
@@ -3988,6 +4037,7 @@ impl eframe::App for App {
                         } else if ui.button("Open an old bulletin...").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
                                 .add_filter("Old bulletins", &["pdf", "pub", "idml", "obd"])
+                                .add_filter("All files", &[] as &[&str])
                                 .pick_file()
                             {
                                 self.open_old_bulletin(path);
@@ -4310,7 +4360,12 @@ impl eframe::App for App {
                 for idx in 0..count {
                     let panel = self.doc.panels[idx].clone();
                     ui.label(egui::RichText::new(&panel.name).strong());
-                    let scale = 0.85f32;
+                    // Fit the sheet to the window the user
+                    // actually has; it grows and shrinks with it
+                    // (stub sweep, 2026-10-15).
+                    let scale = ((ui.available_width() - 4.0)
+                        / (panel.size.w as f32 / 1000.0))
+                    .clamp(0.3, 2.0);
                     let size = egui::vec2(
                         panel.size.w as f32 / 1000.0 * scale,
                         panel.size.h as f32 / 1000.0 * scale,
@@ -4384,7 +4439,9 @@ impl StrongIf for egui::RichText {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1180.0, 820.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1180.0, 820.0])
+            .with_min_inner_size([940.0, 620.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -4545,6 +4602,7 @@ struct AnalyzerReview {
     family: usize,
     corpus: usize,
     workdir: std::path::PathBuf,
+    note: Option<String>,
 }
 
 /// A file-open that would leave unsaved work behind.

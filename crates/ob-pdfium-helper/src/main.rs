@@ -63,7 +63,10 @@ fn main() {
         exit(1);
     });
     let bindings = Pdfium::bind_to_library(lib_path()).unwrap_or_else(|e| {
-        eprintln!("cannot load PDFium library: {e:?}");
+        eprintln!(
+            "the PDF library that travels with the app could not be loaded \
+             (it should sit beside this reader program). Details: {e:?}"
+        );
         exit(1);
     });
     let pdfium = Pdfium::new(bindings);

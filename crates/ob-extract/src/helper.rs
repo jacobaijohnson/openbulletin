@@ -15,9 +15,14 @@ pub fn resolve_helper(explicit: Option<&Path>) -> PathBuf {
         return PathBuf::from(p);
     }
     if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.with_file_name("ob-pdfium-helper");
-        if sibling.exists() {
-            return sibling;
+        // The shipped file carries its platform name: on Windows
+        // that is ob-pdfium-helper.exe. Probing only the bare
+        // name can never match there (stub sweep, 2026-10-15).
+        for name in ["ob-pdfium-helper", "ob-pdfium-helper.exe"] {
+            let sibling = exe.with_file_name(name);
+            if sibling.exists() {
+                return sibling;
+            }
         }
     }
     PathBuf::from("ob-pdfium-helper")
@@ -28,11 +33,14 @@ fn run_helper(helper: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .args(args)
         .output()
         .map_err(|e| {
-            format!(
+            if e.kind() == std::io::ErrorKind::NotFound {
                 "the PDF reader is not with the app on this computer, so PDFs \
                  cannot be read here yet. It travels in the same download as \
                  the app itself; nothing else on this computer is broken."
-            )
+                    .to_string()
+            } else {
+                format!("the PDF reader is here but could not start: {e}")
+            }
         })?;
     if !output.status.success() {
         return Err(format!(

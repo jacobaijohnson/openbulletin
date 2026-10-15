@@ -1,4 +1,5 @@
-//! OpenBulletin CLI — every engine operation, headless.
+//! OpenBulletin CLI: the headless engine operations (new, export,
+//! next-sunday, info, fonts, trace). The import doors live in the app.
 //! If it cannot be done here, the GUI is hiding engine problems.
 
 use clap::{Parser, Subcommand};
@@ -447,17 +448,5 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
 /// Find the PDFium helper binary: explicit flag, environment,
 /// beside this executable, then PATH.
 fn resolve_helper(explicit: Option<&Path>) -> Result<PathBuf, String> {
-    if let Some(p) = explicit {
-        return Ok(p.to_path_buf());
-    }
-    if let Ok(p) = std::env::var("OB_PDFIUM_HELPER") {
-        return Ok(PathBuf::from(p));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.with_file_name("ob-pdfium-helper");
-        if sibling.exists() {
-            return Ok(sibling);
-        }
-    }
-    Ok(PathBuf::from("ob-pdfium-helper"))
+    Ok(ob_extract::helper::resolve_helper(explicit))
 }

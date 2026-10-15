@@ -17,6 +17,7 @@ ob-format = { path = "../ob-format" }
 ob-pdf = { path = "../ob-pdf" }
 ob-impose = { path = "../ob-impose" }
 ob-fonts = { path = "../ob-fonts" }
+ob-extract = { path = "../ob-extract" }
 chrono.workspace = true
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }

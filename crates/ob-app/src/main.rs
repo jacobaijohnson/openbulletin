@@ -281,6 +281,7 @@ impl App {
                             name: "Body".into(),
                             font_size: 11_000,
                             bold: false,
+                            italic: false,
                             align: ob_model::Align::Left,
                             space_after: 4_000,
                             color: ob_model::Rgb::BLACK,
@@ -291,7 +292,7 @@ impl App {
                     let spec = ob_text::shaping::FontSpec {
                         family: style.font_family.clone(),
                         bold: style.bold,
-                        italic: false,
+                        italic: style.italic,
                     };
                     let text = ob_model::resolve_fields(&para.text, &self.doc);
                     let lines = if text.contains('\t') {

@@ -61,7 +61,7 @@ pub struct FrameFit {
 /// Serif, regular and bold). Liberation is metric-compatible with Arial
 /// and very close to the Helvetica the PDF writer draws, so shaped line
 /// breaks and fit checks track the printed page closely.
-/// The bundled starter fonts as (file name, bytes): the four
+/// The bundled starter fonts as (file name, bytes): the eight
 /// Liberation faces. The app seeds the Font Library with these on
 /// first run so the library folder is the one source of fonts on
 /// every machine shape (docs/FONTS.md).
@@ -83,6 +83,22 @@ pub fn bundled_font_files() -> Vec<(&'static str, &'static [u8])> {
             "LiberationSerif-Bold.ttf",
             include_bytes!("../assets/fonts/LiberationSerif-Bold.ttf"),
         ),
+        (
+            "LiberationSans-Italic.ttf",
+            include_bytes!("../assets/fonts/LiberationSans-Italic.ttf"),
+        ),
+        (
+            "LiberationSans-BoldItalic.ttf",
+            include_bytes!("../assets/fonts/LiberationSans-BoldItalic.ttf"),
+        ),
+        (
+            "LiberationSerif-Italic.ttf",
+            include_bytes!("../assets/fonts/LiberationSerif-Italic.ttf"),
+        ),
+        (
+            "LiberationSerif-BoldItalic.ttf",
+            include_bytes!("../assets/fonts/LiberationSerif-BoldItalic.ttf"),
+        ),
     ]
 }
 
@@ -92,6 +108,10 @@ pub fn bundled_shaper() -> Shaper {
     s.register_font(include_bytes!("../assets/fonts/LiberationSans-Bold.ttf").to_vec());
     s.register_font(include_bytes!("../assets/fonts/LiberationSerif-Regular.ttf").to_vec());
     s.register_font(include_bytes!("../assets/fonts/LiberationSerif-Bold.ttf").to_vec());
+    s.register_font(include_bytes!("../assets/fonts/LiberationSans-Italic.ttf").to_vec());
+    s.register_font(include_bytes!("../assets/fonts/LiberationSans-BoldItalic.ttf").to_vec());
+    s.register_font(include_bytes!("../assets/fonts/LiberationSerif-Italic.ttf").to_vec());
+    s.register_font(include_bytes!("../assets/fonts/LiberationSerif-BoldItalic.ttf").to_vec());
     s
 }
 
@@ -313,6 +333,50 @@ mod tests {
         s.register_font(include_bytes!("../assets/fonts/LiberationSans-Regular.ttf").to_vec());
         s.register_font(include_bytes!("../assets/fonts/LiberationSans-Bold.ttf").to_vec());
         s
+    }
+
+    /// The bundled set is complete: eight faces, all parseable.
+    #[test]
+    fn bundled_set_has_all_eight_faces() {
+        let files = bundled_font_files();
+        assert_eq!(files.len(), 8);
+        for (name, bytes) in &files {
+            assert!(
+                ttf_parser::Face::parse(bytes, 0).is_ok(),
+                "{name} should parse"
+            );
+        }
+    }
+
+    /// Italic shaping uses the real italic face: shape a string in
+    /// the italic face only and compare against that face's hmtx.
+    #[test]
+    fn italic_spec_shapes_with_the_italic_face() {
+        let mut shaper = Shaper::new();
+        shaper.register_font(include_bytes!("../assets/fonts/LiberationSans-Italic.ttf").to_vec());
+        let text = "The Lord be with you";
+        let spec = FontSpec {
+            family: "Liberation Sans".into(),
+            bold: false,
+            italic: true,
+        };
+        let shaped = shaper.measure(text, &spec, 11_000);
+        let face = ttf_parser::Face::parse(
+            include_bytes!("../assets/fonts/LiberationSans-Italic.ttf"),
+            0,
+        )
+        .expect("italic face parses");
+        let upem = face.units_per_em() as i64;
+        let mut want: i64 = 0;
+        for ch in text.chars() {
+            let gid = face.glyph_index(ch).expect("glyph");
+            want += face.glyph_hor_advance(gid).expect("advance") as i64;
+        }
+        let want = (want * 11_000) / upem;
+        assert!(
+            (shaped - want).abs() <= 30,
+            "italic shaped {shaped} vs hmtx {want}"
+        );
     }
 
     /// Independent oracle: width straight from the font's hmtx table

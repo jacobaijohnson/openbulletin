@@ -74,6 +74,10 @@ pub struct ParagraphStyle {
     pub name: String,
     pub font_size: Mpt,
     pub bold: bool,
+    /// Italic face of the family. Scripture quotes and sung
+    /// responses are traditionally italic in bulletins.
+    #[serde(default)]
+    pub italic: bool,
     pub align: Align,
     pub space_after: Mpt,
     pub color: Rgb,
@@ -213,16 +217,19 @@ pub fn resolve_fields(text: &str, doc: &Document) -> String {
 /// because they carry tab-leader hymn numbers.
 pub fn default_styles() -> Vec<ParagraphStyle> {
     let st =
-        |id: &str, name: &str, size: Mpt, bold: bool, align: Align, after: Mpt| ParagraphStyle {
-            id: id.to_string(),
-            name: name.to_string(),
-            font_size: size,
-            bold,
-            align,
-            space_after: after,
-            color: Rgb::BLACK,
-            font_family: default_font_family(),
-            font_sha256: None,
+        |id: &str, name: &str, size: Mpt, bold: bool, italic: bool, align: Align, after: Mpt| {
+            ParagraphStyle {
+                id: id.to_string(),
+                name: name.to_string(),
+                font_size: size,
+                bold,
+                italic,
+                align,
+                space_after: after,
+                color: Rgb::BLACK,
+                font_family: default_font_family(),
+                font_sha256: None,
+            }
         };
     vec![
         st(
@@ -230,16 +237,34 @@ pub fn default_styles() -> Vec<ParagraphStyle> {
             "Church Name",
             26_000,
             true,
+            false,
             Align::Center,
             6_000,
         ),
-        st("heading", "Heading", 18_000, true, Align::Left, 6_000),
-        st("subheading", "Subheading", 13_000, true, Align::Left, 4_000),
-        st("body", "Body", 11_000, false, Align::Left, 4_000),
+        st(
+            "heading",
+            "Heading",
+            18_000,
+            true,
+            false,
+            Align::Left,
+            6_000,
+        ),
+        st(
+            "subheading",
+            "Subheading",
+            13_000,
+            true,
+            false,
+            Align::Left,
+            4_000,
+        ),
+        st("body", "Body", 11_000, false, false, Align::Left, 4_000),
         st(
             "body-center",
             "Body Centered",
             11_000,
+            false,
             false,
             Align::Center,
             4_000,
@@ -249,6 +274,7 @@ pub fn default_styles() -> Vec<ParagraphStyle> {
             "Order of Service Line",
             11_000,
             false,
+            false,
             Align::Left,
             3_000,
         ),
@@ -257,10 +283,28 @@ pub fn default_styles() -> Vec<ParagraphStyle> {
             "Sermon Notes Line",
             11_000,
             false,
+            false,
             Align::Left,
             10_000,
         ),
-        st("caption", "Caption", 9_500, false, Align::Center, 3_000),
+        st(
+            "caption",
+            "Caption",
+            9_500,
+            false,
+            false,
+            Align::Center,
+            3_000,
+        ),
+        st(
+            "scripture",
+            "Scripture",
+            11_000,
+            false,
+            true,
+            Align::Left,
+            4_000,
+        ),
     ]
 }
 

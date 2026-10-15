@@ -313,6 +313,7 @@ mod tests {
                 name: "Body".into(),
                 font_size: 11_000,
                 bold: false,
+                italic: false,
                 align: ob_model::Align::Left,
                 space_after: 4_000,
                 color: ob_model::Rgb::BLACK,

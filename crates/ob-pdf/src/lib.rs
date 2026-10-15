@@ -115,6 +115,7 @@ fn draw_panel(
                     name: "Body".into(),
                     font_size: 11_000,
                     bold: false,
+                    italic: false,
                     align: Align::Left,
                     space_after: 4_000,
                     color: ob_model::Rgb::BLACK,
@@ -130,7 +131,7 @@ fn draw_panel(
             let spec = ob_text::shaping::FontSpec {
                 family: style.font_family.clone(),
                 bold: style.bold,
-                italic: false,
+                italic: style.italic,
             };
             let shaped: Vec<(String, ob_model::Mpt)> = if resolved.contains('\t') {
                 let line = shaper.expand_order_line(&resolved, fr.w, &spec, style.font_size);
@@ -374,6 +375,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
                 name: "Big".into(),
                 font_size: 40_000,
                 bold: true,
+                italic: false,
                 align: Align::Center,
                 space_after: 24_000,
                 color: ob_model::Rgb::BLACK,
@@ -385,6 +387,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
                 name: "Body".into(),
                 font_size: 13_000,
                 bold: false,
+                italic: false,
                 align: Align::Center,
                 space_after: 12_000,
                 color: ob_model::Rgb::BLACK,

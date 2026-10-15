@@ -87,11 +87,12 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
     let doc = lopdf::Document::load_mem(bytes).map_err(|e| format!("not a readable PDF: {e}"))?;
     let mut pages = Vec::new();
     let mut spans = Vec::new();
-    for (idx, page_id) in doc.get_pages().keys().enumerate() {
-        let idx = idx as u32;
-        let (w, h) = page_size(&doc, page_id).unwrap_or((0.0, 0.0));
+    // lopdf's page map is page number (1-based) -> object id.
+    for (page_num, page_id) in doc.get_pages() {
+        let idx = page_num - 1;
+        let (w, h) = page_size(&doc, &page_id).unwrap_or((0.0, 0.0));
         let text = doc
-            .extract_text(&[idx + 1])
+            .extract_text(&[page_num])
             .unwrap_or_default()
             .trim()
             .to_string();
@@ -168,12 +169,16 @@ mod tests {
     use super::*;
 
     fn sample_pdf() -> Vec<u8> {
-        let start = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap();
         let doc = ob_layout::build_template(
             ob_layout::Preset::LetterBifold,
-            "Grace Lutheran Church",
+            ob_model::ChurchProfile {
+                name: "Grace Lutheran Church".into(),
+                pastor: "Pastor Lee".into(),
+                ..Default::default()
+            },
             start,
-            ob_layout::next_sunday(start),
+            "Twentieth Sunday after Pentecost",
         );
         ob_pdf::export_reader_pdf(&doc)
     }

@@ -242,17 +242,16 @@ endobj
         }
         out.extend_from_slice(
             format!(
-                "trailer
-<< /Size {} /Root 1 0 R >>
-startxref
-{}
-%%%%EOF
-",
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n",
                 max_obj + 1,
                 xref
             )
             .as_bytes(),
         );
+        // The EOF marker is exactly two percent signs. (A doubled %%
+        // once slipped through here as %%%%EOF, which strict parsers
+        // such as lopdf reject; lenient readers had hidden the bug.)
+        out.extend_from_slice(b"%%EOF\n");
         out
     }
 }
@@ -426,6 +425,15 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
             "Twentieth Sunday after Pentecost",
         )
+    }
+
+    #[test]
+    fn eof_marker_is_exactly_two_percents() {
+        let bytes = export_reader_pdf(&sample_doc());
+        let tail = &bytes[bytes.len().saturating_sub(16)..];
+        let tail = String::from_utf8_lossy(tail);
+        assert!(tail.trim_end().ends_with("%%EOF"), "tail was: {tail:?}");
+        assert!(!tail.contains("%%%%"), "doubled EOF marker: {tail:?}");
     }
 
     #[test]

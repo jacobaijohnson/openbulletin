@@ -184,11 +184,43 @@ struct App {
     catalog_busy: bool,
     system_rows: Vec<ob_fonts::SystemFont>,
     system_shown: bool,
+    preview_cache: Option<(String, Vec<PreviewSheet>)>,
     saved_snapshot: String,
     journal_snapshot: String,
     last_journal_check: std::time::Instant,
     startup_done: bool,
     recovery: Option<(Document, Option<std::path::PathBuf>, u64)>,
+}
+
+/// One sheet side as the printer will produce it: panel rectangles
+/// in points, with the text lines shaped exactly as the PDF shapes
+/// them (same shaper, same fonts), so the breaks shown are the
+/// breaks printed.
+#[derive(Clone)]
+struct PreviewSheet {
+    w: f32,
+    h: f32,
+    panels: Vec<PreviewPanel>,
+}
+
+#[derive(Clone)]
+struct PreviewPanel {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    name: String,
+    lines: Vec<PreviewLine>,
+}
+
+#[derive(Clone)]
+struct PreviewLine {
+    text: String,
+    size: f32,
+    x: f32,
+    y: f32,
+    w: f32,
+    align: ob_model::Align,
 }
 
 /// A message back from a catalog worker thread (search or install).
@@ -238,6 +270,7 @@ impl Default for App {
             catalog_busy: false,
             system_rows: Vec::new(),
             system_shown: false,
+            preview_cache: None,
             saved_snapshot: String::new(),
             journal_snapshot: String::new(),
             last_journal_check: std::time::Instant::now(),
@@ -634,6 +667,46 @@ impl App {
             self.journal_snapshot = self.saved_snapshot.clone();
             self.status = "Threw away the unsaved copy.".into();
         }
+    }
+
+    /// Build (or reuse) the sheet preview for the Print step.
+    fn preview_sheets(&mut self) -> &Vec<PreviewSheet> {
+        let key = snapshot(&self.doc);
+        let stale = self
+            .preview_cache
+            .as_ref()
+            .map(|(k, _)| k != &key)
+            .unwrap_or(true);
+        if stale {
+            let sheets = build_preview(&self.doc);
+            self.preview_cache = Some((key, sheets));
+        }
+        &self.preview_cache.as_ref().expect("cache filled").1
+    }
+
+    /// The Print step's preview: every sheet side, drawn to scale,
+    /// with fold lines and the real shaped text.
+    fn sheet_preview_ui(&mut self, ui: &mut egui::Ui) {
+        // Build first (borrows self), then draw from the cache.
+        let count = self.preview_sheets().len();
+        ui.label(format!(
+            "This is exactly what comes out of the printer: {count} sheet side{}.
+             Lines break where they will print.",
+            if count == 1 { "" } else { "s" }
+        ));
+        let sheets = self.preview_sheets().clone();
+        for (i, sheet) in sheets.iter().enumerate() {
+            let pair = i / 2 + 1;
+            let face = if i % 2 == 0 { "front" } else { "back" };
+            ui.label(egui::RichText::new(format!("Sheet {pair}, {face}")).strong());
+            draw_sheet(ui, sheet);
+        }
+    }
+
+    /// The settings to use in the computer's print window, in plain
+    /// words, computed from this document and the learned printer.
+    fn print_checklist(&self) -> Vec<String> {
+        print_checklist_for(&self.doc, &self.settings, &self.printer_name)
     }
 
     fn fonts_window(&mut self, ctx: &egui::Context) {
@@ -1079,6 +1152,23 @@ impl eframe::App for App {
                     }
                     _ => {
                         ui.heading("Print");
+                        self.save_announcements();
+                        self.sheet_preview_ui(ui);
+                        ui.separator();
+                        ui.label(egui::RichText::new("In the print window, use these settings").strong());
+                        for line in self.print_checklist() {
+                            ui.label(format!("- {line}"));
+                        }
+                        if ui.button("Open the print copy").clicked() {
+                            self.pin_fonts();
+                            let bytes = ob_pdf::export_imposed_pdf(&self.doc);
+                            let path = std::env::temp_dir().join("openbulletin-print-copy.pdf");
+                            match std::fs::write(&path, &bytes).map_err(|e| e.to_string()).and_then(|_| open_with_os(&path)) {
+                                Ok(()) => self.status = "Print copy opened in your PDF viewer. Use the settings listed above.".into(),
+                                Err(e) => self.status = e,
+                            }
+                        }
+                        ui.separator();
                         ui.label("Print copy: folded sheets, in the right order, ready for the copier.");
                         if ui.button(egui::RichText::new("Save print copy (PDF)").strong()).clicked() {
                             self.save_announcements();
@@ -1254,6 +1344,253 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+/// Shape the whole document the way the PDF path does and record
+/// the lines per imposed sheet side.
+fn build_preview(doc: &Document) -> Vec<PreviewSheet> {
+    let mut shaper = ob_text::shaping::bundled_shaper();
+    if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+        for info in lib.scan() {
+            if let Ok(bytes) = lib.read(&info) {
+                shaper.register_font(bytes);
+            }
+        }
+    }
+    let sides = ob_impose::impose(doc);
+    let mut out = Vec::new();
+    for side in &sides {
+        let mut sheet = PreviewSheet {
+            w: side.size.w as f32 / 1000.0,
+            h: side.size.h as f32 / 1000.0,
+            panels: Vec::new(),
+        };
+        for pl in &side.placements {
+            let Some(panel) = doc.panels.get(pl.panel) else {
+                continue;
+            };
+            let mut pp = PreviewPanel {
+                x: pl.x as f32 / 1000.0,
+                y: pl.y as f32 / 1000.0,
+                w: panel.size.w as f32 / 1000.0,
+                h: panel.size.h as f32 / 1000.0,
+                name: panel.name.clone(),
+                lines: Vec::new(),
+            };
+            for frame in &panel.frames {
+                if frame.kind == ob_model::FrameKind::Shape {
+                    continue;
+                }
+                let Some(sid) = &frame.story_id else { continue };
+                let Some(story) = doc.story(sid) else {
+                    continue;
+                };
+                let mut y = frame.rect.y;
+                for para in &story.paragraphs {
+                    let style = doc.style(&para.style).cloned().unwrap_or_else(|| {
+                        ob_model::ParagraphStyle {
+                            id: "body".into(),
+                            name: "Body".into(),
+                            font_size: 11_000,
+                            bold: false,
+                            italic: false,
+                            align: ob_model::Align::Left,
+                            space_after: 4_000,
+                            color: ob_model::Rgb::BLACK,
+                            font_family: "Liberation Sans".into(),
+                            font_sha256: None,
+                        }
+                    });
+                    let resolved = ob_model::resolve_fields(&para.text, doc);
+                    let spec = ob_text::shaping::FontSpec {
+                        family: style.font_family.clone(),
+                        bold: style.bold,
+                        italic: style.italic,
+                    };
+                    let line_h = style.font_size * 13 / 10;
+                    let shaped: Vec<(String, ob_model::Mpt)> = if resolved.contains('\t') {
+                        let line = shaper.expand_order_line(
+                            &resolved,
+                            frame.rect.w,
+                            &spec,
+                            style.font_size,
+                        );
+                        let w = shaper.measure(&line, &spec, style.font_size);
+                        vec![(line, w)]
+                    } else {
+                        shaper
+                            .wrap(&resolved, frame.rect.w, &spec, style.font_size, 1.3)
+                            .into_iter()
+                            .map(|l| (l.text, l.width))
+                            .collect()
+                    };
+                    for (line, tw) in shaped {
+                        if y + line_h > frame.rect.y + frame.rect.h {
+                            break;
+                        }
+                        y += line_h;
+                        let lx = match style.align {
+                            ob_model::Align::Left => frame.rect.x,
+                            ob_model::Align::Center => frame.rect.x + (frame.rect.w - tw) / 2,
+                            ob_model::Align::Right => frame.rect.x + frame.rect.w - tw,
+                        };
+                        pp.lines.push(PreviewLine {
+                            text: line,
+                            size: style.font_size as f32 / 1000.0,
+                            x: pp.x + lx as f32 / 1000.0,
+                            y: pp.y + y as f32 / 1000.0,
+                            w: tw as f32 / 1000.0,
+                            align: style.align,
+                        });
+                    }
+                    y += style.space_after;
+                }
+            }
+            sheet.panels.push(pp);
+        }
+        out.push(sheet);
+    }
+    out
+}
+
+/// Draw one sheet side with the egui painter: white sheet, fold
+/// lines, panel outlines, panel names, and the shaped lines.
+fn draw_sheet(ui: &mut egui::Ui, sheet: &PreviewSheet) {
+    let avail = ui.available_width().min(560.0);
+    let scale = avail / sheet.w;
+    let height = sheet.h * scale;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(avail, height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let origin = rect.min;
+    let to_px = |x: f32, y: f32| egui::pos2(origin.x + x * scale, origin.y + y * scale);
+    painter.rect_filled(rect, 2.0, egui::Color32::WHITE);
+    painter.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0_f32, egui::Color32::DARK_GRAY),
+    );
+    for panel in &sheet.panels {
+        let prect = egui::Rect::from_min_max(
+            to_px(panel.x, panel.y),
+            to_px(panel.x + panel.w, panel.y + panel.h),
+        );
+        painter.rect_stroke(
+            prect,
+            0.0,
+            egui::Stroke::new(0.75_f32, egui::Color32::LIGHT_GRAY),
+        );
+        painter.text(
+            prect.min + egui::vec2(3.0, 2.0),
+            egui::Align2::LEFT_TOP,
+            &panel.name,
+            egui::FontId::proportional(9.0),
+            egui::Color32::from_gray(140),
+        );
+        let clip = painter.with_clip_rect(prect);
+        for line in &panel.lines {
+            let anchor = match line.align {
+                ob_model::Align::Left => egui::Align2::LEFT_BOTTOM,
+                ob_model::Align::Center => egui::Align2::CENTER_BOTTOM,
+                ob_model::Align::Right => egui::Align2::RIGHT_BOTTOM,
+            };
+            let lx = match line.align {
+                ob_model::Align::Left => line.x,
+                ob_model::Align::Center => line.x + line.w / 2.0,
+                ob_model::Align::Right => line.x + line.w,
+            };
+            clip.text(
+                to_px(lx, line.y),
+                anchor,
+                &line.text,
+                egui::FontId::proportional((line.size * scale).max(4.0)),
+                egui::Color32::BLACK,
+            );
+        }
+    }
+}
+
+/// A friendly paper name for a sheet size in milli-points.
+fn paper_name(w: ob_model::Mpt, h: ob_model::Mpt) -> String {
+    let (lw, lh) = (w.max(h), w.min(h));
+    let orientation = if w >= h {
+        "turned sideways (landscape)"
+    } else {
+        "upright (portrait)"
+    };
+    let name = match (lw, lh) {
+        (792_000, 612_000) => "Letter (11 x 8.5 in)".to_string(),
+        (1_008_000, 612_000) => "Legal (14 x 8.5 in)".to_string(),
+        (1_224_000, 792_000) => "Tabloid (17 x 11 in)".to_string(),
+        _ => format!(
+            "{:.1} x {:.1} in",
+            lw as f32 / 72_000.0,
+            lh as f32 / 72_000.0
+        ),
+    };
+    format!("{name}, {orientation}")
+}
+
+/// The print-window settings for one document and printer, as
+/// plain sentences. Pure, so it is testable without a window.
+fn print_checklist_for(doc: &Document, settings: &Settings, printer_name: &str) -> Vec<String> {
+    let sides = ob_impose::impose(doc);
+    let (w, h) = sides
+        .first()
+        .map(|s| (s.size.w, s.size.h))
+        .unwrap_or((doc.sheet.size.w, doc.sheet.size.h));
+    let mut lines = vec![
+        format!("Paper: {}", paper_name(w, h)),
+        "Size: pick Actual size, or 100%. Never \"Fit to page\": it shrinks \
+         the pages and the fold lands in the wrong place."
+            .to_string(),
+    ];
+    match settings.printers.get(printer_name) {
+        Some(setup) if setup.mode == "long_edge" => lines.push(
+            "Two-sided: On, and pick \"flip on long edge\". Your test sheet \
+             proved this is right for this printer."
+                .to_string(),
+        ),
+        Some(setup) if setup.mode == "short_edge" => lines.push(
+            "Two-sided: On, and pick \"flip on short edge\". Your test sheet \
+             proved long edge comes out upside down on this printer."
+                .to_string(),
+        ),
+        Some(_) => lines.push(
+            "Two-sided: this printer does one side at a time. Print all the \
+             front sides, put the stack back in the tray the same way it came \
+             out, then print the back sides. Try one sheet first."
+                .to_string(),
+        ),
+        None => lines.push(format!(
+            "Two-sided: we have not learned the {printer_name} yet. Print the \
+             test sheet below once and answer, and this line will name the \
+             exact setting."
+        )),
+    }
+    lines.push(
+        "Copies: set the number in the print window. This file holds each \
+         sheet once, in the right order."
+            .to_string(),
+    );
+    lines
+}
+
+/// Open a file with the computer's default program (the PDF
+/// viewer, for our print copies).
+fn open_with_os(path: &std::path::Path) -> Result<(), String> {
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/c", "start", ""]);
+        c
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    cmd.arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open the print copy: {e}"))
+}
+
 #[cfg(test)]
 mod settings_tests {
     use super::*;
@@ -1268,6 +1605,31 @@ mod settings_tests {
         let manual = printer_setup_from_answer("manual", "Brother");
         assert_eq!(manual.mode, "manual");
         assert!(manual.instruction.contains("one side at a time"));
+    }
+
+    #[test]
+    fn print_checklist_names_paper_scale_and_learned_flip() {
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        let mut settings = Settings::default();
+        let lines = print_checklist_for(&doc, &settings, "OfficeJet");
+        assert!(lines[0].contains("Letter"), "paper named: {}", lines[0]);
+        assert!(lines[0].contains("landscape"));
+        assert!(lines.iter().any(|l| l.contains("Actual size")));
+        assert!(lines.iter().any(|l| l.contains("not learned")));
+        settings.printers.insert(
+            "OfficeJet".into(),
+            printer_setup_from_answer("up", "OfficeJet"),
+        );
+        let lines = print_checklist_for(&doc, &settings, "OfficeJet");
+        assert!(
+            lines.iter().any(|l| l.contains("flip on long edge")),
+            "learned flip named: {lines:?}"
+        );
     }
 
     #[test]

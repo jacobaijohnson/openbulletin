@@ -2839,6 +2839,7 @@ dependencies = [
  "eframe",
  "ob-fonts",
  "ob-format",
+ "ob-impose",
  "ob-layout",
  "ob-model",
  "ob-pdf",

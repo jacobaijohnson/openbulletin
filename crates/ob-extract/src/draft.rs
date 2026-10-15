@@ -183,6 +183,21 @@ fn lines_of(spans: &[&crate::Span]) -> Vec<Line> {
     lines
 }
 
+/// One page's words, rebuilt into reading lines (the analyzer
+/// reads these, never raw foreign files).
+pub fn rebuilt_page_lines(dump: &ExtractionDump, page: u32) -> Vec<String> {
+    let spans: Vec<&crate::Span> = dump
+        .spans
+        .iter()
+        .filter(|s| s.page == page && s.trust == SpanTrust::RawText)
+        .collect();
+    lines_of(&spans)
+        .iter()
+        .map(|l| l.text())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
 /// Build the draft. `with_backgrounds` names each picture page's
 /// tracing image the way the renderers write it
 /// (assets/page-NN.png), so the caller only renders the pages.

@@ -418,6 +418,9 @@ struct App {
     peer_alive: bool,
     /// PDF rescue in flight and awaiting review.
     import_rx: Option<std::sync::mpsc::Receiver<Result<ImportReview, String>>>,
+    analyzer_rx: Option<std::sync::mpsc::Receiver<Result<AnalyzerReview, String>>>,
+    analyzer_review: Option<AnalyzerReview>,
+    analyzer_armed: bool,
     import_review: Option<ImportReview>,
     import_armed: bool,
     /// Where an unsaved import's page pictures live until the
@@ -562,6 +565,9 @@ impl Default for App {
             discard_armed: false,
             peer_alive: false,
             import_rx: None,
+            analyzer_rx: None,
+            analyzer_review: None,
+            analyzer_armed: false,
             import_review: None,
             import_armed: false,
             asset_base: None,
@@ -2538,6 +2544,169 @@ impl App {
         }
     }
 
+    /// The Template Analyzer on a worker: dump every picked
+    /// bulletin, learn the family and its standing text, render
+    /// the base bulletin's pages as tracing pictures.
+    fn start_analyzer(&mut self, pdfs: Vec<std::path::PathBuf>) {
+        let profile = self.doc.profile.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.analyzer_rx = Some(rx);
+        self.note("Studying your old bulletins...".into());
+        std::thread::spawn(move || {
+            let result = (|| -> Result<AnalyzerReview, String> {
+                let helper = ob_extract::helper::resolve_helper(None);
+                let mut dumps = Vec::new();
+                for pdf in &pdfs {
+                    dumps.push(ob_extract::helper::dump_pdf(&helper, pdf)?);
+                }
+                let out = ob_extract::analyzer::analyze(&dumps, profile)?;
+                let workdir = std::env::temp_dir()
+                    .join(format!("openbulletin-template-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&workdir);
+                if let Some(base) = pdfs
+                    .iter()
+                    .find(|p| p.to_string_lossy() == out.base_source)
+                {
+                    ob_extract::helper::render_pdf(&helper, base, &workdir.join("assets"))?;
+                }
+                Ok(AnalyzerReview {
+                    doc: out.doc,
+                    items: out.items,
+                    family: out.family,
+                    corpus: out.corpus,
+                    workdir,
+                })
+            })();
+            let _ = tx.send(result);
+        });
+    }
+
+    fn poll_analyzer(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.analyzer_rx else { return };
+        match rx.try_recv() {
+            Ok(Ok(review)) => {
+                self.analyzer_rx = None;
+                self.analyzer_armed = false;
+                self.analyzer_review = Some(review);
+                ctx.request_repaint();
+            }
+            Ok(Err(e)) => {
+                self.analyzer_rx = None;
+                self.fail(format!("The old bulletins could not be studied. {e}"));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.analyzer_rx = None;
+                self.fail("The old bulletins could not be studied; the reader stopped.".into());
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    fn finalize_analyzer(&mut self, edit: bool) {
+        let Some(review) = self.analyzer_review.take() else {
+            return;
+        };
+        self.analyzer_armed = false;
+        self.asset_base = Some(review.workdir.clone());
+        self.adopt_document(review.doc, true);
+        self.path = None;
+        if edit {
+            self.show_pages = true;
+            self.note(
+                "Here is the suggested template. Standing words stay each week; \
+                 weekly words clear on Next Sunday."
+                    .into(),
+            );
+        } else {
+            self.step = 1;
+            self.note(
+                "Template suggested from your old bulletins. Set the date, and \
+                 Save it as your church template."
+                    .into(),
+            );
+        }
+    }
+
+    fn analyzer_review_window(&mut self, ctx: &egui::Context) {
+        if self.analyzer_review.is_none() {
+            return;
+        }
+        let mut choice: Option<bool> = None;
+        let mut cancel = false;
+        let dirty = self.frame_snapshot != self.saved_snapshot;
+        egui::Window::new("A template from your old bulletins")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([560.0, 520.0])
+            .show(ctx, |ui| {
+                let review = self.analyzer_review.as_ref().expect("review");
+                let standing = review.items.iter().filter(|i| i.standing).count();
+                ui.label(format!(
+                    "We studied {} bulletins. {} of them look like one family,                      and this suggestion is built from the fullest of those.                      {standing} pieces stand still every week; the rest change                      and become the slots Next Sunday clears.",
+                    review.corpus,
+                    review.family,
+                ));
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for item in &review.items {
+                            let (tag, color) = if item.standing {
+                                ("Stays", egui::Color32::from_rgb(40, 110, 60))
+                            } else {
+                                ("Changes weekly", egui::Color32::from_rgb(170, 110, 20))
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(tag).color(color).strong());
+                                ui.label(&item.label);
+                            });
+                            ui.small(&item.detail);
+                        }
+                    });
+                ui.separator();
+                if dirty && !self.analyzer_armed {
+                    ui.label(
+                        "You have unsaved work on screen. Using this template leaves it behind.",
+                    );
+                }
+                ui.horizontal(|ui| {
+                    let use_label = if dirty && !self.analyzer_armed {
+                        "Leave unsaved work and use this template"
+                    } else if dirty {
+                        "Yes, leave it and use the template"
+                    } else {
+                        "Use this template"
+                    };
+                    if ui.button(use_label).clicked() {
+                        if dirty && !self.analyzer_armed {
+                            self.analyzer_armed = true;
+                        } else {
+                            choice = Some(false);
+                        }
+                    }
+                    if ui.button("Use it and arrange the pages").clicked() {
+                        if dirty && !self.analyzer_armed {
+                            self.analyzer_armed = true;
+                        } else {
+                            choice = Some(true);
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if let Some(edit) = choice {
+            self.finalize_analyzer(edit);
+        } else if cancel {
+            if let Some(review) = self.analyzer_review.take() {
+                let _ = std::fs::remove_dir_all(&review.workdir);
+            }
+            self.analyzer_armed = false;
+            self.note("Template cancelled; nothing changed.".into());
+        }
+    }
+
     fn fonts_window(&mut self, ctx: &egui::Context) {
         if !self.show_fonts {
             return;
@@ -2902,6 +3071,8 @@ impl eframe::App for App {
         }
         self.poll_import(ctx);
         self.import_review_window(ctx);
+        self.poll_analyzer(ctx);
+        self.analyzer_review_window(ctx);
         self.frame_snapshot = snapshot(&self.doc);
         // A gesture must not span a focus change: if the user
         // clicked into a text field mid-gesture, the gesture is
@@ -3136,6 +3307,26 @@ impl eframe::App for App {
                                 .pick_file()
                             {
                                 self.start_import(pdf);
+                            }
+                        }
+                        ui.separator();
+                        ui.heading("Learn from your old bulletins");
+                        ui.label("Or give us three or more old bulletins (PDFs) and we will learn what stays the same every week and what changes, and suggest a template from them.");
+                        if self.analyzer_rx.is_some() {
+                            ui.label("Studying your old bulletins...");
+                        } else if ui.button("Pick old bulletins (3 or more)...").clicked() {
+                            if let Some(pdfs) = rfd::FileDialog::new()
+                                .add_filter("PDF bulletins", &["pdf"])
+                                .pick_files()
+                            {
+                                if pdfs.len() < 3 {
+                                    self.fail(
+                                        "Pick at least three old bulletins; fewer cannot show what stands still."
+                                            .into(),
+                                    );
+                                } else {
+                                    self.start_analyzer(pdfs);
+                                }
                             }
                         }
                         ui.separator();
@@ -3657,6 +3848,15 @@ struct ImportReview {
     items: Vec<ob_extract::draft::ImportItem>,
     workdir: std::path::PathBuf,
     source_name: String,
+}
+
+/// A finished Template Analyzer run awaiting the verdict.
+struct AnalyzerReview {
+    doc: Document,
+    items: Vec<ob_extract::analyzer::TemplateItem>,
+    family: usize,
+    corpus: usize,
+    workdir: std::path::PathBuf,
 }
 
 /// A file-open that would leave unsaved work behind.

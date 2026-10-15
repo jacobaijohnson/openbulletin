@@ -13,6 +13,7 @@
 //! room, so the analyzer's side of the contract does not change.
 
 pub mod draft;
+pub mod analyzer;
 pub mod helper;
 
 use serde::{Deserialize, Serialize};

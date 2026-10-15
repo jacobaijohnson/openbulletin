@@ -13,6 +13,7 @@
 //! room, so the analyzer's side of the contract does not change.
 
 pub mod analyzer;
+pub mod cfb;
 pub mod draft;
 pub mod helper;
 pub mod idml;

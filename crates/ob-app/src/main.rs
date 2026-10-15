@@ -222,6 +222,8 @@ impl App {
         self.frame_menu_for = None;
         self.ctx_pos = None;
         self.lines_cache = None;
+        self.bg_tex_key.clear();
+        self.bg_tex = None;
     }
 
     /// Refresh the text buffers that mirror the document
@@ -414,6 +416,13 @@ struct App {
     /// Another live OpenBulletin process holds the journal: this
     /// instance never writes or clears it (closing audit).
     peer_alive: bool,
+    /// PDF rescue in flight and awaiting review.
+    import_rx: Option<std::sync::mpsc::Receiver<Result<ImportReview, String>>>,
+    import_review: Option<ImportReview>,
+    import_armed: bool,
+    /// Where an unsaved import's page pictures live until the
+    /// first Save moves them beside the bulletin file.
+    asset_base: Option<std::path::PathBuf>,
     /// Pages window zoom: 1.0 fits the window (finding R9).
     pages_zoom: f32,
     /// The copied box, for Ctrl+C / Ctrl+V on the canvas.
@@ -552,6 +561,10 @@ impl Default for App {
             pending_open_snapshot: String::new(),
             discard_armed: false,
             peer_alive: false,
+            import_rx: None,
+            import_review: None,
+            import_armed: false,
+            asset_base: None,
             pages_zoom: 1.0,
             frame_clipboard: None,
             box_seq: 0,
@@ -1503,6 +1516,18 @@ impl App {
                     if ui.button("Add a text box").clicked() {
                         self.add_text_box(idx);
                     }
+                    if self.doc.panels[idx].background_image.is_some() {
+                        ui.separator();
+                        if ui.button("Remove the old page picture").clicked() {
+                            self.push_undo_now();
+                            self.doc.panels[idx].background_image = None;
+                            self.bg_tex_key.clear();
+                            self.bg_tex = None;
+                            self.note(
+                                "Old page picture removed for this page.".into(),
+                            );
+                        }
+                    }
                 });
                 ui.label("Click a box to select it, then drag to move it. Drag the corner square to size it.");
                 ui.label("Double-click a box to type in it. Arrow keys nudge a selected box.");
@@ -1652,6 +1677,11 @@ impl App {
                 self.path
                     .as_ref()
                     .map(|p| p.display().to_string())
+                    .or_else(|| {
+                        self.asset_base
+                            .as_ref()
+                            .map(|d| d.display().to_string())
+                    })
                     .unwrap_or_default(),
                 bg
             );
@@ -2323,6 +2353,7 @@ impl App {
             .path
             .as_ref()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .or_else(|| self.asset_base.clone())
             .unwrap_or_default();
         let bytes = std::fs::read(base.join(rel)).ok()?;
         let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
@@ -2330,6 +2361,181 @@ impl App {
         let color =
             egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
         Some(ctx.load_texture("trace-bg", color, egui::TextureOptions::LINEAR))
+    }
+
+    /// Begin a PDF rescue on a worker thread: read the old
+    /// bulletin with the helper, render its pages as tracing
+    /// pictures, and build the draft.
+    fn start_import(&mut self, pdf: std::path::PathBuf) {
+        let profile = self.doc.profile.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.import_rx = Some(rx);
+        self.note("Reading your old bulletin...".into());
+        std::thread::spawn(move || {
+            let result = (|| -> Result<ImportReview, String> {
+                let helper = ob_extract::helper::resolve_helper(None);
+                let dump = ob_extract::helper::dump_pdf(&helper, &pdf)?;
+                let workdir = std::env::temp_dir()
+                    .join(format!("openbulletin-import-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&workdir);
+                ob_extract::helper::render_pdf(&helper, &pdf, &workdir.join("assets"))?;
+                let out =
+                    ob_extract::draft::document_from_dump(&dump, profile, true);
+                Ok(ImportReview {
+                    doc: out.doc,
+                    items: out.items,
+                    workdir,
+                    source_name: pdf
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "old bulletin".into()),
+                })
+            })();
+            let _ = tx.send(result);
+        });
+    }
+
+    fn poll_import(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.import_rx else { return };
+        match rx.try_recv() {
+            Ok(Ok(review)) => {
+                self.import_rx = None;
+                self.import_armed = false;
+                self.import_review = Some(review);
+                ctx.request_repaint();
+            }
+            Ok(Err(e)) => {
+                self.import_rx = None;
+                self.fail(format!("That PDF could not be brought in. {e}"));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.import_rx = None;
+                self.fail("That PDF could not be brought in; the reader stopped.".into());
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    /// Adopt a reviewed draft. The pictures stay in the work
+    /// folder as the asset base until the first Save moves
+    /// them beside the bulletin file.
+    fn finalize_import(&mut self, edit: bool) {
+        let Some(review) = self.import_review.take() else {
+            return;
+        };
+        self.import_armed = false;
+        self.asset_base = Some(review.workdir.clone());
+        self.adopt_document(review.doc, true);
+        self.path = None;
+        if edit {
+            self.show_pages = true;
+            self.note(
+                "Here is your old bulletin as a draft. The old pages sit under each \
+                 page as pictures to check against."
+                    .into(),
+            );
+        } else {
+            self.step = 1;
+            self.note(
+                "Here is your old bulletin as a draft. Check the date, then work \
+                 through the steps. Save it under a new name when ready."
+                    .into(),
+            );
+        }
+    }
+
+    fn import_review_window(&mut self, ctx: &egui::Context) {
+        if self.import_review.is_none() {
+            return;
+        }
+        let mut choice: Option<bool> = None; // Some(edit) = use it
+        let mut cancel = false;
+        let dirty = self.frame_snapshot != self.saved_snapshot;
+        egui::Window::new("Your old bulletin, as a draft")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([560.0, 520.0])
+            .show(ctx, |ui| {
+                let review = self.import_review.as_ref().expect("review");
+                let (mut good, mut check, mut pics) = (0, 0, 0);
+                for item in &review.items {
+                    match item.badge {
+                        ob_extract::draft::Badge::Matched => good += 1,
+                        ob_extract::draft::Badge::CheckThis => check += 1,
+                        ob_extract::draft::Badge::PictureOnly => pics += 1,
+                    }
+                }
+                ui.label(format!(
+                    "We read {} and rebuilt it as a draft bulletin:                      {good} pieces came over cleanly, {check} need your eye,                      and {pics} pages are pictures only. Nothing is final until                      you say so, and the old pages sit under the new ones as                      pictures to check against.",
+                    review.source_name
+                ));
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for item in &review.items {
+                            let (tag, color) = match item.badge {
+                                ob_extract::draft::Badge::Matched => {
+                                    ("Good", egui::Color32::from_rgb(40, 110, 60))
+                                }
+                                ob_extract::draft::Badge::CheckThis => {
+                                    ("Check this", egui::Color32::from_rgb(170, 110, 20))
+                                }
+                                ob_extract::draft::Badge::PictureOnly => {
+                                    ("Picture only", egui::Color32::from_rgb(90, 90, 160))
+                                }
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(tag).color(color).strong(),
+                                );
+                                ui.label(format!("Page {}: {}", item.panel + 1, item.label));
+                            });
+                            ui.small(&item.detail);
+                        }
+                    });
+                ui.separator();
+                if dirty && !self.import_armed {
+                    ui.label(
+                        "You have unsaved work on screen. Using this draft leaves it behind.",
+                    );
+                }
+                ui.horizontal(|ui| {
+                    let use_label = if dirty && !self.import_armed {
+                        "Leave unsaved work and use this draft"
+                    } else if dirty {
+                        "Yes, leave it and use the draft"
+                    } else {
+                        "Use this draft"
+                    };
+                    if ui.button(use_label).clicked() {
+                        if dirty && !self.import_armed {
+                            self.import_armed = true;
+                        } else {
+                            choice = Some(false);
+                        }
+                    }
+                    if ui.button("Use it and arrange the pages").clicked() {
+                        if dirty && !self.import_armed {
+                            self.import_armed = true;
+                        } else {
+                            choice = Some(true);
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if let Some(edit) = choice {
+            self.finalize_import(edit);
+        } else if cancel {
+            if let Some(review) = self.import_review.take() {
+                let _ = std::fs::remove_dir_all(&review.workdir);
+            }
+            self.import_armed = false;
+            self.note("Import cancelled; nothing changed.".into());
+        }
     }
 
     fn fonts_window(&mut self, ctx: &egui::Context) {
@@ -2694,6 +2900,8 @@ impl eframe::App for App {
         if !self.startup_done {
             self.startup();
         }
+        self.poll_import(ctx);
+        self.import_review_window(ctx);
         self.frame_snapshot = snapshot(&self.doc);
         // A gesture must not span a focus change: if the user
         // clicked into a text field mid-gesture, the gesture is
@@ -2812,6 +3020,25 @@ impl eframe::App for App {
                         match ob_format::save(&self.doc, &path) {
                             Ok(()) => {
                                 self.note(format!("Saved to {}", path.display()));
+                                // An import's page pictures move
+                                // beside the file on first Save.
+                                if let Some(base) = self.asset_base.take() {
+                                    if let Some(parent) = path.parent() {
+                                        let from = base.join("assets");
+                                        let to = parent.join("assets");
+                                        if from.exists() && from != to {
+                                            let _ = std::fs::create_dir_all(&to);
+                                            if let Ok(rd) = std::fs::read_dir(&from) {
+                                                for e in rd.flatten() {
+                                                    let _ = std::fs::copy(
+                                                        e.path(),
+                                                        to.join(e.file_name()),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 self.path = Some(path);
                                 self.mark_clean();
                             }
@@ -2896,6 +3123,19 @@ impl eframe::App for App {
                                         "Could not open that file. Pick a bulletin file ending in .obd. ({e})"
                                     )),
                                 }
+                            }
+                        }
+                        ui.separator();
+                        ui.heading("Bring in an old bulletin");
+                        ui.label("Have last year's bulletin as a PDF? We can read it and rebuild it as a draft you can edit: the words come over, and each old page sits underneath as a picture to check against.");
+                        if self.import_rx.is_some() {
+                            ui.label("Reading your old bulletin...");
+                        } else if ui.button("Open a PDF bulletin...").clicked() {
+                            if let Some(pdf) = rfd::FileDialog::new()
+                                .add_filter("PDF bulletin", &["pdf"])
+                                .pick_file()
+                            {
+                                self.start_import(pdf);
                             }
                         }
                         ui.separator();
@@ -3407,6 +3647,16 @@ fn journal_decision(
     } else {
         JournalAction::Write
     }
+}
+
+/// A finished PDF rescue waiting for the admin's verdict:
+/// the draft, its review list, and the folder holding the
+/// rendered page pictures.
+struct ImportReview {
+    doc: Document,
+    items: Vec<ob_extract::draft::ImportItem>,
+    workdir: std::path::PathBuf,
+    source_name: String,
 }
 
 /// A file-open that would leave unsaved work behind.

@@ -12,6 +12,9 @@
 //! empty until the PDFium helper fills them; the schema already has
 //! room, so the analyzer's side of the contract does not change.
 
+pub mod draft;
+pub mod helper;
+
 use serde::{Deserialize, Serialize};
 
 /// Bump when the dump shape changes incompatibly.

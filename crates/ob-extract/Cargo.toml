@@ -10,9 +10,9 @@ description = "OpenBulletin import extraction: turns PDF (later .pub, IDML) file
 serde.workspace = true
 serde_json.workspace = true
 lopdf = "0.34"
+ob-model = { path = "../ob-model" }
 
 [dev-dependencies]
-ob-model = { path = "../ob-model" }
 ob-layout = { path = "../ob-layout" }
 ob-pdf = { path = "../ob-pdf" }
 chrono.workspace = true

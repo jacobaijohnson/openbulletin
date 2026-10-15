@@ -2838,6 +2838,7 @@ dependencies = [
  "chrono",
  "eframe",
  "image",
+ "ob-extract",
  "ob-fonts",
  "ob-format",
  "ob-impose",

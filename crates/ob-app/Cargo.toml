@@ -15,6 +15,7 @@ ob-model = { path = "../ob-model" }
 ob-layout = { path = "../ob-layout" }
 ob-text = { path = "../ob-text" }
 ob-pdf = { path = "../ob-pdf" }
+ob-extract = { path = "../ob-extract" }
 ob-impose = { path = "../ob-impose" }
 ob-format = { path = "../ob-format" }
 ob-fonts = { path = "../ob-fonts" }

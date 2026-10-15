@@ -133,6 +133,66 @@ fn clear_journal_from(obd: &std::path::Path, meta: &std::path::Path) {
 }
 
 /// A stable snapshot string for one document state.
+impl App {
+    /// Start watching for a change worth one Undo step (a drag, a
+    /// typing session, a burst of nudges).
+    fn begin_gesture(&mut self) {
+        if self.gesture_start.is_none() {
+            self.gesture_start = Some(snapshot(&self.doc));
+        }
+        self.gesture_touch = Some(std::time::Instant::now());
+    }
+
+    /// Close the gesture: if the document changed, the starting
+    /// state becomes one Undo step.
+    fn end_gesture(&mut self) {
+        if let Some(start) = self.gesture_start.take() {
+            self.gesture_touch = None;
+            if start != snapshot(&self.doc) {
+                self.record_undo(start);
+            }
+        }
+    }
+
+    /// Record the current state as one Undo step right now (for
+    /// one-shot changes like a menu apply). Call BEFORE mutating.
+    fn push_undo_now(&mut self) {
+        let state = snapshot(&self.doc);
+        self.record_undo(state);
+    }
+
+    /// Put one earlier document state on the Undo stack.
+    fn record_undo(&mut self, state: String) {
+        self.undo_stack.push(state);
+        if self.undo_stack.len() > 60 {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    fn undo(&mut self) {
+        if let Some(prev) = self.undo_stack.pop() {
+            if let Ok(doc) = serde_json::from_str::<Document>(&prev) {
+                self.redo_stack.push(snapshot(&self.doc));
+                self.doc = doc;
+                self.announcements = weekly_body_text(&self.doc);
+                self.status = "Undone.".into();
+            }
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            if let Ok(doc) = serde_json::from_str::<Document>(&next) {
+                self.undo_stack.push(snapshot(&self.doc));
+                self.doc = doc;
+                self.announcements = weekly_body_text(&self.doc);
+                self.status = "Redone.".into();
+            }
+        }
+    }
+}
+
 fn snapshot(doc: &Document) -> String {
     serde_json::to_string(doc).unwrap_or_default()
 }
@@ -199,6 +259,17 @@ struct App {
     catalog_busy: bool,
     system_rows: Vec<ob_fonts::SystemFont>,
     system_shown: bool,
+    undo_stack: Vec<String>,
+    redo_stack: Vec<String>,
+    gesture_start: Option<String>,
+    gesture_touch: Option<std::time::Instant>,
+    lines_cache: Option<(String, usize, Vec<PreviewLine>)>,
+    editing: Option<(usize, usize)>,
+    edit_text: String,
+    edit_styles: Vec<String>,
+    edit_done: bool,
+    focus_edit: bool,
+    edit_start: Option<String>,
     preview_cache: Option<(String, Vec<PreviewSheet>)>,
     saved_snapshot: String,
     journal_snapshot: String,
@@ -300,6 +371,17 @@ impl Default for App {
             catalog_busy: false,
             system_rows: Vec::new(),
             system_shown: false,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            gesture_start: None,
+            gesture_touch: None,
+            lines_cache: None,
+            editing: None,
+            edit_text: String::new(),
+            edit_styles: Vec::new(),
+            edit_done: false,
+            focus_edit: false,
+            edit_start: None,
             preview_cache: None,
             saved_snapshot: String::new(),
             journal_snapshot: String::new(),
@@ -485,6 +567,7 @@ impl App {
     }
 
     fn next_sunday(&mut self) {
+        self.begin_gesture();
         self.save_announcements();
         match ob_layout::next_sunday(&self.doc) {
             Ok(next) => {
@@ -499,6 +582,7 @@ impl App {
             }
             Err(e) => self.status = format!("Next Sunday failed: {e}"),
         }
+        self.end_gesture();
     }
 }
 
@@ -739,6 +823,117 @@ impl App {
         print_checklist_for(&self.doc, &self.settings, &self.printer_name)
     }
 
+    /// Paragraph count sync for the edit buffer: new paragraphs
+    /// inherit the previous paragraph's style (docs/EDITOR.md).
+    fn sync_edit_styles(&mut self) {
+        let count = self.edit_text.split('\n').count();
+        while self.edit_styles.len() < count {
+            let inherit = self
+                .edit_styles
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "body".to_string());
+            self.edit_styles.push(inherit);
+        }
+        self.edit_styles.truncate(count);
+    }
+
+    /// Enter inline editing for one frame's story.
+    fn enter_edit(&mut self, pi: usize, fi: usize) {
+        let Some(frame) = self.doc.panels[pi].frames.get(fi) else {
+            return;
+        };
+        let Some(sid) = frame.story_id.clone() else {
+            return;
+        };
+        let Some(story) = self.doc.story(&sid).cloned() else {
+            return;
+        };
+        self.edit_start = Some(snapshot(&self.doc));
+        self.edit_text = story
+            .paragraphs
+            .iter()
+            .map(|p| p.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.edit_styles = story.paragraphs.iter().map(|p| p.style.clone()).collect();
+        self.editing = Some((pi, fi));
+        self.selected_frame = Some(fi);
+        self.edit_done = false;
+        self.focus_edit = true;
+    }
+
+    /// Write the edit buffer back into the story and leave
+    /// editing. The gesture closes, so the whole typing session
+    /// is one Undo step.
+    fn commit_edit(&mut self) {
+        let Some((pi, fi)) = self.editing.take() else {
+            return;
+        };
+        self.sync_edit_styles();
+        let Some(frame) = self.doc.panels[pi].frames.get(fi) else {
+            self.edit_start = None;
+            return;
+        };
+        let Some(sid) = frame.story_id.clone() else {
+            self.edit_start = None;
+            return;
+        };
+        let texts: Vec<String> = self.edit_text.split('\n').map(|t| t.to_string()).collect();
+        let paragraphs: Vec<ob_model::Paragraph> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let style = self
+                    .edit_styles
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| "body".to_string());
+                ob_model::Paragraph {
+                    style,
+                    text: t.clone(),
+                }
+            })
+            .collect();
+        if let Some(story) = self.doc.stories.iter_mut().find(|st| st.id == sid) {
+            story.paragraphs = paragraphs;
+        }
+        self.status = "Text updated.".into();
+        if let Some(start) = self.edit_start.take() {
+            if start != snapshot(&self.doc) {
+                self.record_undo(start);
+            }
+        }
+    }
+
+    /// Shaped lines for one panel, cached per document state:
+    /// the canvas and the print preview can never disagree.
+    fn shaped_panel_lines(&mut self, idx: usize) -> Vec<PreviewLine> {
+        let key = snapshot(&self.doc);
+        let stale = self
+            .lines_cache
+            .as_ref()
+            .map(|(k, i, _)| k != &key || *i != idx)
+            .unwrap_or(true);
+        if stale {
+            let mut shaper = ob_text::shaping::bundled_shaper();
+            if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+                for info in lib.scan() {
+                    if let Ok(bytes) = lib.read(&info) {
+                        shaper.register_font(bytes);
+                    }
+                }
+            }
+            let lines = panel_lines(&self.doc, &self.doc.panels[idx], &mut shaper);
+            self.lines_cache = Some((key, idx, lines));
+        }
+        self.lines_cache
+            .as_ref()
+            .expect("lines cache filled")
+            .2
+            .clone()
+    }
+
     /// The Pages window: one panel at a time, with inch rulers,
     /// the tracing picture, frame outlines, and the panel's guides.
     /// Guides follow office habits: drag to move, right-click to
@@ -775,7 +970,49 @@ impl App {
                         self.canvas_panel += 1;
                     }
                 });
-                ui.label("Click a box to select it. Drag to move it, drag its corner square to size it, arrow keys nudge it. Boxes and guides both snap to the blue lines. Right-click anything for its exact place in inches. Guides never print.");
+                ui.label("Click a box to select it. Drag to move it, drag its corner square to size it, arrow keys nudge it. Double-click a box to type in it. Boxes and guides both snap to the blue lines. Right-click anything for its exact place in inches. Guides never print.");
+                if self.editing.map(|(pi, _)| pi) != Some(idx) && self.editing.is_some() {
+                    self.commit_edit();
+                }
+                if let Some((_, fi)) = self.editing {
+                    let frame_name = self.doc.panels[idx]
+                        .frames
+                        .get(fi)
+                        .map(|f| f.name.clone())
+                        .unwrap_or_default();
+                    self.sync_edit_styles();
+                    let para = cursor_paragraph(ctx, &self.edit_text);
+                    let cur_style = self
+                        .edit_styles
+                        .get(para)
+                        .cloned()
+                        .unwrap_or_else(|| "body".to_string());
+                    let cur_name = self
+                        .doc
+                        .style(&cur_style)
+                        .map(|st| st.name.clone())
+                        .unwrap_or_else(|| cur_style.clone());
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("Typing in: {frame_name}")).strong());
+                        ui.label("This paragraph:");
+                        egui::ComboBox::from_id_salt("para-style")
+                            .selected_text(cur_name)
+                            .show_ui(ui, |ui| {
+                                for st in self.doc.styles.clone() {
+                                    if ui
+                                        .selectable_label(cur_style == st.id, st.name.clone())
+                                        .clicked()
+                                        && para < self.edit_styles.len()
+                                    {
+                                        self.edit_styles[para] = st.id.clone();
+                                    }
+                                }
+                            });
+                        if ui.button("Done typing").clicked() {
+                            self.edit_done = true;
+                        }
+                    });
+                }
                 ui.separator();
                 self.panel_canvas(ui, idx, ctx);
                 ui.separator();
@@ -934,6 +1171,44 @@ impl App {
             }
         }
 
+        // The story text, shaped exactly as it will print. The
+        // frame being typed in hides its lines; the editor widget
+        // (below) stands in for them.
+        {
+            let lines = self.shaped_panel_lines(idx);
+            let clip = painter.with_clip_rect(panel_rect);
+            let editing_rect = self
+                .editing
+                .filter(|(pi, _)| *pi == idx)
+                .and_then(|(_, fi)| panel.frames.get(fi).map(|f| f.rect));
+            for line in &lines {
+                if let Some(er) = editing_rect {
+                    let lx = (line.x * 1000.0) as ob_model::Mpt;
+                    let ly = (line.y * 1000.0) as ob_model::Mpt;
+                    if lx >= er.x && lx <= er.x + er.w && ly >= er.y && ly <= er.y + er.h {
+                        continue;
+                    }
+                }
+                let anchor = match line.align {
+                    ob_model::Align::Left => egui::Align2::LEFT_BOTTOM,
+                    ob_model::Align::Center => egui::Align2::CENTER_BOTTOM,
+                    ob_model::Align::Right => egui::Align2::RIGHT_BOTTOM,
+                };
+                let lx = match line.align {
+                    ob_model::Align::Left => line.x,
+                    ob_model::Align::Center => line.x + line.w / 2.0,
+                    ob_model::Align::Right => line.x + line.w,
+                };
+                clip.text(
+                    to_px(lx, line.y),
+                    anchor,
+                    &line.text,
+                    egui::FontId::proportional((line.size * scale).max(4.0)),
+                    egui::Color32::BLACK,
+                );
+            }
+        }
+
         // Guides, hit-testing, dragging.
         let response = ui.interact(
             panel_rect,
@@ -980,8 +1255,43 @@ impl App {
                     && pm.1 <= f.rect.y + f.rect.h
             })
         };
+        if response.double_clicked() {
+            if let Some(pos) = pointer {
+                let pm = to_mpt(pos);
+                if let Some(fi) = frame_hit(pm) {
+                    if self.doc.panels[idx].frames[fi].story_id.is_some() {
+                        self.enter_edit(idx, fi);
+                    }
+                }
+            }
+        }
+        if self.editing.map(|(pi, _)| pi) == Some(idx) {
+            let mut commit = self.edit_done;
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                commit = true;
+            }
+            if response.drag_started() {
+                if let Some(pos) = pointer {
+                    let pm = to_mpt(pos);
+                    let (_, efi) = self.editing.expect("editing checked");
+                    let f = &self.doc.panels[idx].frames[efi];
+                    let inside = pm.0 >= f.rect.x
+                        && pm.0 <= f.rect.x + f.rect.w
+                        && pm.1 >= f.rect.y
+                        && pm.1 <= f.rect.y + f.rect.h;
+                    if !inside {
+                        commit = true;
+                    }
+                }
+            }
+            if commit {
+                self.edit_done = false;
+                self.commit_edit();
+            }
+        }
         if response.drag_started() {
             if let Some(pos) = pointer {
+                self.begin_gesture();
                 self.drag_guide = near_guide(pos);
                 if self.drag_guide.is_none() {
                     let pm = to_mpt(pos);
@@ -1002,7 +1312,7 @@ impl App {
                 }
             }
         }
-        if response.dragged() {
+        if response.dragged() && self.editing.map(|(pi, _)| pi) != Some(idx) {
             if let (Some(gi), Some(pos)) = (self.drag_guide, pointer) {
                 let g = &mut self.doc.panels[idx].guides[gi];
                 let extent = if g.vertical {
@@ -1066,6 +1376,7 @@ impl App {
             self.drag_guide = None;
             self.drag_frame = None;
             self.drag_resize = false;
+            self.end_gesture();
         }
         if response.clicked() {
             if let Some(pos) = pointer {
@@ -1098,6 +1409,7 @@ impl App {
                     dy = step;
                 }
                 if dx != 0 || dy != 0 {
+                    self.begin_gesture();
                     let f = &mut self.doc.panels[idx].frames[fi];
                     f.rect.x = (f.rect.x + dx).clamp(0, panel.size.w - f.rect.w);
                     f.rect.y = (f.rect.y + dy).clamp(0, panel.size.h - f.rect.h);
@@ -1158,6 +1470,37 @@ impl App {
             egui::Stroke::new(1.0_f32, egui::Color32::DARK_GRAY),
         );
 
+        // The inline editor, standing exactly where the frame is.
+        if self.editing.map(|(pi, _)| pi) == Some(idx) {
+            let (_, efi) = self.editing.expect("editing checked");
+            self.sync_edit_styles();
+            let f = panel.frames[efi].clone();
+            let frect = egui::Rect::from_min_max(
+                to_px(f.rect.x as f32 / 1000.0, f.rect.y as f32 / 1000.0),
+                to_px(
+                    (f.rect.x + f.rect.w) as f32 / 1000.0,
+                    (f.rect.y + f.rect.h) as f32 / 1000.0,
+                ),
+            );
+            let first_size = self
+                .edit_styles
+                .first()
+                .and_then(|sid| self.doc.style(sid))
+                .map(|st| st.font_size as f32 / 1000.0 * scale)
+                .unwrap_or(12.0)
+                .clamp(10.0, 20.0);
+            let edit_id = egui::Id::new("canvas-edit");
+            if self.focus_edit {
+                self.focus_edit = false;
+                ctx.memory_mut(|m| m.request_focus(edit_id));
+            }
+            let editor = egui::TextEdit::multiline(&mut self.edit_text)
+                .id(edit_id)
+                .font(egui::FontId::proportional(first_size))
+                .desired_width(frect.width());
+            ui.put(frect, editor);
+        }
+
         // Right-click: exact position for a guide, or add one here.
         let hit = self.ctx_pos.and_then(near_guide);
         let frame_at_menu = self
@@ -1207,6 +1550,7 @@ impl App {
                             .iter()
                             .map(|o| ob_model::inches_to_mpt(o.unwrap()))
                             .collect();
+                        self.push_undo_now();
                         let fr = &mut self.doc.panels[idx].frames[fi];
                         fr.rect.w = v[2].clamp(18_000, panel.size.w);
                         fr.rect.h = v[3].clamp(18_000, panel.size.h);
@@ -1244,6 +1588,7 @@ impl App {
                             } else {
                                 panel.size.h
                             };
+                            self.push_undo_now();
                             self.doc.panels[idx].guides[gi].pos =
                                 ob_model::inches_to_mpt(inches).clamp(0, extent);
                             self.status = "Guide moved.".into();
@@ -1256,6 +1601,7 @@ impl App {
                     }
                 }
                 if ui.button("Delete this guide").clicked() {
+                    self.push_undo_now();
                     self.doc.panels[idx].guides.remove(gi);
                     self.status = "Guide deleted.".into();
                     ui.close_menu();
@@ -1272,6 +1618,7 @@ impl App {
                     ))
                     .clicked()
                 {
+                    self.push_undo_now();
                     self.doc.panels[idx].guides.push(ob_model::Guide {
                         vertical: true,
                         pos: x_mpt.clamp(0, panel.size.w),
@@ -1285,6 +1632,7 @@ impl App {
                     ))
                     .clicked()
                 {
+                    self.push_undo_now();
                     self.doc.panels[idx].guides.push(ob_model::Guide {
                         vertical: false,
                         pos: y_mpt.clamp(0, panel.size.h),
@@ -1606,6 +1954,34 @@ impl eframe::App for App {
         if !self.startup_done {
             self.startup();
         }
+        // A gesture left idle (nudges finished, mouse up) becomes
+        // one Undo step after a short pause.
+        if self.gesture_start.is_some()
+            && self
+                .gesture_touch
+                .map(|t| t.elapsed() > std::time::Duration::from_millis(1200))
+                .unwrap_or(false)
+            && !ctx.input(|i| i.pointer.any_down())
+        {
+            self.end_gesture();
+        }
+        // Global undo/redo, when no text box has the keyboard (text
+        // boxes keep their own undo while you type in them).
+        if ctx.memory(|m| m.focused()).is_none() && self.editing.is_none() {
+            let (undo, redo) = ctx.input(|i| {
+                (
+                    i.modifiers.ctrl && i.key_pressed(egui::Key::Z) && !i.modifiers.shift,
+                    i.modifiers.ctrl
+                        && (i.key_pressed(egui::Key::Y)
+                            || (i.key_pressed(egui::Key::Z) && i.modifiers.shift)),
+                )
+            });
+            if undo {
+                self.undo();
+            } else if redo {
+                self.redo();
+            }
+        }
         self.journal_tick();
         self.recovery_window(ctx);
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -1616,6 +1992,19 @@ impl eframe::App for App {
                 }
                 if ui.button("Fonts").clicked() {
                     self.show_fonts = true;
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(!self.undo_stack.is_empty(), egui::Button::new("Undo"))
+                    .clicked()
+                {
+                    self.undo();
+                }
+                if ui
+                    .add_enabled(!self.redo_stack.is_empty(), egui::Button::new("Redo"))
+                    .clicked()
+                {
+                    self.redo();
                 }
                 if ui.button("Open bulletin...").clicked() {
                     if let Some(path) = rfd::FileDialog::new()
@@ -1952,6 +2341,98 @@ fn main() -> eframe::Result<()> {
 
 /// Shape the whole document the way the PDF path does and record
 /// the lines per imposed sheet side.
+/// Shape one panel's text frames into lines, in panel-local
+/// point coordinates. Shared by the print preview (which offsets
+/// them onto sheets) and the Pages canvas (which draws them in
+/// place), so both always agree.
+fn panel_lines(
+    doc: &Document,
+    panel: &ob_model::Panel,
+    shaper: &mut ob_text::shaping::Shaper,
+) -> Vec<PreviewLine> {
+    let mut lines: Vec<PreviewLine> = Vec::new();
+    for frame in &panel.frames {
+        if frame.kind == ob_model::FrameKind::Shape {
+            continue;
+        }
+        let Some(sid) = &frame.story_id else { continue };
+        let Some(story) = doc.story(sid) else {
+            continue;
+        };
+        let mut y = frame.rect.y;
+        for para in &story.paragraphs {
+            let style =
+                doc.style(&para.style)
+                    .cloned()
+                    .unwrap_or_else(|| ob_model::ParagraphStyle {
+                        id: "body".into(),
+                        name: "Body".into(),
+                        font_size: 11_000,
+                        bold: false,
+                        italic: false,
+                        align: ob_model::Align::Left,
+                        space_after: 4_000,
+                        color: ob_model::Rgb::BLACK,
+                        font_family: "Liberation Sans".into(),
+                        font_sha256: None,
+                    });
+            let resolved = ob_model::resolve_fields(&para.text, doc);
+            let spec = ob_text::shaping::FontSpec {
+                family: style.font_family.clone(),
+                bold: style.bold,
+                italic: style.italic,
+            };
+            let line_h = style.font_size * 13 / 10;
+            let shaped: Vec<(String, ob_model::Mpt)> = if resolved.contains('\t') {
+                let line =
+                    shaper.expand_order_line(&resolved, frame.rect.w, &spec, style.font_size);
+                let w = shaper.measure(&line, &spec, style.font_size);
+                vec![(line, w)]
+            } else {
+                shaper
+                    .wrap(&resolved, frame.rect.w, &spec, style.font_size, 1.3)
+                    .into_iter()
+                    .map(|l| (l.text, l.width))
+                    .collect()
+            };
+            for (line, tw) in shaped {
+                if y + line_h > frame.rect.y + frame.rect.h {
+                    break;
+                }
+                y += line_h;
+                let lx = match style.align {
+                    ob_model::Align::Left => frame.rect.x,
+                    ob_model::Align::Center => frame.rect.x + (frame.rect.w - tw) / 2,
+                    ob_model::Align::Right => frame.rect.x + frame.rect.w - tw,
+                };
+                lines.push(PreviewLine {
+                    text: line,
+                    size: style.font_size as f32 / 1000.0,
+                    x: lx as f32 / 1000.0,
+                    y: y as f32 / 1000.0,
+                    w: tw as f32 / 1000.0,
+                    align: style.align,
+                });
+            }
+            y += style.space_after;
+        }
+    }
+    lines
+}
+
+/// Which paragraph of the edit buffer the text cursor is in
+/// (count the newlines before it), for the style picker.
+fn cursor_paragraph(ctx: &egui::Context, text: &str) -> usize {
+    let id = egui::Id::new("canvas-edit");
+    if let Some(state) = egui::widgets::text_edit::TextEditState::load(ctx, id) {
+        if let Some(range) = state.cursor.char_range() {
+            let idx = range.primary.index;
+            return text.chars().take(idx).filter(|c| *c == '\n').count();
+        }
+    }
+    0
+}
+
 fn build_preview(doc: &Document) -> Vec<PreviewSheet> {
     let mut shaper = ob_text::shaping::bundled_shaper();
     if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
@@ -1981,75 +2462,14 @@ fn build_preview(doc: &Document) -> Vec<PreviewSheet> {
                 name: panel.name.clone(),
                 lines: Vec::new(),
             };
-            for frame in &panel.frames {
-                if frame.kind == ob_model::FrameKind::Shape {
-                    continue;
-                }
-                let Some(sid) = &frame.story_id else { continue };
-                let Some(story) = doc.story(sid) else {
-                    continue;
-                };
-                let mut y = frame.rect.y;
-                for para in &story.paragraphs {
-                    let style = doc.style(&para.style).cloned().unwrap_or_else(|| {
-                        ob_model::ParagraphStyle {
-                            id: "body".into(),
-                            name: "Body".into(),
-                            font_size: 11_000,
-                            bold: false,
-                            italic: false,
-                            align: ob_model::Align::Left,
-                            space_after: 4_000,
-                            color: ob_model::Rgb::BLACK,
-                            font_family: "Liberation Sans".into(),
-                            font_sha256: None,
-                        }
-                    });
-                    let resolved = ob_model::resolve_fields(&para.text, doc);
-                    let spec = ob_text::shaping::FontSpec {
-                        family: style.font_family.clone(),
-                        bold: style.bold,
-                        italic: style.italic,
-                    };
-                    let line_h = style.font_size * 13 / 10;
-                    let shaped: Vec<(String, ob_model::Mpt)> = if resolved.contains('\t') {
-                        let line = shaper.expand_order_line(
-                            &resolved,
-                            frame.rect.w,
-                            &spec,
-                            style.font_size,
-                        );
-                        let w = shaper.measure(&line, &spec, style.font_size);
-                        vec![(line, w)]
-                    } else {
-                        shaper
-                            .wrap(&resolved, frame.rect.w, &spec, style.font_size, 1.3)
-                            .into_iter()
-                            .map(|l| (l.text, l.width))
-                            .collect()
-                    };
-                    for (line, tw) in shaped {
-                        if y + line_h > frame.rect.y + frame.rect.h {
-                            break;
-                        }
-                        y += line_h;
-                        let lx = match style.align {
-                            ob_model::Align::Left => frame.rect.x,
-                            ob_model::Align::Center => frame.rect.x + (frame.rect.w - tw) / 2,
-                            ob_model::Align::Right => frame.rect.x + frame.rect.w - tw,
-                        };
-                        pp.lines.push(PreviewLine {
-                            text: line,
-                            size: style.font_size as f32 / 1000.0,
-                            x: pp.x + lx as f32 / 1000.0,
-                            y: pp.y + y as f32 / 1000.0,
-                            w: tw as f32 / 1000.0,
-                            align: style.align,
-                        });
-                    }
-                    y += style.space_after;
-                }
-            }
+            pp.lines = panel_lines(doc, panel, &mut shaper)
+                .into_iter()
+                .map(|mut l| {
+                    l.x += pp.x;
+                    l.y += pp.y;
+                    l
+                })
+                .collect();
             sheet.panels.push(pp);
         }
         out.push(sheet);

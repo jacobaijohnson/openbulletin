@@ -39,6 +39,25 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
 - While dragging, a readout shows the frame's place and size in
   inches, live.
 
-Not yet: typing text on the page itself, dragging new guides out
-of the rulers, master (all-pages) guides. Those come with the
-inline editing layer.
+## Typing on the page, and Undo (built 2026-10-15)
+
+- The canvas draws every frame's text, shaped by the same code
+  path as the print preview, so the page on screen and the sheet
+  from the printer cannot drift apart.
+- **Double-click a frame to type in it**, right where it sits.
+  Enter adds a paragraph; new paragraphs inherit the style of
+  the one above. A small bar above the page names the box and
+  offers the current paragraph's style (Heading, Body, Scripture,
+  and friends). Done, Escape, or clicking another part of the
+  page finishes; the words are in the story immediately.
+- **Undo** covers the canvas: typing sessions (one step each),
+  drags, nudges (a burst counts once), right-click applies, guide
+  add/move/delete, and the Next Sunday command. Ctrl+Z and the
+  Undo button in the top bar; Ctrl+Y or Ctrl+Shift+Z and Redo
+  put it back. While a text box anywhere has the keyboard, that
+  box keeps its own undo, as in Office.
+- Undo history is per session and per file opened; it is not
+  saved into the bulletin.
+
+Not yet: dragging new guides out of the rulers, master
+(all-pages) guides, spell-check underlines on the canvas.

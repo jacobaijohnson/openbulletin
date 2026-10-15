@@ -51,6 +51,7 @@ mod tests {
                 paragraphs: vec![Paragraph::new("body", "Hello")],
             }],
             panels: vec![Panel {
+                background_image: None,
                 id: "p".into(),
                 name: "P".into(),
                 size: Size::new(1, 2),

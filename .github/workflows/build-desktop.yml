@@ -1,0 +1,25 @@
+name: Desktop Runner Build
+
+# Runs on the project's own self-hosted runner (openbulletin-desktop on
+# Jacob's desktop, Docker container "openbulletin-runner"). Deliberately
+# separate from the EV project's ev-runner: different repo, labels, and
+# container. The hosted CI (ci.yml) remains the cross-platform gate; this
+# lane gives fast, big-core local builds.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: [self-hosted, openbulletin]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Engine tests
+        run: cargo test -p ob-model -p ob-layout -p ob-impose -p ob-text -p ob-pdf -p ob-format -p openbulletin-cli
+      - name: Clippy (engine, deny warnings)
+        run: cargo clippy -p ob-model -p ob-layout -p ob-impose -p ob-text -p ob-pdf -p ob-format -p openbulletin-cli -- -D warnings
+      - name: Release build (app + CLI)
+        run: cargo build --release -p openbulletin -p openbulletin-cli

@@ -15,5 +15,5 @@ OpenBulletin CI runs plain cargo, so the runner does not need it.
 2. On the desktop, in `C:\\openbulletin-runner`:
    `docker build -t openbulletin-runner:local .`
 3. `docker rm -f openbulletin-runner` then:
-   `docker run -d --name openbulletin-runner --restart always --cpus=6 -e REPO_URL=https://github.com/jacobaijohnson/openbulletin -e ACCESS_TOKEN=<token> -e RUNNER_NAME=openbulletin-desktop -e LABELS=openbulletin openbulletin-runner:local`
+   `docker run -d --name openbulletin-runner --restart always --cpus=6 -e REPO_URL=https://github.com/jacobaijohnson/openbulletin -e RUNNER_TOKEN=<token> -e RUNNER_NAME=openbulletin-desktop -e LABELS=openbulletin openbulletin-runner:local` (use RUNNER_TOKEN for a registration token; ACCESS_TOKEN is only for a PAT, which the entrypoint exchanges itself)
 4. Verify: `gh api repos/jacobaijohnson/openbulletin/actions/runners`

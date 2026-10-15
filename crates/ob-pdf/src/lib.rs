@@ -338,7 +338,7 @@ struct FontBook {
 }
 
 impl FontBook {
-    fn build(doc: &Document, pdf: &mut Pdf) -> FontBook {
+    fn build(doc: &Document, pdf: &mut Pdf, library: &[(ob_fonts::FontInfo, Vec<u8>)]) -> FontBook {
         let mut wanted: Vec<(String, bool, bool)> = Vec::new();
         for style in &doc.styles {
             let key = (style.font_family.clone(), style.bold, style.italic);
@@ -361,14 +361,9 @@ impl FontBook {
                 }
             }
         }
-        if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
-            for info in lib.scan() {
-                if !info.rights.may_package() {
-                    continue;
-                }
-                if let Ok(bytes) = lib.read(&info) {
-                    sources.insert((info.family.clone(), info.bold, info.italic), bytes);
-                }
+        for (info, bytes) in library {
+            if info.rights.may_package() {
+                sources.insert((info.family.clone(), info.bold, info.italic), bytes.clone());
             }
         }
         let mut faces = std::collections::HashMap::new();
@@ -505,9 +500,10 @@ fn build_pdf(doc: &Document, sides: &[SheetSide]) -> Vec<u8> {
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
             .to_vec(),
     );
-    let fonts = FontBook::build(doc, &mut pdf);
+    let library = library_font_bytes();
+    let fonts = FontBook::build(doc, &mut pdf, &library);
     let mut shaper = ob_text::shaping::bundled_shaper();
-    register_library_fonts(&mut shaper);
+    register_library_fonts(&mut shaper, &library);
     let mut page_ids = Vec::new();
     for side in sides {
         let mut pc = PageContent { buf: String::new() };
@@ -654,14 +650,28 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
 /// shaper, so styles naming those families shape with the real font.
 /// A missing or unreadable library is not an error: bundled fonts
 /// still cover the default styles.
-fn register_library_fonts(shaper: &mut ob_text::shaping::Shaper) {
+fn register_library_fonts(
+    shaper: &mut ob_text::shaping::Shaper,
+    library: &[(ob_fonts::FontInfo, Vec<u8>)],
+) {
+    for (_, bytes) in library {
+        shaper.register_font(bytes.clone());
+    }
+}
+
+/// The Font Library's fonts, read once per export: the embedder
+/// and the shaper used to each scan and read the whole library
+/// (closing audit).
+fn library_font_bytes() -> Vec<(ob_fonts::FontInfo, Vec<u8>)> {
+    let mut out = Vec::new();
     if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
         for info in lib.scan() {
             if let Ok(bytes) = lib.read(&info) {
-                shaper.register_font(bytes);
+                out.push((info, bytes));
             }
         }
     }
+    out
 }
 
 pub fn export_reader_pdf(doc: &Document) -> Vec<u8> {
@@ -671,8 +681,12 @@ pub fn export_reader_pdf(doc: &Document) -> Vec<u8> {
 
 /// Imposed PDF: printer sheets, ready to print duplex and fold.
 pub fn export_imposed_pdf(doc: &Document) -> Vec<u8> {
-    let sides = ob_impose::impose(doc);
-    build_pdf(doc, &sides)
+    // Lay out the padded document so a file with the wrong
+    // number of panels prints with blanks, never crashes and
+    // never drops a page (closing audit).
+    let padded = ob_impose::padded_document(doc);
+    let sides = ob_impose::impose(&padded);
+    build_pdf(&padded, &sides)
 }
 
 #[cfg(test)]

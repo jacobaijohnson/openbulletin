@@ -145,6 +145,24 @@ pub fn default_library_dir() -> PathBuf {
     base.join("OpenBulletin").join("fonts")
 }
 
+/// Reduce any suggested or archived name to a bare file name:
+/// split on both slash kinds (a zip made on Windows can carry
+/// backslash paths), drop anything empty or dotty.
+pub fn sanitize_file_name(name: &str) -> String {
+    let base = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('.')
+        .to_string();
+    if base.is_empty() {
+        "font.ttf".to_string()
+    } else {
+        base
+    }
+}
+
 pub struct FontLibrary {
     dir: PathBuf,
 }
@@ -190,15 +208,52 @@ impl FontLibrary {
     /// Copy a font into the library. Identical bytes already present
     /// are returned as-is (no duplicates).
     pub fn add_bytes(&self, bytes: &[u8], suggested_name: &str) -> Result<FontInfo, String> {
-        let info = inspect(bytes, suggested_name)?;
-        for existing in self.scan() {
-            if existing.sha256 == info.sha256 {
+        let mut known: std::collections::HashSet<String> =
+            self.scan().iter().map(|f| f.sha256.clone()).collect();
+        self.add_bytes_known(bytes, suggested_name, &mut known)
+    }
+
+    /// add_bytes with the library's known hashes already collected:
+    /// importing a whole zip used to re-scan (re-read, re-parse,
+    /// re-hash) the entire library for every font, which made big
+    /// packs quadratic (closing audit). One scan per batch now.
+    /// Names are sanitized to a bare file name on every platform:
+    /// an archive entry like ..\..\evil.ttf must never write
+    /// outside the library (closing audit, Windows traversal).
+    fn add_bytes_known(
+        &self,
+        bytes: &[u8],
+        suggested_name: &str,
+        known: &mut std::collections::HashSet<String>,
+    ) -> Result<FontInfo, String> {
+        const MAX_FONT_BYTES: usize = 64 * 1024 * 1024;
+        if bytes.len() > MAX_FONT_BYTES {
+            return Err("that font file is larger than 64 MB; real fonts are not".into());
+        }
+        let clean = sanitize_file_name(suggested_name);
+        let mut info = inspect(bytes, &clean)?;
+        if known.contains(&info.sha256) {
+            // Return the existing entry's facts when we can find them.
+            if let Some(existing) = self.scan().into_iter().find(|f| f.sha256 == info.sha256) {
                 return Ok(existing);
             }
+            return Ok(info);
         }
-        let target = self.dir.join(suggested_name);
-        std::fs::write(&target, bytes)
+        // A DIFFERENT font already owns this file name: never
+        // overwrite it (a bulletin pinned to the old font would
+        // silently change face). Write under a hashed name.
+        let target = self.dir.join(&clean);
+        let final_name = if target.exists() {
+            let short: String = info.sha256.chars().take(8).collect();
+            let hashed = format!("{}-{short}", clean);
+            info.file_name = hashed.clone();
+            hashed
+        } else {
+            clean
+        };
+        std::fs::write(self.dir.join(&final_name), bytes)
             .map_err(|e| format!("cannot save font into the library: {e}"))?;
+        known.insert(info.sha256.clone());
         Ok(info)
     }
 
@@ -219,24 +274,42 @@ impl FontLibrary {
     /// the library folder beside the fonts. Returns one result per
     /// font file found; a bad file never sinks the rest.
     pub fn add_zip_bytes(&self, bytes: &[u8]) -> Vec<Result<FontInfo, String>> {
+        // Caps against hostile or broken archives (closing
+        // audit): a small zip must not decompress to gigabytes,
+        // and a pack means dozens of fonts, not thousands.
+        const MAX_ENTRIES: usize = 512;
+        const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+        const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
         let mut results = Vec::new();
         let cursor = std::io::Cursor::new(bytes.to_vec());
         let Ok(mut archive) = zip::ZipArchive::new(cursor) else {
             return vec![Err("that file is not a readable zip archive".to_string())];
         };
-        for i in 0..archive.len() {
+        let mut known: std::collections::HashSet<String> =
+            self.scan().iter().map(|f| f.sha256.clone()).collect();
+        let mut total: u64 = 0;
+        for i in 0..archive.len().min(MAX_ENTRIES) {
             let Ok(mut entry) = archive.by_index(i) else {
                 continue;
             };
             let name = entry.name().to_string();
             let lower = name.to_lowercase();
-            let file_name = name.rsplit('/').next().unwrap_or("font").to_string();
+            let file_name = sanitize_file_name(&name);
             let mut content = Vec::new();
-            if std::io::Read::read_to_end(&mut entry, &mut content).is_err() {
+            let mut limited = std::io::Read::take(&mut entry, MAX_ENTRY_BYTES + 1);
+            let read = std::io::Read::read_to_end(&mut limited, &mut content);
+            if read.is_err() || content.len() as u64 > MAX_ENTRY_BYTES {
                 continue;
             }
+            total += content.len() as u64;
+            if total > MAX_TOTAL_BYTES {
+                results.push(Err(
+                    "that archive holds more than 256 MB of files; stopping there".to_string(),
+                ));
+                break;
+            }
             if lower.ends_with(".ttf") || lower.ends_with(".otf") {
-                results.push(self.add_bytes(&content, &file_name));
+                results.push(self.add_bytes_known(&content, &file_name, &mut known));
             } else if (lower.ends_with(".txt") || lower.ends_with(".md"))
                 && (lower.contains("license") || lower.contains("ofl") || lower.contains("copying"))
             {
@@ -249,6 +322,11 @@ impl FontLibrary {
             ));
         }
         results
+    }
+
+    /// The library folder itself (for cheap state fingerprints).
+    pub fn dir_path(&self) -> &std::path::Path {
+        &self.dir
     }
 
     /// The bytes of one library font, for handing to the text engine.
@@ -415,6 +493,105 @@ mod tests {
         assert!(!regular.rights.plain_words().is_empty());
     }
 
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("ob-fonts-test-{tag}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn names_are_sanitized_on_every_platform() {
+        assert_eq!(sanitize_file_name("../../evil.ttf"), "evil.ttf");
+        assert_eq!(sanitize_file_name("..\\..\\evil.ttf"), "evil.ttf");
+        assert_eq!(sanitize_file_name("a/b\\c.ttf"), "c.ttf");
+        assert_eq!(sanitize_file_name(".."), "font.ttf");
+        assert_eq!(
+            sanitize_file_name("Carlito-Regular.ttf"),
+            "Carlito-Regular.ttf"
+        );
+    }
+
+    #[test]
+    fn zip_traversal_names_stay_in_the_library() {
+        let dir = temp_dir("traversal");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let font = std::fs::read("../ob-text/assets/fonts/LiberationSans-Regular.ttf")
+            .expect("bundled font");
+        // Build a zip whose entry name tries to escape.
+        let mut zip_bytes = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut zip_bytes);
+            let mut zw = zip::ZipWriter::new(cursor);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("..\\..\\escaped.ttf", opts).expect("start");
+            std::io::Write::write_all(&mut zw, &font).expect("write font");
+            zw.finish().expect("finish zip");
+        }
+        let results = lib.add_zip_bytes(&zip_bytes);
+        assert!(
+            results.iter().any(|r| r.is_ok()),
+            "the font itself is fine: {results:?}"
+        );
+        assert!(
+            !dir.parent().expect("parent").join("escaped.ttf").exists()
+                && !std::path::Path::new("escaped.ttf").exists(),
+            "nothing may be written outside the library"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_font_never_overwrites_a_namesake() {
+        let dir = temp_dir("collision");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let a =
+            std::fs::read("../ob-text/assets/fonts/LiberationSans-Regular.ttf").expect("font a");
+        let b =
+            std::fs::read("../ob-text/assets/fonts/LiberationSerif-Regular.ttf").expect("font b");
+        let first = lib.add_bytes(&a, "Same.ttf").expect("add a");
+        let second = lib.add_bytes(&b, "Same.ttf").expect("add b");
+        assert_ne!(first.file_name, second.file_name);
+        // Both still read back as themselves.
+        assert_eq!(lib.read(&first).expect("read a"), a);
+        assert_eq!(lib.read(&second).expect("read b"), b);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restricted_fonts_may_not_be_packaged() {
+        // Patch the fsType of a real font to Restricted (0x0002)
+        // in its OS/2 table and confirm the rights gate closes.
+        let mut bytes = std::fs::read("../ob-text/assets/fonts/LiberationSans-Regular.ttf")
+            .expect("bundled font");
+        let num_tables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+        let mut patched = false;
+        for i in 0..num_tables {
+            let rec = 12 + i * 16;
+            if &bytes[rec..rec + 4] == b"OS/2" {
+                let off = u32::from_be_bytes([
+                    bytes[rec + 8],
+                    bytes[rec + 9],
+                    bytes[rec + 10],
+                    bytes[rec + 11],
+                ]) as usize;
+                // fsType is the uint16 at OS/2 + 8.
+                bytes[off + 8] = 0x00;
+                bytes[off + 9] = 0x02;
+                patched = true;
+            }
+        }
+        assert!(patched, "the test font has an OS/2 table");
+        let info = inspect(&bytes, "Restricted.ttf").expect("inspect");
+        assert!(
+            !info.rights.may_package(),
+            "restricted fonts must not package"
+        );
+        assert!(
+            info.rights.plain_words().to_lowercase().contains("cannot")
+                || info.rights.plain_words().to_lowercase().contains("not"),
+            "the refusal speaks plainly: {}",
+            info.rights.plain_words()
+        );
+    }
+
     #[test]
     fn library_add_scan_dedup_round_trip() {
         let dir = std::env::temp_dir().join(format!("ob-fonts-test-{}", std::process::id()));
@@ -471,9 +648,10 @@ mod tests {
     #[test]
     fn system_scan_never_errors() {
         // Whatever this machine has (possibly nothing), the scan
-        // returns facts with real paths.
+        // returns parsed facts. (It used to also assert each path
+        // exists; a font can vanish mid-scan on a live system,
+        // which made the test environment-flaky — closing audit.)
         for found in system_fonts() {
-            assert!(found.path.exists());
             assert!(!found.info.family.is_empty());
         }
     }

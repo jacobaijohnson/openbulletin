@@ -1,0 +1,49 @@
+//! The CLI is the project's scriptable surface; smoke it end to
+//! end: make a bulletin, export it, advance the week.
+
+#[test]
+fn new_export_next_sunday_round_trip() {
+    let dir = std::env::temp_dir().join(format!("ob-cli-smoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let bin = env!("CARGO_BIN_EXE_openbulletin-cli");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(bin)
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .expect("run cli");
+        assert!(
+            out.status.success(),
+            "cli {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let obd = dir.join("week.obd");
+    run(&[
+        "new",
+        "--preset",
+        "saddle-booklet",
+        "--church",
+        "Grace Lutheran Church",
+        "--out",
+        obd.to_str().expect("path"),
+    ]);
+    assert!(obd.exists());
+    let pdf = dir.join("week.pdf");
+    run(&[
+        "export",
+        obd.to_str().expect("path"),
+        "--out",
+        pdf.to_str().expect("path"),
+    ]);
+    let bytes = std::fs::read(&pdf).expect("pdf written");
+    assert!(bytes.starts_with(b"%PDF"), "export produced a PDF");
+    let info = run(&["info", obd.to_str().expect("path")]);
+    assert!(
+        info.contains("saddle-booklet"),
+        "info names the preset: {info}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

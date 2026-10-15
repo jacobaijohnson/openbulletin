@@ -12,8 +12,8 @@ reference church's bulletins are booklets, not bi-folds.)
 - [ ] Text spike: threaded-frame editing with print-identical output
       ("Hymn of the Day" spike: two threaded frames, dot-leader tab,
       overflow indicator, undo; canvas vs PDF pixel-diff in CI)
-- [ ] Desktop shell: inline text editing, save/open, autosave + recovery
-- [ ] Duplex test-sheet wizard (print an arrow sheet once per printer;
+- [x] Desktop shell: inline text editing, save/open, autosave + recovery (shipped 2026-10-15; inline editing is whole-box words, true shaped caret editing is a later phase)
+- [x] Duplex test-sheet wizard (print an arrow sheet once per printer; (shipped 2026-10-15 as the test sheet plus plain-words questions on the Print step)
       remember the flip answer per printer)
 - [ ] Signed installers: Windows, macOS (notarized), Linux (AppImage/Flatpak)
 - [ ] Pilot: 5-10 real churches using it weekly

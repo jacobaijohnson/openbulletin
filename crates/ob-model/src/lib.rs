@@ -264,6 +264,30 @@ pub struct Document {
 }
 
 impl Document {
+    /// Clamp the numbers a hostile or hand-edited file could set
+    /// to extremes (a font size of i64::MAX used to overflow the
+    /// PDF writer's arithmetic and panic — closing audit). The
+    /// bounds are far outside anything a real bulletin uses.
+    pub fn sanitized(mut self) -> Self {
+        for style in &mut self.styles {
+            style.font_size = style.font_size.clamp(500, 288_000);
+            style.space_after = style.space_after.clamp(0, 144_000);
+        }
+        for panel in &mut self.panels {
+            panel.size.w = panel.size.w.clamp(0, 10_000_000);
+            panel.size.h = panel.size.h.clamp(0, 10_000_000);
+            for frame in &mut panel.frames {
+                frame.rect.x = frame.rect.x.clamp(-10_000_000, 10_000_000);
+                frame.rect.y = frame.rect.y.clamp(-10_000_000, 10_000_000);
+                frame.rect.w = frame.rect.w.clamp(0, 10_000_000);
+                frame.rect.h = frame.rect.h.clamp(0, 10_000_000);
+            }
+        }
+        self
+    }
+}
+
+impl Document {
     pub fn style(&self, id: &str) -> Option<&ParagraphStyle> {
         self.styles.iter().find(|s| s.id == id)
     }

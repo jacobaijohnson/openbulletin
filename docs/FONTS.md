@@ -5,7 +5,9 @@ actually use under our license, can the app make fonts easy to get
 and install the same way on desktop and in the Docker/NAS shape, and
 can fonts come out of imported files (a PDF or .pub that "has" the
 font)? Researched against primary sources; summarized here in plain
-words. This is design, not built yet.
+words. Written as design first (2026-10-15); the Font Library, the
+catalog, the packs, and the rights gate described here are now
+built and tested.
 
 ## The short answers
 

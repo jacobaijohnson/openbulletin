@@ -116,15 +116,24 @@ fn read_journal_from(
     let mut lines = note.lines();
     let when: u64 = lines.next()?.trim().parse().ok()?;
     let source = lines.next().unwrap_or("").trim().to_string();
-    Some((
-        doc,
-        if source.is_empty() {
-            None
+    // The metadata is a plain text file anyone (or any program)
+    // can edit: only accept it as a save target when it names a
+    // bulletin file, never an arbitrary path (closing audit).
+    let source_path = if source.is_empty() {
+        None
+    } else {
+        let pb = std::path::PathBuf::from(&source);
+        let is_obd = pb
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("obd"))
+            .unwrap_or(false);
+        if is_obd {
+            Some(pb)
         } else {
-            Some(std::path::PathBuf::from(source))
-        },
-        when,
-    ))
+            None
+        }
+    };
+    Some((doc, source_path, when))
 }
 
 fn clear_journal_from(obd: &std::path::Path, meta: &std::path::Path) {
@@ -179,7 +188,7 @@ impl App {
         };
         self.redo_stack.push(snapshot(&self.doc));
         self.adopt_document(doc, false);
-        self.status = "Undone.".into();
+        self.note("Undone.".into());
     }
 
     fn redo(&mut self) {
@@ -191,7 +200,7 @@ impl App {
         };
         self.undo_stack.push(snapshot(&self.doc));
         self.adopt_document(doc, false);
-        self.status = "Redone.".into();
+        self.note("Redone.".into());
     }
 
     /// Forget every index that pointed into the old document:
@@ -234,6 +243,7 @@ impl App {
         self.announcements_dirty = false;
         self.church_name = self.doc.profile.name.clone();
         self.profile_address = self.doc.profile.address.clone();
+        self.profile_giving_url = self.doc.profile.giving_url.clone();
         self.profile_service_times = self.doc.profile.service_times.clone();
         self.profile_website = self.doc.profile.website.clone();
         self.profile_pastor = self.doc.profile.pastor.clone();
@@ -323,6 +333,7 @@ struct App {
     preset: Preset,
     church_name: String,
     profile_address: String,
+    profile_giving_url: String,
     profile_service_times: String,
     profile_website: String,
     profile_pastor: String,
@@ -358,12 +369,21 @@ struct App {
     catalog_rx: Option<std::sync::mpsc::Receiver<CatalogMsg>>,
     catalog_busy: bool,
     system_rows: Vec<ob_fonts::SystemFont>,
+    /// The system-font census runs on a worker: reading and
+    /// hashing every font on a real PC takes seconds and must
+    /// not freeze the window (closing audit).
+    sys_scan_rx: Option<std::sync::mpsc::Receiver<Vec<ob_fonts::SystemFont>>>,
     system_shown: bool,
     undo_stack: Vec<String>,
     redo_stack: Vec<String>,
     gesture_start: Option<String>,
     gesture_touch: Option<std::time::Instant>,
-    lines_cache: Option<(String, usize, Vec<PreviewLine>)>,
+    lines_cache: Option<(String, std::collections::HashMap<usize, Vec<PreviewLine>>)>,
+    /// The text shaper, rebuilt only when the Font Library
+    /// changes (closing audit: it used to be rebuilt, with a
+    /// full library scan and hash of every font, per paragraph
+    /// and per panel per repaint).
+    shaper_cache: Option<(u64, ob_text::shaping::Shaper)>,
     editing: Option<(usize, usize)>,
     edit_text: String,
     edit_styles: Vec<String>,
@@ -382,9 +402,18 @@ struct App {
     /// Two-click guard on Open while unsaved work is on screen
     /// (finding B3): the first click arms, the second leaves
     /// the work behind.
-    open_armed: bool,
+    /// A guarded file-open waiting for its confirming click,
+    /// and the screen state it was armed against. If the work
+    /// changes after arming, the guard re-arms (closing audit:
+    /// the old arm flag stayed set forever and silently
+    /// disarmed the guard for later, different work).
+    pending_open: Option<PendingOpen>,
+    pending_open_snapshot: String,
     /// Two-click guard on throwing recovered work away (F11).
     discard_armed: bool,
+    /// Another live OpenBulletin process holds the journal: this
+    /// instance never writes or clears it (closing audit).
+    peer_alive: bool,
     /// Pages window zoom: 1.0 fits the window (finding R9).
     pages_zoom: f32,
     /// The copied box, for Ctrl+C / Ctrl+V on the canvas.
@@ -468,6 +497,7 @@ impl Default for App {
             preset,
             church_name,
             profile_address: "123 Main Street".into(),
+            profile_giving_url: String::new(),
             profile_service_times: "Sundays 9:30 AM".into(),
             profile_website: String::new(),
             profile_pastor: String::new(),
@@ -503,12 +533,14 @@ impl Default for App {
             catalog_rx: None,
             catalog_busy: false,
             system_rows: Vec::new(),
+            sys_scan_rx: None,
             system_shown: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             gesture_start: None,
             gesture_touch: None,
             lines_cache: None,
+            shaper_cache: None,
             editing: None,
             edit_text: String::new(),
             edit_styles: Vec::new(),
@@ -516,8 +548,10 @@ impl Default for App {
             edit_cursor_para: 0,
             frame_snapshot: String::new(),
             status_error: false,
-            open_armed: false,
+            pending_open: None,
+            pending_open_snapshot: String::new(),
             discard_armed: false,
+            peer_alive: false,
             pages_zoom: 1.0,
             frame_clipboard: None,
             box_seq: 0,
@@ -585,6 +619,7 @@ impl App {
         }
         self.save_announcements();
         let before = snapshot(&self.doc);
+        let keep_fields = self.doc.fields.clone();
         let doc = build_template(
             self.preset,
             ChurchProfile {
@@ -598,7 +633,19 @@ impl App {
             chrono::Local::now().date_naive(),
             "Sunday",
         );
+        let mut doc = doc;
+        // Changing only the shape must not reset the week: the
+        // date, its long form, the Sunday name, and the reading
+        // carry across (closing audit).
+        for key in ["sunday_date", "sunday_date_long", "sunday_name", "reading"] {
+            if let Some(v) = keep_fields.get(key) {
+                doc.fields.insert(key.to_string(), v.clone());
+            }
+        }
         self.adopt_document(doc, false);
+        // A fresh template is not the old file: Save must ask
+        // for a name rather than overwrite it (closing audit).
+        self.path = None;
         if before != snapshot(&self.doc) {
             self.record_undo(before);
         }
@@ -670,20 +717,61 @@ impl App {
         }
     }
 
-    /// The shaper every surface must agree on: bundled faces plus
-    /// the whole Font Library, exactly what the PDF embeds. Check
-    /// once measured fit with bundled fonts only and could call a
-    /// page fine that the printer would overflow (finding F9).
-    fn full_shaper(&self) -> ob_text::shaping::Shaper {
-        let mut shaper = ob_text::shaping::bundled_shaper();
+    /// A cheap fingerprint of the Font Library's state: file
+    /// names, sizes, and modification times from a directory
+    /// listing. No font bytes are read to compute it.
+    fn library_fingerprint() -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
         if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
-            for info in lib.scan() {
-                if let Ok(bytes) = lib.read(&info) {
-                    shaper.register_font(bytes);
+            let dir = lib.dir_path();
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                let mut entries: Vec<(String, u64, u64)> = rd
+                    .flatten()
+                    .filter_map(|e| {
+                        let md = e.metadata().ok()?;
+                        let mtime = md
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        Some((
+                            e.file_name().to_string_lossy().into_owned(),
+                            md.len(),
+                            mtime,
+                        ))
+                    })
+                    .collect();
+                entries.sort();
+                for e in entries {
+                    e.hash(&mut h);
                 }
             }
         }
-        shaper
+        h.finish()
+    }
+
+    /// The one shaper, rebuilt only when the library changes.
+    fn shaper(&mut self) -> &mut ob_text::shaping::Shaper {
+        let fp = Self::library_fingerprint();
+        let stale = self
+            .shaper_cache
+            .as_ref()
+            .map(|(f, _)| *f != fp)
+            .unwrap_or(true);
+        if stale {
+            let mut shaper = ob_text::shaping::bundled_shaper();
+            if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+                for info in lib.scan() {
+                    if let Ok(bytes) = lib.read(&info) {
+                        shaper.register_font(bytes);
+                    }
+                }
+            }
+            self.shaper_cache = Some((fp, shaper));
+        }
+        &mut self.shaper_cache.as_mut().expect("shaper just built").1
     }
 
     fn run_checks(&mut self) {
@@ -703,15 +791,30 @@ impl App {
             notes.push("OK: announcements are filled in.".to_string());
         }
         // Real fit check: shape every story into its frame and complain
-        // in plain words about any that do not fit.
-        let mut fit_notes = Vec::new();
+        // in plain words about any that do not fit. Two passes: first
+        // collect the words (borrowing the document), then shape them
+        // with the one cached shaper. This used to rebuild the whole
+        // font engine, with a full library scan, per paragraph
+        // (closing audit: 1.25 s on the booklet, worse with more fonts).
+        type FitWork = (
+            String,
+            ob_model::Rect,
+            String,
+            Vec<(
+                String,
+                ob_text::shaping::FontSpec,
+                ob_model::Mpt,
+                ob_model::Mpt,
+            )>,
+        );
+        let mut work: Vec<FitWork> = Vec::new();
         for panel in &self.doc.panels {
             for frame in &panel.frames {
                 let Some(sid) = &frame.story_id else { continue };
                 let Some(story) = self.doc.story(sid) else {
                     continue;
                 };
-                let mut needed: ob_model::Mpt = 0;
+                let mut paras = Vec::new();
                 for para in &story.paragraphs {
                     let style = self.doc.style(&para.style).cloned().unwrap_or_else(|| {
                         ob_model::ParagraphStyle {
@@ -733,31 +836,38 @@ impl App {
                         italic: style.italic,
                     };
                     let text = ob_model::resolve_fields(&para.text, &self.doc);
-                    let lines = if text.contains('\t') {
-                        1
-                    } else {
-                        self.full_shaper()
-                            .wrap(&text, frame.rect.w, &spec, style.font_size, 1.3)
-                            .len()
-                    };
-                    needed +=
-                        lines as ob_model::Mpt * (style.font_size * 13 / 10) + style.space_after;
+                    paras.push((text, spec, style.font_size, style.space_after));
                 }
-                if needed > frame.rect.h {
-                    let over_lines = ((needed - frame.rect.h) / 14_000).max(1);
-                    let area = story
-                        .paragraphs
-                        .first()
-                        .map(|p| p.text.clone())
-                        .unwrap_or_else(|| "A text block".into());
-                    fit_notes.push(format!(
-                        "Check: the words in \"{}\" ({}) do not all fit. About {} line{} too many. Shorten the words, or we can shrink them in a later version.",
-                        area.chars().take(38).collect::<String>(),
-                        panel.name,
-                        over_lines,
-                        if over_lines == 1 { "" } else { "s" }
-                    ));
-                }
+                let first = story
+                    .paragraphs
+                    .first()
+                    .map(|p| p.text.clone())
+                    .unwrap_or_else(|| "A text block".into());
+                work.push((panel.name.clone(), frame.rect, first, paras));
+            }
+        }
+        let mut fit_notes = Vec::new();
+        for (panel_name, rect, first, paras) in &work {
+            let mut needed: ob_model::Mpt = 0;
+            for (text, spec, font_size, space_after) in paras {
+                let lines = if text.contains('\t') {
+                    1
+                } else {
+                    self.shaper()
+                        .wrap(text, rect.w, spec, *font_size, 1.3)
+                        .len()
+                };
+                needed += lines as ob_model::Mpt * (font_size * 13 / 10) + space_after;
+            }
+            if needed > rect.h {
+                let over_lines = ((needed - rect.h) / 14_000).max(1);
+                fit_notes.push(format!(
+                    "Check: the words in \"{}\" ({}) do not all fit. About {} line{} too many. Shorten the words, or we can shrink them in a later version.",
+                    first.chars().take(38).collect::<String>(),
+                    panel_name,
+                    over_lines,
+                    if over_lines == 1 { "" } else { "s" }
+                ));
             }
         }
         if fit_notes.is_empty() {
@@ -861,12 +971,19 @@ impl App {
         self.startup_done = true;
         self.saved_snapshot = snapshot(&self.doc);
         self.journal_snapshot = self.saved_snapshot.clone();
+        // Single-instance courtesy: if another live OpenBulletin
+        // already holds the journal, this instance leaves the
+        // journal entirely alone (closing audit).
+        self.peer_alive = peer_instance_alive();
+        write_instance_lock();
         let (obd, meta) = journal_paths();
         if let Some((doc, source, when)) = read_journal_from(&obd, &meta) {
             if snapshot(&doc) != self.saved_snapshot {
                 self.journal_snapshot = snapshot(&doc);
-                self.recovery = Some((doc, source, when));
-            } else {
+                if !self.peer_alive {
+                    self.recovery = Some((doc, source, when));
+                }
+            } else if !self.peer_alive {
                 clear_journal_from(&obd, &meta);
             }
         }
@@ -881,19 +998,57 @@ impl App {
         self.last_journal_check = std::time::Instant::now();
         self.save_announcements();
         let snap = snapshot(&self.doc);
-        if snap == self.saved_snapshot {
-            if snap != self.journal_snapshot {
+        match journal_decision(
+            snap == self.saved_snapshot,
+            snap == self.journal_snapshot,
+            self.recovery.is_some(),
+            self.peer_alive,
+        ) {
+            JournalAction::Hold => {}
+            JournalAction::Clear => {
                 self.journal_snapshot = snap;
                 let (obd, meta) = journal_paths();
                 clear_journal_from(&obd, &meta);
             }
-            return;
-        }
-        if snap != self.journal_snapshot {
-            let (obd, meta) = journal_paths();
-            if write_journal_to(&obd, &meta, &self.doc, &self.path).is_ok() {
-                self.journal_snapshot = snap;
+            JournalAction::Write => {
+                let (obd, meta) = journal_paths();
+                if write_journal_to(&obd, &meta, &self.doc, &self.path).is_ok() {
+                    self.journal_snapshot = snap;
+                }
             }
+        }
+    }
+
+    /// The two-click unsaved-work guard, shared by every way
+    /// of opening a file. Returns true when the open may
+    /// proceed. Arming records the screen state; if the work
+    /// changes before the confirming click, this re-arms
+    /// instead of proceeding (closing audit).
+    fn open_guard(&mut self, action: PendingOpen) -> bool {
+        let dirty = self.frame_snapshot != self.saved_snapshot;
+        if !dirty {
+            self.pending_open = None;
+            return true;
+        }
+        if self.pending_open == Some(action) && self.pending_open_snapshot == self.frame_snapshot {
+            self.pending_open = None;
+            return true;
+        }
+        self.pending_open = Some(action);
+        self.pending_open_snapshot = self.frame_snapshot.clone();
+        self.note(
+            "You have unsaved work on screen. Click the same button again to leave it \
+             behind; it will be gone for good. Or Save first."
+                .into(),
+        );
+        false
+    }
+
+    /// Finish any canvas typing session so Save and Print
+    /// never miss the newest words (closing audit).
+    fn commit_if_editing(&mut self) {
+        if self.editing.is_some() {
+            self.commit_edit();
         }
     }
 
@@ -1265,18 +1420,27 @@ impl App {
         let stale = self
             .lines_cache
             .as_ref()
-            .map(|(k, i, _)| k != &key || *i != idx)
+            .map(|(k, _)| k != &key)
             .unwrap_or(true);
         if stale {
-            let mut shaper = self.full_shaper();
-            let lines = panel_lines(&self.doc, &self.doc.panels[idx], &mut shaper);
-            self.lines_cache = Some((key, idx, lines));
+            self.lines_cache = Some((key.clone(), std::collections::HashMap::new()));
         }
-        self.lines_cache
-            .as_ref()
-            .expect("lines cache filled")
-            .2
-            .clone()
+        if let Some((_, map)) = &self.lines_cache {
+            if let Some(lines) = map.get(&idx) {
+                return lines.clone();
+            }
+        }
+        let lines = {
+            // Clone on a cache miss only: the shaper borrows the
+            // app mutably while the lines are computed from the doc.
+            let doc = self.doc.clone();
+            let shaper = self.shaper();
+            panel_lines(&doc, &doc.panels[idx], shaper)
+        };
+        if let Some((_, map)) = &mut self.lines_cache {
+            map.insert(idx, lines.clone());
+        }
+        lines
     }
 
     /// The Pages window: one panel at a time, with inch rulers,
@@ -1301,6 +1465,9 @@ impl App {
                 ui.horizontal(|ui| {
                     if ui.button("<").clicked() && self.canvas_panel > 0 {
                         self.canvas_panel -= 1;
+                        self.selected_frame = None;
+                        self.guide_menu_for = None;
+                        self.frame_menu_for = None;
                     }
                     let panel = &self.doc.panels[self.canvas_panel];
                     ui.label(egui::RichText::new(format!(
@@ -1313,6 +1480,9 @@ impl App {
                         && self.canvas_panel + 1 < self.doc.panels.len()
                     {
                         self.canvas_panel += 1;
+                        self.selected_frame = None;
+                        self.guide_menu_for = None;
+                        self.frame_menu_for = None;
                     }
                     ui.separator();
                     if ui.button("Smaller").clicked() {
@@ -1957,176 +2127,185 @@ impl App {
             })
             .unwrap_or(None);
         let target = choose_menu_target(on_the_line, frame_at_menu, hit);
-        response.context_menu(|ui| match target {
-            MenuTarget::Frame(fi) => {
-                self.selected_frame = Some(fi);
-                let f = self.doc.panels[idx].frames[fi].clone();
-                if self.frame_menu_for != Some((fi, f.rect)) {
-                    self.frame_menu_for = Some((fi, f.rect));
-                    self.frame_input = [
-                        format!("{:.3}", ob_model::mpt_to_inches(f.rect.x)),
-                        format!("{:.3}", ob_model::mpt_to_inches(f.rect.y)),
-                        format!("{:.3}", ob_model::mpt_to_inches(f.rect.w)),
-                        format!("{:.3}", ob_model::mpt_to_inches(f.rect.h)),
-                    ];
-                }
-                ui.label(egui::RichText::new(format!("Box: {}", f.name)).strong());
-                ui.label("Exact place and size, in inches:");
-                for (i, label) in ["Left", "Top", "Width", "Height"].iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{label}:"));
-                        ui.text_edit_singleline(&mut self.frame_input[i]);
-                    });
-                }
-                if ui.button("Set place and size").clicked() {
-                    let parsed: Vec<Option<f64>> = self
-                        .frame_input
-                        .iter()
-                        .map(|t| ob_model::parse_inches(t))
-                        .collect();
-                    if parsed.iter().all(|v| v.is_some()) {
-                        let v: Vec<ob_model::Mpt> = parsed
+        response.context_menu(|ui| {
+            // A menu action can remove or shift boxes: finish any
+            // typing session first, while its indices are still
+            // true (closing audit: deleting a box mid-typing in
+            // another could corrupt text or panic).
+            if self.editing.is_some() {
+                self.commit_edit();
+            }
+            match target {
+                MenuTarget::Frame(fi) => {
+                    self.selected_frame = Some(fi);
+                    let f = self.doc.panels[idx].frames[fi].clone();
+                    if self.frame_menu_for != Some((fi, f.rect)) {
+                        self.frame_menu_for = Some((fi, f.rect));
+                        self.frame_input = [
+                            format!("{:.3}", ob_model::mpt_to_inches(f.rect.x)),
+                            format!("{:.3}", ob_model::mpt_to_inches(f.rect.y)),
+                            format!("{:.3}", ob_model::mpt_to_inches(f.rect.w)),
+                            format!("{:.3}", ob_model::mpt_to_inches(f.rect.h)),
+                        ];
+                    }
+                    ui.label(egui::RichText::new(format!("Box: {}", f.name)).strong());
+                    ui.label("Exact place and size, in inches:");
+                    for (i, label) in ["Left", "Top", "Width", "Height"].iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{label}:"));
+                            ui.text_edit_singleline(&mut self.frame_input[i]);
+                        });
+                    }
+                    if ui.button("Set place and size").clicked() {
+                        let parsed: Vec<Option<f64>> = self
+                            .frame_input
                             .iter()
-                            .map(|o| ob_model::inches_to_mpt(o.unwrap()))
+                            .map(|t| ob_model::parse_inches(t))
                             .collect();
-                        self.push_undo_now();
-                        let fr = &mut self.doc.panels[idx].frames[fi];
-                        fr.rect.w = v[2].clamp(18_000, panel.size.w);
-                        fr.rect.h = v[3].clamp(18_000, panel.size.h);
-                        fr.rect.x = v[0].clamp(0, panel.size.w - fr.rect.w);
-                        fr.rect.y = v[1].clamp(0, panel.size.h - fr.rect.h);
-                        self.status = "Box moved and sized.".into();
-                        ui.close_menu();
-                    } else {
-                        self.status =
-                            "One of those is not a measurement I can read. Try 1.25 or 1 1/4."
-                                .into();
-                    }
-                }
-                ui.separator();
-                if ui.button("Copy this box (Ctrl+C)").clicked() {
-                    let story = f
-                        .story_id
-                        .as_ref()
-                        .and_then(|sid| self.doc.story(sid).cloned());
-                    self.frame_clipboard = Some((f.clone(), story));
-                    self.status = "Box copied. Ctrl+V puts a copy on the page.".into();
-                    ui.close_menu();
-                }
-                if ui.button("Delete this box").clicked() {
-                    self.push_undo_now();
-                    let gone = self.doc.panels[idx].frames.remove(fi);
-                    if let Some(sid) = &gone.story_id {
-                        let used_elsewhere = self
-                            .doc
-                            .panels
-                            .iter()
-                            .flat_map(|p| &p.frames)
-                            .any(|fr| fr.story_id.as_deref() == Some(sid.as_str()));
-                        if !used_elsewhere {
-                            self.doc.stories.retain(|st| &st.id != sid);
-                        }
-                    }
-                    self.selected_frame = None;
-                    self.frame_menu_for = None;
-                    self.status = "Box deleted. Undo brings it back.".into();
-                    ui.close_menu();
-                }
-            }
-            MenuTarget::Guide(gi) => {
-                let g = self.doc.panels[idx].guides[gi];
-                if self.guide_menu_for != Some((gi, g.pos)) {
-                    self.guide_menu_for = Some((gi, g.pos));
-                    self.guide_input = format!("{:.3}", ob_model::mpt_to_inches(g.pos));
-                }
-                let (what, from) = if g.vertical {
-                    ("Vertical guide", "from the left edge")
-                } else {
-                    ("Horizontal guide", "from the top edge")
-                };
-                ui.label(egui::RichText::new(format!("{what}, {from}")).strong());
-                ui.label("Exact place, in inches (1.25 or 1 1/4 works):");
-                let edit = ui.text_edit_singleline(&mut self.guide_input);
-                let apply = ui.button("Set the position").clicked()
-                    || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                if apply {
-                    match ob_model::parse_inches(&self.guide_input) {
-                        Some(inches) => {
-                            let extent = if g.vertical {
-                                panel.size.w
-                            } else {
-                                panel.size.h
-                            };
+                        if parsed.iter().all(|v| v.is_some()) {
+                            let v: Vec<ob_model::Mpt> = parsed
+                                .iter()
+                                .map(|o| ob_model::inches_to_mpt(o.unwrap()))
+                                .collect();
                             self.push_undo_now();
-                            self.doc.panels[idx].guides[gi].pos =
-                                ob_model::inches_to_mpt(inches).clamp(0, extent);
-                            self.status = "Guide moved.".into();
+                            let fr = &mut self.doc.panels[idx].frames[fi];
+                            fr.rect.w = v[2].clamp(18_000, panel.size.w);
+                            fr.rect.h = v[3].clamp(18_000, panel.size.h);
+                            fr.rect.x = v[0].clamp(0, panel.size.w - fr.rect.w);
+                            fr.rect.y = v[1].clamp(0, panel.size.h - fr.rect.h);
+                            self.status = "Box moved and sized.".into();
                             ui.close_menu();
-                        }
-                        None => {
+                        } else {
                             self.status =
-                                "That is not a place I can read. Try 1.25 or 1 1/4.".into();
+                                "One of those is not a measurement I can read. Try 1.25 or 1 1/4."
+                                    .into();
                         }
                     }
+                    ui.separator();
+                    if ui.button("Copy this box (Ctrl+C)").clicked() {
+                        let story = f
+                            .story_id
+                            .as_ref()
+                            .and_then(|sid| self.doc.story(sid).cloned());
+                        self.frame_clipboard = Some((f.clone(), story));
+                        self.status = "Box copied. Ctrl+V puts a copy on the page.".into();
+                        ui.close_menu();
+                    }
+                    if ui.button("Delete this box").clicked() {
+                        self.push_undo_now();
+                        let gone = self.doc.panels[idx].frames.remove(fi);
+                        if let Some(sid) = &gone.story_id {
+                            let used_elsewhere = self
+                                .doc
+                                .panels
+                                .iter()
+                                .flat_map(|p| &p.frames)
+                                .any(|fr| fr.story_id.as_deref() == Some(sid.as_str()));
+                            if !used_elsewhere {
+                                self.doc.stories.retain(|st| &st.id != sid);
+                            }
+                        }
+                        self.selected_frame = None;
+                        self.frame_menu_for = None;
+                        self.status = "Box deleted. Undo brings it back.".into();
+                        ui.close_menu();
+                    }
                 }
-                if ui
-                    .button(if g.locked {
-                        "Unlock this guide"
+                MenuTarget::Guide(gi) => {
+                    let g = self.doc.panels[idx].guides[gi];
+                    if self.guide_menu_for != Some((gi, g.pos)) {
+                        self.guide_menu_for = Some((gi, g.pos));
+                        self.guide_input = format!("{:.3}", ob_model::mpt_to_inches(g.pos));
+                    }
+                    let (what, from) = if g.vertical {
+                        ("Vertical guide", "from the left edge")
                     } else {
-                        "Lock this guide"
-                    })
-                    .clicked()
-                {
-                    self.push_undo_now();
-                    self.doc.panels[idx].guides[gi].locked = !g.locked;
-                    self.status = if g.locked {
-                        "Guide unlocked: it can be dragged again.".into()
-                    } else {
-                        "Guide locked: it stays put until you unlock it.".into()
+                        ("Horizontal guide", "from the top edge")
                     };
-                    ui.close_menu();
+                    ui.label(egui::RichText::new(format!("{what}, {from}")).strong());
+                    ui.label("Exact place, in inches (1.25 or 1 1/4 works):");
+                    let edit = ui.text_edit_singleline(&mut self.guide_input);
+                    let apply = ui.button("Set the position").clicked()
+                        || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    if apply {
+                        match ob_model::parse_inches(&self.guide_input) {
+                            Some(inches) => {
+                                let extent = if g.vertical {
+                                    panel.size.w
+                                } else {
+                                    panel.size.h
+                                };
+                                self.push_undo_now();
+                                self.doc.panels[idx].guides[gi].pos =
+                                    ob_model::inches_to_mpt(inches).clamp(0, extent);
+                                self.status = "Guide moved.".into();
+                                ui.close_menu();
+                            }
+                            None => {
+                                self.status =
+                                    "That is not a place I can read. Try 1.25 or 1 1/4.".into();
+                            }
+                        }
+                    }
+                    if ui
+                        .button(if g.locked {
+                            "Unlock this guide"
+                        } else {
+                            "Lock this guide"
+                        })
+                        .clicked()
+                    {
+                        self.push_undo_now();
+                        self.doc.panels[idx].guides[gi].locked = !g.locked;
+                        self.status = if g.locked {
+                            "Guide unlocked: it can be dragged again.".into()
+                        } else {
+                            "Guide locked: it stays put until you unlock it.".into()
+                        };
+                        ui.close_menu();
+                    }
+                    if ui.button("Delete this guide").clicked() {
+                        self.push_undo_now();
+                        self.doc.panels[idx].guides.remove(gi);
+                        self.status = "Guide deleted.".into();
+                        ui.close_menu();
+                    }
                 }
-                if ui.button("Delete this guide").clicked() {
-                    self.push_undo_now();
-                    self.doc.panels[idx].guides.remove(gi);
-                    self.status = "Guide deleted.".into();
-                    ui.close_menu();
-                }
-            }
-            MenuTarget::Page => {
-                self.guide_menu_for = None;
-                let pos = self.ctx_pos.unwrap_or(origin);
-                let x_mpt = (((pos.x - origin.x) / scale) * 1000.0) as ob_model::Mpt;
-                let y_mpt = (((pos.y - origin.y) / scale) * 1000.0) as ob_model::Mpt;
-                if ui
-                    .button(format!(
-                        "Add vertical guide here ({:.2} in)",
-                        ob_model::mpt_to_inches(x_mpt.clamp(0, panel.size.w))
-                    ))
-                    .clicked()
-                {
-                    self.push_undo_now();
-                    self.doc.panels[idx].guides.push(ob_model::Guide {
-                        vertical: true,
-                        pos: x_mpt.clamp(0, panel.size.w),
-                        locked: false,
-                    });
-                    ui.close_menu();
-                }
-                if ui
-                    .button(format!(
-                        "Add horizontal guide here ({:.2} in)",
-                        ob_model::mpt_to_inches(y_mpt.clamp(0, panel.size.h))
-                    ))
-                    .clicked()
-                {
-                    self.push_undo_now();
-                    self.doc.panels[idx].guides.push(ob_model::Guide {
-                        vertical: false,
-                        pos: y_mpt.clamp(0, panel.size.h),
-                        locked: false,
-                    });
-                    ui.close_menu();
+                MenuTarget::Page => {
+                    self.guide_menu_for = None;
+                    let pos = self.ctx_pos.unwrap_or(origin);
+                    let x_mpt = (((pos.x - origin.x) / scale) * 1000.0) as ob_model::Mpt;
+                    let y_mpt = (((pos.y - origin.y) / scale) * 1000.0) as ob_model::Mpt;
+                    if ui
+                        .button(format!(
+                            "Add vertical guide here ({:.2} in)",
+                            ob_model::mpt_to_inches(x_mpt.clamp(0, panel.size.w))
+                        ))
+                        .clicked()
+                    {
+                        self.push_undo_now();
+                        self.doc.panels[idx].guides.push(ob_model::Guide {
+                            vertical: true,
+                            pos: x_mpt.clamp(0, panel.size.w),
+                            locked: false,
+                        });
+                        ui.close_menu();
+                    }
+                    if ui
+                        .button(format!(
+                            "Add horizontal guide here ({:.2} in)",
+                            ob_model::mpt_to_inches(y_mpt.clamp(0, panel.size.h))
+                        ))
+                        .clicked()
+                    {
+                        self.push_undo_now();
+                        self.doc.panels[idx].guides.push(ob_model::Guide {
+                            vertical: false,
+                            pos: y_mpt.clamp(0, panel.size.h),
+                            locked: false,
+                        });
+                        ui.close_menu();
+                    }
                 }
             }
         });
@@ -2437,11 +2616,29 @@ impl App {
                                     .collect()
                             })
                             .unwrap_or_default();
-                    self.system_rows = ob_fonts::system_fonts()
-                        .into_iter()
-                        .filter(|f| !in_library.contains(&f.info.sha256))
-                        .collect();
-                    self.system_shown = true;
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.sys_scan_rx = Some(rx);
+                    std::thread::spawn(move || {
+                        let rows = ob_fonts::system_fonts()
+                            .into_iter()
+                            .filter(|f| !in_library.contains(&f.info.sha256))
+                            .collect();
+                        let _ = tx.send(rows);
+                    });
+                }
+                if let Some(rx) = &self.sys_scan_rx {
+                    ui.label("Looking through this computer's fonts...");
+                    match rx.try_recv() {
+                        Ok(rows) => {
+                            self.system_rows = rows;
+                            self.system_shown = true;
+                            self.sys_scan_rx = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            self.sys_scan_rx = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    }
                 }
                 if self.system_shown && self.system_rows.is_empty() {
                     ui.label("Every font on this computer is already in the library.");
@@ -2572,22 +2769,12 @@ impl eframe::App for App {
                 {
                     self.redo();
                 }
-                let open_label = if self.open_armed {
+                let open_label = if self.pending_open == Some(PendingOpen::Plain) {
                     "Leave unsaved work and open?"
                 } else {
                     "Open bulletin..."
                 };
-                if ui.button(open_label).clicked() {
-                    let dirty = self.frame_snapshot != self.saved_snapshot;
-                    if dirty && !self.open_armed {
-                        self.open_armed = true;
-                        self.note(
-                            "You have unsaved work on screen. Click Open again to leave it \
-                             behind; it will be gone for good. Or Save first."
-                                .into(),
-                        );
-                    } else {
-                        self.open_armed = false;
+                if ui.button(open_label).clicked() && self.open_guard(PendingOpen::Plain) {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("OpenBulletin bulletin", &["obd"])
                         .pick_file()
@@ -2605,9 +2792,9 @@ impl eframe::App for App {
                             )),
                         }
                     }
-                    }
                 }
                 if ui.button("Save bulletin").clicked() {
+                    self.commit_if_editing();
                     self.save_announcements();
                     self.pin_fonts();
                     let target = self.path.clone().or_else(|| {
@@ -2680,7 +2867,15 @@ impl eframe::App for App {
                     0 => {
                         ui.heading("Start from last week");
                         ui.label("The usual week: open last Sunday's bulletin and we move it to this Sunday. Last week's announcements clear; everything standing stays.");
-                        if ui.button("Use last week's bulletin...").clicked() {
+                        let last_week_label =
+                            if self.pending_open == Some(PendingOpen::LastWeek) {
+                                "Leave unsaved work and use last week's?"
+                            } else {
+                                "Use last week's bulletin..."
+                            };
+                        if ui.button(last_week_label).clicked()
+                            && self.open_guard(PendingOpen::LastWeek)
+                        {
                             if let Some(path) = rfd::FileDialog::new()
                                 .add_filter("OpenBulletin bulletin", &["obd"])
                                 .pick_file()
@@ -2731,6 +2926,16 @@ impl eframe::App for App {
                                 let before = snapshot(&self.doc);
                                 self.doc.profile.service_times =
                                     self.profile_service_times.clone();
+                                self.record_undo(before);
+                        }
+                        ui.label("Online giving link (shows as “Give online:” on the back page)");
+                        let resp_giving = ui.text_edit_singleline(&mut self.profile_giving_url);
+                        if resp_giving.lost_focus()
+                            && self.doc.profile.giving_url != self.profile_giving_url
+                        {
+                                let before = snapshot(&self.doc);
+                                self.doc.profile.giving_url =
+                                    self.profile_giving_url.clone();
                                 self.record_undo(before);
                         }
                         ui.label("Website");
@@ -2857,9 +3062,13 @@ impl eframe::App for App {
                         }
                         ui.small("Open makes a one-time copy to print right now. The Save buttons below keep files you can reuse.");
                         if ui.button("Open the print copy").clicked() {
+                            self.commit_if_editing();
                             self.pin_fonts();
                             let bytes = ob_pdf::export_imposed_pdf(&self.doc);
-                            let path = std::env::temp_dir().join("openbulletin-print-copy.pdf");
+                            let path = std::env::temp_dir().join(format!(
+                                "openbulletin-print-copy-{}.pdf",
+                                std::process::id()
+                            ));
                             match std::fs::write(&path, &bytes).map_err(|e| e.to_string()).and_then(|_| open_with_os(&path)) {
                                 Ok(()) => self.status = "Print copy opened in your PDF viewer. Use the settings listed above.".into(),
                                 Err(e) => self.status = e,
@@ -2868,6 +3077,7 @@ impl eframe::App for App {
                         ui.separator();
                         ui.label("Print copy: folded sheets, in the right order, ready for the copier.");
                         if ui.button(egui::RichText::new("Save print copy (PDF)").strong()).clicked() {
+                            self.commit_if_editing();
                             self.save_announcements();
                             if let Some(path) = rfd::FileDialog::new()
                                 .set_file_name("bulletin-print.pdf")
@@ -2884,6 +3094,7 @@ impl eframe::App for App {
                         }
                         ui.label("Reading copy: one panel per page, for email and the website.");
                         if ui.button("Save reading copy (PDF)").clicked() {
+                            self.commit_if_editing();
                             self.save_announcements();
                             if let Some(path) = rfd::FileDialog::new()
                                 .set_file_name("bulletin-reading.pdf")
@@ -3154,6 +3365,82 @@ fn sunday_on_or_after(d: chrono::NaiveDate) -> chrono::NaiveDate {
     d + chrono::Duration::days((7 - wd) % 7)
 }
 
+/// What the autosave journal should do this tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JournalAction {
+    /// Touch nothing (someone is deciding about recovered work,
+    /// or another live instance owns the journal).
+    Hold,
+    /// The screen matches the saved file: the journal copy is
+    /// no longer needed.
+    Clear,
+    /// The screen has unsaved work the journal does not hold yet.
+    Write,
+}
+
+/// The journal decision, pure so it can be tested: the tick once
+/// deleted the only copy of recovered work two seconds after
+/// launch, while its own dialog was still asking (closing
+/// audit, found by three lanes independently).
+fn journal_decision(
+    screen_eq_saved: bool,
+    screen_eq_journal: bool,
+    recovery_pending: bool,
+    peer_alive: bool,
+) -> JournalAction {
+    if recovery_pending || peer_alive {
+        return JournalAction::Hold;
+    }
+    if screen_eq_saved {
+        if screen_eq_journal {
+            JournalAction::Hold
+        } else {
+            JournalAction::Clear
+        }
+    } else if screen_eq_journal {
+        JournalAction::Hold
+    } else {
+        JournalAction::Write
+    }
+}
+
+/// A file-open that would leave unsaved work behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingOpen {
+    Plain,
+    LastWeek,
+}
+
+/// The instance lock: a file in the settings folder holding
+/// the running app's process id. A second instance reads it to
+/// know the journal already has an owner.
+fn instance_lock_path() -> std::path::PathBuf {
+    settings_path()
+        .parent()
+        .map(|d| d.join("openbulletin.lock"))
+        .unwrap_or_else(|| std::path::PathBuf::from("openbulletin.lock"))
+}
+
+fn write_instance_lock() {
+    let _ = std::fs::write(instance_lock_path(), std::process::id().to_string());
+}
+
+/// Is another OpenBulletin process alive? Proven on Unix via
+/// /proc; elsewhere we cannot tell cheaply, so we answer no
+/// rather than mute a lone instance's autosave.
+fn peer_instance_alive() -> bool {
+    let Ok(text) = std::fs::read_to_string(instance_lock_path()) else {
+        return false;
+    };
+    let Ok(pid) = text.trim().parse::<u32>() else {
+        return false;
+    };
+    if pid == std::process::id() {
+        return false;
+    }
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
 /// What a right-click on the canvas belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuTarget {
@@ -3192,7 +3479,9 @@ fn cursor_paragraph(ctx: &egui::Context, text: &str, salt: &str) -> usize {
     0
 }
 
-fn build_preview(doc: &Document) -> Vec<PreviewSheet> {
+fn build_preview(doc_in: &Document) -> Vec<PreviewSheet> {
+    let padded = ob_impose::padded_document(doc_in);
+    let doc = &padded;
     let mut shaper = ob_text::shaping::bundled_shaper();
     if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
         for info in lib.scan() {
@@ -3367,6 +3656,68 @@ fn open_with_os(path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod settings_tests {
     use super::*;
+
+    #[test]
+    fn journal_never_touches_recovered_work_while_undecided() {
+        // The closing audit's most dangerous finding, found by
+        // three lanes: the tick must hold while a recovery is
+        // pending, whatever the snapshots say.
+        assert_eq!(
+            journal_decision(false, false, true, false),
+            JournalAction::Hold
+        );
+        assert_eq!(
+            journal_decision(true, false, true, false),
+            JournalAction::Hold
+        );
+        // A live peer instance owns the journal.
+        assert_eq!(
+            journal_decision(false, false, false, true),
+            JournalAction::Hold
+        );
+        // Screen saved and journal stale: clear. Screen saved
+        // and journal current: nothing. Unsaved and unjournaled:
+        // write. Unsaved but journaled: nothing.
+        assert_eq!(
+            journal_decision(true, false, false, false),
+            JournalAction::Clear
+        );
+        assert_eq!(
+            journal_decision(true, true, false, false),
+            JournalAction::Hold
+        );
+        assert_eq!(
+            journal_decision(false, false, false, false),
+            JournalAction::Write
+        );
+        assert_eq!(
+            journal_decision(false, true, false, false),
+            JournalAction::Hold
+        );
+    }
+
+    #[test]
+    fn open_guard_rearms_when_the_work_changes() {
+        let mut app = App {
+            frame_snapshot: "work-v1".into(),
+            saved_snapshot: "saved".into(),
+            ..Default::default()
+        };
+        assert!(!app.open_guard(PendingOpen::Plain), "first click arms");
+        assert!(app.open_guard(PendingOpen::Plain), "second click proceeds");
+        // New unsaved work appears: the guard must arm again,
+        // not ride the old confirmation.
+        app.frame_snapshot = "work-v2".into();
+        assert!(!app.open_guard(PendingOpen::Plain), "changed work re-arms");
+        // A different button does not inherit the arm either.
+        assert!(
+            !app.open_guard(PendingOpen::LastWeek),
+            "other action re-arms"
+        );
+        // Clean screen: no guard at all.
+        app.saved_snapshot = app.frame_snapshot.clone();
+        assert!(app.open_guard(PendingOpen::Plain));
+    }
 
     #[test]
     fn answers_map_to_plain_instructions() {

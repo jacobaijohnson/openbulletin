@@ -18,8 +18,8 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Engine tests
-        run: cargo test -p ob-model -p ob-layout -p ob-impose -p ob-text -p ob-pdf -p ob-format -p openbulletin-cli
+        run: cargo test --workspace
       - name: Clippy (engine, deny warnings)
-        run: cargo clippy -p ob-model -p ob-layout -p ob-impose -p ob-text -p ob-pdf -p ob-format -p openbulletin-cli -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Release build (app + CLI)
         run: cargo build --release -p openbulletin -p openbulletin-cli

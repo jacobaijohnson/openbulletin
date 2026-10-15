@@ -7,12 +7,15 @@ legal advice.
 
 ## Dependency license audit (2026-10-15)
 
-`cargo metadata` over the full tree: 475 packages. Every package is
-MIT, Apache-2.0, MIT OR Apache-2.0, Zlib, BSD, ISC, or Unicode-3.0.
-The single multi-license flag, r-efi, is "MIT OR Apache-2.0 OR
-LGPL-2.1-or-later": an OR choice, satisfied by choosing MIT /
-Apache-2.0. No GPL, AGPL, LGPL-as-requirement, or SSPL anywhere.
-Re-run this audit whenever dependencies change materially.
+`cargo metadata` over the full tree: 523 packages. Every package is
+MIT, Apache-2.0, MIT OR Apache-2.0, Zlib, BSD, ISC, Unicode-3.0, or
+(for egui's bundled default fonts) OFL-1.1 / UFL, which cover font
+data, not code. The single multi-license flag, r-efi (present at two
+versions), is "MIT OR Apache-2.0 OR LGPL-2.1-or-later": an OR
+choice, satisfied by choosing MIT / Apache-2.0. No GPL, AGPL,
+LGPL-as-requirement, or SSPL anywhere. Re-run this audit whenever
+dependencies change materially. (Recounted 2026-10-15 during the
+closing audit; the earlier count of 475 had drifted.)
 
 Deliberately excluded on license grounds: MuPDF (AGPL) and Poppler
 (GPL). PDF reading is PDFium (BSD-style, Chromium) in an

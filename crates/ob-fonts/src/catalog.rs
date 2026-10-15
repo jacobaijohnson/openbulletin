@@ -123,7 +123,10 @@ fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
                 let expected: Option<usize> = response
                     .header("Content-Length")
                     .and_then(|v| v.parse().ok());
-                let mut reader = response.into_reader();
+                // Cap downloads: a font file is a few MB; a
+                // hostile or broken endpoint must not stream
+                // forever into memory (closing audit).
+                let mut reader = std::io::Read::take(response.into_reader(), 33_554_432);
                 let mut bytes = Vec::new();
                 let mut buf = [0u8; 16384];
                 let mut failed: Option<String> = None;

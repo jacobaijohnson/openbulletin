@@ -11,7 +11,7 @@ and the same .obd files. Simple on the surface (ELI5 words, five
 steps), powerful underneath (real shaping, imposition, imports).
 
 ## Shapes
-1. **Desktop app (v0.1, shipping shape).** Native on macOS, Windows,
+1. **Desktop app (v0.1, the first shape; pre-release).** Native on macOS, Windows,
    Linux. Files live on the user's machine. No account, no network.
 2. **Docker image for a NAS / home server (planned, v1.x).** One
    container a church office (or a family) runs on their own network;

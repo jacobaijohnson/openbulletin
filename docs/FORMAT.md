@@ -3,8 +3,10 @@
 - v0: a single JSON file. `format_version` in the document header; readers
   reject newer-than-known versions with a clear message and accept all
   older ones.
-- Saves are atomic (temp file + rename). The GUI adds rolling backups and
-  crash recovery in v0.1.
+- Saves are atomic (temp file + rename). The GUI keeps an autosave
+  journal (the current work, rewritten as you edit) beside its
+  settings; after a crash it offers that copy back. There are no
+  rolling backups of older saves.
 - Geometry is integer milli-points (1/1000 pt). Text styles are referenced
   by id, never copied into paragraphs.
 - v1 plan: zip container holding this same `document.json` plus

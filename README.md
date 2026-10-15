@@ -54,6 +54,11 @@ This is early software (version 0.1). Here is the honest list.
   email and the website. Another makes a print copy: sheets laid out in
   the right order, ready to print two-sided and fold.
 - **The Check step** described above.
+- **A Pages window** for arranging each page: drag boxes, set guides
+  and positions by typing exact inches, and type words right on the
+  page.
+- **Autosave.** The app quietly keeps a safety copy while you work.
+  If it closes suddenly, your work is offered back when it opens.
 - **Two-sided printing help** described above.
 - **A command line tool** for people who like typing commands: `new`,
   `export`, `next-sunday`, `info`. The engine underneath the app is real
@@ -62,7 +67,8 @@ This is early software (version 0.1). Here is the honest list.
 ### Fonts today
 
 - Two font families come with the app: Liberation Sans (it looks like
-  Arial) and Liberation Serif. Each has regular and bold.
+  Arial) and Liberation Serif. Each has regular, bold, italic, and
+  bold italic faces, eight in all.
 - **Italics work.** The bundled set includes italic faces, and there is
   an italic Scripture style for readings.
 - **There is a Font Library and a Fonts panel.** The app keeps its fonts
@@ -70,11 +76,10 @@ This is early software (version 0.1). Here is the honest list.
   live preview and its sharing rights in plain words, and can search a
   catalog of free fonts and install them from inside the app. Styles
   name their font family, and the layout uses the real font.
-- **You cannot pick a font for a style inside the app yet.** Styles
-  still come from the template; the panel manages which fonts exist,
-  not which style uses which. A one-tap picker for fonts already
-  installed on your computer is also still to come; today you add the
-  font file in the Fonts panel.
+- **You can pick a font for each style inside the app:** the Fonts
+  panel has a picker per style, and it takes effect everywhere at
+  once. Fonts already on your computer can be copied in with one
+  tap from the same panel, or added as files or zip packs.
 - **PDFs include the real fonts.** Print and reading PDFs embed the
   same font files the layout measured with (when the font's license
   lets it travel), so what the Check step measured is what prints.

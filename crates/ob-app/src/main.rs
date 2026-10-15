@@ -1190,10 +1190,9 @@ impl App {
                 }
                 ui.label(egui::RichText::new(format!("Box: {}", f.name)).strong());
                 ui.label("Exact place and size, in inches:");
-                let labels = ["Left", "Top", "Width", "Height"];
-                for i in 0..4 {
+                for (i, label) in ["Left", "Top", "Width", "Height"].iter().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.label(format!("{}:", labels[i]));
+                        ui.label(format!("{label}:"));
                         ui.text_edit_singleline(&mut self.frame_input[i]);
                     });
                 }

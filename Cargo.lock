@@ -2487,11 +2487,13 @@ name = "ob-pdf"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "lopdf",
  "ob-fonts",
  "ob-impose",
  "ob-layout",
  "ob-model",
  "ob-text",
+ "ttf-parser",
 ]
 
 [[package]]

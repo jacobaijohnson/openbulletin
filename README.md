@@ -63,17 +63,23 @@ This is early software (version 0.1). Here is the honest list.
 
 - Two font families come with the app: Liberation Sans (it looks like
   Arial) and Liberation Serif. Each has regular and bold.
-- There is **no italic** yet.
-- You **cannot pick a font** yet. All bulletin text uses Liberation Sans.
-  The Serif is bundled but cannot be chosen yet.
-- You **cannot use fonts installed on your computer.** The app only uses
-  its bundled fonts.
-- The PDF **does not include the font file.** It asks the viewer or
-  printer to use Helvetica, which looks very close and measures almost
-  the same. Almost is not exact: a line may print a tiny bit wider or
-  narrower than the Check step measured. Look at the PDF before printing
-  copies. Some print shops ask for PDFs with fonts included; ours do not
-  include them yet.
+- **Italics work.** The bundled set includes italic faces, and there is
+  an italic Scripture style for readings.
+- **There is a Font Library and a Fonts panel.** The app keeps its fonts
+  in one folder (the same on every computer), shows each one with a
+  live preview and its sharing rights in plain words, and can search a
+  catalog of free fonts and install them from inside the app. Styles
+  name their font family, and the layout uses the real font.
+- **You cannot pick a font for a style inside the app yet.** Styles
+  still come from the template; the panel manages which fonts exist,
+  not which style uses which. A one-tap picker for fonts already
+  installed on your computer is also still to come; today you add the
+  font file in the Fonts panel.
+- **PDFs include the real fonts.** Print and reading PDFs embed the
+  same font files the layout measured with (when the font's license
+  lets it travel), so what the Check step measured is what prints.
+  One limit: letters outside the western European set (like a cross
+  symbol typed as a character) print as spaces for now.
 
 ### Not built yet
 
@@ -120,7 +126,7 @@ desktop app, CLI, or (someday) web.
 | `ob-layout` | Fold-aware presets, bulletin templates, the Next Sunday command. |
 | `ob-impose` | Turns reader pages into printer sheets: bi-fold, tri-fold, saddle-stitch. |
 | `ob-text` | Measures and wraps text using real font shapes (parley), and builds dot-leader lines. Uses fonts given to it, never fonts found on your computer. |
-| `ob-pdf` | Makes the PDFs: reading copies and print sheets. Today they use Helvetica and do not include font files. |
+| `ob-pdf` | Makes the PDFs: reading copies and print sheets, with the real fonts embedded. |
 | `ob-extract` | A first step toward imports: reads a PDF and writes down its pages, sizes, and words as JSON. It does not make a bulletin. A planned Template Analyzer will use this later. |
 | `ob-format` | Reads and writes `.obd` files. Today's format is version 0, stored as JSON. A zip version is planned. |
 | `openbulletin-cli` | The same engine with no window: create, export, next-sunday, info. |

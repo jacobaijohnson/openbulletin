@@ -11,7 +11,9 @@ ob-model = { path = "../ob-model" }
 ob-text = { path = "../ob-text" }
 ob-fonts = { path = "../ob-fonts" }
 ob-impose = { path = "../ob-impose" }
+ttf-parser = "0.25"
 
 [dev-dependencies]
+lopdf = "0.34"
 ob-layout = { path = "../ob-layout" }
 chrono.workspace = true

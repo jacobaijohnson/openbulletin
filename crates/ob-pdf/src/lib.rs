@@ -1,10 +1,12 @@
 //! PDF export.
 //!
-//! v0 uses a small hand-rolled PDF 1.4 writer with the core Helvetica fonts
-//! so the scaffold has zero dependency risk and perfectly deterministic
-//! output. The production path (font embedding, CMYK, PDF/X) is the krilla
-//! evaluation in the roadmap; this module's job is correct geometry: what
-//! you see on the panel is what lands on the sheet, in milli-point space.
+//! A small hand-rolled PDF 1.4 writer. Fonts are embedded as TrueType
+//! from the same Font Library bytes the shaper measured with, so what
+//! the Check step approves is what prints (docs/FONTS.md). A face whose
+//! license does not allow it to travel, or that cannot be found, falls
+//! back to the core Helvetica fonts for that face only. Text is encoded
+//! as WinAnsi; glyphs outside WinAnsi wait on CID embedding and render
+//! as spaces rather than crashing. CMYK and PDF/X remain roadmap items.
 //!
 //! Model space is top-left origin; PDF space is bottom-left. The conversion
 //! happens here and only here.
@@ -17,21 +19,79 @@ fn pt(v: ob_model::Mpt) -> f32 {
     v as f32 / 1000.0
 }
 
+/// The printable punctuation Windows-1252 adds in 0x80..=0x9F.
+const CP1252_SPECIALS: &[(char, u8)] = &[
+    ('\u{20AC}', 0x80),
+    ('\u{201A}', 0x82),
+    ('\u{0192}', 0x83),
+    ('\u{201E}', 0x84),
+    ('\u{2026}', 0x85),
+    ('\u{2020}', 0x86),
+    ('\u{2021}', 0x87),
+    ('\u{02C6}', 0x88),
+    ('\u{2030}', 0x89),
+    ('\u{0160}', 0x8A),
+    ('\u{2039}', 0x8B),
+    ('\u{0152}', 0x8C),
+    ('\u{017D}', 0x8E),
+    ('\u{2018}', 0x91),
+    ('\u{2019}', 0x92),
+    ('\u{201C}', 0x93),
+    ('\u{201D}', 0x94),
+    ('\u{2022}', 0x95),
+    ('\u{2013}', 0x96),
+    ('\u{2014}', 0x97),
+    ('\u{02DC}', 0x98),
+    ('\u{2122}', 0x99),
+    ('\u{0161}', 0x9A),
+    ('\u{203A}', 0x9B),
+    ('\u{0153}', 0x9C),
+    ('\u{017E}', 0x9E),
+    ('\u{0178}', 0x9F),
+];
+
+/// The WinAnsi (Windows-1252) byte for a character, when it has one.
+/// Latin-1 code points map to themselves; the specials table covers
+/// the punctuation block; everything else has no WinAnsi byte.
+fn winansi_byte(c: char) -> Option<u8> {
+    match c {
+        ' '..='~' => Some(c as u8),
+        '\u{A0}'..='\u{FF}' => Some(c as u8),
+        _ => CP1252_SPECIALS
+            .iter()
+            .find(|(ch, _)| *ch == c)
+            .map(|(_, b)| *b),
+    }
+}
+
+/// The character a WinAnsi byte stands for (for width tables).
+fn winansi_char(b: u8) -> Option<char> {
+    match b {
+        0x20..=0x7E => Some(b as char),
+        0xA0..=0xFF => char::from_u32(b as u32),
+        _ => CP1252_SPECIALS
+            .iter()
+            .find(|(_, byte)| *byte == b)
+            .map(|(ch, _)| *ch),
+    }
+}
+
+/// Escape text as a PDF literal string in WinAnsi bytes. Bytes above
+/// ASCII travel as octal escapes; characters with no WinAnsi byte
+/// become spaces, never a crash.
 fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        const BS: char = '\u{5C}'; // backslash
-        match c {
-            '(' | ')' => {
-                out.push(BS);
-                out.push(c);
+        match winansi_byte(c) {
+            Some(b @ (b'(' | b')' | b'\\')) => {
+                out.push('\\');
+                out.push(b as char);
             }
-            '\u{5C}' => {
-                out.push(BS);
-                out.push(BS);
+            Some(b) if b < 0x80 => out.push(b as char),
+            Some(b) => {
+                let _ = write!(out, "\\{:03o}", b);
             }
-            c if (' '..='~').contains(&c) => out.push(c),
-            _ => out.push(' '), // v0 core fonts are Latin-1-ish; non-ASCII becomes a space, never a crash.
+            None => out.push(' '),
         }
     }
     out
@@ -44,7 +104,7 @@ struct PageContent {
 impl PageContent {
     fn text(
         &mut self,
-        bold: bool,
+        font: &str,
         size_mpt: ob_model::Mpt,
         x: ob_model::Mpt,
         y_top: ob_model::Mpt,
@@ -52,7 +112,6 @@ impl PageContent {
         s: &str,
     ) {
         let y = page_h - y_top; // baseline approx: y_top is the top of the line box
-        let font = if bold { "F2" } else { "F1" };
         let _ = writeln!(
             self.buf,
             "BT /{} {:.2} Tf 1 0 0 1 {:.2} {:.2} Tm ({}) Tj ET",
@@ -79,10 +138,12 @@ impl PageContent {
 /// Draw one panel's frames into `pc`, offset by (ox, oy) in a space whose
 /// total height is `page_h` (panel height for reader PDFs, sheet height for
 /// imposed PDFs).
+#[allow(clippy::too_many_arguments)]
 fn draw_panel(
     pc: &mut PageContent,
     doc: &Document,
     shaper: &mut ob_text::shaping::Shaper,
+    fonts: &FontBook,
     panel: &Panel,
     ox: ob_model::Mpt,
     oy: ob_model::Mpt,
@@ -124,10 +185,9 @@ fn draw_panel(
                 });
             let resolved = ob_model::resolve_fields(&para.text, doc);
             let line_h = style.font_size * 13 / 10;
-            // Real shaping decides line breaks and widths. The PDF draws
-            // core-font Helvetica; Liberation Sans metrics are Arial's and
-            // track Helvetica closely, so breaks land where print puts
-            // them. Font embedding removes the residue later.
+            // Real shaping decides line breaks and widths, and the PDF
+            // embeds the very font bytes that were shaped with, so the
+            // breaks land where print puts them.
             let spec = ob_text::shaping::FontSpec {
                 family: style.font_family.clone(),
                 bold: style.bold,
@@ -154,7 +214,14 @@ fn draw_panel(
                     Align::Center => fr.x + (fr.w - tw) / 2,
                     Align::Right => fr.x + fr.w - tw,
                 };
-                pc.text(style.bold, style.font_size, x, y, page_h, &line);
+                pc.text(
+                    &fonts.resource_for(&style),
+                    style.font_size,
+                    x,
+                    y,
+                    page_h,
+                    &line,
+                );
             }
             y += style.space_after;
         }
@@ -259,6 +326,171 @@ endobj
     }
 }
 
+/// Embedded faces for one export. Each face is a real TrueType font
+/// embedded from the same library bytes the shaper measured with,
+/// keyed by (family, bold, italic). Faces that cannot be found, or
+/// whose license does not let them travel, are absent here and fall
+/// back to the core fonts at draw time.
+struct FontBook {
+    faces: std::collections::HashMap<(String, bool, bool), String>,
+    /// Extra resource entries for the page dictionary.
+    resources: String,
+}
+
+impl FontBook {
+    fn build(doc: &Document, pdf: &mut Pdf) -> FontBook {
+        let mut wanted: Vec<(String, bool, bool)> = Vec::new();
+        for style in &doc.styles {
+            let key = (style.font_family.clone(), style.bold, style.italic);
+            if !wanted.contains(&key) {
+                wanted.push(key);
+            }
+        }
+        let fallback = ("Liberation Sans".to_string(), false, false);
+        if !wanted.contains(&fallback) {
+            wanted.push(fallback);
+        }
+        // Candidate bytes by face: the library wins over the bundled
+        // set, and only faces whose rights let them travel are used.
+        let mut sources: std::collections::HashMap<(String, bool, bool), Vec<u8>> =
+            std::collections::HashMap::new();
+        for (name, bytes) in ob_text::shaping::bundled_font_files() {
+            if let Ok(info) = ob_fonts::inspect(bytes, name) {
+                if info.rights.may_package() {
+                    sources.insert((info.family, info.bold, info.italic), bytes.to_vec());
+                }
+            }
+        }
+        if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+            for info in lib.scan() {
+                if !info.rights.may_package() {
+                    continue;
+                }
+                if let Ok(bytes) = lib.read(&info) {
+                    sources.insert((info.family.clone(), info.bold, info.italic), bytes);
+                }
+            }
+        }
+        let mut faces = std::collections::HashMap::new();
+        let mut resources = String::new();
+        let mut n = 0;
+        for (family, bold, italic) in &wanted {
+            let key = (family.clone(), *bold, *italic);
+            let Some(bytes) = sources.get(&key) else {
+                continue;
+            };
+            let Ok(face) = ttf_parser::Face::parse(bytes, 0) else {
+                continue;
+            };
+            n += 1;
+            let resource = format!("FE{n}");
+            let font_obj = add_embedded_font(pdf, &face, bytes);
+            resources.push_str(&format!(" /{} {} 0 R", resource, font_obj));
+            faces.insert(key, resource);
+        }
+        FontBook { faces, resources }
+    }
+
+    /// The resource name to draw a style with: its exact face when
+    /// embedded, its family's plain face when not, else core fonts.
+    fn resource_for(&self, style: &ob_model::ParagraphStyle) -> String {
+        let exact = (style.font_family.clone(), style.bold, style.italic);
+        if let Some(r) = self.faces.get(&exact) {
+            return r.clone();
+        }
+        let plain = (style.font_family.clone(), false, false);
+        if let Some(r) = self.faces.get(&plain) {
+            return r.clone();
+        }
+        if style.bold {
+            "F2".to_string()
+        } else {
+            "F1".to_string()
+        }
+    }
+}
+
+/// Add the three objects an embedded TrueType face needs (font
+/// stream, descriptor, font dictionary) and return the font object.
+fn add_embedded_font(pdf: &mut Pdf, face: &ttf_parser::Face, bytes: &[u8]) -> usize {
+    let upem = face.units_per_em() as i32;
+    let scale = |v: i16| v as i32 * 1000 / upem;
+    let name = postscript_name(face);
+    let mut stream = format!(
+        "<< /Length {} /Length1 {} >>
+stream
+",
+        bytes.len(),
+        bytes.len()
+    )
+    .into_bytes();
+    stream.extend_from_slice(bytes);
+    stream.extend_from_slice(
+        b"
+endstream",
+    );
+    let stream_id = pdf.add(stream);
+    let bb = face.global_bounding_box();
+    let cap = face
+        .capital_height()
+        .map(scale)
+        .unwrap_or_else(|| scale(face.ascender()) * 7 / 10);
+    let descriptor = format!(
+        "<< /Type /FontDescriptor /FontName /{} /Flags 32 /FontBBox [{} {} {} {}] /ItalicAngle {:.1} /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {} 0 R >>",
+        name,
+        scale(bb.x_min),
+        scale(bb.y_min),
+        scale(bb.x_max),
+        scale(bb.y_max),
+        face.italic_angle(),
+        scale(face.ascender()),
+        scale(face.descender()),
+        cap,
+        stream_id
+    );
+    let descriptor_id = pdf.add(descriptor.into_bytes());
+    let widths: Vec<String> = (32u8..=255)
+        .map(|b| {
+            winansi_char(b)
+                .and_then(|c| face.glyph_index(c))
+                .and_then(|g| face.glyph_hor_advance(g))
+                .map(|a| a as i32 * 1000 / upem)
+                .unwrap_or(0)
+                .to_string()
+        })
+        .collect();
+    let font = format!(
+        "<< /Type /Font /Subtype /TrueType /BaseFont /{} /FirstChar 32 /LastChar 255 /Widths [{}] /FontDescriptor {} 0 R /Encoding /WinAnsiEncoding >>",
+        name,
+        widths.join(" "),
+        descriptor_id
+    );
+    pdf.add(font.into_bytes())
+}
+
+/// The font's PostScript name, sanitized for a PDF name object.
+fn postscript_name(face: &ttf_parser::Face) -> String {
+    let mut found: Option<String> = None;
+    for name in face.names() {
+        if name.name_id == ttf_parser::name_id::POST_SCRIPT_NAME {
+            if let Some(text) = name.to_string() {
+                found = Some(text);
+                break;
+            }
+        }
+    }
+    let raw = found.unwrap_or_else(|| "OpenBulletinFont".to_string());
+    let clean: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    if clean.is_empty() {
+        "OpenBulletinFont".to_string()
+    } else {
+        clean
+    }
+}
+
 /// Build a PDF from a set of sheet sides (each side becomes one page).
 fn build_pdf(doc: &Document, sides: &[SheetSide]) -> Vec<u8> {
     let mut pdf = Pdf {
@@ -273,6 +505,7 @@ fn build_pdf(doc: &Document, sides: &[SheetSide]) -> Vec<u8> {
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
             .to_vec(),
     );
+    let fonts = FontBook::build(doc, &mut pdf);
     let mut shaper = ob_text::shaping::bundled_shaper();
     register_library_fonts(&mut shaper);
     let mut page_ids = Vec::new();
@@ -281,7 +514,16 @@ fn build_pdf(doc: &Document, sides: &[SheetSide]) -> Vec<u8> {
         pc.buf.push_str("0.92 0.92 0.92 RG "); // light frame guides color for shapes
         for pl in &side.placements {
             if let Some(panel) = doc.panels.get(pl.panel) {
-                draw_panel(&mut pc, doc, &mut shaper, panel, pl.x, pl.y, side.size.h);
+                draw_panel(
+                    &mut pc,
+                    doc,
+                    &mut shaper,
+                    &fonts,
+                    panel,
+                    pl.x,
+                    pl.y,
+                    side.size.h,
+                );
             }
         }
         let content = pc.buf.into_bytes();
@@ -302,10 +544,10 @@ endstream",
         });
         let page_id = pdf.add(
             format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources << /Font << /F1 {} 0 R /F2 {} 0 R >> >> /Contents {} 0 R >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources << /Font << /F1 {} 0 R /F2 {} 0 R{} >> >> /Contents {} 0 R >>",
                 pt(side.size.w),
                 pt(side.size.h),
-                f1, f2, content_id
+                f1, f2, fonts.resources, content_id
             )
             .into_bytes(),
         );
@@ -489,6 +731,58 @@ mod tests {
         assert!(
             text.contains("/Count 2"),
             "bifold imposes to 2 sides: {text:.200}"
+        );
+    }
+
+    #[test]
+    fn exports_embed_the_library_fonts() {
+        let doc = sample_doc();
+        let pdf = export_reader_pdf(&doc);
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(
+            text.contains("/Subtype /TrueType"),
+            "embedded TrueType faces"
+        );
+        assert!(text.contains("/FontFile2"), "font programs embedded");
+        assert!(
+            text.contains("/BaseFont /LiberationSans"),
+            "real font names"
+        );
+        // And a strict parser accepts the file with its pages intact.
+        let parsed = lopdf::Document::load_mem(&pdf).expect("lopdf parses the export");
+        assert_eq!(parsed.get_pages().len(), 4);
+    }
+
+    #[test]
+    fn embedded_widths_match_the_real_font() {
+        // Liberation Sans at 2048 units per em, verified against the
+        // font file itself: space advances 569 units (277 thousandths
+        // scaled) and A advances 1366 (666). The embedded /Widths
+        // table must carry the real font's own numbers, not
+        // core-font stand-ins.
+        let doc = sample_doc();
+        let pdf = export_reader_pdf(&doc);
+        let text = String::from_utf8_lossy(&pdf);
+        let mut arrays: Vec<Vec<i32>> = Vec::new();
+        let mut rest = text.as_ref();
+        while let Some(start) = rest.find("/Widths [") {
+            let body = &rest[start + "/Widths [".len()..];
+            let end = body.find(']').expect("widths end");
+            arrays.push(
+                body[..end]
+                    .split_whitespace()
+                    .map(|w| w.parse().expect("width number"))
+                    .collect(),
+            );
+            rest = &body[end..];
+        }
+        assert!(arrays.len() >= 2, "regular and bold faces embedded");
+        assert!(arrays.iter().all(|a| a.len() == 224));
+        assert!(
+            arrays
+                .iter()
+                .any(|a| a[0] == 277 && a[(b'A' - 32) as usize] == 666),
+            "the regular face's real metrics are among the embedded tables"
         );
     }
 

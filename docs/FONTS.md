@@ -83,8 +83,13 @@ fonts may ride inside the package only when their license or
 embedding bits allow it (OFL and Apache: yes; installable/editable:
 yes; preview-and-print: the font stays out and the receiver is told
 which font to get; restricted: never carried, with a plain warning).
-Print PDFs follow the same rule; our PDF writer does not embed fonts
-yet at all (that is its own later step).
+Print PDFs follow the same rule, and the writer now embeds: every
+export carries the exact library faces it shaped with, as embedded
+TrueType with real width tables, whenever the face's rights allow
+travel; a face that may not travel falls back to a core font for
+that face only. Text is WinAnsi-encoded today; CID embedding for
+the full Unicode range is a later step. Full fonts are embedded
+whole (a reader PDF is about a megabyte); subsetting comes later.
 
 ## Live preview and comparison
 

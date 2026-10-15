@@ -17,6 +17,18 @@ structural sidecar (this scaffold). MuPDF (AGPL) and Poppler (GPL) stay
 out on license grounds, consistent with the MIT OR Apache-2.0 project
 license.
 
+## The Publisher bridge (shipped 2026-10-15)
+
+`.pub` takes one extra step: `ob_extract::pub_bridge` finds
+LibreOffice ($OB_SOFFICE, then the standard install locations,
+then PATH) and runs it headless to convert the file to PDF, in
+a private profile folder so an open LibreOffice window cannot
+block it. The PDF then goes through the same dump/render/draft
+path as any rescued PDF, and the review carries a note that the
+file came by way of LibreOffice, so small layout differences
+are normal. Without LibreOffice installed, the app says so in
+plain words and explains the Save-As-PDF route instead.
+
 Spike pass bars, agreed before the real engine work: at least 98%
 character accuracy against hand-checked ground truth on real bulletins,
 100% detection of unreadable pages, and zero confident wrong sheet

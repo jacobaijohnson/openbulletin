@@ -16,6 +16,7 @@ pub mod analyzer;
 pub mod draft;
 pub mod helper;
 pub mod idml;
+pub mod pub_bridge;
 
 use serde::{Deserialize, Serialize};
 

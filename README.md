@@ -148,8 +148,14 @@ Honest labels, in plain words:
   template (Start step, "Learn from your old bulletins").
 - **InDesign files open through IDML**, InDesign's own export:
   words, boxes, and fonts come over as a draft to review; placed
-  pictures do not yet. **Publisher (`.pub`) files do not open yet.**
-  The plan is written down in [ROADMAP.md](ROADMAP.md).
+  pictures do not yet.
+- **Publisher (`.pub`) files open through LibreOffice**, a free
+  program: on the Start step, "Open a Publisher (.pub) file..."
+  has LibreOffice turn the file into a PDF behind the scenes,
+  and it comes in like a PDF rescue from there. If LibreOffice
+  is not installed, the app explains the two ways forward
+  (install it, or save a PDF from Publisher itself). Native
+  `.pub` reading stays out of scope, on purpose.
 - The first piece exists: a tool that reads a PDF and lists its pages,
   sizes, and words (the `ob-extract` crate above).
 - InDesign comes through IDML, Adobe's supported way out; direct

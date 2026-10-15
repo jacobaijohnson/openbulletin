@@ -2789,6 +2789,54 @@ impl App {
         });
     }
 
+    /// Publisher import on a worker: LibreOffice (if the
+    /// office has it) turns the .pub into a PDF, and from
+    /// there the ordinary PDF rescue takes over.
+    fn start_pub_import(&mut self, path: std::path::PathBuf) {
+        let profile = self.doc.profile.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.import_rx = Some(rx);
+        self.note("Reading your Publisher file...".into());
+        std::thread::spawn(move || {
+            let result = (|| -> Result<ImportReview, String> {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Publisher file".into());
+                let Some(soffice) = ob_extract::pub_bridge::find_soffice() else {
+                    return Err("Publisher files ride through LibreOffice, a free program, \
+                         and it is not installed on this computer. Two ways forward: \
+                         install LibreOffice from libreoffice.org and try again, or \
+                         open the file in Publisher, choose File, then Save As, and \
+                         save it as a PDF; then use \"Open a PDF bulletin...\" above \
+                         with that PDF."
+                        .into());
+                };
+                let workdir = std::env::temp_dir()
+                    .join(format!("openbulletin-import-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&workdir);
+                let pdf = ob_extract::pub_bridge::convert_pub_to_pdf(&soffice, &path, &workdir)?;
+                let helper = ob_extract::helper::resolve_helper(None);
+                let dump = ob_extract::helper::dump_pdf(&helper, &pdf)?;
+                ob_extract::helper::render_pdf(&helper, &pdf, &workdir.join("assets"))?;
+                let out = ob_extract::draft::document_from_dump(&dump, profile, true);
+                Ok(ImportReview {
+                    doc: out.doc,
+                    items: out.items,
+                    workdir: Some(workdir),
+                    source_name: name,
+                    note: Some(
+                        "This came from your Publisher file by way of LibreOffice, \
+                         so small layout differences from the original are normal. \
+                         Check each page against its picture underneath."
+                            .into(),
+                    ),
+                })
+            })();
+            let _ = tx.send(result);
+        });
+    }
+
     fn poll_import(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.import_rx else { return };
         match rx.try_recv() {
@@ -2800,11 +2848,11 @@ impl App {
             }
             Ok(Err(e)) => {
                 self.import_rx = None;
-                self.fail(format!("That PDF could not be brought in. {e}"));
+                self.fail(format!("That file could not be brought in. {e}"));
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.import_rx = None;
-                self.fail("That PDF could not be brought in; the reader stopped.".into());
+                self.fail("That file could not be brought in; the reader stopped.".into());
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
@@ -3901,6 +3949,19 @@ impl eframe::App for App {
                                 .pick_file()
                             {
                                 self.start_idml_import(idml);
+                            }
+                        }
+                        ui.separator();
+                        ui.heading("Bring in a Publisher file");
+                        ui.label("If your bulletin was made in Publisher, it can ride in through LibreOffice, a free program: when LibreOffice is installed, the file converts here and comes in like a PDF. Without it, the app will explain how to save a PDF from Publisher itself.");
+                        if self.import_rx.is_some() {
+                            ui.label("Converting your Publisher file...");
+                        } else if ui.button("Open a Publisher (.pub) file...").clicked() {
+                            if let Some(pub_file) = rfd::FileDialog::new()
+                                .add_filter("Publisher file", &["pub"])
+                                .pick_file()
+                            {
+                                self.start_pub_import(pub_file);
                             }
                         }
                         ui.separator();

@@ -209,6 +209,25 @@ impl FontLibrary {
     }
 }
 
+/// Record, on each of the document's styles, the SHA-256 of the
+/// exact library font file that style will be laid out with
+/// (docs/FONTS.md). Run before saving or exporting, so the file
+/// remembers which font bytes its layout depends on. Styles whose
+/// family is not in the library keep whatever pin they had.
+pub fn pin_document_fonts(doc: &mut ob_model::Document, lib: &FontLibrary) {
+    let fonts = lib.scan();
+    for style in &mut doc.styles {
+        let face = fonts
+            .iter()
+            .filter(|f| f.family == style.font_family)
+            .find(|f| f.bold == style.bold && !f.italic)
+            .or_else(|| fonts.iter().find(|f| f.family == style.font_family));
+        if let Some(face) = face {
+            style.font_sha256 = Some(face.sha256.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,5 +291,49 @@ mod tests {
     #[test]
     fn garbage_is_refused() {
         assert!(inspect(b"this is not a font", "junk.ttf").is_err());
+    }
+
+    #[test]
+    fn pinning_records_the_library_files_hash() {
+        let dir = std::env::temp_dir().join(format!("ob-fonts-pin-{}", std::process::id()));
+        let lib = FontLibrary::open(dir.clone()).expect("open library");
+        let info = lib
+            .add_bytes(
+                &bundled("LiberationSans-Regular.ttf"),
+                "LiberationSans-Regular.ttf",
+            )
+            .expect("add font");
+        let mut doc = ob_model::Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "Test".into(),
+            profile: Default::default(),
+            fields: Default::default(),
+            styles: vec![ob_model::ParagraphStyle {
+                id: "body".into(),
+                name: "Body".into(),
+                font_size: 11_000,
+                bold: false,
+                align: ob_model::Align::Left,
+                space_after: 4_000,
+                color: ob_model::Rgb::BLACK,
+                font_family: "Liberation Sans".into(),
+                font_sha256: None,
+            }],
+            stories: Vec::new(),
+            panels: Vec::new(),
+            sheet: ob_model::SheetSpec {
+                preset: "letter-bifold".into(),
+                size: ob_model::Size {
+                    w: 612_000,
+                    h: 792_000,
+                },
+            },
+        };
+        pin_document_fonts(&mut doc, &lib);
+        assert_eq!(
+            doc.styles[0].font_sha256.as_deref(),
+            Some(info.sha256.as_str())
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

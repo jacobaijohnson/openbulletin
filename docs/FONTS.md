@@ -125,6 +125,9 @@ system's certificate store (proxied church networks included).
 The in-app Fonts panel lists the library with a live preview line
 drawn in each font's own face, the plain-words rights, and an
 Add-a-font button; first run seeds the library with Liberation.
-Remaining: catalog search inside the panel itself, and the
-side-by-side comparison preview in the import review (that belongs
-to the analyzer's review screen).
+The panel also searches the catalog and installs from it (on a
+worker thread, so the window never freezes), and saving or
+exporting stamps each style with the fingerprint of the library
+font it was laid out with. Remaining: the side-by-side comparison
+preview in the import review (that belongs to the analyzer's
+review screen).

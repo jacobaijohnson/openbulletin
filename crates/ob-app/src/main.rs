@@ -118,6 +118,17 @@ struct App {
     show_fonts: bool,
     fonts_loaded: bool,
     font_rows: Vec<FontRow>,
+    catalog_query: String,
+    catalog_hits: Vec<ob_fonts::catalog::CatalogEntry>,
+    catalog_rx: Option<std::sync::mpsc::Receiver<CatalogMsg>>,
+    catalog_busy: bool,
+}
+
+/// A message back from a catalog worker thread (search or install).
+enum CatalogMsg {
+    Hits(Vec<ob_fonts::catalog::CatalogEntry>),
+    Installed(Vec<String>),
+    Failed(String),
 }
 
 impl Default for App {
@@ -150,6 +161,10 @@ impl Default for App {
             show_fonts: false,
             fonts_loaded: false,
             font_rows: Vec::new(),
+            catalog_query: String::new(),
+            catalog_hits: Vec::new(),
+            catalog_rx: None,
+            catalog_busy: false,
         }
     }
 }
@@ -380,10 +395,49 @@ impl App {
         self.fonts_loaded = true;
     }
 
+    /// Stamp each style with the fingerprint of the library font it
+    /// will be laid out with, so saved files remember their fonts.
+    fn pin_fonts(&mut self) {
+        if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+            ob_fonts::pin_document_fonts(&mut self.doc, &lib);
+        }
+    }
+
+    /// Collect a finished catalog search or install, if one landed.
+    fn poll_catalog(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.catalog_rx else { return };
+        match rx.try_recv() {
+            Ok(CatalogMsg::Hits(hits)) => {
+                self.catalog_hits = hits;
+                self.catalog_rx = None;
+                self.catalog_busy = false;
+            }
+            Ok(CatalogMsg::Installed(names)) => {
+                self.status = format!("Font installed: {}", names.join(", "));
+                self.catalog_rx = None;
+                self.catalog_busy = false;
+                self.refresh_fonts(ctx);
+            }
+            Ok(CatalogMsg::Failed(e)) => {
+                self.status = format!("Font catalog: {e}");
+                self.catalog_rx = None;
+                self.catalog_busy = false;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(120));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.catalog_rx = None;
+                self.catalog_busy = false;
+            }
+        }
+    }
+
     fn fonts_window(&mut self, ctx: &egui::Context) {
         if !self.show_fonts {
             return;
         }
+        self.poll_catalog(ctx);
         if !self.fonts_loaded {
             self.refresh_fonts(ctx);
         }
@@ -454,12 +508,68 @@ impl App {
                         }
                     }
                 }
+                ui.separator();
+                ui.label(egui::RichText::new("Get a free font").strong());
                 ui.label(
-                    egui::RichText::new(
-                        "Free fonts can also be fetched from the catalog with the                          command line for now: openbulletin-cli fonts search / get.",
-                    )
-                    .small(),
+                    "Search the free font catalog (nearly all of it is free to \
+                     use and share). Getting a font adds its regular, bold, \
+                     and italic faces to this library.",
                 );
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.catalog_query);
+                    if ui
+                        .add_enabled(!self.catalog_busy, egui::Button::new("Search"))
+                        .clicked()
+                    {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let query = self.catalog_query.clone();
+                        self.catalog_rx = Some(rx);
+                        self.catalog_busy = true;
+                        std::thread::spawn(move || {
+                            let msg = match ob_fonts::catalog::search(&query) {
+                                Ok(hits) => CatalogMsg::Hits(hits),
+                                Err(e) => CatalogMsg::Failed(e),
+                            };
+                            let _ = tx.send(msg);
+                        });
+                    }
+                    if self.catalog_busy {
+                        ui.spinner();
+                    }
+                });
+                let mut get_id: Option<String> = None;
+                for hit in &self.catalog_hits {
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "{} ({}) - {}",
+                            hit.family, hit.category, hit.license
+                        ));
+                        if ui
+                            .add_enabled(!self.catalog_busy, egui::Button::new("Get this font"))
+                            .clicked()
+                        {
+                            get_id = Some(hit.id.clone());
+                        }
+                    });
+                }
+                if let Some(id) = get_id {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.catalog_rx = Some(rx);
+                    self.catalog_busy = true;
+                    std::thread::spawn(move || {
+                        let msg = match ob_fonts::FontLibrary::open(
+                            ob_fonts::default_library_dir(),
+                        )
+                        .and_then(|lib| ob_fonts::catalog::install(&lib, &id))
+                        {
+                            Ok(installed) => CatalogMsg::Installed(
+                                installed.iter().map(|f| f.full_name.clone()).collect(),
+                            ),
+                            Err(e) => CatalogMsg::Failed(e),
+                        };
+                        let _ = tx.send(msg);
+                    });
+                }
             });
         self.show_fonts = open;
     }
@@ -493,6 +603,7 @@ impl eframe::App for App {
                 }
                 if ui.button("Save bulletin").clicked() {
                     self.save_announcements();
+                    self.pin_fonts();
                     let target = self.path.clone().or_else(|| {
                         rfd::FileDialog::new()
                             .set_file_name("bulletin.obd")
@@ -618,6 +729,7 @@ impl eframe::App for App {
                                 .add_filter("PDF", &["pdf"])
                                 .save_file()
                             {
+                                self.pin_fonts();
                                 let bytes = ob_pdf::export_imposed_pdf(&self.doc);
                                 match std::fs::write(&path, &bytes) {
                                     Ok(()) => self.status = format!("Saved print copy to {}", path.display()),
@@ -633,6 +745,7 @@ impl eframe::App for App {
                                 .add_filter("PDF", &["pdf"])
                                 .save_file()
                             {
+                                self.pin_fonts();
                                 let bytes = ob_pdf::export_reader_pdf(&self.doc);
                                 match std::fs::write(&path, &bytes) {
                                     Ok(()) => self.status = format!("Saved reading copy to {}", path.display()),

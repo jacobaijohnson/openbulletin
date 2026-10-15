@@ -20,10 +20,35 @@ steps), powerful underneath (real shaping, imposition, imports).
    not a second product. A tiny server process serves the app and the
    .obd files from a mounted folder. `docker compose up` is the whole
    install story.
-3. **Hosted (someday, not committed).** Only if churches ask for it.
-   Nothing in the format or engine may assume it.
+3. **On the internet (someday, not committed).** Only if churches ask
+   for it, and not as a service we run: a church that wants reach from
+   outside its building puts its own NAS/server copy behind a
+   **Cloudflare Tunnel**, with **Cloudflare Access enforcing sign-in
+   before any traffic reaches the app**. Login enforcement lives at
+   that front door; the app's own accounts and roles (below) stay the
+   second layer, never the only lock on an internet-facing door.
+   Nothing in the format or engine may assume any of this exists.
 
-## Accounts and roles (planned-for, not built)
+## Tablets and phones
+The product stays "desktop publishing": bulletins are made and printed
+at a desk. Tablets and phones arrive through shape 2 for free, because
+the browser UI is the same egui interface and works with touch: a
+pastor can view this Sunday's bulletin on a phone, or fix a typo from a
+tablet on the couch. No separate phone app, no second codebase.
+
+## Security posture (churches' data is still churches' data)
+- Local-first, always: no telemetry, no uploads, no phone-home. The
+  Template Analyzer and all imports process files on the machine.
+- The NAS shape binds to the local network by default. Reaching it
+  from the internet is the operator's explicit tunnel choice above,
+  never a default.
+- Import helpers run out-of-process, so a hostile PDF or .pub file can
+  crash a helper, not the app, and never gets file-system reach beyond
+  the file it was handed.
+- Accounts, when they land, store passwords hashed (argon2 class),
+  never plain, and sessions stay on the box.
+
+## Accounts and roles (planned-for, not built; after a working v1)
 - Not in v1. The desktop app has no login and needs none.
 - Design doors kept open from now on: documents carry no owner
   assumptions; the server shape is where accounts live, never the file

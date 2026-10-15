@@ -94,4 +94,15 @@ pretend any tool opens Publisher files perfectly.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. The Apache option is there on purpose: it is just as
+permissive, and it carries an express patent grant, so anyone who
+contributes or uses OpenBulletin has that protection in writing.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in OpenBulletin shall be dual licensed as above,
+without any additional terms or conditions.

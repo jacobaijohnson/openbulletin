@@ -28,6 +28,8 @@ struct App {
     announcements: String,
     notes: Vec<String>,
     status: String,
+    shaper: ob_text::shaping::Shaper,
+    path: Option<std::path::PathBuf>,
 }
 
 impl Default for App {
@@ -53,6 +55,8 @@ impl Default for App {
             announcements,
             notes: Vec::new(),
             status: "Welcome to OpenBulletin.".into(),
+            shaper: ob_text::shaping::bundled_shaper(),
+            path: None,
         }
     }
 }
@@ -152,6 +156,66 @@ impl App {
         } else {
             notes.push("OK: announcements are filled in.".to_string());
         }
+        // Real fit check: shape every story into its frame and complain
+        // in plain words about any that do not fit.
+        let mut fit_notes = Vec::new();
+        for panel in &self.doc.panels {
+            for frame in &panel.frames {
+                let Some(sid) = &frame.story_id else { continue };
+                let Some(story) = self.doc.story(sid) else {
+                    continue;
+                };
+                let mut needed: ob_model::Mpt = 0;
+                for para in &story.paragraphs {
+                    let style = self.doc.style(&para.style).cloned().unwrap_or_else(|| {
+                        ob_model::ParagraphStyle {
+                            id: "body".into(),
+                            name: "Body".into(),
+                            font_size: 11_000,
+                            bold: false,
+                            align: ob_model::Align::Left,
+                            space_after: 4_000,
+                            color: ob_model::Rgb::BLACK,
+                        }
+                    });
+                    let spec = ob_text::shaping::FontSpec {
+                        family: "Liberation Sans".into(),
+                        bold: style.bold,
+                        italic: false,
+                    };
+                    let text = ob_model::resolve_fields(&para.text, &self.doc);
+                    let lines = if text.contains('\t') {
+                        1
+                    } else {
+                        self.shaper
+                            .wrap(&text, frame.rect.w, &spec, style.font_size, 1.3)
+                            .len()
+                    };
+                    needed +=
+                        lines as ob_model::Mpt * (style.font_size * 13 / 10) + style.space_after;
+                }
+                if needed > frame.rect.h {
+                    let over_lines = ((needed - frame.rect.h) / 14_000).max(1);
+                    let area = story
+                        .paragraphs
+                        .first()
+                        .map(|p| p.text.clone())
+                        .unwrap_or_else(|| "A text block".into());
+                    fit_notes.push(format!(
+                        "Check: the words in \"{}\" ({}) do not all fit. About {} line{} too many. Shorten the words, or we can shrink them in a later version.",
+                        area.chars().take(38).collect::<String>(),
+                        panel.name,
+                        over_lines,
+                        if over_lines == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+        }
+        if fit_notes.is_empty() {
+            notes.push("OK: everything fits on the page.".to_string());
+        } else {
+            notes.extend(fit_notes);
+        }
         let has_order = self.doc.stories.iter().any(|s| {
             s.paragraphs
                 .iter()
@@ -189,6 +253,42 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("OpenBulletin");
+                if ui.button("Open bulletin...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("OpenBulletin bulletin", &["obd"])
+                        .pick_file()
+                    {
+                        match ob_format::load(&path) {
+                            Ok(doc) => {
+                                self.announcements = weekly_body_text(&doc);
+                                self.church_name = doc.profile.name.clone();
+                                self.doc = doc;
+                                self.path = Some(path);
+                                self.step = 1;
+                                self.status = "Bulletin opened.".into();
+                            }
+                            Err(e) => self.status = format!("Could not open that file: {e}"),
+                        }
+                    }
+                }
+                if ui.button("Save bulletin").clicked() {
+                    self.save_announcements();
+                    let target = self.path.clone().or_else(|| {
+                        rfd::FileDialog::new()
+                            .set_file_name("bulletin.obd")
+                            .add_filter("OpenBulletin bulletin", &["obd"])
+                            .save_file()
+                    });
+                    if let Some(path) = target {
+                        match ob_format::save(&self.doc, &path) {
+                            Ok(()) => {
+                                self.status = format!("Saved to {}", path.display());
+                                self.path = Some(path);
+                            }
+                            Err(e) => self.status = format!("Could not save: {e}"),
+                        }
+                    }
+                }
                 ui.separator();
                 ui.label(format!("Step {} of 5: {}", self.step + 1, STEPS[self.step]));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -290,8 +390,36 @@ impl eframe::App for App {
                     }
                     _ => {
                         ui.heading("Print");
-                        ui.label("Print copy: folded sheets, in the right order, ready for the copier (Export in the app lands next; today the same PDF comes from the openbulletin-cli export --imposed command).");
-                        ui.label("Reading copy: one panel per page, for email and the website (export without --imposed).");
+                        ui.label("Print copy: folded sheets, in the right order, ready for the copier.");
+                        if ui.button(egui::RichText::new("Save print copy (PDF)").strong()).clicked() {
+                            self.save_announcements();
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_file_name("bulletin-print.pdf")
+                                .add_filter("PDF", &["pdf"])
+                                .save_file()
+                            {
+                                let bytes = ob_pdf::export_imposed_pdf(&self.doc);
+                                match std::fs::write(&path, &bytes) {
+                                    Ok(()) => self.status = format!("Saved print copy to {}", path.display()),
+                                    Err(e) => self.status = format!("Could not save the print copy: {e}"),
+                                }
+                            }
+                        }
+                        ui.label("Reading copy: one panel per page, for email and the website.");
+                        if ui.button("Save reading copy (PDF)").clicked() {
+                            self.save_announcements();
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_file_name("bulletin-reading.pdf")
+                                .add_filter("PDF", &["pdf"])
+                                .save_file()
+                            {
+                                let bytes = ob_pdf::export_reader_pdf(&self.doc);
+                                match std::fs::write(&path, &bytes) {
+                                    Ok(()) => self.status = format!("Saved reading copy to {}", path.display()),
+                                    Err(e) => self.status = format!("Could not save the reading copy: {e}"),
+                                }
+                            }
+                        }
                         ui.separator();
                         if ui.button(egui::RichText::new("Start next Sunday").strong()).clicked() {
                             self.next_sunday();

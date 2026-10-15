@@ -112,3 +112,19 @@ in / 12.8k out; Opus 38.3k in / 10.2k out).
 6. Guide hit wins the context menu when the click is on the
    line itself. (8)
 Then the friction tier from the four reports.
+
+## Resolution (same day)
+
+All eight blockers are fixed in the app, in the order above:
+adopt_document is now the single swap path (history cleared
+across files, interaction indices reset on every swap, Undo/Redo
+buttons gated like the keyboard); edit sessions commit before
+any new session or window close; the announcements buffer writes
+only when it changed and canvas commits refresh it; a preset
+change is an undoable gesture that carries the profile across;
+Step 2 has a real date field with This Sunday / Next Sunday
+buttons and Step 1 has address, service times, website, and
+pastor fields; a click on a guide line itself opens the guide
+menu even under a frame. New unit tests cover the swap behavior
+and the Sunday math. 47 tests green, clippy clean. The friction
+tier from the four reports remains open.

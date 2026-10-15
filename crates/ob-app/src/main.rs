@@ -171,25 +171,104 @@ impl App {
     }
 
     fn undo(&mut self) {
-        if let Some(prev) = self.undo_stack.pop() {
-            if let Ok(doc) = serde_json::from_str::<Document>(&prev) {
-                self.redo_stack.push(snapshot(&self.doc));
-                self.doc = doc;
-                self.announcements = weekly_body_text(&self.doc);
-                self.status = "Undone.".into();
+        let Some(prev) = self.undo_stack.pop() else {
+            return;
+        };
+        let Ok(doc) = serde_json::from_str::<Document>(&prev) else {
+            return;
+        };
+        self.redo_stack.push(snapshot(&self.doc));
+        self.adopt_document(doc, false);
+        self.status = "Undone.".into();
+    }
+
+    fn redo(&mut self) {
+        let Some(next) = self.redo_stack.pop() else {
+            return;
+        };
+        let Ok(doc) = serde_json::from_str::<Document>(&next) else {
+            return;
+        };
+        self.undo_stack.push(snapshot(&self.doc));
+        self.adopt_document(doc, false);
+        self.status = "Redone.".into();
+    }
+
+    /// Forget every index that pointed into the old document:
+    /// selection, drags, menus, the edit session. Raw indices
+    /// into a replaced document are how the audits found a
+    /// reachable panic (audit synthesis 2026-10-15, blocker 7).
+    fn reset_interaction_state(&mut self) {
+        self.gesture_start = None;
+        self.gesture_touch = None;
+        self.editing = None;
+        self.edit_start = None;
+        self.edit_done = false;
+        self.drag_guide = None;
+        self.drag_frame = None;
+        self.drag_resize = false;
+        self.selected_frame = None;
+        self.canvas_panel = 0;
+        self.guide_menu_for = None;
+        self.frame_menu_for = None;
+        self.ctx_pos = None;
+        self.lines_cache = None;
+    }
+
+    /// Refresh the text buffers that mirror the document
+    /// (announcements, church profile, date) after a swap.
+    fn sync_buffers(&mut self) {
+        self.announcements = weekly_body_text(&self.doc);
+        self.announcements_dirty = false;
+        self.church_name = self.doc.profile.name.clone();
+        self.profile_address = self.doc.profile.address.clone();
+        self.profile_service_times = self.doc.profile.service_times.clone();
+        self.profile_website = self.doc.profile.website.clone();
+        self.profile_pastor = self.doc.profile.pastor.clone();
+        self.date_input = self
+            .doc
+            .fields
+            .get("sunday_date")
+            .cloned()
+            .unwrap_or_default();
+    }
+
+    /// Set the bulletin's date from the Step 2 field, in the
+    /// printed long form too. Plain failure words when the date
+    /// does not read (blocker 1: the date used to be unchangeable).
+    fn apply_date(&mut self) {
+        match chrono::NaiveDate::parse_from_str(self.date_input.trim(), "%Y-%m-%d") {
+            Ok(d) => {
+                self.doc
+                    .fields
+                    .insert("sunday_date".to_string(), d.format("%Y-%m-%d").to_string());
+                self.doc.fields.insert(
+                    "sunday_date_long".to_string(),
+                    d.format("%A, %B %-d, %Y").to_string(),
+                );
+                self.status = format!("Date set to {}.", d.format("%A, %B %-d, %Y"));
+            }
+            Err(_) => {
+                self.status =
+                    "That date does not read. Use year-month-day, like 2026-10-18.".into();
             }
         }
     }
 
-    fn redo(&mut self) {
-        if let Some(next) = self.redo_stack.pop() {
-            if let Ok(doc) = serde_json::from_str::<Document>(&next) {
-                self.undo_stack.push(snapshot(&self.doc));
-                self.doc = doc;
-                self.announcements = weekly_body_text(&self.doc);
-                self.status = "Redone.".into();
-            }
+    /// The one way a whole document replaces the current one
+    /// (Open, recovery, Undo, Redo). History is cleared when the
+    /// replacement crosses a file boundary, so Undo can never
+    /// resurrect another bulletin's content under this file's
+    /// name (audit blocker 5). Within one file's editing
+    /// session, Undo and Redo pass clear_history = false.
+    fn adopt_document(&mut self, doc: Document, clear_history: bool) {
+        if clear_history {
+            self.undo_stack.clear();
+            self.redo_stack.clear();
         }
+        self.reset_interaction_state();
+        self.doc = doc;
+        self.sync_buffers();
     }
 }
 
@@ -227,6 +306,12 @@ struct App {
     doc: Document,
     preset: Preset,
     church_name: String,
+    profile_address: String,
+    profile_service_times: String,
+    profile_website: String,
+    profile_pastor: String,
+    date_input: String,
+    announcements_dirty: bool,
     step: usize,
     announcements: String,
     notes: Vec<String>,
@@ -339,6 +424,12 @@ impl Default for App {
             doc,
             preset,
             church_name,
+            profile_address: "123 Main Street".into(),
+            profile_service_times: "Sundays 9:30 AM".into(),
+            profile_website: String::new(),
+            profile_pastor: String::new(),
+            date_input: String::new(),
+            announcements_dirty: false,
             step: 0,
             announcements,
             notes: Vec::new(),
@@ -419,19 +510,38 @@ fn weekly_body_text(doc: &Document) -> String {
 
 impl App {
     fn rebuild(&mut self) {
-        self.doc = build_template(
+        // A shape change replaces the whole document. It used to
+        // be a silent discard with the autosave journal retired:
+        // one stray click and the week's work was gone (blocker
+        // 3). Now the old bulletin is recorded for Undo first,
+        // the journal keeps protecting the new document, and the
+        // church profile carries across from the Step 1 fields.
+        if self.editing.is_some() {
+            self.commit_edit();
+        }
+        self.save_announcements();
+        let before = snapshot(&self.doc);
+        let doc = build_template(
             self.preset,
             ChurchProfile {
                 name: self.church_name.clone(),
-                service_times: "Sundays 9:30 AM".into(),
-                ..Default::default()
+                address: self.profile_address.clone(),
+                service_times: self.profile_service_times.clone(),
+                website: self.profile_website.clone(),
+                giving_url: self.doc.profile.giving_url.clone(),
+                pastor: self.profile_pastor.clone(),
             },
             chrono::Local::now().date_naive(),
             "Sunday",
         );
-        self.announcements = weekly_body_text(&self.doc);
-        self.status = format!("Template loaded: {}", self.preset.label());
-        self.mark_clean();
+        self.adopt_document(doc, false);
+        if before != snapshot(&self.doc) {
+            self.record_undo(before);
+        }
+        self.status = format!(
+            "Template loaded: {}. Undo brings the old bulletin back.",
+            self.preset.label()
+        );
     }
 
     fn save_announcements(&mut self) {
@@ -764,10 +874,8 @@ impl App {
             });
         if bring_back {
             if let Some((doc, source, _)) = self.recovery.take() {
-                self.doc = doc;
+                self.adopt_document(doc, true);
                 self.path = source;
-                self.announcements = weekly_body_text(&self.doc);
-                self.church_name = self.doc.profile.name.clone();
                 // The journal's content is now the screen's content:
                 // the saved state stays the older file (or nothing).
                 self.journal_snapshot = snapshot(&self.doc);
@@ -838,8 +946,13 @@ impl App {
         self.edit_styles.truncate(count);
     }
 
-    /// Enter inline editing for one frame's story.
+    /// Enter inline editing for one frame's story. Any session
+    /// already open commits first: starting a new one must never
+    /// silently drop the words in the old one (blocker 6).
     fn enter_edit(&mut self, pi: usize, fi: usize) {
+        if self.editing.is_some() {
+            self.commit_edit();
+        }
         let Some(frame) = self.doc.panels[pi].frames.get(fi) else {
             return;
         };
@@ -1222,7 +1335,7 @@ impl App {
             }
         }
         let guides_now = self.doc.panels[idx].guides.clone();
-        let near_guide = |pos: egui::Pos2| -> Option<usize> {
+        let near_guide_tol = |pos: egui::Pos2, tol: f32| -> Option<usize> {
             let mut best: Option<(usize, f32)> = None;
             for (gi, g) in guides_now.iter().enumerate() {
                 let line_px = if g.vertical {
@@ -1235,12 +1348,13 @@ impl App {
                 } else {
                     (pos.y - line_px).abs()
                 };
-                if d <= 5.0 && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                if d <= tol && best.map(|(_, bd)| d < bd).unwrap_or(true) {
                     best = Some((gi, d));
                 }
             }
             best.map(|(gi, _)| gi)
         };
+        let near_guide = |pos: egui::Pos2| near_guide_tol(pos, 5.0);
         let to_mpt = |pos: egui::Pos2| -> (ob_model::Mpt, ob_model::Mpt) {
             (
                 (((pos.x - origin.x) / scale) * 1000.0) as ob_model::Mpt,
@@ -1503,6 +1617,7 @@ impl App {
 
         // Right-click: exact position for a guide, or add one here.
         let hit = self.ctx_pos.and_then(near_guide);
+        let on_the_line = self.ctx_pos.and_then(|pos| near_guide_tol(pos, 3.0));
         let frame_at_menu = self
             .ctx_pos
             .map(|pos| {
@@ -1518,8 +1633,25 @@ impl App {
                 })
             })
             .unwrap_or(None);
-        response.context_menu(|ui| {
-            if let Some(fi) = frame_at_menu {
+        // A click ON a guide line belongs to the guide, even when
+        // a frame covers it (blocker 8); then the frame; then a
+        // near-guide; then the page itself.
+        enum MenuTarget {
+            Frame(usize),
+            Guide(usize),
+            Page,
+        }
+        let target = if let Some(gi) = on_the_line {
+            MenuTarget::Guide(gi)
+        } else if let Some(fi) = frame_at_menu {
+            MenuTarget::Frame(fi)
+        } else if let Some(gi) = hit {
+            MenuTarget::Guide(gi)
+        } else {
+            MenuTarget::Page
+        };
+        response.context_menu(|ui| match target {
+            MenuTarget::Frame(fi) => {
                 self.selected_frame = Some(fi);
                 let f = self.doc.panels[idx].frames[fi].clone();
                 if self.frame_menu_for != Some(fi) {
@@ -1564,7 +1696,8 @@ impl App {
                                 .into();
                     }
                 }
-            } else if let Some(gi) = hit {
+            }
+            MenuTarget::Guide(gi) => {
                 let g = self.doc.panels[idx].guides[gi];
                 if self.guide_menu_for != Some(gi) {
                     self.guide_menu_for = Some(gi);
@@ -1606,7 +1739,8 @@ impl App {
                     self.status = "Guide deleted.".into();
                     ui.close_menu();
                 }
-            } else {
+            }
+            MenuTarget::Page => {
                 self.guide_menu_for = None;
                 let pos = self.ctx_pos.unwrap_or(origin);
                 let x_mpt = (((pos.x - origin.x) / scale) * 1000.0) as ob_model::Mpt;
@@ -1965,6 +2099,12 @@ impl eframe::App for App {
         {
             self.end_gesture();
         }
+        // Closing the Pages window mid-typing finishes the
+        // session instead of orphaning it (which also blocked
+        // global undo, since editing was never over).
+        if !self.show_pages && self.editing.is_some() {
+            self.commit_edit();
+        }
         // Global undo/redo, when no text box has the keyboard (text
         // boxes keep their own undo while you type in them).
         if ctx.memory(|m| m.focused()).is_none() && self.editing.is_none() {
@@ -1995,13 +2135,19 @@ impl eframe::App for App {
                 }
                 ui.separator();
                 if ui
-                    .add_enabled(!self.undo_stack.is_empty(), egui::Button::new("Undo"))
+                    .add_enabled(
+                        self.editing.is_none() && !self.undo_stack.is_empty(),
+                        egui::Button::new("Undo"),
+                    )
                     .clicked()
                 {
                     self.undo();
                 }
                 if ui
-                    .add_enabled(!self.redo_stack.is_empty(), egui::Button::new("Redo"))
+                    .add_enabled(
+                        self.editing.is_none() && !self.redo_stack.is_empty(),
+                        egui::Button::new("Redo"),
+                    )
                     .clicked()
                 {
                     self.redo();
@@ -2013,9 +2159,7 @@ impl eframe::App for App {
                     {
                         match ob_format::load(&path) {
                             Ok(doc) => {
-                                self.announcements = weekly_body_text(&doc);
-                                self.church_name = doc.profile.name.clone();
-                                self.doc = doc;
+                                self.adopt_document(doc, true);
                                 self.path = Some(path);
                                 self.step = 1;
                                 self.status = "Bulletin opened.".into();
@@ -2102,6 +2246,27 @@ impl eframe::App for App {
                             let name = self.church_name.clone();
                             self.doc.profile.name = name;
                         }
+                        ui.label("Address");
+                        if ui.text_edit_singleline(&mut self.profile_address).lost_focus() {
+                            self.doc.profile.address = self.profile_address.clone();
+                        }
+                        ui.label("Service times");
+                        if ui
+                            .text_edit_singleline(&mut self.profile_service_times)
+                            .lost_focus()
+                        {
+                            self.doc.profile.service_times =
+                                self.profile_service_times.clone();
+                        }
+                        ui.label("Website");
+                        if ui.text_edit_singleline(&mut self.profile_website).lost_focus() {
+                            self.doc.profile.website = self.profile_website.clone();
+                        }
+                        ui.label("Pastor");
+                        if ui.text_edit_singleline(&mut self.profile_pastor).lost_focus() {
+                            self.doc.profile.pastor = self.profile_pastor.clone();
+                        }
+                        ui.small("These print on the cover and carry into every week. They fill in the {Church.*} spots in your templates.");
                     }
                     1 => {
                         ui.heading("This Sunday");
@@ -2109,6 +2274,30 @@ impl eframe::App for App {
                             "Date: {}",
                             self.doc.fields.get("sunday_date_long").cloned().unwrap_or_default()
                         ));
+                        ui.horizontal(|ui| {
+                            ui.label("Change it:");
+                            let date_edit = ui.text_edit_singleline(&mut self.date_input);
+                            if date_edit.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            {
+                                self.apply_date();
+                            }
+                            if ui.button("Set date").clicked() {
+                                self.apply_date();
+                            }
+                            if ui.button("This Sunday").clicked() {
+                                let d = sunday_on_or_after(chrono::Local::now().date_naive());
+                                self.date_input = d.format("%Y-%m-%d").to_string();
+                                self.apply_date();
+                            }
+                            if ui.button("Next Sunday").clicked() {
+                                let d = sunday_on_or_after(chrono::Local::now().date_naive())
+                                    + chrono::Duration::days(7);
+                                self.date_input = d.format("%Y-%m-%d").to_string();
+                                self.apply_date();
+                            }
+                        });
+                        ui.small("Year-month-day, like 2026-10-18. This is the date printed on the bulletin.");
                         ui.label("Name of the Sunday");
                         let mut sn = self.doc.fields.get("sunday_name").cloned().unwrap_or_default();
                         if ui.text_edit_singleline(&mut sn).lost_focus() {
@@ -2124,11 +2313,14 @@ impl eframe::App for App {
                     2 => {
                         ui.heading("Announcements");
                         ui.label("One announcement per line. Paste from email works; formatting is cleaned up for you.");
-                        ui.add(
+                        let ann_resp = ui.add(
                             egui::TextEdit::multiline(&mut self.announcements)
                                 .desired_rows(12)
                                 .desired_width(f32::INFINITY),
                         );
+                        if ann_resp.changed() {
+                            self.announcements_dirty = true;
+                        }
                         if ui.button("Save announcements").clicked() {
                             self.save_announcements();
                             self.status = "Announcements saved.".into();
@@ -2422,6 +2614,14 @@ fn panel_lines(
 
 /// Which paragraph of the edit buffer the text cursor is in
 /// (count the newlines before it), for the style picker.
+/// The Sunday on or after a date (the date itself when it is
+/// already a Sunday).
+fn sunday_on_or_after(d: chrono::NaiveDate) -> chrono::NaiveDate {
+    use chrono::Datelike;
+    let wd = d.weekday().num_days_from_sunday() as i64;
+    d + chrono::Duration::days((7 - wd) % 7)
+}
+
 fn cursor_paragraph(ctx: &egui::Context, text: &str) -> usize {
     let id = egui::Id::new("canvas-edit");
     if let Some(state) = egui::widgets::text_edit::TextEditState::load(ctx, id) {
@@ -2631,6 +2831,50 @@ mod settings_tests {
         let manual = printer_setup_from_answer("manual", "Brother");
         assert_eq!(manual.mode, "manual");
         assert!(manual.instruction.contains("one side at a time"));
+    }
+
+    #[test]
+    fn sunday_math_lands_on_sundays() {
+        use chrono::Datelike;
+        // 2026-10-15 is a Thursday; its Sunday is 2026-10-18.
+        let thu = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).expect("date");
+        assert_eq!(
+            sunday_on_or_after(thu),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date")
+        );
+        // A Sunday maps to itself.
+        let sun = chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date");
+        assert_eq!(sunday_on_or_after(sun), sun);
+        assert_eq!(sunday_on_or_after(thu).weekday(), chrono::Weekday::Sun);
+    }
+
+    #[test]
+    fn opening_another_file_clears_undo_and_selection() {
+        let mut app = App::default();
+        app.undo_stack.push(snapshot(&app.doc));
+        app.selected_frame = Some(2);
+        app.canvas_panel = 3;
+        let other = ob_layout::build_template(
+            ob_layout::Preset::LetterPortrait,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("date"),
+            "Sunday",
+        );
+        app.adopt_document(other, true);
+        assert!(app.undo_stack.is_empty(), "history must not cross files");
+        assert!(app.redo_stack.is_empty());
+        assert!(app.selected_frame.is_none());
+        assert_eq!(app.canvas_panel, 0);
+        // Within one session, adopt keeps the stacks (Undo/Redo use it).
+        app.undo_stack.push(snapshot(&app.doc));
+        let third = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 8).expect("date"),
+            "Sunday",
+        );
+        app.adopt_document(third, false);
+        assert_eq!(app.undo_stack.len(), 1);
     }
 
     #[test]

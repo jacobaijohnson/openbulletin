@@ -57,6 +57,19 @@ pub struct FrameFit {
     pub has_wide_line: bool,
 }
 
+/// A Shaper pre-loaded with the bundled fonts (Liberation Sans and
+/// Serif, regular and bold). Liberation is metric-compatible with Arial
+/// and very close to the Helvetica the PDF writer draws, so shaped line
+/// breaks and fit checks track the printed page closely.
+pub fn bundled_shaper() -> Shaper {
+    let mut s = Shaper::new();
+    s.register_font(include_bytes!("../assets/fonts/LiberationSans-Regular.ttf").to_vec());
+    s.register_font(include_bytes!("../assets/fonts/LiberationSans-Bold.ttf").to_vec());
+    s.register_font(include_bytes!("../assets/fonts/LiberationSerif-Regular.ttf").to_vec());
+    s.register_font(include_bytes!("../assets/fonts/LiberationSerif-Bold.ttf").to_vec());
+    s
+}
+
 /// A reusable shaping context. Register bundled or app fonts once, then
 /// shape many strings.
 pub struct Shaper {
@@ -131,8 +144,11 @@ impl Shaper {
     }
 
     /// Break a paragraph into lines that fit `max_width` (real shaping,
-    /// real line breaking). Lines may still exceed the width when a single
-    /// word cannot break; callers see that in the returned widths.
+    /// real line breaking). Parley's optimizer occasionally accepts a
+    /// line a hair over the width on tight lines; a strict greedy re-break
+    /// of any over-wide line (using shaped word widths) restores the
+    /// width guarantee. Only a single unbreakable word can still exceed
+    /// the width, and callers see that in the returned widths.
     pub fn wrap(
         &mut self,
         text: &str,
@@ -162,8 +178,75 @@ impl Shaper {
                 text: String::new(),
                 width: 0,
             });
+            return out;
         }
-        out
+        // Strict pass: re-break any line that came back over-wide.
+        let mut strict = Vec::new();
+        for line in out {
+            if line.width <= max_width || !line.text.contains(' ') {
+                strict.push(line);
+                continue;
+            }
+            let mut cur = String::new();
+            for word in line.text.split(' ') {
+                let trial = if cur.is_empty() {
+                    word.to_string()
+                } else {
+                    format!("{cur} {word}")
+                };
+                if !cur.is_empty() && self.measure(&trial, spec, size) > max_width {
+                    let w = self.measure(&cur, spec, size);
+                    strict.push(ShapedLine {
+                        text: cur,
+                        width: w,
+                    });
+                    cur = word.to_string();
+                } else {
+                    cur = trial;
+                }
+            }
+            if !cur.is_empty() {
+                let w = self.measure(&cur, spec, size);
+                strict.push(ShapedLine {
+                    text: cur,
+                    width: w,
+                });
+            }
+        }
+        strict
+    }
+
+    /// A dot-leader line ("Hymn of Praise ...... 432") sized with real
+    /// shaped widths, so the right-hand number lands on the frame edge.
+    pub fn leader_line(
+        &mut self,
+        left: &str,
+        right: &str,
+        width: Mpt,
+        spec: &FontSpec,
+        size: Mpt,
+    ) -> String {
+        if right.is_empty() {
+            return left.to_string();
+        }
+        let dot_w = self.measure(".", spec, size).max(1);
+        let used = self.measure(left, spec, size) + self.measure(right, spec, size) + 2 * dot_w;
+        let dots = ((width - used) / dot_w).max(2) as usize;
+        format!("{left} {} {right}", ".".repeat(dots))
+    }
+
+    /// Expand the tab in an order-of-service line into a dot-leader line.
+    pub fn expand_order_line(
+        &mut self,
+        text: &str,
+        width: Mpt,
+        spec: &FontSpec,
+        size: Mpt,
+    ) -> String {
+        match text.split_once('\t') {
+            Some((l, r)) => self.leader_line(l.trim_end(), r.trim(), width, spec, size),
+            None => text.to_string(),
+        }
     }
 
     /// Lay a story out in a frame and report whether it fits, loudly.
@@ -202,8 +285,8 @@ mod tests {
 
     fn shaper() -> Shaper {
         let mut s = Shaper::new();
-        s.register_font(include_bytes!("../tests/fonts/DejaVuSans.ttf").to_vec());
-        s.register_font(include_bytes!("../tests/fonts/DejaVuSans-Bold.ttf").to_vec());
+        s.register_font(include_bytes!("../assets/fonts/LiberationSans-Regular.ttf").to_vec());
+        s.register_font(include_bytes!("../assets/fonts/LiberationSans-Bold.ttf").to_vec());
         s
     }
 
@@ -211,9 +294,9 @@ mod tests {
     /// (no shaping, no kerning) via ttf-parser.
     fn hmtx_width(text: &str, size: Mpt, bold: bool) -> Mpt {
         let data: &[u8] = if bold {
-            include_bytes!("../tests/fonts/DejaVuSans-Bold.ttf")
+            include_bytes!("../assets/fonts/LiberationSans-Bold.ttf")
         } else {
-            include_bytes!("../tests/fonts/DejaVuSans.ttf")
+            include_bytes!("../assets/fonts/LiberationSans-Regular.ttf")
         };
         let face = ttf_parser::Face::parse(data, 0).unwrap();
         let upem = face.units_per_em() as i64;
@@ -231,7 +314,7 @@ mod tests {
     #[test]
     fn measure_matches_font_table_within_kerning() {
         let mut s = shaper();
-        let spec = FontSpec::new("DejaVu Sans");
+        let spec = FontSpec::new("Liberation Sans");
         let text = "Hymn of the Day";
         let shaped = s.measure(text, &spec, 11_000);
         let raw = hmtx_width(text, 11_000, false);
@@ -246,15 +329,15 @@ mod tests {
     fn bold_is_wider_than_regular() {
         let mut s = shaper();
         let text = "Order of Service";
-        let reg = s.measure(text, &FontSpec::new("DejaVu Sans"), 11_000);
-        let bold = s.measure(text, &FontSpec::new("DejaVu Sans").bold(), 11_000);
+        let reg = s.measure(text, &FontSpec::new("Liberation Sans"), 11_000);
+        let bold = s.measure(text, &FontSpec::new("Liberation Sans").bold(), 11_000);
         assert!(bold > reg, "bold {bold} should exceed regular {reg}");
     }
 
     #[test]
     fn wrap_lines_fit_width() {
         let mut s = shaper();
-        let spec = FontSpec::new("DejaVu Sans");
+        let spec = FontSpec::new("Liberation Sans");
         let text = "Welcome to Grace Lutheran Church. We are glad you are here with us this morning for worship and fellowship.";
         let lines = s.wrap(text, 180_000, &spec, 11_000, 1.25);
         assert!(
@@ -281,7 +364,7 @@ mod tests {
     #[test]
     fn frame_fit_detects_overflow_and_wide_words() {
         let mut s = shaper();
-        let spec = FontSpec::new("DejaVu Sans");
+        let spec = FontSpec::new("Liberation Sans");
         // Panel-interior width of a bi-fold panel (5.5in - margins).
         let w = 320_000;
         let short = "Hymn of the Day: A Mighty Fortress";

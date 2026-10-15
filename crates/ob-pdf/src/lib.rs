@@ -82,6 +82,7 @@ impl PageContent {
 fn draw_panel(
     pc: &mut PageContent,
     doc: &Document,
+    shaper: &mut ob_text::shaping::Shaper,
     panel: &Panel,
     ox: ob_model::Mpt,
     oy: ob_model::Mpt,
@@ -120,22 +121,31 @@ fn draw_panel(
                 });
             let resolved = ob_model::resolve_fields(&para.text, doc);
             let line_h = style.font_size * 13 / 10;
-            let lines: Vec<String> = if resolved.contains('\t') {
-                vec![ob_text::expand_order_line(
-                    &resolved,
-                    fr.w,
-                    style.font_size,
-                    style.bold,
-                )]
-            } else {
-                ob_text::wrap(&resolved, fr.w, style.font_size, style.bold)
+            // Real shaping decides line breaks and widths. The PDF draws
+            // core-font Helvetica; Liberation Sans metrics are Arial's and
+            // track Helvetica closely, so breaks land where print puts
+            // them. Font embedding removes the residue later.
+            let spec = ob_text::shaping::FontSpec {
+                family: "Liberation Sans".into(),
+                bold: style.bold,
+                italic: false,
             };
-            for line in lines {
+            let shaped: Vec<(String, ob_model::Mpt)> = if resolved.contains('\t') {
+                let line = shaper.expand_order_line(&resolved, fr.w, &spec, style.font_size);
+                let w = shaper.measure(&line, &spec, style.font_size);
+                vec![(line, w)]
+            } else {
+                shaper
+                    .wrap(&resolved, fr.w, &spec, style.font_size, 1.3)
+                    .into_iter()
+                    .map(|l| (l.text, l.width))
+                    .collect()
+            };
+            for (line, tw) in shaped {
                 if y + line_h > fr.y + fr.h {
                     break; // v0: clip at frame bottom (overflow indicator is a GUI feature)
                 }
                 y += line_h;
-                let tw = ob_text::measure(&line, style.font_size, style.bold);
                 let x = match style.align {
                     Align::Left => fr.x,
                     Align::Center => fr.x + (fr.w - tw) / 2,
@@ -261,13 +271,14 @@ fn build_pdf(doc: &Document, sides: &[SheetSide]) -> Vec<u8> {
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
             .to_vec(),
     );
+    let mut shaper = ob_text::shaping::bundled_shaper();
     let mut page_ids = Vec::new();
     for side in sides {
         let mut pc = PageContent { buf: String::new() };
         pc.buf.push_str("0.92 0.92 0.92 RG "); // light frame guides color for shapes
         for pl in &side.placements {
             if let Some(panel) = doc.panels.get(pl.panel) {
-                draw_panel(&mut pc, doc, panel, pl.x, pl.y, side.size.h);
+                draw_panel(&mut pc, doc, &mut shaper, panel, pl.x, pl.y, side.size.h);
             }
         }
         let content = pc.buf.into_bytes();

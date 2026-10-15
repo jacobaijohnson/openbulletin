@@ -16,5 +16,6 @@ ob-layout = { path = "../ob-layout" }
 ob-format = { path = "../ob-format" }
 ob-pdf = { path = "../ob-pdf" }
 ob-impose = { path = "../ob-impose" }
+ob-fonts = { path = "../ob-fonts" }
 chrono.workspace = true
 clap = { version = "4", features = ["derive"] }

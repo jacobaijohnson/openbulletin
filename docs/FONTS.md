@@ -105,3 +105,14 @@ picks; nothing is silently substituted.
 - fsType bits are a signal inside the font's license, not the whole
   license; when they disagree with a known license, the stricter
   reading wins and the user sees a plain-words note.
+
+## Status (2026-10-15)
+
+Built: the `ob-fonts` crate (scan a library folder, read family and
+face names, fsType rights with plain-words explanations, SHA-256
+identity, add-with-dedup) and CLI access (`openbulletin-cli fonts
+list|add`). Verified against the bundled Liberation faces, whose
+permission bits read Installable, matching their OFL license.
+Remaining from this design: the free-catalog search and download,
+the in-app Fonts panel with the live preview, and wiring documents
+to name fonts by family + hash.

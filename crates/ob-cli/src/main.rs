@@ -51,6 +51,26 @@ enum Cmd {
     },
     /// Print document facts.
     Info { input: PathBuf },
+    /// Font library: list what is installed, or add a font file.
+    Fonts {
+        #[command(subcommand)]
+        action: FontsCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum FontsCmd {
+    /// List the fonts in the library (default folder unless --dir).
+    List {
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Copy a font file (.ttf/.otf) into the library.
+    Add {
+        file: PathBuf,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -155,6 +175,42 @@ fn run(cli: Cli) -> Result<(), String> {
                     .unwrap_or_default(),
                 doc.fields.get("sunday_date").cloned().unwrap_or_default()
             );
+            Ok(())
+        }
+        Cmd::Fonts { action } => {
+            match action {
+                FontsCmd::List { dir } => {
+                    let lib = ob_fonts::FontLibrary::open(
+                        dir.unwrap_or_else(ob_fonts::default_library_dir),
+                    )?;
+                    let fonts = lib.scan();
+                    if fonts.is_empty() {
+                        println!("the font library is empty ({})", lib.dir().display());
+                    }
+                    for f in &fonts {
+                        println!(
+                            "{} | {} | {}",
+                            f.family,
+                            f.full_name,
+                            f.rights.plain_words()
+                        );
+                    }
+                }
+                FontsCmd::Add { file, dir } => {
+                    let lib = ob_fonts::FontLibrary::open(
+                        dir.unwrap_or_else(ob_fonts::default_library_dir),
+                    )?;
+                    let bytes = std::fs::read(&file)
+                        .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+                    let name = file
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "font.ttf".into());
+                    let info = lib.add_bytes(&bytes, &name)?;
+                    println!("added {} ({})", info.full_name, info.file_name);
+                    println!("{}", info.rights.plain_words());
+                }
+            }
             Ok(())
         }
     }

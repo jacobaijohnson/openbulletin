@@ -88,9 +88,10 @@ This is early software (version 0.1). Here is the honest list.
 
 ### Not built yet
 
-- **Opening old files.** See the Imports section below.
-- **Typing words directly on the page.** Today you edit in the step
-  panels, not on the page picture. Planned.
+- **Opening old files.** See the Imports section below. (One door
+  exists today, in the command line tool: it can trace a PDF into a
+  draft you rebuild over. The friendly in-app version is the next
+  big piece of work.)
 - **Publisher or InDesign keyboard shortcuts.** Planned.
 - **More checks:** text on the fold, missing fonts, blurry pictures.
   Planned.

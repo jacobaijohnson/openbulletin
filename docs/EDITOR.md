@@ -22,6 +22,23 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
   conversion lives in one place and is unit-tested, fractions
   included.
 
-Not yet: dragging frames themselves, snapping frames to guides,
-dragging new guides out of the rulers, master (all-pages) guides.
-Those come with the inline editing layer.
+## Frames on the canvas (built 2026-10-15)
+
+- Click a frame to select it (blue outline, corner handle).
+- Drag to move; it snaps to the panel's guides, the panel edges,
+  and the panel center lines, by its left, center, or right edge
+  (same for top, middle, bottom). The snap helper is one tested
+  function in the model crate.
+- Drag the corner square to resize; the moving edge snaps too.
+  Smallest size is a quarter inch.
+- Arrow keys nudge the selected frame a hundredth of an inch;
+  Shift nudges a tenth.
+- Right-click a frame: exact Left, Top, Width, Height in inches
+  (fractions understood), applied together; values are clamped so
+  the frame stays on the page.
+- While dragging, a readout shows the frame's place and size in
+  inches, live.
+
+Not yet: typing text on the page itself, dragging new guides out
+of the rulers, master (all-pages) guides. Those come with the
+inline editing layer.

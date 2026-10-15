@@ -178,6 +178,13 @@ struct App {
     show_pages: bool,
     canvas_panel: usize,
     drag_guide: Option<usize>,
+    selected_frame: Option<usize>,
+    drag_frame: Option<usize>,
+    drag_resize: bool,
+    grab_dx: ob_model::Mpt,
+    grab_dy: ob_model::Mpt,
+    frame_input: [String; 4],
+    frame_menu_for: Option<usize>,
     ctx_pos: Option<egui::Pos2>,
     guide_input: String,
     guide_menu_for: Option<usize>,
@@ -272,6 +279,13 @@ impl Default for App {
             show_pages: false,
             canvas_panel: 0,
             drag_guide: None,
+            selected_frame: None,
+            drag_frame: None,
+            drag_resize: false,
+            grab_dx: 0,
+            grab_dy: 0,
+            frame_input: [String::new(), String::new(), String::new(), String::new()],
+            frame_menu_for: None,
             ctx_pos: None,
             guide_input: String::new(),
             guide_menu_for: None,
@@ -761,7 +775,7 @@ impl App {
                         self.canvas_panel += 1;
                     }
                 });
-                ui.label("Drag a blue line to move it. Right-click a line to type its exact place, or right-click the page to add a line there. Guides never print.");
+                ui.label("Click a box to select it. Drag to move it, drag its corner square to size it, arrow keys nudge it. Boxes and guides both snap to the blue lines. Right-click anything for its exact place in inches. Guides never print.");
                 ui.separator();
                 self.panel_canvas(ui, idx, ctx);
                 ui.separator();
@@ -887,6 +901,38 @@ impl App {
                 egui::Stroke::new(0.75_f32, egui::Color32::LIGHT_GRAY),
             );
         }
+        if let Some(fi) = self.selected_frame {
+            if let Some(f) = panel.frames.get(fi) {
+                let r = f.rect;
+                let frect = egui::Rect::from_min_max(
+                    to_px(r.x as f32 / 1000.0, r.y as f32 / 1000.0),
+                    to_px((r.x + r.w) as f32 / 1000.0, (r.y + r.h) as f32 / 1000.0),
+                );
+                let blue = egui::Color32::from_rgb(0, 110, 190);
+                painter.rect_stroke(frect, 0.0, egui::Stroke::new(1.75_f32, blue));
+                let handle = egui::Rect::from_min_size(
+                    egui::pos2(frect.max.x - 9.0, frect.max.y - 9.0),
+                    egui::vec2(9.0, 9.0),
+                );
+                painter.rect_filled(handle, 0.0, egui::Color32::WHITE);
+                painter.rect_stroke(handle, 0.0, egui::Stroke::new(1.25_f32, blue));
+                if self.drag_frame == Some(fi) {
+                    painter.text(
+                        frect.min + egui::vec2(4.0, -16.0),
+                        egui::Align2::LEFT_TOP,
+                        format!(
+                            "Left {:.2} in, Top {:.2} in, {:.2} x {:.2} in",
+                            ob_model::mpt_to_inches(r.x),
+                            ob_model::mpt_to_inches(r.y),
+                            ob_model::mpt_to_inches(r.w),
+                            ob_model::mpt_to_inches(r.h)
+                        ),
+                        egui::FontId::proportional(11.0),
+                        blue,
+                    );
+                }
+            }
+        }
 
         // Guides, hit-testing, dragging.
         let response = ui.interact(
@@ -920,9 +966,40 @@ impl App {
             }
             best.map(|(gi, _)| gi)
         };
+        let to_mpt = |pos: egui::Pos2| -> (ob_model::Mpt, ob_model::Mpt) {
+            (
+                (((pos.x - origin.x) / scale) * 1000.0) as ob_model::Mpt,
+                (((pos.y - origin.y) / scale) * 1000.0) as ob_model::Mpt,
+            )
+        };
+        let frame_hit = |pm: (ob_model::Mpt, ob_model::Mpt)| -> Option<usize> {
+            panel.frames.iter().rposition(|f| {
+                pm.0 >= f.rect.x
+                    && pm.0 <= f.rect.x + f.rect.w
+                    && pm.1 >= f.rect.y
+                    && pm.1 <= f.rect.y + f.rect.h
+            })
+        };
         if response.drag_started() {
             if let Some(pos) = pointer {
                 self.drag_guide = near_guide(pos);
+                if self.drag_guide.is_none() {
+                    let pm = to_mpt(pos);
+                    match frame_hit(pm) {
+                        Some(fi) => {
+                            let f = &self.doc.panels[idx].frames[fi];
+                            let handle = self.selected_frame == Some(fi)
+                                && pm.0 >= f.rect.x + f.rect.w - 14_000
+                                && pm.1 >= f.rect.y + f.rect.h - 14_000;
+                            self.selected_frame = Some(fi);
+                            self.drag_frame = Some(fi);
+                            self.drag_resize = handle;
+                            self.grab_dx = pm.0 - f.rect.x;
+                            self.grab_dy = pm.1 - f.rect.y;
+                        }
+                        None => self.selected_frame = None,
+                    }
+                }
             }
         }
         if response.dragged() {
@@ -940,9 +1017,92 @@ impl App {
                 };
                 g.pos = new_pos.clamp(0, extent);
             }
+            if let (Some(fi), Some(pos)) = (self.drag_frame, pointer) {
+                let pm = to_mpt(pos);
+                let threshold = (6.0 / scale * 1000.0) as ob_model::Mpt;
+                let xt: Vec<ob_model::Mpt> = self.doc.panels[idx]
+                    .guides
+                    .iter()
+                    .filter(|g| g.vertical)
+                    .map(|g| g.pos)
+                    .chain([0, panel.size.w / 2, panel.size.w])
+                    .collect();
+                let yt: Vec<ob_model::Mpt> = self.doc.panels[idx]
+                    .guides
+                    .iter()
+                    .filter(|g| !g.vertical)
+                    .map(|g| g.pos)
+                    .chain([0, panel.size.h / 2, panel.size.h])
+                    .collect();
+                let f = &mut self.doc.panels[idx].frames[fi];
+                if self.drag_resize {
+                    let nw = ob_model::snap_to(pm.0, &xt, threshold) - f.rect.x;
+                    let nh = ob_model::snap_to(pm.1, &yt, threshold) - f.rect.y;
+                    f.rect.w = nw.clamp(18_000, panel.size.w - f.rect.x);
+                    f.rect.h = nh.clamp(18_000, panel.size.h - f.rect.y);
+                } else {
+                    let mut nx = pm.0 - self.grab_dx;
+                    let mut ny = pm.1 - self.grab_dy;
+                    for anchor in [0, f.rect.w / 2, f.rect.w] {
+                        let snapped = ob_model::snap_to(nx + anchor, &xt, threshold);
+                        if snapped != nx + anchor {
+                            nx = snapped - anchor;
+                            break;
+                        }
+                    }
+                    for anchor in [0, f.rect.h / 2, f.rect.h] {
+                        let snapped = ob_model::snap_to(ny + anchor, &yt, threshold);
+                        if snapped != ny + anchor {
+                            ny = snapped - anchor;
+                            break;
+                        }
+                    }
+                    f.rect.x = nx.clamp(0, panel.size.w - f.rect.w);
+                    f.rect.y = ny.clamp(0, panel.size.h - f.rect.h);
+                }
+            }
         }
         if response.drag_stopped() {
             self.drag_guide = None;
+            self.drag_frame = None;
+            self.drag_resize = false;
+        }
+        if response.clicked() {
+            if let Some(pos) = pointer {
+                if near_guide(pos).is_none() {
+                    let pm = to_mpt(pos);
+                    self.selected_frame = frame_hit(pm);
+                }
+            }
+        }
+        // Arrow keys nudge the selected frame (Shift: bigger steps),
+        // when no text box is being typed in.
+        if ctx.memory(|m| m.focused()).is_none() {
+            if let Some(fi) = self.selected_frame {
+                let step: ob_model::Mpt = if ui.input(|i| i.modifiers.shift) {
+                    7_200
+                } else {
+                    720
+                };
+                let (mut dx, mut dy): (ob_model::Mpt, ob_model::Mpt) = (0, 0);
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+                    dx = -step;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+                    dx = step;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                    dy = -step;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                    dy = step;
+                }
+                if dx != 0 || dy != 0 {
+                    let f = &mut self.doc.panels[idx].frames[fi];
+                    f.rect.x = (f.rect.x + dx).clamp(0, panel.size.w - f.rect.w);
+                    f.rect.y = (f.rect.y + dy).clamp(0, panel.size.h - f.rect.h);
+                }
+            }
         }
         if response.hovered() {
             if let Some(pos) = pointer {
@@ -1000,8 +1160,68 @@ impl App {
 
         // Right-click: exact position for a guide, or add one here.
         let hit = self.ctx_pos.and_then(near_guide);
+        let frame_at_menu = self
+            .ctx_pos
+            .map(|pos| {
+                let pm = (
+                    (((pos.x - origin.x) / scale) * 1000.0) as ob_model::Mpt,
+                    (((pos.y - origin.y) / scale) * 1000.0) as ob_model::Mpt,
+                );
+                panel.frames.iter().rposition(|f| {
+                    pm.0 >= f.rect.x
+                        && pm.0 <= f.rect.x + f.rect.w
+                        && pm.1 >= f.rect.y
+                        && pm.1 <= f.rect.y + f.rect.h
+                })
+            })
+            .unwrap_or(None);
         response.context_menu(|ui| {
-            if let Some(gi) = hit {
+            if let Some(fi) = frame_at_menu {
+                self.selected_frame = Some(fi);
+                let f = self.doc.panels[idx].frames[fi].clone();
+                if self.frame_menu_for != Some(fi) {
+                    self.frame_menu_for = Some(fi);
+                    self.frame_input = [
+                        format!("{:.3}", ob_model::mpt_to_inches(f.rect.x)),
+                        format!("{:.3}", ob_model::mpt_to_inches(f.rect.y)),
+                        format!("{:.3}", ob_model::mpt_to_inches(f.rect.w)),
+                        format!("{:.3}", ob_model::mpt_to_inches(f.rect.h)),
+                    ];
+                }
+                ui.label(egui::RichText::new(format!("Box: {}", f.name)).strong());
+                ui.label("Exact place and size, in inches:");
+                let labels = ["Left", "Top", "Width", "Height"];
+                for i in 0..4 {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}:", labels[i]));
+                        ui.text_edit_singleline(&mut self.frame_input[i]);
+                    });
+                }
+                if ui.button("Set place and size").clicked() {
+                    let parsed: Vec<Option<f64>> = self
+                        .frame_input
+                        .iter()
+                        .map(|t| ob_model::parse_inches(t))
+                        .collect();
+                    if parsed.iter().all(|v| v.is_some()) {
+                        let v: Vec<ob_model::Mpt> = parsed
+                            .iter()
+                            .map(|o| ob_model::inches_to_mpt(o.unwrap()))
+                            .collect();
+                        let fr = &mut self.doc.panels[idx].frames[fi];
+                        fr.rect.w = v[2].clamp(18_000, panel.size.w);
+                        fr.rect.h = v[3].clamp(18_000, panel.size.h);
+                        fr.rect.x = v[0].clamp(0, panel.size.w - fr.rect.w);
+                        fr.rect.y = v[1].clamp(0, panel.size.h - fr.rect.h);
+                        self.status = "Box moved and sized.".into();
+                        ui.close_menu();
+                    } else {
+                        self.status =
+                            "One of those is not a measurement I can read. Try 1.25 or 1 1/4."
+                                .into();
+                    }
+                }
+            } else if let Some(gi) = hit {
                 let g = self.doc.panels[idx].guides[gi];
                 if self.guide_menu_for != Some(gi) {
                     self.guide_menu_for = Some(gi);

@@ -157,6 +157,20 @@ pub struct Guide {
     pub pos: Mpt,
 }
 
+/// Snap a value to the nearest target when it is within the
+/// threshold: the quiet magnet that makes dragging feel precise.
+/// Returns the target when snapped, else the value unchanged.
+pub fn snap_to(value: Mpt, targets: &[Mpt], threshold: Mpt) -> Mpt {
+    let mut best: Option<(Mpt, Mpt)> = None; // (target, distance)
+    for &t in targets {
+        let d = (value - t).abs();
+        if d <= threshold && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            best = Some((t, d));
+        }
+    }
+    best.map(|(t, _)| t).unwrap_or(value)
+}
+
 /// Inches to milli-points (the editor speaks inches on screen;
 /// the file stores milli-points).
 pub fn inches_to_mpt(inches: f64) -> Mpt {
@@ -416,6 +430,14 @@ mod tests {
 #[cfg(test)]
 mod guide_tests {
     use super::*;
+
+    #[test]
+    fn snapping_grabs_nearby_targets_only() {
+        let targets = [0, 90_000, 396_000];
+        assert_eq!(snap_to(91_000, &targets, 3_000), 90_000);
+        assert_eq!(snap_to(95_000, &targets, 3_000), 95_000);
+        assert_eq!(snap_to(-2_000, &targets, 3_000), 0);
+    }
 
     #[test]
     fn inches_round_trip() {

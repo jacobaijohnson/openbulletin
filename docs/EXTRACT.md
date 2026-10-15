@@ -75,3 +75,24 @@ stay in the private fixtures folder; aggregates only here.
   first (series, season, producer) and run consensus inside each
   cluster, tracking standing text by reading order, not by page
   number. That was the design's assumption; now it is measured.
+
+## Automatic clustering + a hard limit of the scaffold (2026-10-15)
+
+The consensus tool now clusters on its own (Jaccard similarity over
+shingle sets, no filename peeking). On the 17-bulletin pile it found:
+one big 12-bulletin family (417 standing passages, 21% median standing
+share), one ELW pair (595 passages, 35%), and three ELW singletons.
+So the machine finds the main family unaided, and the ELW files are
+different enough from everything, including most of each other, to
+strand. Singleton clusters report a meaningless 100% standing share;
+a family of one has no consensus, and the product must treat it that
+way (ask for more bulletins from that family).
+
+**Measurement instability, verified:** the same tool on the same 17
+files reports 116 standing passages on one run and 91 on the next.
+lopdf hands text back in an order that varies between runs, and
+order-sensitive comparisons wobble by about a quarter. Every number
+from this scaffold is therefore approximate. This is the measured
+reason the real extractor is the position-aware PDFium helper:
+positions make order a fact instead of a guess. Scaffold work stops
+here; PDFium is the next extraction step.

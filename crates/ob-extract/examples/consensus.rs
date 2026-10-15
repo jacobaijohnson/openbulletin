@@ -81,6 +81,80 @@ fn main() {
         pages.push(page_words);
     }
 
+    // --- Automatic clustering -------------------------------------
+    // The analyzer must find a church's families on its own, without
+    // reading filenames. Similarity = Jaccard over 8-word shingle
+    // sets; clusters are connected components above a threshold.
+    let doc_sets: Vec<HashSet<Vec<String>>> = docs.iter().map(|d| shingles(d)).collect();
+    let names: Vec<String> = paths
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    let threshold = 0.12f32;
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let inter = doc_sets[i].intersection(&doc_sets[j]).count() as f32;
+            let union = doc_sets[i].union(&doc_sets[j]).count() as f32;
+            if union > 0.0 && inter / union >= threshold {
+                let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                if a != b {
+                    parent[a] = b;
+                }
+            }
+        }
+    }
+    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        clusters.entry(r).or_default().push(i);
+    }
+    println!("\nautomatic clusters (Jaccard >= {threshold}):");
+    let mut cluster_report = serde_json::json!({});
+    for (k, members) in clusters.values().enumerate() {
+        // consensus inside the cluster
+        let ccut = ((members.len() as f32) * 0.8).ceil() as usize;
+        let mut ccount: HashMap<Vec<String>, usize> = HashMap::new();
+        for &m in members {
+            for sh in &doc_sets[m] {
+                *ccount.entry(sh.clone()).or_default() += 1;
+            }
+        }
+        let cstanding: HashSet<Vec<String>> = ccount
+            .iter()
+            .filter(|(_, c)| **c >= ccut)
+            .map(|(sh, _)| sh.clone())
+            .collect();
+        let mut cshare: Vec<f32> = members
+            .iter()
+            .map(|&m| coverage(&docs[m], &cstanding))
+            .collect();
+        cshare.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = cshare[cshare.len() / 2];
+        println!(
+            "cluster {}: {} bulletins | standing passages {} | median standing share {:.0}%",
+            k + 1,
+            members.len(),
+            cstanding.len(),
+            median * 100.0
+        );
+        for &m in members {
+            println!("    {}", names[m]);
+        }
+        cluster_report[format!("cluster_{}", k + 1)] = serde_json::json!({
+            "members": members.iter().map(|&m| names[m].clone()).collect::<Vec<_>>(),
+            "standing_passages": cstanding.len(),
+            "median_standing_share": median,
+        });
+    }
+
     // Document-level standing shingles
     let mut doc_count: HashMap<Vec<String>, usize> = HashMap::new();
     for d in &docs {
@@ -107,6 +181,7 @@ fn main() {
     // Per-page standing shingles and coverage (median across bulletins)
     let page_nums: HashSet<u32> = pages.iter().flat_map(|p| p.keys().copied()).collect();
     let mut report = serde_json::json!({ "bulletins": n, "standing_passages": standing_doc.len() });
+    report["clusters"] = cluster_report;
     let mut examples: Vec<String> = standing_doc
         .iter()
         .take(40)

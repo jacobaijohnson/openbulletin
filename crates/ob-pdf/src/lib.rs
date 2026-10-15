@@ -593,6 +593,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
                 story_id: Some(story.id.clone()),
                 role: ContentRole::Standing,
             }],
+            background_image: None,
         };
         (panel, story)
     };

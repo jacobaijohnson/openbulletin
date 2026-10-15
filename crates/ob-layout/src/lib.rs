@@ -254,6 +254,7 @@ pub fn build_template(
             name: name.to_string(),
             size: panel,
             frames: vec![text_frame(&format!("frame-{i}"), name, panel, &sid, role)],
+            background_image: None,
         });
     }
 

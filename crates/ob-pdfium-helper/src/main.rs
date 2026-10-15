@@ -6,7 +6,10 @@
 //! as a separate process on purpose: a malformed PDF can crash a
 //! native parser, and a crash here costs one file, not the app.
 //!
-//! Usage: ob-pdfium-helper <file.pdf>   (dump JSON on stdout)
+//! Usage: ob-pdfium-helper <file.pdf>            (dump JSON on stdout)
+//!        ob-pdfium-helper render <file.pdf> <out-dir>
+//! Render mode draws every page to a PNG in the output folder: the
+//! tracing guides for the import rescue (docs/EXTRACT.md).
 //! The PDFium shared library is found via $OB_PDFIUM_LIB (full path
 //! to libpdfium.so / pdfium.dll), defaulting to the workspace
 //! toolchain copy used in development.
@@ -24,10 +27,24 @@ fn lib_path() -> String {
 }
 
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| {
-        eprintln!("usage: ob-pdfium-helper <file.pdf>");
+    let mut args = std::env::args().skip(1);
+    let first = args.next().unwrap_or_else(|| {
+        eprintln!("usage: ob-pdfium-helper <file.pdf> | render <file.pdf> <out-dir>");
         exit(2);
     });
+    if first == "render" {
+        let pdf = args.next().unwrap_or_else(|| {
+            eprintln!("usage: ob-pdfium-helper render <file.pdf> <out-dir>");
+            exit(2);
+        });
+        let out_dir = args.next().unwrap_or_else(|| {
+            eprintln!("usage: ob-pdfium-helper render <file.pdf> <out-dir>");
+            exit(2);
+        });
+        render_pages(&pdf, &out_dir);
+        return;
+    }
+    let path = first;
     let bytes = std::fs::read(&path).unwrap_or_else(|e| {
         eprintln!("cannot read {path}: {e}");
         exit(1);
@@ -108,4 +125,49 @@ fn main() {
     }
 
     println!("{}", serde_json::to_string(&dump).expect("serialize dump"));
+}
+
+/// Draw every page to `page-NN.png` in the output folder, at about
+/// 200 dpi: crisp enough to trace over, small enough to keep.
+fn render_pages(path: &str, out_dir: &str) {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| {
+        eprintln!("cannot read {path}: {e}");
+        exit(1);
+    });
+    let bindings = Pdfium::bind_to_library(lib_path()).unwrap_or_else(|e| {
+        eprintln!("cannot load PDFium library: {e:?}");
+        exit(1);
+    });
+    let pdfium = Pdfium::new(bindings);
+    let doc = pdfium
+        .load_pdf_from_byte_slice(&bytes, None)
+        .unwrap_or_else(|e| {
+            eprintln!("cannot parse {path}: {e:?}");
+            exit(1);
+        });
+    std::fs::create_dir_all(out_dir).unwrap_or_else(|e| {
+        eprintln!("cannot create {out_dir}: {e}");
+        exit(1);
+    });
+    let mut written = 0;
+    for (index, page) in doc.pages().iter().enumerate() {
+        let target_width = (page.width().value * 200.0 / 72.0).round() as i32;
+        let config = PdfRenderConfig::new()
+            .set_target_width(target_width.max(200))
+            .set_clear_color(PdfColor::new(255, 255, 255, 255));
+        match page.render_with_config(&config) {
+            Ok(bitmap) => {
+                let file = format!("{out_dir}/page-{:02}.png", index + 1);
+                match bitmap
+                    .as_image()
+                    .save_with_format(&file, image::ImageFormat::Png)
+                {
+                    Ok(()) => written += 1,
+                    Err(e) => eprintln!("cannot write {file}: {e}"),
+                }
+            }
+            Err(e) => eprintln!("cannot render page {}: {e:?}", index + 1),
+        }
+    }
+    println!("rendered {written} pages to {out_dir}");
 }

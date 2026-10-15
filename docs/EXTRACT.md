@@ -154,3 +154,20 @@ which is the honest shape of the evidence: same series, two
 production flavors, and the review screen is where a human merges
 them if they wish. Hints also fire between the main family and the
 ELW trio (0.11, shared standing material), advisory only.
+
+## Trace rescue (built 2026-10-15)
+
+The reviewers' import order starts here: before any analysis, a
+church can rescue last week's PDF as pictures. `ob-pdfium-helper
+render <file.pdf> <dir>` draws every page to a PNG at 200 dpi.
+`openbulletin-cli trace <file.pdf> --out <dir>` runs the helper,
+reads the page sizes back from the dump, and writes a draft
+bulletin (<name>-traced.obd) plus an assets folder: one panel per
+page, each carrying its page picture as `background_image` (a
+tracing guide that never prints; the model field is optional and
+defaults to none). Sixteen same-size half-letter pages become a
+saddle-booklet draft automatically; anything else becomes plain
+pages. Verified on a real 16-page corpus bulletin: 16 panels,
+16 guides, and the guide render is a faithful page image. The
+app's page canvas (which will show the guides under the text) is
+the next layer; the draft already opens as a normal bulletin.

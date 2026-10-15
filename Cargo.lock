@@ -2522,6 +2522,7 @@ dependencies = [
 name = "ob-pdfium-helper"
 version = "0.1.0"
 dependencies = [
+ "image",
  "ob-extract",
  "pdfium-render",
  "serde_json",
@@ -2859,6 +2860,7 @@ dependencies = [
  "ob-layout",
  "ob-model",
  "ob-pdf",
+ "serde_json",
 ]
 
 [[package]]

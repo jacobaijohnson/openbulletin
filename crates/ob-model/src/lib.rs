@@ -151,6 +151,12 @@ pub struct Panel {
     pub name: String,
     pub size: Size,
     pub frames: Vec<Frame>,
+    /// Optional tracing-guide picture under this panel: an asset
+    /// file name (the page of the old bulletin this panel rebuilds,
+    /// from the trace rescue in docs/EXTRACT.md). A guide is shown
+    /// under the text while editing and never prints.
+    #[serde(default)]
+    pub background_image: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

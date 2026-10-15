@@ -171,6 +171,7 @@ mod tests {
                     name: format!("P{i}"),
                     size: panel,
                     frames: vec![],
+                    background_image: None,
                 })
                 .collect(),
             sheet: SheetSpec {

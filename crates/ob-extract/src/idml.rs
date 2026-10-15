@@ -33,11 +33,6 @@ impl Node {
             c.find_all(tag, out);
         }
     }
-    fn find<'a>(&'a self, tag: &str) -> Option<&'a Node> {
-        let mut v = Vec::new();
-        self.find_all(tag, &mut v);
-        v.into_iter().next()
-    }
     fn find_path<'a>(&'a self, path: &[&str]) -> Option<&'a Node> {
         let mut cur = self;
         for tag in path {
@@ -274,7 +269,7 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
     // Collect part paths from any attribute pointing at them.
     let mut spread_srcs: Vec<String> = Vec::new();
     fn collect(node: &Node, spread_srcs: &mut Vec<String>) {
-        for (_, v) in &node.attrs {
+        for v in node.attrs.values() {
             if v.starts_with("Spreads/") && v.ends_with(".xml") && !spread_srcs.contains(v) {
                 spread_srcs.push(v.clone());
             }

@@ -20,3 +20,19 @@ Invariants, never negotiable: the file format and its contents, the menu
 tree and labels, command behavior and undo semantics, rendering, and
 export output are identical in every mode. A document never records which
 keymap created it.
+
+## Keymap, as shipped (2026-10-15)
+
+Jacob's rule: presets only SET the defaults. The Keys window (top
+bar) offers three starting sets: OpenBulletin, Publisher, and
+InDesign. Choosing one fills the table; from there every key can
+be changed by picking the action and pressing the new key. The
+moment the effective keys differ from a set's defaults, the set
+is named Custom; changing a key back restores the set's name
+(the name is derived from the keys, never stored as a claim).
+If a pressed key already belongs to another action, the two
+actions swap keys: no key does two jobs, and none is lost.
+Bindable actions: undo, redo, save, open, new, Pages and Fonts
+window toggles, next/previous step, copy/paste box, next/previous
+page. Escape cancels a capture. Bindings live in settings.json
+(keymap_preset + per-action overrides), never in the .obd file.

@@ -38,8 +38,10 @@ every week: the bulletin.
   folded in thirds, Letter portrait, Legal folded in half, Tabloid folded
   in half. Booklets stapled in the middle fold (saddle-stitch) work too.
 - **Planned: familiar keys.** We plan Publisher-style and InDesign-style
-  keyboard shortcuts, so your hands feel at home. Not built yet. The plan
-  is in [docs/MODES.md](docs/MODES.md).
+  keyboard shortcuts, so your hands feel at home: the Keys window
+  (top bar) starts from OpenBulletin's own set, Publisher's, or
+  InDesign's, and any key you change makes the set your own Custom
+  set. The plan is in [docs/MODES.md](docs/MODES.md).
 
 ## What works today, and what does not yet
 
@@ -89,7 +91,6 @@ This is early software (version 0.1). Here is the honest list.
 
 ### Not built yet
 
-- **Publisher or InDesign keyboard shortcuts.** Planned.
 - **An installer.** Today you build the app from source code. If that
   sounds unfamiliar, OpenBulletin is not ready for you yet. Watch this
   page for a download.

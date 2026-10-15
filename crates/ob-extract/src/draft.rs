@@ -50,7 +50,7 @@ pub fn font_match(source_name: &str) -> Option<String> {
         .trim()
         .to_lowercase();
     let base = clean
-        .split(|c| c == '-' || c == ',')
+        .split(['-', ','])
         .next()
         .unwrap_or("")
         .trim()
@@ -83,11 +83,14 @@ pub fn font_match(source_name: &str) -> Option<String> {
     None
 }
 
+/// One text fragment: x, width, text, font size, bold, font.
+type Fragment = (f32, f32, String, f32, bool, Option<String>);
+
 struct Line {
     y: f32,
     h: f32,
     /// x, width, text, font size, bold, font name: one fragment.
-    parts: Vec<(f32, f32, String, f32, bool, Option<String>)>,
+    parts: Vec<Fragment>,
     /// Baseline wander inside the line: large on text set along
     /// a curve or in steps, which no reading order fully heals.
     spread: f32,
@@ -108,8 +111,7 @@ impl Line {
     /// nothing, trim each fragment, a space appears only when
     /// the physical gap earns one).
     fn text(&self) -> String {
-        let mut parts: Vec<&(f32, f32, String, f32, bool, Option<String>)> =
-            self.parts.iter().collect();
+        let mut parts: Vec<&Fragment> = self.parts.iter().collect();
         parts.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut out = String::new();
         let mut prev_end: Option<f32> = None;

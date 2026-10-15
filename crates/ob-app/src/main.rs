@@ -34,6 +34,213 @@ pub struct PrinterSetup {
 pub struct Settings {
     #[serde(default)]
     pub printers: std::collections::BTreeMap<String, PrinterSetup>,
+    /// The keyboard preset last chosen ("" means ours). The
+    /// preset only SETS the defaults: any change to a key
+    /// below moves the set to Custom (see keymap_status).
+    #[serde(default)]
+    pub keymap_preset: String,
+    /// Per-action key overrides on top of the preset.
+    #[serde(default)]
+    pub keymap: std::collections::BTreeMap<String, String>,
+}
+
+/// The keys the app answers to, as (action, plain label).
+pub const KEY_ACTIONS: &[(&str, &str)] = &[
+    ("undo", "Undo"),
+    ("redo", "Redo"),
+    ("save", "Save bulletin"),
+    ("open", "Open a bulletin"),
+    ("new", "New bulletin"),
+    ("pages", "Pages window (open or close)"),
+    ("fonts", "Fonts window (open or close)"),
+    ("next_step", "Go to the next step"),
+    ("prev_step", "Go back a step"),
+    ("copy_box", "Copy the selected box (Pages window)"),
+    ("paste_box", "Paste a box (Pages window)"),
+    ("next_page", "Next page (Pages window)"),
+    ("prev_page", "Previous page (Pages window)"),
+];
+
+/// A preset is only a set of starting defaults: choosing one
+/// fills the table, and from there the keys are yours.
+pub fn preset_defaults(preset: &str) -> std::collections::BTreeMap<String, String> {
+    let mut m: std::collections::BTreeMap<String, String> = [
+        ("undo", "Ctrl+Z"),
+        ("save", "Ctrl+S"),
+        ("open", "Ctrl+O"),
+        ("new", "Ctrl+N"),
+        ("copy_box", "Ctrl+C"),
+        ("paste_box", "Ctrl+V"),
+    ]
+    .iter()
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .collect();
+    match preset {
+        "publisher" => {
+            m.insert("redo".into(), "Ctrl+Y".into());
+            m.insert("pages".into(), "Alt+P".into());
+            m.insert("fonts".into(), "Ctrl+Shift+F".into());
+            m.insert("next_step".into(), "Ctrl+Tab".into());
+            m.insert("prev_step".into(), "Ctrl+Shift+Tab".into());
+            m.insert("next_page".into(), "Ctrl+PageDown".into());
+            m.insert("prev_page".into(), "Ctrl+PageUp".into());
+        }
+        "indesign" => {
+            m.insert("redo".into(), "Ctrl+Shift+Z".into());
+            m.insert("pages".into(), "F12".into());
+            m.insert("fonts".into(), "Ctrl+T".into());
+            m.insert("next_step".into(), "Ctrl+Right".into());
+            m.insert("prev_step".into(), "Ctrl+Left".into());
+            m.insert("next_page".into(), "PageDown".into());
+            m.insert("prev_page".into(), "PageUp".into());
+        }
+        _ => {
+            m.insert("redo".into(), "Ctrl+Y".into());
+            m.insert("pages".into(), "Alt+P".into());
+            m.insert("fonts".into(), "Alt+F".into());
+            m.insert("next_step".into(), "Ctrl+Right".into());
+            m.insert("prev_step".into(), "Ctrl+Left".into());
+            m.insert("next_page".into(), "PageDown".into());
+            m.insert("prev_page".into(), "PageUp".into());
+        }
+    }
+    m
+}
+
+/// The keys actually in force: preset defaults plus overrides.
+pub fn effective_keymap(settings: &Settings) -> std::collections::BTreeMap<String, String> {
+    let preset = if settings.keymap_preset.is_empty() {
+        "openbulletin"
+    } else {
+        settings.keymap_preset.as_str()
+    };
+    let mut m = preset_defaults(preset);
+    for (action, binding) in &settings.keymap {
+        m.insert(action.clone(), binding.clone());
+    }
+    m
+}
+
+/// Jacob's rule, exactly: a preset names the set only while
+/// the keys match its defaults. Change any key and the set is
+/// Custom; change it back and the name returns.
+pub fn keymap_status(settings: &Settings) -> &'static str {
+    let eff = effective_keymap(settings);
+    if eff == preset_defaults("openbulletin") {
+        "OpenBulletin defaults"
+    } else if eff == preset_defaults("publisher") {
+        "Publisher defaults"
+    } else if eff == preset_defaults("indesign") {
+        "InDesign defaults"
+    } else {
+        "Custom"
+    }
+}
+
+/// One key press, as stored: "Ctrl+Shift+Z", "Alt+P", "F12".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyBinding {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub key: egui::Key,
+}
+
+pub fn key_name(key: egui::Key) -> Option<&'static str> {
+    use egui::Key::*;
+    Some(match key {
+        A => "A", B => "B", C => "C", D => "D", E => "E", F => "F", G => "G",
+        H => "H", I => "I", J => "J", K => "K", L => "L", M => "M", N => "N",
+        O => "O", P => "P", Q => "Q", R => "R", S => "S", T => "T", U => "U",
+        V => "V", W => "W", X => "X", Y => "Y", Z => "Z",
+        Num0 => "0", Num1 => "1", Num2 => "2", Num3 => "3", Num4 => "4",
+        Num5 => "5", Num6 => "6", Num7 => "7", Num8 => "8", Num9 => "9",
+        F1 => "F1", F2 => "F2", F3 => "F3", F4 => "F4", F5 => "F5", F6 => "F6",
+        F7 => "F7", F8 => "F8", F9 => "F9", F10 => "F10", F11 => "F11",
+        F12 => "F12", F13 => "F13", F14 => "F14", F15 => "F15", F16 => "F16",
+        F17 => "F17", F18 => "F18", F19 => "F19", F20 => "F20",
+        Enter => "Enter",
+        Tab => "Tab",
+        PageUp => "PageUp",
+        PageDown => "PageDown",
+        Space => "Space",
+        ArrowLeft => "Left",
+        ArrowRight => "Right",
+        ArrowUp => "Up",
+        ArrowDown => "Down",
+        _ => return None,
+    })
+}
+
+pub fn name_key(name: &str) -> Option<egui::Key> {
+    use egui::Key::*;
+    Some(match name {
+        "A" => A, "B" => B, "C" => C, "D" => D, "E" => E, "F" => F, "G" => G,
+        "H" => H, "I" => I, "J" => J, "K" => K, "L" => L, "M" => M, "N" => N,
+        "O" => O, "P" => P, "Q" => Q, "R" => R, "S" => S, "T" => T, "U" => U,
+        "V" => V, "W" => W, "X" => X, "Y" => Y, "Z" => Z,
+        "0" => Num0, "1" => Num1, "2" => Num2, "3" => Num3, "4" => Num4,
+        "5" => Num5, "6" => Num6, "7" => Num7, "8" => Num8, "9" => Num9,
+        "F1" => F1, "F2" => F2, "F3" => F3, "F4" => F4, "F5" => F5, "F6" => F6,
+        "F7" => F7, "F8" => F8, "F9" => F9, "F10" => F10, "F11" => F11,
+        "F12" => F12, "F13" => F13, "F14" => F14, "F15" => F15, "F16" => F16,
+        "F17" => F17, "F18" => F18, "F19" => F19, "F20" => F20,
+        "Enter" => Enter,
+        "Tab" => Tab,
+        "PageUp" => PageUp,
+        "PageDown" => PageDown,
+        "Space" => Space,
+        "Left" => ArrowLeft,
+        "Right" => ArrowRight,
+        "Up" => ArrowUp,
+        "Down" => ArrowDown,
+        _ => return None,
+    })
+}
+
+pub fn parse_binding(text: &str) -> Option<KeyBinding> {
+    let mut b = KeyBinding {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        key: egui::Key::A,
+    };
+    let parts: Vec<&str> = text.split('+').collect();
+    let (mods, key_part) = parts.split_at(parts.len().checked_sub(1)?);
+    for m in mods {
+        match m.trim().to_lowercase().as_str() {
+            "ctrl" | "control" | "cmd" | "command" => b.ctrl = true,
+            "shift" => b.shift = true,
+            "alt" | "option" => b.alt = true,
+            _ => return None,
+        }
+    }
+    b.key = name_key(key_part[0].trim())?;
+    Some(b)
+}
+
+pub fn format_binding(b: &KeyBinding) -> String {
+    let mut out = String::new();
+    if b.ctrl {
+        out.push_str("Ctrl+");
+    }
+    if b.shift {
+        out.push_str("Shift+");
+    }
+    if b.alt {
+        out.push_str("Alt+");
+    }
+    out.push_str(key_name(b.key).unwrap_or("?"));
+    out
+}
+
+/// Does this input state match the binding right now? "Ctrl"
+/// reads as egui's command flag, so it is Cmd on a Mac.
+pub fn binding_pressed(i: &egui::InputState, b: &KeyBinding) -> bool {
+    i.key_pressed(b.key)
+        && i.modifiers.command == b.ctrl
+        && i.modifiers.shift == b.shift
+        && i.modifiers.alt == b.alt
 }
 
 pub fn printer_setup_from_answer(answer: &str, printer: &str) -> PrinterSetup {
@@ -364,6 +571,9 @@ struct App {
     bg_tex_key: String,
     bg_tex: Option<egui::TextureHandle>,
     show_fonts: bool,
+    show_keys: bool,
+    /// The action whose key is being captured, if any.
+    key_capture: Option<String>,
     fonts_loaded: bool,
     font_rows: Vec<FontRow>,
     catalog_query: String,
@@ -538,6 +748,8 @@ impl Default for App {
             bg_tex_key: String::new(),
             bg_tex: None,
             show_fonts: false,
+            show_keys: false,
+            key_capture: None,
             fonts_loaded: false,
             font_rows: Vec::new(),
             catalog_query: String::new(),
@@ -1546,15 +1758,8 @@ impl App {
             .default_width(720.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("<").clicked() && self.canvas_panel > 0 {
-                        // Changing pages mid-typing commits the
-                        // session first, while its panel index is
-                        // still the page it belongs to.
-                        self.commit_if_editing();
-                        self.canvas_panel -= 1;
-                        self.selected_frame = None;
-                        self.guide_menu_for = None;
-                        self.frame_menu_for = None;
+                    if ui.button("<").clicked() {
+                        self.page_by(-1);
                     }
                     let panel = &self.doc.panels[self.canvas_panel];
                     ui.label(egui::RichText::new(format!(
@@ -1563,14 +1768,8 @@ impl App {
                         self.canvas_panel + 1,
                         self.doc.panels.len()
                     )).strong());
-                    if ui.button(">").clicked()
-                        && self.canvas_panel + 1 < self.doc.panels.len()
-                    {
-                        self.commit_if_editing();
-                        self.canvas_panel += 1;
-                        self.selected_frame = None;
-                        self.guide_menu_for = None;
-                        self.frame_menu_for = None;
+                    if ui.button(">").clicked() {
+                        self.page_by(1);
                     }
                     ui.separator();
                     if ui.button("Smaller").clicked() {
@@ -2076,7 +2275,7 @@ impl App {
                         }
                     }
                 }
-                if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
+                if self.action_pressed(ui.ctx(), "copy_box") {
                     if let Some(fi) = self.selected_frame {
                         let f = self.doc.panels[idx].frames[fi].clone();
                         let story = f
@@ -2087,7 +2286,7 @@ impl App {
                         self.status = "Box copied.".into();
                     }
                 }
-                if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::V)) {
+                if self.action_pressed(ui.ctx(), "paste_box") {
                     if let Some((f, story)) = self.frame_clipboard.clone() {
                         self.paste_box(idx, f, story);
                     }
@@ -2813,6 +3012,234 @@ impl App {
         }
     }
 
+    /// Move the Pages window by delta pages, with the same
+    /// care the pager buttons take (commit typing first, drop
+    /// indices into the old page).
+    fn page_by(&mut self, delta: i32) {
+        let target = self.canvas_panel as i32 + delta;
+        if target < 0 || target as usize >= self.doc.panels.len() {
+            return;
+        }
+        self.commit_if_editing();
+        self.canvas_panel = target as usize;
+        self.selected_frame = None;
+        self.guide_menu_for = None;
+        self.frame_menu_for = None;
+    }
+
+    /// The Open button's work, shared with its key.
+    fn open_flow(&mut self) {
+        if !self.open_guard(PendingOpen::Plain) {
+            return;
+        }
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("OpenBulletin bulletin", &["obd"])
+            .pick_file()
+        {
+            match ob_format::load(&path) {
+                Ok(doc) => {
+                    self.adopt_document(doc, true);
+                    self.path = Some(path);
+                    self.step = 1;
+                    self.note("Bulletin opened.".into());
+                    self.mark_clean();
+                }
+                Err(e) => self.fail(format!(
+                    "Could not open that file. Pick a bulletin file ending in .obd. ({e})"
+                )),
+            }
+        }
+    }
+
+    /// The Save button's work, shared with its key.
+    fn save_flow(&mut self) {
+        self.commit_if_editing();
+        self.save_announcements();
+        self.pin_fonts();
+        let target = self.path.clone().or_else(|| {
+            rfd::FileDialog::new()
+                .set_file_name("bulletin.obd")
+                .add_filter("OpenBulletin bulletin", &["obd"])
+                .save_file()
+        });
+        if let Some(path) = target {
+            match ob_format::save(&self.doc, &path) {
+                Ok(()) => {
+                    self.note(format!("Saved to {}", path.display()));
+                    // An import's page pictures move beside the
+                    // file on first Save.
+                    if let Some(base) = self.asset_base.take() {
+                        if let Some(parent) = path.parent() {
+                            let from = base.join("assets");
+                            let to = parent.join("assets");
+                            if from.exists() && from != to {
+                                let _ = std::fs::create_dir_all(&to);
+                                if let Ok(rd) = std::fs::read_dir(&from) {
+                                    for e in rd.flatten() {
+                                        let _ = std::fs::copy(
+                                            e.path(),
+                                            to.join(e.file_name()),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.path = Some(path);
+                    self.mark_clean();
+                }
+                Err(e) => self.fail(format!(
+                    "Could not save the file. Try your Documents folder. ({e})"
+                )),
+            }
+        }
+    }
+
+    /// The binding currently in force for an action.
+    fn binding_for(&self, action: &str) -> Option<KeyBinding> {
+        effective_keymap(&self.settings)
+            .get(action)
+            .and_then(|t| parse_binding(t))
+    }
+
+    /// Was this action's key just pressed?
+    fn action_pressed(&self, ctx: &egui::Context, action: &str) -> bool {
+        match self.binding_for(action) {
+            Some(b) => ctx.input(|i| binding_pressed(i, &b)),
+            None => false,
+        }
+    }
+
+    /// While a key is being captured for the Keys window, the
+    /// next key press becomes that action's key. If another
+    /// action held that key, they swap: no key ever does two
+    /// jobs, and none is silently lost.
+    fn capture_key(&mut self, ctx: &egui::Context) {
+        let Some(action) = self.key_capture.clone() else {
+            return;
+        };
+        let found = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        let Some((key, modifiers)) = found else {
+            return;
+        };
+        if key == egui::Key::Escape {
+            self.key_capture = None;
+            return;
+        }
+        if key_name(key).is_none() {
+            return; // not a key we can bind; keep waiting
+        }
+        let new_binding = KeyBinding {
+            ctrl: modifiers.command,
+            shift: modifiers.shift,
+            alt: modifiers.alt,
+            key,
+        };
+        let new_text = format_binding(&new_binding);
+        let eff = effective_keymap(&self.settings);
+        let old_text = eff.get(&action).cloned().unwrap_or_default();
+        if let Some((other, _)) = eff
+            .iter()
+            .find(|(a, b)| *a != &action && *b == &new_text)
+        {
+            let other = other.clone();
+            self.settings
+                .keymap
+                .insert(other, old_text.clone());
+        }
+        self.settings.keymap.insert(action, new_text);
+        self.key_capture = None;
+        if let Err(e) = save_settings(&self.settings) {
+            self.fail(format!("Your key was set, but the settings could not be saved. ({e})"));
+        }
+    }
+
+    fn keys_window(&mut self, ctx: &egui::Context) {
+        if !self.show_keys {
+            return;
+        }
+        let mut open = self.show_keys;
+        let eff = effective_keymap(&self.settings);
+        let status = keymap_status(&self.settings);
+        egui::Window::new("Keys")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([520.0, 560.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    "Keyboard shortcuts. Start from a set you know, then make any \
+                     key your own: the moment a key moves away from the set's \
+                     defaults, the set is called Custom, which is fine and normal.",
+                );
+                ui.label(format!("You are using: {status}"));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Start from:");
+                    for (preset, label) in [
+                        ("openbulletin", "OpenBulletin"),
+                        ("publisher", "Publisher"),
+                        ("indesign", "InDesign"),
+                    ] {
+                        if ui.button(label).clicked() {
+                            self.settings.keymap_preset = preset.to_string();
+                            self.settings.keymap.clear();
+                            self.key_capture = None;
+                            if let Err(e) = save_settings(&self.settings) {
+                                self.fail(format!(
+                                    "Settings could not be saved. ({e})"
+                                ));
+                            }
+                        }
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(340.0)
+                    .show(ui, |ui| {
+                        for (action, label) in KEY_ACTIONS {
+                            ui.horizontal(|ui| {
+                                ui.label(*label);
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let capturing =
+                                            self.key_capture.as_deref() == Some(action);
+                                        let text = if capturing {
+                                            "Press a key... (Escape cancels)".to_string()
+                                        } else {
+                                            eff.get(*action).cloned().unwrap_or_default()
+                                        };
+                                        if ui.button(text).clicked() {
+                                            self.key_capture = Some(action.to_string());
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                    });
+                ui.separator();
+                if ui.button("Put every key back to the set's defaults").clicked() {
+                    self.settings.keymap.clear();
+                    self.key_capture = None;
+                    if let Err(e) = save_settings(&self.settings) {
+                        self.fail(format!("Settings could not be saved. ({e})"));
+                    }
+                }
+            });
+        self.show_keys = open;
+    }
+
     fn fonts_window(&mut self, ctx: &egui::Context) {
         if !self.show_fonts {
             return;
@@ -3179,6 +3606,8 @@ impl eframe::App for App {
         self.import_review_window(ctx);
         self.poll_analyzer(ctx);
         self.analyzer_review_window(ctx);
+        self.capture_key(ctx);
+        self.keys_window(ctx);
         self.frame_snapshot = snapshot(&self.doc);
         // A gesture must not span a focus change: if the user
         // clicked into a text field mid-gesture, the gesture is
@@ -3204,21 +3633,44 @@ impl eframe::App for App {
         if !self.show_pages && self.editing.is_some() {
             self.commit_edit();
         }
-        // Global undo/redo, when no text box has the keyboard (text
-        // boxes keep their own undo while you type in them).
-        if ctx.memory(|m| m.focused()).is_none() && self.editing.is_none() {
-            let (undo, redo) = ctx.input(|i| {
-                (
-                    i.modifiers.ctrl && i.key_pressed(egui::Key::Z) && !i.modifiers.shift,
-                    i.modifiers.ctrl
-                        && (i.key_pressed(egui::Key::Y)
-                            || (i.key_pressed(egui::Key::Z) && i.modifiers.shift)),
-                )
-            });
-            if undo {
+        // Global keys, when no text box has the keyboard (text
+        // boxes keep their own undo while you type in them) and
+        // no key is being captured for the Keys window. Every
+        // key comes from the keymap: presets set the defaults,
+        // and any change makes the set Custom (see Settings).
+        if ctx.memory(|m| m.focused()).is_none()
+            && self.editing.is_none()
+            && self.key_capture.is_none()
+        {
+            if self.action_pressed(ctx, "undo") {
                 self.undo();
-            } else if redo {
+            } else if self.action_pressed(ctx, "redo") {
                 self.redo();
+            } else if self.action_pressed(ctx, "save") {
+                self.save_flow();
+            } else if self.action_pressed(ctx, "open") {
+                self.open_flow();
+            } else if self.action_pressed(ctx, "new") {
+                self.goto_step(0);
+                self.note(
+                    "Step 1 is where a fresh bulletin starts: pick a shape and it \
+                     rebuilds. Nothing you have open is touched until you pick one."
+                        .into(),
+                );
+            } else if self.action_pressed(ctx, "pages") {
+                self.show_pages = !self.show_pages;
+            } else if self.action_pressed(ctx, "fonts") {
+                self.show_fonts = !self.show_fonts;
+            } else if self.action_pressed(ctx, "next_step") && self.step < 4 {
+                let next = self.step + 1;
+                self.goto_step(next);
+            } else if self.action_pressed(ctx, "prev_step") && self.step > 0 {
+                let prev = self.step - 1;
+                self.goto_step(prev);
+            } else if self.show_pages && self.action_pressed(ctx, "next_page") {
+                self.page_by(1);
+            } else if self.show_pages && self.action_pressed(ctx, "prev_page") {
+                self.page_by(-1);
             }
         }
         self.journal_tick();
@@ -3239,6 +3691,9 @@ impl eframe::App for App {
                 }
                 if ui.button("Fonts").clicked() {
                     self.show_fonts = true;
+                }
+                if ui.button("Keys").clicked() {
+                    self.show_keys = true;
                 }
                 ui.separator();
                 if ui
@@ -3264,66 +3719,11 @@ impl eframe::App for App {
                 } else {
                     "Open bulletin..."
                 };
-                if ui.button(open_label).clicked() && self.open_guard(PendingOpen::Plain) {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("OpenBulletin bulletin", &["obd"])
-                        .pick_file()
-                    {
-                        match ob_format::load(&path) {
-                            Ok(doc) => {
-                                self.adopt_document(doc, true);
-                                self.path = Some(path);
-                                self.step = 1;
-                                self.note("Bulletin opened.".into());
-                                self.mark_clean();
-                            }
-                            Err(e) => self.fail(format!(
-                                "Could not open that file. Pick a bulletin file ending in .obd. ({e})"
-                            )),
-                        }
-                    }
+                if ui.button(open_label).clicked() {
+                    self.open_flow();
                 }
                 if ui.button("Save bulletin").clicked() {
-                    self.commit_if_editing();
-                    self.save_announcements();
-                    self.pin_fonts();
-                    let target = self.path.clone().or_else(|| {
-                        rfd::FileDialog::new()
-                            .set_file_name("bulletin.obd")
-                            .add_filter("OpenBulletin bulletin", &["obd"])
-                            .save_file()
-                    });
-                    if let Some(path) = target {
-                        match ob_format::save(&self.doc, &path) {
-                            Ok(()) => {
-                                self.note(format!("Saved to {}", path.display()));
-                                // An import's page pictures move
-                                // beside the file on first Save.
-                                if let Some(base) = self.asset_base.take() {
-                                    if let Some(parent) = path.parent() {
-                                        let from = base.join("assets");
-                                        let to = parent.join("assets");
-                                        if from.exists() && from != to {
-                                            let _ = std::fs::create_dir_all(&to);
-                                            if let Ok(rd) = std::fs::read_dir(&from) {
-                                                for e in rd.flatten() {
-                                                    let _ = std::fs::copy(
-                                                        e.path(),
-                                                        to.join(e.file_name()),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                self.path = Some(path);
-                                self.mark_clean();
-                            }
-                            Err(e) => self.fail(format!(
-                                "Could not save the file. Try your Documents folder. ({e})"
-                            )),
-                        }
-                    }
+                    self.save_flow();
                 }
                 ui.separator();
                 ui.label(format!("Step {} of 5: {}", self.step + 1, STEPS[self.step]));
@@ -4234,6 +4634,39 @@ fn open_with_os(path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod settings_tests {
     use super::*;
+
+    #[test]
+    fn keymap_presets_set_defaults_and_any_change_is_custom() {
+        // Fresh settings: our defaults, named as such.
+        let mut st = Settings::default();
+        assert_eq!(keymap_status(&st), "OpenBulletin defaults");
+        // Choosing Publisher only sets defaults.
+        st.keymap_preset = "publisher".into();
+        assert_eq!(keymap_status(&st), "Publisher defaults");
+        assert_eq!(effective_keymap(&st)["fonts"], "Ctrl+Shift+F");
+        // One key moves away: Custom (Jacob's rule).
+        st.keymap.insert("fonts".into(), "Alt+F".into());
+        assert_eq!(keymap_status(&st), "Custom");
+        // Moving it back restores the preset's name.
+        st.keymap.insert("fonts".into(), "Ctrl+Shift+F".into());
+        assert_eq!(keymap_status(&st), "Publisher defaults");
+        // InDesign's redo is the documented Ctrl+Shift+Z.
+        assert_eq!(preset_defaults("indesign")["redo"], "Ctrl+Shift+Z");
+        assert_eq!(preset_defaults("publisher")["redo"], "Ctrl+Y");
+    }
+
+    #[test]
+    fn keymap_bindings_round_trip() {
+        for preset in ["openbulletin", "publisher", "indesign"] {
+            for (action, text) in preset_defaults(preset) {
+                let parsed = parse_binding(&text)
+                    .unwrap_or_else(|| panic!("{preset}/{action}: {text} parses"));
+                assert_eq!(format_binding(&parsed), text, "{preset}/{action}");
+            }
+        }
+        assert!(parse_binding("Ctrl+Bogus").is_none());
+        assert!(parse_binding("Hyper+Z").is_none());
+    }
 
     #[test]
     fn checks_flag_missing_fonts_and_edge_boxes() {

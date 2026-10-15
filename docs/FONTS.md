@@ -133,6 +133,17 @@ Add-a-font button; first run seeds the library with Liberation.
 The panel also searches the catalog and installs from it (on a
 worker thread, so the window never freezes), and saving or
 exporting stamps each style with the fingerprint of the library
-font it was laid out with. Remaining: the side-by-side comparison
-preview in the import review (that belongs to the analyzer's
-review screen).
+font it was laid out with.
+
+Also built (the review-confirmed build order, 2026-10-15): italic
+faces bundled and an italic style in the model; PDF exports embed
+the real library fonts; the Church Starter Pack (Carlito, Caladea,
+Gelasio, Lora, Playfair Display) installs in one tap from the panel
+or the CLI; the panel adds fonts by multi-file pick, by zip pack,
+and by copying in from a list of the computer's own fonts, with a
+plain-words caution when a font did not come from the free catalog
+and its license is not clearly shareable. One known limit: three
+pack families are variable fonts and currently shape at their
+default weight only; the static families carry all four faces.
+Remaining: the side-by-side comparison preview in the import
+review (that belongs to the analyzer's review screen).

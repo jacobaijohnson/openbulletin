@@ -192,21 +192,20 @@ impl eframe::App for App {
                 ui.separator();
                 ui.label(format!("Step {} of 5: {}", self.step + 1, STEPS[self.step]));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.step < 4 {
-                        if ui
+                    if self.step < 4
+                        && ui
                             .button(
                                 egui::RichText::new(format!("Next: {}", STEPS[self.step + 1]))
                                     .strong(),
                             )
                             .clicked()
-                        {
-                            if self.step == 2 {
-                                self.save_announcements();
-                            }
-                            self.step += 1;
-                            if self.step == 3 {
-                                self.run_checks();
-                            }
+                    {
+                        if self.step == 2 {
+                            self.save_announcements();
+                        }
+                        self.step += 1;
+                        if self.step == 3 {
+                            self.run_checks();
                         }
                     }
                     if self.step > 0 && ui.button("Back").clicked() {
@@ -319,7 +318,7 @@ impl eframe::App for App {
                     painter.rect_stroke(
                         rect,
                         2.0,
-                        egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
+                        egui::Stroke::new(1.0_f32, egui::Color32::DARK_GRAY),
                     );
                     for frame in &panel.frames {
                         let fr = egui::Rect::from_min_size(
@@ -336,7 +335,7 @@ impl eframe::App for App {
                         painter.rect_stroke(
                             fr,
                             1.0,
-                            egui::Stroke::new(0.75, egui::Color32::LIGHT_GRAY),
+                            egui::Stroke::new(0.75_f32, egui::Color32::LIGHT_GRAY),
                         );
                         if let Some(sid) = &frame.story_id {
                             if let Some(story) = self.doc.story(sid) {

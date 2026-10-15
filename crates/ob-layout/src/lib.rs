@@ -1,0 +1,365 @@
+//! Fold-aware presets and bulletin templates.
+//!
+//! Bulletins are defined by the fold, not the page size. A preset starts from
+//! the sheet and the fold; the volunteer edits reader panels and never has to
+//! know which panel lands where on the printed sheet (that is ob-impose).
+
+use chrono::{Datelike, Duration, NaiveDate};
+use ob_model::*;
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preset {
+    LetterBifold,
+    LetterTrifold,
+    LetterPortrait,
+    LegalBifold,
+    TabloidBifold,
+}
+
+impl Preset {
+    pub fn id(&self) -> &'static str {
+        match self {
+            Preset::LetterBifold => "letter-bifold",
+            Preset::LetterTrifold => "letter-trifold",
+            Preset::LetterPortrait => "letter-portrait",
+            Preset::LegalBifold => "legal-bifold",
+            Preset::TabloidBifold => "tabloid-bifold",
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Preset::LetterBifold => "Letter Bi-Fold Bulletin (11 x 8.5 sheet, folds to 5.5 x 8.5)",
+            Preset::LetterTrifold => "Letter Tri-Fold Bulletin (11 x 8.5 sheet, 6 panels)",
+            Preset::LetterPortrait => "Letter Portrait (8.5 x 11, multi-page)",
+            Preset::LegalBifold => "Legal Bi-Fold (14 x 8.5 sheet, folds to 7 x 8.5)",
+            Preset::TabloidBifold => "Tabloid Bi-Fold (17 x 11 sheet, folds to 8.5 x 11)",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Preset> {
+        Some(match s {
+            "letter-bifold" => Preset::LetterBifold,
+            "letter-trifold" => Preset::LetterTrifold,
+            "letter-portrait" => Preset::LetterPortrait,
+            "legal-bifold" => Preset::LegalBifold,
+            "tabloid-bifold" => Preset::TabloidBifold,
+            _ => return None,
+        })
+    }
+    pub fn all() -> [Preset; 5] {
+        [
+            Preset::LetterBifold,
+            Preset::LetterTrifold,
+            Preset::LetterPortrait,
+            Preset::LegalBifold,
+            Preset::TabloidBifold,
+        ]
+    }
+    pub fn sheet_size(&self) -> Size {
+        match self {
+            Preset::LetterBifold | Preset::LetterTrifold => Size::new(inch(11.0), inch(8.5)),
+            Preset::LetterPortrait => Size::new(inch(8.5), inch(11.0)),
+            Preset::LegalBifold => Size::new(inch(14.0), inch(8.5)),
+            Preset::TabloidBifold => Size::new(inch(17.0), inch(11.0)),
+        }
+    }
+    pub fn panel_size(&self) -> Size {
+        let s = self.sheet_size();
+        match self {
+            Preset::LetterBifold | Preset::LegalBifold | Preset::TabloidBifold => {
+                Size::new(s.w / 2, s.h)
+            }
+            Preset::LetterTrifold => Size::new(s.w / 3, s.h),
+            Preset::LetterPortrait => s,
+        }
+    }
+    pub fn panel_names(&self) -> Vec<&'static str> {
+        match self {
+            Preset::LetterTrifold => vec![
+                "Front Cover",
+                "Inside Flap (Welcome)",
+                "Inside Left",
+                "Inside Middle",
+                "Inside Right",
+                "Back Cover",
+            ],
+            Preset::LetterPortrait => vec![
+                "Page 1 (Cover)",
+                "Page 2 (Order of Service)",
+                "Page 3 (Notes and Announcements)",
+                "Page 4 (Back)",
+            ],
+            _ => vec![
+                "Front Cover",
+                "Inside Left (Order of Service)",
+                "Inside Right (Notes and Announcements)",
+                "Back Cover",
+            ],
+        }
+    }
+}
+
+fn para(style: &str, text: &str) -> Paragraph {
+    Paragraph::new(style, text)
+}
+
+fn text_frame(id: &str, name: &str, panel: Size, story: &str, role: ContentRole) -> Frame {
+    let m = inch(0.45);
+    Frame {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: FrameKind::Text,
+        rect: Rect::new(m, inch(0.4), panel.w - 2 * m, panel.h - inch(0.8)),
+        story_id: Some(story.to_string()),
+        role,
+    }
+}
+
+/// Build a ready-to-edit bulletin document for a preset.
+/// Standing content uses `{...}` field tokens so the weekly edit is mostly
+/// changing field values, not hunting through panels.
+pub fn build_template(
+    preset: Preset,
+    profile: ChurchProfile,
+    sunday: NaiveDate,
+    sunday_name: &str,
+) -> Document {
+    let panel = preset.panel_size();
+    let names = preset.panel_names();
+    let cover_idx = 0usize;
+    let order_idx = if preset == Preset::LetterTrifold {
+        2
+    } else {
+        1
+    };
+    let notes_idx = if preset == Preset::LetterTrifold {
+        3
+    } else {
+        2
+    };
+    let back_idx = names.len() - 1;
+
+    let mut stories: Vec<Story> = Vec::new();
+    let mut panels: Vec<Panel> = Vec::new();
+
+    for (i, name) in names.iter().enumerate() {
+        let sid = format!("story-{i}");
+        let (paragraphs, role) = if i == cover_idx {
+            (
+                vec![
+                    para("church-name", "{Church.name}"),
+                    para("subheading", "{Sunday.name}"),
+                    para("body-center", "{Sunday.date}"),
+                    para("body-center", "Welcome! We are glad you are here."),
+                    para("caption", "Please silence mobile phones during worship."),
+                ],
+                ContentRole::Standing,
+            )
+        } else if i == order_idx {
+            (
+                vec![
+                    para("subheading", "Order of Service"),
+                    para("order-line", "Prelude\t"),
+                    para("order-line", "Welcome and Announcements\t"),
+                    para("order-line", "Call to Worship\t"),
+                    para("order-line", "Hymn of Praise\t432"),
+                    para("order-line", "Prayer of Confession\t"),
+                    para("body", "Scripture Reading: {Sunday.reading}"),
+                    para("body", "Sermon: {Church.pastor}"),
+                    para("order-line", "Hymn of Response\t365"),
+                    para("order-line", "Benediction\t"),
+                ],
+                ContentRole::Standing,
+            )
+        } else if i == notes_idx {
+            (
+                vec![
+                    para("subheading", "Sermon Notes"),
+                    para("notes-line", "________________________________________"),
+                    para("notes-line", "________________________________________"),
+                    para("notes-line", "________________________________________"),
+                    para("subheading", "Announcements"),
+                    para("body", "[Replace with this week's announcements.]"),
+                ],
+                ContentRole::Weekly,
+            )
+        } else if i == back_idx {
+            (
+                vec![
+                    para("subheading", "Service Times"),
+                    para("body", "{Church.times}"),
+                    para("body", "{Church.address}"),
+                    para("body", "{Church.website}"),
+                    para("body", "Pastor: {Church.pastor}"),
+                    para("body", "Give online: {Church.giving}"),
+                ],
+                ContentRole::Standing,
+            )
+        } else {
+            // Tri-fold welcome flap and extra inside panels.
+            (
+                vec![
+                    para("subheading", "Welcome"),
+                    para("body", "New here? Please stop by the welcome table after the service. We would love to meet you."),
+                    para("body", "Children are welcome in worship; a nursery is available for ages 0-4."),
+                ],
+                ContentRole::Standing,
+            )
+        };
+        stories.push(Story {
+            id: sid.clone(),
+            paragraphs,
+        });
+        panels.push(Panel {
+            id: format!("panel-{i}"),
+            name: name.to_string(),
+            size: panel,
+            frames: vec![text_frame(&format!("frame-{i}"), name, panel, &sid, role)],
+        });
+    }
+
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "sunday_date".to_string(),
+        sunday.format("%Y-%m-%d").to_string(),
+    );
+    fields.insert("sunday_date_long".to_string(), long_date(sunday));
+    fields.insert("sunday_name".to_string(), sunday_name.to_string());
+    fields.insert("reading".to_string(), "Romans 8:18-25".to_string());
+
+    Document {
+        format_version: FORMAT_VERSION,
+        title: format!("{} Bulletin", profile.name),
+        profile,
+        fields,
+        styles: default_styles(),
+        stories,
+        panels,
+        sheet: SheetSpec {
+            preset: preset.id().to_string(),
+            size: preset.sheet_size(),
+        },
+    }
+}
+
+/// "October 18, 2026" style long date, portable across platforms.
+pub fn long_date(d: NaiveDate) -> String {
+    format!("{} {}, {}", d.format("%B"), d.day(), d.year())
+}
+
+/// The signature command: clone the document for next Sunday.
+/// - Advances the Sunday date by 7 days (long form too).
+/// - Clears Body paragraphs in Weekly stories (announcements), keeping
+///   headings and standing structure untouched.
+///
+/// Returns an error string if the stored date cannot be parsed.
+pub fn next_sunday(doc: &Document) -> Result<Document, String> {
+    let mut out = doc.clone();
+    let iso = out
+        .fields
+        .get("sunday_date")
+        .ok_or("document has no sunday_date field")?
+        .clone();
+    let date = NaiveDate::parse_from_str(&iso, "%Y-%m-%d")
+        .map_err(|e| format!("bad sunday_date {iso}: {e}"))?;
+    let next = date + Duration::days(7);
+    out.fields.insert(
+        "sunday_date".to_string(),
+        next.format("%Y-%m-%d").to_string(),
+    );
+    out.fields
+        .insert("sunday_date_long".to_string(), long_date(next));
+
+    // Find weekly story ids from frames marked Weekly.
+    let weekly: Vec<String> = out
+        .panels
+        .iter()
+        .flat_map(|p| p.frames.iter())
+        .filter(|f| f.role == ContentRole::Weekly)
+        .filter_map(|f| f.story_id.clone())
+        .collect();
+    for sid in weekly {
+        if let Some(story) = out.story_mut(&sid) {
+            for p in story.paragraphs.iter_mut() {
+                if p.style == "body" {
+                    p.text = String::new();
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile() -> ChurchProfile {
+        ChurchProfile {
+            name: "Grace Lutheran Church".into(),
+            address: "123 Main St".into(),
+            service_times: "Sundays 9:30 AM".into(),
+            website: "grace.example.org".into(),
+            giving_url: "grace.example.org/give".into(),
+            pastor: "Pastor Lee".into(),
+        }
+    }
+
+    #[test]
+    fn bifold_template_shape() {
+        let d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "Twentieth Sunday after Pentecost",
+        );
+        assert_eq!(d.panels.len(), 4);
+        assert_eq!(d.sheet.size, Size::new(inch(11.0), inch(8.5)));
+        assert_eq!(d.panels[0].size, Size::new(inch(5.5), inch(8.5)));
+        let cover = &d.stories[0];
+        assert!(cover
+            .paragraphs
+            .iter()
+            .any(|p| p.text.contains("{Sunday.name}")));
+    }
+
+    #[test]
+    fn trifold_has_six_panels() {
+        let d = build_template(
+            Preset::LetterTrifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "X",
+        );
+        assert_eq!(d.panels.len(), 6);
+    }
+
+    #[test]
+    fn next_sunday_advances_and_clears() {
+        let d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "X",
+        );
+        let n = next_sunday(&d).unwrap();
+        assert_eq!(n.fields["sunday_date"], "2026-10-25");
+        assert_eq!(n.fields["sunday_date_long"], "October 25, 2026");
+        // Announcements (body in the weekly story) cleared; heading kept.
+        let notes = &n.stories[2];
+        assert!(notes
+            .paragraphs
+            .iter()
+            .any(|p| p.style == "subheading" && p.text == "Announcements"));
+        assert!(notes
+            .paragraphs
+            .iter()
+            .filter(|p| p.style == "body")
+            .all(|p| p.text.is_empty()));
+        // Standing order of service untouched.
+        assert!(n.stories[1]
+            .paragraphs
+            .iter()
+            .any(|p| p.text.contains("Hymn of Praise")));
+    }
+}

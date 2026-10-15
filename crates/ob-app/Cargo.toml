@@ -1,0 +1,17 @@
+[package]
+name = "openbulletin"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenBulletin desktop app (egui shell over the headless engine crates)."
+
+[[bin]]
+name = "openbulletin"
+path = "src/main.rs"
+
+[dependencies]
+ob-model = { path = "../ob-model" }
+ob-layout = { path = "../ob-layout" }
+eframe = "0.29"
+chrono.workspace = true

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Engine tests (headless crates)
+        run: cargo test -p ob-model -p ob-layout -p ob-impose -p ob-text -p ob-pdf -p ob-format -p openbulletin-cli
+      - name: Clippy (engine)
+        run: cargo clippy -p ob-model -p ob-layout -p ob-impose -p ob-text -p ob-pdf -p ob-format -p openbulletin-cli -- -D warnings
+      - name: Build desktop app
+        run: cargo build --release -p openbulletin -p openbulletin-cli

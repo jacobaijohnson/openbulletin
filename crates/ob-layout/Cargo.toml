@@ -1,0 +1,11 @@
+[package]
+name = "ob-layout"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenBulletin fold-aware presets, bulletin templates, and the Next Sunday command."
+
+[dependencies]
+ob-model = { path = "../ob-model" }
+chrono.workspace = true

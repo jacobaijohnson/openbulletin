@@ -1,0 +1,20 @@
+[package]
+name = "openbulletin-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenBulletin headless CLI: new, export-pdf, next-sunday, info. The CI oracle for the engine."
+
+[[bin]]
+name = "openbulletin-cli"
+path = "src/main.rs"
+
+[dependencies]
+ob-model = { path = "../ob-model" }
+ob-layout = { path = "../ob-layout" }
+ob-format = { path = "../ob-format" }
+ob-pdf = { path = "../ob-pdf" }
+ob-impose = { path = "../ob-impose" }
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }

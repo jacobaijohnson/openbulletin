@@ -1,0 +1,4 @@
+/target
+*.obd
+*.pdf
+.DS_Store

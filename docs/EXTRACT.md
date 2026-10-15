@@ -140,3 +140,17 @@ the bar dropped. Specified next rule: merge mutual closest siblings
 first (pairs that name each other), then attach their near neighbors.
 That is a clustering refinement, not an extraction problem; the
 extraction layer is done proving itself.
+
+## Clustering v2: mutual siblings (2026-10-15)
+
+Implemented as specified. On the 17 real dumps the machine now
+finds three families with no filename help: the 12-bulletin main
+family; an ELW family of three (the previously stranded 09-27
+attached to its closest sibling's family, as the rule intends); and
+an ELW pair (10-11, 10-18, mutual closest siblings, 467 standing
+passages, 24% standing share). The two ELW groups are NOT merged;
+instead the tool prints a "looks related" hint (best pair 0.10),
+which is the honest shape of the evidence: same series, two
+production flavors, and the review screen is where a human merges
+them if they wish. Hints also fire between the main family and the
+ELW trio (0.11, shared standing material), advisory only.

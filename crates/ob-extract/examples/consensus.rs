@@ -179,7 +179,33 @@ fn main() {
         .iter()
         .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
         .collect();
-    let threshold = 0.12f32;
+    // Clustering v2 (evidence: docs/EXTRACT.md). A single global bar
+    // was the wrong shape: the main family chains at 0.14+, while a
+    // real subfamily sat at 0.11. Rules, in order:
+    //   1. Mutual closest siblings merge (each names the other).
+    //   2. A bulletin joins its closest sibling's cluster when that
+    //      similarity clears a low floor: it reaches for that family
+    //      over all others.
+    //   3. Two clusters merge only at the strict bar.
+    // Remaining pairs above a hint floor are reported as "looks
+    // related" for the human review step, never auto-merged.
+    let sim = |i: usize, j: usize| -> f32 {
+        let inter = doc_sets[i].intersection(&doc_sets[j]).count() as f32;
+        let union = doc_sets[i].union(&doc_sets[j]).count() as f32;
+        if union > 0.0 {
+            inter / union
+        } else {
+            0.0
+        }
+    };
+    let best: Vec<(f32, usize)> = (0..n)
+        .map(|i| {
+            (0..n).filter(|&j| j != i).map(|j| (sim(i, j), j)).fold(
+                (0.0f32, usize::MAX),
+                |acc, x| if x.0 > acc.0 { x } else { acc },
+            )
+        })
+        .collect();
     let mut parent: Vec<usize> = (0..n).collect();
     fn find(parent: &mut [usize], mut x: usize) -> usize {
         while parent[x] != x {
@@ -188,39 +214,74 @@ fn main() {
         }
         x
     }
+    fn union(parent: &mut [usize], a: usize, b: usize) {
+        let (ra, rb) = (find(parent, a), find(parent, b));
+        if ra != rb {
+            parent[ra] = rb;
+        }
+    }
+    // rule 1: mutual closest siblings
     for i in 0..n {
-        for j in (i + 1)..n {
-            let inter = doc_sets[i].intersection(&doc_sets[j]).count() as f32;
-            let union = doc_sets[i].union(&doc_sets[j]).count() as f32;
-            if union > 0.0 && inter / union >= threshold {
-                let (a, b) = (find(&mut parent, i), find(&mut parent, j));
-                if a != b {
-                    parent[a] = b;
+        let j = best[i].1;
+        if j != usize::MAX && best[j].1 == i && best[i].0 >= 0.08 {
+            union(&mut parent, i, j);
+        }
+    }
+    // rule 2: attach to closest sibling's cluster (descending strength)
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| best[b].0.partial_cmp(&best[a].0).unwrap());
+    for &i in &order {
+        let j = best[i].1;
+        if j != usize::MAX && best[i].0 >= 0.10 {
+            union(&mut parent, i, j);
+        }
+    }
+    // rule 3: cluster-cluster merge at the strict bar
+    loop {
+        let mut merged = false;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if find(&mut parent, i) != find(&mut parent, j) && sim(i, j) >= 0.12 {
+                    union(&mut parent, i, j);
+                    merged = true;
                 }
             }
         }
+        if !merged {
+            break;
+        }
     }
+    // relatedness hints between final clusters
     let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for i in 0..n {
         let r = find(&mut parent, i);
         clusters.entry(r).or_default().push(i);
     }
-    println!("closest sibling per bulletin (Jaccard):");
-    for i in 0..n {
-        let mut best = (0.0f32, usize::MAX);
-        for j in 0..n {
-            if i == j {
-                continue;
-            }
-            let inter = doc_sets[i].intersection(&doc_sets[j]).count() as f32;
-            let union = doc_sets[i].union(&doc_sets[j]).count() as f32;
-            if union > 0.0 && inter / union > best.0 {
-                best = (inter / union, j);
+    let roots: Vec<usize> = clusters.keys().copied().collect();
+    for a in 0..roots.len() {
+        for b in (a + 1)..roots.len() {
+            let cross = clusters[&roots[a]]
+                .iter()
+                .flat_map(|&i| clusters[&roots[b]].iter().map(move |&j| sim(i, j)))
+                .fold(0.0f32, f32::max);
+            if cross >= 0.08 {
+                println!(
+                    "hint: clusters {} and {} look related (best pair {:.2})",
+                    a + 1,
+                    b + 1,
+                    cross
+                );
             }
         }
-        println!("    {:.2}  {}  ~  {}", best.0, names[i], names[best.1]);
     }
-    println!("\nautomatic clusters (Jaccard >= {threshold}):");
+    println!("closest sibling per bulletin (Jaccard):");
+    for i in 0..n {
+        println!(
+            "    {:.2}  {}  ~  {}",
+            best[i].0, names[i], names[best[i].1]
+        );
+    }
+    println!("automatic clusters (mutual-sibling rules):");
     let mut cluster_report = serde_json::json!({});
     for (k, members) in clusters.values().enumerate() {
         // consensus inside the cluster

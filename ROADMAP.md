@@ -44,6 +44,10 @@ Imports are rescues with honest fidelity labels, never magic (PRINCIPLES.md):
       binary and stays out of scope — InDesign users export IDML, which is
       Adobe's own supported path out).
 - [ ] PDF place as graphic + trace layer (also v0.5).
+- [ ] Template Analyzer (onboarding): drop 3-10+ old bulletins in any mix of PDF, .pub, IDML, and .obd; corpus
+      consensus separates standing structure from weekly slots and
+      field-like text; the app drafts a template the user can Accept,
+      Edit, or Cancel. Design: docs/TEMPLATE-ANALYZER.md.
 
 ## Later, only if earned
 Print-shop phase (CMYK, spot, ICC, bleed/marks, PDF/X-4), CSV data merge

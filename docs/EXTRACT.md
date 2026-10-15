@@ -50,3 +50,28 @@ output: the file ended in a doubled EOF marker (`%%%%EOF`). Lenient
 viewers had silently accepted it. Fixed, with a regression test
 (`eof_marker_is_exactly_two_percents`). Lesson recorded: verify with a
 strict parser, not just by opening the file.
+
+## Corpus consensus: first pass results (2026-10-15)
+
+Method: 8-word shingles over normalized text (whole-line matching was
+tried first and found almost nothing; producers chunk text too
+differently for line equality to survive). A passage is "standing"
+when it appears in at least 80% of the bulletins being compared.
+Tool: `crates/ob-extract/examples/consensus.rs`. Full example passages
+stay in the private fixtures folder; aggregates only here.
+
+- **Whole pile mixed (17 bulletins):** 116 standing passages, but only
+  page 2 holds its position week to week (53% standing). Pages 4-16
+  show zero page-stable standing text. The standing words exist; they
+  MOVE, because a 16-page booklet reflows as each week's readings and
+  music change length.
+- **Clustered by series, the picture snaps into focus.** The 6 LOTR
+  bulletins: 737 standing passages, 28-34% of each bulletin is
+  standing text, page 2 is 76% standing and page 4 is 100% standing.
+  The 5 ELW bulletins score lower (147 passages, 8-13%), which may be
+  word-order scrambling in this crude extractor rather than reality;
+  the position-aware PDFium helper will settle that question.
+- **Design consequence, evidence-backed:** the analyzer must cluster
+  first (series, season, producer) and run consensus inside each
+  cluster, tracking standing text by reading order, not by page
+  number. That was the design's assumption; now it is measured.

@@ -1464,6 +1464,10 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("<").clicked() && self.canvas_panel > 0 {
+                        // Changing pages mid-typing commits the
+                        // session first, while its panel index is
+                        // still the page it belongs to.
+                        self.commit_if_editing();
                         self.canvas_panel -= 1;
                         self.selected_frame = None;
                         self.guide_menu_for = None;
@@ -1479,6 +1483,7 @@ impl App {
                     if ui.button(">").clicked()
                         && self.canvas_panel + 1 < self.doc.panels.len()
                     {
+                        self.commit_if_editing();
                         self.canvas_panel += 1;
                         self.selected_frame = None;
                         self.guide_menu_for = None;

@@ -97,3 +97,27 @@ instances are handled by courtesy lock, not enforcement.
 The GUI has still never been run by a human. Every verdict is
 from code reading, tests, and crafted inputs. The remaining
 honest gate is a person opening the app and making a bulletin.
+
+## Tier-2 milestone judgment (Opus + GPT, 2026-10-15)
+
+Split verdict on "ready for one real admin, supervised":
+Opus yes, GPT no. The split is about evidence, not the tree.
+GPT's no rests on the effectiveness lane's pre-fix findings
+(E-B1, E-M4) treated as current; the packet it received held
+the pre-fix lane reports beside the post-fix synthesis, and
+it weighted the reports over the synthesis. The coordinator
+re-checked the territory: both findings are fixed in commit
+d828571, each with a regression test (open_guard_rearms_when_
+the_work_changes; journal_never_touches_recovered_work_
+while_undecided; 62 tests green). Lesson recorded: external
+auditors judging fixes need the fixed code or a diff, not
+reports about the old code.
+
+Both families independently rank the same remaining gate
+first: a human running the GUI. Opus also named the standing
+fault line precisely: the stale-index fixes are procedural
+(commit funnels), not structural. One more path of that
+family was found and closed the same day (paging to another
+panel mid-typing now commits first). The structural answer,
+frame identity instead of raw indices, is recorded debt for
+the editor's next phase.

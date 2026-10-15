@@ -132,3 +132,5 @@ mod tests {
         assert!(s.ends_with("365") && s.contains("..."));
     }
 }
+
+pub mod shaping;

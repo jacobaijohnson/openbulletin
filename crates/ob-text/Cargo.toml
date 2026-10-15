@@ -8,3 +8,21 @@ description = "OpenBulletin text helpers: measurement estimate, wrapping, dot-le
 
 [dependencies]
 ob-model = { path = "../ob-model" }
+
+# Shaping runs on registered fonts only: no system font backends in the
+# engine. That keeps the headless core deterministic on every OS (and out
+# of fontconfig/pkg-config trouble entirely). The app bundles fonts and
+# registers them; user-font discovery, if it ever lands, is an app-layer
+# concern, not an engine dependency.
+[dependencies.parley]
+version = "0.12"
+default-features = false
+features = ["std"]
+
+[dependencies.fontique]
+version = "0.12"
+default-features = false
+features = ["std"]
+
+[dev-dependencies]
+ttf-parser = "0.25"

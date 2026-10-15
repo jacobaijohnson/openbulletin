@@ -52,3 +52,10 @@ Imports are rescues with honest fidelity labels, never magic (PRINCIPLES.md):
 ## Later, only if earned
 Print-shop phase (CMYK, spot, ICC, bleed/marks, PDF/X-4), CSV data merge
 (name tags, certificates), Scribus import, IDML read-only import.
+
+## Deployment track (Jacob, 2026-10-15; design in docs/DEPLOYMENT.md)
+- [ ] Docker image for NAS / home-server use: same egui UI compiled to
+      WebAssembly, tiny file server, `docker compose up` install.
+- [ ] (Only with the server shape) local accounts, optional Google
+      sign-in, and Owner / Editor / Viewer roles. Desktop stays
+      login-free; the file format never carries accounts.

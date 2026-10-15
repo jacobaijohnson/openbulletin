@@ -18,6 +18,7 @@ pub mod draft;
 pub mod helper;
 pub mod idml;
 pub mod pub_bridge;
+pub mod pub_text;
 
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +44,12 @@ pub enum SpanTrust {
     /// fonts). The analyzer treats such pages as pictures to trace
     /// over, never as words it knows.
     PictureOnly,
+    /// Decoded as text, but the recovery cannot vouch for the
+    /// words' look or placement (the native .pub text rescue:
+    /// words in reading order, without their places on the
+    /// page). The draft badges every block built from these
+    /// Check this.
+    NeedsReview,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

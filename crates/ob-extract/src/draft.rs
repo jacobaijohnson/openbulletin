@@ -94,6 +94,10 @@ struct Line {
     /// Baseline wander inside the line: large on text set along
     /// a curve or in steps, which no reading order fully heals.
     spread: f32,
+    /// Any fragment came from a recovery that cannot vouch for
+    /// the words (SpanTrust::NeedsReview): the block is badged
+    /// Check this no matter how well its font matched.
+    review: bool,
 }
 
 impl Line {
@@ -175,6 +179,7 @@ fn lines_of(spans: &[&crate::Span]) -> Vec<Line> {
         if joins == Some(true) {
             let line = lines.last_mut().expect("line");
             line.spread = line.spread.max((y - line.y).abs());
+            line.review |= sp.trust == SpanTrust::NeedsReview;
             line.parts.push(part);
         } else {
             lines.push(Line {
@@ -182,6 +187,7 @@ fn lines_of(spans: &[&crate::Span]) -> Vec<Line> {
                 h: sp.h.unwrap_or(size * 1.2),
                 parts: vec![part],
                 spread: 0.0,
+                review: sp.trust == SpanTrust::NeedsReview,
             });
         }
     }
@@ -243,7 +249,10 @@ pub fn document_from_dump(
         let spans: Vec<&crate::Span> = dump
             .spans
             .iter()
-            .filter(|s| s.page == page.index && s.trust == SpanTrust::RawText)
+            .filter(|s| {
+                s.page == page.index
+                    && matches!(s.trust, SpanTrust::RawText | SpanTrust::NeedsReview)
+            })
             .collect();
         let mut panel = Panel {
             id: format!("page-{}", page.index + 1),
@@ -368,18 +377,23 @@ pub fn document_from_dump(
             });
             // Words set along a curve or in steps in the old
             // file cannot be read back in a certain order: flag
-            // the block even when its font matched.
+            // the block even when its font matched. Words from
+            // a recovery that cannot vouch for them (the .pub
+            // text rescue) are flagged the same way.
             let jittery = block.iter().any(|l| l.spread > l.size() * 0.6);
+            let unvouched = block.iter().any(|l| l.review);
             let first_line: String = paras[0].chars().take(38).collect();
             items.push(ImportItem {
                 panel: pi,
                 label: first_line,
-                badge: if mapped.is_some() && !jittery {
+                badge: if mapped.is_some() && !jittery && !unvouched {
                     Badge::Matched
                 } else {
                     Badge::CheckThis
                 },
-                detail: if jittery {
+                detail: if unvouched {
+                    format!("Words from page {}; they came over as words only, without their places on the page, so check them against the original file.", page.index + 1)
+                } else if jittery {
                     format!("Words from page {}; they were set along a curve or in steps in the old file, so their order may be off. The old page sits underneath as a picture to check against.", page.index + 1)
                 } else if mapped.is_some() {
                     format!("Words from page {}, in a font we have or a twin of {src_font}.", page.index + 1)
@@ -506,6 +520,39 @@ mod tests {
             .styles
             .iter()
             .any(|s| s.font_family == "Liberation Sans" && s.font_size == 20_000));
+    }
+
+    #[test]
+    fn unvouched_words_are_check_this_even_with_a_matched_font() {
+        // The .pub text rescue: words without places. Arial
+        // would normally earn a Matched badge; NeedsReview
+        // words are Check this regardless.
+        let mut s = span(0, "Grace Lutheran", 60.0, 40.0, 20.0, "Arial", true);
+        s.trust = SpanTrust::NeedsReview;
+        let dump = ExtractionDump {
+            schema_version: 1,
+            source_kind: SourceKind::Pub,
+            source_name: "old.pub".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![s],
+        };
+        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        assert_eq!(out.items.len(), 1);
+        assert_eq!(out.items[0].badge, Badge::CheckThis);
+        assert!(out.items[0].detail.contains("without their places"));
+        // And the words themselves still land in a story.
+        assert!(out
+            .doc
+            .stories
+            .iter()
+            .any(|st| st.paragraphs.iter().any(|p| p.text == "Grace Lutheran")));
     }
 
     #[test]

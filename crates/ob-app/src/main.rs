@@ -2815,6 +2815,13 @@ impl App {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "Publisher file".into());
                 let Some(soffice) = ob_extract::pub_bridge::find_soffice() else {
+                    // No LibreOffice: our own reader takes the
+                    // Publisher 2002-and-later family. Anything
+                    // it cannot rescue (the older family, a
+                    // damaged file) keeps the standing message.
+                    if let Ok(review) = native_pub_review(&path, &name, profile.clone()) {
+                        return Ok(review);
+                    }
                     return Err("Publisher files ride through LibreOffice, a free program, \
                          and it is not installed on this computer. Two ways forward: \
                          install LibreOffice from libreoffice.org and try again, or \
@@ -4579,6 +4586,43 @@ fn journal_decision(
     } else {
         JournalAction::Write
     }
+}
+
+/// The native .pub text rescue (phase 2b): our own reader,
+/// no LibreOffice needed. Words only, in reading order; the
+/// review note says so plainly, with the loss counts when
+/// anything in the file could not be read.
+fn native_pub_review(
+    path: &std::path::Path,
+    name: &str,
+    profile: ChurchProfile,
+) -> Result<ImportReview, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read that file: {e}"))?;
+    let source_bytes = bytes.len();
+    let cfb = ob_extract::cfb::Cfb::open(bytes)?;
+    let (dump, loss) = ob_extract::pub_text::extract_pub_text(&cfb, name, source_bytes)?;
+    if dump.spans.is_empty() {
+        return Err("the built-in reader found no words in that Publisher file".into());
+    }
+    let out = ob_extract::draft::document_from_dump(&dump, profile, false);
+    let mut note = "These words came from your Publisher file with OpenBulletin's own \
+                    reader, so no other program was needed. Only the words come over in \
+                    this step: their places on the page and any pictures arrive later, \
+                    so check the words themselves. Every piece is marked Check this."
+        .to_string();
+    if loss.stories_unresolved > 0 {
+        note.push_str(&format!(
+            " {} of {} pieces of text in the file could not be read and were left out.",
+            loss.stories_unresolved, loss.stories_total
+        ));
+    }
+    Ok(ImportReview {
+        doc: out.doc,
+        items: out.items,
+        workdir: None,
+        source_name: name.to_string(),
+        note: Some(note),
+    })
 }
 
 /// A finished PDF rescue waiting for the admin's verdict:

@@ -217,6 +217,18 @@ impl App {
 
     /// Refresh the text buffers that mirror the document
     /// (announcements, church profile, date) after a swap.
+    /// Set a failure status: renders as a banner (F3).
+    fn fail(&mut self, msg: String) {
+        self.status = msg;
+        self.status_error = true;
+    }
+
+    /// Set an ordinary status and clear any failure banner.
+    fn note(&mut self, msg: String) {
+        self.status = msg;
+        self.status_error = false;
+    }
+
     fn sync_buffers(&mut self) {
         self.announcements = weekly_body_text(&self.doc);
         self.announcements_dirty = false;
@@ -364,6 +376,15 @@ struct App {
     /// so style inheritance follows insertions at the cursor
     /// instead of the end of the text (audit R2).
     edit_cursor_para: usize,
+    /// True when the status line reports a failure: it renders
+    /// as a banner the user cannot miss (finding F3).
+    status_error: bool,
+    /// Two-click guard on Open while unsaved work is on screen
+    /// (finding B3): the first click arms, the second leaves
+    /// the work behind.
+    open_armed: bool,
+    /// Two-click guard on throwing recovered work away (F11).
+    discard_armed: bool,
     /// One document snapshot per frame, shared by the preview
     /// caches instead of re-serializing the document for every
     /// consumer (audit R6).
@@ -488,6 +509,9 @@ impl Default for App {
             edit_salt: String::new(),
             edit_cursor_para: 0,
             frame_snapshot: String::new(),
+            status_error: false,
+            open_armed: false,
+            discard_armed: false,
             edit_done: false,
             focus_edit: false,
             edit_start: None,
@@ -527,6 +551,19 @@ fn weekly_body_text(doc: &Document) -> String {
 }
 
 impl App {
+    /// Move to a step the way the Next button does: leaving
+    /// Announcements writes the box; arriving at Check runs it.
+    /// The step list itself is clickable now (finding F1).
+    fn goto_step(&mut self, i: usize) {
+        if self.step == 2 && i != 2 {
+            self.save_announcements();
+        }
+        self.step = i;
+        if i == 3 {
+            self.run_checks();
+        }
+    }
+
     fn rebuild(&mut self) {
         // A shape change replaces the whole document. It used to
         // be a silent discard with the autosave journal retired:
@@ -928,12 +965,28 @@ impl App {
                     "OpenBulletin kept a copy of the bulletin you were editing, \
                      saved on {clock}. It was never saved to a file."
                 ));
+                if let Some(source) = self.recovery.as_ref().and_then(|(_, src, _)| src.as_ref()) {
+                    ui.label(format!("It belongs to the file: {}", source.display()));
+                } else {
+                    ui.label("It was a brand-new bulletin, never saved anywhere.");
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Bring it back").clicked() {
                         bring_back = true;
+                        self.discard_armed = false;
                     }
-                    if ui.button("Throw it away").clicked() {
-                        throw_away = true;
+                    let discard_label = if self.discard_armed {
+                        "Click again to throw it away for good"
+                    } else {
+                        "Throw it away"
+                    };
+                    if ui.button(discard_label).clicked() {
+                        if self.discard_armed {
+                            throw_away = true;
+                            self.discard_armed = false;
+                        } else {
+                            self.discard_armed = true;
+                        }
                     }
                 });
             });
@@ -1175,7 +1228,9 @@ impl App {
                         self.canvas_panel += 1;
                     }
                 });
-                ui.label("Click a box to select it. Drag to move it, drag its corner square to size it, arrow keys nudge it. Double-click a box to type in it. Boxes and guides both snap to the blue lines. Right-click anything for its exact place in inches. Guides never print.");
+                ui.label("Click a box to select it, then drag to move it. Drag the corner square to size it.");
+                ui.label("Double-click a box to type in it. Arrow keys nudge a selected box.");
+                ui.label("Right-click anything for its exact place in inches. The blue guides never print.");
                 if self.editing.map(|(pi, _)| pi) != Some(idx) && self.editing.is_some() {
                     self.commit_edit();
                 }
@@ -1905,9 +1960,8 @@ impl App {
             .resizable(true)
             .default_width(520.0)
             .show(ctx, |ui| {
-                ui.label(
-                    "These are the fonts this app may use. Bulletins are laid out                      only with fonts from this library, so they look the same on                      every computer.",
-                );
+                ui.label("These are the fonts this app may use.");
+                ui.label("Bulletins are laid out only with fonts from this library, so they look the same on every computer.");
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
@@ -1934,6 +1988,56 @@ impl App {
                         }
                     });
                 ui.add_space(4.0);
+                ui.separator();
+                ui.label(egui::RichText::new("Put a font to work").strong());
+                ui.label("Installing a font only makes it available. Pick one here to use it in this bulletin:");
+                {
+                    let mut families: Vec<String> = vec![
+                        "Liberation Sans".to_string(),
+                        "Liberation Serif".to_string(),
+                    ];
+                    for row in &self.font_rows {
+                        if !families.contains(&row.family) {
+                            families.push(row.family.clone());
+                        }
+                    }
+                    families.sort();
+                    families.dedup();
+                    let style_names: Vec<String> =
+                        self.doc.styles.iter().map(|st| st.name.clone()).collect();
+                    for name in style_names {
+                        let current = self
+                            .doc
+                            .styles
+                            .iter()
+                            .find(|st| st.name == name)
+                            .map(|st| st.font_family.clone())
+                            .unwrap_or_default();
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{name}:"));
+                            let mut picked = current.clone();
+                            egui::ComboBox::from_id_salt(("style-font", &name))
+                                .selected_text(&current)
+                                .show_ui(ui, |ui| {
+                                    for fam in &families {
+                                        ui.selectable_value(&mut picked, fam.clone(), fam);
+                                    }
+                                });
+                            if picked != current {
+                                let before = snapshot(&self.doc);
+                                if let Some(st) =
+                                    self.doc.styles.iter_mut().find(|st| st.name == name)
+                                {
+                                    st.font_family = picked.clone();
+                                }
+                                self.pin_fonts();
+                                self.record_undo(before);
+                                self.note(format!("{name} now uses {picked}."));
+                            }
+                        });
+                    }
+                }
+                ui.separator();
                 if ui.button("Add fonts...").clicked() {
                     if let Some(paths) = rfd::FileDialog::new()
                         .add_filter("Font files and packs", &["ttf", "otf", "zip"])
@@ -2233,6 +2337,14 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("OpenBulletin");
+                if ui.button("New bulletin").clicked() {
+                    self.goto_step(0);
+                    self.note(
+                        "Step 1 is where a fresh bulletin starts: pick a shape and it \
+                         rebuilds. Nothing you have open is touched until you pick one."
+                            .into(),
+                    );
+                }
                 if ui.button("Pages").clicked() {
                     self.show_pages = true;
                 }
@@ -2258,7 +2370,22 @@ impl eframe::App for App {
                 {
                     self.redo();
                 }
-                if ui.button("Open bulletin...").clicked() {
+                let open_label = if self.open_armed {
+                    "Leave unsaved work and open?"
+                } else {
+                    "Open bulletin..."
+                };
+                if ui.button(open_label).clicked() {
+                    let dirty = self.frame_snapshot != self.saved_snapshot;
+                    if dirty && !self.open_armed {
+                        self.open_armed = true;
+                        self.note(
+                            "You have unsaved work on screen. Click Open again to leave it \
+                             behind; it will be gone for good. Or Save first."
+                                .into(),
+                        );
+                    } else {
+                        self.open_armed = false;
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("OpenBulletin bulletin", &["obd"])
                         .pick_file()
@@ -2268,11 +2395,14 @@ impl eframe::App for App {
                                 self.adopt_document(doc, true);
                                 self.path = Some(path);
                                 self.step = 1;
-                                self.status = "Bulletin opened.".into();
+                                self.note("Bulletin opened.".into());
                                 self.mark_clean();
                             }
-                            Err(e) => self.status = format!("Could not open that file: {e}"),
+                            Err(e) => self.fail(format!(
+                                "Could not open that file. Pick a bulletin file ending in .obd. ({e})"
+                            )),
                         }
+                    }
                     }
                 }
                 if ui.button("Save bulletin").clicked() {
@@ -2287,11 +2417,13 @@ impl eframe::App for App {
                     if let Some(path) = target {
                         match ob_format::save(&self.doc, &path) {
                             Ok(()) => {
-                                self.status = format!("Saved to {}", path.display());
+                                self.note(format!("Saved to {}", path.display()));
                                 self.path = Some(path);
                                 self.mark_clean();
                             }
-                            Err(e) => self.status = format!("Could not save: {e}"),
+                            Err(e) => self.fail(format!(
+                                "Could not save the file. Try your Documents folder. ({e})"
+                            )),
                         }
                     }
                 }
@@ -2306,16 +2438,12 @@ impl eframe::App for App {
                             )
                             .clicked()
                     {
-                        if self.step == 2 {
-                            self.save_announcements();
-                        }
-                        self.step += 1;
-                        if self.step == 3 {
-                            self.run_checks();
-                        }
+                        let next = self.step + 1;
+                        self.goto_step(next);
                     }
                     if self.step > 0 && ui.button("Back").clicked() {
-                        self.step -= 1;
+                        let prev = self.step - 1;
+                        self.goto_step(prev);
                     }
                 });
             });
@@ -2323,8 +2451,8 @@ impl eframe::App for App {
         });
 
         egui::SidePanel::left("steps")
-            .resizable(false)
-            .default_width(300.0)
+            .resizable(true)
+            .default_width(if self.step == 4 { 560.0 } else { 300.0 })
             .show(ctx, |ui| {
                 for (i, name) in STEPS.iter().enumerate() {
                     let marker = if i == self.step {
@@ -2334,12 +2462,42 @@ impl eframe::App for App {
                     } else {
                         ""
                     };
-                    ui.label(egui::RichText::new(format!("{marker} {}. {name}", i + 1)).strong_if(i == self.step));
+                    if ui
+                        .selectable_label(
+                            i == self.step,
+                            egui::RichText::new(format!("{marker} {}. {name}", i + 1))
+                                .strong_if(i == self.step),
+                        )
+                        .clicked()
+                    {
+                        self.goto_step(i);
+                    }
                 }
                 ui.separator();
                 match self.step {
                     0 => {
-                        ui.heading("Bulletin shape");
+                        ui.heading("Start from last week");
+                        ui.label("The usual week: open last Sunday's bulletin and we move it to this Sunday. Last week's announcements clear; everything standing stays.");
+                        if ui.button("Use last week's bulletin...").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("OpenBulletin bulletin", &["obd"])
+                                .pick_file()
+                            {
+                                match ob_format::load(&path) {
+                                    Ok(doc) => {
+                                        self.adopt_document(doc, true);
+                                        self.path = Some(path);
+                                        self.mark_clean();
+                                        self.next_sunday();
+                                    }
+                                    Err(e) => self.fail(format!(
+                                        "Could not open that file. Pick a bulletin file ending in .obd. ({e})"
+                                    )),
+                                }
+                            }
+                        }
+                        ui.separator();
+                        ui.heading("Or start fresh: bulletin shape");
                         for p in Preset::all() {
                             if ui.selectable_label(self.preset == p, p.label()).clicked() {
                                 self.preset = p;
@@ -2440,9 +2598,16 @@ impl eframe::App for App {
                                 self.record_undo(before);
                         }
                         ui.small("The cover and the order of service fill themselves from these.");
+                        ui.separator();
+                        if ui.button("Make next week's bulletin from this one").clicked() {
+                            self.next_sunday();
+                        }
                     }
                     2 => {
                         ui.heading("Announcements");
+                        if ui.button("See the announcements on the page").clicked() {
+                            self.show_pages = true;
+                        }
                         ui.label("One announcement per line. Paste from email works; formatting is cleaned up for you.");
                         let ann_resp = ui.add(
                             egui::TextEdit::multiline(&mut self.announcements)
@@ -2466,6 +2631,18 @@ impl eframe::App for App {
                             self.save_announcements();
                             self.run_checks();
                         }
+                        ui.horizontal(|ui| {
+                            if ui.button("Fix the date or readings").clicked() {
+                                self.goto_step(1);
+                            }
+                            if ui.button("Fix the words").clicked() {
+                                self.goto_step(2);
+                            }
+                            if ui.button("Open the Pages window").clicked() {
+                                self.show_pages = true;
+                            }
+                        });
+                        ui.small("Too much text in a box? Open the Pages window and make the box bigger, or shorten the words.");
                     }
                     _ => {
                         ui.heading("Print");
@@ -2476,6 +2653,7 @@ impl eframe::App for App {
                         for line in self.print_checklist() {
                             ui.label(format!("- {line}"));
                         }
+                        ui.small("Open makes a one-time copy to print right now. The Save buttons below keep files you can reuse.");
                         if ui.button("Open the print copy").clicked() {
                             self.pin_fonts();
                             let bytes = ob_pdf::export_imposed_pdf(&self.doc);
@@ -2525,6 +2703,19 @@ impl eframe::App for App {
                             ui.label("Printer:");
                             ui.text_edit_singleline(&mut self.printer_name);
                         });
+                        if !self.settings.printers.is_empty() {
+                            ui.horizontal(|ui| {
+                                ui.label("Printers we know:");
+                                let names: Vec<String> =
+                                    self.settings.printers.keys().cloned().collect();
+                                for n in names {
+                                    if ui.selectable_label(self.printer_name == n, &n).clicked()
+                                    {
+                                        self.printer_name = n;
+                                    }
+                                }
+                            });
+                        }
                         let known = self.settings.printers.get(&self.printer_name).cloned();
                         if let Some(setup) = &known {
                             ui.label(egui::RichText::new(&setup.instruction).strong());
@@ -2565,15 +2756,26 @@ impl eframe::App for App {
                     }
                 }
                 ui.separator();
-                ui.small(&self.status);
+                if self.status_error {
+                    ui.label(
+                        egui::RichText::new(format!("Something needs attention: {}", self.status))
+                            .color(egui::Color32::from_rgb(170, 40, 30))
+                            .strong(),
+                    );
+                } else {
+                    ui.small(&self.status);
+                }
             });
 
         self.pages_window(ctx);
         self.fonts_window(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label(egui::RichText::new("Preview: what the congregation will hold").strong());
+            ui.small("Laid out with your real fonts, the same lines the printer gets. The Pages window is where you move boxes.");
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for panel in &self.doc.panels {
+                let count = self.doc.panels.len();
+                for idx in 0..count {
+                    let panel = self.doc.panels[idx].clone();
                     ui.label(egui::RichText::new(&panel.name).strong());
                     let scale = 0.85f32;
                     let size = egui::vec2(
@@ -2605,29 +2807,26 @@ impl eframe::App for App {
                             1.0,
                             egui::Stroke::new(0.75_f32, egui::Color32::LIGHT_GRAY),
                         );
-                        if let Some(sid) = &frame.story_id {
-                            if let Some(story) = self.doc.story(sid) {
-                                let mut y = fr.min.y + 4.0;
-                                for para in &story.paragraphs {
-                                    let style = self.doc.style(&para.style);
-                                    let fs =
-                                        style.map(|s| s.font_size as f32 / 1000.0).unwrap_or(11.0);
-                                    let text = ob_model::resolve_fields(&para.text, &self.doc);
-                                    let text = text.replace('\t', "  ");
-                                    painter.text(
-                                        egui::pos2(fr.min.x + 6.0, y),
-                                        egui::Align2::LEFT_TOP,
-                                        text.chars().take(64).collect::<String>(),
-                                        egui::FontId::proportional(fs * scale + 3.0),
-                                        egui::Color32::BLACK,
-                                    );
-                                    y += (fs * scale + 3.0) * 1.35;
-                                    if y > fr.max.y - 10.0 {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                    }
+                    let lines = self.shaped_panel_lines(idx);
+                    for line in &lines {
+                        let anchor = match line.align {
+                            ob_model::Align::Left => egui::Align2::LEFT_BOTTOM,
+                            ob_model::Align::Center => egui::Align2::CENTER_BOTTOM,
+                            ob_model::Align::Right => egui::Align2::RIGHT_BOTTOM,
+                        };
+                        let lx = match line.align {
+                            ob_model::Align::Left => line.x,
+                            ob_model::Align::Center => line.x + line.w / 2.0,
+                            ob_model::Align::Right => line.x + line.w,
+                        };
+                        painter.text(
+                            rect.min + egui::vec2(lx * scale, line.y * scale),
+                            anchor,
+                            &line.text,
+                            egui::FontId::proportional((line.size * scale).max(4.0)),
+                            egui::Color32::BLACK,
+                        );
                     }
                     ui.add_space(14.0);
                 }
@@ -2927,22 +3126,10 @@ fn print_checklist_for(doc: &Document, settings: &Settings, printer_name: &str) 
             .to_string(),
     ];
     match settings.printers.get(printer_name) {
-        Some(setup) if setup.mode == "long_edge" => lines.push(
-            "Two-sided: On, and pick \"flip on long edge\". Your test sheet \
-             proved this is right for this printer."
-                .to_string(),
-        ),
-        Some(setup) if setup.mode == "short_edge" => lines.push(
-            "Two-sided: On, and pick \"flip on short edge\". Your test sheet \
-             proved long edge comes out upside down on this printer."
-                .to_string(),
-        ),
-        Some(_) => lines.push(
-            "Two-sided: this printer does one side at a time. Print all the \
-             front sides, put the stack back in the tray the same way it came \
-             out, then print the back sides. Try one sheet first."
-                .to_string(),
-        ),
+        // One source of words: the checklist quotes the very
+        // instruction the wizard learned, so the two can never
+        // disagree (finding F6).
+        Some(setup) => lines.push(setup.instruction.clone()),
         None => lines.push(format!(
             "Two-sided: we have not learned the {printer_name} yet. Print the \
              test sheet below once and answer, and this line will name the \

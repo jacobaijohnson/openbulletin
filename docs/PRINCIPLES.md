@@ -31,3 +31,11 @@
 8. **Build isolation.** OpenBulletin never shares space with Jacob's other
    project (the EV Classic Mac harness): separate repo, separate chats,
    separate desktop runner, container, and caches. No cross-contamination.
+
+9. **Conform to the office worker, not the other way round**
+   (Jacob's words, 2026-10-15). The user already knows Office and
+   Publisher habits: rulers in inches, right-click menus, typing an
+   exact number into a box. Power is welcome, but it must arrive in
+   the shapes they already know, one visible step at a time. If a
+   feature makes them learn us instead of the other way round, the
+   feature is wrong, however elegant the engine is.

@@ -7,7 +7,7 @@ legal advice.
 
 ## Dependency license audit (2026-10-15)
 
-`cargo metadata` over the full tree: 523 packages. Every package is
+`cargo metadata` over the full tree: 524 packages (recounted 2026-10-15 when IDML import added quick-xml and zip as direct dependencies; both were already in the tree transitively in substance). Every package is
 MIT, Apache-2.0, MIT OR Apache-2.0, Zlib, BSD, ISC, Unicode-3.0, or
 (for egui's bundled default fonts) OFL-1.1 / UFL, which cover font
 data, not code. The single multi-license flag, r-efi (present at two

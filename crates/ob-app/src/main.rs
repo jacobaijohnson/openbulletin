@@ -2454,11 +2454,49 @@ impl App {
                 Ok(ImportReview {
                     doc: out.doc,
                     items: out.items,
-                    workdir,
+                    workdir: Some(workdir),
+                    note: None,
                     source_name: pdf
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "old bulletin".into()),
+                })
+            })();
+            let _ = tx.send(result);
+        });
+    }
+
+    /// IDML import on a worker: parse the package in-process
+    /// (memory-safe zip and XML), build the draft.
+    fn start_idml_import(&mut self, path: std::path::PathBuf) {
+        let profile = self.doc.profile.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.import_rx = Some(rx);
+        self.note("Reading your InDesign file...".into());
+        std::thread::spawn(move || {
+            let result = (|| -> Result<ImportReview, String> {
+                let bytes = std::fs::read(&path)
+                    .map_err(|e| format!("cannot read that file: {e}"))?;
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "InDesign file".into());
+                let dump = ob_extract::idml::dump_from_idml(&bytes, &name)?;
+                if dump.pages.is_empty() {
+                    return Err("that IDML file has no pages we can read".into());
+                }
+                let out =
+                    ob_extract::draft::document_from_dump(&dump, profile, false);
+                Ok(ImportReview {
+                    doc: out.doc,
+                    items: out.items,
+                    workdir: None,
+                    source_name: name,
+                    note: Some(
+                        "Pictures placed in InDesign do not come over in this \
+                         first version. The words, their boxes, and their fonts do."
+                            .into(),
+                    ),
                 })
             })();
             let _ = tx.send(result);
@@ -2494,14 +2532,13 @@ impl App {
             return;
         };
         self.import_armed = false;
-        self.asset_base = Some(review.workdir.clone());
+        self.asset_base = review.workdir.clone();
         self.adopt_document(review.doc, true);
         self.path = None;
         if edit {
             self.show_pages = true;
             self.note(
-                "Here is your old bulletin as a draft. The old pages sit under each \
-                 page as pictures to check against."
+                "Here is your old bulletin as a draft. Check it page by page."
                     .into(),
             );
         } else {
@@ -2539,6 +2576,9 @@ impl App {
                     "We read {} and rebuilt it as a draft bulletin:                      {good} pieces came over cleanly, {check} need your eye,                      and {pics} pages are pictures only. Nothing is final until                      you say so, and the old pages sit under the new ones as                      pictures to check against.",
                     review.source_name
                 ));
+                if let Some(note) = &review.note {
+                    ui.label(note);
+                }
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
@@ -2601,7 +2641,9 @@ impl App {
             self.finalize_import(edit);
         } else if cancel {
             if let Some(review) = self.import_review.take() {
-                let _ = std::fs::remove_dir_all(&review.workdir);
+                if let Some(wd) = &review.workdir {
+                    let _ = std::fs::remove_dir_all(wd);
+                }
             }
             self.import_armed = false;
             self.note("Import cancelled; nothing changed.".into());
@@ -3374,6 +3416,19 @@ impl eframe::App for App {
                             }
                         }
                         ui.separator();
+                        ui.heading("Bring in an InDesign file");
+                        ui.label("If your bulletin was made in InDesign, export it there as IDML (File, Export, choose InDesign Markup). We read the words, their boxes, and their fonts from that file.");
+                        if self.import_rx.is_some() {
+                            ui.label("Reading your file...");
+                        } else if ui.button("Open an IDML file...").clicked() {
+                            if let Some(idml) = rfd::FileDialog::new()
+                                .add_filter("InDesign IDML", &["idml"])
+                                .pick_file()
+                            {
+                                self.start_idml_import(idml);
+                            }
+                        }
+                        ui.separator();
                         ui.heading("Learn from your old bulletins");
                         ui.label("Or give us three or more old bulletins (PDFs) and we will learn what stays the same every week and what changes, and suggest a template from them.");
                         if self.analyzer_rx.is_some() {
@@ -3910,8 +3965,12 @@ fn journal_decision(
 struct ImportReview {
     doc: Document,
     items: Vec<ob_extract::draft::ImportItem>,
-    workdir: std::path::PathBuf,
+    /// Where the page pictures live, for PDF rescues. IDML
+    /// imports have none.
+    workdir: Option<std::path::PathBuf>,
     source_name: String,
+    /// An honesty line shown in the review (IDML pictures).
+    note: Option<String>,
 }
 
 /// A finished Template Analyzer run awaiting the verdict.

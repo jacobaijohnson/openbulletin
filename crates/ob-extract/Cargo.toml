@@ -11,6 +11,8 @@ serde.workspace = true
 serde_json.workspace = true
 lopdf = "0.34"
 ob-model = { path = "../ob-model" }
+quick-xml = "0.36"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 ob-layout = { path = "../ob-layout" }

@@ -90,7 +90,6 @@ This is early software (version 0.1). Here is the honest list.
 ### Not built yet
 
 - **Publisher or InDesign keyboard shortcuts.** Planned.
-- **An InDesign door.** IDML import is the next import piece.
 - **An installer.** Today you build the app from source code. If that
   sounds unfamiliar, OpenBulletin is not ready for you yet. Watch this
   page for a download.
@@ -146,13 +145,14 @@ Honest labels, in plain words:
   Check this, or Picture only before you accept anything.
   Three or more old PDFs can also teach the app your church's
   template (Start step, "Learn from your old bulletins").
-- **Publisher (`.pub`) and InDesign files do not open yet.** The plan
-  is written down in [ROADMAP.md](ROADMAP.md).
+- **InDesign files open through IDML**, InDesign's own export:
+  words, boxes, and fonts come over as a draft to review; placed
+  pictures do not yet. **Publisher (`.pub`) files do not open yet.**
+  The plan is written down in [ROADMAP.md](ROADMAP.md).
 - The first piece exists: a tool that reads a PDF and lists its pages,
   sizes, and words (the `ob-extract` crate above).
-- When imports land, InDesign will come through IDML, which is Adobe's
-  supported way out of InDesign. Direct `.indd` reading stays out of
-  scope.
+- InDesign comes through IDML, Adobe's supported way out; direct
+  `.indd` reading stays out of scope.
 - **One limit that will never change:** we will never copy fonts out of
   old PDFs. Those fonts are usually partial copies, and the law usually
   does not allow it. Instead, imports will swap in a look-alike font

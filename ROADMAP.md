@@ -43,9 +43,10 @@ Imports are rescues with honest fidelity labels, never magic (PRINCIPLES.md):
 - [ ] .pub rescue import: text, images, and page geometry out of Publisher
       files via libmspub (the MPL library LibreOffice uses) in an
       out-of-process helper, mapped onto the closest template.
-- [ ] IDML import (InDesign's interchange format; .indd itself is a closed
-      binary and stays out of scope — InDesign users export IDML, which is
-      Adobe's own supported path out).
+- [x] IDML import (shipped 2026-10-15): words, frames, sizes, and fonts
+      out of InDesign's interchange format, through the same draft
+      review as PDF rescue; placed pictures do not come over yet.
+      (.indd itself is a closed binary and stays out of scope.)
 - [ ] PDF place as graphic + trace layer (also v0.5).
 - [x] Template Analyzer (shipped 2026-10-15 for PDFs): pick 3 or more
       old bulletin PDFs; corpus consensus separates standing text from

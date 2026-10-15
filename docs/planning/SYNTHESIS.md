@@ -16,3 +16,58 @@ DesignCraft already implements the Opus "eventually" engine list (composer, thre
 1. Trial DesignCraft against the 5 pre-written criteria (evaluation doc). Jacob's decision pending.
 2. If engine passes: "OpenBulletin" becomes a LAYER on DesignCraft, not a fork and not a new engine — a bulletin template pack + church profile/fields conventions + Next Sunday automation built on DesignCraft's CLI/MCP/data-merge, contributed upstream where it fits (templates, simple workspace proposal). Small, ownable, useful even if upstream moves fast.
 3. If engine fails the trial: fall back to the Opus build plan, starting with the text spike, reusing Opus's crate map and never-list as policy.
+
+## Amendment 2026-10-15 (later): GPT record corrected + GPT-family pass landed
+
+Correction to the history above: the GPT sol-pro attempt history was
+mis-recorded. Attempt 1 timed out at 280s. Attempt 2 (medium, 32k)
+SUCCEEDED (13,890 prompt / 8,684 completion tokens, 18,932 chars) and its
+output was saved to gpt-concept.md, but the coordinator deleted that file
+during commit cleanup, unread, trusting the wrong failure summary.
+Attempt 3 returned an empty provider stub. The GPT-family pass was then
+completed on gpt-6.1-sol (same brief); its output is the current
+gpt-concept.md. The loss and the error are recorded here deliberately.
+
+GPT (sol) vs Opus convergence: template-first weekly workflow ("prepare
+next Sunday without damaging the layout"); one editing model with
+configurable workspaces, never three personalities; local files; a
+typography-to-paper spike first; strict bloat exclusions (GREP styles,
+footnotes/index, EPUB/web, collaboration/cloud, plugin ecosystems).
+Divergences: GPT phases mail merge/data merge and simple tables into a
+later Publisher-replacement tier (P2) instead of Opus's never-list, and
+phases tri-fold to v0.5 where the shipped scaffold already includes it.
+Adopted stance: keep Opus's never-list as the public commitment for the
+bulletin product; GPT's P2 framing is noted as the revisit path if a
+Publisher-replacement tier is ever funded deliberately.
+
+## Amendment 2026-10-15: import architecture (Opus import pass)
+
+Full text: opus-import.md. Adopted decisions:
+- PDF extraction: PDFium via pdfium-render, out-of-process helper
+  emitting a versioned JSON extraction dump; all heuristics in pure Rust
+  on the dump; lopdf as sidecar for structural facts. MuPDF and Poppler
+  are excluded on license (AGPL/GPL vs the MIT app). The dump schema is
+  the hub every importer targets.
+- Imports produce a draft bulletin ("Rebuilt from your old bulletins")
+  that enters the normal weekly flow, not a separate template object.
+  The Template Analyzer's Accept/Edit/Cancel review applies to that
+  draft; corpus diffing across weeks is the standing-vs-weekly signal
+  (independently matches Jacob's analyzer design).
+- Real text shaping (parley) is a hard prerequisite for shipping any
+  importer; the extraction spike may run in parallel.
+- Confirmation is specific questions with pictures, never blanket OK.
+  Per-item badges: Matched / Check this / Picture only. Side-by-side
+  swipe comparison against the original is the primary trust tool.
+  No OCR in v1: scanned/outlined pages become a tracing-guide underlay.
+- .pub order: guided "Save as PDF from Publisher" first, then a
+  LibreOffice bridge (soffice convert-to PDF, then the PDF analyzer),
+  then the libmspub helper only on demonstrated demand. MPL licensing is
+  compatible with shipping in an MIT app with source and notices.
+- IDML subset as spec'd in opus-import.md section 4 (threading
+  preserved, style names kept, linked images prompted, masters
+  flattened and labeled). A .docx evaluation is flagged before IDML on
+  user value (admins live in Word); IDML stays on the roadmap per
+  Jacob's requirement.
+- First spike: 2 weeks, ~30 real bulletins corpus with hand-written
+  ground truth, hard pass bars (98% char accuracy, 100% unreadable-page
+  detection, zero confident wrong sheet classifications).

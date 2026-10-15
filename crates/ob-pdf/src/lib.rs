@@ -353,4 +353,24 @@ mod tests {
             "bifold imposes to 2 sides: {text:.200}"
         );
     }
+
+    #[test]
+    fn reader_pages_are_panel_sized() {
+        let doc = sample_doc();
+        let pdf = String::from_utf8_lossy(&export_reader_pdf(&doc)).to_string();
+        // Bi-fold panel is 5.5 x 8.5 in = 396 x 612 pt; sheet is 792 x 612.
+        assert!(
+            pdf.contains("/MediaBox [0 0 396.00 612.00]"),
+            "reader pages must be panel-sized"
+        );
+        assert!(
+            !pdf.contains("/MediaBox [0 0 792.00 612.00]"),
+            "reader pages must not be sheet-sized"
+        );
+        let imposed = String::from_utf8_lossy(&export_imposed_pdf(&doc)).to_string();
+        assert!(
+            imposed.contains("/MediaBox [0 0 792.00 612.00]"),
+            "imposed pages must be sheet-sized"
+        );
+    }
 }

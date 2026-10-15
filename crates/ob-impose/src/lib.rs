@@ -136,7 +136,7 @@ pub fn impose_single(doc: &Document) -> Vec<SheetSide> {
         .iter()
         .enumerate()
         .map(|(i, p)| SheetSide {
-            size: doc.sheet.size,
+            size: p.size,
             placements: vec![place(i, 0, 0, p.size)],
         })
         .collect()

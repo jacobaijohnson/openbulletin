@@ -894,6 +894,70 @@ impl App {
         } else {
             notes.extend(fit_notes);
         }
+        // Missing fonts: a style naming a family that is neither
+        // bundled nor in the Font Library prints in a stand-in.
+        {
+            let mut have: std::collections::HashSet<String> = Default::default();
+            for (name, bytes) in ob_text::shaping::bundled_font_files() {
+                if let Ok(info) = ob_fonts::inspect(bytes, name) {
+                    have.insert(info.family.to_lowercase());
+                }
+            }
+            if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+                for info in lib.scan() {
+                    have.insert(info.family.to_lowercase());
+                }
+            }
+            let mut missing: Vec<String> = Vec::new();
+            for style in &self.doc.styles {
+                let fam = style.font_family.trim();
+                if !fam.is_empty()
+                    && !have.contains(&fam.to_lowercase())
+                    && !missing.iter().any(|m| m == fam)
+                {
+                    missing.push(fam.to_string());
+                }
+            }
+            for fam in missing {
+                notes.push(format!(
+                    "Check: this bulletin uses the font \"{fam}\", which is not in \
+                     your Font Library, so it will print in a stand-in font. Add \
+                     it in the Fonts panel, or pick another font for those styles."
+                ));
+            }
+            // Words near a page edge or fold: printers cannot
+            // print to the very edge, and folds eat words.
+            let fold_preset = matches!(
+                self.doc.sheet.preset.as_str(),
+                "letter-bifold" | "legal-bifold" | "tabloid-bifold" | "letter-trifold"
+                    | "saddle-booklet"
+            );
+            if fold_preset {
+                let edge: ob_model::Mpt = 9_000; // 1/8 inch
+                for panel in &self.doc.panels {
+                    for frame in &panel.frames {
+                        if frame.story_id.is_none() {
+                            continue;
+                        }
+                        let near_left = frame.rect.x < edge;
+                        let near_right =
+                            panel.size.w - (frame.rect.x + frame.rect.w) < edge;
+                        let near_top = frame.rect.y < edge;
+                        let near_bottom =
+                            panel.size.h - (frame.rect.y + frame.rect.h) < edge;
+                        if near_left || near_right || near_top || near_bottom {
+                            notes.push(format!(
+                                "Check: a box on \"{}\" runs close to the page edge \
+                                 or the fold. Printers cannot print right at the \
+                                 edge; give the words a little more room.",
+                                panel.name
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         let has_order = self.doc.stories.iter().any(|s| {
             s.paragraphs
                 .iter()
@@ -4111,6 +4175,32 @@ fn open_with_os(path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod settings_tests {
     use super::*;
+
+    #[test]
+    fn checks_flag_missing_fonts_and_edge_boxes() {
+        let mut app = App::default();
+        app.doc.styles[0].font_family = "NoSuchFont Display".into();
+        app.run_checks();
+        assert!(
+            app.notes.iter().any(|n| n.contains("NoSuchFont Display")),
+            "missing font is named: {:?}",
+            app.notes
+        );
+        // A box hugging the edge is called out on a fold preset.
+        let mut app2 = App::default();
+        app2.doc.panels[0].frames[0].rect.x = 0;
+        app2.run_checks();
+        assert!(
+            app2.notes.iter().any(|n| n.contains("close to the page edge")),
+            "edge box is named: {:?}",
+            app2.notes
+        );
+        // The untouched template earns neither note.
+        let mut app3 = App::default();
+        app3.run_checks();
+        assert!(!app3.notes.iter().any(|n| n.contains("close to the page edge")));
+        assert!(!app3.notes.iter().any(|n| n.contains("not in") && n.contains("font")));
+    }
 
     #[test]
     fn journal_never_touches_recovered_work_while_undecided() {

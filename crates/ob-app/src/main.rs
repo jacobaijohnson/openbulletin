@@ -239,6 +239,7 @@ impl App {
     fn apply_date(&mut self) {
         match chrono::NaiveDate::parse_from_str(self.date_input.trim(), "%Y-%m-%d") {
             Ok(d) => {
+                let before = snapshot(&self.doc);
                 self.doc
                     .fields
                     .insert("sunday_date".to_string(), d.format("%Y-%m-%d").to_string());
@@ -246,6 +247,9 @@ impl App {
                     "sunday_date_long".to_string(),
                     d.format("%A, %B %-d, %Y").to_string(),
                 );
+                if before != snapshot(&self.doc) {
+                    self.record_undo(before);
+                }
                 self.status = format!("Date set to {}.", d.format("%A, %B %-d, %Y"));
             }
             Err(_) => {
@@ -316,7 +320,6 @@ struct App {
     announcements: String,
     notes: Vec<String>,
     status: String,
-    shaper: ob_text::shaping::Shaper,
     path: Option<std::path::PathBuf>,
     settings: Settings,
     printer_name: String,
@@ -329,10 +332,10 @@ struct App {
     grab_dx: ob_model::Mpt,
     grab_dy: ob_model::Mpt,
     frame_input: [String; 4],
-    frame_menu_for: Option<usize>,
+    frame_menu_for: Option<(usize, ob_model::Rect)>,
     ctx_pos: Option<egui::Pos2>,
     guide_input: String,
-    guide_menu_for: Option<usize>,
+    guide_menu_for: Option<(usize, ob_model::Mpt)>,
     bg_tex_key: String,
     bg_tex: Option<egui::TextureHandle>,
     show_fonts: bool,
@@ -352,6 +355,19 @@ struct App {
     editing: Option<(usize, usize)>,
     edit_text: String,
     edit_styles: Vec<String>,
+    /// Story id of the current edit session, salting the text
+    /// editor's identity so its private state (cursor, its own
+    /// undo) never leaks from one box's session into another's
+    /// (audit R4).
+    edit_salt: String,
+    /// Paragraph the cursor is in, kept by the editing toolbar
+    /// so style inheritance follows insertions at the cursor
+    /// instead of the end of the text (audit R2).
+    edit_cursor_para: usize,
+    /// One document snapshot per frame, shared by the preview
+    /// caches instead of re-serializing the document for every
+    /// consumer (audit R6).
+    frame_snapshot: String,
     edit_done: bool,
     focus_edit: bool,
     edit_start: Option<String>,
@@ -434,7 +450,6 @@ impl Default for App {
             announcements,
             notes: Vec::new(),
             status: "Welcome to OpenBulletin.".into(),
-            shaper: ob_text::shaping::bundled_shaper(),
             path: None,
             settings: load_settings(),
             printer_name: "Church office printer".into(),
@@ -470,6 +485,9 @@ impl Default for App {
             editing: None,
             edit_text: String::new(),
             edit_styles: Vec::new(),
+            edit_salt: String::new(),
+            edit_cursor_para: 0,
+            frame_snapshot: String::new(),
             edit_done: false,
             focus_edit: false,
             edit_start: None,
@@ -545,15 +563,36 @@ impl App {
     }
 
     fn save_announcements(&mut self) {
+        // The buffer is one of two writers for this story (the
+        // Pages canvas is the other). It may only write when it
+        // actually changed, or a stale buffer erases canvas
+        // typing on the next autosave tick (blocker 4). This
+        // gate was once lost in a file splice; the test named
+        // announcements_buffer_only_writes_when_dirty guards it.
+        if !self.announcements_dirty {
+            return;
+        }
         let Some(sid) = weekly_story_id(&self.doc) else {
             return;
         };
-        let lines: Vec<String> = self
+        self.announcements_dirty = false;
+        let before = snapshot(&self.doc);
+        // Preserve what was typed: trim only trailing spaces,
+        // keep blank lines (they are paragraph breaks). The box
+        // used to trim and drop blanks, silently reformatting
+        // the admin's text (finding F8). Leading and trailing
+        // blank runs still go; they mean nothing on paper.
+        let mut lines: Vec<String> = self
             .announcements
             .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
+            .map(|l| l.trim_end().to_string())
             .collect();
+        while lines.first().map(|l| l.is_empty()).unwrap_or(false) {
+            lines.remove(0);
+        }
+        while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+            lines.pop();
+        }
         if let Some(story) = self.doc.story_mut(&sid) {
             let mut rest: Vec<ob_model::Paragraph> = story
                 .paragraphs
@@ -580,6 +619,25 @@ impl App {
             }
             story.paragraphs = new_paras;
         }
+        if before != snapshot(&self.doc) {
+            self.record_undo(before);
+        }
+    }
+
+    /// The shaper every surface must agree on: bundled faces plus
+    /// the whole Font Library, exactly what the PDF embeds. Check
+    /// once measured fit with bundled fonts only and could call a
+    /// page fine that the printer would overflow (finding F9).
+    fn full_shaper(&self) -> ob_text::shaping::Shaper {
+        let mut shaper = ob_text::shaping::bundled_shaper();
+        if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+            for info in lib.scan() {
+                if let Ok(bytes) = lib.read(&info) {
+                    shaper.register_font(bytes);
+                }
+            }
+        }
+        shaper
     }
 
     fn run_checks(&mut self) {
@@ -632,7 +690,7 @@ impl App {
                     let lines = if text.contains('\t') {
                         1
                     } else {
-                        self.shaper
+                        self.full_shaper()
                             .wrap(&text, frame.rect.w, &spec, style.font_size, 1.3)
                             .len()
                     };
@@ -677,22 +735,29 @@ impl App {
     }
 
     fn next_sunday(&mut self) {
-        self.begin_gesture();
+        if self.editing.is_some() {
+            self.commit_edit();
+        }
         self.save_announcements();
+        let before = snapshot(&self.doc);
         match ob_layout::next_sunday(&self.doc) {
             Ok(next) => {
-                self.doc = next;
-                self.announcements = weekly_body_text(&self.doc);
-                self.mark_clean();
+                self.adopt_document(next, false);
+                if before != snapshot(&self.doc) {
+                    self.record_undo(before);
+                }
+                // The new week is a new file: never let a later
+                // Save overwrite last week's bulletin, and never
+                // call this unsaved document saved (finding F13).
+                self.path = None;
                 self.step = 1;
                 self.status = format!(
-                    "Started {} bulletin. Weekly announcements were cleared; standing items carried over.",
+                    "Started the {} bulletin. Weekly announcements were cleared; standing items carried over. Save it under its own name.",
                     self.doc.fields.get("sunday_date_long").cloned().unwrap_or_default()
                 );
             }
             Err(e) => self.status = format!("Next Sunday failed: {e}"),
         }
-        self.end_gesture();
     }
 }
 
@@ -893,7 +958,7 @@ impl App {
 
     /// Build (or reuse) the sheet preview for the Print step.
     fn preview_sheets(&mut self) -> &Vec<PreviewSheet> {
-        let key = snapshot(&self.doc);
+        let key = self.frame_snapshot.clone();
         let stale = self
             .preview_cache
             .as_ref()
@@ -934,21 +999,46 @@ impl App {
     /// Paragraph count sync for the edit buffer: new paragraphs
     /// inherit the previous paragraph's style (docs/EDITOR.md).
     fn sync_edit_styles(&mut self) {
+        // Changes happen at the cursor (audit R2): styles used to
+        // grow and shrink only at the end, so a paragraph inserted
+        // in the middle silently shifted every style below it.
         let count = self.edit_text.split('\n').count();
-        while self.edit_styles.len() < count {
+        let cur = self
+            .edit_cursor_para
+            .min(self.edit_styles.len().saturating_sub(1));
+        if self.edit_styles.len() < count {
             let inherit = self
                 .edit_styles
-                .last()
+                .get(cur)
                 .cloned()
                 .unwrap_or_else(|| "body".to_string());
-            self.edit_styles.push(inherit);
+            while self.edit_styles.len() < count {
+                let at = (cur + 1).min(self.edit_styles.len());
+                self.edit_styles.insert(at, inherit.clone());
+            }
+        } else if self.edit_styles.len() > count {
+            let excess = self.edit_styles.len() - count;
+            let start = (cur + 1).min(self.edit_styles.len() - excess);
+            self.edit_styles.drain(start..start + excess);
         }
-        self.edit_styles.truncate(count);
     }
 
     /// Enter inline editing for one frame's story. Any session
     /// already open commits first: starting a new one must never
     /// silently drop the words in the old one (blocker 6).
+    /// Throw the typing away: Escape in a text box means cancel
+    /// in the office tools our users know (audit finding C1,
+    /// resolved for the office convention). Done typing, or
+    /// clicking another box, is what saves.
+    fn cancel_edit(&mut self) {
+        self.editing = None;
+        self.edit_start = None;
+        self.edit_text.clear();
+        self.edit_styles.clear();
+        self.edit_done = false;
+        self.status = "Typing thrown away. The page keeps the words it had.".into();
+    }
+
     fn enter_edit(&mut self, pi: usize, fi: usize) {
         if self.editing.is_some() {
             self.commit_edit();
@@ -963,6 +1053,8 @@ impl App {
             return;
         };
         self.edit_start = Some(snapshot(&self.doc));
+        self.edit_salt = story.id.clone();
+        self.edit_cursor_para = 0;
         self.edit_text = story
             .paragraphs
             .iter()
@@ -1012,6 +1104,13 @@ impl App {
             story.paragraphs = paragraphs;
         }
         self.status = "Text updated.".into();
+        // If the edited story is the announcements story, the
+        // step box must show the same words (the box is the
+        // other writer; it refreshes from here and stays clean).
+        if weekly_story_id(&self.doc).as_deref() == Some(sid.as_str()) {
+            self.announcements = weekly_body_text(&self.doc);
+            self.announcements_dirty = false;
+        }
         if let Some(start) = self.edit_start.take() {
             if start != snapshot(&self.doc) {
                 self.record_undo(start);
@@ -1022,21 +1121,14 @@ impl App {
     /// Shaped lines for one panel, cached per document state:
     /// the canvas and the print preview can never disagree.
     fn shaped_panel_lines(&mut self, idx: usize) -> Vec<PreviewLine> {
-        let key = snapshot(&self.doc);
+        let key = self.frame_snapshot.clone();
         let stale = self
             .lines_cache
             .as_ref()
             .map(|(k, i, _)| k != &key || *i != idx)
             .unwrap_or(true);
         if stale {
-            let mut shaper = ob_text::shaping::bundled_shaper();
-            if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
-                for info in lib.scan() {
-                    if let Ok(bytes) = lib.read(&info) {
-                        shaper.register_font(bytes);
-                    }
-                }
-            }
+            let mut shaper = self.full_shaper();
             let lines = panel_lines(&self.doc, &self.doc.panels[idx], &mut shaper);
             self.lines_cache = Some((key, idx, lines));
         }
@@ -1094,7 +1186,8 @@ impl App {
                         .map(|f| f.name.clone())
                         .unwrap_or_default();
                     self.sync_edit_styles();
-                    let para = cursor_paragraph(ctx, &self.edit_text);
+                    let para = cursor_paragraph(ctx, &self.edit_text, &self.edit_salt);
+                    self.edit_cursor_para = para;
                     let cur_style = self
                         .edit_styles
                         .get(para)
@@ -1230,6 +1323,17 @@ impl App {
                 self.bg_tex_key = key.clone();
                 self.bg_tex = self.load_bg_texture(ctx, bg);
             }
+            if self.bg_tex.is_none() {
+                // A missing tracing picture used to fail silently
+                // (audit R7): say so on the page itself.
+                painter.text(
+                    panel_rect.min + egui::vec2(10.0, 10.0),
+                    egui::Align2::LEFT_TOP,
+                    "The old page picture for this panel could not be found.\nIt lives beside the bulletin file.",
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::from_rgb(150, 60, 50),
+                );
+            }
             if let Some(tex) = &self.bg_tex {
                 painter.image(
                     tex.id(),
@@ -1334,6 +1438,15 @@ impl App {
                 self.ctx_pos = Some(pos);
             }
         }
+        // The menu must open where the right-click landed, not
+        // where the pointer last hovered (audit C3/R3).
+        if ui.input(|i| i.pointer.secondary_pressed()) {
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                if panel_rect.contains(pos) {
+                    self.ctx_pos = Some(pos);
+                }
+            }
+        }
         let guides_now = self.doc.panels[idx].guides.clone();
         let near_guide_tol = |pos: egui::Pos2, tol: f32| -> Option<usize> {
             let mut best: Option<(usize, f32)> = None;
@@ -1382,7 +1495,8 @@ impl App {
         if self.editing.map(|(pi, _)| pi) == Some(idx) {
             let mut commit = self.edit_done;
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                commit = true;
+                self.cancel_edit();
+                return;
             }
             if response.drag_started() {
                 if let Some(pos) = pointer {
@@ -1603,7 +1717,7 @@ impl App {
                 .map(|st| st.font_size as f32 / 1000.0 * scale)
                 .unwrap_or(12.0)
                 .clamp(10.0, 20.0);
-            let edit_id = egui::Id::new("canvas-edit");
+            let edit_id = egui::Id::new(("canvas-edit", self.edit_salt.as_str()));
             if self.focus_edit {
                 self.focus_edit = false;
                 ctx.memory_mut(|m| m.request_focus(edit_id));
@@ -1633,29 +1747,13 @@ impl App {
                 })
             })
             .unwrap_or(None);
-        // A click ON a guide line belongs to the guide, even when
-        // a frame covers it (blocker 8); then the frame; then a
-        // near-guide; then the page itself.
-        enum MenuTarget {
-            Frame(usize),
-            Guide(usize),
-            Page,
-        }
-        let target = if let Some(gi) = on_the_line {
-            MenuTarget::Guide(gi)
-        } else if let Some(fi) = frame_at_menu {
-            MenuTarget::Frame(fi)
-        } else if let Some(gi) = hit {
-            MenuTarget::Guide(gi)
-        } else {
-            MenuTarget::Page
-        };
+        let target = choose_menu_target(on_the_line, frame_at_menu, hit);
         response.context_menu(|ui| match target {
             MenuTarget::Frame(fi) => {
                 self.selected_frame = Some(fi);
                 let f = self.doc.panels[idx].frames[fi].clone();
-                if self.frame_menu_for != Some(fi) {
-                    self.frame_menu_for = Some(fi);
+                if self.frame_menu_for != Some((fi, f.rect)) {
+                    self.frame_menu_for = Some((fi, f.rect));
                     self.frame_input = [
                         format!("{:.3}", ob_model::mpt_to_inches(f.rect.x)),
                         format!("{:.3}", ob_model::mpt_to_inches(f.rect.y)),
@@ -1699,8 +1797,8 @@ impl App {
             }
             MenuTarget::Guide(gi) => {
                 let g = self.doc.panels[idx].guides[gi];
-                if self.guide_menu_for != Some(gi) {
-                    self.guide_menu_for = Some(gi);
+                if self.guide_menu_for != Some((gi, g.pos)) {
+                    self.guide_menu_for = Some((gi, g.pos));
                     self.guide_input = format!("{:.3}", ob_model::mpt_to_inches(g.pos));
                 }
                 let (what, from) = if g.vertical {
@@ -2088,6 +2186,14 @@ impl eframe::App for App {
         if !self.startup_done {
             self.startup();
         }
+        self.frame_snapshot = snapshot(&self.doc);
+        // A gesture must not span a focus change: if the user
+        // clicked into a text field mid-gesture, the gesture is
+        // over (audit C2: an orphaned snapshot would swallow
+        // later edits into one wrong undo step).
+        if self.gesture_start.is_some() && ctx.memory(|m| m.focused().is_some()) {
+            self.end_gesture();
+        }
         // A gesture left idle (nudges finished, mouse up) becomes
         // one Undo step after a short pause.
         if self.gesture_start.is_some()
@@ -2244,27 +2350,42 @@ impl eframe::App for App {
                         ui.label("Church name");
                         if ui.text_edit_singleline(&mut self.church_name).lost_focus() {
                             let name = self.church_name.clone();
-                            self.doc.profile.name = name;
+                            if self.doc.profile.name != name {
+                                let before = snapshot(&self.doc);
+                                self.doc.profile.name = name;
+                                self.record_undo(before);
+                            }
                         }
                         ui.label("Address");
-                        if ui.text_edit_singleline(&mut self.profile_address).lost_focus() {
-                            self.doc.profile.address = self.profile_address.clone();
+                        let resp_profile_address = ui.text_edit_singleline(&mut self.profile_address);
+                        if resp_profile_address.lost_focus() && self.doc.profile.address != self.profile_address {
+                                let before = snapshot(&self.doc);
+                                self.doc.profile.address = self.profile_address.clone();
+                                self.record_undo(before);
                         }
                         ui.label("Service times");
-                        if ui
-                            .text_edit_singleline(&mut self.profile_service_times)
-                            .lost_focus()
+                        let resp_times = ui.text_edit_singleline(&mut self.profile_service_times);
+                        if resp_times.lost_focus()
+                            && self.doc.profile.service_times != self.profile_service_times
                         {
-                            self.doc.profile.service_times =
-                                self.profile_service_times.clone();
+                                let before = snapshot(&self.doc);
+                                self.doc.profile.service_times =
+                                    self.profile_service_times.clone();
+                                self.record_undo(before);
                         }
                         ui.label("Website");
-                        if ui.text_edit_singleline(&mut self.profile_website).lost_focus() {
-                            self.doc.profile.website = self.profile_website.clone();
+                        let resp_profile_website = ui.text_edit_singleline(&mut self.profile_website);
+                        if resp_profile_website.lost_focus() && self.doc.profile.website != self.profile_website {
+                                let before = snapshot(&self.doc);
+                                self.doc.profile.website = self.profile_website.clone();
+                                self.record_undo(before);
                         }
                         ui.label("Pastor");
-                        if ui.text_edit_singleline(&mut self.profile_pastor).lost_focus() {
-                            self.doc.profile.pastor = self.profile_pastor.clone();
+                        let resp_profile_pastor = ui.text_edit_singleline(&mut self.profile_pastor);
+                        if resp_profile_pastor.lost_focus() && self.doc.profile.pastor != self.profile_pastor {
+                                let before = snapshot(&self.doc);
+                                self.doc.profile.pastor = self.profile_pastor.clone();
+                                self.record_undo(before);
                         }
                         ui.small("These print on the cover and carry into every week. They fill in the {Church.*} spots in your templates.");
                     }
@@ -2300,13 +2421,23 @@ impl eframe::App for App {
                         ui.small("Year-month-day, like 2026-10-18. This is the date printed on the bulletin.");
                         ui.label("Name of the Sunday");
                         let mut sn = self.doc.fields.get("sunday_name").cloned().unwrap_or_default();
-                        if ui.text_edit_singleline(&mut sn).lost_focus() {
-                            self.doc.fields.insert("sunday_name".to_string(), sn);
+                        let resp_sn = ui.text_edit_singleline(&mut sn);
+                        if resp_sn.lost_focus()
+                            && self.doc.fields.get("sunday_name").map(|v| v.as_str()) != Some(sn.as_str())
+                        {
+                                let before = snapshot(&self.doc);
+                                self.doc.fields.insert("sunday_name".to_string(), sn);
+                                self.record_undo(before);
                         }
                         ui.label("Scripture reading");
                         let mut rd = self.doc.fields.get("reading").cloned().unwrap_or_default();
-                        if ui.text_edit_singleline(&mut rd).lost_focus() {
-                            self.doc.fields.insert("reading".to_string(), rd);
+                        let resp_rd = ui.text_edit_singleline(&mut rd);
+                        if resp_rd.lost_focus()
+                            && self.doc.fields.get("reading").map(|v| v.as_str()) != Some(rd.as_str())
+                        {
+                                let before = snapshot(&self.doc);
+                                self.doc.fields.insert("reading".to_string(), rd);
+                                self.record_undo(before);
                         }
                         ui.small("The cover and the order of service fill themselves from these.");
                     }
@@ -2622,8 +2753,35 @@ fn sunday_on_or_after(d: chrono::NaiveDate) -> chrono::NaiveDate {
     d + chrono::Duration::days((7 - wd) % 7)
 }
 
-fn cursor_paragraph(ctx: &egui::Context, text: &str) -> usize {
-    let id = egui::Id::new("canvas-edit");
+/// What a right-click on the canvas belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuTarget {
+    Frame(usize),
+    Guide(usize),
+    Page,
+}
+
+/// A click ON a guide line belongs to the guide, even when a
+/// frame covers it (blocker 8); then the frame under the click;
+/// then a guide merely near the click; then the page itself.
+fn choose_menu_target(
+    on_line: Option<usize>,
+    frame: Option<usize>,
+    near: Option<usize>,
+) -> MenuTarget {
+    if let Some(gi) = on_line {
+        MenuTarget::Guide(gi)
+    } else if let Some(fi) = frame {
+        MenuTarget::Frame(fi)
+    } else if let Some(gi) = near {
+        MenuTarget::Guide(gi)
+    } else {
+        MenuTarget::Page
+    }
+}
+
+fn cursor_paragraph(ctx: &egui::Context, text: &str, salt: &str) -> usize {
+    let id = egui::Id::new(("canvas-edit", salt));
     if let Some(state) = egui::widgets::text_edit::TextEditState::load(ctx, id) {
         if let Some(range) = state.cursor.char_range() {
             let idx = range.primary.index;
@@ -2831,6 +2989,150 @@ mod settings_tests {
         let manual = printer_setup_from_answer("manual", "Brother");
         assert_eq!(manual.mode, "manual");
         assert!(manual.instruction.contains("one side at a time"));
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn announcements_buffer_only_writes_when_dirty() {
+        // Regression guard: this gate was once lost in a file
+        // splice while every test stayed green. The buffer may
+        // only write when it changed (blocker 4).
+        let mut app = App::default();
+        let sid = weekly_story_id(&app.doc).expect("template has an announcements story");
+        let before: Vec<String> = app
+            .doc
+            .story(&sid)
+            .expect("story")
+            .paragraphs
+            .iter()
+            .map(|p| p.text.clone())
+            .collect();
+        app.announcements = "Potluck next Friday".to_string();
+        app.announcements_dirty = false;
+        app.save_announcements();
+        let after: Vec<String> = app
+            .doc
+            .story(&sid)
+            .expect("story")
+            .paragraphs
+            .iter()
+            .map(|p| p.text.clone())
+            .collect();
+        assert_eq!(before, after, "a clean buffer must not write");
+        app.announcements_dirty = true;
+        app.save_announcements();
+        let written: Vec<String> = app
+            .doc
+            .story(&sid)
+            .expect("story")
+            .paragraphs
+            .iter()
+            .map(|p| p.text.clone())
+            .collect();
+        assert!(written.iter().any(|t| t.contains("Potluck next Friday")));
+        assert!(!app.announcements_dirty, "the write clears the flag");
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn announcements_preserve_blank_lines() {
+        let mut app = App::default();
+        app.announcements = "First item\n\nSecond item".to_string();
+        app.announcements_dirty = true;
+        app.save_announcements();
+        let sid = weekly_story_id(&app.doc).expect("story");
+        let texts: Vec<&str> = app
+            .doc
+            .story(&sid)
+            .expect("story")
+            .paragraphs
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect();
+        let joined = texts.join("|");
+        assert!(
+            joined.contains("First item||Second item"),
+            "the blank line must survive as a paragraph break: {joined}"
+        );
+    }
+
+    #[test]
+    fn edit_session_commit_then_undo_round_trip() {
+        let mut app = App::default();
+        let (pi, fi, sid) = {
+            let mut found = None;
+            for (pi, panel) in app.doc.panels.iter().enumerate() {
+                for (fi, f) in panel.frames.iter().enumerate() {
+                    if let Some(sid) = &f.story_id {
+                        found = Some((pi, fi, sid.clone()));
+                        break;
+                    }
+                }
+                if found.is_some() {
+                    break;
+                }
+            }
+            found.expect("a frame with a story")
+        };
+        let original_first = app
+            .doc
+            .story(&sid)
+            .expect("story")
+            .paragraphs
+            .first()
+            .map(|p| p.text.clone())
+            .unwrap_or_default();
+        app.enter_edit(pi, fi);
+        app.edit_text = "Line one\nLine two".to_string();
+        app.sync_edit_styles();
+        app.commit_edit();
+        let texts: Vec<&str> = app
+            .doc
+            .story(&sid)
+            .expect("story")
+            .paragraphs
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect();
+        assert_eq!(texts, vec!["Line one", "Line two"]);
+        app.undo();
+        let restored = app
+            .doc
+            .story(&sid)
+            .expect("story after undo")
+            .paragraphs
+            .first()
+            .map(|p| p.text.clone())
+            .unwrap_or_default();
+        assert_eq!(restored, original_first);
+    }
+
+    #[test]
+    fn gesture_becomes_one_undo_step() {
+        let mut app = App::default();
+        let title = app.doc.title.clone();
+        app.begin_gesture();
+        app.doc.title = "Changed mid-gesture".to_string();
+        app.end_gesture();
+        app.undo();
+        assert_eq!(app.doc.title, title);
+    }
+
+    #[test]
+    fn menu_target_priority() {
+        assert_eq!(
+            choose_menu_target(Some(2), Some(0), Some(1)),
+            MenuTarget::Guide(2)
+        );
+        assert_eq!(
+            choose_menu_target(None, Some(0), Some(1)),
+            MenuTarget::Frame(0)
+        );
+        assert_eq!(
+            choose_menu_target(None, None, Some(1)),
+            MenuTarget::Guide(1)
+        );
+        assert_eq!(choose_menu_target(None, None, None), MenuTarget::Page);
     }
 
     #[test]

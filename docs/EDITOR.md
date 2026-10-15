@@ -48,8 +48,9 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
   Enter adds a paragraph; new paragraphs inherit the style of
   the one above. A small bar above the page names the box and
   offers the current paragraph's style (Heading, Body, Scripture,
-  and friends). Done, Escape, or clicking another part of the
-  page finishes; the words are in the story immediately.
+  and friends). Done or clicking another part of the page
+  finishes and saves; Escape throws the typing away (the
+  office convention: Escape in a text box means cancel).
 - **Undo** covers the canvas: typing sessions (one step each),
   drags, nudges (a burst counts once), right-click applies, guide
   add/move/delete, and the Next Sunday command. Ctrl+Z and the

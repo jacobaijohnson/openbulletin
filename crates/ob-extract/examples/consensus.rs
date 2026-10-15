@@ -48,6 +48,60 @@ fn coverage(ws: &[String], standing: &HashSet<Vec<String>>) -> f32 {
     covered.iter().filter(|c| **c).count() as f32 / ws.len() as f32
 }
 
+/// Rebuild a page's true lines from positioned spans: group spans
+/// into rows by vertical overlap, order each row left to right, and
+/// join with a space only where the horizontal gap looks like a word
+/// space. Tiny gaps mean the producer split a word mid-way; joining
+/// without a space heals the split. Returns None when the dump has
+/// no positions (older scaffold dumps).
+fn rebuilt_lines(dump: &ob_extract::ExtractionDump, page: u32) -> Option<Vec<String>> {
+    let mut spans: Vec<&ob_extract::Span> = dump
+        .spans
+        .iter()
+        .filter(|s| s.page == page && s.x.is_some() && s.y.is_some())
+        .collect();
+    if spans.is_empty() {
+        return None;
+    }
+    spans.sort_by(|a, b| {
+        a.y.unwrap()
+            .partial_cmp(&b.y.unwrap())
+            .unwrap()
+            .then(a.x.unwrap().partial_cmp(&b.x.unwrap()).unwrap())
+    });
+    let mut rows: Vec<Vec<&ob_extract::Span>> = Vec::new();
+    for sp in spans {
+        let y = sp.y.unwrap();
+        let h = sp.h.unwrap_or(10.0).max(1.0);
+        match rows.last_mut() {
+            Some(row) if (y - row[0].y.unwrap()).abs() <= 0.5 * h => row.push(sp),
+            _ => rows.push(vec![sp]),
+        }
+    }
+    let mut lines = Vec::new();
+    for mut row in rows {
+        row.sort_by(|a, b| a.x.unwrap().partial_cmp(&b.x.unwrap()).unwrap());
+        let mut line = String::new();
+        let mut prev_end: Option<f32> = None;
+        for sp in row {
+            let x = sp.x.unwrap();
+            if let Some(pe) = prev_end {
+                let gap = x - pe;
+                let size = sp.font_size.unwrap_or(11.0);
+                if gap > 0.22 * size {
+                    line.push(' ');
+                }
+            }
+            line.push_str(sp.text.trim());
+            prev_end = Some(x + sp.w.unwrap_or(0.0));
+        }
+        if !line.trim().is_empty() {
+            lines.push(line);
+        }
+    }
+    Some(lines)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() != 2 {
@@ -85,17 +139,32 @@ fn main() {
         };
         let mut doc_words = Vec::new();
         let mut page_words: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-        for span in dump
-            .spans
-            .iter()
-            .filter(|s| s.trust == ob_extract::SpanTrust::RawText)
-        {
-            let ws = words(&span.text);
-            page_words
-                .entry(span.page)
-                .or_default()
-                .extend(ws.iter().cloned());
-            doc_words.extend(ws);
+        let page_nums: Vec<u32> = dump.pages.iter().map(|pg| pg.index).collect();
+        for page in page_nums {
+            if let Some(lines) = rebuilt_lines(&dump, page) {
+                let mut ws = Vec::new();
+                for line in &lines {
+                    ws.extend(words(line));
+                }
+                page_words
+                    .entry(page)
+                    .or_default()
+                    .extend(ws.iter().cloned());
+                doc_words.extend(ws);
+            } else {
+                for span in dump
+                    .spans
+                    .iter()
+                    .filter(|sp| sp.page == page && sp.trust == ob_extract::SpanTrust::RawText)
+                {
+                    let ws = words(&span.text);
+                    page_words
+                        .entry(page)
+                        .or_default()
+                        .extend(ws.iter().cloned());
+                    doc_words.extend(ws);
+                }
+            }
         }
         docs.push(doc_words);
         pages.push(page_words);
@@ -135,6 +204,21 @@ fn main() {
     for i in 0..n {
         let r = find(&mut parent, i);
         clusters.entry(r).or_default().push(i);
+    }
+    println!("closest sibling per bulletin (Jaccard):");
+    for i in 0..n {
+        let mut best = (0.0f32, usize::MAX);
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let inter = doc_sets[i].intersection(&doc_sets[j]).count() as f32;
+            let union = doc_sets[i].union(&doc_sets[j]).count() as f32;
+            if union > 0.0 && inter / union > best.0 {
+                best = (inter / union, j);
+            }
+        }
+        println!("    {:.2}  {}  ~  {}", best.0, names[i], names[best.1]);
     }
     println!("\nautomatic clusters (Jaccard >= {threshold}):");
     let mut cluster_report = serde_json::json!({});

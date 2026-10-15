@@ -119,3 +119,24 @@ from 77 crude text chunks to 866 positioned spans.
   lines from positioned spans (group by vertical position, sort by
   horizontal, join on gaps) BEFORE consensus. Positions turn that
   from guesswork into arithmetic.
+
+## Line rebuild: measured gains, and the ELW family at 0.11 (2026-10-15)
+
+The consensus tool now rebuilds true lines from positioned spans
+before comparing (rows by vertical overlap, left-to-right order, a
+space only where the gap looks like a word space, so mid-word splits
+heal). Gains on the same 17 dumps: standing passages 198 -> 212, and
+page 2's median standing share 24% -> 43%. Reading order as
+arithmetic works.
+
+The three stranded ELW files still miss the 0.12 merge bar, but the
+new closest-sibling diagnostic shows by how little, and it changes
+the conclusion: every ELW file's closest sibling is another ELW file.
+The trio sits at 0.11 similarity, just under the bar, and two of
+them are each other's closest match. The family is real; a single
+global threshold is simply the wrong shape for it, because the big
+main family chains together at 0.14+ and would swallow strangers if
+the bar dropped. Specified next rule: merge mutual closest siblings
+first (pairs that name each other), then attach their near neighbors.
+That is a clustering refinement, not an extraction problem; the
+extraction layer is done proving itself.

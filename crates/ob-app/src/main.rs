@@ -93,6 +93,16 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
     std::fs::write(&path, text).map_err(|e| e.to_string())
 }
 
+/// One row of the Fonts panel: a library font with everything the
+/// admin needs (its own face for the preview, its name, and what its
+/// license allows in plain words).
+struct FontRow {
+    key: String,
+    family: String,
+    full_name: String,
+    rights_words: String,
+}
+
 struct App {
     doc: Document,
     preset: Preset,
@@ -105,6 +115,9 @@ struct App {
     path: Option<std::path::PathBuf>,
     settings: Settings,
     printer_name: String,
+    show_fonts: bool,
+    fonts_loaded: bool,
+    font_rows: Vec<FontRow>,
 }
 
 impl Default for App {
@@ -134,6 +147,9 @@ impl Default for App {
             path: None,
             settings: load_settings(),
             printer_name: "Church office printer".into(),
+            show_fonts: false,
+            fonts_loaded: false,
+            font_rows: Vec::new(),
         }
     }
 }
@@ -253,10 +269,12 @@ impl App {
                             align: ob_model::Align::Left,
                             space_after: 4_000,
                             color: ob_model::Rgb::BLACK,
+                            font_family: "Liberation Sans".into(),
+                            font_sha256: None,
                         }
                     });
                     let spec = ob_text::shaping::FontSpec {
-                        family: "Liberation Sans".into(),
+                        family: style.font_family.clone(),
                         bold: style.bold,
                         italic: false,
                     };
@@ -325,11 +343,136 @@ impl App {
     }
 }
 
+impl App {
+    /// Load the Font Library into the panel, seeding it with the
+    /// bundled Liberation faces on first run, and register every
+    /// library font with the UI so each preview line is drawn in
+    /// its own face.
+    fn refresh_fonts(&mut self, ctx: &egui::Context) {
+        let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) else {
+            return;
+        };
+        if lib.scan().is_empty() {
+            for (name, bytes) in ob_text::shaping::bundled_font_files() {
+                let _ = lib.add_bytes(bytes, name);
+            }
+        }
+        let mut defs = egui::FontDefinitions::default();
+        let mut rows = Vec::new();
+        for info in lib.scan() {
+            let Ok(bytes) = lib.read(&info) else { continue };
+            let key = format!("lib-{}", &info.sha256[..12]);
+            defs.font_data
+                .insert(key.clone(), egui::FontData::from_owned(bytes));
+            defs.families.insert(
+                egui::FontFamily::Name(key.clone().into()),
+                vec![key.clone()],
+            );
+            rows.push(FontRow {
+                key,
+                family: info.family.clone(),
+                full_name: info.full_name.clone(),
+                rights_words: info.rights.plain_words().to_string(),
+            });
+        }
+        ctx.set_fonts(defs);
+        self.font_rows = rows;
+        self.fonts_loaded = true;
+    }
+
+    fn fonts_window(&mut self, ctx: &egui::Context) {
+        if !self.show_fonts {
+            return;
+        }
+        if !self.fonts_loaded {
+            self.refresh_fonts(ctx);
+        }
+        let mut open = self.show_fonts;
+        egui::Window::new("Fonts")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    "These are the fonts this app may use. Bulletins are laid out                      only with fonts from this library, so they look the same on                      every computer.",
+                );
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for row in &self.font_rows {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Welcome! The Lord be with you. 1234567890",
+                                )
+                                .font(egui::FontId::new(
+                                    17.0,
+                                    egui::FontFamily::Name(row.key.clone().into()),
+                                )),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} ({})",
+                                    row.full_name, row.family
+                                ))
+                                .strong(),
+                            );
+                            ui.label(egui::RichText::new(&row.rights_words).small());
+                            ui.separator();
+                        }
+                    });
+                ui.add_space(4.0);
+                if ui.button("Add a font...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Font files", &["ttf", "otf"])
+                        .pick_file()
+                    {
+                        match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                let name = path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "font.ttf".into());
+                                match ob_fonts::FontLibrary::open(
+                                    ob_fonts::default_library_dir(),
+                                )
+                                .and_then(|lib| lib.add_bytes(&bytes, &name))
+                                {
+                                    Ok(info) => {
+                                        self.status =
+                                            format!("Font added: {}", info.full_name);
+                                        self.refresh_fonts(ctx);
+                                    }
+                                    Err(e) => {
+                                        self.status = format!("Could not add that font: {e}")
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.status = format!("Could not read that file: {e}")
+                            }
+                        }
+                    }
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Free fonts can also be fetched from the catalog with the                          command line for now: openbulletin-cli fonts search / get.",
+                    )
+                    .small(),
+                );
+            });
+        self.show_fonts = open;
+    }
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("OpenBulletin");
+                if ui.button("Fonts").clicked() {
+                    self.show_fonts = true;
+                }
                 if ui.button("Open bulletin...").clicked() {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("OpenBulletin bulletin", &["obd"])
@@ -547,6 +690,7 @@ impl eframe::App for App {
                 ui.small(&self.status);
             });
 
+        self.fonts_window(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label(egui::RichText::new("Preview: what the congregation will hold").strong());
             egui::ScrollArea::vertical().show(ui, |ui| {

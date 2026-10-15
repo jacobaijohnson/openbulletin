@@ -9,6 +9,7 @@ description = "OpenBulletin PDF export: a small self-contained PDF 1.4 writer (r
 [dependencies]
 ob-model = { path = "../ob-model" }
 ob-text = { path = "../ob-text" }
+ob-fonts = { path = "../ob-fonts" }
 ob-impose = { path = "../ob-impose" }
 
 [dev-dependencies]

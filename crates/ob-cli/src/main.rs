@@ -71,6 +71,14 @@ enum FontsCmd {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
+    /// Search the free-font catalog by name.
+    Search { query: String },
+    /// Download a free font family from the catalog into the library.
+    Get {
+        id: String,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -194,6 +202,27 @@ fn run(cli: Cli) -> Result<(), String> {
                             f.full_name,
                             f.rights.plain_words()
                         );
+                    }
+                }
+                FontsCmd::Search { query } => {
+                    let hits = ob_fonts::catalog::search(&query)?;
+                    if hits.is_empty() {
+                        println!("no free fonts match \"{query}\"");
+                    }
+                    for h in &hits {
+                        println!("{} | {} | {} | {}", h.id, h.family, h.category, h.license);
+                    }
+                }
+                FontsCmd::Get { id, dir } => {
+                    let lib = ob_fonts::FontLibrary::open(
+                        dir.unwrap_or_else(ob_fonts::default_library_dir),
+                    )?;
+                    let installed = ob_fonts::catalog::install(&lib, &id)?;
+                    for f in &installed {
+                        println!("installed {} ({})", f.full_name, f.file_name);
+                    }
+                    if let Some(first) = installed.first() {
+                        println!("{}", first.rights.plain_words());
                     }
                 }
                 FontsCmd::Add { file, dir } => {

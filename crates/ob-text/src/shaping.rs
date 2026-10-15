@@ -61,6 +61,31 @@ pub struct FrameFit {
 /// Serif, regular and bold). Liberation is metric-compatible with Arial
 /// and very close to the Helvetica the PDF writer draws, so shaped line
 /// breaks and fit checks track the printed page closely.
+/// The bundled starter fonts as (file name, bytes): the four
+/// Liberation faces. The app seeds the Font Library with these on
+/// first run so the library folder is the one source of fonts on
+/// every machine shape (docs/FONTS.md).
+pub fn bundled_font_files() -> Vec<(&'static str, &'static [u8])> {
+    vec![
+        (
+            "LiberationSans-Regular.ttf",
+            include_bytes!("../assets/fonts/LiberationSans-Regular.ttf"),
+        ),
+        (
+            "LiberationSans-Bold.ttf",
+            include_bytes!("../assets/fonts/LiberationSans-Bold.ttf"),
+        ),
+        (
+            "LiberationSerif-Regular.ttf",
+            include_bytes!("../assets/fonts/LiberationSerif-Regular.ttf"),
+        ),
+        (
+            "LiberationSerif-Bold.ttf",
+            include_bytes!("../assets/fonts/LiberationSerif-Bold.ttf"),
+        ),
+    ]
+}
+
 pub fn bundled_shaper() -> Shaper {
     let mut s = Shaper::new();
     s.register_font(include_bytes!("../assets/fonts/LiberationSans-Regular.ttf").to_vec());

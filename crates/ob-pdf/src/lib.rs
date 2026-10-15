@@ -118,6 +118,8 @@ fn draw_panel(
                     align: Align::Left,
                     space_after: 4_000,
                     color: ob_model::Rgb::BLACK,
+                    font_family: "Liberation Sans".into(),
+                    font_sha256: None,
                 });
             let resolved = ob_model::resolve_fields(&para.text, doc);
             let line_h = style.font_size * 13 / 10;
@@ -126,7 +128,7 @@ fn draw_panel(
             // track Helvetica closely, so breaks land where print puts
             // them. Font embedding removes the residue later.
             let spec = ob_text::shaping::FontSpec {
-                family: "Liberation Sans".into(),
+                family: style.font_family.clone(),
                 bold: style.bold,
                 italic: false,
             };
@@ -271,6 +273,7 @@ fn build_pdf(doc: &Document, sides: &[SheetSide]) -> Vec<u8> {
             .to_vec(),
     );
     let mut shaper = ob_text::shaping::bundled_shaper();
+    register_library_fonts(&mut shaper);
     let mut page_ids = Vec::new();
     for side in sides {
         let mut pc = PageContent { buf: String::new() };
@@ -374,6 +377,8 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
                 align: Align::Center,
                 space_after: 24_000,
                 color: ob_model::Rgb::BLACK,
+                font_family: "Liberation Sans".into(),
+                font_sha256: None,
             },
             ParagraphStyle {
                 id: "test-body".into(),
@@ -383,6 +388,8 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
                 align: Align::Center,
                 space_after: 12_000,
                 color: ob_model::Rgb::BLACK,
+                font_family: "Liberation Sans".into(),
+                font_sha256: None,
             },
         ],
         stories: vec![s1, s2],
@@ -396,6 +403,20 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
 }
 
 /// Reader PDF: one panel per page, in reading order (for email/website).
+/// Register every font in the Font Library (docs/FONTS.md) with the
+/// shaper, so styles naming those families shape with the real font.
+/// A missing or unreadable library is not an error: bundled fonts
+/// still cover the default styles.
+fn register_library_fonts(shaper: &mut ob_text::shaping::Shaper) {
+    if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+        for info in lib.scan() {
+            if let Ok(bytes) = lib.read(&info) {
+                shaper.register_font(bytes);
+            }
+        }
+    }
+}
+
 pub fn export_reader_pdf(doc: &Document) -> Vec<u8> {
     let sides = ob_impose::impose_single(doc);
     build_pdf(doc, &sides)

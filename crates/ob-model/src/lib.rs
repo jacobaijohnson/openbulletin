@@ -77,6 +77,20 @@ pub struct ParagraphStyle {
     pub align: Align,
     pub space_after: Mpt,
     pub color: Rgb,
+    /// Font family this style is set in, by name (docs/FONTS.md).
+    /// The Font Library resolves the name to actual font bytes; the
+    /// layout engine only ever shapes with library fonts, so the same
+    /// document lays out identically on every machine.
+    #[serde(default = "default_font_family")]
+    pub font_family: String,
+    /// SHA-256 of the exact font file this style was laid out with,
+    /// when known. Pins the metrics even if a same-named font changes.
+    #[serde(default)]
+    pub font_sha256: Option<String>,
+}
+
+fn default_font_family() -> String {
+    "Liberation Sans".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -207,6 +221,8 @@ pub fn default_styles() -> Vec<ParagraphStyle> {
             align,
             space_after: after,
             color: Rgb::BLACK,
+            font_family: default_font_family(),
+            font_sha256: None,
         };
     vec![
         st(

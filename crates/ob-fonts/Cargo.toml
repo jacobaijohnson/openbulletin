@@ -9,4 +9,9 @@ description = "OpenBulletin font library: one app-managed folder of fonts, ident
 [dependencies]
 serde.workspace = true
 sha2 = "0.10"
+serde_json.workspace = true
+ureq = { version = "2", features = ["json", "tls"] }
+rustls = { version = "0.23", features = ["ring"] }
+rustls-native-certs = "0.8"
+webpki-roots = "0.26"
 ttf-parser = "0.25"

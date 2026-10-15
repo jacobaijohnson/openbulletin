@@ -11,6 +11,8 @@
 //! documents name fonts by family + hash, so a bulletin that travels
 //! also says exactly which font file it was laid out with.
 
+pub mod catalog;
+
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};

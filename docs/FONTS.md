@@ -113,6 +113,18 @@ face names, fsType rights with plain-words explanations, SHA-256
 identity, add-with-dedup) and CLI access (`openbulletin-cli fonts
 list|add`). Verified against the bundled Liberation faces, whose
 permission bits read Installable, matching their OFL license.
-Remaining from this design: the free-catalog search and download,
-the in-app Fonts panel with the live preview, and wiring documents
-to name fonts by family + hash.
+Also built: styles name a font family (and may pin its SHA-256);
+the PDF path registers every library font with the shaper and shapes
+each style in its named family. The catalog works from the command
+line (`fonts search`, `fonts get`): Fontsource for search and
+license facts, downloads from the google/fonts repository itself,
+four core faces per family, license text saved beside them. Its
+transport tries a direct connection first and the proxy from the
+standard environment variables second, and trusts the operating
+system's certificate store (proxied church networks included).
+The in-app Fonts panel lists the library with a live preview line
+drawn in each font's own face, the plain-words rights, and an
+Add-a-font button; first run seeds the library with Liberation.
+Remaining: catalog search inside the panel itself, and the
+side-by-side comparison preview in the import review (that belongs
+to the analyzer's review screen).

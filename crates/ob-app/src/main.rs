@@ -20,6 +20,79 @@ const GUIDANCE: [&str; 5] = [
     "Print the folded bulletin, or save a reading copy as PDF. Then start next Sunday in one click.",
 ];
 
+/// How one printer flips paper, learned from the test sheet and
+/// remembered in a small settings file next to the app's other data.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PrinterSetup {
+    /// "long_edge", "short_edge", or "manual".
+    pub mode: String,
+    /// The plain-words instruction shown in the Print step.
+    pub instruction: String,
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub printers: std::collections::BTreeMap<String, PrinterSetup>,
+}
+
+pub fn printer_setup_from_answer(answer: &str, printer: &str) -> PrinterSetup {
+    match answer {
+        "up" => PrinterSetup {
+            mode: "long_edge".into(),
+            instruction: format!(
+                "For the {printer}: in the print window, turn two-sided printing on and pick \"flip on long edge\" (long-edge binding). That is what your test sheet proved works."
+            ),
+        },
+        "down" => PrinterSetup {
+            mode: "short_edge".into(),
+            instruction: format!(
+                "For the {printer}: in the print window, turn two-sided printing on and pick \"flip on short edge\" (short-edge binding). Your test sheet showed long edge comes out upside down on this printer."
+            ),
+        },
+        _ => PrinterSetup {
+            mode: "manual".into(),
+            instruction: format!(
+                "For the {printer}: it prints one side at a time. Print the front sides, put the stack back in the tray printed-side up with the top edge going in first, then print the back sides. Try one sheet first until it comes out right."
+            ),
+        },
+    }
+}
+
+pub fn settings_path() -> std::path::PathBuf {
+    let base = if let Ok(appdata) = std::env::var("APPDATA") {
+        std::path::PathBuf::from(appdata)
+    } else if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        std::path::PathBuf::from(xdg)
+    } else if let Ok(home) = std::env::var("HOME") {
+        let mac = std::path::PathBuf::from(&home).join("Library/Application Support");
+        if mac.exists() {
+            mac
+        } else {
+            std::path::PathBuf::from(home).join(".config")
+        }
+    } else {
+        std::path::PathBuf::from(".")
+    };
+    base.join("OpenBulletin").join("settings.json")
+}
+
+pub fn load_settings() -> Settings {
+    std::fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_settings(settings: &Settings) -> Result<(), String> {
+    let path = settings_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| e.to_string())
+}
+
 struct App {
     doc: Document,
     preset: Preset,
@@ -30,6 +103,8 @@ struct App {
     status: String,
     shaper: ob_text::shaping::Shaper,
     path: Option<std::path::PathBuf>,
+    settings: Settings,
+    printer_name: String,
 }
 
 impl Default for App {
@@ -57,6 +132,8 @@ impl Default for App {
             status: "Welcome to OpenBulletin.".into(),
             shaper: ob_text::shaping::bundled_shaper(),
             path: None,
+            settings: load_settings(),
+            printer_name: "Church office printer".into(),
         }
     }
 }
@@ -421,6 +498,46 @@ impl eframe::App for App {
                             }
                         }
                         ui.separator();
+                        ui.label(egui::RichText::new("Two-sided printing, first time on a printer?").strong());
+                        ui.label("Every printer flips the paper its own way. Print one test sheet and tell us how it came out. We remember the answer for that printer.");
+                        ui.horizontal(|ui| {
+                            ui.label("Printer:");
+                            ui.text_edit_singleline(&mut self.printer_name);
+                        });
+                        let known = self.settings.printers.get(&self.printer_name).cloned();
+                        if let Some(setup) = &known {
+                            ui.label(egui::RichText::new(&setup.instruction).strong());
+                        }
+                        if ui.button("Save a test sheet (PDF)").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_file_name("two-sided-test-sheet.pdf")
+                                .add_filter("PDF", &["pdf"])
+                                .save_file()
+                            {
+                                match std::fs::write(&path, ob_pdf::export_duplex_test_pdf()) {
+                                    Ok(()) => self.status = "Test sheet saved. Print it with two-sided printing ON, and pick \"flip on long edge\" if the printer asks. Then answer below.".into(),
+                                    Err(e) => self.status = format!("Could not save the test sheet: {e}"),
+                                }
+                            }
+                        }
+                        ui.label("Hold the FRONT so you can read it. Turn the sheet like a book page. The BACK was:");
+                        ui.horizontal(|ui| {
+                            for (answer, label) in [
+                                ("up", "Right side up"),
+                                ("down", "Upside down"),
+                                ("manual", "My printer does one side at a time"),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    let setup = printer_setup_from_answer(answer, &self.printer_name);
+                                    self.settings.printers.insert(self.printer_name.clone(), setup);
+                                    match save_settings(&self.settings) {
+                                        Ok(()) => self.status = format!("Remembered for the {}. You will see the setting to use right here.", self.printer_name),
+                                        Err(e) => self.status = format!("Learned it, but could not save the note: {e}"),
+                                    }
+                                }
+                            }
+                        });
+                        ui.separator();
                         if ui.button(egui::RichText::new("Start next Sunday").strong()).clicked() {
                             self.next_sunday();
                         }
@@ -520,4 +637,34 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|_cc| Ok(Box::new(App::default()))),
     )
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn answers_map_to_plain_instructions() {
+        let up = printer_setup_from_answer("up", "Brother");
+        assert_eq!(up.mode, "long_edge");
+        assert!(up.instruction.contains("long edge"));
+        let down = printer_setup_from_answer("down", "Brother");
+        assert_eq!(down.mode, "short_edge");
+        let manual = printer_setup_from_answer("manual", "Brother");
+        assert_eq!(manual.mode, "manual");
+        assert!(manual.instruction.contains("one side at a time"));
+    }
+
+    #[test]
+    fn settings_json_round_trip() {
+        let mut st = Settings::default();
+        st.printers
+            .insert("Brother".into(), printer_setup_from_answer("up", "Brother"));
+        let text = serde_json::to_string(&st).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            back.printers["Brother"].mode, "long_edge",
+            "printer memory survives a save/load round trip"
+        );
+    }
 }

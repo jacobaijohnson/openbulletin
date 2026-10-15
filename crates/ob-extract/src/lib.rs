@@ -150,7 +150,11 @@ fn page_size(doc: &lopdf::Document, page_id: &lopdf::ObjectId) -> Option<(f32, f
     let mb = page.get(b"MediaBox").ok()?.as_array().ok()?;
     let nums: Vec<f32> = mb
         .iter()
-        .filter_map(|o| o.as_float().ok().or_else(|| o.as_i64().ok().map(|i| i as f32)))
+        .filter_map(|o| {
+            o.as_float()
+                .ok()
+                .or_else(|| o.as_i64().ok().map(|i| i as f32))
+        })
         .collect();
     if nums.len() == 4 {
         Some((nums[2] - nums[0], nums[3] - nums[1]))

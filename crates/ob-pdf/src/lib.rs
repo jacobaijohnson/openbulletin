@@ -311,6 +311,91 @@ endstream",
     pdf.finish(&page_ids, f1, f2)
 }
 
+/// The two-sided printing test sheet (one sheet, FRONT and BACK).
+///
+/// Print it with two-sided printing on, "flip on long edge" if the
+/// printer asks. Hold FRONT so it reads right, turn the sheet like a
+/// book page: if BACK reads right too, long-edge flipping is correct
+/// for that printer; if BACK is upside down, that printer needs
+/// short-edge. The app asks the question and remembers the answer.
+pub fn export_duplex_test_pdf() -> Vec<u8> {
+    use ob_model::{
+        Align, ContentRole, Frame, FrameKind, Panel, Paragraph, ParagraphStyle, Rect, Size, Story,
+    };
+    let page = Size::new(612_000, 792_000); // US Letter portrait
+    let frame_rect = Rect::new(54_000, 54_000, page.w - 108_000, page.h - 108_000);
+    let side = |id: &str, big: &str, last: &str| -> (Panel, Story) {
+        let story = Story {
+            id: format!("{id}-story"),
+            paragraphs: vec![
+                Paragraph::new("test-big", big),
+                Paragraph::new(
+                    "test-body",
+                    "The top of this side is the edge nearest the big word.",
+                ),
+                Paragraph::new("test-body", last),
+            ],
+        };
+        let panel = Panel {
+            id: id.to_string(),
+            name: big.to_string(),
+            size: page,
+            frames: vec![Frame {
+                id: format!("{id}-frame"),
+                name: "Test sheet".into(),
+                kind: FrameKind::Text,
+                rect: frame_rect,
+                story_id: Some(story.id.clone()),
+                role: ContentRole::Standing,
+            }],
+        };
+        (panel, story)
+    };
+    let (p1, s1) = side(
+        "front",
+        "FRONT",
+        "Print BOTH sides of one sheet, then hold this FRONT so you can read it.",
+    );
+    let (p2, s2) = side(
+        "back",
+        "BACK",
+        "Turn the sheet over like a book page. In the app, tell us: is this BACK right side up, or upside down?",
+    );
+    let doc = Document {
+        format_version: ob_model::FORMAT_VERSION,
+        title: "Two-sided printing test sheet".into(),
+        profile: Default::default(),
+        fields: Default::default(),
+        styles: vec![
+            ParagraphStyle {
+                id: "test-big".into(),
+                name: "Big".into(),
+                font_size: 40_000,
+                bold: true,
+                align: Align::Center,
+                space_after: 24_000,
+                color: ob_model::Rgb::BLACK,
+            },
+            ParagraphStyle {
+                id: "test-body".into(),
+                name: "Body".into(),
+                font_size: 13_000,
+                bold: false,
+                align: Align::Center,
+                space_after: 12_000,
+                color: ob_model::Rgb::BLACK,
+            },
+        ],
+        stories: vec![s1, s2],
+        panels: vec![p1, p2],
+        sheet: ob_model::SheetSpec {
+            preset: "letter-portrait".into(),
+            size: page,
+        },
+    };
+    export_reader_pdf(&doc)
+}
+
 /// Reader PDF: one panel per page, in reading order (for email/website).
 pub fn export_reader_pdf(doc: &Document) -> Vec<u8> {
     let sides = ob_impose::impose_single(doc);
@@ -341,6 +426,16 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
             "Twentieth Sunday after Pentecost",
         )
+    }
+
+    #[test]
+    fn duplex_test_sheet_has_front_and_back() {
+        let bytes = export_duplex_test_pdf();
+        assert!(bytes.starts_with(b"%PDF-1.4"));
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("/Count 2"), "two pages: {text:.200}");
+        assert!(text.contains("FRONT"), "front missing");
+        assert!(text.contains("BACK"), "back missing");
     }
 
     #[test]

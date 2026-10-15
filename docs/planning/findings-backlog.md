@@ -108,3 +108,12 @@ recorded), or DEFERRED (reason + what would unblock it).
 - D7 Interaction layer untested. FIX-A/C: unit tests for the
   edit session, gesture-to-undo, menu target choice, and the
   announcements write rule.
+
+## Outcome (2026-10-15)
+
+Batches A, B, and C landed: every FIX item above is implemented
+and covered where a test can reach it (53 workspace tests,
+clippy clean). BY-DESIGN and DEFERRED items stand as recorded.
+The closing gate per Jacob: a full review, audit, and red-team
+suite over the result, Wonder lanes first, Tier-2 where it
+strengthens.

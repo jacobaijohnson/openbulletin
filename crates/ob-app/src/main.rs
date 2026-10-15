@@ -385,6 +385,12 @@ struct App {
     open_armed: bool,
     /// Two-click guard on throwing recovered work away (F11).
     discard_armed: bool,
+    /// Pages window zoom: 1.0 fits the window (finding R9).
+    pages_zoom: f32,
+    /// The copied box, for Ctrl+C / Ctrl+V on the canvas.
+    frame_clipboard: Option<(ob_model::Frame, Option<ob_model::Story>)>,
+    /// Sequence for fresh box and story ids.
+    box_seq: u32,
     /// One document snapshot per frame, shared by the preview
     /// caches instead of re-serializing the document for every
     /// consumer (audit R6).
@@ -512,6 +518,9 @@ impl Default for App {
             status_error: false,
             open_armed: false,
             discard_armed: false,
+            pages_zoom: 1.0,
+            frame_clipboard: None,
+            box_seq: 0,
             edit_done: false,
             focus_edit: false,
             edit_start: None,
@@ -1083,6 +1092,84 @@ impl App {
     /// in the office tools our users know (audit finding C1,
     /// resolved for the office convention). Done typing, or
     /// clicking another box, is what saves.
+    /// Paste a copied box onto a panel: fresh ids, the copied
+    /// words come along, dropped a little down and right of the
+    /// original like every office app does.
+    fn paste_box(
+        &mut self,
+        idx: usize,
+        mut frame: ob_model::Frame,
+        story: Option<ob_model::Story>,
+    ) {
+        self.push_undo_now();
+        if let Some(mut st) = story {
+            self.box_seq += 1;
+            let mut n = self.box_seq;
+            let mut sid = format!("box-{n}");
+            while self.doc.story(&sid).is_some() {
+                n += 1;
+                sid = format!("box-{n}");
+            }
+            self.box_seq = n;
+            st.id = sid.clone();
+            self.doc.stories.push(st);
+            frame.story_id = Some(sid);
+        }
+        frame.id = format!(
+            "frame-{}",
+            frame.story_id.clone().unwrap_or_else(|| "shape".into())
+        );
+        let panel = &mut self.doc.panels[idx];
+        frame.rect.x = (frame.rect.x + 18_000).min(panel.size.w - frame.rect.w);
+        frame.rect.y = (frame.rect.y + 18_000).min(panel.size.h - frame.rect.h);
+        frame.name = format!("{} copy", frame.name);
+        panel.frames.push(frame);
+        self.selected_frame = Some(panel.frames.len() - 1);
+        self.note("Box pasted. Drag it where it belongs.".into());
+    }
+
+    /// Add a fresh text box to a panel, with its own new story
+    /// (finding D2: boxes could not be born before this).
+    fn add_text_box(&mut self, idx: usize) {
+        if self.editing.is_some() {
+            self.commit_edit();
+        }
+        self.push_undo_now();
+        self.box_seq += 1;
+        let mut n = self.box_seq;
+        let mut sid = format!("box-{n}");
+        while self.doc.story(&sid).is_some() {
+            n += 1;
+            sid = format!("box-{n}");
+        }
+        self.box_seq = n;
+        self.doc.stories.push(ob_model::Story {
+            id: sid.clone(),
+            paragraphs: vec![ob_model::Paragraph::new(
+                "body",
+                "New box. Double-click and type.",
+            )],
+        });
+        let panel = &mut self.doc.panels[idx];
+        let w = 216_000.min(panel.size.w);
+        let h = 108_000.min(panel.size.h);
+        panel.frames.push(ob_model::Frame {
+            id: format!("frame-{sid}"),
+            name: "Text box".into(),
+            kind: ob_model::FrameKind::Text,
+            rect: ob_model::Rect {
+                x: (panel.size.w - w) / 2,
+                y: (panel.size.h - h) / 2,
+                w,
+                h,
+            },
+            story_id: Some(sid),
+            role: ob_model::ContentRole::Weekly,
+        });
+        self.selected_frame = Some(panel.frames.len() - 1);
+        self.note("Text box added in the middle of the page. Drag it where it belongs.".into());
+    }
+
     fn cancel_edit(&mut self) {
         self.editing = None;
         self.edit_start = None;
@@ -1227,10 +1314,25 @@ impl App {
                     {
                         self.canvas_panel += 1;
                     }
+                    ui.separator();
+                    if ui.button("Smaller").clicked() {
+                        self.pages_zoom = (self.pages_zoom / 1.25).clamp(0.4, 3.0);
+                    }
+                    if ui.button("Fit").clicked() {
+                        self.pages_zoom = 1.0;
+                    }
+                    if ui.button("Bigger").clicked() {
+                        self.pages_zoom = (self.pages_zoom * 1.25).clamp(0.4, 3.0);
+                    }
+                    ui.separator();
+                    if ui.button("Add a text box").clicked() {
+                        self.add_text_box(idx);
+                    }
                 });
                 ui.label("Click a box to select it, then drag to move it. Drag the corner square to size it.");
                 ui.label("Double-click a box to type in it. Arrow keys nudge a selected box.");
                 ui.label("Right-click anything for its exact place in inches. The blue guides never print.");
+                ui.small("Keys: Tab moves to the next box, Enter types in it, arrows move a box (Shift for bigger steps), Ctrl+C and Ctrl+V copy a box, Ctrl+Z undoes.");
                 if self.editing.map(|(pi, _)| pi) != Some(idx) && self.editing.is_some() {
                     self.commit_edit();
                 }
@@ -1275,7 +1377,11 @@ impl App {
                     });
                 }
                 ui.separator();
-                self.panel_canvas(ui, idx, ctx);
+                egui::ScrollArea::both()
+                    .max_height(820.0)
+                    .show(ui, |ui| {
+                        self.panel_canvas(ui, idx, ctx);
+                    });
                 ui.separator();
                 let n = self.doc.panels[idx].guides.len();
                 ui.small(format!(
@@ -1294,7 +1400,7 @@ impl App {
         let ph = panel.size.h as f32 / 1000.0;
         let ruler = 20.0_f32;
         let avail_w = (ui.available_width() - ruler - 4.0).max(120.0);
-        let scale = (avail_w / pw).min(760.0 / ph).min(2.0);
+        let scale = ((avail_w / pw).min(760.0 / ph) * self.pages_zoom).clamp(0.15, 6.0);
         let disp_w = pw * scale;
         let disp_h = ph * scale;
         let (full, _) = ui.allocate_exact_size(
@@ -1575,7 +1681,7 @@ impl App {
         if response.drag_started() {
             if let Some(pos) = pointer {
                 self.begin_gesture();
-                self.drag_guide = near_guide(pos);
+                self.drag_guide = near_guide(pos).filter(|&gi| !panel.guides[gi].locked);
                 if self.drag_guide.is_none() {
                     let pm = to_mpt(pos);
                     match frame_hit(pm) {
@@ -1669,6 +1775,50 @@ impl App {
                 }
             }
         }
+        // Canvas keys when no text box is being typed in: Tab
+        // cycles boxes, Enter types in the selected box, Ctrl+C
+        // and Ctrl+V copy and paste a box, arrows nudge.
+        let canvas_keys_active = ctx.memory(|m| m.focused()).is_none() && self.editing.is_none();
+        if canvas_keys_active {
+            let n_frames = self.doc.panels[idx].frames.len();
+            if n_frames > 0 {
+                let backwards = ui.input(|i| i.modifiers.shift);
+                if ui.input(|i| i.key_pressed(egui::Key::Tab)) {
+                    let cur = self.selected_frame.unwrap_or(0);
+                    self.selected_frame = Some(if backwards {
+                        (cur + n_frames - 1) % n_frames
+                    } else if self.selected_frame.is_none() {
+                        0
+                    } else {
+                        (cur + 1) % n_frames
+                    });
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if let Some(fi) = self.selected_frame {
+                        if self.doc.panels[idx].frames[fi].story_id.is_some() {
+                            self.enter_edit(idx, fi);
+                            return;
+                        }
+                    }
+                }
+                if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
+                    if let Some(fi) = self.selected_frame {
+                        let f = self.doc.panels[idx].frames[fi].clone();
+                        let story = f
+                            .story_id
+                            .as_ref()
+                            .and_then(|sid| self.doc.story(sid).cloned());
+                        self.frame_clipboard = Some((f, story));
+                        self.status = "Box copied.".into();
+                    }
+                }
+                if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::V)) {
+                    if let Some((f, story)) = self.frame_clipboard.clone() {
+                        self.paste_box(idx, f, story);
+                    }
+                }
+            }
+        }
         // Arrow keys nudge the selected frame (Shift: bigger steps),
         // when no text box is being typed in.
         if ctx.memory(|m| m.focused()).is_none() {
@@ -1712,9 +1862,13 @@ impl App {
             }
         }
         let guide_color = egui::Color32::from_rgb(0, 150, 200);
+        let locked_color = egui::Color32::from_rgb(120, 120, 120);
         for (gi, g) in self.doc.panels[idx].guides.iter().enumerate() {
             let dragging = self.drag_guide == Some(gi);
-            let stroke = egui::Stroke::new(if dragging { 2.0_f32 } else { 1.25_f32 }, guide_color);
+            let stroke = egui::Stroke::new(
+                if dragging { 2.0_f32 } else { 1.25_f32 },
+                if g.locked { locked_color } else { guide_color },
+            );
             if g.vertical {
                 let x = origin.x + (g.pos as f32 / 1000.0) * scale;
                 painter.line_segment(
@@ -1849,6 +2003,35 @@ impl App {
                                 .into();
                     }
                 }
+                ui.separator();
+                if ui.button("Copy this box (Ctrl+C)").clicked() {
+                    let story = f
+                        .story_id
+                        .as_ref()
+                        .and_then(|sid| self.doc.story(sid).cloned());
+                    self.frame_clipboard = Some((f.clone(), story));
+                    self.status = "Box copied. Ctrl+V puts a copy on the page.".into();
+                    ui.close_menu();
+                }
+                if ui.button("Delete this box").clicked() {
+                    self.push_undo_now();
+                    let gone = self.doc.panels[idx].frames.remove(fi);
+                    if let Some(sid) = &gone.story_id {
+                        let used_elsewhere = self
+                            .doc
+                            .panels
+                            .iter()
+                            .flat_map(|p| &p.frames)
+                            .any(|fr| fr.story_id.as_deref() == Some(sid.as_str()));
+                        if !used_elsewhere {
+                            self.doc.stories.retain(|st| &st.id != sid);
+                        }
+                    }
+                    self.selected_frame = None;
+                    self.frame_menu_for = None;
+                    self.status = "Box deleted. Undo brings it back.".into();
+                    ui.close_menu();
+                }
             }
             MenuTarget::Guide(gi) => {
                 let g = self.doc.panels[idx].guides[gi];
@@ -1886,6 +2069,23 @@ impl App {
                         }
                     }
                 }
+                if ui
+                    .button(if g.locked {
+                        "Unlock this guide"
+                    } else {
+                        "Lock this guide"
+                    })
+                    .clicked()
+                {
+                    self.push_undo_now();
+                    self.doc.panels[idx].guides[gi].locked = !g.locked;
+                    self.status = if g.locked {
+                        "Guide unlocked: it can be dragged again.".into()
+                    } else {
+                        "Guide locked: it stays put until you unlock it.".into()
+                    };
+                    ui.close_menu();
+                }
                 if ui.button("Delete this guide").clicked() {
                     self.push_undo_now();
                     self.doc.panels[idx].guides.remove(gi);
@@ -1909,6 +2109,7 @@ impl App {
                     self.doc.panels[idx].guides.push(ob_model::Guide {
                         vertical: true,
                         pos: x_mpt.clamp(0, panel.size.w),
+                        locked: false,
                     });
                     ui.close_menu();
                 }
@@ -1923,6 +2124,7 @@ impl App {
                     self.doc.panels[idx].guides.push(ob_model::Guide {
                         vertical: false,
                         pos: y_mpt.clamp(0, panel.size.h),
+                        locked: false,
                     });
                     ui.close_menu();
                 }
@@ -3320,6 +3522,38 @@ mod settings_tests {
             MenuTarget::Guide(1)
         );
         assert_eq!(choose_menu_target(None, None, None), MenuTarget::Page);
+    }
+
+    #[test]
+    fn add_and_paste_boxes_round_trip_with_undo() {
+        let mut app = App::default();
+        let frames0 = app.doc.panels[0].frames.len();
+        let stories0 = app.doc.stories.len();
+        app.add_text_box(0);
+        assert_eq!(app.doc.panels[0].frames.len(), frames0 + 1);
+        assert_eq!(app.doc.stories.len(), stories0 + 1);
+        // Copy the new box and paste it: another frame, a distinct story.
+        let f = app.doc.panels[0].frames.last().expect("frame").clone();
+        let story = f
+            .story_id
+            .as_ref()
+            .and_then(|sid| app.doc.story(sid).cloned());
+        let sid_first = f.story_id.clone();
+        app.paste_box(0, f, story);
+        assert_eq!(app.doc.panels[0].frames.len(), frames0 + 2);
+        assert_eq!(app.doc.stories.len(), stories0 + 2);
+        let sid_second = app.doc.panels[0]
+            .frames
+            .last()
+            .expect("frame")
+            .story_id
+            .clone();
+        assert_ne!(sid_first, sid_second, "a paste must own its words");
+        app.undo();
+        assert_eq!(app.doc.panels[0].frames.len(), frames0 + 1);
+        app.undo();
+        assert_eq!(app.doc.panels[0].frames.len(), frames0);
+        assert_eq!(app.doc.stories.len(), stories0);
     }
 
     #[test]

@@ -62,3 +62,18 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
 
 Not yet: dragging new guides out of the rulers, master
 (all-pages) guides, spell-check underlines on the canvas.
+
+## After the audits (2026-10-15, batches A-C)
+
+- **Zoom**: Smaller / Fit / Bigger in the Pages window; the page
+  scrolls when it outgrows the window.
+- **Boxes are born and die here**: "Add a text box" (middle of
+  the page, its own words), and a box's right-click menu offers
+  Copy and Delete. Ctrl+C / Ctrl+V do the same from the keys.
+  A paste gets its own copy of the words. Undo covers all of it.
+- **Guide lock**: a guide's menu can lock it (gray, undraggable)
+  or unlock it. Its exact place can still be typed.
+- **Keyboard**: Tab cycles boxes, Enter types in the selected
+  box, arrows nudge, Shift+arrows stride, Ctrl+Z/Y undo/redo.
+- **Escape cancels typing** (the office convention); Done or
+  clicking away saves.

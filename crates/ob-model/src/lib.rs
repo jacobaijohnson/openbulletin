@@ -155,6 +155,10 @@ pub struct Guide {
     /// true: a vertical line at x = pos. false: horizontal at y.
     pub vertical: bool,
     pub pos: Mpt,
+    /// A locked guide cannot be dragged (its exact place can
+    /// still be typed, and it can be unlocked from its menu).
+    #[serde(default)]
+    pub locked: bool,
 }
 
 /// Snap a value to the nearest target when it is within the

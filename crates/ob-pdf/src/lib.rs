@@ -594,6 +594,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
                 role: ContentRole::Standing,
             }],
             background_image: None,
+            guides: Vec::new(),
         };
         (panel, story)
     };

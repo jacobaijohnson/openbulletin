@@ -145,12 +145,66 @@ pub struct Frame {
     pub role: ContentRole,
 }
 
+/// One layout guide on a panel: a straight line the eye (and later,
+/// snapping) can line things up against. Positions are in the
+/// panel's own milli-point coordinates, from its top-left corner,
+/// exactly like frames. On screen they are shown and edited in
+/// inches, the office worker's unit (docs/EDITOR.md).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Guide {
+    /// true: a vertical line at x = pos. false: horizontal at y.
+    pub vertical: bool,
+    pub pos: Mpt,
+}
+
+/// Inches to milli-points (the editor speaks inches on screen;
+/// the file stores milli-points).
+pub fn inches_to_mpt(inches: f64) -> Mpt {
+    (inches * 72_000.0).round() as Mpt
+}
+
+/// Milli-points to inches, for display.
+pub fn mpt_to_inches(m: Mpt) -> f64 {
+    m as f64 / 72_000.0
+}
+
+/// Read a position the way an office worker types it: "1.25",
+/// "2", "1/2", or "1 1/4" (inches). None when it is not a number
+/// we understand; the caller keeps the old value and says so.
+pub fn parse_inches(text: &str) -> Option<f64> {
+    let t = text.trim().trim_end_matches(['"', ' ']).trim();
+    if t.is_empty() {
+        return None;
+    }
+    let mut total = 0.0f64;
+    for part in t.split_whitespace() {
+        if let Some((num, den)) = part.split_once('/') {
+            let n: f64 = num.parse().ok()?;
+            let d: f64 = den.parse().ok()?;
+            if d == 0.0 {
+                return None;
+            }
+            total += n / d;
+        } else {
+            total += part.parse::<f64>().ok()?;
+        }
+    }
+    if total.is_finite() && total >= 0.0 {
+        Some(total)
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Panel {
     pub id: String,
     pub name: String,
     pub size: Size,
     pub frames: Vec<Frame>,
+    /// Layout guides on this panel (docs/EDITOR.md).
+    #[serde(default)]
+    pub guides: Vec<Guide>,
     /// Optional tracing-guide picture under this panel: an asset
     /// file name (the page of the old bulletin this panel rebuilds,
     /// from the trace rescue in docs/EXTRACT.md). A guide is shown
@@ -356,5 +410,30 @@ mod tests {
             resolve_fields("{Church.name} - {Sunday.name}, {Sunday.date}", &doc),
             "Grace Lutheran - Twentieth Sunday after Pentecost, October 18, 2026"
         );
+    }
+}
+
+#[cfg(test)]
+mod guide_tests {
+    use super::*;
+
+    #[test]
+    fn inches_round_trip() {
+        assert_eq!(inches_to_mpt(1.25), 90_000);
+        assert_eq!(mpt_to_inches(90_000), 1.25);
+        assert_eq!(inches_to_mpt(0.0), 0);
+    }
+
+    #[test]
+    fn parses_office_worker_numbers() {
+        assert_eq!(parse_inches("1.25"), Some(1.25));
+        assert_eq!(parse_inches("2"), Some(2.0));
+        assert_eq!(parse_inches("1/2"), Some(0.5));
+        assert_eq!(parse_inches("1 1/4"), Some(1.25));
+        assert_eq!(parse_inches("  3/8 \""), Some(0.375));
+        assert_eq!(parse_inches("abc"), None);
+        assert_eq!(parse_inches(""), None);
+        assert_eq!(parse_inches("-1"), None);
+        assert_eq!(parse_inches("1/0"), None);
     }
 }

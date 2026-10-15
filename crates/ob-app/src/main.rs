@@ -175,6 +175,14 @@ struct App {
     path: Option<std::path::PathBuf>,
     settings: Settings,
     printer_name: String,
+    show_pages: bool,
+    canvas_panel: usize,
+    drag_guide: Option<usize>,
+    ctx_pos: Option<egui::Pos2>,
+    guide_input: String,
+    guide_menu_for: Option<usize>,
+    bg_tex_key: String,
+    bg_tex: Option<egui::TextureHandle>,
     show_fonts: bool,
     fonts_loaded: bool,
     font_rows: Vec<FontRow>,
@@ -261,6 +269,14 @@ impl Default for App {
             path: None,
             settings: load_settings(),
             printer_name: "Church office printer".into(),
+            show_pages: false,
+            canvas_panel: 0,
+            drag_guide: None,
+            ctx_pos: None,
+            guide_input: String::new(),
+            guide_menu_for: None,
+            bg_tex_key: String::new(),
+            bg_tex: None,
             show_fonts: false,
             fonts_loaded: false,
             font_rows: Vec::new(),
@@ -709,6 +725,373 @@ impl App {
         print_checklist_for(&self.doc, &self.settings, &self.printer_name)
     }
 
+    /// The Pages window: one panel at a time, with inch rulers,
+    /// the tracing picture, frame outlines, and the panel's guides.
+    /// Guides follow office habits: drag to move, right-click to
+    /// type the exact place (docs/EDITOR.md).
+    fn pages_window(&mut self, ctx: &egui::Context) {
+        if !self.show_pages {
+            return;
+        }
+        if self.doc.panels.is_empty() {
+            self.show_pages = false;
+            return;
+        }
+        self.canvas_panel = self.canvas_panel.min(self.doc.panels.len() - 1);
+        let idx = self.canvas_panel;
+        let mut open = self.show_pages;
+        egui::Window::new("Pages")
+            .open(&mut open)
+            .default_width(720.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("<").clicked() && self.canvas_panel > 0 {
+                        self.canvas_panel -= 1;
+                    }
+                    let panel = &self.doc.panels[self.canvas_panel];
+                    ui.label(egui::RichText::new(format!(
+                        "{}  ({} of {})",
+                        panel.name,
+                        self.canvas_panel + 1,
+                        self.doc.panels.len()
+                    )).strong());
+                    if ui.button(">").clicked()
+                        && self.canvas_panel + 1 < self.doc.panels.len()
+                    {
+                        self.canvas_panel += 1;
+                    }
+                });
+                ui.label("Drag a blue line to move it. Right-click a line to type its exact place, or right-click the page to add a line there. Guides never print.");
+                ui.separator();
+                self.panel_canvas(ui, idx, ctx);
+                ui.separator();
+                let n = self.doc.panels[idx].guides.len();
+                ui.small(format!(
+                    "{n} guide{} on this page. They save with the bulletin.",
+                    if n == 1 { "" } else { "s" }
+                ));
+            });
+        self.show_pages = open;
+    }
+
+    /// Draw and interact with one panel: rulers, tracing picture,
+    /// frame outlines, guides with drag + right-click editing.
+    fn panel_canvas(&mut self, ui: &mut egui::Ui, idx: usize, ctx: &egui::Context) {
+        let panel = self.doc.panels[idx].clone();
+        let pw = panel.size.w as f32 / 1000.0; // points
+        let ph = panel.size.h as f32 / 1000.0;
+        let ruler = 20.0_f32;
+        let avail_w = (ui.available_width() - ruler - 4.0).max(120.0);
+        let scale = (avail_w / pw).min(760.0 / ph).min(2.0);
+        let disp_w = pw * scale;
+        let disp_h = ph * scale;
+        let (full, _) = ui.allocate_exact_size(
+            egui::vec2(disp_w + ruler + 2.0, disp_h + ruler + 2.0),
+            egui::Sense::hover(),
+        );
+        let origin = egui::pos2(full.min.x + ruler, full.min.y + ruler);
+        let to_px =
+            |x_pt: f32, y_pt: f32| egui::pos2(origin.x + x_pt * scale, origin.y + y_pt * scale);
+        let panel_rect = egui::Rect::from_min_size(origin, egui::vec2(disp_w, disp_h));
+        let painter = ui.painter_at(full.shrink(0.0));
+
+        // Rulers: quarter-inch ticks, a number each inch.
+        let in_w = pw / 72.0;
+        let in_h = ph / 72.0;
+        let mut t = 0.0_f32;
+        while t <= in_w + 0.001 {
+            let x = origin.x + t * 72.0 * scale;
+            let len = if (t * 4.0).fract() < 0.01 {
+                if t.fract() < 0.01 {
+                    11.0
+                } else {
+                    6.0
+                }
+            } else {
+                6.0
+            };
+            painter.line_segment(
+                [
+                    egui::pos2(x, origin.y - 2.0),
+                    egui::pos2(x, origin.y - 2.0 - len),
+                ],
+                egui::Stroke::new(0.75_f32, egui::Color32::GRAY),
+            );
+            if t.fract() < 0.01 && t > 0.0 {
+                painter.text(
+                    egui::pos2(x - 4.0, origin.y - 20.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("{}", t as i32),
+                    egui::FontId::proportional(8.0),
+                    egui::Color32::GRAY,
+                );
+            }
+            t += 0.25;
+        }
+        let mut t = 0.0_f32;
+        while t <= in_h + 0.001 {
+            let y = origin.y + t * 72.0 * scale;
+            let len = if t.fract() < 0.01 { 11.0 } else { 6.0 };
+            painter.line_segment(
+                [
+                    egui::pos2(origin.x - 2.0, y),
+                    egui::pos2(origin.x - 2.0 - len, y),
+                ],
+                egui::Stroke::new(0.75_f32, egui::Color32::GRAY),
+            );
+            if t.fract() < 0.01 && t > 0.0 {
+                painter.text(
+                    egui::pos2(origin.x - 18.0, y - 4.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("{}", t as i32),
+                    egui::FontId::proportional(8.0),
+                    egui::Color32::GRAY,
+                );
+            }
+            t += 0.25;
+        }
+
+        // The panel itself, its tracing picture, and its frames.
+        painter.rect_filled(panel_rect, 0.0, egui::Color32::WHITE);
+        if let Some(bg) = &panel.background_image {
+            let key = format!(
+                "{}|{}",
+                self.path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                bg
+            );
+            if self.bg_tex_key != key {
+                self.bg_tex_key = key.clone();
+                self.bg_tex = self.load_bg_texture(ctx, bg);
+            }
+            if let Some(tex) = &self.bg_tex {
+                painter.image(
+                    tex.id(),
+                    panel_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
+        for frame in &panel.frames {
+            let r = frame.rect;
+            let frect = egui::Rect::from_min_max(
+                to_px(r.x as f32 / 1000.0, r.y as f32 / 1000.0),
+                to_px((r.x + r.w) as f32 / 1000.0, (r.y + r.h) as f32 / 1000.0),
+            );
+            painter.rect_stroke(
+                frect,
+                0.0,
+                egui::Stroke::new(0.75_f32, egui::Color32::LIGHT_GRAY),
+            );
+        }
+
+        // Guides, hit-testing, dragging.
+        let response = ui.interact(
+            panel_rect,
+            egui::Id::new("panel-canvas"),
+            egui::Sense::click_and_drag(),
+        );
+        let pointer = response.hover_pos().or(self.ctx_pos);
+        if response.hovered() {
+            if let Some(pos) = response.hover_pos() {
+                self.ctx_pos = Some(pos);
+            }
+        }
+        let guides_now = self.doc.panels[idx].guides.clone();
+        let near_guide = |pos: egui::Pos2| -> Option<usize> {
+            let mut best: Option<(usize, f32)> = None;
+            for (gi, g) in guides_now.iter().enumerate() {
+                let line_px = if g.vertical {
+                    origin.x + (g.pos as f32 / 1000.0) * scale
+                } else {
+                    origin.y + (g.pos as f32 / 1000.0) * scale
+                };
+                let d = if g.vertical {
+                    (pos.x - line_px).abs()
+                } else {
+                    (pos.y - line_px).abs()
+                };
+                if d <= 5.0 && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                    best = Some((gi, d));
+                }
+            }
+            best.map(|(gi, _)| gi)
+        };
+        if response.drag_started() {
+            if let Some(pos) = pointer {
+                self.drag_guide = near_guide(pos);
+            }
+        }
+        if response.dragged() {
+            if let (Some(gi), Some(pos)) = (self.drag_guide, pointer) {
+                let g = &mut self.doc.panels[idx].guides[gi];
+                let extent = if g.vertical {
+                    panel.size.w
+                } else {
+                    panel.size.h
+                };
+                let new_pos = if g.vertical {
+                    (((pos.x - origin.x) / scale) * 1000.0) as ob_model::Mpt
+                } else {
+                    (((pos.y - origin.y) / scale) * 1000.0) as ob_model::Mpt
+                };
+                g.pos = new_pos.clamp(0, extent);
+            }
+        }
+        if response.drag_stopped() {
+            self.drag_guide = None;
+        }
+        if response.hovered() {
+            if let Some(pos) = pointer {
+                if let Some(gi) = near_guide(pos) {
+                    let g = self.doc.panels[idx].guides[gi];
+                    ctx.set_cursor_icon(if g.vertical {
+                        egui::CursorIcon::ResizeHorizontal
+                    } else {
+                        egui::CursorIcon::ResizeVertical
+                    });
+                }
+            }
+        }
+        let guide_color = egui::Color32::from_rgb(0, 150, 200);
+        for (gi, g) in self.doc.panels[idx].guides.iter().enumerate() {
+            let dragging = self.drag_guide == Some(gi);
+            let stroke = egui::Stroke::new(if dragging { 2.0_f32 } else { 1.25_f32 }, guide_color);
+            if g.vertical {
+                let x = origin.x + (g.pos as f32 / 1000.0) * scale;
+                painter.line_segment(
+                    [egui::pos2(x, origin.y), egui::pos2(x, origin.y + disp_h)],
+                    stroke,
+                );
+                if dragging {
+                    painter.text(
+                        egui::pos2(x + 6.0, origin.y + 4.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("{:.2} in from the left", ob_model::mpt_to_inches(g.pos)),
+                        egui::FontId::proportional(11.0),
+                        guide_color,
+                    );
+                }
+            } else {
+                let y = origin.y + (g.pos as f32 / 1000.0) * scale;
+                painter.line_segment(
+                    [egui::pos2(origin.x, y), egui::pos2(origin.x + disp_w, y)],
+                    stroke,
+                );
+                if dragging {
+                    painter.text(
+                        egui::pos2(origin.x + 6.0, y + 4.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("{:.2} in from the top", ob_model::mpt_to_inches(g.pos)),
+                        egui::FontId::proportional(11.0),
+                        guide_color,
+                    );
+                }
+            }
+        }
+        painter.rect_stroke(
+            panel_rect,
+            0.0,
+            egui::Stroke::new(1.0_f32, egui::Color32::DARK_GRAY),
+        );
+
+        // Right-click: exact position for a guide, or add one here.
+        let hit = self.ctx_pos.and_then(near_guide);
+        response.context_menu(|ui| {
+            if let Some(gi) = hit {
+                let g = self.doc.panels[idx].guides[gi];
+                if self.guide_menu_for != Some(gi) {
+                    self.guide_menu_for = Some(gi);
+                    self.guide_input = format!("{:.3}", ob_model::mpt_to_inches(g.pos));
+                }
+                let (what, from) = if g.vertical {
+                    ("Vertical guide", "from the left edge")
+                } else {
+                    ("Horizontal guide", "from the top edge")
+                };
+                ui.label(egui::RichText::new(format!("{what}, {from}")).strong());
+                ui.label("Exact place, in inches (1.25 or 1 1/4 works):");
+                let edit = ui.text_edit_singleline(&mut self.guide_input);
+                let apply = ui.button("Set the position").clicked()
+                    || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                if apply {
+                    match ob_model::parse_inches(&self.guide_input) {
+                        Some(inches) => {
+                            let extent = if g.vertical {
+                                panel.size.w
+                            } else {
+                                panel.size.h
+                            };
+                            self.doc.panels[idx].guides[gi].pos =
+                                ob_model::inches_to_mpt(inches).clamp(0, extent);
+                            self.status = "Guide moved.".into();
+                            ui.close_menu();
+                        }
+                        None => {
+                            self.status =
+                                "That is not a place I can read. Try 1.25 or 1 1/4.".into();
+                        }
+                    }
+                }
+                if ui.button("Delete this guide").clicked() {
+                    self.doc.panels[idx].guides.remove(gi);
+                    self.status = "Guide deleted.".into();
+                    ui.close_menu();
+                }
+            } else {
+                self.guide_menu_for = None;
+                let pos = self.ctx_pos.unwrap_or(origin);
+                let x_mpt = (((pos.x - origin.x) / scale) * 1000.0) as ob_model::Mpt;
+                let y_mpt = (((pos.y - origin.y) / scale) * 1000.0) as ob_model::Mpt;
+                if ui
+                    .button(format!(
+                        "Add vertical guide here ({:.2} in)",
+                        ob_model::mpt_to_inches(x_mpt.clamp(0, panel.size.w))
+                    ))
+                    .clicked()
+                {
+                    self.doc.panels[idx].guides.push(ob_model::Guide {
+                        vertical: true,
+                        pos: x_mpt.clamp(0, panel.size.w),
+                    });
+                    ui.close_menu();
+                }
+                if ui
+                    .button(format!(
+                        "Add horizontal guide here ({:.2} in)",
+                        ob_model::mpt_to_inches(y_mpt.clamp(0, panel.size.h))
+                    ))
+                    .clicked()
+                {
+                    self.doc.panels[idx].guides.push(ob_model::Guide {
+                        vertical: false,
+                        pos: y_mpt.clamp(0, panel.size.h),
+                    });
+                    ui.close_menu();
+                }
+            }
+        });
+    }
+
+    /// Load a panel's tracing picture (PNG beside the document)
+    /// as an egui texture, or None when it cannot be read.
+    fn load_bg_texture(&self, ctx: &egui::Context, rel: &str) -> Option<egui::TextureHandle> {
+        let base = self
+            .path
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_default();
+        let bytes = std::fs::read(base.join(rel)).ok()?;
+        let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        let (w, h) = img.dimensions();
+        let color =
+            egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
+        Some(ctx.load_texture("trace-bg", color, egui::TextureOptions::LINEAR))
+    }
+
     fn fonts_window(&mut self, ctx: &egui::Context) {
         if !self.show_fonts {
             return;
@@ -1009,6 +1392,9 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("OpenBulletin");
+                if ui.button("Pages").clicked() {
+                    self.show_pages = true;
+                }
                 if ui.button("Fonts").clicked() {
                     self.show_fonts = true;
                 }
@@ -1251,6 +1637,7 @@ impl eframe::App for App {
                 ui.small(&self.status);
             });
 
+        self.pages_window(ctx);
         self.fonts_window(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label(egui::RichText::new("Preview: what the congregation will hold").strong());

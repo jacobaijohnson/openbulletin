@@ -415,6 +415,7 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
                 role: ob_model::ContentRole::Weekly,
             }],
             background_image: Some(format!("assets/page-{:02}.png", i + 1)),
+            guides: Vec::new(),
         });
     }
     let stem = input

@@ -56,6 +56,7 @@ mod tests {
                 name: "P".into(),
                 size: Size::new(1, 2),
                 frames: vec![],
+                guides: vec![],
             }],
             sheet: SheetSpec {
                 preset: "letter-portrait".into(),

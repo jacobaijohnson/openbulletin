@@ -172,6 +172,7 @@ mod tests {
                     size: panel,
                     frames: vec![],
                     background_image: None,
+                    guides: Vec::new(),
                 })
                 .collect(),
             sheet: SheetSpec {

@@ -23,3 +23,4 @@ serde.workspace = true
 serde_json.workspace = true
 eframe = "0.29"
 chrono.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }

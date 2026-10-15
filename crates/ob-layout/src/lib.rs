@@ -15,6 +15,10 @@ pub enum Preset {
     LetterPortrait,
     LegalBifold,
     TabloidBifold,
+    /// The shape our reference church actually uses: 5.5 x 8.5 inch
+    /// pages, saddle-stitched into a booklet (16 pages by default),
+    /// printed two pages per letter sheet side.
+    HalfLetterBooklet,
 }
 
 impl Preset {
@@ -25,6 +29,7 @@ impl Preset {
             Preset::LetterPortrait => "letter-portrait",
             Preset::LegalBifold => "legal-bifold",
             Preset::TabloidBifold => "tabloid-bifold",
+            Preset::HalfLetterBooklet => "saddle-booklet",
         }
     }
     pub fn label(&self) -> &'static str {
@@ -34,6 +39,9 @@ impl Preset {
             Preset::LetterPortrait => "Letter Portrait (8.5 x 11, multi-page)",
             Preset::LegalBifold => "Legal Bi-Fold (14 x 8.5 sheet, folds to 7 x 8.5)",
             Preset::TabloidBifold => "Tabloid Bi-Fold (17 x 11 sheet, folds to 8.5 x 11)",
+            Preset::HalfLetterBooklet => {
+                "Half-Letter Booklet (5.5 x 8.5 pages, 16 pages, stapled spine)"
+            }
         }
     }
     pub fn parse(s: &str) -> Option<Preset> {
@@ -43,16 +51,18 @@ impl Preset {
             "letter-portrait" => Preset::LetterPortrait,
             "legal-bifold" => Preset::LegalBifold,
             "tabloid-bifold" => Preset::TabloidBifold,
+            "saddle-booklet" => Preset::HalfLetterBooklet,
             _ => return None,
         })
     }
-    pub fn all() -> [Preset; 5] {
+    pub fn all() -> [Preset; 6] {
         [
             Preset::LetterBifold,
             Preset::LetterTrifold,
             Preset::LetterPortrait,
             Preset::LegalBifold,
             Preset::TabloidBifold,
+            Preset::HalfLetterBooklet,
         ]
     }
     pub fn sheet_size(&self) -> Size {
@@ -61,6 +71,7 @@ impl Preset {
             Preset::LetterPortrait => Size::new(inch(8.5), inch(11.0)),
             Preset::LegalBifold => Size::new(inch(14.0), inch(8.5)),
             Preset::TabloidBifold => Size::new(inch(17.0), inch(11.0)),
+            Preset::HalfLetterBooklet => Size::new(inch(11.0), inch(8.5)),
         }
     }
     pub fn panel_size(&self) -> Size {
@@ -71,30 +82,48 @@ impl Preset {
             }
             Preset::LetterTrifold => Size::new(s.w / 3, s.h),
             Preset::LetterPortrait => s,
+            Preset::HalfLetterBooklet => Size::new(inch(5.5), inch(8.5)),
         }
     }
-    pub fn panel_names(&self) -> Vec<&'static str> {
+    pub fn panel_names(&self) -> Vec<String> {
         match self {
-            Preset::LetterTrifold => vec![
+            Preset::LetterTrifold => [
                 "Front Cover",
                 "Inside Flap (Welcome)",
                 "Inside Left",
                 "Inside Middle",
                 "Inside Right",
                 "Back Cover",
-            ],
-            Preset::LetterPortrait => vec![
+            ]
+            .iter()
+            .map(|n| n.to_string())
+            .collect(),
+            Preset::LetterPortrait => [
                 "Page 1 (Cover)",
                 "Page 2 (Order of Service)",
                 "Page 3 (Notes and Announcements)",
                 "Page 4 (Back)",
-            ],
-            _ => vec![
+            ]
+            .iter()
+            .map(|n| n.to_string())
+            .collect(),
+            Preset::HalfLetterBooklet => {
+                let mut names = vec!["Cover".to_string(), "Inside Cover".to_string()];
+                for page in 3..=15 {
+                    names.push(format!("Page {page}"));
+                }
+                names.push("Back Cover".to_string());
+                names
+            }
+            _ => [
                 "Front Cover",
                 "Inside Left (Order of Service)",
                 "Inside Right (Notes and Announcements)",
                 "Back Cover",
-            ],
+            ]
+            .iter()
+            .map(|n| n.to_string())
+            .collect(),
         }
     }
 }
@@ -195,6 +224,16 @@ pub fn build_template(
                 ],
                 ContentRole::Standing,
             )
+        } else if preset == Preset::HalfLetterBooklet {
+            // Booklet content pages: a heading and room for the
+            // week's material. Weekly, so Next Sunday clears them.
+            (
+                vec![
+                    para("subheading", name),
+                    para("body", "[Text for this page.]"),
+                ],
+                ContentRole::Weekly,
+            )
         } else {
             // Tri-fold welcome flap and extra inside panels.
             (
@@ -293,6 +332,27 @@ pub fn next_sunday(doc: &Document) -> Result<Document, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn booklet_template_is_sixteen_half_letter_pages() {
+        let doc = build_template(
+            Preset::HalfLetterBooklet,
+            ChurchProfile::default(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        assert_eq!(doc.panels.len(), 16);
+        assert_eq!(doc.sheet.preset, "saddle-booklet");
+        for panel in &doc.panels {
+            assert_eq!(panel.size, Size::new(inch(5.5), inch(8.5)));
+        }
+        assert_eq!(doc.panels[0].name, "Cover");
+        assert_eq!(doc.panels[15].name, "Back Cover");
+        // Imposition pairs first and last page on the outer sheet.
+        let sides = ob_impose::impose(&doc);
+        assert_eq!(sides.len(), 8);
+        assert_eq!(sides[0].size, Size::new(inch(11.0), inch(8.5)));
+    }
 
     fn profile() -> ChurchProfile {
         ChurchProfile {

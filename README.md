@@ -123,7 +123,7 @@ desktop app, CLI, or (someday) web.
 | Crate | Job |
 | --- | --- |
 | `ob-model` | Document model: panels, frames, stories, styles, fields, church profile. Sizes are stored in thousandths of a point so layout math is exact. |
-| `ob-layout` | Fold-aware presets, bulletin templates, the Next Sunday command. |
+| `ob-layout` | Fold-aware presets (bi-fold, tri-fold, and the half-letter saddle booklet), bulletin templates, the Next Sunday command. |
 | `ob-impose` | Turns reader pages into printer sheets: bi-fold, tri-fold, saddle-stitch. |
 | `ob-text` | Measures and wraps text using real font shapes (parley), and builds dot-leader lines. Uses fonts given to it, never fonts found on your computer. |
 | `ob-pdf` | Makes the PDFs: reading copies and print sheets, with the real fonts embedded. |

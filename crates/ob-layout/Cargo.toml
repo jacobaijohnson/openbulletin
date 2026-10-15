@@ -9,3 +9,6 @@ description = "OpenBulletin fold-aware presets, bulletin templates, and the Next
 [dependencies]
 ob-model = { path = "../ob-model" }
 chrono.workspace = true
+
+[dev-dependencies]
+ob-impose = { path = "../ob-impose" }

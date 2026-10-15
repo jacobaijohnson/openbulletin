@@ -735,6 +735,19 @@ mod tests {
     }
 
     #[test]
+    fn booklet_exports_eight_sheet_sides() {
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::HalfLetterBooklet,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        let pdf = export_imposed_pdf(&doc);
+        let parsed = lopdf::Document::load_mem(&pdf).expect("lopdf parses the booklet");
+        assert_eq!(parsed.get_pages().len(), 8);
+    }
+
+    #[test]
     fn exports_embed_the_library_fonts() {
         let doc = sample_doc();
         let pdf = export_reader_pdf(&doc);

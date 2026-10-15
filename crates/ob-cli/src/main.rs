@@ -113,7 +113,7 @@ fn run(cli: Cli) -> Result<(), String> {
             out,
         } => {
             let preset = ob_layout::Preset::parse(&preset)
-                .ok_or_else(|| format!("unknown preset {preset} (try letter-bifold, letter-trifold, letter-portrait, legal-bifold, tabloid-bifold)"))?;
+                .ok_or_else(|| format!("unknown preset {preset} (try letter-bifold, letter-trifold, letter-portrait, legal-bifold, tabloid-bifold, saddle-booklet)"))?;
             let date = match date {
                 Some(d) => {
                     chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").map_err(|e| e.to_string())?

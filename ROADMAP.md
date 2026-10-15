@@ -2,7 +2,10 @@
 
 ## v0.1 — The Sunday Test (in progress)
 Acceptance: a real church secretary, unaided, produces and prints a real
-Sunday letter bi-fold bulletin, then runs Next Sunday for the week after.
+Sunday bulletin in the shape their church actually uses (letter bi-fold
+or the 16-page half-letter saddle booklet), then runs Next Sunday for
+the week after. (Corrected 2026-10-15 on Tier-2 review advice: the
+reference church's bulletins are booklets, not bi-folds.)
 
 - [x] Engine scaffold: model, presets/templates, imposition, PDF export, CLI
 - [x] Next Sunday command (CLI + shell button)

@@ -65,6 +65,7 @@ cargo run --release -p openbulletin-cli -- info bulletin.obd
 | `ob-impose` | Reader panels to printer sheets: bi-fold, tri-fold, saddle-stitch. Pure and heavily tested. |
 | `ob-text` | Text measurement, wrapping, dot-leader lines (real shaping engine lands behind this API). |
 | `ob-pdf` | PDF export: reader panels and imposed sheets. |
+| `ob-extract` | Import extraction: foreign files (PDF first) become a versioned JSON dump the Template Analyzer reads. |
 | `ob-format` | The `.obd` file format (v0 JSON; v1 zip container, same document JSON). |
 | `openbulletin-cli` | Headless CLI. The CI oracle: if it cannot be done here, the GUI is hiding it. |
 | `openbulletin` | The egui desktop app. Thin shell on purpose. |

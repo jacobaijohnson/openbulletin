@@ -96,3 +96,26 @@ from this scaffold is therefore approximate. This is the measured
 reason the real extractor is the position-aware PDFium helper:
 positions make order a fact instead of a guess. Scaffold work stops
 here; PDFium is the next extraction step.
+
+## PDFium helper: built and measured (2026-10-15)
+
+`crates/ob-pdfium-helper` is a real out-of-process helper on PDFium
+157 (pdfium-render 0.8): same JSON dump schema, now with x/y/w/h,
+font size, and bold on every span. The first ELW file it read went
+from 77 crude text chunks to 866 positioned spans.
+
+- **Deterministic.** Two runs over all 17 dumps agree exactly (198
+  standing passages both times). The scaffold's wobble is gone.
+- **Cluster structure reproduced** from positioned data: the same
+  12-bulletin family, the same ELW pair (753 passages, 33% standing),
+  the same three ELW singletons. Two independent extractors agreeing
+  on the families is good evidence the families are real.
+- **ELW mystery, refined verdict:** it was not word-order scrambling.
+  The three stranded ELW files are fragmented far more finely
+  (average span ~15 characters vs ~27 for the main family), the mark
+  of a different producer or export setting. Where one producer
+  splits text differently every week, word runs break at the seams.
+- **Next analyzer step, now precisely specified:** rebuild true
+  lines from positioned spans (group by vertical position, sort by
+  horizontal, join on gaps) BEFORE consensus. Positions turn that
+  from guesswork into arithmetic.

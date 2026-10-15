@@ -57,9 +57,17 @@ fn main() {
     let mut paths: Vec<_> = std::fs::read_dir(&args[0])
         .expect("read dir")
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().map(|x| x == "pdf").unwrap_or(false))
+        .filter(|p| {
+            p.extension()
+                .map(|x| x == "pdf" || x == "json")
+                .unwrap_or(false)
+        })
         .collect();
     paths.sort();
+    let from_dumps = paths
+        .first()
+        .map(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+        .unwrap_or(false);
     let n = paths.len();
     let cut = ((n as f32) * 0.8).ceil() as usize;
     println!("corpus: {n} bulletins, standing cut: present in >= {cut}");
@@ -68,13 +76,25 @@ fn main() {
     let mut docs: Vec<Vec<String>> = Vec::new();
     let mut pages: Vec<BTreeMap<u32, Vec<String>>> = Vec::new();
     for path in &paths {
-        let bytes = std::fs::read(path).expect("read pdf");
-        let dump = ob_extract::extract_pdf(&bytes, &path.display().to_string()).expect("extract");
+        let dump = if from_dumps {
+            let json = std::fs::read_to_string(path).expect("read dump");
+            serde_json::from_str(&json).expect("parse dump")
+        } else {
+            let bytes = std::fs::read(path).expect("read pdf");
+            ob_extract::extract_pdf(&bytes, &path.display().to_string()).expect("extract")
+        };
         let mut doc_words = Vec::new();
         let mut page_words: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-        for span in dump.spans.iter().filter(|s| s.trust == ob_extract::SpanTrust::RawText) {
+        for span in dump
+            .spans
+            .iter()
+            .filter(|s| s.trust == ob_extract::SpanTrust::RawText)
+        {
             let ws = words(&span.text);
-            page_words.entry(span.page).or_default().extend(ws.iter().cloned());
+            page_words
+                .entry(span.page)
+                .or_default()
+                .extend(ws.iter().cloned());
             doc_words.extend(ws);
         }
         docs.push(doc_words);
@@ -92,7 +112,7 @@ fn main() {
         .collect();
     let threshold = 0.12f32;
     let mut parent: Vec<usize> = (0..n).collect();
-    fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
         while parent[x] != x {
             parent[x] = parent[parent[x]];
             x = parent[x];
@@ -167,7 +187,10 @@ fn main() {
         .filter(|(_, c)| **c >= cut)
         .map(|(sh, _)| sh.clone())
         .collect();
-    println!("standing passages (8-word runs) anywhere in the booklet: {}", standing_doc.len());
+    println!(
+        "standing passages (8-word runs) anywhere in the booklet: {}",
+        standing_doc.len()
+    );
     let covs: Vec<f32> = docs.iter().map(|d| coverage(d, &standing_doc)).collect();
     let mut sorted = covs.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -209,7 +232,11 @@ fn main() {
             .map(|ws| coverage(ws, &standing_page))
             .collect();
         pcovs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let median = if pcovs.is_empty() { 0.0 } else { pcovs[pcovs.len() / 2] };
+        let median = if pcovs.is_empty() {
+            0.0
+        } else {
+            pcovs[pcovs.len() / 2]
+        };
         println!(
             "page {:>2}: standing passages {:>3} | median standing share {:.0}%",
             page + 1,

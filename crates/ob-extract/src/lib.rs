@@ -51,6 +51,11 @@ pub struct Span {
     pub h: Option<f32>,
     pub font_size: Option<f32>,
     pub bold: Option<bool>,
+    /// Font name as the source file names it (e.g. "ABCDEF+Calibri"
+    /// for a subset embedded font). Importers report names; the font
+    /// files themselves are never extracted (docs/FONTS.md).
+    #[serde(default)]
+    pub font: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +119,7 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
                 h: None,
                 font_size: None,
                 bold: None,
+                font: None,
             });
         } else {
             for line in text.lines() {
@@ -131,6 +137,7 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
                     h: None,
                     font_size: None,
                     bold: None,
+                    font: None,
                 });
             }
         }

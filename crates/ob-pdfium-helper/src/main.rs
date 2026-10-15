@@ -69,15 +69,19 @@ fn main() {
                 continue;
             }
             let b = segment.bounds();
-            let (font_size, bold) = match segment.chars() {
+            let (font_size, bold, font) = match segment.chars() {
                 Ok(chars) => match chars.iter().next() {
-                    Some(c) => (
-                        Some(c.scaled_font_size().value),
-                        Some(c.font_name().to_lowercase().contains("bold")),
-                    ),
-                    None => (None, None),
+                    Some(c) => {
+                        let name = c.font_name();
+                        (
+                            Some(c.scaled_font_size().value),
+                            Some(name.to_lowercase().contains("bold")),
+                            Some(name),
+                        )
+                    }
+                    None => (None, None, None),
                 },
-                Err(_) => (None, None),
+                Err(_) => (None, None, None),
             };
             dump.spans.push(Span {
                 page: index as u32,
@@ -91,6 +95,7 @@ fn main() {
                 h: Some(b.height().value),
                 font_size,
                 bold,
+                font,
             });
             page_spans += 1;
         }

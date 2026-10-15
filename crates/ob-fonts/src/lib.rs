@@ -202,11 +202,160 @@ impl FontLibrary {
         Ok(info)
     }
 
+    /// Add a font from a file on disk (a download, a USB stick, a
+    /// system font being copied in). Same door as add_bytes.
+    pub fn add_path(&self, path: &std::path::Path) -> Result<FontInfo, String> {
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("font.ttf");
+        self.add_bytes(&bytes, name)
+    }
+
+    /// Add every font inside a zip archive (how font sites ship
+    /// packs). License text files in the archive are copied into
+    /// the library folder beside the fonts. Returns one result per
+    /// font file found; a bad file never sinks the rest.
+    pub fn add_zip_bytes(&self, bytes: &[u8]) -> Vec<Result<FontInfo, String>> {
+        let mut results = Vec::new();
+        let cursor = std::io::Cursor::new(bytes.to_vec());
+        let Ok(mut archive) = zip::ZipArchive::new(cursor) else {
+            return vec![Err("that file is not a readable zip archive".to_string())];
+        };
+        for i in 0..archive.len() {
+            let Ok(mut entry) = archive.by_index(i) else {
+                continue;
+            };
+            let name = entry.name().to_string();
+            let lower = name.to_lowercase();
+            let file_name = name.rsplit('/').next().unwrap_or("font").to_string();
+            let mut content = Vec::new();
+            if std::io::Read::read_to_end(&mut entry, &mut content).is_err() {
+                continue;
+            }
+            if lower.ends_with(".ttf") || lower.ends_with(".otf") {
+                results.push(self.add_bytes(&content, &file_name));
+            } else if (lower.ends_with(".txt") || lower.ends_with(".md"))
+                && (lower.contains("license") || lower.contains("ofl") || lower.contains("copying"))
+            {
+                let _ = std::fs::write(self.dir.join(&file_name), &content);
+            }
+        }
+        if results.is_empty() {
+            results.push(Err(
+                "no font files (.ttf or .otf) inside that zip".to_string()
+            ));
+        }
+        results
+    }
+
     /// The bytes of one library font, for handing to the text engine.
     pub fn read(&self, info: &FontInfo) -> Result<Vec<u8>, String> {
         std::fs::read(self.dir.join(&info.file_name))
             .map_err(|e| format!("cannot read font {}: {e}", info.file_name))
     }
+}
+
+/// One font found on this computer, outside the library: its facts
+/// and where the file lives. The panel offers these with an
+/// "add a copy" button; adding copies the file into the library
+/// (copy-in, never a live link: docs/FONTS.md).
+pub struct SystemFont {
+    pub info: FontInfo,
+    pub path: std::path::PathBuf,
+}
+
+/// The folders this operating system keeps fonts in.
+fn system_font_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    if cfg!(target_os = "windows") {
+        let windir = std::env::var_os("WINDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+        dirs.push(windir.join("Fonts"));
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(
+                std::path::PathBuf::from(local)
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Fonts"),
+            );
+        }
+    } else if cfg!(target_os = "macos") {
+        dirs.push(std::path::PathBuf::from("/System/Library/Fonts"));
+        dirs.push(std::path::PathBuf::from("/Library/Fonts"));
+        if let Some(h) = &home {
+            dirs.push(h.join("Library").join("Fonts"));
+        }
+    } else {
+        dirs.push(std::path::PathBuf::from("/usr/share/fonts"));
+        dirs.push(std::path::PathBuf::from("/usr/local/share/fonts"));
+        if let Some(h) = &home {
+            dirs.push(h.join(".local").join("share").join("fonts"));
+            dirs.push(h.join(".fonts"));
+        }
+    }
+    dirs
+}
+
+/// Every font file on this computer (recursive, .ttf and .otf),
+/// deduplicated by hash. Font collections (.ttc) are skipped in
+/// this version: a collection holds many faces and needs
+/// face-by-face handling.
+pub fn system_fonts() -> Vec<SystemFont> {
+    fn walk(
+        dir: &std::path::Path,
+        out: &mut Vec<SystemFont>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out, seen);
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if ext != "ttf" && ext != "otf" {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("font")
+                .to_string();
+            if let Ok(info) = inspect(&bytes, &name) {
+                if seen.insert(info.sha256.clone()) {
+                    out.push(SystemFont { info, path });
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for dir in system_font_dirs() {
+        walk(&dir, &mut out, &mut seen);
+    }
+    out.sort_by(|a, b| {
+        a.info
+            .family
+            .cmp(&b.info.family)
+            .then(a.info.bold.cmp(&b.info.bold))
+            .then(a.info.italic.cmp(&b.info.italic))
+    });
+    out
 }
 
 /// Record, on each of the document's styles, the SHA-256 of the
@@ -291,6 +440,42 @@ mod tests {
     #[test]
     fn garbage_is_refused() {
         assert!(inspect(b"this is not a font", "junk.ttf").is_err());
+    }
+
+    #[test]
+    fn zip_import_takes_fonts_and_license() {
+        use std::io::Write as _;
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("Lato-Regular.ttf", opts).expect("zip entry");
+            zw.write_all(&bundled("LiberationSans-Regular.ttf"))
+                .expect("zip write");
+            zw.start_file("Lato-Bold.ttf", opts).expect("zip entry");
+            zw.write_all(&bundled("LiberationSans-Bold.ttf"))
+                .expect("zip write");
+            zw.start_file("OFL.txt", opts).expect("zip entry");
+            zw.write_all(b"SIL Open Font License").expect("zip write");
+            zw.finish().expect("zip finish");
+        }
+        let dir = std::env::temp_dir().join(format!("ob-fonts-zip-{}", std::process::id()));
+        let lib = FontLibrary::open(dir.clone()).expect("open library");
+        let results = lib.add_zip_bytes(&buf);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.is_ok()));
+        assert!(dir.join("OFL.txt").exists(), "license text kept");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn system_scan_never_errors() {
+        // Whatever this machine has (possibly nothing), the scan
+        // returns facts with real paths.
+        for found in system_fonts() {
+            assert!(found.path.exists());
+            assert!(!found.info.family.is_empty());
+        }
     }
 
     #[test]

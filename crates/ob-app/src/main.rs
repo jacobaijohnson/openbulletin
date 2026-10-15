@@ -122,12 +122,18 @@ struct App {
     catalog_hits: Vec<ob_fonts::catalog::CatalogEntry>,
     catalog_rx: Option<std::sync::mpsc::Receiver<CatalogMsg>>,
     catalog_busy: bool,
+    system_rows: Vec<ob_fonts::SystemFont>,
+    system_shown: bool,
 }
 
 /// A message back from a catalog worker thread (search or install).
 enum CatalogMsg {
     Hits(Vec<ob_fonts::catalog::CatalogEntry>),
     Installed(Vec<String>),
+    PackDone {
+        installed: Vec<String>,
+        failed: Vec<(String, String)>,
+    },
     Failed(String),
 }
 
@@ -165,6 +171,8 @@ impl Default for App {
             catalog_hits: Vec::new(),
             catalog_rx: None,
             catalog_busy: false,
+            system_rows: Vec::new(),
+            system_shown: false,
         }
     }
 }
@@ -419,6 +427,24 @@ impl App {
                 self.catalog_busy = false;
                 self.refresh_fonts(ctx);
             }
+            Ok(CatalogMsg::PackDone { installed, failed }) => {
+                self.status = if failed.is_empty() {
+                    format!("Church Starter Pack installed: {} fonts", installed.len())
+                } else {
+                    format!(
+                        "Starter Pack mostly installed: {} fonts in; could not get {}",
+                        installed.len(),
+                        failed
+                            .iter()
+                            .map(|(id, _)| id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                self.catalog_rx = None;
+                self.catalog_busy = false;
+                self.refresh_fonts(ctx);
+            }
             Ok(CatalogMsg::Failed(e)) => {
                 self.status = format!("Font catalog: {e}");
                 self.catalog_rx = None;
@@ -477,34 +503,79 @@ impl App {
                         }
                     });
                 ui.add_space(4.0);
-                if ui.button("Add a font...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Font files", &["ttf", "otf"])
-                        .pick_file()
+                if ui.button("Add fonts...").clicked() {
+                    if let Some(paths) = rfd::FileDialog::new()
+                        .add_filter("Font files and packs", &["ttf", "otf", "zip"])
+                        .pick_files()
                     {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                let name = path
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| "font.ttf".into());
-                                match ob_fonts::FontLibrary::open(
-                                    ob_fonts::default_library_dir(),
-                                )
-                                .and_then(|lib| lib.add_bytes(&bytes, &name))
-                                {
-                                    Ok(info) => {
-                                        self.status =
-                                            format!("Font added: {}", info.full_name);
-                                        self.refresh_fonts(ctx);
-                                    }
-                                    Err(e) => {
-                                        self.status = format!("Could not add that font: {e}")
+                        match ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+                            Ok(lib) => {
+                                let mut added: Vec<String> = Vec::new();
+                                let mut caution = String::new();
+                                let mut problems: Vec<String> = Vec::new();
+                                for path in &paths {
+                                    let is_zip = path
+                                        .extension()
+                                        .map(|e| e.eq_ignore_ascii_case("zip"))
+                                        .unwrap_or(false);
+                                    if is_zip {
+                                        match std::fs::read(path) {
+                                            Ok(bytes) => {
+                                                for result in lib.add_zip_bytes(&bytes) {
+                                                    match result {
+                                                        Ok(info) => {
+                                                            if !info.rights.may_package() {
+                                                                caution = format!(
+                                                                    " Note: {} did not come from \
+                                                                     the free catalog; only share \
+                                                                     bulletins using it if you have \
+                                                                     the right to share that font.",
+                                                                    info.full_name
+                                                                );
+                                                            }
+                                                            added.push(info.full_name);
+                                                        }
+                                                        Err(e) => problems.push(e),
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => problems
+                                                .push(format!("could not read a zip: {e}")),
+                                        }
+                                    } else {
+                                        match lib.add_path(path) {
+                                            Ok(info) => {
+                                                if !info.rights.may_package() {
+                                                    caution = format!(
+                                                        " Note: {} did not come from the \
+                                                         free catalog; only share bulletins \
+                                                         using it if you have the right to \
+                                                         share that font.",
+                                                        info.full_name
+                                                    );
+                                                }
+                                                added.push(info.full_name);
+                                            }
+                                            Err(e) => problems.push(e),
+                                        }
                                     }
                                 }
+                                self.status = if added.is_empty() {
+                                    format!(
+                                        "No fonts added. {}",
+                                        problems.into_iter().next().unwrap_or_default()
+                                    )
+                                } else {
+                                    format!(
+                                        "Fonts added: {}{}",
+                                        added.join(", "),
+                                        caution
+                                    )
+                                };
+                                self.refresh_fonts(ctx);
                             }
                             Err(e) => {
-                                self.status = format!("Could not read that file: {e}")
+                                self.status = format!("Could not open the font library: {e}")
                             }
                         }
                     }
@@ -570,6 +641,109 @@ impl App {
                         };
                         let _ = tx.send(msg);
                     });
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("The Church Starter Pack").strong());
+                ui.label(
+                    "One tap adds the free stand-ins for the fonts church \
+                     computers already have: Carlito (for Calibri), Caladea \
+                     (Cambria), Gelasio (Georgia), plus Lora for readings \
+                     and Playfair Display for titles and holidays.",
+                );
+                if ui
+                    .add_enabled(
+                        !self.catalog_busy,
+                        egui::Button::new("Install the Starter Pack"),
+                    )
+                    .clicked()
+                {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.catalog_rx = Some(rx);
+                    self.catalog_busy = true;
+                    std::thread::spawn(move || {
+                        let msg = match ob_fonts::FontLibrary::open(
+                            ob_fonts::default_library_dir(),
+                        ) {
+                            Ok(lib) => {
+                                let report = ob_fonts::catalog::install_pack(
+                                    &lib,
+                                    ob_fonts::catalog::CHURCH_STARTER_PACK,
+                                );
+                                CatalogMsg::PackDone {
+                                    installed: report
+                                        .installed
+                                        .iter()
+                                        .map(|f| f.full_name.clone())
+                                        .collect(),
+                                    failed: report.failed,
+                                }
+                            }
+                            Err(e) => CatalogMsg::Failed(e),
+                        };
+                        let _ = tx.send(msg);
+                    });
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("Fonts on this computer").strong());
+                ui.label(
+                    "OpenBulletin keeps its fonts in its own library, so a \
+                     bulletin looks the same on every computer. To use a \
+                     font your computer already has, add a copy of it here.",
+                );
+                if ui.button("Show fonts on this computer").clicked() {
+                    let in_library: std::collections::HashSet<String> =
+                        ob_fonts::FontLibrary::open(ob_fonts::default_library_dir())
+                            .map(|lib| {
+                                lib.scan()
+                                    .iter()
+                                    .map(|f| f.sha256.clone())
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                    self.system_rows = ob_fonts::system_fonts()
+                        .into_iter()
+                        .filter(|f| !in_library.contains(&f.info.sha256))
+                        .collect();
+                    self.system_shown = true;
+                }
+                if self.system_shown && self.system_rows.is_empty() {
+                    ui.label("Every font on this computer is already in the library.");
+                }
+                let mut add_copy: Option<std::path::PathBuf> = None;
+                for found in &self.system_rows {
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "{} ({})",
+                            found.info.full_name, found.info.family
+                        ));
+                        if ui.button("Add a copy").clicked() {
+                            add_copy = Some(found.path.clone());
+                        }
+                    });
+                }
+                if let Some(path) = add_copy {
+                    match ob_fonts::FontLibrary::open(ob_fonts::default_library_dir())
+                        .and_then(|lib| lib.add_path(&path))
+                    {
+                        Ok(info) => {
+                            self.status = if info.rights.may_package() {
+                                format!("Font copied in: {}", info.full_name)
+                            } else {
+                                format!(
+                                    "Font copied in: {}. Note: it did not come from \
+                                     the free catalog; only share bulletins using \
+                                     it if you have the right to share that font.",
+                                    info.full_name
+                                )
+                            };
+                            self.system_rows
+                                .retain(|f| f.info.sha256 != info.sha256);
+                            self.refresh_fonts(ctx);
+                        }
+                        Err(e) => {
+                            self.status = format!("Could not add that font: {e}")
+                        }
+                    }
                 }
             });
         self.show_fonts = open;

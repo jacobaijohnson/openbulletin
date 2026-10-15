@@ -65,12 +65,22 @@ enum FontsCmd {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
-    /// Copy a font file (.ttf/.otf) into the library.
+    /// Copy font files (.ttf/.otf, or a .zip of them) into the library.
     Add {
-        file: PathBuf,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
         #[arg(long)]
         dir: Option<PathBuf>,
     },
+    /// Install the Church Starter Pack (free metric twins and
+    /// graceful faces) into the library.
+    Pack {
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// List the fonts installed on this computer (candidates to
+    /// copy into the library with `fonts add`).
+    System,
     /// Search the free-font catalog by name.
     Search { query: String },
     /// Download a free font family from the catalog into the library.
@@ -225,19 +235,67 @@ fn run(cli: Cli) -> Result<(), String> {
                         println!("{}", first.rights.plain_words());
                     }
                 }
-                FontsCmd::Add { file, dir } => {
+                FontsCmd::Pack { dir } => {
                     let lib = ob_fonts::FontLibrary::open(
                         dir.unwrap_or_else(ob_fonts::default_library_dir),
                     )?;
-                    let bytes = std::fs::read(&file)
-                        .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
-                    let name = file
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "font.ttf".into());
-                    let info = lib.add_bytes(&bytes, &name)?;
-                    println!("added {} ({})", info.full_name, info.file_name);
-                    println!("{}", info.rights.plain_words());
+                    let report = ob_fonts::catalog::install_pack(
+                        &lib,
+                        ob_fonts::catalog::CHURCH_STARTER_PACK,
+                    );
+                    for f in &report.installed {
+                        println!("installed {} ({})", f.full_name, f.file_name);
+                    }
+                    for (id, why) in &report.failed {
+                        println!("could not install {id}: {why}");
+                    }
+                    println!(
+                        "starter pack: {} faces in, {} families failed",
+                        report.installed.len(),
+                        report.failed.len()
+                    );
+                }
+                FontsCmd::System => {
+                    let found = ob_fonts::system_fonts();
+                    if found.is_empty() {
+                        println!("no system fonts found on this computer");
+                    }
+                    for f in &found {
+                        println!(
+                            "{} | {} | {} | {}",
+                            f.info.family,
+                            f.info.full_name,
+                            f.info.rights.plain_words(),
+                            f.path.display()
+                        );
+                    }
+                }
+                FontsCmd::Add { files, dir } => {
+                    let lib = ob_fonts::FontLibrary::open(
+                        dir.unwrap_or_else(ob_fonts::default_library_dir),
+                    )?;
+                    for file in &files {
+                        let bytes = std::fs::read(file)
+                            .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+                        if file
+                            .extension()
+                            .map(|e| e.eq_ignore_ascii_case("zip"))
+                            .unwrap_or(false)
+                        {
+                            for result in lib.add_zip_bytes(&bytes) {
+                                match result {
+                                    Ok(info) => {
+                                        println!("added {} ({})", info.full_name, info.file_name)
+                                    }
+                                    Err(e) => println!("skipped one in {}: {e}", file.display()),
+                                }
+                            }
+                        } else {
+                            let info = lib.add_path(file)?;
+                            println!("added {} ({})", info.full_name, info.file_name);
+                            println!("{}", info.rights.plain_words());
+                        }
+                    }
                 }
             }
             Ok(())

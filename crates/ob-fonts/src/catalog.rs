@@ -182,16 +182,23 @@ pub fn install(lib: &FontLibrary, id: &str) -> Result<Vec<FontInfo>, String> {
         ));
     }
     // The family's folder in google/fonts, by license directory.
-    let dir = ["ofl", "apache", "ufl"]
-        .iter()
-        .find_map(|d| {
-            let url =
-                format!("https://raw.githubusercontent.com/google/fonts/main/{d}/{id}/METADATA.pb");
-            get_string(&url).ok().map(|text| (d, text))
-        })
-        .map(|(d, text)| (d.to_string(), text))
-        .ok_or_else(|| format!("cannot find {id} in the free font repository"))?;
-    let (license_dir, metadata) = dir;
+    // Repository folders drop dashes (Open Sans lives in opensans/),
+    // so probe the plain id and the dash-less id in each directory.
+    let squashed = id.replace('-', "");
+    let mut found: Option<(String, String, String)> = None;
+    'probe: for d in ["ofl", "apache", "ufl"] {
+        for cand in [id, squashed.as_str()] {
+            let url = format!(
+                "https://raw.githubusercontent.com/google/fonts/main/{d}/{cand}/METADATA.pb"
+            );
+            if let Ok(text) = get_string(&url) {
+                found = Some((d.to_string(), cand.to_string(), text));
+                break 'probe;
+            }
+        }
+    }
+    let (license_dir, repo_id, metadata) =
+        found.ok_or_else(|| format!("cannot find {id} in the free font repository"))?;
     let mut files: Vec<String> = metadata
         .lines()
         .filter_map(|l| {
@@ -243,7 +250,7 @@ pub fn install(lib: &FontLibrary, id: &str) -> Result<Vec<FontInfo>, String> {
     let mut installed = Vec::new();
     for file_name in &files {
         let url = format!(
-            "https://raw.githubusercontent.com/google/fonts/main/{license_dir}/{id}/{file_name}"
+            "https://raw.githubusercontent.com/google/fonts/main/{license_dir}/{repo_id}/{file_name}"
         );
         let bytes = get_bytes(&url).map_err(|e| format!("download failed for {id}: {e}"))?;
         installed.push(lib.add_bytes(&bytes, file_name)?);
@@ -251,19 +258,19 @@ pub fn install(lib: &FontLibrary, id: &str) -> Result<Vec<FontInfo>, String> {
     if installed.is_empty() {
         return Err(format!("no downloadable faces found for {id}"));
     }
-    write_license_note(lib, id, &detail);
+    write_license_note(lib, &repo_id, &detail);
     Ok(installed)
 }
 
-fn write_license_note(lib: &FontLibrary, id: &str, detail: &serde_json::Value) {
+fn write_license_note(lib: &FontLibrary, repo_id: &str, detail: &serde_json::Value) {
     let license = detail["license"].as_str().unwrap_or("unknown");
     let source = detail["source"].as_str().unwrap_or("Fontsource");
-    let family = detail["family"].as_str().unwrap_or(id);
+    let family = detail["family"].as_str().unwrap_or(repo_id);
     // For Google-sourced OFL families the full license text lives in
     // the google/fonts repo beside the font. Best effort: a failure
     // leaves the note, which still names the license and its source.
     let text = get_string(&format!(
-        "https://raw.githubusercontent.com/google/fonts/main/ofl/{id}/OFL.txt"
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/{repo_id}/OFL.txt"
     ))
     .ok()
     .unwrap_or_else(|| {
@@ -271,7 +278,41 @@ fn write_license_note(lib: &FontLibrary, id: &str, detail: &serde_json::Value) {
                 "{family}\nLicense: {license}\nSource: {source}\nFull license text: see the family's entry in the Google Fonts catalog.\n"
             )
         });
-    let _ = std::fs::write(lib.dir().join(format!("{id}-LICENSE.txt")), text);
+    let _ = std::fs::write(lib.dir().join(format!("{repo_id}-LICENSE.txt")), text);
+}
+
+/// The Church Starter Pack: metric twins for the fonts church
+/// computers already have, plus two graceful faces for headings and
+/// readings. Liberation (the Arial/Times twin) is bundled with the
+/// app itself, so it is not listed here. Ids are catalog ids.
+pub const CHURCH_STARTER_PACK: &[&str] = &[
+    "carlito",          // Calibri twin
+    "caladea",          // Cambria twin
+    "gelasio",          // Georgia twin
+    "lora",             // a warm reading serif
+    "playfair-display", // a display face for titles and holidays
+];
+
+/// What a pack install did: the faces that landed, and the families
+/// that failed with the reason (one bad family never sinks a pack).
+pub struct PackReport {
+    pub installed: Vec<crate::FontInfo>,
+    pub failed: Vec<(String, String)>,
+}
+
+/// Install several families, tolerating per-family failure.
+pub fn install_pack(lib: &crate::FontLibrary, ids: &[&str]) -> PackReport {
+    let mut report = PackReport {
+        installed: Vec::new(),
+        failed: Vec::new(),
+    };
+    for id in ids {
+        match install(lib, id) {
+            Ok(mut faces) => report.installed.append(&mut faces),
+            Err(e) => report.failed.push((id.to_string(), e)),
+        }
+    }
+    report
 }
 
 #[cfg(test)]

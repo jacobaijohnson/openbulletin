@@ -36,10 +36,10 @@ guarantee (every 1.x opens every 1.x file).
 ## Import and conversion track (Jacob, 2026-10-15)
 Imports are rescues with honest fidelity labels, never magic (PRINCIPLES.md):
 - [x] Native .obd (v0) — ours, full fidelity by definition.
-- [ ] PDF analysis -> template (flagship): drop in an old bulletin PDF; the
-      app extracts page geometry, text blocks with positions and fonts, and
-      images, then drafts an editable OpenBulletin template that a human
-      confirms. The old PDF also stays placeable as a locked trace layer.
+- [x] PDF rescue (shipped 2026-10-15): open an old bulletin PDF in the
+      app; words come back as editable boxes with Good / Check this /
+      Picture only labels, and each old page stays underneath as a
+      tracing picture until removed. Accept / Edit / Cancel review.
 - [ ] .pub rescue import: text, images, and page geometry out of Publisher
       files via libmspub (the MPL library LibreOffice uses) in an
       out-of-process helper, mapped onto the closest template.
@@ -47,10 +47,11 @@ Imports are rescues with honest fidelity labels, never magic (PRINCIPLES.md):
       binary and stays out of scope — InDesign users export IDML, which is
       Adobe's own supported path out).
 - [ ] PDF place as graphic + trace layer (also v0.5).
-- [ ] Template Analyzer (onboarding): drop 3-10+ old bulletins in any mix of PDF, .pub, IDML, and .obd; corpus
-      consensus separates standing structure from weekly slots and
-      field-like text; the app drafts a template the user can Accept,
-      Edit, or Cancel. Design: docs/TEMPLATE-ANALYZER.md.
+- [x] Template Analyzer (shipped 2026-10-15 for PDFs): pick 3 or more
+      old bulletin PDFs; corpus consensus separates standing text from
+      weekly slots and drafts a template to Accept, Edit, or Cancel.
+      Design: docs/TEMPLATE-ANALYZER.md. (.pub / IDML / .obd inputs join
+      when those importers land.)
 
 ## Later, only if earned
 Print-shop phase (CMYK, spot, ICC, bleed/marks, PDF/X-4), CSV data merge

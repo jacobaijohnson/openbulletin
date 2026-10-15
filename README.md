@@ -28,8 +28,9 @@ every week: the bulletin.
 - **A Check step before you print.** It makes sure the date is filled in.
   It makes sure the order of service is there. It measures your words with
   real font measurements and warns you, in plain words, if text is too long
-  for its box. More checks are planned, like warnings for text that lands
-  on the fold.
+  for its box. It also warns about fonts the bulletin names that are
+  not in your Font Library, and about boxes running close to a page
+  edge or the fold.
 - **Two-sided printing help.** Every printer flips the paper its own way.
   Print one test sheet, tell the app how it came out, and it remembers the
   right setting for that printer.
@@ -88,13 +89,8 @@ This is early software (version 0.1). Here is the honest list.
 
 ### Not built yet
 
-- **Opening old files.** See the Imports section below. (One door
-  exists today, in the command line tool: it can trace a PDF into a
-  draft you rebuild over. The friendly in-app version is the next
-  big piece of work.)
 - **Publisher or InDesign keyboard shortcuts.** Planned.
-- **More checks:** text on the fold, missing fonts, blurry pictures.
-  Planned.
+- **An InDesign door.** IDML import is the next import piece.
 - **An installer.** Today you build the app from source code. If that
   sounds unfamiliar, OpenBulletin is not ready for you yet. Watch this
   page for a download.
@@ -143,10 +139,15 @@ desktop app, CLI, or (someday) web.
 Honest labels, in plain words:
 
 - **OpenBulletin `.obd` files open today**, fully.
-- **Old files do not open yet.** You cannot yet bring in a Publisher
-  (`.pub`) file, an InDesign file, or an old bulletin PDF and turn it
-  into an editable bulletin. That work is planned, and the plan is
-  written down in [ROADMAP.md](ROADMAP.md).
+- **Old bulletin PDFs open today**, as drafts: on the Start step,
+  "Open a PDF bulletin..." reads the words out with a helper program
+  and rebuilds them as boxes you can edit, with each old page kept
+  underneath as a picture to check against. Pieces are labeled Good,
+  Check this, or Picture only before you accept anything.
+  Three or more old PDFs can also teach the app your church's
+  template (Start step, "Learn from your old bulletins").
+- **Publisher (`.pub`) and InDesign files do not open yet.** The plan
+  is written down in [ROADMAP.md](ROADMAP.md).
 - The first piece exists: a tool that reads a PDF and lists its pages,
   sizes, and words (the `ob-extract` crate above).
 - When imports land, InDesign will come through IDML, which is Adobe's

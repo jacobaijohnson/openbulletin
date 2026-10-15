@@ -77,6 +77,66 @@ pub fn settings_path() -> std::path::PathBuf {
     base.join("OpenBulletin").join("settings.json")
 }
 
+/// Where the autosave journal lives: beside settings.json.
+/// Two files: the bulletin itself and a two-line note (when it was
+/// written, and which file it belongs to, if any).
+pub fn journal_paths() -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = settings_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    (dir.join("autosave.obd"), dir.join("autosave.txt"))
+}
+
+fn write_journal_to(
+    obd: &std::path::Path,
+    meta: &std::path::Path,
+    doc: &Document,
+    source: &Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    ob_format::save(doc, obd)?;
+    let when = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let source_line = source
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    std::fs::write(meta, format!("{when}\n{source_line}\n"))
+        .map_err(|e| format!("cannot write the autosave note: {e}"))
+}
+
+fn read_journal_from(
+    obd: &std::path::Path,
+    meta: &std::path::Path,
+) -> Option<(Document, Option<std::path::PathBuf>, u64)> {
+    let doc = ob_format::load(obd).ok()?;
+    let note = std::fs::read_to_string(meta).ok()?;
+    let mut lines = note.lines();
+    let when: u64 = lines.next()?.trim().parse().ok()?;
+    let source = lines.next().unwrap_or("").trim().to_string();
+    Some((
+        doc,
+        if source.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(source))
+        },
+        when,
+    ))
+}
+
+fn clear_journal_from(obd: &std::path::Path, meta: &std::path::Path) {
+    let _ = std::fs::remove_file(obd);
+    let _ = std::fs::remove_file(meta);
+}
+
+/// A stable snapshot string for one document state.
+fn snapshot(doc: &Document) -> String {
+    serde_json::to_string(doc).unwrap_or_default()
+}
+
 pub fn load_settings() -> Settings {
     std::fs::read_to_string(settings_path())
         .ok()
@@ -124,6 +184,11 @@ struct App {
     catalog_busy: bool,
     system_rows: Vec<ob_fonts::SystemFont>,
     system_shown: bool,
+    saved_snapshot: String,
+    journal_snapshot: String,
+    last_journal_check: std::time::Instant,
+    startup_done: bool,
+    recovery: Option<(Document, Option<std::path::PathBuf>, u64)>,
 }
 
 /// A message back from a catalog worker thread (search or install).
@@ -173,6 +238,11 @@ impl Default for App {
             catalog_busy: false,
             system_rows: Vec::new(),
             system_shown: false,
+            saved_snapshot: String::new(),
+            journal_snapshot: String::new(),
+            last_journal_check: std::time::Instant::now(),
+            startup_done: false,
+            recovery: None,
         }
     }
 }
@@ -216,6 +286,7 @@ impl App {
         );
         self.announcements = weekly_body_text(&self.doc);
         self.status = format!("Template loaded: {}", self.preset.label());
+        self.mark_clean();
     }
 
     fn save_announcements(&mut self) {
@@ -356,6 +427,7 @@ impl App {
             Ok(next) => {
                 self.doc = next;
                 self.announcements = weekly_body_text(&self.doc);
+                self.mark_clean();
                 self.step = 1;
                 self.status = format!(
                     "Started {} bulletin. Weekly announcements were cleared; standing items carried over.",
@@ -406,6 +478,57 @@ impl App {
 
     /// Stamp each style with the fingerprint of the library font it
     /// will be laid out with, so saved files remember their fonts.
+    /// The document on disk now matches the screen: remember the
+    /// state and retire the autosave journal.
+    fn mark_clean(&mut self) {
+        self.saved_snapshot = snapshot(&self.doc);
+        self.journal_snapshot = self.saved_snapshot.clone();
+        let (obd, meta) = journal_paths();
+        clear_journal_from(&obd, &meta);
+    }
+
+    /// Once per launch: adopt the current document as the saved
+    /// state, and pick up any journal a previous session left.
+    fn startup(&mut self) {
+        self.startup_done = true;
+        self.saved_snapshot = snapshot(&self.doc);
+        self.journal_snapshot = self.saved_snapshot.clone();
+        let (obd, meta) = journal_paths();
+        if let Some((doc, source, when)) = read_journal_from(&obd, &meta) {
+            if snapshot(&doc) != self.saved_snapshot {
+                self.journal_snapshot = snapshot(&doc);
+                self.recovery = Some((doc, source, when));
+            } else {
+                clear_journal_from(&obd, &meta);
+            }
+        }
+    }
+
+    /// The autosave tick: about every two seconds, if the work on
+    /// screen differs from the last save, write the journal.
+    fn journal_tick(&mut self) {
+        if self.last_journal_check.elapsed() < std::time::Duration::from_secs(2) {
+            return;
+        }
+        self.last_journal_check = std::time::Instant::now();
+        self.save_announcements();
+        let snap = snapshot(&self.doc);
+        if snap == self.saved_snapshot {
+            if snap != self.journal_snapshot {
+                self.journal_snapshot = snap;
+                let (obd, meta) = journal_paths();
+                clear_journal_from(&obd, &meta);
+            }
+            return;
+        }
+        if snap != self.journal_snapshot {
+            let (obd, meta) = journal_paths();
+            if write_journal_to(&obd, &meta, &self.doc, &self.path).is_ok() {
+                self.journal_snapshot = snap;
+            }
+        }
+    }
+
     fn pin_fonts(&mut self) {
         if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
             ob_fonts::pin_document_fonts(&mut self.doc, &lib);
@@ -457,6 +580,59 @@ impl App {
                 self.catalog_rx = None;
                 self.catalog_busy = false;
             }
+        }
+    }
+
+    /// Offer back work a previous session left unsaved.
+    fn recovery_window(&mut self, ctx: &egui::Context) {
+        if self.recovery.is_none() {
+            return;
+        }
+        let mut bring_back = false;
+        let mut throw_away = false;
+        egui::Window::new("Your work from last time")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                let when = self.recovery.as_ref().map(|(_, _, w)| *w).unwrap_or(0);
+                let clock = chrono::DateTime::from_timestamp(when as i64, 0)
+                    .map(|utc| {
+                        utc.with_timezone(&chrono::Local)
+                            .format("%A at %I:%M %p")
+                            .to_string()
+                    })
+                    .unwrap_or_else(|| "earlier".to_string());
+                ui.label(format!(
+                    "OpenBulletin kept a copy of the bulletin you were editing, \
+                     saved on {clock}. It was never saved to a file."
+                ));
+                ui.horizontal(|ui| {
+                    if ui.button("Bring it back").clicked() {
+                        bring_back = true;
+                    }
+                    if ui.button("Throw it away").clicked() {
+                        throw_away = true;
+                    }
+                });
+            });
+        if bring_back {
+            if let Some((doc, source, _)) = self.recovery.take() {
+                self.doc = doc;
+                self.path = source;
+                self.announcements = weekly_body_text(&self.doc);
+                self.church_name = self.doc.profile.name.clone();
+                // The journal's content is now the screen's content:
+                // the saved state stays the older file (or nothing).
+                self.journal_snapshot = snapshot(&self.doc);
+                self.status = "Your unsaved work is back. Save when ready.".into();
+            }
+        }
+        if throw_away {
+            self.recovery = None;
+            let (obd, meta) = journal_paths();
+            clear_journal_from(&obd, &meta);
+            self.journal_snapshot = self.saved_snapshot.clone();
+            self.status = "Threw away the unsaved copy.".into();
         }
     }
 
@@ -752,6 +928,11 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.startup_done {
+            self.startup();
+        }
+        self.journal_tick();
+        self.recovery_window(ctx);
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("OpenBulletin");
@@ -771,6 +952,7 @@ impl eframe::App for App {
                                 self.path = Some(path);
                                 self.step = 1;
                                 self.status = "Bulletin opened.".into();
+                                self.mark_clean();
                             }
                             Err(e) => self.status = format!("Could not open that file: {e}"),
                         }
@@ -790,6 +972,7 @@ impl eframe::App for App {
                             Ok(()) => {
                                 self.status = format!("Saved to {}", path.display());
                                 self.path = Some(path);
+                                self.mark_clean();
                             }
                             Err(e) => self.status = format!("Could not save: {e}"),
                         }
@@ -1085,6 +1268,29 @@ mod settings_tests {
         let manual = printer_setup_from_answer("manual", "Brother");
         assert_eq!(manual.mode, "manual");
         assert!(manual.instruction.contains("one side at a time"));
+    }
+
+    #[test]
+    fn journal_round_trip_and_clear() {
+        let dir = std::env::temp_dir().join(format!("ob-app-journal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let obd = dir.join("autosave.obd");
+        let meta = dir.join("autosave.txt");
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        let source = Some(std::path::PathBuf::from("/tmp/church/bulletin.obd"));
+        write_journal_to(&obd, &meta, &doc, &source).expect("write journal");
+        let (back, back_source, when) = read_journal_from(&obd, &meta).expect("read journal");
+        assert_eq!(snapshot(&back), snapshot(&doc));
+        assert_eq!(back_source, source);
+        assert!(when > 0);
+        clear_journal_from(&obd, &meta);
+        assert!(read_journal_from(&obd, &meta).is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

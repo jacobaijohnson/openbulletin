@@ -12,10 +12,10 @@
 //! empty until the PDFium helper fills them; the schema already has
 //! room, so the analyzer's side of the contract does not change.
 
-pub mod draft;
 pub mod analyzer;
-pub mod idml;
+pub mod draft;
 pub mod helper;
+pub mod idml;
 
 use serde::{Deserialize, Serialize};
 

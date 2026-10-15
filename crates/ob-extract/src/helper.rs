@@ -45,7 +45,8 @@ fn run_helper(helper: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
 /// Extract the text dump from a PDF.
 pub fn dump_pdf(helper: &Path, pdf: &Path) -> Result<ExtractionDump, String> {
     let bytes = run_helper(helper, &[&pdf.to_string_lossy()])?;
-    let text = String::from_utf8(bytes).map_err(|e| format!("the PDF reader answered oddly: {e}"))?;
+    let text =
+        String::from_utf8(bytes).map_err(|e| format!("the PDF reader answered oddly: {e}"))?;
     ExtractionDump::from_json(&text)
 }
 
@@ -56,11 +57,7 @@ pub fn render_pdf(helper: &Path, pdf: &Path, out_dir: &Path) -> Result<(), Strin
         .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
     run_helper(
         helper,
-        &[
-            "render",
-            &pdf.to_string_lossy(),
-            &out_dir.to_string_lossy(),
-        ],
+        &["render", &pdf.to_string_lossy(), &out_dir.to_string_lossy()],
     )?;
     Ok(())
 }

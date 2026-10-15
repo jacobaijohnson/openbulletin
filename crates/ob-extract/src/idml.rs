@@ -80,10 +80,7 @@ fn parse_xml(text: &str) -> Result<Node, String> {
                 stack.last_mut().expect("stack").children.push(node);
             }
             Ok(Event::Text(e)) => {
-                let t = e
-                    .unescape()
-                    .map(|v| v.into_owned())
-                    .unwrap_or_default();
+                let t = e.unescape().map(|v| v.into_owned()).unwrap_or_default();
                 stack.last_mut().expect("stack").text.push_str(&t);
             }
             Ok(Event::End(_)) => {
@@ -306,8 +303,7 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
         }
         let mut rects: Vec<PageRect> = Vec::new();
         for pg in &page_nodes {
-            if let Some((top, left, bottom, right)) = geometric_bounds(pg.attr("GeometricBounds"))
-            {
+            if let Some((top, left, bottom, right)) = geometric_bounds(pg.attr("GeometricBounds")) {
                 let index = pages.len() as u32;
                 pages.push(PageInfo {
                     index,
@@ -353,9 +349,10 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
             let fh = (maxy - miny).max(10.0);
             let cx = fx + fw / 2.0;
             let cy = fy + fh / 2.0;
-            let Some(rect) = rects.iter().find(|r| {
-                cx >= r.left && cx <= r.left + r.w && cy >= r.top && cy <= r.top + r.h
-            }) else {
+            let Some(rect) = rects
+                .iter()
+                .find(|r| cx >= r.left && cx <= r.left + r.w && cy >= r.top && cy <= r.top + r.h)
+            else {
                 continue;
             };
             let Some(story_xml) = files.get(&format!("Stories/Story_{story_id}.xml")) else {
@@ -463,7 +460,10 @@ mod tests {
     fn idml_dump_carries_words_frames_and_fonts() {
         let dump = dump_from_idml(&tiny_idml(), "old.idml").expect("dump");
         assert_eq!(dump.pages.len(), 1);
-        assert_eq!((dump.pages[0].width_pt, dump.pages[0].height_pt), (396.0, 612.0));
+        assert_eq!(
+            (dump.pages[0].width_pt, dump.pages[0].height_pt),
+            (396.0, 612.0)
+        );
         assert_eq!(dump.spans.len(), 2);
         let first = &dump.spans[0];
         assert_eq!(first.text, "Welcome to worship this morning");
@@ -471,18 +471,14 @@ mod tests {
         assert_eq!(first.font.as_deref(), Some("Calibri"));
         assert_eq!(dump.spans[1].bold, Some(true));
         // And the draft builder turns it into an editable draft.
-        let out = crate::draft::document_from_dump(
-            &dump,
-            ob_model::ChurchProfile::default(),
-            false,
-        );
+        let out =
+            crate::draft::document_from_dump(&dump, ob_model::ChurchProfile::default(), false);
         assert_eq!(out.doc.panels.len(), 1);
         assert_eq!(out.doc.panels[0].frames.len(), 1);
-        assert!(out
-            .doc
-            .stories
+        assert!(out.doc.stories.iter().any(|st| st
+            .paragraphs
             .iter()
-            .any(|st| st.paragraphs.iter().any(|p| p.text.contains("Announcements"))));
+            .any(|p| p.text.contains("Announcements"))));
     }
 
     #[test]

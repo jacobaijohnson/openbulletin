@@ -129,7 +129,10 @@ impl Line {
                 }
             }
             out.push_str(text.trim());
-            prev_end = Some(match prev_end { Some(e) => e.max(x + w), None => x + w });
+            prev_end = Some(match prev_end {
+                Some(e) => e.max(x + w),
+                None => x + w,
+            });
         }
         out.trim().to_string()
     }
@@ -217,7 +220,9 @@ pub fn document_from_dump(
     // Preset: the booklet rule the corpus taught us; otherwise
     // one page per sheet, which always prints safely.
     let first = dump.pages.first();
-    let (w_pt, h_pt) = first.map(|p| (p.width_pt, p.height_pt)).unwrap_or((612.0, 792.0));
+    let (w_pt, h_pt) = first
+        .map(|p| (p.width_pt, p.height_pt))
+        .unwrap_or((612.0, 792.0));
     let all_same = dump
         .pages
         .iter()
@@ -228,15 +233,9 @@ pub fn document_from_dump(
         && (w_pt - 396.0).abs() < 4.0
         && (h_pt - 612.0).abs() < 4.0;
     let (preset, sheet) = if booklet {
-        (
-            "saddle-booklet".to_string(),
-            Size::new(792_000, 612_000),
-        )
+        ("saddle-booklet".to_string(), Size::new(792_000, 612_000))
     } else {
-        (
-            "letter-portrait".to_string(),
-            Size::new(pt(w_pt), pt(h_pt)),
-        )
+        ("letter-portrait".to_string(), Size::new(pt(w_pt), pt(h_pt)))
     };
 
     for page in &dump.pages {
@@ -353,10 +352,7 @@ pub fn document_from_dump(
             let x0 = block.iter().map(|l| l.x0()).fold(f32::MAX, f32::min);
             let y0 = block.iter().map(|l| l.y).fold(f32::MAX, f32::min);
             let x1 = block.iter().map(|l| l.x1()).fold(0.0, f32::max);
-            let y1 = block
-                .iter()
-                .map(|l| l.y + l.h)
-                .fold(0.0, f32::max);
+            let y1 = block.iter().map(|l| l.y + l.h).fold(0.0, f32::max);
             panel.frames.push(Frame {
                 id: format!("rescue-frame-{pi}-{bi}"),
                 name: format!("Words from page {}", page.index + 1),
@@ -373,9 +369,7 @@ pub fn document_from_dump(
             // Words set along a curve or in steps in the old
             // file cannot be read back in a certain order: flag
             // the block even when its font matched.
-            let jittery = block
-                .iter()
-                .any(|l| l.spread > l.size() * 0.6);
+            let jittery = block.iter().any(|l| l.spread > l.size() * 0.6);
             let first_line: String = paras[0].chars().take(38).collect();
             items.push(ImportItem {
                 panel: pi,
@@ -446,13 +440,41 @@ mod tests {
             source_bytes: 10,
             extractor: "test".into(),
             pages: vec![
-                PageInfo { index: 0, width_pt: 396.0, height_pt: 612.0, picture_only: false },
-                PageInfo { index: 1, width_pt: 396.0, height_pt: 612.0, picture_only: false },
-                PageInfo { index: 2, width_pt: 396.0, height_pt: 612.0, picture_only: false },
-                PageInfo { index: 3, width_pt: 396.0, height_pt: 612.0, picture_only: true },
+                PageInfo {
+                    index: 0,
+                    width_pt: 396.0,
+                    height_pt: 612.0,
+                    picture_only: false,
+                },
+                PageInfo {
+                    index: 1,
+                    width_pt: 396.0,
+                    height_pt: 612.0,
+                    picture_only: false,
+                },
+                PageInfo {
+                    index: 2,
+                    width_pt: 396.0,
+                    height_pt: 612.0,
+                    picture_only: false,
+                },
+                PageInfo {
+                    index: 3,
+                    width_pt: 396.0,
+                    height_pt: 612.0,
+                    picture_only: true,
+                },
             ],
             spans: vec![
-                span(0, "Grace Lutheran", 60.0, 40.0, 20.0, "ABCDEF+Arial-Bold", true),
+                span(
+                    0,
+                    "Grace Lutheran",
+                    60.0,
+                    40.0,
+                    20.0,
+                    "ABCDEF+Arial-Bold",
+                    true,
+                ),
                 span(0, "Welcome to worship", 60.0, 90.0, 11.0, "Calibri", false),
                 span(0, "this morning and", 60.0, 104.0, 11.0, "Calibri", false),
                 span(0, "bring a friend", 60.0, 118.0, 11.0, "Calibri", false),
@@ -465,8 +487,14 @@ mod tests {
         // Page 1: a heading block and a body block.
         assert_eq!(out.doc.panels[0].frames.len(), 2);
         // Arial maps to its twin; Calibri to Carlito; GillSans is unknown.
-        assert!(out.items.iter().any(|i| i.badge == Badge::Matched && i.label.contains("Grace")));
-        assert!(out.items.iter().any(|i| i.badge == Badge::CheckThis && i.label.contains("Mystery")));
+        assert!(out
+            .items
+            .iter()
+            .any(|i| i.badge == Badge::Matched && i.label.contains("Grace")));
+        assert!(out
+            .items
+            .iter()
+            .any(|i| i.badge == Badge::CheckThis && i.label.contains("Mystery")));
         assert!(out.items.iter().any(|i| i.badge == Badge::PictureOnly));
         assert_eq!(
             out.doc.panels[3].background_image.as_deref(),
@@ -482,8 +510,14 @@ mod tests {
 
     #[test]
     fn font_twins_are_matched() {
-        assert_eq!(font_match("ABCDEF+ArialMT").as_deref(), Some("Liberation Sans"));
-        assert_eq!(font_match("TimesNewRomanPSMT").as_deref(), Some("Liberation Serif"));
+        assert_eq!(
+            font_match("ABCDEF+ArialMT").as_deref(),
+            Some("Liberation Sans")
+        );
+        assert_eq!(
+            font_match("TimesNewRomanPSMT").as_deref(),
+            Some("Liberation Serif")
+        );
         assert_eq!(font_match("Calibri").as_deref(), Some("Carlito"));
         assert_eq!(font_match("GillSansMT"), None);
     }

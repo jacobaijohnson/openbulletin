@@ -117,7 +117,10 @@ fn doc_shingle_set(dump: &ExtractionDump) -> HashSet<String> {
 /// Analyze a corpus (3 or more dumps from one church). The
 /// largest family of look-alike bulletins drives the template;
 /// the base is the family member carrying the most text.
-pub fn analyze(dumps: &[ExtractionDump], profile: ChurchProfile) -> Result<TemplateOutcome, String> {
+pub fn analyze(
+    dumps: &[ExtractionDump],
+    profile: ChurchProfile,
+) -> Result<TemplateOutcome, String> {
     if dumps.len() < 3 {
         return Err("three or more old bulletins are needed to see what stands still".into());
     }
@@ -184,9 +187,7 @@ pub fn analyze(dumps: &[ExtractionDump], profile: ChurchProfile) -> Result<Templ
             for line in doc_lines(&dumps[*j]) {
                 let n = norm(&line);
                 let words: Vec<&str> = n.split_whitespace().collect();
-                if !words.is_empty()
-                    && shingles(&words).iter().all(|sh| standing.contains(sh))
-                {
+                if !words.is_empty() && shingles(&words).iter().all(|sh| standing.contains(sh)) {
                     out.insert(n);
                 }
             }
@@ -263,7 +264,8 @@ mod tests {
 
     fn dump_with(name: &str, weekly: &str) -> ExtractionDump {
         let mut spans = Vec::new();
-        let standing = "the lord is my shepherd i shall not want he makes me lie down in green pastures";
+        let standing =
+            "the lord is my shepherd i shall not want he makes me lie down in green pastures";
         spans.push(Span {
             page: 0,
             text: standing.into(),

@@ -24,6 +24,10 @@ fn main() {
         out.items.len() - standing
     );
     for item in out.items.iter().take(6) {
-        println!("  [{}] {}", if item.standing { "stands" } else { "weekly" }, item.label);
+        println!(
+            "  [{}] {}",
+            if item.standing { "stands" } else { "weekly" },
+            item.label
+        );
     }
 }

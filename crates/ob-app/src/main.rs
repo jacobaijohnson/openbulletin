@@ -149,16 +149,62 @@ pub struct KeyBinding {
 pub fn key_name(key: egui::Key) -> Option<&'static str> {
     use egui::Key::*;
     Some(match key {
-        A => "A", B => "B", C => "C", D => "D", E => "E", F => "F", G => "G",
-        H => "H", I => "I", J => "J", K => "K", L => "L", M => "M", N => "N",
-        O => "O", P => "P", Q => "Q", R => "R", S => "S", T => "T", U => "U",
-        V => "V", W => "W", X => "X", Y => "Y", Z => "Z",
-        Num0 => "0", Num1 => "1", Num2 => "2", Num3 => "3", Num4 => "4",
-        Num5 => "5", Num6 => "6", Num7 => "7", Num8 => "8", Num9 => "9",
-        F1 => "F1", F2 => "F2", F3 => "F3", F4 => "F4", F5 => "F5", F6 => "F6",
-        F7 => "F7", F8 => "F8", F9 => "F9", F10 => "F10", F11 => "F11",
-        F12 => "F12", F13 => "F13", F14 => "F14", F15 => "F15", F16 => "F16",
-        F17 => "F17", F18 => "F18", F19 => "F19", F20 => "F20",
+        A => "A",
+        B => "B",
+        C => "C",
+        D => "D",
+        E => "E",
+        F => "F",
+        G => "G",
+        H => "H",
+        I => "I",
+        J => "J",
+        K => "K",
+        L => "L",
+        M => "M",
+        N => "N",
+        O => "O",
+        P => "P",
+        Q => "Q",
+        R => "R",
+        S => "S",
+        T => "T",
+        U => "U",
+        V => "V",
+        W => "W",
+        X => "X",
+        Y => "Y",
+        Z => "Z",
+        Num0 => "0",
+        Num1 => "1",
+        Num2 => "2",
+        Num3 => "3",
+        Num4 => "4",
+        Num5 => "5",
+        Num6 => "6",
+        Num7 => "7",
+        Num8 => "8",
+        Num9 => "9",
+        F1 => "F1",
+        F2 => "F2",
+        F3 => "F3",
+        F4 => "F4",
+        F5 => "F5",
+        F6 => "F6",
+        F7 => "F7",
+        F8 => "F8",
+        F9 => "F9",
+        F10 => "F10",
+        F11 => "F11",
+        F12 => "F12",
+        F13 => "F13",
+        F14 => "F14",
+        F15 => "F15",
+        F16 => "F16",
+        F17 => "F17",
+        F18 => "F18",
+        F19 => "F19",
+        F20 => "F20",
         Enter => "Enter",
         Tab => "Tab",
         PageUp => "PageUp",
@@ -175,16 +221,62 @@ pub fn key_name(key: egui::Key) -> Option<&'static str> {
 pub fn name_key(name: &str) -> Option<egui::Key> {
     use egui::Key::*;
     Some(match name {
-        "A" => A, "B" => B, "C" => C, "D" => D, "E" => E, "F" => F, "G" => G,
-        "H" => H, "I" => I, "J" => J, "K" => K, "L" => L, "M" => M, "N" => N,
-        "O" => O, "P" => P, "Q" => Q, "R" => R, "S" => S, "T" => T, "U" => U,
-        "V" => V, "W" => W, "X" => X, "Y" => Y, "Z" => Z,
-        "0" => Num0, "1" => Num1, "2" => Num2, "3" => Num3, "4" => Num4,
-        "5" => Num5, "6" => Num6, "7" => Num7, "8" => Num8, "9" => Num9,
-        "F1" => F1, "F2" => F2, "F3" => F3, "F4" => F4, "F5" => F5, "F6" => F6,
-        "F7" => F7, "F8" => F8, "F9" => F9, "F10" => F10, "F11" => F11,
-        "F12" => F12, "F13" => F13, "F14" => F14, "F15" => F15, "F16" => F16,
-        "F17" => F17, "F18" => F18, "F19" => F19, "F20" => F20,
+        "A" => A,
+        "B" => B,
+        "C" => C,
+        "D" => D,
+        "E" => E,
+        "F" => F,
+        "G" => G,
+        "H" => H,
+        "I" => I,
+        "J" => J,
+        "K" => K,
+        "L" => L,
+        "M" => M,
+        "N" => N,
+        "O" => O,
+        "P" => P,
+        "Q" => Q,
+        "R" => R,
+        "S" => S,
+        "T" => T,
+        "U" => U,
+        "V" => V,
+        "W" => W,
+        "X" => X,
+        "Y" => Y,
+        "Z" => Z,
+        "0" => Num0,
+        "1" => Num1,
+        "2" => Num2,
+        "3" => Num3,
+        "4" => Num4,
+        "5" => Num5,
+        "6" => Num6,
+        "7" => Num7,
+        "8" => Num8,
+        "9" => Num9,
+        "F1" => F1,
+        "F2" => F2,
+        "F3" => F3,
+        "F4" => F4,
+        "F5" => F5,
+        "F6" => F6,
+        "F7" => F7,
+        "F8" => F8,
+        "F9" => F9,
+        "F10" => F10,
+        "F11" => F11,
+        "F12" => F12,
+        "F13" => F13,
+        "F14" => F14,
+        "F15" => F15,
+        "F16" => F16,
+        "F17" => F17,
+        "F18" => F18,
+        "F19" => F19,
+        "F20" => F20,
         "Enter" => Enter,
         "Tab" => Tab,
         "PageUp" => PageUp,
@@ -1141,7 +1233,10 @@ impl App {
             // print to the very edge, and folds eat words.
             let fold_preset = matches!(
                 self.doc.sheet.preset.as_str(),
-                "letter-bifold" | "legal-bifold" | "tabloid-bifold" | "letter-trifold"
+                "letter-bifold"
+                    | "legal-bifold"
+                    | "tabloid-bifold"
+                    | "letter-trifold"
                     | "saddle-booklet"
             );
             if fold_preset {
@@ -1152,11 +1247,9 @@ impl App {
                             continue;
                         }
                         let near_left = frame.rect.x < edge;
-                        let near_right =
-                            panel.size.w - (frame.rect.x + frame.rect.w) < edge;
+                        let near_right = panel.size.w - (frame.rect.x + frame.rect.w) < edge;
                         let near_top = frame.rect.y < edge;
-                        let near_bottom =
-                            panel.size.h - (frame.rect.y + frame.rect.h) < edge;
+                        let near_bottom = panel.size.h - (frame.rect.y + frame.rect.h) < edge;
                         if near_left || near_right || near_top || near_bottom {
                             notes.push(format!(
                                 "Check: a box on \"{}\" runs close to the page edge \
@@ -1946,11 +2039,7 @@ impl App {
                 self.path
                     .as_ref()
                     .map(|p| p.display().to_string())
-                    .or_else(|| {
-                        self.asset_base
-                            .as_ref()
-                            .map(|d| d.display().to_string())
-                    })
+                    .or_else(|| { self.asset_base.as_ref().map(|d| d.display().to_string()) })
                     .unwrap_or_default(),
                 bg
             );
@@ -2648,8 +2737,7 @@ impl App {
                     .join(format!("openbulletin-import-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&workdir);
                 ob_extract::helper::render_pdf(&helper, &pdf, &workdir.join("assets"))?;
-                let out =
-                    ob_extract::draft::document_from_dump(&dump, profile, true);
+                let out = ob_extract::draft::document_from_dump(&dump, profile, true);
                 Ok(ImportReview {
                     doc: out.doc,
                     items: out.items,
@@ -2674,8 +2762,8 @@ impl App {
         self.note("Reading your InDesign file...".into());
         std::thread::spawn(move || {
             let result = (|| -> Result<ImportReview, String> {
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| format!("cannot read that file: {e}"))?;
+                let bytes =
+                    std::fs::read(&path).map_err(|e| format!("cannot read that file: {e}"))?;
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -2684,8 +2772,7 @@ impl App {
                 if dump.pages.is_empty() {
                     return Err("that IDML file has no pages we can read".into());
                 }
-                let out =
-                    ob_extract::draft::document_from_dump(&dump, profile, false);
+                let out = ob_extract::draft::document_from_dump(&dump, profile, false);
                 Ok(ImportReview {
                     doc: out.doc,
                     items: out.items,
@@ -2736,10 +2823,7 @@ impl App {
         self.path = None;
         if edit {
             self.show_pages = true;
-            self.note(
-                "Here is your old bulletin as a draft. Check it page by page."
-                    .into(),
-            );
+            self.note("Here is your old bulletin as a draft. Check it page by page.".into());
         } else {
             self.step = 1;
             self.note(
@@ -2868,10 +2952,7 @@ impl App {
                 let workdir = std::env::temp_dir()
                     .join(format!("openbulletin-template-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&workdir);
-                if let Some(base) = pdfs
-                    .iter()
-                    .find(|p| p.to_string_lossy() == out.base_source)
-                {
+                if let Some(base) = pdfs.iter().find(|p| p.to_string_lossy() == out.base_source) {
                     ob_extract::helper::render_pdf(&helper, base, &workdir.join("assets"))?;
                 }
                 Ok(AnalyzerReview {
@@ -3076,10 +3157,7 @@ impl App {
                                 let _ = std::fs::create_dir_all(&to);
                                 if let Ok(rd) = std::fs::read_dir(&from) {
                                     for e in rd.flatten() {
-                                        let _ = std::fs::copy(
-                                            e.path(),
-                                            to.join(e.file_name()),
-                                        );
+                                        let _ = std::fs::copy(e.path(), to.join(e.file_name()));
                                     }
                                 }
                             }
@@ -3148,19 +3226,16 @@ impl App {
         let new_text = format_binding(&new_binding);
         let eff = effective_keymap(&self.settings);
         let old_text = eff.get(&action).cloned().unwrap_or_default();
-        if let Some((other, _)) = eff
-            .iter()
-            .find(|(a, b)| *a != &action && *b == &new_text)
-        {
+        if let Some((other, _)) = eff.iter().find(|(a, b)| *a != &action && *b == &new_text) {
             let other = other.clone();
-            self.settings
-                .keymap
-                .insert(other, old_text.clone());
+            self.settings.keymap.insert(other, old_text.clone());
         }
         self.settings.keymap.insert(action, new_text);
         self.key_capture = None;
         if let Err(e) = save_settings(&self.settings) {
-            self.fail(format!("Your key was set, but the settings could not be saved. ({e})"));
+            self.fail(format!(
+                "Your key was set, but the settings could not be saved. ({e})"
+            ));
         }
     }
 
@@ -3196,9 +3271,7 @@ impl App {
                             self.settings.keymap.clear();
                             self.key_capture = None;
                             if let Err(e) = save_settings(&self.settings) {
-                                self.fail(format!(
-                                    "Settings could not be saved. ({e})"
-                                ));
+                                self.fail(format!("Settings could not be saved. ({e})"));
                             }
                         }
                     }
@@ -3213,8 +3286,7 @@ impl App {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        let capturing =
-                                            self.key_capture.as_deref() == Some(action);
+                                        let capturing = self.key_capture.as_deref() == Some(action);
                                         let text = if capturing {
                                             "Press a key... (Escape cancels)".to_string()
                                         } else {
@@ -3229,7 +3301,10 @@ impl App {
                         }
                     });
                 ui.separator();
-                if ui.button("Put every key back to the set's defaults").clicked() {
+                if ui
+                    .button("Put every key back to the set's defaults")
+                    .clicked()
+                {
                     self.settings.keymap.clear();
                     self.key_capture = None;
                     if let Err(e) = save_settings(&self.settings) {
@@ -4683,15 +4758,23 @@ mod settings_tests {
         app2.doc.panels[0].frames[0].rect.x = 0;
         app2.run_checks();
         assert!(
-            app2.notes.iter().any(|n| n.contains("close to the page edge")),
+            app2.notes
+                .iter()
+                .any(|n| n.contains("close to the page edge")),
             "edge box is named: {:?}",
             app2.notes
         );
         // The untouched template earns neither note.
         let mut app3 = App::default();
         app3.run_checks();
-        assert!(!app3.notes.iter().any(|n| n.contains("close to the page edge")));
-        assert!(!app3.notes.iter().any(|n| n.contains("not in") && n.contains("font")));
+        assert!(!app3
+            .notes
+            .iter()
+            .any(|n| n.contains("close to the page edge")));
+        assert!(!app3
+            .notes
+            .iter()
+            .any(|n| n.contains("not in") && n.contains("font")));
     }
 
     #[test]

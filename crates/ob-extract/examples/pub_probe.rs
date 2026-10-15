@@ -19,7 +19,10 @@ fn main() {
             }
             if let Ok(contents) = cfb.read_stream("Contents") {
                 println!("Contents stream: {} bytes", contents.len());
-                println!("first 4 bytes: {:02x?}", &contents[0..4.min(contents.len())]);
+                println!(
+                    "first 4 bytes: {:02x?}",
+                    &contents[0..4.min(contents.len())]
+                );
             }
         }
         Err(e) => println!("ERROR: {e}"),

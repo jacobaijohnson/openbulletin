@@ -34,23 +34,17 @@ pub struct Cfb {
 }
 
 fn u16le(b: &[u8], off: usize) -> Result<u16, String> {
-    let s = b
-        .get(off..off + 2)
-        .ok_or("compound file is truncated")?;
+    let s = b.get(off..off + 2).ok_or("compound file is truncated")?;
     Ok(u16::from_le_bytes([s[0], s[1]]))
 }
 
 fn u32le(b: &[u8], off: usize) -> Result<u32, String> {
-    let s = b
-        .get(off..off + 4)
-        .ok_or("compound file is truncated")?;
+    let s = b.get(off..off + 4).ok_or("compound file is truncated")?;
     Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 fn u64le(b: &[u8], off: usize) -> Result<u64, String> {
-    let s = b
-        .get(off..off + 8)
-        .ok_or("compound file is truncated")?;
+    let s = b.get(off..off + 8).ok_or("compound file is truncated")?;
     let mut a = [0u8; 8];
     a.copy_from_slice(s);
     Ok(u64::from_le_bytes(a))
@@ -338,21 +332,22 @@ mod tests {
         }
         // Directory at sector 1 (file offset 2*512).
         let dir_off = sector * 2;
-        let mut entry = |file: &mut Vec<u8>, idx: usize, name: &str, ty: u8, start: u32, size: u32| {
-            let base = dir_off + idx * 128;
-            let units: Vec<u16> = name.encode_utf16().collect();
-            for (i, u) in units.iter().enumerate() {
-                file[base + i * 2..base + i * 2 + 2].copy_from_slice(&u.to_le_bytes());
-            }
-            file[base + 64..base + 66]
-                .copy_from_slice(&(((units.len() + 1) * 2) as u16).to_le_bytes());
-            file[base + 66] = ty;
-            file[base + 68..base + 72].copy_from_slice(&NO_STREAM.to_le_bytes());
-            file[base + 72..base + 76].copy_from_slice(&NO_STREAM.to_le_bytes());
-            file[base + 76..base + 80].copy_from_slice(&NO_STREAM.to_le_bytes());
-            file[base + 116..base + 120].copy_from_slice(&start.to_le_bytes());
-            file[base + 120..base + 124].copy_from_slice(&size.to_le_bytes());
-        };
+        let mut entry =
+            |file: &mut Vec<u8>, idx: usize, name: &str, ty: u8, start: u32, size: u32| {
+                let base = dir_off + idx * 128;
+                let units: Vec<u16> = name.encode_utf16().collect();
+                for (i, u) in units.iter().enumerate() {
+                    file[base + i * 2..base + i * 2 + 2].copy_from_slice(&u.to_le_bytes());
+                }
+                file[base + 64..base + 66]
+                    .copy_from_slice(&(((units.len() + 1) * 2) as u16).to_le_bytes());
+                file[base + 66] = ty;
+                file[base + 68..base + 72].copy_from_slice(&NO_STREAM.to_le_bytes());
+                file[base + 72..base + 76].copy_from_slice(&NO_STREAM.to_le_bytes());
+                file[base + 76..base + 80].copy_from_slice(&NO_STREAM.to_le_bytes());
+                file[base + 116..base + 120].copy_from_slice(&start.to_le_bytes());
+                file[base + 120..base + 124].copy_from_slice(&size.to_le_bytes());
+            };
         entry(&mut file, 0, "Root Entry", 5, 2, 64);
         entry(&mut file, 1, "Big", 2, 3, 1000);
         entry(&mut file, 2, "Small", 2, 0, 11);

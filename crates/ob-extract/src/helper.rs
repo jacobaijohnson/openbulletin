@@ -29,8 +29,9 @@ fn run_helper(helper: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .output()
         .map_err(|e| {
             format!(
-                "the PDF reader (ob-pdfium-helper) is not available: {e}. \
-                 It belongs beside the app; reinstalling brings it back."
+                "the PDF reader is not with the app on this computer, so PDFs \
+                 cannot be read here yet. It travels in the same download as \
+                 the app itself; nothing else on this computer is broken."
             )
         })?;
     if !output.status.success() {

@@ -1848,7 +1848,9 @@ impl App {
         let mut open = self.show_pages;
         egui::Window::new("Pages")
             .open(&mut open)
-            .default_width(720.0)
+            .resizable(true)
+            .default_size([900.0, 700.0])
+            .min_size([520.0, 420.0])
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("<").clicked() {
@@ -2835,6 +2837,59 @@ impl App {
             })();
             let _ = tx.send(result);
         });
+    }
+
+    /// One door for every old bulletin (Jacob's rule: the app
+    /// conforms to the office worker, who has a file, not a
+    /// format opinion). Routes by extension, and when the name
+    /// does not say, by the file's own first bytes.
+    fn open_old_bulletin(&mut self, path: std::path::PathBuf) {
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        match ext.as_str() {
+            "pdf" => self.start_import(path),
+            "idml" => self.start_idml_import(path),
+            "pub" => self.start_pub_import(path),
+            "obd" => {
+                if !self.open_guard(PendingOpen::Plain) {
+                    return;
+                }
+                match ob_format::load(&path) {
+                    Ok(doc) => {
+                        self.adopt_document(doc, true);
+                        self.path = Some(path);
+                        self.step = 1;
+                        self.note("Bulletin opened.".into());
+                        self.mark_clean();
+                    }
+                    Err(e) => self.fail(format!("Could not open that file. ({e})")),
+                }
+            }
+            _ => {
+                // Sniff the first bytes: PDF says %PDF, an IDML
+                // is a zip (PK), a .pub is a compound file.
+                let head = std::fs::read(&path)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .take(8)
+                    .collect::<Vec<u8>>();
+                if head.starts_with(b"%PDF") {
+                    self.start_import(path);
+                } else if head.starts_with(b"PK") {
+                    self.start_idml_import(path);
+                } else if head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
+                    self.start_pub_import(path);
+                } else {
+                    self.fail(
+                        "That file does not look like a PDF, a Publisher file, or an \
+                         InDesign (IDML) file, so it cannot be brought in."
+                            .into(),
+                    );
+                }
+            }
+        }
     }
 
     fn poll_import(&mut self, ctx: &egui::Context) {
@@ -3927,41 +3982,15 @@ impl eframe::App for App {
                         }
                         ui.separator();
                         ui.heading("Bring in an old bulletin");
-                        ui.label("Have last year's bulletin as a PDF? We can read it and rebuild it as a draft you can edit: the words come over, and each old page sits underneath as a picture to check against.");
+                        ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, or an InDesign file (IDML). One button for all of them; the app works out which kind it is, and the words come over as a draft you can edit. Publisher files ride in through LibreOffice (a free program) when it is installed; for InDesign, export the file there as IDML first.");
                         if self.import_rx.is_some() {
                             ui.label("Reading your old bulletin...");
-                        } else if ui.button("Open a PDF bulletin...").clicked() {
-                            if let Some(pdf) = rfd::FileDialog::new()
-                                .add_filter("PDF bulletin", &["pdf"])
+                        } else if ui.button("Open an old bulletin...").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Old bulletins", &["pdf", "pub", "idml", "obd"])
                                 .pick_file()
                             {
-                                self.start_import(pdf);
-                            }
-                        }
-                        ui.separator();
-                        ui.heading("Bring in an InDesign file");
-                        ui.label("If your bulletin was made in InDesign, export it there as IDML (File, Export, choose InDesign Markup). We read the words, their boxes, and their fonts from that file.");
-                        if self.import_rx.is_some() {
-                            ui.label("Reading your file...");
-                        } else if ui.button("Open an IDML file...").clicked() {
-                            if let Some(idml) = rfd::FileDialog::new()
-                                .add_filter("InDesign IDML", &["idml"])
-                                .pick_file()
-                            {
-                                self.start_idml_import(idml);
-                            }
-                        }
-                        ui.separator();
-                        ui.heading("Bring in a Publisher file");
-                        ui.label("If your bulletin was made in Publisher, it can ride in through LibreOffice, a free program: when LibreOffice is installed, the file converts here and comes in like a PDF. Without it, the app will explain how to save a PDF from Publisher itself.");
-                        if self.import_rx.is_some() {
-                            ui.label("Converting your Publisher file...");
-                        } else if ui.button("Open a Publisher (.pub) file...").clicked() {
-                            if let Some(pub_file) = rfd::FileDialog::new()
-                                .add_filter("Publisher file", &["pub"])
-                                .pick_file()
-                            {
-                                self.start_pub_import(pub_file);
+                                self.open_old_bulletin(path);
                             }
                         }
                         ui.separator();

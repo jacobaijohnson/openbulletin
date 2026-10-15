@@ -1,0 +1,56 @@
+name: Windows bundle
+
+# Builds the one-download Windows bundle Jacob asked for by
+# experience: openbulletin.exe + ob-pdfium-helper.exe + pdfium.dll
+# in a single zip. No installer, no steps: unzip, double-click.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the app and the PDF reader
+        run: cargo build --release -p openbulletin -p ob-pdfium-helper
+      - name: Fetch the PDFium library (pinned, chromium 8100)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8100/pdfium-win-x64.tgz" -OutFile pdfium.tgz
+          tar -xzf pdfium.tgz
+          Get-ChildItem -Recurse | Select-Object FullName
+      - name: Stage the bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bundle | Out-Null
+          Copy-Item target/release/openbulletin.exe bundle/
+          Copy-Item target/release/ob-pdfium-helper.exe bundle/
+          Copy-Item bin/pdfium.dll bundle/
+          Copy-Item LICENSE bundle/PDFium-LICENSE.txt
+          @"
+          OpenBulletin for Windows
+          ========================
+          Unzip this folder anywhere (your Desktop is fine) and
+          double-click openbulletin.exe. There is nothing to
+          install. The two other programs in the folder are the
+          PDF reader; keep them beside openbulletin.exe.
+
+          Your bulletins and fonts stay on this computer. The app
+          does not send them anywhere.
+          "@ | Out-File -Encoding utf8 bundle/README.txt
+          Compress-Archive -Path bundle/* -DestinationPath openbulletin-windows.zip
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: openbulletin-windows
+          path: openbulletin-windows.zip
+      - name: Attach to a release when tagged
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: openbulletin-windows.zip

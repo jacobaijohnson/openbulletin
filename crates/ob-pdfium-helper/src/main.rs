@@ -22,6 +22,19 @@ fn lib_path() -> String {
     if let Ok(p) = std::env::var("OB_PDFIUM_LIB") {
         return p;
     }
+    // The shipped bundle layout: the library sits beside the
+    // helper itself (pdfium.dll on Windows, libpdfium.so on
+    // Linux, libpdfium.dylib on macOS).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in ["pdfium.dll", "libpdfium.so", "libpdfium.dylib"] {
+                let candidate = dir.join(name);
+                if candidate.exists() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
     let home = std::env::var("HOME").unwrap_or_default();
     format!("{home}/workspace/.toolchain/pdfium/lib/libpdfium.so")
 }

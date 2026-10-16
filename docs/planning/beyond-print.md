@@ -72,6 +72,30 @@ Adopted into the plan:
   "spoken only", so a name meant for the spoken prayers
   cannot wander into the printed sheet by accident.
 
+## 5. The administrator's eyes (Jacob, 2026-10-15)
+
+The large-print edition serves the congregation. The same
+fact applies at the desk: church administrators skew
+older, and the application itself must conform to their
+eyes (Principle 9 applied to the user, not only to the
+reader). This is an objective, not a polish item:
+
+- A text-size setting for the app itself (three steps),
+  scaling the whole interface, not only the canvas. The
+  audit bar: every step of the weekly flow stays usable
+  and unclipped at the largest size.
+- A high-contrast option beside the standard palette.
+- Nothing essential rides on a small target, a subtle
+  color difference, or an unlabeled icon. Words on
+  buttons (already the naming rule), generous click
+  areas, visible keyboard focus everywhere.
+- The canvas editing work (E1) already draws text at real
+  sizes; the comfort settings govern the chrome around it.
+- Verification is partly human (the standing deferred
+  accessibility item): the settings ship with the design
+  rules above, and the first older-administrator user is
+  the real test, the same gate the GUI itself passed.
+
 Recorded, not scheduled:
 - **Announcement intake**: a simple submission path
   (form or email-in) landing in the Announcements step.

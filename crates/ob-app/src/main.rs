@@ -721,6 +721,8 @@ impl App {
     fn adopt_document(&mut self, doc: Document, clear_history: bool) {
         // Any swap retires a pick the open guard was holding.
         self.pending_path = None;
+        // Thrown-away typing belonged to the old document (J3).
+        self.discarded_edit = None;
         // A start-fresh arm belongs to the old bulletin.
         self.shape_arm = None;
         if clear_history {
@@ -741,6 +743,21 @@ fn snapshot(doc: &Document) -> String {
 /// 2, batch 3): "Saved print copy as bulletin-print.pdf"
 /// reads better in a narrow sidebar than a full path, and
 /// the person just chose the folder in the save dialog.
+/// The name Save proposes for a bulletin that has never been
+/// saved (J8): dated from the document's own Sunday date, so
+/// a folder of bulletins sorts itself by week. Falls back to
+/// the plain name when the date field does not parse.
+fn suggested_save_name(doc: &Document) -> String {
+    match doc
+        .fields
+        .get("sunday_date")
+        .and_then(|iso| chrono::NaiveDate::parse_from_str(iso.trim(), "%Y-%m-%d").ok())
+    {
+        Some(d) => format!("Bulletin {}.obd", d.format("%Y-%m-%d")),
+        None => "bulletin.obd".to_string(),
+    }
+}
+
 fn file_name_of(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -894,6 +911,62 @@ fn announcements_check(announcements_empty: bool, none_marked: bool) -> String {
          there if there are none."
             .to_string()
     }
+}
+
+/// What is being carried into this week, as information
+/// lines for the Check step (J10): every story whose
+/// keep-through date covers the bulletin's Sunday, named by
+/// its first words and its through date. Automation shows
+/// its hand; these are facts, not problems, so the lines
+/// never start with "Check:".
+fn carried_lines(doc: &Document) -> Vec<String> {
+    use chrono::Datelike;
+    let Some(bulletin) = doc
+        .fields
+        .get("sunday_date")
+        .and_then(|iso| chrono::NaiveDate::parse_from_str(iso.trim(), "%Y-%m-%d").ok())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for story in &doc.stories {
+        let Some(raw) = story.keep_through.as_deref() else {
+            continue;
+        };
+        let Ok(until) = chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d") else {
+            continue;
+        };
+        if until < bulletin {
+            continue;
+        }
+        let first_text = story
+            .paragraphs
+            .iter()
+            .filter(|p| p.style == "body")
+            .map(|p| p.text.trim())
+            .find(|t| !t.is_empty())
+            .or_else(|| {
+                story
+                    .paragraphs
+                    .iter()
+                    .map(|p| p.text.trim())
+                    .find(|t| !t.is_empty())
+            })
+            .unwrap_or("An announcement");
+        let first: String = first_text
+            .lines()
+            .next()
+            .unwrap_or(first_text)
+            .trim()
+            .chars()
+            .take(40)
+            .collect();
+        let through = format!("{} {}, {}", until.format("%B"), until.day(), until.year());
+        out.push(format!(
+            "Carried into this week: \"{first}\" (kept through {through})."
+        ));
+    }
+    out
 }
 
 /// Whether a date field holds an edit: some text, and not
@@ -1219,6 +1292,15 @@ struct App {
     edit_done: bool,
     focus_edit: bool,
     edit_start: Option<String>,
+    /// The edit buffer as the current session started (J3):
+    /// Escape compares the buffer against it to know whether
+    /// real words are being thrown away.
+    edit_start_text: String,
+    /// Words a cancelled typing session threw away (J3):
+    /// (story id, panel, frame, text). While set, the status
+    /// area and the Pages window offer to bring them back.
+    /// Any new edit session or document swap clears it.
+    discarded_edit: Option<(String, usize, usize, String)>,
     preview_cache: Option<(String, Vec<PreviewSheet>)>,
     saved_snapshot: String,
     journal_snapshot: String,
@@ -1364,7 +1446,7 @@ impl Default for App {
             checked_fingerprint: None,
             path: None,
             settings,
-            printer_name: "Church office printer".into(),
+            printer_name: String::new(),
             show_pages: false,
             canvas_panel: 0,
             drag_guide: None,
@@ -1423,6 +1505,8 @@ impl Default for App {
             edit_done: false,
             focus_edit: false,
             edit_start: None,
+            edit_start_text: String::new(),
+            discarded_edit: None,
             preview_cache: None,
             saved_snapshot: String::new(),
             journal_snapshot: String::new(),
@@ -1920,7 +2004,7 @@ impl App {
             let mut needed: ob_model::Mpt = 0;
             for (text, spec, font_size, space_after) in paras {
                 let lines = if text.contains('\t') {
-                    1
+                    tabbed_fit_lines(self.shaper(), text, rect.w, spec, *font_size)
                 } else {
                     self.shaper()
                         .wrap(text, rect.w, spec, *font_size, 1.3)
@@ -2051,6 +2135,12 @@ impl App {
                 "Check: no order of service found.".to_string(),
             ));
         }
+        // What the automation is carrying into this week,
+        // said out loud as information after the problems
+        // (J10): plain notes, never "Check:" lines.
+        for line in carried_lines(&self.doc) {
+            notes.push(CheckNote::plain(line));
+        }
         // Characters the print copy cannot show get their own
         // findings (not plain notes) so the Check step can put
         // a fix button under each one.
@@ -2109,6 +2199,11 @@ impl App {
                         " {} announcements ended and were cleared.",
                         report.ended_announcements
                     ));
+                }
+                // Name what ended, not only the count (J10):
+                // automation shows its hand.
+                if !report.ended_names.is_empty() {
+                    msg.push_str(&format!(" Ended: {}.", report.ended_names.join(", ")));
                 }
                 // An accidental click lands here too; say
                 // the way back out loud (UI audit round 2).
@@ -2508,6 +2603,13 @@ impl App {
         print_checklist_for(&self.doc, &self.settings, &self.printer_name)
     }
 
+    /// The print-window guidance for the printer currently
+    /// named on the Print step (J5).
+    fn current_print_guidance(&self) -> String {
+        let setup = self.settings.printers.get(&self.printer_name);
+        print_dialog_guidance(setup.is_some(), setup.map(|s| s.instruction.as_str()))
+    }
+
     /// Paragraph count sync for the edit buffer: new paragraphs
     /// inherit the previous paragraph's style (docs/EDITOR.md).
     fn sync_edit_styles(&mut self) {
@@ -2622,12 +2724,58 @@ impl App {
     }
 
     fn cancel_edit(&mut self) {
+        // Escape still cancels, and the page keeps its old
+        // words (Batch A law). But a session whose words
+        // changed is not gone without a trace (J3): record
+        // what was typed, so the "Bring the typed words
+        // back" button can reopen the box with them.
+        if let Some((pi, fi)) = self.editing {
+            if self.edit_text != self.edit_start_text {
+                self.discarded_edit =
+                    Some((self.edit_salt.clone(), pi, fi, self.edit_text.clone()));
+            }
+        }
         self.editing = None;
         self.edit_start = None;
+        self.edit_start_text.clear();
         self.edit_text.clear();
         self.edit_styles.clear();
         self.edit_done = false;
         self.status = "Typing thrown away. The page keeps the words it had.".into();
+    }
+
+    /// Bring back the words a cancelled typing session threw
+    /// away (J3): reopen the session on the same box with the
+    /// recorded words as the buffer. If the box is not there
+    /// anymore, say so and drop the record.
+    fn restore_discarded_edit(&mut self) {
+        let Some((sid, pi, fi, text)) = self.discarded_edit.take() else {
+            return;
+        };
+        let still_there = self
+            .doc
+            .panels
+            .get(pi)
+            .and_then(|p| p.frames.get(fi))
+            .map(|f| f.story_id.as_deref() == Some(sid.as_str()))
+            .unwrap_or(false);
+        if !still_there {
+            self.fail(
+                "Those typed words belonged to a box that is not there anymore, \
+                 so they cannot be brought back."
+                    .into(),
+            );
+            return;
+        }
+        self.show_pages = true;
+        self.canvas_panel = pi;
+        self.enter_edit(pi, fi);
+        self.edit_text = text;
+        self.note(
+            "Your typed words are back in the box. Click away, or use Done \
+             typing, to keep them."
+                .into(),
+        );
     }
 
     fn enter_edit(&mut self, pi: usize, fi: usize) {
@@ -2646,12 +2794,16 @@ impl App {
         self.edit_start = Some(snapshot(&self.doc));
         self.edit_salt = story.id.clone();
         self.edit_cursor_para = 0;
+        // A new session supersedes any thrown-away words
+        // still on offer (J3).
+        self.discarded_edit = None;
         self.edit_text = story
             .paragraphs
             .iter()
             .map(|p| p.text.clone())
             .collect::<Vec<_>>()
             .join("\n");
+        self.edit_start_text = self.edit_text.clone();
         self.edit_styles = story.paragraphs.iter().map(|p| p.style.clone()).collect();
         self.editing = Some((pi, fi));
         self.selected_frame = Some(fi);
@@ -2666,6 +2818,7 @@ impl App {
         let Some((pi, fi)) = self.editing.take() else {
             return;
         };
+        self.edit_start_text.clear();
         self.sync_edit_styles();
         let Some(frame) = self.doc.panels[pi].frames.get(fi) else {
             self.edit_start = None;
@@ -2805,6 +2958,11 @@ impl App {
                 ui.label("Double-click a box to type in it. Arrow keys nudge a selected box.");
                 ui.label("Right-click anything for its exact place in inches. The blue guides never print.");
                 ui.small("Keys: Tab moves to the next box, Enter types in it, arrows move a box (Shift for bigger steps), Ctrl+C and Ctrl+V copy a box, Ctrl+Z undoes.");
+                if self.discarded_edit.is_some()
+                    && ui.button("Bring the typed words back").clicked()
+                {
+                    self.restore_discarded_edit();
+                }
                 if self.editing.map(|(pi, _)| pi) != Some(idx) && self.editing.is_some() {
                     self.commit_edit();
                 }
@@ -2847,6 +3005,11 @@ impl App {
                             self.edit_done = true;
                         }
                     });
+                    // The raw field tokens are visible while
+                    // typing (a known fidelity debt); say what
+                    // the braces mean before someone "repairs"
+                    // one (J12, Wonder lane 2 finding 6).
+                    ui.small("Words in {braces} fill themselves in from your church and this Sunday.");
                 }
                 ui.separator();
                 egui::ScrollArea::both()
@@ -3820,6 +3983,34 @@ impl App {
     /// file chosen instead of asking for it again (UI audit
     /// round 2). Imports answer to their review windows,
     /// whose own confirm guards the discard.
+    /// "Start from last week" (J13): the pick goes through the
+    /// same door as everything else, filters and all. One of
+    /// ours (.obd) opens and moves to this Sunday, exactly as
+    /// it always did. Anything else (the predecessor's .pub,
+    /// most often) comes in through the one open door as a
+    /// draft to review, because that is what those files are.
+    fn open_last_week(&mut self, path: std::path::PathBuf) {
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if ext != "obd" {
+            self.route_old_bulletin(path);
+            return;
+        }
+        match ob_format::load(&path) {
+            Ok(doc) => {
+                self.adopt_document(doc, true);
+                self.remember_bulletin(&path);
+                self.path = Some(path);
+                self.seed_doc_state();
+                self.mark_clean();
+                self.next_sunday();
+            }
+            Err(e) => self.fail(format!("Could not open that file. ({e})")),
+        }
+    }
+
     fn open_old_bulletin(&mut self, path: std::path::PathBuf) {
         let ext = path
             .extension()
@@ -4414,7 +4605,7 @@ impl App {
         self.pin_fonts();
         let target = self.path.clone().or_else(|| {
             rfd::FileDialog::new()
-                .set_file_name("bulletin.obd")
+                .set_file_name(suggested_save_name(&self.doc))
                 .add_filter("OpenBulletin bulletin", &["obd"])
                 .save_file()
         });
@@ -5000,6 +5191,19 @@ impl eframe::App for App {
         if !self.show_pages && self.editing.is_some() {
             self.commit_edit();
         }
+        // While the recovery offer waits for its answer, it
+        // gates the whole app (J9): draw the journal tick and
+        // the recovery window over a plain background, and
+        // nothing else. The step panels, the top bar, and the
+        // global keys stay unrendered until one of the
+        // window's two buttons is chosen; editing behind an
+        // unanswered "your work from last time" is how
+        // recovered work gets lost.
+        if self.recovery.is_some() {
+            self.journal_tick();
+            self.recovery_window(ctx);
+            return;
+        }
         // Global keys, when no text box has the keyboard (text
         // boxes keep their own undo while you type in them) and
         // no key is being captured for the Keys window. Every
@@ -5239,21 +5443,14 @@ impl eframe::App for App {
                             && self.open_guard(PendingOpen::LastWeek)
                         {
                             if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("OpenBulletin bulletin", &["obd"])
+                                .add_filter(
+                                    "Old bulletins",
+                                    &["pdf", "pub", "idml", "sla", "obd"],
+                                )
+                                .add_filter("All files", &[] as &[&str])
                                 .pick_file()
                             {
-                                match ob_format::load(&path) {
-                                    Ok(doc) => {
-                                        self.adopt_document(doc, true);
-                                        self.remember_bulletin(&path);
-                                        self.path = Some(path);
-                                        self.mark_clean();
-                                        self.next_sunday();
-                                    }
-                                    Err(e) => self.fail(format!(
-                                        "Could not open that file. Pick a bulletin file ending in .obd. ({e})"
-                                    )),
-                                }
+                                self.open_last_week(path);
                             }
                         }
                         ui.separator();
@@ -5570,6 +5767,10 @@ impl eframe::App for App {
                     }
                     3 => {
                         ui.heading("Check");
+                        // Say what this step is NOT, before
+                        // its OK lines can be read as a proof
+                        // pass (J11): spell check is v0.5.
+                        ui.small("This step checks that the bulletin will print right. It does not check spelling.");
                         // Problems read as problems: "Check:"
                         // lines in the problem red, "OK:" lines
                         // plain, and a note that knows its box
@@ -5664,11 +5865,17 @@ impl eframe::App for App {
                                 Ok(()) => {
                                     self.print_fingerprint = Some(snapshot(&self.doc));
                                     self.store_doc_state();
-                                    self.status = "Print copy opened in your PDF viewer. Use the settings listed above.".into();
+                                    let guidance = self.current_print_guidance();
+                                    self.status = format!(
+                                        "Print copy opened in your PDF viewer. {guidance}"
+                                    );
                                 }
                                 Err(e) => self.status = e,
                             }
                         }
+                        // The dialog guidance stands on the step,
+                        // not only in the passing status line (J5).
+                        ui.small(self.current_print_guidance());
                         ui.separator();
                         ui.label(egui::RichText::new("Keep a copy as a file").strong());
                         ui.label("Print copy: folded sheets, in the right order, ready for the copier.");
@@ -5686,14 +5893,18 @@ impl eframe::App for App {
                                     Ok(()) => {
                                         self.print_fingerprint = Some(snapshot(&self.doc));
                                         self.store_doc_state();
-                                        self.status = format!("Saved print copy as {}", file_name_of(&path));
+                                        let guidance = self.current_print_guidance();
+                                        self.status = format!(
+                                            "Saved print copy as {}. {guidance}",
+                                            file_name_of(&path)
+                                        );
                                     }
                                     Err(e) => self.status = format!("Could not save the print copy: {e}"),
                                 }
                             }
                         }
-                        ui.label("Reading copy: one panel per page, for email and the website.");
-                        if ui.button("Save reading copy (PDF)").clicked() {
+                        ui.label("Reading copy: one panel per page, for proofreading, email, and the website.");
+                        if ui.button("Open a copy to read through").clicked() {
                             self.commit_if_editing();
                             self.save_announcements();
                             if let Some(path) = rfd::FileDialog::new()
@@ -5737,10 +5948,7 @@ impl eframe::App for App {
                         ui.separator();
                         ui.label(egui::RichText::new("Two-sided printing, first time on a printer?").strong());
                         ui.label("Every printer flips the paper its own way. Print one test sheet and tell us how it came out. We remember the answer for that printer.");
-                        ui.horizontal(|ui| {
-                            ui.label("Printer:");
-                            ui.text_edit_singleline(&mut self.printer_name);
-                        });
+                        ui.label("These answers are kept on this computer, under the printer's name.");
                         if !self.settings.printers.is_empty() {
                             ui.horizontal(|ui| {
                                 ui.label("Printers we know:");
@@ -5754,6 +5962,13 @@ impl eframe::App for App {
                                 }
                             });
                         }
+                        ui.horizontal(|ui| {
+                            ui.label("Printer:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.printer_name)
+                                    .hint_text("Name this printer, like Church office printer"),
+                            );
+                        });
                         let known = self.settings.printers.get(&self.printer_name).cloned();
                         if let Some(setup) = &known {
                             ui.label(egui::RichText::new(&setup.instruction).strong());
@@ -5778,6 +5993,16 @@ impl eframe::App for App {
                                 ("manual", "My printer does one side at a time"),
                             ] {
                                 if ui.button(label).clicked() {
+                                    if self.printer_name.trim().is_empty() {
+                                        // An answer learned under no
+                                        // name would be quoted later
+                                        // for the wrong printer (J4).
+                                        self.fail(
+                                            "Give the printer a name first, in the box above, so this answer is remembered under the right printer."
+                                                .into(),
+                                        );
+                                        continue;
+                                    }
                                     let setup = printer_setup_from_answer(answer, &self.printer_name);
                                     self.settings.printers.insert(self.printer_name.clone(), setup);
                                     match save_settings(&self.settings) {
@@ -5799,6 +6024,13 @@ impl eframe::App for App {
                         }
                     });
                 ui.separator();
+                // Thrown-away typing stays recoverable until
+                // the next session or document (J3).
+                if self.discarded_edit.is_some()
+                    && ui.button("Bring the typed words back").clicked()
+                {
+                    self.restore_discarded_edit();
+                }
                 if self.status_error {
                     ui.label(
                         egui::RichText::new(format!("Something needs attention: {}", self.status))
@@ -6415,6 +6647,50 @@ fn paper_name(w: ob_model::Mpt, h: ob_model::Mpt) -> String {
     format!("{name}, {orientation}")
 }
 
+/// How many lines a tabbed (dot-leader) paragraph counts as
+/// in the fit check (J14). The canvas draws such a line as
+/// ONE leader line, but when the words on the two sides of
+/// the tab are together wider than the box, that line
+/// measures wider than the box and the words spill. Count
+/// it as two lines then, so the fit note can fire, instead
+/// of the old blind "a tab means one line". Measured with
+/// the same shaping the canvas uses: expand to a leader
+/// line at the box's width, then measure the line.
+fn tabbed_fit_lines(
+    shaper: &mut ob_text::shaping::Shaper,
+    text: &str,
+    width: ob_model::Mpt,
+    spec: &ob_text::shaping::FontSpec,
+    size: ob_model::Mpt,
+) -> usize {
+    let line = shaper.expand_order_line(text, width, spec, size);
+    if shaper.measure(&line, spec, size) > width {
+        2
+    } else {
+        1
+    }
+}
+
+/// What to choose in the PDF viewer's print window (J5).
+/// The app does not print; the viewer does, so these sentences
+/// are the bridge between our window and that dialog. The
+/// learned branch quotes the checklist's own instruction
+/// (`flip_words`), so the two can never disagree. Pure, so it
+/// is testable without a window.
+fn print_dialog_guidance(printer_known: bool, flip_words: Option<&str>) -> String {
+    match (printer_known, flip_words) {
+        (true, Some(words)) => format!(
+            "In the print window: choose Actual size, never Fit to page. \
+             Two-sided printing: {words} Print one sheet first and check \
+             it, then print the rest."
+        ),
+        _ => "In the print window: choose Actual size, never Fit to page. \
+              For two-sided printing, run the test sheet below first so \
+              the copies flip the right way."
+            .to_string(),
+    }
+}
+
 /// The print-window settings for one document and printer, as
 /// plain sentences. Pure, so it is testable without a window.
 fn print_checklist_for(doc: &Document, settings: &Settings, printer_name: &str) -> Vec<String> {
@@ -6434,11 +6710,20 @@ fn print_checklist_for(doc: &Document, settings: &Settings, printer_name: &str) 
         // instruction the wizard learned, so the two can never
         // disagree (finding F6).
         Some(setup) => lines.push(setup.instruction.clone()),
-        None => lines.push(format!(
-            "Two-sided: we have not learned the {printer_name} yet. Print the \
-             test sheet below once and answer, and this line will name the \
-             exact setting."
-        )),
+        None => {
+            // The name field starts empty now (J4): "this
+            // printer" until the office names it.
+            let who = if printer_name.trim().is_empty() {
+                "this printer".to_string()
+            } else {
+                format!("the {printer_name}")
+            };
+            lines.push(format!(
+                "Two-sided: we have not learned {who} yet. Print the \
+                 test sheet below once and answer, and this line will name the \
+                 exact setting."
+            ))
+        }
     }
     lines.push(
         "Copies: set the number in the print window. This file holds each \
@@ -6639,6 +6924,42 @@ mod settings_tests {
             .find(|n| n.text.contains("close to the page edge"))
             .expect("edge note");
         assert_eq!(edge.target, Some((0, Some(0))));
+    }
+
+    #[test]
+    fn escape_records_changed_words_and_restore_brings_them_back() {
+        // J3: Escape still cancels (the page keeps its old
+        // words), but the typed words are recorded, and the
+        // restore reopens the same box with them as the buffer.
+        let mut app = App::default();
+        app.enter_edit(0, 0);
+        assert!(
+            app.editing.is_some(),
+            "template frame opens an edit session"
+        );
+        app.edit_text = "Words typed and then escaped away.".into();
+        app.cancel_edit();
+        assert!(app.editing.is_none());
+        let rec = app
+            .discarded_edit
+            .clone()
+            .expect("a changed session's words are recorded");
+        assert_eq!(rec.1, 0);
+        assert_eq!(rec.2, 0);
+        assert_eq!(rec.3, "Words typed and then escaped away.");
+        app.restore_discarded_edit();
+        assert_eq!(app.editing, Some((0, 0)));
+        assert_eq!(app.edit_text, "Words typed and then escaped away.");
+        assert!(app.discarded_edit.is_none(), "the record is spent");
+    }
+
+    #[test]
+    fn escape_without_changes_records_nothing() {
+        // J3: a clean cancel has nothing to forgive.
+        let mut app = App::default();
+        app.enter_edit(0, 0);
+        app.cancel_edit();
+        assert!(app.discarded_edit.is_none());
     }
 
     #[test]
@@ -6933,6 +7254,103 @@ mod settings_tests {
         );
         app.adopt_document(third, false);
         assert_eq!(app.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn save_proposes_a_dated_name() {
+        // J8: the proposed name carries the bulletin's Sunday;
+        // a missing or unreadable date falls back to plain.
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        assert_eq!(suggested_save_name(&doc), "Bulletin 2026-10-18.obd");
+        let mut no_date = doc.clone();
+        no_date.fields.remove("sunday_date");
+        assert_eq!(suggested_save_name(&no_date), "bulletin.obd");
+        let mut bad_date = doc;
+        bad_date
+            .fields
+            .insert("sunday_date".into(), "next Sunday-ish".into());
+        assert_eq!(suggested_save_name(&bad_date), "bulletin.obd");
+    }
+
+    #[test]
+    fn tabbed_fit_lines_measures_the_leader_line() {
+        // J14: a tabbed line used to count as one line sight
+        // unseen, so a hymn line wider than its box passed
+        // Check. Now the leader line is measured: too wide
+        // counts as two lines; an ordinary one still counts
+        // as one.
+        let mut shaper = ob_text::shaping::bundled_shaper();
+        let spec = ob_text::shaping::FontSpec {
+            family: "Liberation Sans".into(),
+            bold: false,
+            italic: false,
+        };
+        let wide = "Hymn of Praise and Thanksgiving for All the Saints\t1234";
+        assert_eq!(
+            tabbed_fit_lines(&mut shaper, wide, 72_000, &spec, 11_000),
+            2
+        );
+        assert_eq!(
+            tabbed_fit_lines(&mut shaper, "Hymn of Praise\t432", 400_000, &spec, 11_000),
+            1
+        );
+    }
+
+    #[test]
+    fn carried_lines_names_what_is_kept_and_through_when() {
+        // J10: a story whose keep-through date covers the
+        // bulletin's Sunday is named, as information; a spent
+        // date carries nothing.
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        assert!(carried_lines(&doc).is_empty());
+        let sid = weekly_story_id(&doc).expect("template has an announcements story");
+        doc.stories
+            .iter_mut()
+            .find(|s| s.id == sid)
+            .expect("story")
+            .keep_through = Some("2026-11-08".into());
+        let lines = carried_lines(&doc);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("Carried into this week:"));
+        assert!(
+            lines[0].contains("kept through November 8, 2026"),
+            "{}",
+            lines[0]
+        );
+        assert!(!lines[0].starts_with("Check:"));
+        doc.stories
+            .iter_mut()
+            .find(|s| s.id == sid)
+            .expect("story")
+            .keep_through = Some("2026-10-11".into());
+        assert!(carried_lines(&doc).is_empty());
+    }
+
+    #[test]
+    fn print_dialog_guidance_speaks_for_both_printer_states() {
+        // J5: a learned printer's guidance quotes the learned
+        // instruction and ends with the one-sheet check; an
+        // unlearned one sends the user to the test sheet.
+        let learned = print_dialog_guidance(true, Some("flip on long edge"));
+        assert!(learned.contains("Actual size, never Fit to page"));
+        assert!(learned.contains("flip on long edge"));
+        assert!(learned.contains("Print one sheet first and check it"));
+        let fresh = print_dialog_guidance(false, None);
+        assert!(fresh.contains("Actual size, never Fit to page"));
+        assert!(fresh.contains("run the test sheet below first"));
+        // Known flag without words falls back to the test sheet.
+        let odd = print_dialog_guidance(true, None);
+        assert!(odd.contains("run the test sheet below first"));
     }
 
     #[test]

@@ -292,11 +292,15 @@ pub fn long_date(d: NaiveDate) -> String {
 
 /// What Next Sunday did to announcements that carry a
 /// keep-through date, so the app can say it out loud.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NextSundayReport {
     /// Weekly stories whose keep-through date had passed by the
     /// new Sunday and whose words were cleared because of it.
     pub ended_announcements: usize,
+    /// The first words of each announcement that ended, in the
+    /// order they were ended, so the app can name what it
+    /// cleared and not only count it (J10).
+    pub ended_names: Vec<String>,
     /// Weekly stories whose keep-through date still covers the
     /// new Sunday, so their words carried over.
     pub kept_announcements: usize,
@@ -417,6 +421,10 @@ pub fn next_sunday_report_as_of(
                         .paragraphs
                         .iter()
                         .any(|p| p.style == "body" && !p.text.trim().is_empty());
+                    if had_words {
+                        // Name it before the words go (J10).
+                        report.ended_names.push(announcement_first_line(story));
+                    }
                     clear_body(story);
                     story.keep_through = None;
                     if had_words {
@@ -428,6 +436,32 @@ pub fn next_sunday_report_as_of(
         }
     }
     Ok((out, report))
+}
+
+/// The identifying first words of an announcement story
+/// (J10): its first non-empty Body paragraph, first line
+/// only, trimmed to about 40 characters. Falls back to the
+/// first non-empty paragraph of any style, then a plain
+/// label, so the caller always has something to name.
+fn announcement_first_line(story: &Story) -> String {
+    let first_text = |want_body: bool| {
+        story
+            .paragraphs
+            .iter()
+            .filter(|p| !want_body || p.style == "body")
+            .map(|p| p.text.trim())
+            .find(|t| !t.is_empty())
+    };
+    let text = first_text(true)
+        .or_else(|| first_text(false))
+        .unwrap_or("An announcement");
+    text.lines()
+        .next()
+        .unwrap_or(text)
+        .trim()
+        .chars()
+        .take(40)
+        .collect()
 }
 
 /// Empty a story's Body paragraphs, keeping headings and
@@ -566,6 +600,9 @@ mod tests {
         d.stories[2].keep_through = Some("2026-10-24".into());
         let (n, report) = next_sunday_report(&d).unwrap();
         assert_eq!(report.ended_announcements, 1);
+        // J10: the ended announcement is named by its first
+        // words, not only counted.
+        assert_eq!(report.ended_names, vec!["Food bank collection".to_string()]);
         assert_eq!(report.kept_announcements, 0);
         assert!(body_text(&n).trim().is_empty());
         assert_eq!(n.stories[2].keep_through, None);

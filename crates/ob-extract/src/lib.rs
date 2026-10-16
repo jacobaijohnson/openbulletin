@@ -233,4 +233,5 @@ mod tests {
 }
 
 pub mod idml_export;
+pub mod learn;
 pub mod sla;

@@ -22,6 +22,23 @@ Deliberately excluded on license grounds: MuPDF (AGPL) and Poppler
 out-of-process helper; the PDFium binary is NOT in this repository
 (it is fetched to a local toolchain folder, per docs/EXTRACT.md).
 
+## The Publisher reader and the LibreOffice bridge
+
+Our Publisher (.pub) reader is an independent implementation
+written from documented format facts: Microsoft's published
+container and drawing-layer documentation ([MS-CFB],
+[MS-ODRAW]) and facts from the public reverse-engineering
+record (field layouts and constants; facts are not protected
+expression). It is not a clean-room process and we do not call
+it one: the same project read the record and wrote the code.
+No libmspub code was copied or adapted.
+
+The LibreOffice bridge distributes nothing. OpenBulletin
+never bundles, downloads, or ships LibreOffice; when a user
+has it installed, the app asks that program, through its own
+command line, to convert the user's file, the same as the
+user running it by hand.
+
 ## Fonts
 
 Bundled: Liberation family, SIL Open Font License, license text in

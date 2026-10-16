@@ -30,7 +30,7 @@ rebuilding an old bulletin over a PDF of it.
 ## v1.0 — Credible for Small Organizations
 Newsletters (facing pages, jump lines), hyphenation and H&J controls,
 large-print companion export (same stories at 16-18pt), tagged PDF,
-`.pub` rescue import, shareable template packs, file-format stability
+`.pub` rescue import (shipped early, 2026-10-15), shareable template packs, file-format stability
 guarantee (every 1.x opens every 1.x file).
 
 ## Import and conversion track (Jacob, 2026-10-15)
@@ -53,16 +53,30 @@ Imports are rescues with honest fidelity labels, never magic (PRINCIPLES.md):
       out of InDesign's interchange format, through the same draft
       review as PDF rescue; placed pictures do not come over yet.
       (.indd itself is a closed binary and stays out of scope.)
+- [x] IDML export (shipped 2026-10-15): any bulletin saves as an
+      IDML package for InDesign from the Print step's one export
+      door ("Save a copy for another program...", format chosen
+      in the save dialog) or the CLI's export-idml; the export
+      report states in plain words what was not carried.
+- [x] Scribus import (shipped 2026-10-15): .sla files open through
+      the same one door as everything else; words, boxes, and
+      fonts as a draft to review; picture frames counted and
+      named, not carried.
+- [ ] Scribus export: a bulletin saved as a .sla file, joining the
+      same export door by its save-dialog format.
 - [ ] PDF place as graphic + trace layer (also v0.5).
-- [x] Template Analyzer (shipped 2026-10-15 for PDFs): pick 3 or more
-      old bulletin PDFs; corpus consensus separates standing text from
+- [x] Template Analyzer (shipped 2026-10-15): pick 3 or more old
+      bulletins; corpus consensus separates standing text from
       weekly slots and drafts a template to Accept, Edit, or Cancel.
-      Design: docs/TEMPLATE-ANALYZER.md. (.pub / IDML / .obd inputs join
-      when those importers land.)
+      Design: docs/TEMPLATE-ANALYZER.md. Inputs are one mixed pick
+      (PDF / .pub / IDML / .sla / .obd) since 2026-10-15: learning
+      needs at least three bulletins that count, structured files
+      one-for-one and PDFs only in a group of three or more, and
+      the app states the rule and any shortfall in plain words.
 
 ## Later, only if earned
 Print-shop phase (CMYK, spot, ICC, bleed/marks, PDF/X-4), CSV data merge
-(name tags, certificates), Scribus import, IDML read-only import.
+(name tags, certificates).
 
 ## Deployment track (Jacob, 2026-10-15; design in docs/DEPLOYMENT.md)
 - [ ] Docker image for NAS / home-server use: same egui UI compiled to

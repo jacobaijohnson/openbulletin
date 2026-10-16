@@ -37,11 +37,11 @@ every week: the bulletin.
 - **Paper and folds you can use today.** Letter folded in half, Letter
   folded in thirds, Letter portrait, Legal folded in half, Tabloid folded
   in half. Booklets stapled in the middle fold (saddle-stitch) work too.
-- **Planned: familiar keys.** We plan Publisher-style and InDesign-style
-  keyboard shortcuts, so your hands feel at home: the Keys window
-  (top bar) starts from OpenBulletin's own set, Publisher's, or
-  InDesign's, and any key you change makes the set your own Custom
-  set. The plan is in [docs/MODES.md](docs/MODES.md).
+- **Familiar keys.** The Keys window (top bar) starts from
+  OpenBulletin's own set of keyboard shortcuts, Publisher's, or
+  InDesign's, so your hands feel at home; any key you change makes
+  the set your own Custom set. Details in
+  [docs/MODES.md](docs/MODES.md).
 
 ## What works today, and what does not yet
 
@@ -63,9 +63,12 @@ This is early software (version 0.1). Here is the honest list.
 - **Autosave.** The app quietly keeps a safety copy while you work.
   If it closes suddenly, your work is offered back when it opens.
 - **Two-sided printing help** described above.
+- **Save a copy for another program.** On the Print step, one button
+  saves a copy in another program's format (today: InDesign's IDML),
+  and tells you in plain words anything the copy could not carry.
 - **A command line tool** for people who like typing commands: `new`,
-  `export`, `next-sunday`, `info`. The engine underneath the app is real
-  and tested.
+  `export`, `export-idml`, `next-sunday`, `info`, `fonts`, `trace`.
+  The engine underneath the app is real and tested.
 
 ### Fonts today
 
@@ -91,9 +94,11 @@ This is early software (version 0.1). Here is the honest list.
 
 ### Not built yet
 
-- **An installer.** Today you build the app from source code. If that
-  sounds unfamiliar, OpenBulletin is not ready for you yet. Watch this
-  page for a download.
+- **A signed installer.** On Windows there is a ready bundle instead
+  (see "Run it" below): one zip you unzip anywhere, nothing to
+  install. Signed installers for Windows, macOS, and Linux are not
+  built yet; on macOS and Linux you build the app from source code
+  for now.
 
 Plans and order of work: [ROADMAP.md](ROADMAP.md).
 
@@ -132,9 +137,9 @@ desktop app, CLI, or (someday) web.
 | `ob-impose` | Turns reader pages into printer sheets: bi-fold, tri-fold, saddle-stitch. |
 | `ob-text` | Measures and wraps text using real font shapes (parley), and builds dot-leader lines. Uses fonts given to it, never fonts found on your computer. |
 | `ob-pdf` | Makes the PDFs: reading copies and print sheets, with the real fonts embedded. |
-| `ob-extract` | A first step toward imports: reads a PDF and writes down its pages, sizes, and words as JSON. It does not make a bulletin. A planned Template Analyzer will use this later. |
+| `ob-extract` | Imports and exports: reads old bulletins (PDFs through the helper, Publisher files with our own reader or the LibreOffice bridge, InDesign IDML, Scribus) into one shared dump the Template Analyzer learns from, and writes documents back out as IDML for InDesign. |
 | `ob-format` | Reads and writes `.obd` files. Today's format is version 0, stored as JSON. A zip version is planned. |
-| `openbulletin-cli` | The same engine with no window: create, export, next-sunday, info. |
+| `openbulletin-cli` | The same engine with no window: create, export (PDF and IDML), next-sunday, info, fonts, trace. |
 | `openbulletin` | The egui desktop app. A thin shell over the crates above, on purpose. |
 
 ## Imports and conversions
@@ -143,28 +148,44 @@ Honest labels, in plain words:
 
 - **OpenBulletin `.obd` files open today**, fully.
 - **Old bulletins open today through one door**: on the Start step,
-  "Open an old bulletin..." takes a PDF, a Publisher file, or an
-  InDesign (IDML) file and works out which it is. A helper program
-  reads PDFs (and Publisher files converted by way of LibreOffice)
-  and rebuilds the words as boxes you can edit, with each old page
-  kept underneath as a picture to check against. Pieces are labeled
-  Good, Check this, or Picture only before you accept anything.
-  Three or more old PDFs can also teach the app your church's
-  template (Start step, "Learn from your old bulletins").
+  "Open an old bulletin..." takes a PDF, a Publisher file, an
+  InDesign (IDML) file, or a Scribus file and works out which it
+  is. A helper program reads PDFs and rebuilds the words as boxes
+  you can edit, with each old page kept underneath as a picture to
+  check against. Pieces are labeled Good, Check this, or Picture
+  only before you accept anything.
 - **InDesign files open through IDML**, InDesign's own export:
   words, boxes, and fonts come over as a draft to review; placed
-  pictures do not yet.
-- **Publisher (`.pub`) files open through LibreOffice**, a free
-  program: on the Start step, "Open a Publisher (.pub) file..."
-  has LibreOffice turn the file into a PDF behind the scenes,
-  and it comes in like a PDF rescue from there. If LibreOffice
-  is not installed, the app explains the two ways forward
-  (install it, or save a PDF from Publisher itself). Native
-  `.pub` reading stays out of scope, on purpose.
-- The first piece exists: a tool that reads a PDF and lists its pages,
-  sizes, and words (the `ob-extract` crate above).
-- InDesign comes through IDML, Adobe's supported way out; direct
-  `.indd` reading stays out of scope.
+  pictures do not yet. Direct `.indd` reading stays out of scope:
+  `.indd` is a closed binary with no published format.
+- **Publisher (`.pub`) files open two ways.** When LibreOffice
+  (a free program) is installed, it turns the file into a PDF
+  behind the scenes and it comes in like a PDF rescue. When it
+  is not, OpenBulletin's own reader opens Publisher 2002-2019
+  files directly: the words land in the boxes Publisher put
+  them in, with master pages, tables, and styled text art
+  marked Check this; pictures are counted and their places
+  marked, but their image bytes do not come over yet. Publisher
+  2000 and earlier files need the LibreOffice route, or a PDF
+  saved from Publisher itself; the app says so in plain words.
+- **Scribus (`.sla`) files open through the same door**: words,
+  boxes, and fonts come over as a draft to review; picture
+  frames are counted and named in the review, not carried.
+- **Old bulletins can also teach the app your church's template**
+  (Start step, "Learn from your old bulletins"): pick old
+  bulletins in any mix of the kinds above. Learning needs at
+  least three bulletins that count: Publisher, InDesign,
+  Scribus, and OpenBulletin files count one-for-one, and PDFs
+  count only in a group of three or more, because one or two
+  PDFs alone cannot show what repeats. The app states the rule
+  before it starts, and says exactly what to add when a pick
+  falls short.
+- **Copies go back out, too.** On the Print step, "Save a copy
+  for another program..." writes an InDesign (IDML) file with
+  the words, their boxes, and their fonts, and lists in plain
+  words anything the copy could not carry. (Writing `.pub` or
+  `.indd` files stays out of scope: those formats are theirs
+  to write, not ours.)
 - **One limit that will never change:** we will never copy fonts out of
   old PDFs. Those fonts are usually partial copies, and the law usually
   does not allow it. Instead, imports swap in a free font with the

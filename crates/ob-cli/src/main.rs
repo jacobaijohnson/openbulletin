@@ -1,5 +1,6 @@
 //! OpenBulletin CLI: the headless engine operations (new, export,
-//! next-sunday, info, fonts, trace). The import doors live in the app.
+//! export-idml, next-sunday, info, fonts, trace). The import doors
+//! live in the app.
 //! If it cannot be done here, the GUI is hiding engine problems.
 
 use clap::{Parser, Subcommand};
@@ -41,6 +42,14 @@ enum Cmd {
         input: PathBuf,
         #[arg(long)]
         imposed: bool,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Save a copy for InDesign: an IDML package carrying the
+    /// words, their boxes, and their fonts. Prints plain-words
+    /// notes about anything the copy could not carry.
+    ExportIdml {
+        input: PathBuf,
         #[arg(long)]
         out: PathBuf,
     },
@@ -174,6 +183,22 @@ fn run(cli: Cli) -> Result<(), String> {
                     "reader panels"
                 }
             );
+            Ok(())
+        }
+        Cmd::ExportIdml { input, out } => {
+            let doc = ob_format::load(&input)?;
+            let (bytes, report) = ob_extract::idml_export::export_idml(&doc)?;
+            std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
+            println!(
+                "wrote {} ({} bytes, IDML for InDesign: {} pages, {} text frames)",
+                out.display(),
+                bytes.len(),
+                report.pages,
+                report.text_frames
+            );
+            for n in &report.notes {
+                println!("not carried: {n}");
+            }
             Ok(())
         }
         Cmd::NextSunday { input, out } => {

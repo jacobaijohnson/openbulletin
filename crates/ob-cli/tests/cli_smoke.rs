@@ -45,5 +45,18 @@ fn new_export_next_sunday_round_trip() {
         info.contains("saddle-booklet"),
         "info names the preset: {info}"
     );
+    let idml = dir.join("week.idml");
+    let said = run(&[
+        "export-idml",
+        obd.to_str().expect("path"),
+        "--out",
+        idml.to_str().expect("path"),
+    ]);
+    assert!(
+        said.contains("IDML for InDesign"),
+        "export-idml reports what it made: {said}"
+    );
+    let zbytes = std::fs::read(&idml).expect("idml written");
+    assert!(zbytes.starts_with(b"PK"), "an IDML file is a zip package");
     let _ = std::fs::remove_dir_all(&dir);
 }

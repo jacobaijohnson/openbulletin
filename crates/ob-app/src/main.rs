@@ -644,6 +644,10 @@ struct App {
     announcements: String,
     notes: Vec<String>,
     status: String,
+    /// The last "Save a copy for another program..." result,
+    /// shown under that button on the Print step: what was
+    /// saved and what the copy could not carry.
+    export_note: Option<String>,
     path: Option<std::path::PathBuf>,
     settings: Settings,
     printer_name: String,
@@ -821,6 +825,7 @@ impl Default for App {
             announcements,
             notes: Vec::new(),
             status: "Welcome to OpenBulletin.".into(),
+            export_note: None,
             path: None,
             settings: load_settings(),
             printer_name: "Church office printer".into(),
@@ -2800,6 +2805,46 @@ impl App {
         });
     }
 
+    /// Scribus import on a worker: a .sla file is one XML
+    /// document, read in-process into the shared dump, and the
+    /// draft and its review are the same as every other
+    /// rescue's.
+    fn start_sla_import(&mut self, path: std::path::PathBuf) {
+        let profile = self.doc.profile.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.import_rx = Some(rx);
+        self.note("Reading your Scribus file...".into());
+        std::thread::spawn(move || {
+            let result = (|| -> Result<ImportReview, String> {
+                let bytes =
+                    std::fs::read(&path).map_err(|e| format!("cannot read that file: {e}"))?;
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Scribus file".into());
+                let (dump, loss_notes) = ob_extract::sla::import_sla(&bytes, &name)?;
+                if dump.pages.is_empty() {
+                    return Err("that Scribus file has no pages we can read".into());
+                }
+                let out = ob_extract::draft::document_from_dump(&dump, profile, false);
+                let mut note = "This came from a Scribus file: the words, their                                 boxes, and their fonts came over as a draft to check."
+                    .to_string();
+                for n in &loss_notes {
+                    note.push(' ');
+                    note.push_str(n);
+                }
+                Ok(ImportReview {
+                    doc: out.doc,
+                    items: out.items,
+                    workdir: None,
+                    source_name: name,
+                    note: Some(note),
+                })
+            })();
+            let _ = tx.send(result);
+        });
+    }
+
     /// Publisher import on a worker: LibreOffice (if the
     /// office has it) turns the .pub into a PDF, and from
     /// there the ordinary PDF rescue takes over.
@@ -2876,6 +2921,7 @@ impl App {
             "pdf" => self.start_import(path),
             "idml" => self.start_idml_import(path),
             "pub" => self.start_pub_import(path),
+            "sla" => self.start_sla_import(path),
             "obd" => {
                 if !self.open_guard(PendingOpen::Plain) {
                     return;
@@ -2893,11 +2939,12 @@ impl App {
             }
             _ => {
                 // Sniff the first bytes: PDF says %PDF, an IDML
-                // is a zip (PK), a .pub is a compound file.
+                // is a zip (PK), a .pub is a compound file, a
+                // Scribus file is XML under a SCRIBUSUTF8NEW root.
                 let head = std::fs::read(&path)
                     .unwrap_or_default()
                     .into_iter()
-                    .take(8)
+                    .take(4096)
                     .collect::<Vec<u8>>();
                 if head.starts_with(b"%PDF") {
                     self.start_import(path);
@@ -2905,10 +2952,13 @@ impl App {
                     self.start_idml_import(path);
                 } else if head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
                     self.start_pub_import(path);
+                } else if String::from_utf8_lossy(&head).contains("SCRIBUSUTF8NEW") {
+                    self.start_sla_import(path);
                 } else {
                     self.fail(
-                        "That file does not look like a PDF, a Publisher file, or an \
-                         InDesign (IDML) file, so it cannot be brought in."
+                        "That file does not look like a PDF, a Publisher file, an \
+                         InDesign (IDML) file, or a Scribus file, so it cannot \
+                         be brought in."
                             .into(),
                     );
                 }
@@ -3060,50 +3110,102 @@ impl App {
         }
     }
 
-    /// The Template Analyzer on a worker: dump every picked
-    /// bulletin, learn the family and its standing text, render
-    /// the base bulletin's pages as tracing pictures.
-    fn start_analyzer(&mut self, pdfs: Vec<std::path::PathBuf>) {
+    /// The Template Analyzer on a worker: turn every picked
+    /// bulletin into a dump through its own reader (the pick
+    /// may mix PDFs, Publisher files, InDesign files, Scribus
+    /// files, and OpenBulletin files), learn the family and
+    /// its standing text, and render the base bulletin's pages
+    /// as tracing pictures when the base can be rendered.
+    /// Files that cannot be read are skipped and named; if
+    /// what survives no longer meets the learning minimums
+    /// (ob_extract::learn), the run stops and says what to add.
+    fn start_analyzer(&mut self, files: Vec<std::path::PathBuf>) {
         let profile = self.doc.profile.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         self.analyzer_rx = Some(rx);
         self.note("Studying your old bulletins...".into());
         std::thread::spawn(move || {
             let result = (|| -> Result<AnalyzerReview, String> {
+                use ob_extract::learn::LearnKind;
                 let helper = ob_extract::helper::resolve_helper(None);
-                let mut dumps = Vec::new();
-                let mut skipped: Vec<String> = Vec::new();
-                for pdf in &pdfs {
-                    match ob_extract::helper::dump_pdf(&helper, pdf) {
-                        Ok(d) => dumps.push(d),
-                        Err(_) => skipped.push(
-                            pdf.file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| pdf.display().to_string()),
-                        ),
-                    }
-                }
-                if dumps.len() < 3 {
-                    return Err(format!(
-                        "Only {} of the picked files could be read ({} could not: {}). \
-                         Pick at least three readable PDF bulletins.",
-                        dumps.len(),
-                        skipped.len(),
-                        skipped.join(", ")
-                    ));
-                }
-                let out = ob_extract::analyzer::analyze(&dumps, profile)?;
                 let workdir = std::env::temp_dir()
                     .join(format!("openbulletin-template-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&workdir);
-                if let Some(base) = pdfs.iter().find(|p| p.to_string_lossy() == out.base_source) {
-                    let _ = ob_extract::helper::render_pdf(&helper, base, &workdir.join("assets"));
+                let soffice = ob_extract::pub_bridge::find_soffice();
+                // Each read bulletin: its dump, plus the PDF it
+                // can be pictured from, when it has one.
+                let mut entries: Vec<(ob_extract::ExtractionDump, Option<std::path::PathBuf>)> =
+                    Vec::new();
+                let mut skipped: Vec<String> = Vec::new();
+                for path in &files {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string());
+                    let read: Result<
+                        (ob_extract::ExtractionDump, Option<std::path::PathBuf>),
+                        String,
+                    > = match ob_extract::learn::classify_path(path) {
+                        Some(LearnKind::Pdf) => ob_extract::helper::dump_pdf(&helper, path)
+                            .map(|d| (d, Some(path.clone()))),
+                        Some(LearnKind::Publisher) => match &soffice {
+                            Some(so) => ob_extract::pub_bridge::convert_pub_to_pdf(
+                                so,
+                                path,
+                                &workdir.join("pub-pdf"),
+                            )
+                            .and_then(|pdf| {
+                                ob_extract::helper::dump_pdf(&helper, &pdf).map(|d| (d, Some(pdf)))
+                            }),
+                            None => (|| {
+                                let bytes = std::fs::read(path)
+                                    .map_err(|e| format!("cannot read that file: {e}"))?;
+                                let size = bytes.len();
+                                let cfb = ob_extract::cfb::Cfb::open(bytes)?;
+                                let x = ob_extract::pub_layout::extract_pub_positioned(
+                                    &cfb, &name, size,
+                                )?;
+                                Ok((x.dump, None))
+                            })(),
+                        },
+                        Some(LearnKind::Indesign) => std::fs::read(path)
+                            .map_err(|e| format!("cannot read that file: {e}"))
+                            .and_then(|bytes| ob_extract::idml::dump_from_idml(&bytes, &name))
+                            .map(|d| (d, None)),
+                        Some(LearnKind::Scribus) => std::fs::read(path)
+                            .map_err(|e| format!("cannot read that file: {e}"))
+                            .and_then(|bytes| ob_extract::sla::dump_from_sla(&bytes, &name))
+                            .map(|d| (d, None)),
+                        Some(LearnKind::OpenBulletin) => ob_format::load(path)
+                            .map(|doc| (ob_extract::learn::dump_from_document(&doc, &name), None)),
+                        None => Err("not a kind of file we can learn from".into()),
+                    };
+                    match read {
+                        Ok(entry) => entries.push(entry),
+                        Err(_) => skipped.push(name),
+                    }
+                }
+                let dumps: Vec<ob_extract::ExtractionDump> =
+                    entries.iter().map(|(d, _)| d.clone()).collect();
+                let counts = ob_extract::learn::counts_of_dumps(&dumps);
+                if counts.effective() < ob_extract::learn::MIN_BULLETINS {
+                    return Err(ob_extract::learn::shortfall_after_reading(
+                        &counts, &skipped,
+                    ));
+                }
+                let out = ob_extract::analyzer::analyze(&dumps, profile)?;
+                if let Some((_, Some(pdf))) = entries
+                    .iter()
+                    .find(|(d, _)| d.source_name == out.base_source)
+                {
+                    let _ = ob_extract::helper::render_pdf(&helper, pdf, &workdir.join("assets"));
                 }
                 Ok(AnalyzerReview {
                     doc: out.doc,
                     items: out.items,
                     family: out.family,
                     corpus: out.corpus,
+                    mix: ob_extract::learn::mix_summary(&counts),
                     workdir,
                     note: if skipped.is_empty() {
                         None
@@ -3185,6 +3287,7 @@ impl App {
                     review.corpus,
                     review.family,
                 ));
+                ui.label(&review.mix);
                 if let Some(note) = &review.note {
                     ui.label(
                         egui::RichText::new(note)
@@ -3288,6 +3391,46 @@ impl App {
                     "Could not open that file. Pick a bulletin file ending in .obd. ({e})"
                 )),
             }
+        }
+    }
+
+    /// The one export door for other programs (Jacob's
+    /// rule: one button, the format chosen in the save
+    /// dialog, never a button per format). Dispatches by the
+    /// ending the user chose, so a new format joins by
+    /// adding one arm here. The confirmation keeps the
+    /// export report's plain-words notes: what was saved
+    /// and what the copy could not carry.
+    fn save_copy_for_program(&mut self, path: &std::path::Path) {
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        match ext.as_str() {
+            "idml" => match ob_extract::idml_export::export_idml(&self.doc) {
+                Ok((bytes, report)) => match std::fs::write(path, &bytes) {
+                    Ok(()) => {
+                        let mut msg =
+                            format!("Saved a copy for InDesign to {}.", path.display());
+                        if report.notes.is_empty() {
+                            msg.push_str(" Everything in the bulletin came over.");
+                        } else {
+                            for n in &report.notes {
+                                msg.push(' ');
+                                msg.push_str(n);
+                            }
+                        }
+                        self.export_note = Some(msg.clone());
+                        self.note(msg);
+                    }
+                    Err(e) => self.fail(format!("Could not save that copy: {e}")),
+                },
+                Err(e) => self.fail(format!("Could not make that copy: {e}")),
+            },
+            _ => self.fail(
+                "That kind of copy is not one we can make yet. The save dialog                  offers InDesign (IDML)."
+                    .into(),
+            ),
         }
     }
 
@@ -4038,12 +4181,15 @@ impl eframe::App for App {
                         }
                         ui.separator();
                         ui.heading("Bring in an old bulletin");
-                        ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, or an InDesign file (IDML). One button for all of them; the app works out which kind it is, and the words come over as a draft you can edit. Publisher files ride in through LibreOffice (a free program) when it is installed, and through OpenBulletin's own reader when it is not; for InDesign, export the file there as IDML first.");
+                        ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, an InDesign file (IDML), or a Scribus file. One button for all of them; the app works out which kind it is, and the words come over as a draft you can edit. Publisher files ride in through LibreOffice (a free program) when it is installed, and through OpenBulletin's own reader when it is not; for InDesign, export the file there as IDML first.");
                         if self.import_rx.is_some() {
                             ui.label("Reading your old bulletin...");
                         } else if ui.button("Open an old bulletin...").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Old bulletins", &["pdf", "pub", "idml", "obd"])
+                                .add_filter(
+                                    "Old bulletins",
+                                    &["pdf", "pub", "idml", "sla", "obd"],
+                                )
                                 .add_filter("All files", &[] as &[&str])
                                 .pick_file()
                             {
@@ -4052,21 +4198,28 @@ impl eframe::App for App {
                         }
                         ui.separator();
                         ui.heading("Learn from your old bulletins");
-                        ui.label("Or give us three or more old bulletins (PDFs) and we will learn what stays the same every week and what changes, and suggest a template from them.");
+                        ui.label("Or give us old bulletins in any mix (PDFs, Publisher files, InDesign (IDML) files, Scribus files, or OpenBulletin files) and we will learn what stays the same every week and what changes, and suggest a template from them. Learning needs at least three bulletins that count: the other kinds count one-for-one, and PDFs count only in a group of three or more, because one or two PDFs alone cannot show what repeats.");
                         if self.analyzer_rx.is_some() {
                             ui.label("Studying your old bulletins...");
                         } else if ui.button("Pick old bulletins (3 or more)...").clicked() {
-                            if let Some(pdfs) = rfd::FileDialog::new()
-                                .add_filter("PDF bulletins", &["pdf"])
+                            if let Some(files) = rfd::FileDialog::new()
+                                .add_filter(
+                                    "Old bulletins",
+                                    &["pdf", "pub", "idml", "sla", "obd"],
+                                )
+                                .add_filter("All files", &[] as &[&str])
                                 .pick_files()
                             {
-                                if pdfs.len() < 3 {
-                                    self.fail(
-                                        "Pick at least three old bulletins; fewer cannot show what stands still."
-                                            .into(),
-                                    );
-                                } else {
-                                    self.start_analyzer(pdfs);
+                                let mut counts = ob_extract::learn::KindCounts::default();
+                                for f in &files {
+                                    if let Some(kind) = ob_extract::learn::classify_path(f)
+                                    {
+                                        counts.add(kind);
+                                    }
+                                }
+                                match ob_extract::learn::check_pick(&counts) {
+                                    Ok(()) => self.start_analyzer(files),
+                                    Err(msg) => self.fail(msg),
                                 }
                             }
                         }
@@ -4285,6 +4438,22 @@ impl eframe::App for App {
                                     Err(e) => self.status = format!("Could not save the reading copy: {e}"),
                                 }
                             }
+                        }
+                        ui.separator();
+                        ui.label("A copy for another program: an InDesign (IDML) file carries the words, their boxes, and their fonts, so someone with InDesign can take the bulletin from here.");
+                        if ui.button("Save a copy for another program...").clicked() {
+                            self.commit_if_editing();
+                            self.save_announcements();
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_file_name("bulletin.idml")
+                                .add_filter("InDesign (IDML)", &["idml"])
+                                .save_file()
+                            {
+                                self.save_copy_for_program(&path);
+                            }
+                        }
+                        if let Some(n) = &self.export_note {
+                            ui.label(n.clone());
                         }
                         ui.separator();
                         ui.label(egui::RichText::new("Two-sided printing, first time on a printer?").strong());
@@ -4695,6 +4864,9 @@ struct AnalyzerReview {
     items: Vec<ob_extract::analyzer::TemplateItem>,
     family: usize,
     corpus: usize,
+    /// The mix the template was learned from, in plain words
+    /// ("Learned from 9 files: 6 old PDFs, ...").
+    mix: String,
     workdir: std::path::PathBuf,
     note: Option<String>,
 }

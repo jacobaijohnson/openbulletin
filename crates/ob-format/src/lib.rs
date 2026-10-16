@@ -71,6 +71,7 @@ mod tests {
                 preset: "letter-portrait".into(),
                 size: Size::new(612_000, 792_000),
             },
+            no_announcements: false,
         };
         ob_format_save_helper(&path, &doc);
         let loaded = load(&path).expect("loads");
@@ -100,6 +101,7 @@ mod tests {
             stories: vec![Story {
                 id: "s".into(),
                 paragraphs: vec![Paragraph::new("body", "Hello")],
+                keep_through: None,
             }],
             panels: vec![Panel {
                 background_image: None,
@@ -113,11 +115,39 @@ mod tests {
                 preset: "letter-portrait".into(),
                 size: Size::new(1, 2),
             },
+            no_announcements: false,
         };
         let path = std::env::temp_dir().join("ob-roundtrip-test.obd");
         save(&doc, &path).unwrap();
         let back = load(&path).unwrap();
         assert_eq!(doc, back);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn files_written_before_keep_through_and_no_announcements_load() {
+        // A v0 file from before the keep-through date and the
+        // no-announcements mark existed: neither field is in the
+        // JSON, and both must come back as their defaults (no
+        // keep-through, announcements not marked none).
+        let json = r#"{
+            "format_version": 0,
+            "title": "Old file",
+            "profile": {"name": "Grace", "address": "", "service_times": "",
+                        "website": "", "giving_url": "", "pastor": ""},
+            "fields": {},
+            "styles": [],
+            "stories": [{"id": "s", "paragraphs": [{"style": "body", "text": "Hello"}]}],
+            "panels": [],
+            "sheet": {"preset": "letter-portrait", "size": {"w": 1, "h": 2}}
+        }"#;
+        let dir = std::env::temp_dir().join(format!("ob-format-old-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("old.obd");
+        std::fs::write(&path, json).expect("write");
+        let doc = load(&path).expect("old file loads");
+        assert_eq!(doc.stories[0].keep_through, None);
+        assert!(!doc.no_announcements);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

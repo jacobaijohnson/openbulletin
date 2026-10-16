@@ -34,6 +34,40 @@ rules as follows.
    exported; editing afterward makes Print say "Changed since
    the print copy was made" until a fresh copy exists.
 
+## Shipped (2026-10-15, the workflow streamlining batch)
+
+All five landed, each with tests:
+
+1. Unsupported characters: ob-pdf now publishes its own
+   WinAnsi test (`winansi_supported` / `unsupported_chars`), so
+   the warning and the encoder share one definition. Check
+   names the character and the story, with a fix button to the
+   step that edits it; Print repeats the warning. One
+   correction to the review's premise: the dagger and the
+   curly quotes DO print (they are real WinAnsi characters);
+   the characters that vanish are ones like the Latin cross,
+   check marks, emoji, and Greek letters, and the tests pin
+   both halves of that. Tab is never flagged: order lines
+   spend it as the dot-leader mark before encoding.
+2. Announcement expiry: a story may carry a keep-through date
+   (serde-defaulted; older files load). Next Sunday keeps the
+   words while the date covers the new Sunday, ends and counts
+   the story once the date has passed, and the app says how
+   many ended. The Announcements step has one optional
+   "Keep through" date field for the announcements it edits.
+3. Start status: a pure function over the document derives
+   "Working on: Sunday, [date]" and the next thing needed
+   (church name, then date, then announcements), or "Ready
+   to print."
+4. "No announcements this week": a document flag
+   (serde-defaulted), a checkbox on the Announcements step,
+   and Check accepts the empty box only when it is marked.
+   Next Sunday resets the mark.
+5. Print-copy freshness: the Print step remembers the
+   snapshot a copy was made from; any later change brings up
+   "changed since the print copy was made" until a fresh copy
+   exists. In-memory only for now: closing the app forgets it.
+
 ## Considered and deferred
 
 - Per-field Confirmed states: real value for teams, but they

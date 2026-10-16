@@ -421,6 +421,7 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
                 "body",
                 "[Type this page over the picture of the old one.]",
             )],
+            keep_through: None,
         });
         let m = ob_model::inch(0.45);
         panels.push(ob_model::Panel {
@@ -457,6 +458,7 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
         stories,
         panels,
         sheet,
+        no_announcements: false,
     };
     let out_file = out.join(format!("{stem}-traced.obd"));
     ob_format::save(&doc, &out_file)?;

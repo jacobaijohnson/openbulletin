@@ -294,6 +294,7 @@ pub fn export_idml(doc: &Document) -> Result<(Vec<u8>, IdmlExportReport), String
                             let empty = ob_model::Story {
                                 id: part_id.clone(),
                                 paragraphs: Vec::new(),
+                                keep_through: None,
                             };
                             let xml = story_xml(doc, &empty, &mut report);
                             story_parts.push((format!("Stories/Story_{part_id}.xml"), xml));
@@ -460,6 +461,7 @@ mod tests {
         ];
         let stories = vec![
             Story {
+                keep_through: None,
                 id: "s-cover".into(),
                 paragraphs: vec![
                     Paragraph::new("heading", "Welcome to worship"),
@@ -468,6 +470,7 @@ mod tests {
                 ],
             },
             Story {
+                keep_through: None,
                 id: "s-inside".into(),
                 paragraphs: vec![
                     Paragraph::new("body", "Announcements for the week"),
@@ -529,6 +532,7 @@ mod tests {
                 preset: "letter-bifold".into(),
                 size: Size::new(792_000, 612_000),
             },
+            no_announcements: false,
         }
     }
 

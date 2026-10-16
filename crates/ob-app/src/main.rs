@@ -542,6 +542,10 @@ impl App {
     fn sync_buffers(&mut self) {
         self.announcements = weekly_body_text(&self.doc);
         self.announcements_dirty = false;
+        self.ann_keep_through = weekly_story_id(&self.doc)
+            .and_then(|sid| self.doc.story(&sid))
+            .and_then(|s| s.keep_through.clone())
+            .unwrap_or_default();
         self.church_name = self.doc.profile.name.clone();
         self.profile_address = self.doc.profile.address.clone();
         self.profile_giving_url = self.doc.profile.giving_url.clone();
@@ -582,6 +586,52 @@ impl App {
         }
     }
 
+    /// Set the announcements' keep-through date from the
+    /// Announcements step field. Blank means "this Sunday only".
+    /// A date that does not read is refused in plain words and
+    /// the field goes back to what the bulletin holds.
+    fn apply_ann_keep_through(&mut self) {
+        let Some(sid) = weekly_story_id(&self.doc) else {
+            return;
+        };
+        let text = self.ann_keep_through.trim().to_string();
+        let parsed = if text.is_empty() {
+            Some(None)
+        } else {
+            chrono::NaiveDate::parse_from_str(&text, "%Y-%m-%d")
+                .ok()
+                .map(|d| Some(d.format("%Y-%m-%d").to_string()))
+        };
+        let Some(value) = parsed else {
+            self.status =
+                "That keep-through date does not read. Use year-month-day, like 2026-11-08, or leave it blank.".into();
+            self.ann_keep_through = self
+                .doc
+                .story(&sid)
+                .and_then(|s| s.keep_through.clone())
+                .unwrap_or_default();
+            return;
+        };
+        let before = snapshot(&self.doc);
+        if let Some(story) = self.doc.story_mut(&sid) {
+            story.keep_through = value.clone();
+        }
+        if before != snapshot(&self.doc) {
+            self.record_undo(before);
+            self.status = match &value {
+                Some(iso) => {
+                    let d =
+                        chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d").expect("just formatted");
+                    format!(
+                        "These announcements stay in the bulletin through {}.",
+                        d.format("%B %-d, %Y")
+                    )
+                }
+                None => "Announcements are for this Sunday only.".into(),
+            };
+        }
+    }
+
     /// The one way a whole document replaces the current one
     /// (Open, recovery, Undo, Redo). History is cleared when the
     /// replacement crosses a file boundary, so Undo can never
@@ -601,6 +651,132 @@ impl App {
 
 fn snapshot(doc: &Document) -> String {
     serde_json::to_string(doc).unwrap_or_default()
+}
+
+/// One story whose words use a character the print file cannot
+/// show (GPT workflow review, adopted item 1). The character
+/// test itself is ob-pdf's own, so this warning and the printed
+/// output can never disagree.
+#[derive(Debug, Clone, PartialEq)]
+struct CharFinding {
+    story_id: String,
+    /// The story's first words, so the admin can find it.
+    label: String,
+    /// The unprintable characters, in the order they appear.
+    chars: Vec<char>,
+}
+
+/// Every story in the document that would lose characters to
+/// blank spaces in the print copy. Fields are filled in first,
+/// because the filled-in words are what actually prints.
+fn char_findings(doc: &Document) -> Vec<CharFinding> {
+    let mut out = Vec::new();
+    for story in &doc.stories {
+        let mut chars: Vec<char> = Vec::new();
+        for para in &story.paragraphs {
+            let resolved = ob_model::resolve_fields(&para.text, doc);
+            for c in ob_pdf::unsupported_chars(&resolved) {
+                if !chars.contains(&c) {
+                    chars.push(c);
+                }
+            }
+        }
+        if chars.is_empty() {
+            continue;
+        }
+        let label = story
+            .paragraphs
+            .iter()
+            .map(|p| p.text.trim())
+            .find(|t| !t.is_empty())
+            .map(|t| t.chars().take(38).collect::<String>())
+            .unwrap_or_else(|| "A text block".to_string());
+        out.push(CharFinding {
+            story_id: story.id.clone(),
+            label,
+            chars,
+        });
+    }
+    out
+}
+
+/// The Check-step words for one unprintable-character finding.
+fn char_note(f: &CharFinding) -> String {
+    let marks = f
+        .chars
+        .iter()
+        .map(|c| format!("\"{c}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if f.chars.len() == 1 {
+        format!(
+            "Check: the words in \"{}\" use a mark the print copy cannot show: {marks}. \
+             It would print as a blank space. Type a plain mark instead, or take it out.",
+            f.label
+        )
+    } else {
+        format!(
+            "Check: the words in \"{}\" use marks the print copy cannot show: {marks}. \
+             They would print as blank spaces. Type plain marks instead, or take them out.",
+            f.label
+        )
+    }
+}
+
+/// The Check-step line about announcements, in plain words.
+/// An empty box is only fine when the office said so out loud
+/// (adopted item 4).
+fn announcements_check(announcements_empty: bool, none_marked: bool) -> String {
+    if !announcements_empty {
+        "OK: announcements are filled in.".to_string()
+    } else if none_marked {
+        "OK: no announcements this week, as marked.".to_string()
+    } else {
+        "Check: announcements are still needed. Add them on the \
+         Announcements step, or mark \"No announcements this week\" \
+         there if there are none."
+            .to_string()
+    }
+}
+
+/// The Start step's opening lines (adopted item 3): which
+/// Sunday this is, and the next thing needed, worked out from
+/// the document itself in step order. Nothing here is kept by
+/// hand, so it cannot go stale.
+fn start_status(doc: &Document, announcements_empty: bool) -> (String, String) {
+    let long = doc
+        .fields
+        .get("sunday_date_long")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let headline = match long {
+        Some(d) => format!("Working on: Sunday, {d}"),
+        None => "Working on: a new bulletin".to_string(),
+    };
+    let date_missing = long.is_none()
+        || doc
+            .fields
+            .get("sunday_date")
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true);
+    let next = if doc.profile.name.trim().is_empty() {
+        "Next: add your church name on this step."
+    } else if date_missing {
+        "Next: set the date on the This Sunday step."
+    } else if announcements_empty && !doc.no_announcements {
+        "Next: add this week's announcements on the Announcements step, \
+         or mark there that there are none this week."
+    } else {
+        "Ready to print."
+    };
+    (headline, next.to_string())
+}
+
+/// True when a print copy exists but the bulletin has changed
+/// since it was made (adopted item 5). The fingerprint is the
+/// same snapshot text the undo history keeps.
+fn print_copy_stale(fingerprint: Option<&str>, current: &str) -> bool {
+    fingerprint.map(|fp| fp != current).unwrap_or(false)
 }
 
 pub fn load_settings() -> Settings {
@@ -648,6 +824,16 @@ struct App {
     /// shown under that button on the Print step: what was
     /// saved and what the copy could not carry.
     export_note: Option<String>,
+    /// Stories using characters the print file cannot show,
+    /// found by the last Check run (and recomputed on Print).
+    char_findings: Vec<CharFinding>,
+    /// The "Keep through" date field on the Announcements
+    /// step, bound to the announcements story.
+    ann_keep_through: String,
+    /// The document snapshot a print copy was made from, so
+    /// the Print step can say when the bulletin has changed
+    /// since. Memory only: forgotten when the app closes.
+    print_fingerprint: Option<String>,
     path: Option<std::path::PathBuf>,
     settings: Settings,
     printer_name: String,
@@ -826,6 +1012,9 @@ impl Default for App {
             notes: Vec::new(),
             status: "Welcome to OpenBulletin.".into(),
             export_note: None,
+            char_findings: Vec::new(),
+            ann_keep_through: String::new(),
+            print_fingerprint: None,
             path: None,
             settings: load_settings(),
             printer_name: "Church office printer".into(),
@@ -1113,11 +1302,10 @@ impl App {
             Some(d) if !d.is_empty() => notes.push(format!("OK: bulletin date is {d}.")),
             _ => notes.push("Check: no Sunday date is set (Step 2).".to_string()),
         }
-        if self.announcements.trim().is_empty() {
-            notes.push("Check: announcements are empty. If that is correct for this week, you can ignore this.".to_string());
-        } else {
-            notes.push("OK: announcements are filled in.".to_string());
-        }
+        notes.push(announcements_check(
+            self.announcements.trim().is_empty(),
+            self.doc.no_announcements,
+        ));
         // Real fit check: shape every story into its frame and complain
         // in plain words about any that do not fit. Two passes: first
         // collect the words (borrowing the document), then shape them
@@ -1280,6 +1468,10 @@ impl App {
         } else {
             notes.push("Check: no order of service found.".to_string());
         }
+        // Characters the print copy cannot show get their own
+        // findings (not plain notes) so the Check step can put
+        // a fix button under each one.
+        self.char_findings = char_findings(&self.doc);
         self.notes = notes;
     }
 
@@ -1289,8 +1481,8 @@ impl App {
         }
         self.save_announcements();
         let before = snapshot(&self.doc);
-        match ob_layout::next_sunday(&self.doc) {
-            Ok(next) => {
+        match ob_layout::next_sunday_report(&self.doc) {
+            Ok((next, report)) => {
                 self.adopt_document(next, false);
                 if before != snapshot(&self.doc) {
                     self.record_undo(before);
@@ -1300,10 +1492,19 @@ impl App {
                 // call this unsaved document saved (finding F13).
                 self.path = None;
                 self.step = 1;
-                self.status = format!(
+                let mut msg = format!(
                     "Started the {} bulletin. Weekly announcements were cleared; standing items carried over. Save it under its own name.",
                     self.doc.fields.get("sunday_date_long").cloned().unwrap_or_default()
                 );
+                if report.ended_announcements == 1 {
+                    msg.push_str(" 1 announcement ended and was cleared.");
+                } else if report.ended_announcements > 1 {
+                    msg.push_str(&format!(
+                        " {} announcements ended and were cleared.",
+                        report.ended_announcements
+                    ));
+                }
+                self.status = msg;
             }
             Err(e) => self.status = format!("Next Sunday failed: {e}"),
         }
@@ -1697,6 +1898,7 @@ impl App {
                 "body",
                 "New box. Double-click and type.",
             )],
+            keep_through: None,
         });
         let panel = &mut self.doc.panels[idx];
         let w = 216_000.min(panel.size.w);
@@ -4151,6 +4353,11 @@ impl eframe::App for App {
                 ui.separator();
                 match self.step {
                     0 => {
+                        let (headline, next_line) =
+                            start_status(&self.doc, self.announcements.trim().is_empty());
+                        ui.label(egui::RichText::new(headline).strong());
+                        ui.label(next_line);
+                        ui.separator();
                         ui.heading("Start from last week");
                         ui.label("The usual week: open last Sunday's bulletin and we move it to this Sunday. Last week's announcements clear; everything standing stays.");
                         let last_week_label =
@@ -4358,11 +4565,47 @@ impl eframe::App for App {
                             self.save_announcements();
                             self.status = "Announcements saved.".into();
                         }
+                        ui.separator();
+                        let mut none_marked = self.doc.no_announcements;
+                        if ui
+                            .checkbox(&mut none_marked, "No announcements this week")
+                            .changed()
+                        {
+                            let before = snapshot(&self.doc);
+                            self.doc.no_announcements = none_marked;
+                            if before != snapshot(&self.doc) {
+                                self.record_undo(before);
+                            }
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label("Keep through:");
+                            let kt_resp = ui.text_edit_singleline(&mut self.ann_keep_through);
+                            if kt_resp.lost_focus() {
+                                self.apply_ann_keep_through();
+                            }
+                        });
+                        ui.small("Leave the date blank for this Sunday only. With a date (year-month-day, like 2026-11-08), these announcements stay in the bulletin through that Sunday when you start next week's.");
                     }
                     3 => {
                         ui.heading("Before you print");
                         for n in &self.notes {
                             ui.label(n);
+                        }
+                        let findings = self.char_findings.clone();
+                        for f in &findings {
+                            ui.label(
+                                egui::RichText::new(char_note(f))
+                                    .color(egui::Color32::from_rgb(170, 40, 30)),
+                            );
+                            if weekly_story_id(&self.doc).as_deref()
+                                == Some(f.story_id.as_str())
+                            {
+                                if ui.button("Fix the announcements").clicked() {
+                                    self.goto_step(2);
+                                }
+                            } else if ui.button("Fix it in the Pages window").clicked() {
+                                self.show_pages = true;
+                            }
                         }
                         if ui.button("Check again").clicked() {
                             self.save_announcements();
@@ -4390,6 +4633,23 @@ impl eframe::App for App {
                         for line in self.print_checklist() {
                             ui.label(format!("- {line}"));
                         }
+                        for f in char_findings(&self.doc) {
+                            ui.label(
+                                egui::RichText::new(char_note(&f))
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(170, 40, 30)),
+                            );
+                        }
+                        if print_copy_stale(
+                            self.print_fingerprint.as_deref(),
+                            &self.frame_snapshot,
+                        ) {
+                            ui.label(
+                                egui::RichText::new("This bulletin changed since the print copy was made. Make a fresh print copy before printing.")
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(170, 40, 30)),
+                            );
+                        }
                         ui.small("Open makes a one-time copy to print right now. The Save buttons below keep files you can reuse.");
                         if ui.button("Open the print copy").clicked() {
                             self.commit_if_editing();
@@ -4400,7 +4660,10 @@ impl eframe::App for App {
                                 std::process::id()
                             ));
                             match std::fs::write(&path, &bytes).map_err(|e| e.to_string()).and_then(|_| open_with_os(&path)) {
-                                Ok(()) => self.status = "Print copy opened in your PDF viewer. Use the settings listed above.".into(),
+                                Ok(()) => {
+                                    self.print_fingerprint = Some(snapshot(&self.doc));
+                                    self.status = "Print copy opened in your PDF viewer. Use the settings listed above.".into();
+                                }
                                 Err(e) => self.status = e,
                             }
                         }
@@ -4417,7 +4680,10 @@ impl eframe::App for App {
                                 self.pin_fonts();
                                 let bytes = ob_pdf::export_imposed_pdf(&self.doc);
                                 match std::fs::write(&path, &bytes) {
-                                    Ok(()) => self.status = format!("Saved print copy to {}", path.display()),
+                                    Ok(()) => {
+                                        self.print_fingerprint = Some(snapshot(&self.doc));
+                                        self.status = format!("Saved print copy to {}", path.display());
+                                    }
                                     Err(e) => self.status = format!("Could not save the print copy: {e}"),
                                 }
                             }
@@ -4434,7 +4700,10 @@ impl eframe::App for App {
                                 self.pin_fonts();
                                 let bytes = ob_pdf::export_reader_pdf(&self.doc);
                                 match std::fs::write(&path, &bytes) {
-                                    Ok(()) => self.status = format!("Saved reading copy to {}", path.display()),
+                                    Ok(()) => {
+                                        self.print_fingerprint = Some(snapshot(&self.doc));
+                                        self.status = format!("Saved reading copy to {}", path.display());
+                                    }
                                     Err(e) => self.status = format!("Could not save the reading copy: {e}"),
                                 }
                             }
@@ -5531,6 +5800,111 @@ mod settings_tests {
         clear_journal_from(&obd, &meta);
         assert!(read_journal_from(&obd, &meta).is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn char_findings_flag_only_what_print_cannot_show() {
+        // Workflow review, adopted item 1: a Latin cross and an
+        // emoji would print as blank spaces and must be named;
+        // the dagger and curly quotes print as themselves (they
+        // are real WinAnsi characters) and must not be flagged.
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        // The fresh template is clean (tabs in the order of
+        // service are dot-leader marks, not characters).
+        assert!(char_findings(&doc).is_empty());
+        let sid = doc.stories[2].id.clone();
+        doc.story_mut(&sid)
+            .expect("story")
+            .paragraphs
+            .push(ob_model::Paragraph::new(
+                "body",
+                "The \u{271D} marks the spot \u{1F600}",
+            ));
+        doc.story_mut(&sid)
+            .expect("story")
+            .paragraphs
+            .push(ob_model::Paragraph::new(
+                "body",
+                "A dagger \u{2020} and \u{201C}quotes\u{201D} print fine",
+            ));
+        let findings = char_findings(&doc);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].story_id, sid);
+        assert_eq!(findings[0].chars, vec!['\u{271D}', '\u{1F600}']);
+        let note = char_note(&findings[0]);
+        assert!(note.contains("\u{271D}"), "the note names the mark: {note}");
+        assert!(
+            note.contains("blank space"),
+            "the note says what happens: {note}"
+        );
+    }
+
+    #[test]
+    fn announcements_check_distinguishes_empty_from_none() {
+        // Adopted item 4: filled is fine; empty is fine only
+        // when the office marked that there are none; empty and
+        // unmarked still needs a person.
+        assert!(announcements_check(false, false).starts_with("OK"));
+        assert!(announcements_check(true, true).starts_with("OK"));
+        let needed = announcements_check(true, false);
+        assert!(needed.starts_with("Check"));
+        assert!(needed.contains("No announcements this week"));
+    }
+
+    #[test]
+    fn start_status_names_the_next_thing_needed() {
+        // Adopted item 3, derived from the document each time.
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        // No church name yet: that is the first thing needed.
+        doc.profile.name = String::new();
+        let (headline, next) = start_status(&doc, true);
+        assert!(headline.starts_with("Working on: Sunday,"));
+        assert!(next.contains("church name"), "next: {next}");
+        // Name set, date set, announcements empty and unmarked.
+        doc.profile.name = "Grace Lutheran Church".into();
+        let (_, next) = start_status(&doc, true);
+        assert!(next.contains("Announcements step"), "next: {next}");
+        // Announcements present: nothing left but printing.
+        let (_, next) = start_status(&doc, false);
+        assert_eq!(next, "Ready to print.");
+        // Or marked as none this week: also ready.
+        doc.no_announcements = true;
+        let (_, next) = start_status(&doc, true);
+        assert_eq!(next, "Ready to print.");
+        // No date at all: the This Sunday step is next, and the
+        // headline cannot name a Sunday.
+        doc.fields.remove("sunday_date");
+        doc.fields.remove("sunday_date_long");
+        let (headline, next) = start_status(&doc, false);
+        assert_eq!(headline, "Working on: a new bulletin");
+        assert!(next.contains("This Sunday step"), "next: {next}");
+    }
+
+    #[test]
+    fn print_copy_staleness_compares_fingerprints() {
+        // Adopted item 5: no copy yet is never stale; the same
+        // snapshot is fresh; any later change is stale.
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        let fp = snapshot(&doc);
+        assert!(!print_copy_stale(None, &fp));
+        assert!(!print_copy_stale(Some(&fp), &snapshot(&doc)));
+        doc.profile.name = "Changed Church".into();
+        assert!(print_copy_stale(Some(&fp), &snapshot(&doc)));
     }
 
     #[test]

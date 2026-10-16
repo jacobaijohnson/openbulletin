@@ -117,6 +117,15 @@ impl Paragraph {
 pub struct Story {
     pub id: String,
     pub paragraphs: Vec<Paragraph>,
+    /// Optional last Sunday (ISO date, YYYY-MM-DD) a weekly story
+    /// stays in the bulletin. Empty (None) means "this Sunday
+    /// only": Next Sunday clears the story's body paragraphs.
+    /// With a date, the words survive Next Sunday while the date
+    /// is on or after the new bulletin's date, and end (cleared,
+    /// counted in the report) once it has passed. Serde-defaulted
+    /// so bulletin files written before this field load fine.
+    #[serde(default)]
+    pub keep_through: Option<String>,
 }
 
 /// Whether content survives the "Next Sunday" command.
@@ -261,6 +270,13 @@ pub struct Document {
     pub stories: Vec<Story>,
     pub panels: Vec<Panel>,
     pub sheet: SheetSpec,
+    /// The office has said, out loud, that there are no
+    /// announcements this week. Without this, an empty
+    /// announcements box cannot be told apart from one nobody
+    /// filled in yet. Reset by Next Sunday: each week answers
+    /// for itself. Serde-defaulted for older files.
+    #[serde(default)]
+    pub no_announcements: bool,
 }
 
 impl Document {
@@ -447,6 +463,7 @@ mod tests {
                 preset: "letter-portrait".into(),
                 size: Size::new(0, 0),
             },
+            no_announcements: false,
         };
         assert_eq!(
             resolve_fields("{Church.name} - {Sunday.name}, {Sunday.date}", &doc),

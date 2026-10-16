@@ -305,6 +305,7 @@ mod tests {
                 preset: preset.into(),
                 size: sheet,
             },
+            no_announcements: false,
         }
     }
 

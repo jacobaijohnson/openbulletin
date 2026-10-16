@@ -502,12 +502,14 @@ mod tests {
                 font_sha256: None,
             }],
             stories: vec![Story {
+                keep_through: None,
                 id: "story-1".into(),
                 paragraphs: vec![
                     Paragraph::new("body", "Welcome to Grace Lutheran Church"),
                     Paragraph::new("body", "The Lord is my shepherd, I shall not want"),
                 ],
             }],
+            no_announcements: false,
             panels: vec![Panel {
                 id: "page-1".into(),
                 name: "Page 1".into(),

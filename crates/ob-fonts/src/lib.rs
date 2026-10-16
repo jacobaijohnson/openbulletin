@@ -692,6 +692,7 @@ mod tests {
                     h: 792_000,
                 },
             },
+            no_announcements: false,
         };
         pin_document_fonts(&mut doc, &lib);
         assert_eq!(

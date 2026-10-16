@@ -248,6 +248,7 @@ pub fn build_template(
         stories.push(Story {
             id: sid.clone(),
             paragraphs,
+            keep_through: None,
         });
         panels.push(Panel {
             id: format!("panel-{i}"),
@@ -280,6 +281,7 @@ pub fn build_template(
             preset: preset.id().to_string(),
             size: preset.sheet_size(),
         },
+        no_announcements: false,
     }
 }
 
@@ -288,13 +290,37 @@ pub fn long_date(d: NaiveDate) -> String {
     format!("{} {}, {}", d.format("%B"), d.day(), d.year())
 }
 
+/// What Next Sunday did to announcements that carry a
+/// keep-through date, so the app can say it out loud.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NextSundayReport {
+    /// Weekly stories whose keep-through date had passed by the
+    /// new Sunday and whose words were cleared because of it.
+    pub ended_announcements: usize,
+    /// Weekly stories whose keep-through date still covers the
+    /// new Sunday, so their words carried over.
+    pub kept_announcements: usize,
+}
+
 /// The signature command: clone the document for next Sunday.
 /// - Advances the Sunday date by 7 days (long form too).
 /// - Clears Body paragraphs in Weekly stories (announcements), keeping
 ///   headings and standing structure untouched.
+/// - A weekly story with a keep-through date keeps its words
+///   while that date is on or after the new Sunday; once the
+///   date has passed, the story ends: cleared, and counted in
+///   the report. A keep-through date that does not read as a
+///   date counts as none ("this Sunday only").
+/// - The no-announcements mark is reset: each week answers
+///   for itself.
 ///
 /// Returns an error string if the stored date cannot be parsed.
 pub fn next_sunday(doc: &Document) -> Result<Document, String> {
+    Ok(next_sunday_report(doc)?.0)
+}
+
+/// [`next_sunday`] with the announcement bookkeeping attached.
+pub fn next_sunday_report(doc: &Document) -> Result<(Document, NextSundayReport), String> {
     let mut out = doc.clone();
     let iso = out
         .fields
@@ -310,25 +336,64 @@ pub fn next_sunday(doc: &Document) -> Result<Document, String> {
     );
     out.fields
         .insert("sunday_date_long".to_string(), long_date(next));
+    out.no_announcements = false;
 
-    // Find weekly story ids from frames marked Weekly.
-    let weekly: Vec<String> = out
-        .panels
-        .iter()
-        .flat_map(|p| p.frames.iter())
-        .filter(|f| f.role == ContentRole::Weekly)
-        .filter_map(|f| f.story_id.clone())
-        .collect();
-    for sid in weekly {
-        if let Some(story) = out.story_mut(&sid) {
-            for p in story.paragraphs.iter_mut() {
-                if p.style == "body" {
-                    p.text = String::new();
+    // Find weekly story ids from frames marked Weekly. Two
+    // frames can share one story; visit each story once so the
+    // report counts announcements, not frames.
+    let mut weekly: Vec<String> = Vec::new();
+    for frame in out.panels.iter().flat_map(|p| p.frames.iter()) {
+        if frame.role == ContentRole::Weekly {
+            if let Some(sid) = &frame.story_id {
+                if !weekly.contains(sid) {
+                    weekly.push(sid.clone());
                 }
             }
         }
     }
-    Ok(out)
+    let mut report = NextSundayReport::default();
+    for sid in weekly {
+        if let Some(story) = out.story_mut(&sid) {
+            let keep = story
+                .keep_through
+                .as_deref()
+                .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok());
+            match keep {
+                Some(until) if until >= next => {
+                    // Still running: the words carry over.
+                    report.kept_announcements += 1;
+                }
+                Some(_) => {
+                    // The date has passed: the announcement
+                    // ends. Count it only if words were
+                    // actually cleared, and drop the spent
+                    // date so it cannot end twice.
+                    let had_words = story
+                        .paragraphs
+                        .iter()
+                        .any(|p| p.style == "body" && !p.text.trim().is_empty());
+                    clear_body(story);
+                    story.keep_through = None;
+                    if had_words {
+                        report.ended_announcements += 1;
+                    }
+                }
+                None => clear_body(story),
+            }
+        }
+    }
+    Ok((out, report))
+}
+
+/// Empty a story's Body paragraphs, keeping headings and
+/// standing structure untouched (the long-standing weekly
+/// clearing rule).
+fn clear_body(story: &mut Story) {
+    for p in story.paragraphs.iter_mut() {
+        if p.style == "body" {
+            p.text = String::new();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -423,5 +488,81 @@ mod tests {
             .paragraphs
             .iter()
             .any(|p| p.text.contains("Hymn of Praise")));
+    }
+
+    #[test]
+    fn next_sunday_honors_keep_through_dates() {
+        // The template's weekly story is the notes/announcements
+        // story (index 2): dated 2026-10-18, so Next Sunday
+        // makes the 2026-10-25 bulletin.
+        let mut d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "X",
+        );
+        let body_text = |doc: &Document| {
+            doc.stories[2]
+                .paragraphs
+                .iter()
+                .filter(|p| p.style == "body")
+                .map(|p| p.text.clone())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        d.stories[2]
+            .paragraphs
+            .iter_mut()
+            .filter(|p| p.style == "body")
+            .for_each(|p| p.text = "Food bank collection".into());
+
+        // Keep-through before the new Sunday: ended and cleared,
+        // counted once, and the spent date is gone.
+        d.stories[2].keep_through = Some("2026-10-24".into());
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert_eq!(report.ended_announcements, 1);
+        assert_eq!(report.kept_announcements, 0);
+        assert!(body_text(&n).trim().is_empty());
+        assert_eq!(n.stories[2].keep_through, None);
+
+        // Keep-through on the new Sunday itself: kept whole.
+        d.stories[2].keep_through = Some("2026-10-25".into());
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert_eq!(report.ended_announcements, 0);
+        assert_eq!(report.kept_announcements, 1);
+        assert!(body_text(&n).contains("Food bank collection"));
+        assert_eq!(n.stories[2].keep_through.as_deref(), Some("2026-10-25"));
+
+        // Keep-through after the new Sunday: kept whole.
+        d.stories[2].keep_through = Some("2026-11-08".into());
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert_eq!(report.kept_announcements, 1);
+        assert!(body_text(&n).contains("Food bank collection"));
+
+        // No keep-through: cleared as always, and not counted
+        // as an announcement that ended (it never had a date).
+        d.stories[2].keep_through = None;
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert_eq!(report.ended_announcements, 0);
+        assert!(body_text(&n).trim().is_empty());
+
+        // A date that does not read counts as none.
+        d.stories[2].keep_through = Some("next month".into());
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert_eq!(report.ended_announcements, 0);
+        assert!(body_text(&n).trim().is_empty());
+    }
+
+    #[test]
+    fn next_sunday_resets_the_no_announcements_mark() {
+        let mut d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "X",
+        );
+        d.no_announcements = true;
+        let n = next_sunday(&d).unwrap();
+        assert!(!n.no_announcements, "each week answers for itself");
     }
 }

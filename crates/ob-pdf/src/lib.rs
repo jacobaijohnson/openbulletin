@@ -64,6 +64,30 @@ fn winansi_byte(c: char) -> Option<u8> {
     }
 }
 
+/// True when this character prints as itself in the PDF: the
+/// exact test the encoder below applies (one definition, shared
+/// with the Check step, so the warning and the output can never
+/// disagree). Note the dagger and the curly quotes ARE printable:
+/// they live in the specials table above.
+pub fn winansi_supported(c: char) -> bool {
+    winansi_byte(c).is_some()
+}
+
+/// The distinct characters in `text` that the print path would
+/// turn into blank spaces, in the order they first appear.
+/// Tab is not reported: order lines spend it as the dot-leader
+/// marker before encoding, so it never reaches the encoder as
+/// a character and does not print as a blank.
+pub fn unsupported_chars(text: &str) -> Vec<char> {
+    let mut out: Vec<char> = Vec::new();
+    for c in text.chars() {
+        if c != '\t' && !winansi_supported(c) && !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// The character a WinAnsi byte stands for (for width tables).
 fn winansi_char(b: u8) -> Option<char> {
     match b {
@@ -576,6 +600,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
                 ),
                 Paragraph::new("test-body", last),
             ],
+            keep_through: None,
         };
         let panel = Panel {
             id: id.to_string(),
@@ -641,6 +666,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
             preset: "letter-portrait".into(),
             size: page,
         },
+        no_announcements: false,
     };
     export_reader_pdf(&doc)
 }
@@ -716,6 +742,33 @@ mod tests {
         let tail = String::from_utf8_lossy(tail);
         assert!(tail.trim_end().ends_with("%%EOF"), "tail was: {tail:?}");
         assert!(!tail.contains("%%%%"), "doubled EOF marker: {tail:?}");
+    }
+
+    #[test]
+    fn unsupported_chars_match_what_the_encoder_does() {
+        // Plain ASCII and the WinAnsi punctuation people actually
+        // type (curly quotes, em dash, the dagger itself, the
+        // bullet) all print as themselves: not flagged.
+        assert!(unsupported_chars("Plain text, 123!").is_empty());
+        assert!(
+            unsupported_chars("\u{201C}quoted\u{201D} \u{2014} and \u{2020} \u{2022}").is_empty()
+        );
+        // The Latin cross and a check mark have no WinAnsi byte:
+        // the encoder prints a space for them, so they are flagged.
+        assert_eq!(unsupported_chars("a \u{271D} b"), vec!['\u{271D}']);
+        assert_eq!(unsupported_chars("done \u{2713}"), vec!['\u{2713}']);
+        // An emoji is flagged, once, however often it appears.
+        assert_eq!(
+            unsupported_chars("\u{1F600} and \u{1F600}"),
+            vec!['\u{1F600}']
+        );
+        // Greek letters are outside WinAnsi too.
+        assert_eq!(
+            unsupported_chars("\u{3B1}\u{3C9}"),
+            vec!['\u{3B1}', '\u{3C9}']
+        );
+        // A tab is the dot-leader marker, never a blank: skipped.
+        assert!(unsupported_chars("Prelude\t").is_empty());
     }
 
     #[test]

@@ -349,6 +349,7 @@ pub fn document_from_dump(
             });
             let sid = format!("rescue-{pi}-{bi}");
             stories.push(Story {
+                keep_through: None,
                 id: sid.clone(),
                 paragraphs: paras
                     .iter()
@@ -420,6 +421,7 @@ pub fn document_from_dump(
                 preset,
                 size: sheet,
             },
+            no_announcements: false,
         },
         items,
     }

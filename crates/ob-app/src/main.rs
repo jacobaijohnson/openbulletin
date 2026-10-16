@@ -982,6 +982,14 @@ impl App {
         // A contribution review and the save guard's state
         // belong to the old document too (R-1).
         self.contribution_review = None;
+        // The applied-parts memory belongs to the old
+        // document too (round 3, R3-5): words applied to
+        // another bulletin say nothing about this one.
+        // Undo and Redo keep it: they stay inside one
+        // document's session.
+        if clear_history {
+            self.applied_contribution_fps.clear();
+        }
         self.save_conflict = None;
         self.replace_armed = false;
         self.replace_ok = None;
@@ -1227,8 +1235,16 @@ fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<CheckNote> {
 /// answer yet: Check asks, because the web page's rule
 /// can only take the care the note describes. A box
 /// whose picture is missing in fact is another
-/// finding's business. Pure over (document, frame).
+/// finding's business. A music box is never asked
+/// (round 3, R3-4): its picture is engraved sheet
+/// music, not a photograph of anybody, and its menu
+/// has no children answer to give, so the question
+/// would be unanswerable noise. Pure over (document,
+/// frame).
 fn picture_children_unnoted(doc: &Document, frame: &ob_model::Frame) -> bool {
+    if frame.music.is_some() {
+        return false;
+    }
     let Some(placement) = &frame.picture else {
         return false;
     };
@@ -2364,6 +2380,14 @@ struct App {
     /// A contribution (from the inbox or the paste box)
     /// waiting for its Accept/Edit/Cancel answer (R-1).
     contribution_review: Option<ContributionReview>,
+    /// Content fingerprints of contributions already
+    /// APPLIED to the document on screen in this session
+    /// (round 3, R3-5). A review that opens for one of
+    /// these offers filing only: applying the same words
+    /// twice would print them twice. In memory only, and
+    /// cleared when a different document is adopted: the
+    /// set speaks for this document, not for the folder.
+    applied_contribution_fps: std::collections::HashSet<String>,
     /// The paste box: words someone sent, pasted in.
     show_paste: bool,
     paste_text: String,
@@ -2975,6 +2999,7 @@ impl Default for App {
             import_review: None,
             import_armed: false,
             contribution_review: None,
+            applied_contribution_fps: std::collections::HashSet::new(),
             show_paste: false,
             paste_text: String::new(),
             inbox_items: Vec::new(),
@@ -3027,6 +3052,11 @@ enum SlotTarget {
     /// build later; the words are never dropped and never
     /// fake-applied).
     LooseSheet,
+    /// Nowhere to land: the bulletin has no box for these
+    /// words yet (round 3, R3-8a). They stay with the part
+    /// when it is filed, and the plan says exactly that
+    /// instead of promising a box that is not there.
+    KeptWithPart,
 }
 
 /// One part's slot, with the sentence the review shows.
@@ -3087,12 +3117,16 @@ enum HymnSlot {
 /// A contribution line's own label and value, the way
 /// senders write them: "Hymn of Praise\t433" (the tab
 /// mirrors the bulletin's own lines) or "Opening hymn:
-/// ELW 432". Anything else is all value, no label.
+/// ELW 432". Anything else is all value, no label. The
+/// value is everything after the FIRST tab (round 3,
+/// R3-8e): a line typed as "Hymn\tELW 432\tJoyful,
+/// Joyful" keeps its middle, so the hymnal and number
+/// survive to be composed with the title.
 fn part_line_label(text: &str) -> (Option<String>, String) {
     let t = text.trim();
     if let Some(tab) = t.find('\t') {
         let label = t[..tab].trim();
-        let value = t.rsplit('\t').next().unwrap_or("").trim();
+        let value = t[tab + 1..].trim();
         return (
             if label.is_empty() {
                 None
@@ -3116,12 +3150,18 @@ fn part_line_label(text: &str) -> (Option<String>, String) {
 
 /// Decide where every line of a service part lands
 /// against this document's service lines. A line is a
-/// hymn entry when its value reads as one (a number, or a
-/// title under a hymn label). Named entries replace the
-/// hymn line they name; the rest fill empty hymn lines in
-/// order; what is left becomes a new line at the end.
-/// Pure, so the review's plan and the apply step can both
-/// run it and always agree.
+/// hymn entry only when it parses to a hymn value WITH
+/// a number, and either its label is a hymn label or
+/// the value itself names a hymnal (round 3, R3-8e):
+/// a bare number can be a psalm, a page, or a time
+/// ("Psalm\t23" stays a plain service line), and prose
+/// under a hymn-flavoured label ("Hymn requests: see
+/// the director") has no number and stays prose.
+/// Named entries replace the hymn line they name; the
+/// rest fill empty hymn lines in order; what is left
+/// becomes a new line at the end. Pure, so the review's
+/// plan and the apply step can both run it and always
+/// agree.
 fn hymn_slots(doc: &Document, part: &ob_extract::contribution::Part) -> Vec<HymnSlot> {
     use ob_model::hymns::{compose_hymn_value, is_hymn_label, parse_hymn_value};
     let lines = service_lines(doc);
@@ -3131,9 +3171,10 @@ fn hymn_slots(doc: &Document, part: &ob_extract::contribution::Part) -> Vec<Hymn
         let text = p.text();
         let (label, value) = part_line_label(&text);
         let entry = parse_hymn_value(&value);
+        let hymn_labelled = label.as_deref().map(is_hymn_label).unwrap_or(false);
         let valued = !text.trim().is_empty()
-            && (entry.number.is_some()
-                || (label.as_deref().map(is_hymn_label).unwrap_or(false) && entry.title.is_some()));
+            && entry.number.is_some()
+            && (hymn_labelled || entry.hymnal.is_some());
         parsed.push((label, entry, valued));
     }
     let mut slots: Vec<Option<HymnSlot>> = Vec::new();
@@ -3270,67 +3311,172 @@ fn push_story_paragraph(doc: &mut Document, sid: &str, p: ob_model::Paragraph) -
     }
 }
 
-/// Decide every part's slot against this document.
-fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec<PartPlan> {
+/// The date a story keeps through once a contribution's
+/// date lands in it: the later of the story's own date
+/// and the contribution's (round 3, R3-8c). An existing
+/// date that does not read is simply replaced; the new
+/// date can extend a stay, never silently shorten one.
+fn effective_keep_through(
+    doc: &Document,
+    sid: &str,
+    kt: ob_model::SimpleDate,
+) -> ob_model::SimpleDate {
+    if let Some(existing) = doc
+        .story(sid)
+        .and_then(|s| s.keep_through.as_deref())
+        .and_then(|iso| ob_model::parse_flexible_date(iso, kt))
+    {
+        if existing > kt {
+            return existing;
+        }
+    }
+    kt
+}
+
+/// The keep-through sentence for a part landing in the
+/// story `sid`, worded with the date that will actually
+/// be in force there. Nothing when the contribution
+/// names no date: then no date is in play.
+fn stays_in_sentence(
+    doc: &Document,
+    sid: &str,
+    c: &ob_extract::contribution::Contribution,
+) -> String {
+    let Some(kt) = c.keep_through else {
+        return String::new();
+    };
+    format!(
+        " Stays in through {}.",
+        ob_extract::contribution::format_date_long(effective_keep_through(doc, sid, kt))
+    )
+}
+
+/// Land a contribution's keep-through date in the story
+/// that received its words (round 3, R3-8b): every arm
+/// that places words, not only the announcement arm.
+/// The later of the two dates wins (R3-8c).
+fn apply_keep_through(doc: &mut Document, sid: &str, kt: ob_model::SimpleDate) {
+    let effective = effective_keep_through(doc, sid, kt);
+    if let Some(story) = doc.story_mut(sid) {
+        story.keep_through = Some(format!(
+            "{:04}-{:02}-{:02}",
+            effective.year, effective.month, effective.day
+        ));
+    }
+}
+
+/// Decide one part's slot against this document.
+fn plan_part(
+    doc: &Document,
+    c: &ob_extract::contribution::Contribution,
+    part: &ob_extract::contribution::Part,
+) -> PartPlan {
     use ob_extract::contribution::PartKind;
     let service = service_story_id(doc);
     let weekly = weekly_story_id(doc);
-    c.parts
-        .iter()
-        .map(|part| match part.kind {
-            PartKind::Service => match &service {
-                Some(sid) => PartPlan {
-                    target: SlotTarget::Story(sid.clone()),
-                    line: service_plan_line(doc, part),
-                },
-                None => PartPlan {
-                    target: SlotTarget::AnnouncementsUnderHeading("For the service"),
-                    line: "This bulletin has no service box, so these words go into \
-                           the announcements, under a \u{201c}For the service\u{201d} heading."
-                        .to_string(),
-                },
+    match part.kind {
+        PartKind::Service => match &service {
+            Some(sid) => PartPlan {
+                target: SlotTarget::Story(sid.clone()),
+                line: format!(
+                    "{}{}",
+                    service_plan_line(doc, part),
+                    stays_in_sentence(doc, sid, c)
+                ),
             },
-            PartKind::Announcement => {
-                let mut line = "Goes into the announcements.".to_string();
-                if let Some(kt) = c.keep_through {
-                    line.push_str(&format!(
-                        " Stays in through {}.",
-                        ob_extract::contribution::format_date_long(kt)
-                    ));
+            None => {
+                let mut line = "This bulletin has no service box, so these words go into \
+                       the announcements, under a \u{201c}For the service\u{201d} heading."
+                    .to_string();
+                if let Some(wid) = &weekly {
+                    line.push_str(&stays_in_sentence(doc, wid, c));
                 }
                 PartPlan {
-                    target: SlotTarget::Story(weekly.clone().unwrap_or_default()),
+                    target: SlotTarget::AnnouncementsUnderHeading("For the service"),
                     line,
                 }
             }
-            PartKind::SundaySchool | PartKind::Youth => {
-                let words = if part.kind == PartKind::SundaySchool {
-                    "sunday school"
-                } else {
-                    "youth"
-                };
-                match named_story_id(doc, words) {
-                    Some(sid) => PartPlan {
-                        target: SlotTarget::Story(sid),
-                        line: format!("Goes into the {words} box."),
-                    },
-                    None => PartPlan {
-                        target: SlotTarget::AnnouncementsUnderHeading(part.kind.heading()),
-                        line: format!(
-                            "Goes into the announcements, under a \u{201c}{}\u{201d} heading.",
-                            part.kind.heading()
-                        ),
-                    },
-                }
-            }
-            PartKind::Insert => PartPlan {
-                target: SlotTarget::LooseSheet,
-                line: "A loose sheet. It is filed with this part and kept safe; \
-                       it does not go into the bulletin pages."
+        },
+        PartKind::Announcement => match &weekly {
+            Some(wid) => PartPlan {
+                target: SlotTarget::Story(wid.clone()),
+                line: format!(
+                    "Goes into the announcements.{}",
+                    stays_in_sentence(doc, wid, c)
+                ),
+            },
+            // Round 3 (R3-8a): with no announcements box,
+            // the plan says the words stay with the part.
+            // Promising a box that is not there sent the
+            // office looking for words Accept never placed.
+            None => PartPlan {
+                target: SlotTarget::KeptWithPart,
+                line: "There is no announcements box in this bulletin yet, so these \
+                       words are kept with the part when it is filed; nothing is \
+                       added to the pages."
                     .to_string(),
             },
-        })
-        .collect()
+        },
+        PartKind::SundaySchool | PartKind::Youth => {
+            let words = if part.kind == PartKind::SundaySchool {
+                "sunday school"
+            } else {
+                "youth"
+            };
+            match named_story_id(doc, words) {
+                Some(sid) => PartPlan {
+                    line: format!(
+                        "Goes into the {words} box.{}",
+                        stays_in_sentence(doc, &sid, c)
+                    ),
+                    target: SlotTarget::Story(sid),
+                },
+                None => {
+                    let mut line = format!(
+                        "Goes into the announcements, under a \u{201c}{}\u{201d} heading.",
+                        part.kind.heading()
+                    );
+                    if let Some(wid) = &weekly {
+                        line.push_str(&stays_in_sentence(doc, wid, c));
+                    }
+                    PartPlan {
+                        target: SlotTarget::AnnouncementsUnderHeading(part.kind.heading()),
+                        line,
+                    }
+                }
+            }
+        }
+        PartKind::Insert => PartPlan {
+            target: SlotTarget::LooseSheet,
+            line: "A loose sheet. It is filed with this part and kept safe; \
+                   it does not go into the bulletin pages."
+                .to_string(),
+        },
+    }
+}
+
+/// Decide every part's slot, in file order. The plan is
+/// a simulation (round 3, R3-8d): each part is planned
+/// against a clone the earlier parts have already been
+/// applied to, with the very function Accept will run,
+/// so the sentences the review shows are the outcomes
+/// Accept produces, including a second service part
+/// slotting its hymns against the first part's work.
+fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec<PartPlan> {
+    let mut sim = doc.clone();
+    let mut plans = Vec::with_capacity(c.parts.len());
+    for part in &c.parts {
+        plans.push(plan_part(&sim, c, part));
+        let single = ob_extract::contribution::Contribution {
+            from: c.from.clone(),
+            for_date: c.for_date,
+            keep_through: c.keep_through,
+            parts: vec![part.clone()],
+            named_weekday_mismatch: c.named_weekday_mismatch.clone(),
+        };
+        apply_contribution(&mut sim, &single);
+    }
+    plans
 }
 
 /// A heading paragraph in the document's own styles: the
@@ -3353,107 +3499,143 @@ fn heading_paragraph(doc: &Document, text: &str) -> ob_model::Paragraph {
     p
 }
 
+/// The running counts one apply builds toward its
+/// summary sentences.
+#[derive(Default)]
+struct ApplyCounts {
+    service_lines: usize,
+    announcements: usize,
+    named: usize,
+    under_headings: usize,
+    loose: usize,
+    unplaced: usize,
+}
+
+/// Put one part into the document, per its plan. The
+/// plan is decided against the document as it stands
+/// when the part lands, so an apply walks the same
+/// ground the review's simulation walked.
+fn apply_part(
+    doc: &mut Document,
+    c: &ob_extract::contribution::Contribution,
+    part: &ob_extract::contribution::Part,
+    plan: &PartPlan,
+    counts: &mut ApplyCounts,
+) {
+    use ob_extract::contribution::PartKind;
+    // The music slip (R-2a): a service part aimed at
+    // the service story slots its hymn lines into the
+    // bulletin's hymn lines, the way the review's plan
+    // said, instead of appending the whole part.
+    if part.kind == PartKind::Service {
+        if let SlotTarget::Story(sid) = &plan.target {
+            if service_story_id(doc).as_deref() == Some(sid.as_str()) {
+                let slots = hymn_slots(doc, part);
+                let mut placed = 0usize;
+                for (p, slot) in part.paragraphs.iter().zip(slots.iter()) {
+                    let landed = match slot {
+                        HymnSlot::Replace {
+                            para_index, value, ..
+                        } => {
+                            set_service_line(doc, *para_index, value);
+                            true
+                        }
+                        HymnSlot::AppendHymn { value } => {
+                            let style = service_line_style(doc);
+                            let text = format!("Hymn\t{value}");
+                            push_story_paragraph(
+                                doc,
+                                sid,
+                                ob_model::Paragraph::plain(&style, &text),
+                            )
+                        }
+                        HymnSlot::Plain => push_story_paragraph(doc, sid, p.clone()),
+                    };
+                    if landed {
+                        placed += 1;
+                    }
+                }
+                counts.service_lines += placed;
+                counts.unplaced += part.paragraphs.len() - placed;
+                if placed > 0 {
+                    if let Some(kt) = c.keep_through {
+                        apply_keep_through(doc, sid, kt);
+                    }
+                }
+                return;
+            }
+        }
+    }
+    match &plan.target {
+        SlotTarget::Story(sid) => {
+            let placed = match doc.story_mut(sid) {
+                Some(story) => {
+                    story.paragraphs.extend(part.paragraphs.iter().cloned());
+                    true
+                }
+                None => false,
+            };
+            if placed {
+                match part.kind {
+                    PartKind::Service => counts.service_lines += part.paragraphs.len(),
+                    PartKind::Announcement => counts.announcements += part.paragraphs.len(),
+                    _ => counts.named += part.paragraphs.len(),
+                }
+                if let Some(kt) = c.keep_through {
+                    apply_keep_through(doc, sid, kt);
+                }
+            } else {
+                counts.unplaced += part.paragraphs.len();
+            }
+        }
+        SlotTarget::AnnouncementsUnderHeading(heading) => {
+            let head = heading_paragraph(doc, heading);
+            let wid = weekly_story_id(doc);
+            let placed = match wid.as_ref().and_then(|wid| doc.story_mut(wid)) {
+                Some(story) => {
+                    story.paragraphs.push(head);
+                    story.paragraphs.extend(part.paragraphs.iter().cloned());
+                    true
+                }
+                None => false,
+            };
+            if placed {
+                counts.under_headings += part.paragraphs.len();
+                if let (Some(kt), Some(wid)) = (c.keep_through, &wid) {
+                    apply_keep_through(doc, wid, kt);
+                }
+            } else {
+                counts.unplaced += part.paragraphs.len();
+            }
+        }
+        SlotTarget::LooseSheet => counts.loose += 1,
+        SlotTarget::KeptWithPart => counts.unplaced += part.paragraphs.len(),
+    }
+}
+
 /// Put a reviewed contribution's parts into the document,
-/// per the plan the review showed. Returns the summary
-/// lines Accept reports: counts per part, and the loose
-/// sheet's fate said out loud.
+/// each planned against the document the parts before
+/// it left behind, exactly as the review's plan was
+/// simulated. Returns the summary lines Accept reports:
+/// counts per part, and the loose sheet's fate said out
+/// loud.
 fn apply_contribution(
     doc: &mut Document,
     c: &ob_extract::contribution::Contribution,
 ) -> Vec<String> {
-    use ob_extract::contribution::PartKind;
-    let plans = plan_parts(doc, c);
-    let mut service_lines = 0usize;
-    let mut announcements = 0usize;
-    let mut named = 0usize;
-    let mut under_headings = 0usize;
-    let mut loose = 0usize;
-    let mut unplaced = 0usize;
-    for (part, plan) in c.parts.iter().zip(plans.iter()) {
-        // The music slip (R-2a): a service part aimed at
-        // the service story slots its hymn lines into the
-        // bulletin's hymn lines, the way the review's plan
-        // said, instead of appending the whole part.
-        if part.kind == PartKind::Service {
-            if let SlotTarget::Story(sid) = &plan.target {
-                if service_story_id(doc).as_deref() == Some(sid.as_str()) {
-                    let slots = hymn_slots(doc, part);
-                    let mut placed = 0usize;
-                    for (p, slot) in part.paragraphs.iter().zip(slots.iter()) {
-                        let landed = match slot {
-                            HymnSlot::Replace {
-                                para_index, value, ..
-                            } => {
-                                set_service_line(doc, *para_index, value);
-                                true
-                            }
-                            HymnSlot::AppendHymn { value } => {
-                                let style = service_line_style(doc);
-                                let text = format!("Hymn\t{value}");
-                                push_story_paragraph(
-                                    doc,
-                                    sid,
-                                    ob_model::Paragraph::plain(&style, &text),
-                                )
-                            }
-                            HymnSlot::Plain => push_story_paragraph(doc, sid, p.clone()),
-                        };
-                        if landed {
-                            placed += 1;
-                        }
-                    }
-                    service_lines += placed;
-                    unplaced += part.paragraphs.len() - placed;
-                    continue;
-                }
-            }
-        }
-        match &plan.target {
-            SlotTarget::Story(sid) => {
-                let placed = match doc.story_mut(sid) {
-                    Some(story) => {
-                        story.paragraphs.extend(part.paragraphs.iter().cloned());
-                        true
-                    }
-                    None => false,
-                };
-                if placed {
-                    match part.kind {
-                        PartKind::Service => service_lines += part.paragraphs.len(),
-                        PartKind::Announcement => announcements += part.paragraphs.len(),
-                        _ => named += part.paragraphs.len(),
-                    }
-                    if part.kind == PartKind::Announcement {
-                        if let Some(kt) = c.keep_through {
-                            if let Some(story) = doc.story_mut(sid) {
-                                story.keep_through =
-                                    Some(format!("{:04}-{:02}-{:02}", kt.year, kt.month, kt.day));
-                            }
-                        }
-                    }
-                } else {
-                    unplaced += part.paragraphs.len();
-                }
-            }
-            SlotTarget::AnnouncementsUnderHeading(heading) => {
-                let head = heading_paragraph(doc, heading);
-                let placed = match weekly_story_id(doc).and_then(|wid| doc.story_mut(&wid)) {
-                    Some(story) => {
-                        story.paragraphs.push(head);
-                        story.paragraphs.extend(part.paragraphs.iter().cloned());
-                        true
-                    }
-                    None => false,
-                };
-                if placed {
-                    under_headings += part.paragraphs.len();
-                } else {
-                    unplaced += part.paragraphs.len();
-                }
-            }
-            SlotTarget::LooseSheet => loose += 1,
-        }
+    let mut counts = ApplyCounts::default();
+    for part in &c.parts {
+        let plan = plan_part(doc, c, part);
+        apply_part(doc, c, part, &plan, &mut counts);
     }
+    let ApplyCounts {
+        service_lines,
+        announcements,
+        named,
+        under_headings,
+        loose,
+        unplaced,
+    } = counts;
     if announcements + under_headings > 0 {
         // Words arrived: the office is no longer saying
         // there are no announcements this week.
@@ -3728,6 +3910,30 @@ fn swap_insert_parts(doc: &mut Document, id: &str) -> bool {
     true
 }
 
+/// Whether one rights record is stronger than another
+/// for the same picture bytes (round 3, R3-11): a
+/// record carrying a credit line (the credit text, or
+/// the copyright line that prints in its place) beats
+/// one without; else a known license beats Unknown.
+/// Equal strength keeps the existing record: the
+/// bulletin's own words are never traded away for a
+/// sheet's.
+fn rights_record_stronger(
+    incoming: &ob_model::RightsRecord,
+    existing: &ob_model::RightsRecord,
+) -> bool {
+    let has_credit = |r: &ob_model::RightsRecord| {
+        !r.credit_text.trim().is_empty() || !r.copyright_line.trim().is_empty()
+    };
+    match (has_credit(incoming), has_credit(existing)) {
+        (true, false) => return true,
+        (false, true) => return false,
+        _ => {}
+    }
+    incoming.license != ob_model::LicenseKind::Unknown
+        && existing.license == ob_model::LicenseKind::Unknown
+}
+
 /// An id no sheet in this document already uses.
 fn fresh_insert_id(doc: &Document) -> String {
     let mut n = doc.inserts.len() + 1;
@@ -3884,6 +4090,22 @@ fn content_fingerprint(bytes: &[u8]) -> String {
     ob_model::sha256_hex(bytes).chars().take(8).collect()
 }
 
+/// The review's first line when the part under review
+/// was already applied to the bulletin on screen in
+/// this session (round 3, R3-5): said once, in these
+/// words, and pinned by a test.
+const APPLIED_PART_FIRST_LINE: &str = "These words are already in the bulletin on screen. \
+    Saving the bulletin finishes this part; there is nothing more to add.";
+
+/// Whether these exact words were already applied to
+/// the open document in this session. The fingerprint
+/// is the same one the filed name carries, so the file
+/// a failed save left in the inbox and the words on
+/// screen compare equal.
+fn part_already_applied(fps: &std::collections::HashSet<String>, text: &str) -> bool {
+    fps.contains(&content_fingerprint(text.as_bytes()))
+}
+
 /// One markdown file found in the inbox, read and parsed.
 /// A file that does not parse stays on the list as
 /// unreadable, with the reason: it is never hidden.
@@ -3895,6 +4117,33 @@ struct InboxItem {
     fingerprint: String,
     text: String,
     parsed: Result<ob_extract::contribution::Contribution, String>,
+    /// Filed items only: the Sunday the filed name
+    /// carries (round 3, R3-10), read back out of the
+    /// name file_contribution wrote. For an undated part
+    /// that is the Sunday it was filed for; the
+    /// still-waiting count trusts it and nothing else.
+    filed_for: Option<ob_model::SimpleDate>,
+}
+
+/// The Sunday a filed part's name carries: the date
+/// segment between the sender and the fingerprint,
+/// split from the right so a sender whose name holds
+/// dashes survives. None when the name carries no date
+/// (the "no Sunday named" names older filings used).
+fn filed_sunday_from_name(file_name: &str) -> Option<ob_model::SimpleDate> {
+    let stem = file_name
+        .strip_suffix(".md")
+        .or_else(|| file_name.strip_suffix(".MD"))?;
+    let (rest, _fingerprint) = stem.rsplit_once(" - ")?;
+    let (_sender, date) = rest.rsplit_once(" - ")?;
+    ob_model::parse_flexible_date(
+        date.trim(),
+        ob_model::SimpleDate {
+            year: 2000,
+            month: 1,
+            day: 1,
+        },
+    )
 }
 
 /// The largest contribution file the inbox will read
@@ -3929,8 +4178,14 @@ fn read_part_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
 
 /// Read every `.md` file in a folder (the inbox, or the
 /// filed folder when arrivals are counted) and parse each
-/// as a contribution. Reading never moves a file.
-fn scan_contribution_folder(dir: &std::path::Path, today: ob_model::SimpleDate) -> Vec<InboxItem> {
+/// as a contribution. Reading never moves a file. Filed
+/// items also carry the Sunday their name was filed
+/// under (round 3, R3-10).
+fn scan_contribution_folder(
+    dir: &std::path::Path,
+    today: ob_model::SimpleDate,
+    filed: bool,
+) -> Vec<InboxItem> {
     let mut items: Vec<InboxItem> = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else {
         return items;
@@ -3961,6 +4216,11 @@ fn scan_contribution_folder(dir: &std::path::Path, today: ob_model::SimpleDate) 
             }
             Err(reason) => (String::new(), String::new(), Err(reason)),
         };
+        let filed_for = if filed {
+            filed_sunday_from_name(&file_name)
+        } else {
+            None
+        };
         items.push(InboxItem {
             path,
             file_name,
@@ -3968,6 +4228,7 @@ fn scan_contribution_folder(dir: &std::path::Path, today: ob_model::SimpleDate) 
             fingerprint,
             text,
             parsed,
+            filed_for,
         });
     }
     items.sort_by(|a, b| a.file_name.cmp(&b.file_name));
@@ -4015,29 +4276,50 @@ fn group_inbox(items: &[InboxItem]) -> Vec<InboxGroup> {
 
 /// The expected parts with no arrived contribution yet:
 /// the Start step's "still waiting for" list. A
-/// contribution counts as arrived when its From holds the
-/// expected words (a name match, case-insensitive,
-/// nothing smarter) and it is either undated or dated for
-/// the open bulletin's Sunday. One dated for a different
-/// Sunday does not count.
+/// contribution counts as arrived when its From IS the
+/// expected name, compared without case and ignoring
+/// spaces at the ends (round 3, R3-10): "Lee" is not
+/// satisfied by Leanne's part, however close the names
+/// sit; the old substring match let exactly that
+/// happen. Dating: a part that names a Sunday counts
+/// only for that Sunday, in either folder. An undated
+/// part still sitting in the inbox counts (it is
+/// waiting to be reviewed, for the open Sunday by
+/// default); an undated part that was FILED counts
+/// only for the Sunday it was filed for, which the
+/// filed scan read back out of its name.
 fn still_waiting(
     expected: &[String],
-    arrived: &[ob_extract::contribution::Contribution],
+    inbox: &[ob_extract::contribution::Contribution],
+    filed: &[(
+        &ob_extract::contribution::Contribution,
+        Option<ob_model::SimpleDate>,
+    )],
     bulletin: Option<ob_model::SimpleDate>,
 ) -> Vec<String> {
+    let same_sender = |from: &str, want: &str| {
+        !want.trim().is_empty() && from.trim().eq_ignore_ascii_case(want.trim())
+    };
     expected
         .iter()
         .filter(|want| {
-            let w = want.trim().to_ascii_lowercase();
-            !arrived.iter().any(|c| {
-                let from = c.from.clone().unwrap_or_default().to_ascii_lowercase();
-                let named = !w.is_empty() && from.contains(&w);
-                let dated = match (c.for_date, bulletin) {
-                    (Some(d), Some(b)) => d == b,
-                    _ => true,
-                };
-                named && dated
-            })
+            let in_inbox = inbox.iter().any(|c| {
+                same_sender(c.from.as_deref().unwrap_or(""), want)
+                    && match (c.for_date, bulletin) {
+                        (Some(d), Some(b)) => d == b,
+                        _ => true,
+                    }
+            });
+            let in_filed = filed.iter().any(|(c, filed_for)| {
+                same_sender(c.from.as_deref().unwrap_or(""), want)
+                    && match (c.for_date, bulletin) {
+                        (Some(d), Some(b)) => d == b,
+                        (Some(_), None) => true,
+                        (None, Some(b)) => *filed_for == Some(b),
+                        (None, None) => true,
+                    }
+            });
+            !(in_inbox || in_filed)
         })
         .cloned()
         .collect()
@@ -5029,12 +5311,25 @@ impl App {
         self.fonts_loaded = true;
     }
 
+    /// The unsaved-work comparison's one shape (round 3,
+    /// R3-7): the canonical document, the same arrangement
+    /// the journal writes. Opening a loose sheet on the
+    /// canvas swaps that sheet into the live document,
+    /// which used to read as unsaved work the moment the
+    /// sheet opened; in the canonical shape the swap alone
+    /// is no change at all, while a word typed in the
+    /// sheet still is, because the canonical form carries
+    /// the inserts.
+    fn canonical_snapshot(&self) -> String {
+        snapshot(&self.canonical_document())
+    }
+
     /// Stamp each style with the fingerprint of the library font it
     /// will be laid out with, so saved files remember their fonts.
     /// The document on disk now matches the screen: remember the
     /// state and retire the autosave journal.
     fn mark_clean(&mut self) {
-        self.saved_snapshot = snapshot(&self.doc);
+        self.saved_snapshot = self.canonical_snapshot();
         self.journal_snapshot = self.saved_snapshot.clone();
         let (obd, meta) = journal_paths();
         clear_journal_from(&obd, &meta);
@@ -5095,7 +5390,7 @@ impl App {
     /// state, and pick up any journal a previous session left.
     fn startup(&mut self) {
         self.startup_done = true;
-        self.saved_snapshot = snapshot(&self.doc);
+        self.saved_snapshot = self.canonical_snapshot();
         self.journal_snapshot = self.saved_snapshot.clone();
         // Single-instance courtesy: if another live OpenBulletin
         // already holds the journal, this instance leaves the
@@ -5148,7 +5443,7 @@ impl App {
         }
         self.last_journal_check = std::time::Instant::now();
         self.save_announcements();
-        let snap = snapshot(&self.doc);
+        let snap = self.canonical_snapshot();
         match journal_decision(
             snap == self.saved_snapshot,
             snap == self.journal_snapshot,
@@ -5166,9 +5461,10 @@ impl App {
                 // The journal is a file like any other: it
                 // holds the bulletin whole, never the
                 // inside-out shape of a sheet on the canvas
-                // (R-3). The snapshot comparisons above stay
-                // in the live shape; only the bytes written
-                // are swapped back.
+                // (R-3). The snapshot comparisons above are
+                // in the canonical shape too (round 3,
+                // R3-7), so the bytes written and the state
+                // they are compared against agree.
                 let doc = self.canonical_document();
                 if write_journal_to(&obd, &meta, &doc, &self.path).is_ok() {
                     self.journal_snapshot = snap;
@@ -5333,7 +5629,7 @@ impl App {
                 self.note_disk_stamp();
                 // The journal's content is now the screen's content:
                 // the saved state stays the older file (or nothing).
-                self.journal_snapshot = snapshot(&self.doc);
+                self.journal_snapshot = self.canonical_snapshot();
                 self.status = "Your unsaved work is back. Save when ready.".into();
             }
         }
@@ -7546,6 +7842,14 @@ impl App {
             self.undo_stack.clear();
             self.redo_stack.clear();
             self.reset_interaction_state();
+            // The preview and edit-layout caches key on
+            // the frame snapshot, which is canonical now
+            // (round 3, R3-7): a swap no longer changes
+            // the key, so drop both caches by hand or the
+            // sheet would be painted from the bulletin's
+            // cached layout.
+            self.preview_cache = None;
+            self.edit_layout = None;
             self.show_pages = true;
             let name = self
                 .doc
@@ -7573,6 +7877,10 @@ impl App {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.reset_interaction_state();
+        // Same cache drop as going in (round 3, R3-7):
+        // the canonical key does not change at the swap.
+        self.preview_cache = None;
+        self.edit_layout = None;
         self.sync_buffers();
     }
 
@@ -7699,9 +8007,22 @@ impl App {
         self.leave_insert_editing();
         self.push_undo_now();
         ins.id = fresh_insert_id(&self.doc);
+        // A picture the bulletin already holds keeps its
+        // bytes; its rights record merges toward the
+        // stronger one (round 3, R3-11): a sheet saved
+        // from a fuller bulletin used to lose its credit
+        // lines silently when the plainer copy was
+        // already here.
+        let mut strengthened = 0usize;
         for rec in assets {
-            if !self.doc.assets.iter().any(|a| a.sha256 == rec.sha256) {
-                self.doc.assets.push(rec);
+            match self.doc.assets.iter_mut().find(|a| a.sha256 == rec.sha256) {
+                Some(existing) => {
+                    if rights_record_stronger(&rec.rights, &existing.rights) {
+                        existing.rights = rec.rights;
+                        strengthened += 1;
+                    }
+                }
+                None => self.doc.assets.push(rec),
             }
         }
         for (hash, data) in bytes {
@@ -7712,7 +8033,16 @@ impl App {
         self.doc.inserts.push(ins);
         self.insert_sel = Some(new_id);
         self.insert_sel_loaded = None;
-        self.note(format!("Added the loose sheet '{name}' to this bulletin."));
+        let mut msg = format!("Added the loose sheet '{name}' to this bulletin.");
+        if strengthened > 0 {
+            msg.push_str(&format!(
+                " {} picture record{} {} filled in from the sheet.",
+                strengthened,
+                if strengthened == 1 { "" } else { "s" },
+                if strengthened == 1 { "was" } else { "were" }
+            ));
+        }
+        self.note(msg);
     }
 
     /// Add a fresh loose sheet to this bulletin: one
@@ -10789,8 +11119,8 @@ impl App {
     /// left the inbox). Reading never moves a file.
     fn refresh_inbox(&mut self) {
         let today = today_simple();
-        self.inbox_items = scan_contribution_folder(&inbox_dir(), today);
-        self.inbox_filed = scan_contribution_folder(&filed_dir(), today);
+        self.inbox_items = scan_contribution_folder(&inbox_dir(), today, false);
+        self.inbox_filed = scan_contribution_folder(&filed_dir(), today, true);
         self.inbox_dirty = false;
     }
 
@@ -10880,10 +11210,25 @@ impl App {
     /// the bulletin, the bulletin is saved, and only then
     /// is the part filed. If the save does not happen, the
     /// file stays in the inbox and the status says so.
+    /// Accept leaves any loose-sheet editing first, like
+    /// every other door out of the sheet canvas (round 3,
+    /// R3-9): the words belong in the bulletin the office
+    /// sees, not inside one sheet's private arrangement.
     fn accept_contribution(&mut self) {
+        self.leave_insert_editing();
         let Some(review) = self.contribution_review.take() else {
             return;
         };
+        // A part this session already applied is filed,
+        // never applied twice (round 3, R3-5). The review
+        // normally routes these to "File it"; this keeps
+        // every other path to Accept honest too.
+        if part_already_applied(&self.applied_contribution_fps, &review.text) {
+            let filed = self.file_contribution(&review);
+            self.note(filed);
+            self.inbox_dirty = true;
+            return;
+        }
         let before = snapshot(&self.doc);
         let summary = apply_contribution(&mut self.doc, &review.contribution);
         if before != snapshot(&self.doc) {
@@ -10894,9 +11239,9 @@ impl App {
         if !saved {
             if self.save_conflict.is_none() {
                 self.fail(
-                    "The words are in the bulletin on screen, but it was not \
-                     saved, so this part stays in the inbox. Save the bulletin, \
-                     then open the part again."
+                    "The words are in the bulletin on screen, but the bulletin \
+                     was not saved, so this part stays in the inbox. Save the \
+                     bulletin, and the part can then be filed from the inbox."
                         .into(),
                 );
             }
@@ -10905,6 +11250,12 @@ impl App {
             // the part likewise stays in the inbox.
             return;
         }
+        // The words are in the bulletin and the bulletin
+        // is saved: this session remembers them (R3-5),
+        // so the copy still sitting in the inbox can only
+        // ever be filed from here on, not applied again.
+        self.applied_contribution_fps
+            .insert(content_fingerprint(review.text.as_bytes()));
         let filed = self.file_contribution(&review);
         let mut msg = summary.join(" ");
         if !msg.is_empty() {
@@ -10912,6 +11263,20 @@ impl App {
         }
         msg.push_str(&filed);
         self.note(msg);
+        self.inbox_dirty = true;
+    }
+
+    /// File a part whose words are already in the
+    /// bulletin (round 3, R3-5): the review's "File it"
+    /// answer. No apply, no save; the filing is the
+    /// whole job.
+    fn file_applied_contribution(&mut self) {
+        self.leave_insert_editing();
+        let Some(review) = self.contribution_review.take() else {
+            return;
+        };
+        let filed = self.file_contribution(&review);
+        self.note(filed);
         self.inbox_dirty = true;
     }
 
@@ -10926,25 +11291,48 @@ impl App {
             return "The part could not be filed; it is still in the inbox.".to_string();
         }
         let fingerprint = content_fingerprint(review.text.as_bytes());
+        // The Sunday the name carries: the part's own when
+        // it names one; for an undated part, the Sunday it
+        // was filed for, which is the open bulletin's
+        // (round 3, R3-10). The still-waiting count reads
+        // the date back out of the name, so an undated
+        // part filed last month cannot pose as this
+        // week's arrival.
+        let filing_sunday = self
+            .doc
+            .fields
+            .get("occasion_date")
+            .and_then(|iso| ob_model::parse_flexible_date(iso, today_simple()));
         let name = filed_file_name(
             review.contribution.from.as_deref(),
-            review.contribution.for_date,
+            review.contribution.for_date.or(filing_sunday),
             &fingerprint,
         );
         let target = dir.join(&name);
         match &review.source {
-            Some(path) => {
-                let moved = std::fs::rename(path, &target).or_else(|_| {
-                    std::fs::copy(path, &target).and_then(|_| std::fs::remove_file(path))
-                });
-                match moved {
-                    Ok(()) => format!("Filed as {name}."),
+            Some(path) => match std::fs::rename(path, &target) {
+                Ok(()) => format!("Filed as {name}."),
+                // The rename failed (another drive, most
+                // often): copy, then remove. The two steps
+                // report separately (round 3, R3-5): a copy
+                // that landed IS a filing, even when the
+                // inbox copy could not be removed, and the
+                // office is told to delete it by hand.
+                Err(_) => match std::fs::copy(path, &target) {
+                    Ok(_) => match std::fs::remove_file(path) {
+                        Ok(()) => format!("Filed as {name}."),
+                        Err(_) => format!(
+                            "Filed as {name}. The copy in the inbox could not be \
+                             removed; delete it by hand so the part is not \
+                             counted twice."
+                        ),
+                    },
                     Err(_) => "The words are saved in the bulletin, but the part \
                                file could not be moved to the filed folder; it \
                                is still in the inbox."
                         .to_string(),
-                }
-            }
+                },
+            },
             None => match std::fs::write(&target, &review.text) {
                 Ok(()) => format!("Filed as {name}."),
                 Err(_) => "The words are saved in the bulletin, but the pasted words \
@@ -10972,6 +11360,7 @@ impl App {
             .and_then(|iso| ob_model::parse_flexible_date(iso, today_simple()));
         let mut review = self.contribution_review.take().expect("checked");
         let mut accept = false;
+        let mut file_only = false;
         let mut cancel = false;
         let mut start_edit = false;
         let mut apply_edit = false;
@@ -11030,35 +11419,79 @@ impl App {
                     });
                     return;
                 }
+                if part_already_applied(&self.applied_contribution_fps, &review.text) {
+                    // Round 3 (R3-5): these words are
+                    // already in this bulletin. The first
+                    // line says so, and the only answer
+                    // left is to file the part: applying
+                    // it again would print the words twice.
+                    ui.label(egui::RichText::new(APPLIED_PART_FIRST_LINE).strong());
+                    let sender = match (&review.contribution.from, &review.source) {
+                        (Some(f), _) => format!("From: {f}"),
+                        (None, Some(path)) => {
+                            format!("No name given (the file is {}).", file_name_of(path))
+                        }
+                        (None, None) => "Pasted words; no name given.".to_string(),
+                    };
+                    ui.label(sender);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("File it").clicked() {
+                            file_only = true;
+                        }
+                        if ui.button("Edit").clicked() {
+                            start_edit = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                    return;
+                }
                 let verdict = week_verdict(&review.contribution, bulletin_date);
-                match verdict {
-                    WeekVerdict::DifferentSunday(said) => {
-                        let open = bulletin_date.expect("verdict names both");
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "These words say they are for {}. The bulletin open is for {}.",
-                                format_date_long(said),
-                                format_date_long(open)
-                            ))
+                if let Some(mismatch) = &review.contribution.named_weekday_mismatch {
+                    // Round 3 (RT3-D): the line named a day
+                    // that does not exist. That is the first
+                    // line, in place of the "do not say"
+                    // words, which would misdescribe the
+                    // file. There is no Sunday to arm
+                    // against: Accept stays as it is, with
+                    // this sentence in view.
+                    ui.label(
+                        egui::RichText::new(mismatch.sentence())
                             .color(self.theme.warn)
                             .strong(),
-                        );
-                    }
-                    WeekVerdict::SameSunday => {
-                        let d = review.contribution.for_date.expect("verdict");
-                        ui.label(format!(
-                            "These words say they are for {}.",
-                            format_date_long(d)
-                        ));
-                    }
-                    WeekVerdict::NoSundayNamed => {
-                        if let Some(d) = review.contribution.for_date {
+                    );
+                } else {
+                    match verdict {
+                        WeekVerdict::DifferentSunday(said) => {
+                            let open = bulletin_date.expect("verdict names both");
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "These words say they are for {}. The bulletin open is for {}.",
+                                    format_date_long(said),
+                                    format_date_long(open)
+                                ))
+                                .color(self.theme.warn)
+                                .strong(),
+                            );
+                        }
+                        WeekVerdict::SameSunday => {
+                            let d = review.contribution.for_date.expect("verdict");
                             ui.label(format!(
                                 "These words say they are for {}.",
                                 format_date_long(d)
                             ));
-                        } else {
-                            ui.label("These words do not say which Sunday they are for.");
+                        }
+                        WeekVerdict::NoSundayNamed => {
+                            if let Some(d) = review.contribution.for_date {
+                                ui.label(format!(
+                                    "These words say they are for {}.",
+                                    format_date_long(d)
+                                ));
+                            } else {
+                                ui.label("These words do not say which Sunday they are for.");
+                            }
                         }
                     }
                 }
@@ -11118,6 +11551,11 @@ impl App {
         if accept {
             self.contribution_review = Some(review);
             self.accept_contribution();
+            return;
+        }
+        if file_only {
+            self.contribution_review = Some(review);
+            self.file_applied_contribution();
             return;
         }
         if back {
@@ -12681,7 +13119,7 @@ impl eframe::App for App {
         self.analyzer_review_window(ctx);
         self.capture_key(ctx);
         self.keys_window(ctx);
-        self.frame_snapshot = snapshot(&self.doc);
+        self.frame_snapshot = self.canonical_snapshot();
         // A gesture must not span a focus change: if the user
         // clicked into a text field mid-gesture, the gesture is
         // over (audit C2: an orphaned snapshot would swallow
@@ -13107,12 +13545,26 @@ impl eframe::App for App {
                             let arrived: Vec<ob_extract::contribution::Contribution> =
                                 self.inbox_items
                                     .iter()
-                                    .chain(self.inbox_filed.iter())
                                     .filter_map(|i| i.parsed.clone().ok())
                                     .collect();
+                            let filed: Vec<(
+                                ob_extract::contribution::Contribution,
+                                Option<ob_model::SimpleDate>,
+                            )> = self
+                                .inbox_filed
+                                .iter()
+                                .filter_map(|i| {
+                                    i.parsed.clone().ok().map(|c| (c, i.filed_for))
+                                })
+                                .collect();
+                            let filed_refs: Vec<(
+                                &ob_extract::contribution::Contribution,
+                                Option<ob_model::SimpleDate>,
+                            )> = filed.iter().map(|(c, f)| (c, *f)).collect();
                             let waiting = still_waiting(
                                 &self.doc.profile.expected_parts,
                                 &arrived,
+                                &filed_refs,
                                 bulletin_date,
                             );
                             if waiting.is_empty() {
@@ -15288,6 +15740,122 @@ mod settings_tests {
         assert_eq!(restored.inserts[0].panels, before.inserts[0].panels);
         // A sheet that is not there does not swap.
         assert!(!swap_insert_parts(&mut doc, "no-such-sheet"));
+    }
+
+    #[test]
+    fn r3_opening_a_sheet_is_not_unsaved_work_but_editing_it_is() {
+        // Round 3 (R3-7): the dirty comparison runs on
+        // the canonical document, so the canvas swap
+        // alone is not unsaved work, and a word typed
+        // in the sheet is, on both sides of the swap.
+        let mut app = App::default();
+        app.doc = doc_with_sheet();
+        app.saved_snapshot = app.canonical_snapshot();
+        app.edit_insert_on_pages("sheet-1");
+        assert!(app.insert_edit.is_some(), "the sheet is on the canvas");
+        // The refresh update() performs every frame.
+        app.frame_snapshot = app.canonical_snapshot();
+        assert_eq!(
+            app.frame_snapshot, app.saved_snapshot,
+            "opening a sheet is not unsaved work"
+        );
+        app.doc.stories[0].paragraphs[0].set_text("Pray for the choir");
+        app.frame_snapshot = app.canonical_snapshot();
+        assert_ne!(
+            app.frame_snapshot, app.saved_snapshot,
+            "a word typed in the sheet is unsaved work"
+        );
+        app.leave_insert_editing();
+        app.frame_snapshot = app.canonical_snapshot();
+        assert_ne!(
+            app.frame_snapshot, app.saved_snapshot,
+            "and it stays unsaved work back in the bulletin"
+        );
+    }
+
+    #[test]
+    fn r3_rights_merge_prefers_the_record_with_a_credit_line() {
+        // Round 3 (R3-11): credit line first, then a
+        // known license over Unknown; equal strength
+        // keeps the record already there.
+        let weak = ob_model::RightsRecord::default();
+        let strong = ob_model::RightsRecord {
+            license: ob_model::LicenseKind::CcBy("4.0".into()),
+            credit_text: "Photo by Jane Doe, CC BY 4.0".into(),
+            ..Default::default()
+        };
+        assert!(rights_record_stronger(&strong, &weak));
+        assert!(!rights_record_stronger(&weak, &strong));
+        let licensed = ob_model::RightsRecord {
+            license: ob_model::LicenseKind::Cc0,
+            ..Default::default()
+        };
+        assert!(rights_record_stronger(&licensed, &weak));
+        assert!(!rights_record_stronger(&weak, &licensed));
+        assert!(!rights_record_stronger(&weak, &weak));
+    }
+
+    #[test]
+    fn r3_sheet_attach_fills_in_a_weak_picture_record() {
+        // Round 3 (R3-11): the same picture bytes in both
+        // stores. The bulletin holds the picture with
+        // nothing noted; the sheet's copy carries the CC
+        // BY credit. Attaching the sheet fills the record
+        // in, and the note says so.
+        let bytes: &[u8] = b"fake picture bytes for the merge test";
+        let hash = ob_model::sha256_hex(bytes);
+        let weak = ob_model::RightsRecord {
+            source: "the church camera".into(),
+            ..Default::default()
+        };
+        let mut strong = weak.clone();
+        strong.license = ob_model::LicenseKind::CcBy("4.0".into());
+        strong.credit_text = "Photo by Jane Doe, CC BY 4.0".into();
+        let asset = |rights: ob_model::RightsRecord| ob_model::Asset {
+            sha256: hash.clone(),
+            kind: ob_model::AssetKind::Picture,
+            media_type: "image/png".into(),
+            rights,
+        };
+        let mut ins = new_insert("sheet-9", "Photo sheet");
+        let (mut frame, mut placement) =
+            picture_frame(216_000, 144_000, ob_model::PictureFit::ShowWhole);
+        placement.asset = hash.clone();
+        frame.picture = Some(placement);
+        ins.panels[0].frames.push(frame);
+        let mut host = doc_with_sheet();
+        host.assets.push(asset(strong));
+        host.asset_bytes.insert(hash.clone(), bytes.to_vec());
+        let dir = std::env::temp_dir().join(format!("openbulletin-r3-obdi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("photo-sheet.obdi");
+        ob_format::save_insert(&ins, &host, &file).expect("the sheet saves");
+        let mut app = App {
+            doc: doc_with_sheet(),
+            ..Default::default()
+        };
+        app.doc.assets.push(asset(weak));
+        app.doc.asset_bytes.insert(hash.clone(), bytes.to_vec());
+        app.add_insert_from_library(&file);
+        let stored = app
+            .doc
+            .assets
+            .iter()
+            .find(|a| a.sha256 == hash)
+            .expect("the picture stays");
+        assert_eq!(stored.rights.credit_text, "Photo by Jane Doe, CC BY 4.0");
+        assert_eq!(
+            stored.rights.license,
+            ob_model::LicenseKind::CcBy("4.0".into())
+        );
+        assert!(
+            app.status
+                .contains("1 picture record was filled in from the sheet."),
+            "{}",
+            app.status
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -17610,6 +18178,7 @@ mod settings_tests {
             fingerprint: content_fingerprint(text.as_bytes()),
             text: text.to_string(),
             parsed: ob_extract::contribution::parse_contribution(text, r1_today()),
+            filed_for: None,
         };
         let sue1 = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nOne.\n";
         let sue2 = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nTwo.\n";
@@ -17665,7 +18234,7 @@ mod settings_tests {
         .expect("write");
         std::fs::write(dir.join("empty.md"), "## Youth\n").expect("write");
         std::fs::write(dir.join("notes.txt"), "not a part").expect("write");
-        let items = scan_contribution_folder(&dir, r1_today());
+        let items = scan_contribution_folder(&dir, r1_today(), false);
         assert_eq!(items.len(), 2, "only the .md files are parts");
         assert_eq!(
             items.iter().filter(|i| i.parsed.is_ok()).count(),
@@ -17693,7 +18262,7 @@ mod settings_tests {
             "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n",
         )
         .expect("write");
-        let items = scan_contribution_folder(&dir, r1_today());
+        let items = scan_contribution_folder(&dir, r1_today(), false);
         assert_eq!(items.len(), 2, "both files are listed");
         let big = items
             .iter()
@@ -17731,8 +18300,14 @@ mod settings_tests {
             month: 10,
             day: 18,
         });
+        // Round 3 (R3-10): the expected name is the
+        // sender's name as written, in full. This test
+        // used to expect "Pastor" to be satisfied by a
+        // part From "Pastor Lee" through a substring
+        // match; that match is exactly what R3-10
+        // removed, so the fixture now names him in full.
         let expected = vec![
-            "Pastor".to_string(),
+            "Pastor Lee".to_string(),
             "Music director".to_string(),
             "Sunday school".to_string(),
         ];
@@ -17740,10 +18315,10 @@ mod settings_tests {
         // music part names a different Sunday: does not
         // count. The undated Sunday school part counts.
         assert_eq!(
-            still_waiting(&expected, &arrived, bulletin),
+            still_waiting(&expected, &arrived, &[], bulletin),
             vec!["Music director".to_string()]
         );
-        let text = reminder_text(&still_waiting(&expected, &arrived, bulletin), bulletin);
+        let text = reminder_text(&still_waiting(&expected, &arrived, &[], bulletin), bulletin);
         assert!(
             text.contains(
                 "the bulletin for Sunday, October 18, 2026 is still waiting for Music director."
@@ -17755,7 +18330,332 @@ mod settings_tests {
             "{text}"
         );
         // Nothing expected, nothing waited for.
-        assert!(still_waiting(&[], &arrived, bulletin).is_empty());
+        assert!(still_waiting(&[], &arrived, &[], bulletin).is_empty());
+    }
+
+    #[test]
+    fn r3_still_waiting_needs_the_same_name_not_a_near_one() {
+        // Round 3 (R3-10): the old substring match let
+        // Leanne's part satisfy an expected "Lee", so the
+        // office stopped waiting for Lee's words while
+        // they had never come.
+        let parse =
+            |t: &str| ob_extract::contribution::parse_contribution(t, r1_today()).expect("parses");
+        let bulletin = Some(ob_model::SimpleDate {
+            year: 2026,
+            month: 10,
+            day: 25,
+        });
+        let expected = vec!["Lee".to_string()];
+        let leanne = vec![parse("From: Leanne\n\n## Announcement\n\nWords.\n")];
+        assert_eq!(
+            still_waiting(&expected, &leanne, &[], bulletin),
+            vec!["Lee".to_string()],
+            "a near name is not the name"
+        );
+        // The same name, in another case, counts.
+        let lee = vec![parse("From: lee\n\n## Announcement\n\nWords.\n")];
+        assert!(still_waiting(&expected, &lee, &[], bulletin).is_empty());
+    }
+
+    #[test]
+    fn r3_an_undated_filed_part_counts_only_for_its_filing_sunday() {
+        // Round 3 (R3-10): an undated part, once filed,
+        // belongs to the Sunday it was filed for. Filed
+        // last month, it cannot silence this week's
+        // reminder; the inbox copy of the same words
+        // still counts, because it is waiting to be
+        // reviewed for the open Sunday.
+        let parse =
+            |t: &str| ob_extract::contribution::parse_contribution(t, r1_today()).expect("parses");
+        let undated = parse("From: Sue\n\n## Announcement\n\nWords.\n");
+        let expected = vec!["Sue".to_string()];
+        let day = |month: u32, day: u32| ob_model::SimpleDate {
+            year: 2026,
+            month,
+            day,
+        };
+        let bulletin = Some(day(10, 25));
+        let filed_last_month = vec![(&undated, Some(day(9, 27)))];
+        assert_eq!(
+            still_waiting(&expected, &[], &filed_last_month, bulletin),
+            vec!["Sue".to_string()]
+        );
+        let filed_this_week = vec![(&undated, Some(day(10, 25)))];
+        assert!(still_waiting(&expected, &[], &filed_this_week, bulletin).is_empty());
+        assert!(
+            still_waiting(&expected, std::slice::from_ref(&undated), &[], bulletin).is_empty(),
+            "the undated inbox part still counts"
+        );
+        // The name round trip: the Sunday
+        // file_contribution writes into a filed name is
+        // the Sunday the filed scan reads back out.
+        let name = filed_file_name(Some("Sue"), Some(day(10, 25)), "abcd1234");
+        assert_eq!(filed_sunday_from_name(&name), Some(day(10, 25)));
+        let nameless = filed_file_name(Some("Sue"), None, "abcd1234");
+        assert_eq!(filed_sunday_from_name(&nameless), None);
+    }
+
+    #[test]
+    fn r3_applied_part_fingerprint_guard() {
+        // Round 3 (R3-5): the guard is the content
+        // fingerprint of the words as reviewed, the same
+        // fingerprint the filed name carries.
+        let mut fps = std::collections::HashSet::new();
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        assert!(!part_already_applied(&fps, text));
+        fps.insert(content_fingerprint(text.as_bytes()));
+        assert!(part_already_applied(&fps, text));
+        assert!(
+            !part_already_applied(&fps, "From: Sue\n\n## Announcement\n\nChanged words.\n"),
+            "different words are a different part"
+        );
+        // The review's first line is the settled sentence,
+        // pinned word for word.
+        assert_eq!(
+            APPLIED_PART_FIRST_LINE,
+            "These words are already in the bulletin on screen. Saving the bulletin finishes this part; there is nothing more to add."
+        );
+    }
+
+    #[test]
+    fn r3_announcement_without_a_box_is_kept_with_the_part() {
+        // Round 3 (R3-8a): with no announcements box in
+        // the bulletin, the plan says the words stay with
+        // the part, and Accept places nothing.
+        let mut doc = r1_template();
+        for panel in &mut doc.panels {
+            for frame in &mut panel.frames {
+                if frame.role == ob_model::ContentRole::Weekly {
+                    frame.role = ob_model::ContentRole::Standing;
+                }
+            }
+        }
+        assert!(weekly_story_id(&doc).is_none());
+        let c = ob_extract::contribution::parse_contribution(
+            "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n",
+            r1_today(),
+        )
+        .expect("parses");
+        let plans = plan_parts(&doc, &c);
+        assert_eq!(plans[0].target, SlotTarget::KeptWithPart);
+        assert!(
+            plans[0].line.contains("no announcements box"),
+            "{}",
+            plans[0].line
+        );
+        assert!(
+            plans[0].line.contains("nothing is added to the pages"),
+            "{}",
+            plans[0].line
+        );
+        let words_before: usize = doc.stories.iter().map(|s| s.paragraphs.len()).sum();
+        let summary = apply_contribution(&mut doc, &c);
+        let words_after: usize = doc.stories.iter().map(|s| s.paragraphs.len()).sum();
+        assert_eq!(words_before, words_after, "nothing was placed");
+        assert!(
+            summary.iter().any(|s| s.contains("had no box to go into")),
+            "{summary:?}"
+        );
+    }
+
+    #[test]
+    fn r3_keep_through_lands_on_the_receiving_story_and_the_later_date_wins() {
+        // Round 3 (R3-8b/c): the date lands on whichever
+        // story received the words, and a story's own
+        // later date is never shortened by an earlier
+        // contribution date.
+        let parse =
+            |t: &str| ob_extract::contribution::parse_contribution(t, r1_today()).expect("parses");
+        // A named Sunday school box receives the date.
+        let mut doc = r1_template();
+        doc.stories.push(ob_model::Story {
+            id: "sunday-school".into(),
+            paragraphs: vec![],
+            keep_through: None,
+        });
+        let c = parse(
+            "From: Sue\nKeep-through: November 8, 2026\n\n## Sunday school\n\nClasses at 9.\n",
+        );
+        let plans = plan_parts(&doc, &c);
+        assert_eq!(
+            plans[0].target,
+            SlotTarget::Story("sunday-school".to_string())
+        );
+        assert!(
+            plans[0].line.contains("Stays in through")
+                && plans[0].line.contains("November 8, 2026"),
+            "{}",
+            plans[0].line
+        );
+        apply_contribution(&mut doc, &c);
+        assert_eq!(
+            doc.story("sunday-school")
+                .expect("story")
+                .keep_through
+                .as_deref(),
+            Some("2026-11-08")
+        );
+        // The service fallback heading lands in the weekly
+        // story, and the date goes with it.
+        let mut doc_fb = r1_template();
+        for story in &mut doc_fb.stories {
+            for p in &mut story.paragraphs {
+                let t = p.text();
+                if t.contains('\t') {
+                    p.set_text(&t.replace('\t', " "));
+                }
+            }
+        }
+        assert!(service_story_id(&doc_fb).is_none());
+        let wid_fb = weekly_story_id(&doc_fb).expect("weekly story");
+        let c_fb = parse(
+            "From: Sue\nKeep-through: November 8, 2026\n\n## For the service\n\nSermon: **Roots**\n",
+        );
+        let plans_fb = plan_parts(&doc_fb, &c_fb);
+        assert_eq!(
+            plans_fb[0].target,
+            SlotTarget::AnnouncementsUnderHeading("For the service")
+        );
+        apply_contribution(&mut doc_fb, &c_fb);
+        assert_eq!(
+            doc_fb
+                .story(&wid_fb)
+                .expect("story")
+                .keep_through
+                .as_deref(),
+            Some("2026-11-08")
+        );
+        // Later wins, both directions.
+        let announcement =
+            parse("From: Sue\nKeep-through: November 8, 2026\n\n## Announcement\n\nSupper.\n");
+        let mut doc_late = r1_template();
+        let wid_late = weekly_story_id(&doc_late).expect("weekly story");
+        doc_late.story_mut(&wid_late).expect("story").keep_through = Some("2026-12-25".into());
+        let plans_late = plan_parts(&doc_late, &announcement);
+        assert!(
+            plans_late[0].line.contains("December 25, 2026"),
+            "{}",
+            plans_late[0].line
+        );
+        apply_contribution(&mut doc_late, &announcement);
+        assert_eq!(
+            doc_late
+                .story(&wid_late)
+                .expect("story")
+                .keep_through
+                .as_deref(),
+            Some("2026-12-25"),
+            "the later date already there is not shortened"
+        );
+        let mut doc_early = r1_template();
+        let wid_early = weekly_story_id(&doc_early).expect("weekly story");
+        doc_early.story_mut(&wid_early).expect("story").keep_through = Some("2026-10-20".into());
+        apply_contribution(&mut doc_early, &announcement);
+        assert_eq!(
+            doc_early
+                .story(&wid_early)
+                .expect("story")
+                .keep_through
+                .as_deref(),
+            Some("2026-11-08"),
+            "the contribution's later date extends the stay"
+        );
+    }
+
+    #[test]
+    fn r3_the_plan_is_simulated_so_a_second_service_part_sees_the_first() {
+        // Round 3 (R3-8d): two service parts in one file.
+        // The first fills the one empty hymn line; the
+        // second, planned against the first's work, must
+        // promise an added line, not the same fill, and
+        // Accept must do what the plan promised.
+        let mut doc = r1_template();
+        let sid = service_story_id(&doc).expect("service story");
+        {
+            let story = doc.story_mut(&sid).expect("story");
+            for p in story.paragraphs.iter_mut() {
+                if p.text().starts_with("Hymn of Response") {
+                    p.set_text("Hymn of Response\t");
+                }
+            }
+        }
+        let text = "\
+From: Music director
+
+## For the service
+ELW 111
+
+## For the service
+ELW 222
+";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert_eq!(c.parts.len(), 2, "two service parts, in order");
+        let plans = plan_parts(&doc, &c);
+        assert!(
+            plans[0]
+                .line
+                .contains("Fills the Hymn of Response line with ELW 111."),
+            "{}",
+            plans[0].line
+        );
+        assert!(
+            plans[1]
+                .line
+                .contains("Adds a hymn line at the end: ELW 222."),
+            "{}",
+            plans[1].line
+        );
+        apply_contribution(&mut doc, &c);
+        let story = doc.story(&sid).expect("story");
+        let texts: Vec<String> = story.paragraphs.iter().map(|p| p.text()).collect();
+        assert!(
+            texts.iter().any(|t| t == "Hymn of Response\tELW 111"),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|t| t == "Hymn\tELW 222"), "{texts:?}");
+        assert!(
+            !texts.iter().any(|t| t == "Hymn of Response\tELW 222"),
+            "the second part did not take the filled line: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn r3_part_lines_keep_their_middle_and_bare_numbers_stay_plain() {
+        // Round 3 (R3-8e): a value is everything after
+        // the FIRST tab, and a line is a hymn entry only
+        // with a number and (a hymn label or a hymnal).
+        let (label, value) = part_line_label("Hymn\tELW 432\tJoyful, Joyful");
+        assert_eq!(label.as_deref(), Some("Hymn"));
+        assert_eq!(value, "ELW 432\tJoyful, Joyful");
+        let doc = r1_template();
+        let part = |lines: &[&str]| ob_extract::contribution::Part {
+            kind: ob_extract::contribution::PartKind::Service,
+            paragraphs: lines
+                .iter()
+                .map(|t| ob_model::Paragraph::plain("body", t))
+                .collect(),
+        };
+        let slots = hymn_slots(
+            &doc,
+            &part(&[
+                "Hymn\tELW 432\tJoyful, Joyful",
+                "Psalm\t23",
+                "Hymn requests: see the director",
+            ]),
+        );
+        match &slots[0] {
+            HymnSlot::AppendHymn { value } => {
+                assert_eq!(value, "ELW 432 \u{00b7} Joyful, Joyful")
+            }
+            other => panic!("the two-tab hymn line slots as a hymn entry, got {other:?}"),
+        }
+        assert_eq!(slots[1], HymnSlot::Plain, "a psalm number is not a hymn");
+        assert_eq!(
+            slots[2],
+            HymnSlot::Plain,
+            "prose under a hymn-flavoured label stays prose"
+        );
     }
 
     #[test]
@@ -18478,6 +19378,20 @@ Prelude is at 9:25 this week.
             music: None,
         };
         assert!(picture_children_unnoted(&doc, &frame), "no answer yet: ask");
+        // Round 3 (R3-4): a music box showing an engraved
+        // system of the same unanswered asset is never
+        // asked. Sheet music is not a photograph, and the
+        // music box's menu has no answer to give.
+        let mut music_frame = frame.clone();
+        music_frame.music = Some(ob_model::MusicFrame {
+            system: 0,
+            staff_mm: 6.5,
+            source: hash.clone(),
+        });
+        assert!(
+            !picture_children_unnoted(&doc, &music_frame),
+            "music is exempt"
+        );
         doc.assets
             .iter_mut()
             .find(|a| a.sha256 == hash)

@@ -84,6 +84,82 @@ pub struct Contribution {
     pub for_date: Option<SimpleDate>,
     pub keep_through: Option<SimpleDate>,
     pub parts: Vec<Part>,
+    /// The For Sunday line named a weekday that its own
+    /// date does not fall on (round 3, RT3-D). Such a
+    /// date does not read at all, so `for_date` is None;
+    /// this record keeps what the line said, so the
+    /// review can name the mistake instead of
+    /// misdescribing the file as naming no Sunday.
+    pub named_weekday_mismatch: Option<WeekdayMismatch>,
+}
+
+/// A For Sunday line whose weekday disagrees with its
+/// date: "Monday, October 25, 2026", when that date is
+/// not a Monday. Naming no Sunday and naming an
+/// impossible one are different facts, and only the
+/// second is worth a word with the sender.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeekdayMismatch {
+    /// The weekday word as written ("Monday").
+    pub named: String,
+    /// The date the line names, read without its weekday.
+    pub date: SimpleDate,
+}
+
+impl WeekdayMismatch {
+    /// The review's first line for such a part.
+    pub fn sentence(&self) -> String {
+        let actual = WEEKDAYS[(self.date.weekday() % 7) as usize];
+        format!(
+            "This part names {}, {}, but that date is a {}. \
+             Check the date with the sender.",
+            self.named,
+            format_date_short(self.date),
+            actual
+        )
+    }
+}
+
+/// A weekday word as an office writes one, full or
+/// shortened, to its number (0 = Sunday .. 6 =
+/// Saturday): the same table the date reader uses.
+fn weekday_word(word: &str) -> Option<u32> {
+    let w = word.trim_end_matches(['.', ',']).to_ascii_lowercase();
+    Some(match w.as_str() {
+        "sun" | "sunday" => 0,
+        "mon" | "monday" => 1,
+        "tue" | "tues" | "tuesday" => 2,
+        "wed" | "wednesday" => 3,
+        "thu" | "thur" | "thurs" | "thursday" => 4,
+        "fri" | "friday" => 5,
+        "sat" | "saturday" => 6,
+        _ => return None,
+    })
+}
+
+/// Tell "a Sunday was named with the wrong weekday"
+/// apart from "no Sunday was named": when the For
+/// Sunday line as written does not read, but its first
+/// word is a weekday and the rest reads as a date that
+/// falls on a different weekday, the line named an
+/// impossible day.
+fn named_weekday_mismatch(raw: &Option<String>, today: SimpleDate) -> Option<WeekdayMismatch> {
+    let text = raw.as_deref()?.trim();
+    if text.is_empty() || parse_flexible_date(text, today).is_some() {
+        return None;
+    }
+    let (first, rest) = text.split_once(|c: char| c.is_whitespace())?;
+    let named_number = weekday_word(first)?;
+    let date = parse_flexible_date(rest.trim_start_matches(',').trim(), today)?;
+    if date.weekday() == named_number {
+        // The refusal had another cause; nothing about
+        // a wrong weekday can honestly be said.
+        return None;
+    }
+    Some(WeekdayMismatch {
+        named: first.trim_end_matches([',', '.']).to_string(),
+        date,
+    })
 }
 
 /// The raw split of a contribution, before dates and
@@ -225,6 +301,7 @@ pub fn parse_contribution(text: &str, today: SimpleDate) -> Result<Contribution,
         for_date: date(&raw.for_sunday),
         keep_through: date(&raw.keep_through),
         parts,
+        named_weekday_mismatch: named_weekday_mismatch(&raw.for_sunday, today),
     })
 }
 
@@ -416,6 +493,42 @@ Youth group meets Wednesday at 6 PM.
         let numeric = "For Sunday: 10/25/26\n\n## Announcement\n\nHi.\n";
         let c = parse_contribution(numeric, today()).expect("parses");
         assert_eq!(c.for_date, Some(oct(25)));
+    }
+
+    #[test]
+    fn a_wrong_weekday_is_named_not_mistaken_for_no_sunday() {
+        // Round 3 (RT3-D): 2026-10-25 is a Sunday. A line
+        // calling it Monday names an impossible day, and
+        // the parse says so, instead of the review having
+        // to call the file dateless.
+        let wrong = "From: Sue\nFor Sunday: Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(wrong, today()).expect("parses");
+        assert_eq!(c.for_date, None, "the date itself still does not read");
+        let m = c
+            .named_weekday_mismatch
+            .expect("the wrong weekday is recorded");
+        assert_eq!(m.named, "Monday");
+        assert_eq!(m.date, oct(25));
+        assert_eq!(
+            m.sentence(),
+            "This part names Monday, October 25, 2026, but that date is a \
+             Sunday. Check the date with the sender."
+        );
+        // A correct weekday records no mismatch, and a
+        // line with no date in it records none either.
+        let right = "From: Sue\nFor Sunday: Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(right, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.named_weekday_mismatch, None);
+        let none = parse_contribution("## Announcement\n\nHi.\n", today()).expect("parses");
+        assert_eq!(none.named_weekday_mismatch, None);
+        let vague = "For Sunday: soon\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(vague, today()).expect("parses");
+        assert_eq!(c.for_date, None);
+        assert_eq!(
+            c.named_weekday_mismatch, None,
+            "an unreadable line is not a wrong-weekday line"
+        );
     }
 
     #[test]

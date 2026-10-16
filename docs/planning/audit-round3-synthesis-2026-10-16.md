@@ -408,3 +408,105 @@ Batch R3-C shipped:
   as a cleared hymn.
 
 No other batch's dispositions change.
+
+## Shipped addendum, R3-D: seam, sheets, snapshot (2026-10-16)
+
+- R3-4: `picture_children_unnoted` returns false for
+  any frame carrying music. Engraved notation systems
+  are not photographs of children, the picture menu
+  has no answer to give for them, and Check no longer
+  asks the question. The existing picture test now
+  pins a music frame beside a plain picture: the
+  picture still asks, the system does not.
+- R3-5: the app remembers the content fingerprints
+  of contributions applied in this session
+  (`applied_contribution_fps`, cleared when a
+  different document is adopted). A review opening
+  for an applied fingerprint leads with "These words
+  are already in the bulletin on screen. Saving the
+  bulletin finishes this part; there is nothing more
+  to add." and its Accept becomes "File it" (filing
+  only); Accept itself also refuses a second apply,
+  so no path prints the words twice. The failed-save
+  status no longer invites re-apply: it says the
+  words are in the bulletin on screen and to save
+  the bulletin, after which the part can be filed
+  from the inbox. `file_contribution`'s
+  copy-then-remove fallback reports the two steps
+  separately: a copy that landed is a filing, and
+  when the inbox copy cannot be removed the note
+  says so and asks the office to delete it by hand.
+- R3-7: the unsaved-work comparison runs on the
+  canonical document on both sides
+  (`App::canonical_snapshot`): the per-frame
+  snapshot, the saved snapshot at save/open/adopt,
+  and the journal tick all use it, so opening a loose
+  sheet on the canvas is not dirty and editing the
+  sheet is, truthfully on both sides of the swap.
+  Undo/redo snapshots keep the live arrangement.
+  Because the canonical snapshot no longer changes
+  at a swap, both swap directions now clear the
+  preview and edit-layout caches by hand.
+- R3-8: the contribution plan and apply are one
+  machinery. `plan_part` decides one part;
+  `plan_parts` simulates by applying each part to a
+  clone with the same `apply_part` Accept runs, so
+  the review promises what Accept does, including a
+  second service part slotting against the first
+  part's hymns. (a) An announcement part with no
+  announcements box plans to a new `KeptWithPart`
+  target: the words stay with the filed part, the
+  plan says nothing is added to the pages, and the
+  summary counts them unplaced. (b) The
+  contribution's keep-through now lands on every
+  story that receives words (service story, named
+  boxes, and the under-heading weekly story alike).
+  (c) When the receiving story already carries a
+  keep-through, the later date wins, and plan lines
+  state the effective date. (e) A part line's value
+  is everything after the FIRST tab ("Hymn\tELW
+  432\tJoyful, Joyful" keeps its hymnal), and a line
+  counts as a hymn entry only with a number AND (a
+  hymn label OR a hymnal in the value): "Psalm\t23"
+  stays a plain service line and "Hymn requests: see
+  the director" stays prose (absorbs RT3-G). One
+  pre-existing behavior changes knowingly: a bare
+  titled line under a hymn label with no number no
+  longer counts as a hymn entry.
+- R3-9: `accept_contribution` leaves loose-sheet
+  editing before applying, like save, step changes,
+  Next Sunday, and Check already did.
+- R3-10: `still_waiting` matches senders exactly
+  after trim and case-folding; the substring match
+  that let Leanne's part satisfy an expected "Lee"
+  is gone. Arrivals are now counted from two lists:
+  inbox parts (undated still counts) and filed
+  parts, where an undated filed part counts only
+  for the Sunday it was filed for. `file_contribution`
+  files an undated part under the open bulletin's
+  Sunday, and the filed scan reads that date back
+  out of the filed name (`InboxItem.filed_for`).
+  One pre-existing test changed knowingly: the
+  still-waiting fixture expected "Pastor" to be
+  satisfied by a part From "Pastor Lee"; it now
+  names him in full, as the profile holds names.
+- R3-11: `add_insert_from_library` merges the rights
+  record when an incoming asset's bytes are already
+  in the bulletin: the stronger record wins (a
+  credit line beats none; else a known license
+  beats Unknown; else the existing record stays),
+  and the attach note names the count ("1 picture
+  record was filled in from the sheet.").
+- RT3-D: the contribution parser records a named
+  weekday mismatch (`WeekdayMismatch`) when the For
+  Sunday line carries a weekday and a date the
+  flexible parser refuses for that mismatch alone,
+  and the review's first line says "This part names
+  {weekday}, {date}, but that date is a {actual
+  weekday}. Check the date with the sender." in
+  place of the "do not say which Sunday" words.
+  The wrong-week arming does not engage; Accept
+  stays normal.
+
+This completes the round's addenda: R3-A, R3-B,
+R3-C, and R3-D together close every round-3 item.

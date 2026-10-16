@@ -12,6 +12,7 @@ ob-text = { path = "../ob-text" }
 ob-fonts = { path = "../ob-fonts" }
 ob-impose = { path = "../ob-impose" }
 ttf-parser = "0.25"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 lopdf = "0.34"

@@ -8,6 +8,14 @@
 //! as WinAnsi; glyphs outside WinAnsi wait on CID embedding and render
 //! as spaces rather than crashing. CMYK and PDF/X remain roadmap items.
 //!
+//! Every stream (page content and embedded fonts) is FlateDecode
+//! compressed, and every export carries an ExportPurpose recorded
+//! in the file's information dictionary. Font subsetting is NOT
+//! done: the subsetter crate drops the font's cmap and requires
+//! CID-keyed embedding, which would break this writer's WinAnsi
+//! glyph mapping; see docs/LEGAL.md (2026-10-16 note). Faces are
+//! embedded whole (compressed), honoring the same rights gates.
+//!
 //! Model space is top-left origin; PDF space is bottom-left. The conversion
 //! happens here and only here.
 
@@ -17,6 +25,80 @@ use std::fmt::Write as _;
 
 fn pt(v: ob_model::Mpt) -> f32 {
     v as f32 / 1000.0
+}
+
+/// What a PDF copy is FOR, in the user's own words (Jacob's
+/// preset ruling, 2026-10-15). The purpose caps picture
+/// resolution at the given pixels per inch once picture frames
+/// exist to bite on; today it is threaded through every export
+/// and recorded in the file's metadata, never faked. The .obd
+/// working file and the IDML/.sla copies are never optimized:
+/// they always carry the full originals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportPurpose {
+    /// Reading copies: email and the church website.
+    ForEmailOrWeb,
+    /// The print copy: folded sheets for the church copier.
+    ForPrinting,
+    /// A print shop or a publication.
+    ForPrintShop,
+    /// No cap: 4K display and archival copies.
+    FullResolution,
+}
+
+impl ExportPurpose {
+    /// The radio-button label, in Jacob's exact words.
+    pub fn label(self) -> &'static str {
+        match self {
+            ExportPurpose::ForEmailOrWeb => "For email or the web",
+            ExportPurpose::ForPrinting => "For printing",
+            ExportPurpose::ForPrintShop => "For a print shop or publication",
+            ExportPurpose::FullResolution => "Full resolution",
+        }
+    }
+
+    /// The mid-sentence form for status lines: "written: name,
+    /// 212 KB, for printing."
+    pub fn words(self) -> &'static str {
+        match self {
+            ExportPurpose::ForEmailOrWeb => "for email or the web",
+            ExportPurpose::ForPrinting => "for printing",
+            ExportPurpose::ForPrintShop => "for a print shop or publication",
+            ExportPurpose::FullResolution => "at full resolution",
+        }
+    }
+
+    /// The picture-resolution cap this purpose applies, in
+    /// pixels per inch at placed size; None means no cap.
+    pub fn ppi_cap(self) -> Option<u32> {
+        match self {
+            ExportPurpose::ForEmailOrWeb => Some(150),
+            ExportPurpose::ForPrinting => Some(300),
+            ExportPurpose::ForPrintShop => Some(600),
+            ExportPurpose::FullResolution => None,
+        }
+    }
+
+    /// The short slug the settings file and the CLI spell it with.
+    pub fn slug(self) -> &'static str {
+        match self {
+            ExportPurpose::ForEmailOrWeb => "web",
+            ExportPurpose::ForPrinting => "print",
+            ExportPurpose::ForPrintShop => "shop",
+            ExportPurpose::FullResolution => "full",
+        }
+    }
+
+    /// Parse a slug from settings or the CLI.
+    pub fn from_slug(s: &str) -> Option<ExportPurpose> {
+        match s {
+            "web" => Some(ExportPurpose::ForEmailOrWeb),
+            "print" => Some(ExportPurpose::ForPrinting),
+            "shop" => Some(ExportPurpose::ForPrintShop),
+            "full" => Some(ExportPurpose::FullResolution),
+            _ => None,
+        }
+    }
 }
 
 /// The printable punctuation Windows-1252 adds in 0x80..=0x9F.
@@ -252,6 +334,19 @@ fn draw_panel(
     }
 }
 
+/// Compress a stream's bytes for /FlateDecode (zlib form, via
+/// miniz_oxide). Falls back to the raw bytes when compression
+/// fails or does not help: an export must never fail, or grow,
+/// because of compression.
+fn flate(data: &[u8]) -> (Vec<u8>, bool) {
+    use std::io::Write as _;
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    match enc.write_all(data).and_then(|_| enc.finish()) {
+        Ok(out) if out.len() < data.len() => (out, true),
+        _ => (data.to_vec(), false),
+    }
+}
+
 struct Pdf {
     objects: Vec<Vec<u8>>,
 }
@@ -262,7 +357,13 @@ impl Pdf {
         // Object 1 = catalog, 2 = pages tree, so stored objects are numbered from 3.
         self.objects.len() + 2
     }
-    fn finish(self, page_ids: &[usize], font1: usize, font2: usize) -> Vec<u8> {
+    fn finish(
+        self,
+        page_ids: &[usize],
+        font1: usize,
+        font2: usize,
+        info: Option<usize>,
+    ) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();
         out.extend_from_slice(
             b"%PDF-1.4
@@ -334,10 +435,15 @@ endobj
                 .as_bytes(),
             );
         }
+        let info_entry = match info {
+            Some(id) => format!(" /Info {} 0 R", id),
+            None => String::new(),
+        };
         out.extend_from_slice(
             format!(
-                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n",
+                "trailer\n<< /Size {} /Root 1 0 R{} >>\nstartxref\n{}\n",
                 max_obj + 1,
+                info_entry,
                 xref
             )
             .as_bytes(),
@@ -435,15 +541,22 @@ fn add_embedded_font(pdf: &mut Pdf, face: &ttf_parser::Face, bytes: &[u8]) -> us
     let upem = face.units_per_em() as i32;
     let scale = |v: i16| v as i32 * 1000 / upem;
     let name = postscript_name(face);
+    let (font_bytes, compressed) = flate(bytes);
+    let filter = if compressed {
+        " /Filter /FlateDecode"
+    } else {
+        ""
+    };
     let mut stream = format!(
-        "<< /Length {} /Length1 {} >>
+        "<< /Length {} /Length1 {} {}>>
 stream
 ",
+        font_bytes.len(),
         bytes.len(),
-        bytes.len()
+        filter
     )
     .into_bytes();
-    stream.extend_from_slice(bytes);
+    stream.extend_from_slice(&font_bytes);
     stream.extend_from_slice(
         b"
 endstream",
@@ -510,8 +623,25 @@ fn postscript_name(face: &ttf_parser::Face) -> String {
     }
 }
 
+/// The document information dictionary: title, producer, and
+/// the export purpose in words, so the file itself says what it
+/// was made for (and at what picture cap, once pictures exist).
+fn info_object(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
+    let cap_note = match purpose.ppi_cap() {
+        Some(ppi) => format!(" Pictures are capped at {ppi} pixels per inch."),
+        None => " Pictures are kept at full resolution.".to_string(),
+    };
+    format!(
+        "<< /Title ({}) /Producer (OpenBulletin) /Subject (Made {}.{}) >>",
+        esc(&doc.title),
+        purpose.words(),
+        cap_note
+    )
+    .into_bytes()
+}
+
 /// Build a PDF from a set of sheet sides (each side becomes one page).
-fn build_pdf(doc: &Document, sides: &[SheetSide]) -> Vec<u8> {
+fn build_pdf(doc: &Document, sides: &[SheetSide], purpose: ExportPurpose) -> Vec<u8> {
     let mut pdf = Pdf {
         objects: Vec::new(),
     };
@@ -547,12 +677,19 @@ fn build_pdf(doc: &Document, sides: &[SheetSide]) -> Vec<u8> {
             }
         }
         let content = pc.buf.into_bytes();
+        let (content, compressed) = flate(&content);
+        let filter = if compressed {
+            " /Filter /FlateDecode"
+        } else {
+            ""
+        };
         let content_id = pdf.add({
             let mut v = format!(
-                "<< /Length {} >>
+                "<< /Length {} {}>>
 stream
 ",
-                content.len()
+                content.len(),
+                filter
             )
             .into_bytes();
             v.extend_from_slice(&content);
@@ -573,7 +710,8 @@ endstream",
         );
         page_ids.push(page_id);
     }
-    pdf.finish(&page_ids, f1, f2)
+    let info = pdf.add(info_object(doc, purpose));
+    pdf.finish(&page_ids, f1, f2, Some(info))
 }
 
 /// The two-sided printing test sheet (one sheet, FRONT and BACK).
@@ -668,7 +806,8 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
         },
         no_announcements: false,
     };
-    export_reader_pdf(&doc)
+    // The sheet exists to be printed, so it takes the print purpose.
+    export_reader_pdf(&doc, ExportPurpose::ForPrinting)
 }
 
 /// Reader PDF: one panel per page, in reading order (for email/website).
@@ -700,19 +839,19 @@ fn library_font_bytes() -> Vec<(ob_fonts::FontInfo, Vec<u8>)> {
     out
 }
 
-pub fn export_reader_pdf(doc: &Document) -> Vec<u8> {
+pub fn export_reader_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
     let sides = ob_impose::impose_single(doc);
-    build_pdf(doc, &sides)
+    build_pdf(doc, &sides, purpose)
 }
 
 /// Imposed PDF: printer sheets, ready to print duplex and fold.
-pub fn export_imposed_pdf(doc: &Document) -> Vec<u8> {
+pub fn export_imposed_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
     // Lay out the padded document so a file with the wrong
     // number of panels prints with blanks, never crashes and
     // never drops a page (closing audit).
     let padded = ob_impose::padded_document(doc);
     let sides = ob_impose::impose(&padded);
-    build_pdf(&padded, &sides)
+    build_pdf(&padded, &sides, purpose)
 }
 
 #[cfg(test)]
@@ -737,7 +876,7 @@ mod tests {
 
     #[test]
     fn eof_marker_is_exactly_two_percents() {
-        let bytes = export_reader_pdf(&sample_doc());
+        let bytes = export_reader_pdf(&sample_doc(), ExportPurpose::ForEmailOrWeb);
         let tail = &bytes[bytes.len().saturating_sub(16)..];
         let tail = String::from_utf8_lossy(tail);
         assert!(tail.trim_end().ends_with("%%EOF"), "tail was: {tail:?}");
@@ -771,35 +910,146 @@ mod tests {
         assert!(unsupported_chars("Prelude\t").is_empty());
     }
 
+    /// Every page's content stream, decoded (content streams
+    /// are FlateDecode-compressed, so the words live behind the
+    /// filter; a strict parser decodes them for us).
+    fn decoded_content(pdf: &[u8]) -> String {
+        let parsed = lopdf::Document::load_mem(pdf).expect("lopdf parses the export");
+        let mut out = String::new();
+        for (_, page_id) in parsed.get_pages() {
+            if let Ok(content) = parsed.get_page_content(page_id) {
+                out.push_str(&String::from_utf8_lossy(&content));
+                out.push('\n');
+            }
+        }
+        out
+    }
+
     #[test]
     fn duplex_test_sheet_has_front_and_back() {
         let bytes = export_duplex_test_pdf();
         assert!(bytes.starts_with(b"%PDF-1.4"));
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("/Count 2"), "two pages: {text:.200}");
-        assert!(text.contains("FRONT"), "front missing");
-        assert!(text.contains("BACK"), "back missing");
+        let content = decoded_content(&bytes);
+        assert!(content.contains("FRONT"), "front missing");
+        assert!(content.contains("BACK"), "back missing");
     }
 
     #[test]
     fn reader_pdf_looks_like_pdf() {
-        let bytes = export_reader_pdf(&sample_doc());
+        let bytes = export_reader_pdf(&sample_doc(), ExportPurpose::ForEmailOrWeb);
         assert!(bytes.starts_with(b"%PDF-1.4"));
         let text = String::from_utf8_lossy(&bytes);
-        assert!(text.contains("Grace Lutheran Church"), "cover text missing");
         assert!(
             text.contains("/Count 4"),
             "reader PDF must have 4 pages: {text:.200}"
+        );
+        assert!(
+            decoded_content(&bytes).contains("Grace Lutheran Church"),
+            "cover text missing"
+        );
+    }
+
+    #[test]
+    fn streams_are_flate_compressed_and_decode_intact() {
+        let bytes = export_reader_pdf(&sample_doc(), ExportPurpose::ForEmailOrWeb);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("/FlateDecode"),
+            "content and font streams are compressed"
+        );
+        // Decompressing a content stream brings the operators
+        // back exactly: text blocks with the words in them.
+        let content = decoded_content(&bytes);
+        assert!(
+            content.contains("BT"),
+            "text blocks survive: {content:.200}"
+        );
+        assert!(content.contains("Tj"), "show-text operators survive");
+        assert!(
+            content.contains("Grace Lutheran Church"),
+            "the words survive"
+        );
+        // The embedded font stream is compressed too, and a
+        // strict parser still reads the file structure whole.
+        let parsed = lopdf::Document::load_mem(&bytes).expect("lopdf parses the export");
+        assert_eq!(parsed.get_pages().len(), 4);
+    }
+
+    #[test]
+    fn purpose_is_recorded_in_the_file() {
+        let doc = sample_doc();
+        let print = String::from_utf8_lossy(&export_imposed_pdf(&doc, ExportPurpose::ForPrinting))
+            .into_owned();
+        assert!(
+            print.contains("/Producer (OpenBulletin)"),
+            "producer recorded"
+        );
+        assert!(
+            print.contains("Made for printing."),
+            "print purpose recorded in words"
+        );
+        assert!(print.contains("300 pixels per inch"), "print cap recorded");
+        let web = String::from_utf8_lossy(&export_reader_pdf(&doc, ExportPurpose::ForEmailOrWeb))
+            .into_owned();
+        assert!(
+            web.contains("Made for email or the web."),
+            "web purpose recorded in words"
+        );
+        let full = String::from_utf8_lossy(&export_reader_pdf(&doc, ExportPurpose::FullResolution))
+            .into_owned();
+        assert!(
+            full.contains("Made at full resolution."),
+            "full-resolution purpose recorded"
         );
     }
 
     #[test]
     fn imposed_pdf_has_two_sheet_sides() {
-        let bytes = export_imposed_pdf(&sample_doc());
+        let bytes = export_imposed_pdf(&sample_doc(), ExportPurpose::ForPrinting);
         let text = String::from_utf8_lossy(&bytes);
         assert!(
             text.contains("/Count 2"),
             "bifold imposes to 2 sides: {text:.200}"
+        );
+    }
+
+    #[test]
+    fn booklet_export_size_stays_down() {
+        // The audit measured this fresh 16-panel booklet at
+        // 1,254,242 bytes (reader) and 1,251,892 (imposed):
+        // whole raw font faces, no compressed streams. Stream
+        // compression alone roughly halves it. Font subsetting
+        // is the remaining lever and is BLOCKED on the writer:
+        // the subsetter crate removes the font's cmap and
+        // requires CID-keyed embedding, while this writer emits
+        // WinAnsi simple fonts whose glyph mapping runs through
+        // that cmap (see docs/LEGAL.md, 2026-10-16 note). Until
+        // the CID migration lands, this bound guards the
+        // compression win; it tightens when subsetting lands.
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::HalfLetterBooklet,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        let imposed = export_imposed_pdf(&doc, ExportPurpose::ForPrinting);
+        let reader = export_reader_pdf(&doc, ExportPurpose::ForEmailOrWeb);
+        println!(
+            "booklet sizes after O1: imposed {} bytes, reader {} bytes",
+            imposed.len(),
+            reader.len()
+        );
+        assert!(
+            imposed.len() < 800_000,
+            "imposed booklet regressed: {} bytes",
+            imposed.len()
+        );
+        assert!(
+            reader.len() < 800_000,
+            "reader booklet regressed: {} bytes",
+            reader.len()
         );
     }
 
@@ -811,7 +1061,7 @@ mod tests {
             chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
             "Sunday",
         );
-        let pdf = export_imposed_pdf(&doc);
+        let pdf = export_imposed_pdf(&doc, ExportPurpose::ForPrinting);
         let parsed = lopdf::Document::load_mem(&pdf).expect("lopdf parses the booklet");
         assert_eq!(parsed.get_pages().len(), 8);
     }
@@ -819,7 +1069,7 @@ mod tests {
     #[test]
     fn exports_embed_the_library_fonts() {
         let doc = sample_doc();
-        let pdf = export_reader_pdf(&doc);
+        let pdf = export_reader_pdf(&doc, ExportPurpose::ForEmailOrWeb);
         let text = String::from_utf8_lossy(&pdf);
         assert!(
             text.contains("/Subtype /TrueType"),
@@ -843,7 +1093,7 @@ mod tests {
         // table must carry the real font's own numbers, not
         // core-font stand-ins.
         let doc = sample_doc();
-        let pdf = export_reader_pdf(&doc);
+        let pdf = export_reader_pdf(&doc, ExportPurpose::ForEmailOrWeb);
         let text = String::from_utf8_lossy(&pdf);
         let mut arrays: Vec<Vec<i32>> = Vec::new();
         let mut rest = text.as_ref();
@@ -871,7 +1121,8 @@ mod tests {
     #[test]
     fn reader_pages_are_panel_sized() {
         let doc = sample_doc();
-        let pdf = String::from_utf8_lossy(&export_reader_pdf(&doc)).to_string();
+        let pdf = String::from_utf8_lossy(&export_reader_pdf(&doc, ExportPurpose::ForEmailOrWeb))
+            .to_string();
         // Bi-fold panel is 5.5 x 8.5 in = 396 x 612 pt; sheet is 792 x 612.
         assert!(
             pdf.contains("/MediaBox [0 0 396.00 612.00]"),
@@ -881,7 +1132,9 @@ mod tests {
             !pdf.contains("/MediaBox [0 0 792.00 612.00]"),
             "reader pages must not be sheet-sized"
         );
-        let imposed = String::from_utf8_lossy(&export_imposed_pdf(&doc)).to_string();
+        let imposed =
+            String::from_utf8_lossy(&export_imposed_pdf(&doc, ExportPurpose::ForPrinting))
+                .to_string();
         assert!(
             imposed.contains("/MediaBox [0 0 792.00 612.00]"),
             "imposed pages must be sheet-sized"

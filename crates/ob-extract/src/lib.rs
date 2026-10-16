@@ -203,7 +203,7 @@ mod tests {
             start,
             "Twentieth Sunday after Pentecost",
         );
-        ob_pdf::export_reader_pdf(&doc)
+        ob_pdf::export_reader_pdf(&doc, ob_pdf::ExportPurpose::ForEmailOrWeb)
     }
 
     #[test]

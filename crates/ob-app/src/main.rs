@@ -83,6 +83,11 @@ pub struct Settings {
     /// (J6), clamped to the step list.
     #[serde(default)]
     pub last_step: usize,
+    /// The purpose last chosen for a saved PDF copy (an
+    /// ob_pdf::ExportPurpose slug). "" means the chooser's
+    /// default, For printing (O1).
+    #[serde(default)]
+    pub pdf_purpose: String,
 }
 
 impl Settings {
@@ -92,6 +97,14 @@ impl Settings {
             .iter()
             .find(|(p, _)| p == path)
             .map(|(_, s)| s)
+    }
+
+    /// The purpose a saved PDF copy is made for: the remembered
+    /// choice, or the chooser's default (For printing) when the
+    /// saved word is missing or not a purpose we know.
+    pub fn pdf_purpose(&self) -> ob_pdf::ExportPurpose {
+        ob_pdf::ExportPurpose::from_slug(&self.pdf_purpose)
+            .unwrap_or(ob_pdf::ExportPurpose::ForPrinting)
     }
 
     /// Remember one file's state, most recent last; beyond
@@ -742,7 +755,7 @@ fn snapshot(doc: &Document) -> String {
 }
 
 /// Just the file's name for status messages (UI audit round
-/// 2, batch 3): "Saved print copy as bulletin-print.pdf"
+/// 2, batch 3): "Print copy written: bulletin-print.pdf, ..."
 /// reads better in a narrow sidebar than a full path, and
 /// the person just chose the folder in the save dialog.
 /// The name Save proposes for a bulletin that has never been
@@ -764,6 +777,18 @@ fn file_name_of(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
+}
+
+/// A file size in plain words for status lines: bytes under a
+/// kilobyte by count, then KB, then MB with one decimal.
+fn human_file_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} bytes")
+    } else if bytes < 1024 * 1024 {
+        format!("{} KB", (bytes + 512) / 1024)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }
 
 /// One Check-step note. A note that knows which panel and
@@ -5529,8 +5554,27 @@ impl App {
                 },
                 Err(e) => self.fail(format!("Could not make that copy: {e}")),
             },
+            "pdf" => {
+                // The finished pages, made for the purpose the
+                // radio above the button remembers (O1).
+                let purpose = self.settings.pdf_purpose();
+                let bytes = ob_pdf::export_reader_pdf(&self.doc, purpose);
+                match std::fs::write(path, &bytes) {
+                    Ok(()) => {
+                        let msg = format!(
+                            "Saved a copy as {}, {}, {}.",
+                            file_name_of(path),
+                            human_file_size(bytes.len()),
+                            purpose.words()
+                        );
+                        self.export_note = Some(msg.clone());
+                        self.note(msg);
+                    }
+                    Err(e) => self.fail(format!("Could not save that copy: {e}")),
+                }
+            }
             _ => self.fail(
-                "That kind of copy is not one we can make yet. The save dialog                  offers InDesign (IDML) and Scribus."
+                "That kind of copy is not one we can make yet. The save dialog offers InDesign (IDML), Scribus, and PDF."
                     .into(),
             ),
         }
@@ -6794,7 +6838,10 @@ impl eframe::App for App {
                         if ui.button(egui::RichText::new("Open the print copy").strong()).clicked() {
                             self.commit_if_editing();
                             self.pin_fonts();
-                            let bytes = ob_pdf::export_imposed_pdf(&self.doc);
+                            let bytes = ob_pdf::export_imposed_pdf(
+                                &self.doc,
+                                ob_pdf::ExportPurpose::ForPrinting,
+                            );
                             let path = std::env::temp_dir().join(format!(
                                 "openbulletin-print-copy-{}.pdf",
                                 std::process::id()
@@ -6805,7 +6852,9 @@ impl eframe::App for App {
                                     self.store_doc_state();
                                     let guidance = self.current_print_guidance();
                                     self.status = format!(
-                                        "Print copy opened in your PDF viewer. {guidance}"
+                                        "Print copy opened in your PDF viewer ({}, {}). {guidance}",
+                                        human_file_size(bytes.len()),
+                                        ob_pdf::ExportPurpose::ForPrinting.words()
                                     );
                                 }
                                 Err(e) => self.status = e,
@@ -6826,15 +6875,20 @@ impl eframe::App for App {
                                 .save_file()
                             {
                                 self.pin_fonts();
-                                let bytes = ob_pdf::export_imposed_pdf(&self.doc);
+                                let bytes = ob_pdf::export_imposed_pdf(
+                                    &self.doc,
+                                    ob_pdf::ExportPurpose::ForPrinting,
+                                );
                                 match std::fs::write(&path, &bytes) {
                                     Ok(()) => {
                                         self.print_fingerprint = Some(snapshot(&self.doc));
                                         self.store_doc_state();
                                         let guidance = self.current_print_guidance();
                                         self.status = format!(
-                                            "Saved print copy as {}. {guidance}",
-                                            file_name_of(&path)
+                                            "Print copy written: {}, {}, {}. {guidance}",
+                                            file_name_of(&path),
+                                            human_file_size(bytes.len()),
+                                            ob_pdf::ExportPurpose::ForPrinting.words()
                                         );
                                     }
                                     Err(e) => self.status = format!("Could not save the print copy: {e}"),
@@ -6851,7 +6905,10 @@ impl eframe::App for App {
                                 .save_file()
                             {
                                 self.pin_fonts();
-                                let bytes = ob_pdf::export_reader_pdf(&self.doc);
+                                let bytes = ob_pdf::export_reader_pdf(
+                                    &self.doc,
+                                    ob_pdf::ExportPurpose::ForEmailOrWeb,
+                                );
                                 match std::fs::write(&path, &bytes) {
                                     Ok(()) => {
                                         // No print fingerprint: a
@@ -6860,14 +6917,41 @@ impl eframe::App for App {
                                         // freshness warning must
                                         // never claim one exists
                                         // (UI audit round 2).
-                                        self.status = format!("Saved reading copy as {}", file_name_of(&path));
+                                        self.status = format!(
+                                            "Reading copy written: {}, {}, {}.",
+                                            file_name_of(&path),
+                                            human_file_size(bytes.len()),
+                                            ob_pdf::ExportPurpose::ForEmailOrWeb.words()
+                                        );
                                     }
                                     Err(e) => self.status = format!("Could not save the reading copy: {e}"),
                                 }
                             }
                         }
                         ui.separator();
-                        ui.label("A copy for another program: an InDesign (IDML) file or a Scribus file carries the words, their boxes, and their fonts, so someone with one of those programs can take the bulletin from here.");
+                        ui.label("A copy for another program: an InDesign (IDML) file or a Scribus file carries the words, their boxes, and their fonts, so someone with one of those programs can take the bulletin from here. A PDF copy carries the finished pages instead.");
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Make a PDF copy:");
+                            let current = self.settings.pdf_purpose();
+                            for purpose in [
+                                ob_pdf::ExportPurpose::ForEmailOrWeb,
+                                ob_pdf::ExportPurpose::ForPrinting,
+                                ob_pdf::ExportPurpose::ForPrintShop,
+                                ob_pdf::ExportPurpose::FullResolution,
+                            ] {
+                                if ui
+                                    .radio(current == purpose, purpose.label())
+                                    .clicked()
+                                {
+                                    self.settings.pdf_purpose = purpose.slug().to_string();
+                                    if let Err(e) = save_settings(&self.settings) {
+                                        self.status = format!(
+                                            "That choice could not be remembered: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                        });
                         if ui.button("Save a copy for another program...").clicked() {
                             self.commit_if_editing();
                             self.save_announcements();
@@ -6875,6 +6959,7 @@ impl eframe::App for App {
                                 .set_file_name("bulletin.idml")
                                 .add_filter("InDesign (IDML)", &["idml"])
                                 .add_filter("Scribus", &["sla"])
+                                .add_filter("PDF", &["pdf"])
                                 .save_file()
                             {
                                 self.save_copy_for_program(&path);
@@ -7739,6 +7824,40 @@ fn open_with_os(path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod settings_tests {
     use super::*;
+
+    #[test]
+    fn pdf_purpose_defaults_to_printing_and_remembers() {
+        // A settings file from before O1 has no purpose word:
+        // the chooser's default is For printing.
+        let st: Settings = serde_json::from_str("{}").expect("old settings load");
+        assert_eq!(st.pdf_purpose(), ob_pdf::ExportPurpose::ForPrinting);
+        // A remembered choice comes back as itself, and the
+        // slug round-trips through the settings file.
+        let st = Settings {
+            pdf_purpose: ob_pdf::ExportPurpose::ForEmailOrWeb.slug().to_string(),
+            ..Default::default()
+        };
+        assert_eq!(st.pdf_purpose(), ob_pdf::ExportPurpose::ForEmailOrWeb);
+        let json = serde_json::to_string(&st).expect("settings save");
+        let back: Settings = serde_json::from_str(&json).expect("settings reload");
+        assert_eq!(back.pdf_purpose(), ob_pdf::ExportPurpose::ForEmailOrWeb);
+        // A word we do not know falls back to the default,
+        // never to a wrong purpose.
+        let st = Settings {
+            pdf_purpose: "carrier-pigeon".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(st.pdf_purpose(), ob_pdf::ExportPurpose::ForPrinting);
+    }
+
+    #[test]
+    fn file_sizes_read_in_plain_words() {
+        assert_eq!(human_file_size(512), "512 bytes");
+        assert_eq!(human_file_size(1024), "1 KB");
+        assert_eq!(human_file_size(212 * 1024 + 300), "212 KB");
+        assert_eq!(human_file_size(1024 * 1024), "1.0 MB");
+        assert_eq!(human_file_size(7 * 1024 * 1024 + 512 * 1024), "7.5 MB");
+    }
 
     #[test]
     fn keymap_presets_set_defaults_and_any_change_is_custom() {

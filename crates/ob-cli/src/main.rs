@@ -42,6 +42,11 @@ enum Cmd {
         input: PathBuf,
         #[arg(long)]
         imposed: bool,
+        /// What the copy is for: web, print, shop, or full.
+        /// Defaults follow the door: print for imposed sheets,
+        /// web for reader panels.
+        #[arg(long, value_parser = ["web", "print", "shop", "full"])]
+        purpose: Option<String>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -172,24 +177,32 @@ fn run(cli: Cli) -> Result<(), String> {
         Cmd::Export {
             input,
             imposed,
+            purpose,
             out,
         } => {
             let doc = ob_format::load(&input)?;
+            let purpose = match purpose.as_deref() {
+                Some(slug) => ob_pdf::ExportPurpose::from_slug(slug)
+                    .ok_or_else(|| format!("unknown purpose: {slug}"))?,
+                None if imposed => ob_pdf::ExportPurpose::ForPrinting,
+                None => ob_pdf::ExportPurpose::ForEmailOrWeb,
+            };
             let bytes = if imposed {
-                ob_pdf::export_imposed_pdf(&doc)
+                ob_pdf::export_imposed_pdf(&doc, purpose)
             } else {
-                ob_pdf::export_reader_pdf(&doc)
+                ob_pdf::export_reader_pdf(&doc, purpose)
             };
             std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
             println!(
-                "wrote {} ({} bytes, {})",
+                "wrote {} ({} bytes, {}, {})",
                 out.display(),
                 bytes.len(),
                 if imposed {
                     "imposed sheets"
                 } else {
                     "reader panels"
-                }
+                },
+                purpose.words()
             );
             Ok(())
         }

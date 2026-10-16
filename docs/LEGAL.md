@@ -22,6 +22,23 @@ Deliberately excluded on license grounds: MuPDF (AGPL) and Poppler
 out-of-process helper; the PDFium binary is NOT in this repository
 (it is fetched to a local toolchain folder, per docs/EXTRACT.md).
 
+Export size work (2026-10-16): ob-pdf now compresses every PDF
+stream with FlateDecode via `flate2` (MIT OR Apache-2.0) on the
+`miniz_oxide` backend (MIT OR Apache-2.0); both were already in
+the tree transitively and are now direct dependencies, so the
+package count is unchanged. Font subsetting was evaluated
+against the `subsetter` crate (Typst project; license verified
+in its crate metadata as MIT OR Apache-2.0) and DEFERRED, not
+on license grounds but on format grounds: subsetter removes
+the font's cmap table by design and requires the PDF writer to
+embed fonts as CID-keyed fonts with its own ToUnicode CMap.
+Our writer emits WinAnsi simple fonts whose glyph mapping runs
+through the embedded cmap, so a cmap-less subset would render
+the wrong glyphs (or none). Subsetting waits for a deliberate
+CID-embedding migration of the writer; it must not be bolted
+onto the WinAnsi path. `subsetter` is therefore NOT a
+dependency today.
+
 ## The Publisher reader and the LibreOffice bridge
 
 Our Publisher (.pub) reader is an independent implementation

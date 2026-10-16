@@ -48,6 +48,50 @@ Frequency, elapsed time, and the document's condition are
 facts the app already holds; guidance, summaries, and warnings
 scale with those, and the screens stay the same.
 
+## The contributors (added 2026-10-16)
+
+Jacob widened the cast the same day the convergence loop
+started: the bulletin is assembled by more hands than the
+three above, and the design answer is the same rule pushed
+outward. Contributors never get a mode and never need the
+app. They send words in a small known shape (a contribution
+file, the same words pasted from an email); the administrator
+reviews each part into its slot. Synthesis:
+docs/planning/roles-synthesis-2026-10-16.md.
+
+**The Sunday school director.** Usually a volunteer parent
+whose real job description names "prepare articles for the
+bulletin" as a duty, working from home at night, most likely
+to miss a deadline nobody stated. Sends class news, event
+items with end dates, and the standing class listing. The
+children's rules are hers as much as anyone's: the church's
+names rule, not-for-web marks, and children-in-pictures notes
+exist because her material is where children appear.
+
+**The teachers and youth leader.** Teachers produce nothing
+for print and should never open the app. The youth leader
+reaches parents by group text; the bulletin is his channel
+to the wider congregation, so his parts are event-shaped,
+with dates and deadlines, and they ride the same contribution
+shape as everyone else's.
+
+**The music director (often also choir director and
+organist).** Works on three clocks (the season, the month of
+rehearsal runway, the admin's week) and sends the hymn list
+in service order, anthem and special-music lines, and printed
+music as files, never scans when an export exists. The seam
+that hurts is retyping: every error is born in the admin's
+retyping, so hymns became real fields with a remembered
+number-and-title memory, and the music slip slots into those
+fields instead of appending loose lines.
+
+**The insert authors.** Whoever writes the prayer list, the
+connection card, the event flyer: their work is a loose
+sheet, its own small document with its own life (standing,
+dated, this week only), printed separately and tucked in.
+The sheets are first class because the bulletin is not the
+only thing in the fold.
+
 ## The journeys
 
 **1. The first week ever.** A new office, a pile of old files,
@@ -101,6 +145,19 @@ one (Next Sunday returns to the ordinary shape). Standing:
 seasonal clustering shipped in the Analyzer; seasonal packs
 are roadmap, and this journey is their acceptance test when
 they land.
+
+**6. The contribution week.** Parts arrive through the week:
+the pastor's service lines, the music slip, the Sunday school
+news, each a small file or a paste. Start says what has
+arrived and what is still waited for ("Still waiting for:
+the music director's hymns"); each part opens in the
+Accept/Edit/Cancel review with its slot already chosen, and
+a part for the wrong Sunday arms its Accept instead of
+landing silently. On Accept the bulletin saves first, then
+the part is filed, never deleted. Design demand: the
+administrator assembles; she never retypes. Standing: the
+seam shipped as roles build R-1; hymn slotting in R-2a; the
+loose-sheet parts wait for the inserts' later phase.
 
 ## What the interviews still owe us
 

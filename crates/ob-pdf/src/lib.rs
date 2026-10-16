@@ -198,55 +198,44 @@ struct FaceSource {
 /// Library, which wins over the bundled set (one definition,
 /// shared by the writer and the Check step's oracle, so what a
 /// warning is computed against is what would actually embed).
+/// The enumeration itself is ob_fonts::candidate_faces, the
+/// same one the document font pin draws from (round 4, R4-9):
+/// rights-filtered, one winner per key by the shared pick
+/// rule. This function only attaches bytes to the winners,
+/// looked up by hash, the font file's identity.
 fn face_sources(
     library: &[(ob_fonts::FontInfo, Vec<u8>)],
 ) -> std::collections::HashMap<FaceKey, FaceSource> {
-    let mut candidates: Vec<(FaceKey, FaceSource)> = Vec::new();
+    let mut bundled: Vec<ob_fonts::FontInfo> = Vec::new();
+    let mut bytes_by_sha: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
     for (name, bytes) in ob_text::shaping::bundled_font_files() {
         if let Ok(info) = ob_fonts::inspect(bytes, name) {
-            if info.rights.may_package() {
-                candidates.push((
-                    (info.family, info.bold, info.italic),
-                    FaceSource {
-                        bytes: bytes.to_vec(),
-                        no_subsetting: info.no_subsetting,
-                    },
-                ));
-            }
+            bytes_by_sha.insert(info.sha256.clone(), bytes.to_vec());
+            bundled.push(info);
         }
     }
+    // Later inserts win a shared hash, which in practice
+    // means identical bytes (the first-run library IS the
+    // bundled files copied in); the order keeps the
+    // long-standing last-face-wins reading for any two
+    // entries that claim one identity.
     for (info, bytes) in library {
-        if info.rights.may_package() {
-            candidates.push((
-                (info.family.clone(), info.bold, info.italic),
-                FaceSource {
-                    bytes: bytes.clone(),
-                    no_subsetting: info.no_subsetting,
-                },
-            ));
-        }
+        bytes_by_sha.insert(info.sha256.clone(), bytes.clone());
     }
-    // One face per key, picked by the shared rule
-    // (ob_fonts::pick_face, the same rule the document
-    // font pin uses, round 3 R3-13): every candidate for
-    // a key carries that key's own flags, so the rule's
-    // exact match is the LAST candidate, which keeps the
-    // long-standing order: the library wins over the
-    // bundled set.
-    let mut by_key: std::collections::HashMap<FaceKey, Vec<usize>> =
-        std::collections::HashMap::new();
-    for (idx, (key, _)) in candidates.iter().enumerate() {
-        by_key.entry(key.clone()).or_default().push(idx);
-    }
+    let library_infos: Vec<ob_fonts::FontInfo> =
+        library.iter().map(|(info, _)| info.clone()).collect();
     let mut sources: std::collections::HashMap<FaceKey, FaceSource> =
         std::collections::HashMap::new();
-    for (key, idxs) in by_key {
-        let flags: Vec<(bool, bool)> = idxs
-            .iter()
-            .map(|&i| ((candidates[i].0).1, (candidates[i].0).2))
-            .collect();
-        if let Some(pick) = ob_fonts::pick_face(&flags, key.1, key.2) {
-            sources.insert(key, candidates[idxs[pick]].1.clone());
+    for winner in ob_fonts::candidate_faces(&bundled, &library_infos) {
+        if let Some(bytes) = bytes_by_sha.get(&winner.sha256) {
+            sources.insert(
+                (winner.family.clone(), winner.bold, winner.italic),
+                FaceSource {
+                    bytes: bytes.clone(),
+                    no_subsetting: winner.no_subsetting,
+                },
+            );
         }
     }
     sources
@@ -3640,6 +3629,23 @@ mod tests {
             sha256: String::new(),
             bytes: 0,
         }
+    }
+
+    #[test]
+    fn face_sources_draws_the_shared_candidate_set() {
+        // R4-9: the writer's sources are the shared
+        // candidate enumeration (ob_fonts::candidate_faces,
+        // the same set the document font pin names):
+        // bundled faces are present with an empty library,
+        // and a library face whose rights forbid travel
+        // never becomes a source.
+        let sources = face_sources(&[]);
+        assert!(sources.contains_key(&("Liberation Sans".to_string(), false, false)));
+        assert!(sources.contains_key(&("Liberation Serif".to_string(), true, false)));
+        let mut restricted = fake_info("Acme Sans", false, false);
+        restricted.rights = ob_fonts::EmbeddingRights::Restricted;
+        let sources = face_sources(&[(restricted, b"bytes".to_vec())]);
+        assert!(!sources.contains_key(&("Acme Sans".to_string(), false, false)));
     }
 
     #[test]

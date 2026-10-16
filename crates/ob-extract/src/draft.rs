@@ -673,14 +673,25 @@ fn build_draft(
             let src_font = rep.font().unwrap_or_default();
             let italic = rep.italic();
             let size_pt = rep.size();
-            // Wanted fonts (docs/FONTS.md): the style keeps
-            // the name the source file stated, in the form a
-            // person would search for, never the stand-in's
-            // name. The chain is walked now only to name the
-            // stand-in in the review and in the document's
-            // wanted record; the real choice is made again
-            // at every shaping and print, against the
-            // library as it stands then (ob_fonts::resolve).
+            // Wanted fonts (docs/FONTS.md): the style's
+            // identity is the FULL family name the source
+            // file stated, subset tag off and nothing
+            // stripped ("Times New Roman", "Verdana-Bold",
+            // "Latin Modern Roman" all stay whole), never
+            // the stand-in's name and never a stripped
+            // display form: resolution tries the full name
+            // first, so a font installed later upgrades
+            // the document by itself (round 4, R4-1; the
+            // stripped form here once threw the raw name
+            // away and made that impossible). The display
+            // name, the form a person would search for, is
+            // for words only: the style's label, the
+            // review sentences, the wanted record. The
+            // chain is walked now only to name the stand-in
+            // in those places; the real choice is made
+            // again at every shaping and print, against
+            // the library as it stands then
+            // (ob_fonts::resolve).
             let resolution = if src_font.is_empty() {
                 None
             } else {
@@ -690,8 +701,24 @@ fn build_draft(
                 ))
             };
             let family = match &resolution {
-                Some(r) => r.display_name.clone(),
+                Some(_) => {
+                    let raw = src_font
+                        .split('+')
+                        .next_back()
+                        .unwrap_or(&src_font)
+                        .trim()
+                        .to_string();
+                    if raw.is_empty() {
+                        "Liberation Sans".to_string()
+                    } else {
+                        raw
+                    }
+                }
                 None => "Liberation Sans".to_string(),
+            };
+            let display = match &resolution {
+                Some(r) => r.display_name.clone(),
+                None => family.clone(),
             };
             if let Some(r) = &resolution {
                 if r.tier != ob_fonts::resolve::SubstituteTier::Exact
@@ -712,11 +739,14 @@ fn build_draft(
                 block_color_v[1],
                 block_color_v[2]
             );
+            // The style's label wears the display name;
+            // its font_family (below) wears the identity.
+            let style_name = format!("{display} {:.0}pt", size_pt);
             let style_id = style_ids.entry(key).or_insert_with(|| {
                 let id = format!("import-{}", styles.len());
                 styles.push(ParagraphStyle {
                     id: id.clone(),
-                    name: format!("{family} {:.0}pt", size_pt),
+                    name: style_name,
                     font_size: pt(size_pt),
                     bold: rep.bold(),
                     italic,
@@ -837,21 +867,21 @@ fn build_draft(
                     let r = resolution.as_ref().expect("a named font was resolved");
                     match r.tier {
                         ob_fonts::resolve::SubstituteTier::Exact => format!(
-                            "Words from page {}, in {family}, the font they were made in.",
+                            "Words from page {}, in {display}, the font they were made in.",
                             page.index + 1
                         ),
                         ob_fonts::resolve::SubstituteTier::MetricTwin => format!(
-                            "Words from page {}, made in {family}. Its metric twin {} stands in, with the same letter widths.",
+                            "Words from page {}, made in {display}. Its metric twin {} stands in, with the same letter widths.",
                             page.index + 1,
                             r.family
                         ),
                         ob_fonts::resolve::SubstituteTier::Lookalike => format!(
-                            "Words from page {}, made in {family}. We do not have that font, so its lookalike {} stands in for now.",
+                            "Words from page {}, made in {display}. We do not have that font, so its lookalike {} stands in for now.",
                             page.index + 1,
                             r.family
                         ),
                         ob_fonts::resolve::SubstituteTier::HouseDefault => format!(
-                            "Words from page {}, made in {family}. We do not have that font, so {} stands in for now.",
+                            "Words from page {}, made in {display}. We do not have that font, so {} stands in for now.",
                             page.index + 1,
                             r.family
                         ),
@@ -1256,15 +1286,19 @@ mod tests {
             out.doc.panels[3].background_image.as_deref(),
             Some("assets/page-04.png")
         );
-        // The Arial style keeps the name Arial; the twin
-        // stands in when the words are shaped and printed,
-        // and the want is on the document with the twin
-        // named as the stand-in.
+        // The Arial style keeps the full name the file
+        // stated, "Arial-Bold" (round 4, R4-1: identity
+        // is the raw name, subset tag off); resolution
+        // still answers its twin when the words are
+        // shaped and printed, and installing Arial later
+        // upgrades the style by itself. The want is on
+        // the document under the family's display name,
+        // with the twin named as the stand-in.
         assert!(out
             .doc
             .styles
             .iter()
-            .any(|s| s.font_family == "Arial" && s.font_size == 20_000));
+            .any(|s| s.font_family == "Arial-Bold" && s.font_size == 20_000));
         assert!(out
             .doc
             .wanted_fonts
@@ -1444,7 +1478,12 @@ mod tests {
             .filter(|s| s.id.starts_with("import-"))
             .collect();
         assert_eq!(import_styles.len(), 1);
-        assert_eq!(import_styles[0].font_family, "Gill Sans MT");
+        // The style's identity is the full name the file
+        // stated, subset tag off (round 4, R4-1); the
+        // display form "Gill Sans MT" lives in the style's
+        // label and the wanted record below.
+        assert_eq!(import_styles[0].font_family, "GillSansMT");
+        assert_eq!(import_styles[0].name, "Gill Sans MT 18pt");
         assert_eq!(
             out.doc.wanted_fonts,
             vec![WantedFont {
@@ -1528,6 +1567,107 @@ mod tests {
             .items
             .iter()
             .any(|i| i.badge == Badge::Matched && i.label.contains("Welcome")));
+    }
+
+    #[test]
+    fn times_new_roman_keeps_its_whole_name_and_its_twin() {
+        // R4-1: the spaced name .pub and IDML files carry
+        // stays whole on the style, and the want names
+        // Liberation Serif as the stand-in: the twin's
+        // widths match, so the words badge Matched. Before
+        // the fix the style was born as "Times New", no
+        // row could answer, and the words stood in a sans.
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pub,
+            source_name: "old.pub".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![span(
+                0,
+                "Welcome to worship",
+                60.0,
+                90.0,
+                11.0,
+                "Times New Roman",
+                false,
+            )],
+            images: Vec::new(),
+            loss_notes: Vec::new(),
+        };
+        let families: Vec<String> = vec!["Liberation Serif".to_string()];
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &families);
+        let style = out
+            .doc
+            .styles
+            .iter()
+            .find(|s| s.id.starts_with("import-"))
+            .expect("an import style");
+        assert_eq!(style.font_family, "Times New Roman");
+        assert_eq!(
+            out.doc.wanted_fonts,
+            vec![WantedFont {
+                name: "Times New Roman".to_string(),
+                substituted_by: "Liberation Serif".to_string(),
+            }]
+        );
+        assert!(out
+            .items
+            .iter()
+            .any(|i| i.badge == Badge::Matched && i.label.contains("Welcome")));
+    }
+
+    #[test]
+    fn a_family_ending_in_roman_is_wanted_under_its_own_name() {
+        // R4-1: "Latin Modern Roman" is wanted as itself,
+        // the name a person can find and install, not as
+        // "Latin Modern"; and the style keeps the whole
+        // name, so installing the font upgrades the draft.
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pdf,
+            source_name: "old.pdf".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![span(
+                0,
+                "Welcome to worship",
+                60.0,
+                90.0,
+                11.0,
+                "Latin Modern Roman",
+                false,
+            )],
+            images: Vec::new(),
+            loss_notes: Vec::new(),
+        };
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &[]);
+        let style = out
+            .doc
+            .styles
+            .iter()
+            .find(|s| s.id.starts_with("import-"))
+            .expect("an import style");
+        assert_eq!(style.font_family, "Latin Modern Roman");
+        assert_eq!(
+            out.doc.wanted_fonts,
+            vec![WantedFont {
+                name: "Latin Modern Roman".to_string(),
+                substituted_by: "Liberation Sans".to_string(),
+            }]
+        );
     }
 
     #[test]

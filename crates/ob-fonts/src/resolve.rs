@@ -160,14 +160,22 @@ const ROWS: &[Row] = &[
 
 /// Face words: the part of a source name that names one
 /// face of a family rather than the family itself. Source
-/// files write them glued with a dash or comma
+/// files write them after a dash or comma
 /// ("Verdana-Bold"), spaced ("DejaVu Sans Bold"), or
-/// both at once ("Verdana-Bold Italic"). Roman is in the
-/// list on purpose: in the PostScript-style names our
-/// sources write, Roman is a face word, so a name like
-/// "Acme Roman" bases to "Acme". That is the semantics
-/// the install-later promise needs: the family is the
-/// name a person can go and install.
+/// both at once ("Verdana-Bold Italic"). After a dash or
+/// comma the full set below comes off, Roman and Regular
+/// included: in the PostScript-style names our sources
+/// write that way, Roman is a face word, so
+/// "Acme-Roman" bases to "Acme". After a SPACE only the
+/// narrow set (SPACED_FACE_SUFFIXES) comes off: a spaced
+/// Roman or Regular is as likely to be part of the
+/// family itself ("Times New Roman", "Latin Modern
+/// Roman"), and stripping it named a family that does
+/// not exist, one the office could never install and
+/// whose table row could never answer (round 4, R4-1).
+/// The family is the name a person can go and install:
+/// that is the semantics the install-later promise
+/// needs.
 const FACE_SUFFIXES: &[&str] = &[
     "bolditalic",
     "boldoblique",
@@ -179,6 +187,18 @@ const FACE_SUFFIXES: &[&str] = &[
     "roman",
 ];
 
+/// The face words that come off after a space: only the
+/// weight and slant words, which never end a real
+/// family's own name the way Roman and Regular can.
+const SPACED_FACE_SUFFIXES: &[&str] = &[
+    "bolditalic",
+    "boldoblique",
+    "bold italic",
+    "bold",
+    "italic",
+    "oblique",
+];
+
 /// PostScript name tails: markers glued onto compressed
 /// names by the tools that write them ("TimesNewRomanPSMT"
 /// is Times New Roman). They say nothing about the design,
@@ -188,35 +208,45 @@ const FACE_SUFFIXES: &[&str] = &[
 /// (round 3, R3-2).
 const PS_TAILS: &[&str] = &["psmt", "ps", "mt"];
 
-/// Is this trailing word (spaces removed, lowered) a
-/// face word, or a face word with a PostScript tail
+/// Is this trailing word (spaces removed, lowered) one
+/// of `suffixes`, or one of them with a PostScript tail
 /// glued on ("BoldMT", from "TimesNewRomanPS-BoldMT")?
-fn is_face_tail(tail: &str) -> bool {
+fn is_suffix_tail(tail: &str, suffixes: &[&str]) -> bool {
     let squashed: String = tail.to_lowercase().chars().filter(|c| *c != ' ').collect();
-    if FACE_SUFFIXES
-        .iter()
-        .any(|s| s.chars().filter(|c| *c != ' ').collect::<String>() == squashed)
-    {
-        return true;
-    }
-    FACE_SUFFIXES.iter().any(|s| {
+    suffixes.iter().any(|s| {
         let s: String = s.chars().filter(|c| *c != ' ').collect();
-        squashed
-            .strip_prefix(&s)
-            .map(|rest| PS_TAILS.contains(&rest))
-            .unwrap_or(false)
+        squashed == s
+            || squashed
+                .strip_prefix(&s)
+                .map(|rest| PS_TAILS.contains(&rest))
+                .unwrap_or(false)
     })
 }
 
+/// A face tail after a dash or comma: the full set.
+fn is_face_tail(tail: &str) -> bool {
+    is_suffix_tail(tail, FACE_SUFFIXES)
+}
+
+/// A face tail after a space: the narrow set only, so a
+/// spaced Roman or Regular stays part of the name.
+fn is_spaced_face_tail(tail: &str) -> bool {
+    is_suffix_tail(tail, SPACED_FACE_SUFFIXES)
+}
+
 /// The base family a source name names: subset prefix
-/// off, then trailing face words off (see FACE_SUFFIXES).
-/// Case and spacing are preserved, so the result is a
-/// name a person would search for. This holds whether or
-/// not the family is in the table: "Verdana-Bold" and
-/// "DejaVu Sans Bold" base to "Verdana" and "DejaVu Sans"
-/// (round 3, R3-1: the long tail of names no table row
-/// knows is the common case, and its wanted-font record
-/// must name an installable family, not a face).
+/// off, then trailing face words off. Which words come
+/// off depends on the separator in front of them (see
+/// FACE_SUFFIXES): a dash or comma takes the full set,
+/// a space only the weight and slant words, so "Times
+/// New Roman" bases to itself while "Verdana-Bold" and
+/// "DejaVu Sans Bold" base to "Verdana" and "DejaVu
+/// Sans". Case and spacing are preserved, so the result
+/// is a name a person would search for. This holds
+/// whether or not the family is in the table (round 3,
+/// R3-1: the long tail of names no table row knows is
+/// the common case, and its wanted-font record must
+/// name an installable family, not a face).
 pub fn base_name(source_name: &str) -> String {
     let mut name = source_name
         .split('+')
@@ -226,9 +256,17 @@ pub fn base_name(source_name: &str) -> String {
         .to_string();
     // One name can carry two face words ("Bold Italic");
     // strip while a separator precedes a face word and a
-    // real head remains.
+    // real head remains. The separator in front of the
+    // tail decides which set judges it: the byte at idx
+    // is one of the three ASCII separators.
     while let Some(idx) = name.rfind(['-', ',', ' ']) {
-        if !is_face_tail(&name[idx + 1..]) {
+        let tail = &name[idx + 1..];
+        let strip = if name.as_bytes()[idx] == b' ' {
+            is_spaced_face_tail(tail)
+        } else {
+            is_face_tail(tail)
+        };
+        if !strip {
             break;
         }
         let head = name[..idx].trim_end_matches(['-', ',', ' ']).trim();
@@ -331,20 +369,30 @@ fn available_spelling(name: &str, available: &[String]) -> Option<String> {
 /// families available right now (the Font Library's scan,
 /// or a shaper's registered families): exact first, then
 /// the twin, then the lookalike, then the house default.
+/// Exact tries the FULL name the source file stated
+/// before any stripped form (round 4, R4-1): a family
+/// really named "Acme Bold" or "Latin Modern Roman"
+/// keeps its identity on the document's styles, and when
+/// the library holds that family it must win over the
+/// base the name strips to, or the wrong typeface
+/// prints and installing the real font never upgrades
+/// anything.
 pub fn resolve_family(requested: &str, available: &[String]) -> Resolution {
     let display_name = display_name_for(requested);
-    if let Some(family) = available_spelling(&display_name, available) {
+    // The full name first: the spelling the source file
+    // used, subset tag off, nothing stripped.
+    let raw = requested.split('+').next_back().unwrap_or(requested).trim();
+    if let Some(family) = available_spelling(raw, available) {
         return Resolution {
             family,
             tier: SubstituteTier::Exact,
             display_name,
         };
     }
-    // The library may carry the family under the spelling
-    // the source file used rather than the display form.
-    let raw = requested.split('+').next_back().unwrap_or(requested).trim();
-    if !raw.eq_ignore_ascii_case(&display_name) {
-        if let Some(family) = available_spelling(raw, available) {
+    // Then the display form: the name a person would
+    // search for ("Gill Sans MT" for "GillSansMT").
+    if !display_name.eq_ignore_ascii_case(raw) {
+        if let Some(family) = available_spelling(&display_name, available) {
             return Resolution {
                 family,
                 tier: SubstituteTier::Exact,
@@ -352,7 +400,7 @@ pub fn resolve_family(requested: &str, available: &[String]) -> Resolution {
             };
         }
     }
-    // Or under the raw name's base: the source file wrote
+    // Or under the name's base: the source file wrote
     // a face ("Verdana-Bold") and the library's family is
     // the base ("Verdana"). This attempt is what makes
     // installing the real font upgrade a document whose
@@ -367,6 +415,10 @@ pub fn resolve_family(requested: &str, available: &[String]) -> Resolution {
             };
         }
     }
+    // The table's stand-in. row_for reads the full name
+    // (it bases the name itself), so a row is consulted
+    // for "Times New Roman" whole, never for a stripped
+    // form that lost the family's own last word.
     if let Some(row) = row_for(requested) {
         if row.tier != SubstituteTier::Exact {
             if let Some(family) = available_spelling(row.substitute, available) {
@@ -478,9 +530,15 @@ mod tests {
         assert_eq!(base_name("UOETYK+Verdana-Bold"), "Verdana");
         assert_eq!(display_name_for("Verdana-Bold"), "Verdana");
         assert_eq!(display_name_for("DejaVu Sans Bold"), "DejaVu Sans");
-        // Roman is a face word in the names we consume:
-        // pinned knowingly, per base_name's comment.
-        assert_eq!(base_name("Acme Roman"), "Acme");
+        // After a dash or comma, Roman and Regular are
+        // face words (round 3, R3-1, kept). After a space
+        // they stay: they can be the family's own last
+        // word (round 4, R4-1).
+        assert_eq!(base_name("Acme-Roman"), "Acme");
+        assert_eq!(base_name("Acme,Regular"), "Acme");
+        assert_eq!(base_name("Acme Roman"), "Acme Roman");
+        assert_eq!(base_name("Foo Regular"), "Foo Regular");
+        assert_eq!(base_name("Times New Roman"), "Times New Roman");
         // Design words are not face words: they stay.
         assert_eq!(base_name("Arial Narrow"), "Arial Narrow");
         assert_eq!(base_name("FooBarMT"), "FooBarMT");
@@ -552,6 +610,67 @@ mod tests {
         // Bookman URW itself is still its own answer.
         let r = resolve_family("Bookman URW", &avail(&["Bookman URW"]));
         assert_eq!(r.tier, SubstituteTier::Exact);
+    }
+
+    #[test]
+    fn times_new_roman_reaches_its_twin_and_itself() {
+        // R4-1 (a): the spaced name the .pub fixtures
+        // carry bases to itself, so its Liberation Serif
+        // row answers, and the real font wins when the
+        // library holds it. Before the fix the name based
+        // to "Times New" and neither could ever happen:
+        // a serif bulletin laid out in a sans.
+        assert_eq!(display_name_for("Times New Roman"), "Times New Roman");
+        let r = resolve_family("Times New Roman", &avail(&["Liberation Serif"]));
+        assert_eq!(r.family, "Liberation Serif");
+        assert_eq!(r.tier, SubstituteTier::MetricTwin);
+        let r = resolve_family(
+            "Times New Roman",
+            &avail(&["Liberation Serif", "Times New Roman"]),
+        );
+        assert_eq!(r.family, "Times New Roman");
+        assert_eq!(r.tier, SubstituteTier::Exact);
+        // Its faces still strip, by dash and by space.
+        assert_eq!(base_name("Times New Roman-Regular"), "Times New Roman");
+        assert_eq!(base_name("Times New Roman Bold"), "Times New Roman");
+        assert_eq!(
+            substitution_for("Times New Roman Bold").map(|s| s.tier),
+            Some(SubstituteTier::MetricTwin)
+        );
+    }
+
+    #[test]
+    fn the_full_name_wins_over_the_base_it_strips_to() {
+        // R4-1 (b): a family really named "Acme Bold",
+        // installed beside "Acme". A document set in it
+        // resolves to it, not to the base the name strips
+        // to (before the fix the display attempt answered
+        // "Acme" first and the wrong typeface printed).
+        let both = avail(&["Acme", "Acme Bold"]);
+        let r = resolve_family("Acme Bold", &both);
+        assert_eq!(r.family, "Acme Bold");
+        assert_eq!(r.tier, SubstituteTier::Exact);
+        // With only the base installed, the base answers,
+        // as it always has.
+        let r = resolve_family("Acme Bold", &avail(&["Acme"]));
+        assert_eq!(r.family, "Acme");
+        assert_eq!(r.tier, SubstituteTier::Exact);
+    }
+
+    #[test]
+    fn a_family_ending_in_roman_upgrades_when_installed() {
+        // R4-1 (c): "Latin Modern Roman" names itself, so
+        // the wanted record is installable and the real
+        // font upgrades the document when it arrives.
+        // Before the fix the record said "Latin Modern",
+        // a family that does not exist under that name.
+        assert_eq!(display_name_for("Latin Modern Roman"), "Latin Modern Roman");
+        let before = resolve_family("Latin Modern Roman", &avail(&[]));
+        assert_eq!(before.tier, SubstituteTier::HouseDefault);
+        assert_eq!(before.display_name, "Latin Modern Roman");
+        let after = resolve_family("Latin Modern Roman", &avail(&["Latin Modern Roman"]));
+        assert_eq!(after.family, "Latin Modern Roman");
+        assert_eq!(after.tier, SubstituteTier::Exact);
     }
 
     #[test]

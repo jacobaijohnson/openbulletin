@@ -136,3 +136,69 @@ baseline).
   mismatch on Keep-through and after-date positions.
 
 Then round 5.
+
+## Shipped addendum, R4-A: font identity (2026-10-16)
+
+- **Identity preserved (R4-1, RT-1a).** The draft builder
+  now stores the FULL source family name on each import
+  style (subset tag off, nothing stripped: "Times New
+  Roman", "Verdana-Bold", "Latin Modern Roman",
+  "GillSansMT" all stay whole); the display form survives
+  only in words: the style's label, the review sentences,
+  the wanted record. Every dump door (PDF, IDML, .pub,
+  .sla) funnels through this one builder, and every
+  resolution consumer (shaper, PDF writer, Check oracle,
+  painters, pin) already keys off the style's family, so
+  identity now flows from the full name everywhere. The
+  app's wanted-font Check note also resolves from a
+  style's full name rather than the record.
+- **The shown name (R4-1, RT-1c).** `base_name` is
+  separator-aware: after a dash or comma the full
+  face-word set comes off (Bold, Italic, BoldItalic,
+  Oblique, BoldOblique, Regular, Roman); after a space
+  only Bold, Italic, BoldItalic, Oblique, BoldOblique
+  come off, never Roman or Regular. "Times New Roman"
+  bases to itself and reaches its Liberation Serif
+  metric-twin row; "Verdana Bold" still names "Verdana".
+  New records therefore never carry a face's name
+  (RT-1c's wart for new files); a legacy record written
+  by an older build still shows its stored string in the
+  note, but resolution no longer depends on it.
+- **Resolution order.** `resolve_family` tries the full
+  name at Exact before the display form, then the base,
+  then the row (consulted on the full name). With both
+  "Acme" and "Acme Bold" installed, a document set in
+  "Acme Bold" resolves Exact "Acme Bold". This supersedes
+  the R3-A addendum's display-first order, and its pinned
+  "Acme Roman" → "Acme" expectation: the spaced form now
+  keeps Roman knowingly, for the reason above; the dash
+  form still strips it.
+- **Pin agreement (R4-9).** One candidate enumeration,
+  `ob_fonts::candidate_faces`: bundled faces first, then
+  the library's, only may_package faces, one winner per
+  (family, bold, italic) key by pick_face. The PDF
+  writer's `face_sources` and `pin_document_fonts` both
+  draw from it (the writer attaches bytes by hash; the
+  pin takes the bundled facts from
+  `ob_text::shaping::bundled_font_infos`). When
+  pick_face returns None for a style, the pin is
+  cleared, never left stale. Tests pin the set equality
+  (a Restricted and a PreviewAndPrint face excluded, the
+  library winning a shared key), bundled faces pinning
+  with an empty library, the stale pin clearing, and the
+  writer excluding a Restricted face.
+- Tests changed knowingly: `every_name_bases_to_its_family`
+  ("Acme Roman", above); the draft tests
+  `rescue_builds_frames_styles_and_badges` (the heading
+  style's identity is now "Arial-Bold", the full name
+  its file stated; the wanted record still names
+  "Arial") and the GillSansMT draft test (style identity
+  "GillSansMT", label and record still "Gill Sans MT").
+  FONTS.md corrected: styles keep the full source name,
+  the shown name is derived by the separator rule, and
+  the pin/writer candidate rule is stated.
+- Suite: 486 passed / 0 failed (477 + 9 new), clippy
+  `-D warnings` clean, both from unpiped runs. One full
+  run hit the known helper ETXTBSY flake
+  (`a_helper_from_the_future_is_refused_in_words`); it
+  passed solo and the clean re-run is the 486 above.

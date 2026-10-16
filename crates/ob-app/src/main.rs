@@ -1211,14 +1211,21 @@ fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<CheckNote> {
         )
         .collect();
     for w in &doc.wanted_fonts {
-        let still_used = used.iter().any(|family| {
+        // The record names the family in display form;
+        // the styles that still use it carry the full
+        // source name. Resolution keys off a style's full
+        // name, not the record (round 4, R4-1): the two
+        // can differ ("Verdana-Bold" on the style,
+        // "Verdana" on the record), and what prints is
+        // decided by the name on the style.
+        let used_as = used.iter().find(|family| {
             family.eq_ignore_ascii_case(&w.name)
                 || ob_fonts::resolve::display_name_for(family).eq_ignore_ascii_case(&w.name)
         });
-        if !still_used {
+        let Some(used_as) = used_as else {
             continue;
-        }
-        let r = ob_fonts::resolve::resolve_family(&w.name, available);
+        };
+        let r = ob_fonts::resolve::resolve_family(used_as, available);
         if r.tier != ob_fonts::resolve::SubstituteTier::Exact {
             out.push(CheckNote::to_fonts(format!(
                 "Check: {}",
@@ -5508,7 +5515,8 @@ impl App {
 
     fn pin_fonts(&mut self) {
         if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
-            ob_fonts::pin_document_fonts(&mut self.doc, &lib);
+            let bundled = ob_text::shaping::bundled_font_infos();
+            ob_fonts::pin_document_fonts(&mut self.doc, &lib, &bundled);
         }
     }
 
@@ -7905,7 +7913,8 @@ impl App {
         self.commit_if_editing();
         let mut doc = insert.as_document(&self.doc);
         if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
-            ob_fonts::pin_document_fonts(&mut doc, &lib);
+            let bundled = ob_text::shaping::bundled_font_infos();
+            ob_fonts::pin_document_fonts(&mut doc, &lib, &bundled);
         }
         let stem = self
             .path

@@ -624,8 +624,44 @@ pub fn pick_face(candidates: &[(bool, bool)], bold: bool, italic: bool) -> Optio
         .or_else(|| candidates.iter().rposition(|&(b, i)| !b && !i))
 }
 
+/// THE candidate faces, shared by the document font pin
+/// and the PDF writer (round 4, R4-9): the bundled faces
+/// first, then the library's, and only faces whose
+/// embedding rights let them travel inside a file
+/// (may_package) are candidates at all. One winner per
+/// (family, bold, italic) key, picked by pick_face, so
+/// the library's face wins over a bundled face of the
+/// same key, the writer's long-standing order. The pin
+/// used to scan the library unfiltered with no bundled
+/// faces at all, so it could name a file the writer
+/// would never embed, and miss the bundled face the
+/// writer would; one enumeration in one place ends
+/// that drift. Callers pass the bundled faces as facts
+/// (ob_text::shaping::bundled_font_infos) because the
+/// bundled files live with the shaper.
+pub fn candidate_faces(bundled: &[FontInfo], library: &[FontInfo]) -> Vec<FontInfo> {
+    let mut groups: Vec<((String, bool, bool), Vec<FontInfo>)> = Vec::new();
+    for info in bundled.iter().chain(library.iter()) {
+        if !info.rights.may_package() {
+            continue;
+        }
+        let key = (info.family.clone(), info.bold, info.italic);
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, group)) => group.push(info.clone()),
+            None => groups.push((key, vec![info.clone()])),
+        }
+    }
+    groups
+        .into_iter()
+        .filter_map(|((_, bold, italic), group)| {
+            let flags: Vec<(bool, bool)> = group.iter().map(|f| (f.bold, f.italic)).collect();
+            pick_face(&flags, bold, italic).map(|idx| group[idx].clone())
+        })
+        .collect()
+}
+
 /// Record, on each of the document's styles, the SHA-256 of the
-/// exact library font file that style will be laid out with
+/// exact font file that style will be laid out with
 /// (docs/FONTS.md). Run before saving or exporting, so the file
 /// remembers which font bytes its layout depends on. The family
 /// a style names is walked through the resolution chain first:
@@ -635,9 +671,15 @@ pub fn pick_face(candidates: &[(bool, bool)], bold: bool, italic: bool) -> Optio
 /// added later, the next save re-pins to it by itself. The face
 /// within the family is picked by pick_face, the shared rule:
 /// an italic style pins the italic face, bold-italic the
-/// bold-italic face.
-pub fn pin_document_fonts(doc: &mut ob_model::Document, lib: &FontLibrary) {
-    let fonts = lib.scan();
+/// bold-italic face. The faces themselves come from
+/// candidate_faces, the same enumeration the PDF writer
+/// draws from (round 4, R4-9): bundled faces plus the
+/// library's, rights-filtered, so the pin names a face
+/// that would actually print. When no face can be picked
+/// (the resolved family has no candidate at all), the
+/// pin is CLEARED, never left stale from an earlier save.
+pub fn pin_document_fonts(doc: &mut ob_model::Document, lib: &FontLibrary, bundled: &[FontInfo]) {
+    let fonts = candidate_faces(bundled, &lib.scan());
     let families: Vec<String> = {
         let mut out: Vec<String> = Vec::new();
         for f in &fonts {
@@ -651,8 +693,9 @@ pub fn pin_document_fonts(doc: &mut ob_model::Document, lib: &FontLibrary) {
         let resolved = resolve::resolve_family(&style.font_family, &families).family;
         let family_faces: Vec<&FontInfo> = fonts.iter().filter(|f| f.family == resolved).collect();
         let flags: Vec<(bool, bool)> = family_faces.iter().map(|f| (f.bold, f.italic)).collect();
-        if let Some(idx) = pick_face(&flags, style.bold, style.italic) {
-            style.font_sha256 = Some(family_faces[idx].sha256.clone());
+        match pick_face(&flags, style.bold, style.italic) {
+            Some(idx) => style.font_sha256 = Some(family_faces[idx].sha256.clone()),
+            None => style.font_sha256 = None,
         }
     }
 }
@@ -666,6 +709,42 @@ mod tests {
             .join("../../crates/ob-text/assets/fonts")
             .join(name);
         std::fs::read(&path).expect("bundled font present")
+    }
+
+    /// The bundled faces as inspected facts, the way
+    /// ob_text::shaping::bundled_font_infos hands them to
+    /// the pin in the app.
+    fn bundled_infos() -> Vec<FontInfo> {
+        [
+            "LiberationSans-Regular.ttf",
+            "LiberationSans-Bold.ttf",
+            "LiberationSans-Italic.ttf",
+            "LiberationSans-BoldItalic.ttf",
+            "LiberationSerif-Regular.ttf",
+            "LiberationSerif-Bold.ttf",
+            "LiberationSerif-Italic.ttf",
+            "LiberationSerif-BoldItalic.ttf",
+        ]
+        .iter()
+        .map(|name| inspect(&bundled(name), name).expect("inspect bundled face"))
+        .collect()
+    }
+
+    /// A fabricated face fact: candidate_faces reads
+    /// facts, not font bytes, so the rule is testable
+    /// without a font file for every rights class.
+    fn fake_info(family: &str, bold: bool, rights: EmbeddingRights, sha: &str) -> FontInfo {
+        FontInfo {
+            family: family.into(),
+            full_name: family.into(),
+            bold,
+            italic: false,
+            rights,
+            no_subsetting: false,
+            file_name: "fake.ttf".into(),
+            sha256: sha.into(),
+            bytes: 0,
+        }
     }
 
     #[test]
@@ -1030,7 +1109,7 @@ mod tests {
             participants: Default::default(),
             inserts: Default::default(),
         };
-        pin_document_fonts(&mut doc, &lib);
+        pin_document_fonts(&mut doc, &lib, &bundled_infos());
         assert_eq!(
             doc.styles[0].font_sha256.as_deref(),
             Some(info.sha256.as_str())
@@ -1058,6 +1137,149 @@ mod tests {
         // No exact match and no plain face: nothing.
         assert_eq!(pick_face(&[(true, false)], false, true), None);
         assert_eq!(pick_face(&[], false, false), None);
+    }
+
+    #[test]
+    fn candidate_faces_are_the_writers_set() {
+        // R4-9: one enumeration for the pin and the PDF
+        // writer: bundled first, library after (so the
+        // library wins a shared key), and only faces
+        // whose rights let them travel are candidates.
+        let bundled = vec![fake_info(
+            "Liberation Sans",
+            false,
+            EmbeddingRights::Installable,
+            "bundled-sha",
+        )];
+        let library = vec![
+            fake_info(
+                "Liberation Sans",
+                false,
+                EmbeddingRights::Installable,
+                "library-sha",
+            ),
+            fake_info("Acme", false, EmbeddingRights::Restricted, "acme-sha"),
+            fake_info("Beta", false, EmbeddingRights::PreviewAndPrint, "beta-sha"),
+            fake_info("Gamma", true, EmbeddingRights::Editable, "gamma-sha"),
+        ];
+        let winners = candidate_faces(&bundled, &library);
+        let keys: Vec<(&str, bool, &str)> = winners
+            .iter()
+            .map(|f| (f.family.as_str(), f.bold, f.sha256.as_str()))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("Liberation Sans", false, "library-sha"),
+                ("Gamma", true, "gamma-sha"),
+            ]
+        );
+    }
+
+    #[test]
+    fn pinning_finds_bundled_faces_with_an_empty_library() {
+        // R4-9: the writer embeds the bundled faces even
+        // when the library folder is empty, so the pin
+        // names them too; before the shared enumeration
+        // it named nothing and the pin silently stayed
+        // unset.
+        let dir = std::env::temp_dir().join(format!("ob-fonts-pin3-{}", std::process::id()));
+        let lib = FontLibrary::open(dir.clone()).expect("open library");
+        let mut doc = ob_model::Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "Test".into(),
+            profile: Default::default(),
+            fields: Default::default(),
+            styles: vec![ob_model::ParagraphStyle {
+                id: "body".into(),
+                name: "Body".into(),
+                font_size: 11_000,
+                bold: false,
+                italic: false,
+                align: ob_model::Align::Left,
+                space_after: 4_000,
+                color: ob_model::Rgb::BLACK,
+                font_family: "Liberation Sans".into(),
+                font_sha256: None,
+            }],
+            stories: Vec::new(),
+            panels: Vec::new(),
+            sheet: ob_model::SheetSpec {
+                preset: "letter-bifold".into(),
+                size: ob_model::Size {
+                    w: 612_000,
+                    h: 792_000,
+                },
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+            wanted_fonts: Vec::new(),
+            participants: Default::default(),
+            inserts: Default::default(),
+        };
+        let bundled = bundled_infos();
+        let regular_sha = bundled
+            .iter()
+            .find(|f| f.family == "Liberation Sans" && !f.bold && !f.italic)
+            .expect("bundled regular face")
+            .sha256
+            .clone();
+        pin_document_fonts(&mut doc, &lib, &bundled);
+        assert_eq!(
+            doc.styles[0].font_sha256.as_deref(),
+            Some(regular_sha.as_str())
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_style_with_no_pickable_face_loses_its_stale_pin() {
+        // R4-9: when pick_face has nothing to pick (here
+        // no candidates at all: an empty library and no
+        // bundled faces handed in), the style's old pin
+        // is cleared, not left naming a file nothing
+        // would print with.
+        let dir = std::env::temp_dir().join(format!("ob-fonts-pin4-{}", std::process::id()));
+        let lib = FontLibrary::open(dir.clone()).expect("open library");
+        let mut doc = ob_model::Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "Test".into(),
+            profile: Default::default(),
+            fields: Default::default(),
+            styles: vec![ob_model::ParagraphStyle {
+                id: "body".into(),
+                name: "Body".into(),
+                font_size: 11_000,
+                bold: false,
+                italic: false,
+                align: ob_model::Align::Left,
+                space_after: 4_000,
+                color: ob_model::Rgb::BLACK,
+                font_family: "Liberation Serif".into(),
+                font_sha256: Some("a-stale-hash".into()),
+            }],
+            stories: Vec::new(),
+            panels: Vec::new(),
+            sheet: ob_model::SheetSpec {
+                preset: "letter-bifold".into(),
+                size: ob_model::Size {
+                    w: 612_000,
+                    h: 792_000,
+                },
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+            wanted_fonts: Vec::new(),
+            participants: Default::default(),
+            inserts: Default::default(),
+        };
+        pin_document_fonts(&mut doc, &lib, &[]);
+        assert_eq!(doc.styles[0].font_sha256, None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1116,7 +1338,7 @@ mod tests {
             participants: Default::default(),
             inserts: Default::default(),
         };
-        pin_document_fonts(&mut doc, &lib);
+        pin_document_fonts(&mut doc, &lib, &bundled_infos());
         assert_eq!(
             doc.styles[0].font_sha256.as_deref(),
             Some(shas["LiberationSans-Regular.ttf"].as_str())

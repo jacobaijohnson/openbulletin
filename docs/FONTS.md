@@ -73,9 +73,13 @@ font name, so the user can find and install the real font
 themselves; and once it is installed, documents must use it with no
 editing. Built that way:
 
-- Styles an import creates carry the SOURCE family name from the
-  file ("Gill Sans MT"), never the substitute's name. The document
-  records what it was made in.
+- Styles an import creates carry the FULL source family name
+  from the file, exactly as stated ("Gill Sans MT", "Times New
+  Roman", "Verdana-Bold"), never the substitute's name and never
+  a stripped form. The document records what it was made in, and
+  resolution tries the full name first, so a family whose name
+  ends in a face word ("Latin Modern Roman", "Acme Bold") still
+  upgrades by itself when the real font is installed.
 - The document also gains a wanted-fonts record (`wanted_fonts` in
   the .obd): each font the library did not hold at import time, with
   the free family that stood in for it then. The import review
@@ -99,15 +103,23 @@ editing. Built that way:
 
 Two name rules keep those promises honest (round 3, R3-1 and R3-2):
 
-- **The record names the family, not a face.** Source files name
-  faces: "Verdana-Bold", "DejaVu Sans Bold", "GillSansMT-Bold".
-  Every recorded and wanted name is the base family ("Verdana",
-  "DejaVu Sans", "Gill Sans MT"): the family is what a person can
-  search for and install, and once it is in the library the
-  documents upgrade, whichever face's name the file happened to
-  carry. Face words are the conservative set Bold, Italic,
-  BoldItalic, Oblique, BoldOblique, Regular, and Roman (in the
-  PostScript-style names our sources write, Roman is a face word).
+- **The record names the family, not a face.** The style keeps
+  the full source name (above); the wanted record and the Check
+  finding name the family a person can search for and install,
+  derived from that full name. How much comes off depends on the
+  separator in front of the face word. After a dash or comma,
+  the full set comes off: Bold, Italic, BoldItalic, Oblique,
+  BoldOblique, Regular, and Roman ("Verdana-Bold" records
+  "Verdana"; in the PostScript-style names our sources write
+  that way, Roman is a face word). After a space, only Bold,
+  Italic, BoldItalic, Oblique, and BoldOblique come off, never
+  Roman or Regular: a spaced Roman can be the family's own last
+  word, so "Times New Roman" and "Latin Modern Roman" name
+  themselves. An earlier build stripped a spaced Roman too,
+  recording "Times New", a family that does not exist: its
+  metric-twin row could never answer, the serif text laid out
+  in a sans, and installing the real font upgraded nothing
+  (round 4, R4-1).
 - **The table answers a name only for the family itself.** A row
   matches when the whole name is one of its families plus at most
   a face word or a PostScript tail (the "PSMT" in
@@ -156,7 +168,13 @@ laptop). So fonts live in one app-managed folder, the Font Library:
   Docker shape the library is a folder in the data volume, and the
   same Add/Find flows work from the browser.
 
-Documents name fonts by family plus file hash. When an .obd travels,
+Documents name fonts by family plus file hash. The fingerprint a
+save stamps on each style and the faces a print PDF embeds are
+picked from one and the same candidate set (round 4, R4-9): the
+bundled faces plus the library faces whose embedding bits let
+them travel, one winner per face. A style whose picked face does
+not exist keeps no fingerprint rather than a stale one from an
+earlier save. When an .obd travels,
 fonts may ride inside the package only when their license or
 embedding bits allow it (OFL and Apache: yes; installable/editable:
 yes; preview-and-print: the font stays out and the receiver is told

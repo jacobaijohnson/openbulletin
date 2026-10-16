@@ -137,6 +137,19 @@ pub fn bundled_font_files() -> Vec<(&'static str, &'static [u8])> {
     ]
 }
 
+/// The bundled starter fonts as inspected facts (family,
+/// face flags, rights, hash), for the consumers that
+/// enumerate faces without shaping: the document font pin
+/// shares the PDF writer's candidate rule, whose set is
+/// these faces plus the Font Library's
+/// (ob_fonts::candidate_faces, round 4 R4-9).
+pub fn bundled_font_infos() -> Vec<ob_fonts::FontInfo> {
+    bundled_font_files()
+        .iter()
+        .filter_map(|(name, bytes)| ob_fonts::inspect(bytes, name).ok())
+        .collect()
+}
+
 pub fn bundled_shaper() -> Shaper {
     let mut s = Shaper::new();
     s.register_font(include_bytes!("../assets/fonts/LiberationSans-Regular.ttf").to_vec());

@@ -163,3 +163,39 @@ and real bulletins, not preferences.
 Tier-2 for this round: Opus 2,611 in / 14,642 out; GPT 1,712
 in / 3,587 out. Roughly $0.34 estimated in total. The two
 Wonder lanes ran on internal tokens.
+
+## Shipped (2026-10-15, same evening)
+
+Batch J-A (commit 0425294, 132 tests): J1 date guard + Next
+Sunday snap with weeks_advanced reported; J2 service lines +
+sermon title on This Sunday (pure extract/apply over the order
+story, {Church.pastor} preserved); J6 per-file print/check
+fingerprints persisted in settings (20-file cap) + step
+restored on launch; J7 coming-Sunday default date + starter
+sample sentence. Builder note accepted: on Save the state is
+stored under the new path rather than reseeded.
+
+Batch J-B (commit 512e50f, 138 tests): J3 dirty-cancel records
+the discarded words with a "Bring the typed words back" button
+in the status area and Pages window; J4 printer pick list, the
+seeded fake name removed (field starts empty with a hint), and
+two defensive extras (the checklist says "this printer" when
+unnamed; the test-sheet answers refuse to learn under a blank
+name, closing Wonder finding 2's exact poisoning path); J5
+print_dialog_guidance pure function, shown after making a copy
+and persistently under the Print buttons; J8 dated save name;
+J9 recovery offer gates all editing until answered; J10
+NextSundayReport.ended_names names what ended, Check lists
+carried announcements with through dates as information; J11
+reading copy leads with proofreading, Check states it does
+not check spelling; J12 verified zero user-facing "encoding"
+or noun-"story" strings exist, braces explanation added to
+the editing session; J13 the leftover was Start's "Start from
+last week" door, now routed: .obd keeps its semantics, every
+other format goes through the one door as a draft, refusal
+string deleted; J14 fit check measures tabbed lines via the
+canvas's own shaping (probe: a normal hymn leader line
+measures 399,158 of its 400,000 mpt frame, just fitting).
+
+Still deferred, unchanged: import field-binding by pointing,
+spell check (v0.5), shaped-fidelity typing, native printing.

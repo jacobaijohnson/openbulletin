@@ -50,7 +50,11 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
   offers the current paragraph's style (Heading, Body, Scripture,
   and friends). Done or clicking another part of the page
   finishes and saves; Escape throws the typing away (the
-  office convention: Escape in a text box means cancel).
+  office convention: Escape in a text box means cancel). Since
+  the lens review (2026-10-15), thrown-away typing that
+  differed from what was there is kept: the status line offers
+  "Bring the typed words back", reopening the box with them.
+  Cancel still cancels; it no longer destroys.
 - **Undo** covers the canvas: typing sessions (one step each),
   drags, nudges (a burst counts once), right-click applies, guide
   add/move/delete, and the Next Sunday command. Ctrl+Z and the

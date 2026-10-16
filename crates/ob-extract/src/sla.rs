@@ -491,6 +491,7 @@ pub fn import_sla(
                         align: seg.align,
                         italic,
                         color: [0, 0, 0],
+                        runs: Vec::new(),
                     });
                 }
             }

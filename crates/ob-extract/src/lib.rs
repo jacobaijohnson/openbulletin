@@ -96,6 +96,26 @@ pub struct Span {
     /// takes the block's consensus.
     #[serde(default)]
     pub color: [u8; 3],
+    /// Inline formatting inside the span (G1b), when the
+    /// source carries it run by run (IDML CharacterStyleRange
+    /// today). Invariant: concatenating the run texts gives
+    /// exactly `text`. Empty means the span states one face
+    /// for all its words (its own bold/italic fields).
+    #[serde(default)]
+    pub runs: Vec<SpanRun>,
+}
+
+/// One formatted piece of a span (G1b): text plus the face
+/// switches the source states for it (None = the source
+/// states nothing; the draft builder reads those as the
+/// span's own face).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpanRun {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bold: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub italic: Option<bool>,
 }
 
 /// One picture found in the source, carried beside the dump:
@@ -184,6 +204,7 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
                 align: None,
                 italic: false,
                 color: [0, 0, 0],
+                runs: Vec::new(),
             });
         } else {
             for line in text.lines() {
@@ -205,6 +226,7 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
                     align: None,
                     italic: false,
                     color: [0, 0, 0],
+                    runs: Vec::new(),
                 });
             }
         }
@@ -429,6 +451,7 @@ mod tests {
             align: None,
             italic: false,
             color: [0, 0, 0],
+            runs: Vec::new(),
         }
     }
 

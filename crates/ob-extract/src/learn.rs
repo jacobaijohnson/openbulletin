@@ -304,7 +304,7 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> ExtractionDump {
             let fw = frame.rect.w as f32 / 1000.0;
             let mut y = frame.rect.y as f32 / 1000.0;
             for para in &story.paragraphs {
-                if para.text.trim().is_empty() {
+                if para.text().trim().is_empty() {
                     continue;
                 }
                 let style = doc.style(&para.style);
@@ -314,7 +314,7 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> ExtractionDump {
                     .max(1.0);
                 panel_spans.push(Span {
                     page: pi as u32,
-                    text: para.text.clone(),
+                    text: para.text(),
                     trust: SpanTrust::RawText,
                     x: Some(fx),
                     y: Some(y),
@@ -331,6 +331,7 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> ExtractionDump {
                     color: style
                         .map(|s| [s.color.r, s.color.g, s.color.b])
                         .unwrap_or([0, 0, 0]),
+                    runs: Vec::new(),
                 });
                 y += size_pt * 1.25 + style.map(|s| s.space_after as f32 / 1000.0).unwrap_or(0.0);
             }
@@ -585,6 +586,7 @@ mod tests {
                 align: None,
                 italic: false,
                 color: [0, 0, 0],
+                runs: Vec::new(),
             };
             ExtractionDump {
                 schema_version: 1,

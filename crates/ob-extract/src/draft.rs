@@ -84,7 +84,9 @@ pub fn font_match(source_name: &str) -> Option<String> {
 }
 
 /// One text fragment: x, width, text, font size, bold,
-/// font name, italic, color, stated alignment.
+/// font name, italic, color, stated alignment, and the
+/// span's inline runs (G1b; empty when the source states
+/// one face for the whole span).
 type Fragment = (
     f32,
     f32,
@@ -95,13 +97,14 @@ type Fragment = (
     bool,
     [u8; 3],
     Option<Align>,
+    Vec<crate::SpanRun>,
 );
 
 struct Line {
     y: f32,
     h: f32,
     /// x, width, text, font size, bold, font name, italic,
-    /// color, stated alignment: one fragment.
+    /// color, stated alignment, runs: one fragment.
     parts: Vec<Fragment>,
     /// Baseline wander inside the line: large on text set along
     /// a curve or in steps, which no reading order fully heals.
@@ -131,7 +134,7 @@ impl Line {
         parts.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut out = String::new();
         let mut prev_end: Option<f32> = None;
-        for (x, w, text, size, _, _, _, _, _) in parts {
+        for (x, w, text, size, _, _, _, _, _, _) in parts {
             // Some producers draw the same words twice (a fill
             // pass and an outline pass, a point or two apart):
             // a fragment that starts deep inside the previous
@@ -151,6 +154,85 @@ impl Line {
             });
         }
         out.trim().to_string()
+    }
+    /// This line's words as model runs (G1b), when every
+    /// fragment carries runs that concatenate to its text:
+    /// the same left-to-right walk `text()` makes (overlap
+    /// skips honored, gap spaces earned the same way), each
+    /// piece's flags made effective against its fragment's
+    /// stated face. None when any fragment lacks runs or
+    /// disagrees with its fragment's text.
+    fn runs(&self) -> Option<Vec<ob_model::Run>> {
+        self.runs_walk(true)
+    }
+
+    /// Runs built from the fragments themselves: one run
+    /// per fragment, trimmed, in the fragment's own face.
+    /// The fallback for lines whose spans carry no inline
+    /// runs (PDF and .pub spans state a face per span, not
+    /// per word): a bold or italic span inside the line
+    /// still lands as a bold or italic run of the paragraph
+    /// instead of vanishing into the block's one style.
+    fn part_runs(&self) -> Vec<ob_model::Run> {
+        self.runs_walk(false).unwrap_or_default()
+    }
+
+    /// The walk behind `runs` and `part_runs`. With
+    /// `span_runs`, a fragment contributes its inline runs
+    /// (and the walk fails, None, when a fragment has none
+    /// or they disagree with its text); without, each
+    /// fragment contributes one run in its own face.
+    fn runs_walk(&self, span_runs: bool) -> Option<Vec<ob_model::Run>> {
+        let mut parts: Vec<&Fragment> = self.parts.iter().collect();
+        parts.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut out: Vec<ob_model::Run> = Vec::new();
+        let mut prev_end: Option<f32> = None;
+        for (x, w, text, size, bold, font, italic, _, _, runs) in parts {
+            let mut frag: Vec<ob_model::Run> = if span_runs {
+                if runs.is_empty() {
+                    return None;
+                }
+                let concat: String = runs.iter().map(|r| r.text.as_str()).collect();
+                if concat != *text {
+                    return None;
+                }
+                runs.iter()
+                    .map(|r| ob_model::Run {
+                        text: r.text.clone(),
+                        bold: Some(r.bold.unwrap_or(*bold)),
+                        italic: Some(r.italic.unwrap_or(*italic)),
+                    })
+                    .collect()
+            } else {
+                // The fragment's own face, with the v1
+                // name sniff for italic that Line::italic
+                // applies line-wide.
+                let fname = font.clone().unwrap_or_default().to_lowercase();
+                let frag_italic = *italic || fname.contains("italic") || fname.contains("oblique");
+                vec![ob_model::Run {
+                    text: text.clone(),
+                    bold: Some(*bold),
+                    italic: Some(frag_italic),
+                }]
+            };
+            if let Some(end) = prev_end {
+                if *x < end - size * 0.1 {
+                    continue; // the second drawing, as in text()
+                }
+                if x - end > (size * 0.06).max(0.15) && !out.is_empty() {
+                    if let Some(last) = out.last_mut() {
+                        last.text.push(' ');
+                    }
+                }
+            }
+            trim_runs(&mut frag);
+            out.extend(frag);
+            prev_end = Some(match prev_end {
+                Some(e) => e.max(x + w),
+                None => x + w,
+            });
+        }
+        Some(ob_model::normalize_runs(out))
     }
     fn font(&self) -> Option<String> {
         self.parts.first().and_then(|p| p.5.clone())
@@ -181,6 +263,32 @@ impl Line {
     /// This line's color: the one most of its parts carry.
     fn color(&self) -> [u8; 3] {
         majority(self.parts.iter().map(|p| p.7)).unwrap_or([0, 0, 0])
+    }
+}
+
+/// Trim whitespace off the ends of a run list, as
+/// `str::trim` would trim its concatenation.
+fn trim_runs(runs: &mut [ob_model::Run]) {
+    let full: String = runs.iter().map(|r| r.text.as_str()).collect();
+    let start = full.len() - full.trim_start().len();
+    let end = full.trim_end().len();
+    if start >= end {
+        for r in runs.iter_mut() {
+            r.text.clear();
+        }
+        return;
+    }
+    let mut at = 0usize;
+    for r in runs.iter_mut() {
+        let len = r.text.len();
+        let s = start.max(at);
+        let e = end.min(at + len);
+        r.text = if s < e {
+            r.text[s - at..e - at].to_string()
+        } else {
+            String::new()
+        };
+        at += len;
     }
 }
 
@@ -240,6 +348,7 @@ fn lines_of(spans: &[&crate::Span]) -> Vec<Line> {
             sp.italic,
             sp.color,
             sp.align,
+            sp.runs.clone(),
         );
         if joins == Some(true) {
             let line = lines.last_mut().expect("line");
@@ -391,24 +500,35 @@ fn build_draft(
         for (bi, block) in blocks.iter().enumerate() {
             // Paragraphs: a line that nearly fills the block's
             // width wrapped, so it joins the next line.
+            // Paragraphs accumulate as RUNS (G1b): a line whose
+            // spans carry inline formatting keeps it, with the
+            // flags still effective (the block style is chosen
+            // below; flags are relativized against it when the
+            // story is written). A line without runs becomes
+            // plain runs with the LINE's own face, so a line
+            // more italic than its block lands as an italic
+            // run of the block's paragraph, not a new style.
             let maxw = block.iter().map(|l| l.x1() - l.x0()).fold(0.0, f32::max);
-            let mut paras: Vec<String> = Vec::new();
+            let mut paras: Vec<Vec<ob_model::Run>> = Vec::new();
             for line in block {
                 let t = line.text();
                 if t.is_empty() {
                     continue;
                 }
+                let line_runs = line.runs().unwrap_or_else(|| line.part_runs());
                 let wrapped = line.x1() - line.x0() > maxw * 0.85;
                 if wrapped {
                     if let Some(last) = paras.last_mut() {
                         if !last.is_empty() {
-                            last.push(' ');
-                            last.push_str(&t);
+                            if let Some(tail) = last.last_mut() {
+                                tail.text.push(' ');
+                            }
+                            last.extend(line_runs);
                             continue;
                         }
                     }
                 }
-                paras.push(t);
+                paras.push(line_runs);
             }
             if paras.is_empty() {
                 continue;
@@ -453,15 +573,35 @@ fn build_draft(
                 id
             });
             let sid = format!("rescue-{pi}-{bi}");
+            // Relativize the runs against the block style
+            // (G1b): a flag the style already carries becomes
+            // None (inherit), a differing one stays explicit.
+            let style = styles
+                .iter()
+                .find(|s| s.id == *style_id)
+                .expect("the style was just made");
+            let (sb, si) = (style.bold, style.italic);
+            let relativize = |runs: &Vec<ob_model::Run>| -> Vec<ob_model::Run> {
+                runs.iter()
+                    .map(|r| ob_model::Run {
+                        text: r.text.clone(),
+                        bold: match r.bold {
+                            Some(f) if f == sb => None,
+                            other => other,
+                        },
+                        italic: match r.italic {
+                            Some(f) if f == si => None,
+                            other => other,
+                        },
+                    })
+                    .collect()
+            };
             stories.push(Story {
                 keep_through: None,
                 id: sid.clone(),
                 paragraphs: paras
                     .iter()
-                    .map(|t| Paragraph {
-                        style: style_id.clone(),
-                        text: t.clone(),
-                    })
+                    .map(|runs| Paragraph::from_runs(style_id, relativize(runs)))
                     .collect(),
             });
             let x0 = block.iter().map(|l| l.x0()).fold(f32::MAX, f32::min);
@@ -488,7 +628,8 @@ fn build_draft(
             // text rescue) are flagged the same way.
             let jittery = block.iter().any(|l| l.spread > l.size() * 0.6);
             let unvouched = block.iter().any(|l| l.review);
-            let first_line: String = paras[0].chars().take(38).collect();
+            let first_text: String = paras[0].iter().map(|r| r.text.as_str()).collect();
+            let first_line: String = first_text.chars().take(38).collect();
             items.push(ImportItem {
                 panel: pi,
                 label: first_line,
@@ -586,7 +727,60 @@ mod tests {
             align: None,
             italic: false,
             color: [0, 0, 0],
+            runs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_line_more_italic_than_its_block_becomes_an_italic_run() {
+        // G1b: the block takes its style from its first line
+        // (regular); the second line, set italic in the old
+        // file, must not force a second style or lose its
+        // face: it lands as an italic run of its paragraph.
+        let mut italic_span = span(0, "A mighty fortress", 60.0, 104.0, 11.0, "Calibri", false);
+        italic_span.italic = true;
+        italic_span.w = Some(40.0); // a short line: its own paragraph, not a wrap join
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pdf,
+            source_name: "old.pdf".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![
+                span(0, "Welcome to worship", 60.0, 90.0, 11.0, "Calibri", false),
+                italic_span,
+            ],
+            images: Vec::new(),
+        };
+        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        let story = &out.doc.stories[0];
+        assert_eq!(story.paragraphs.len(), 2);
+        let first = &story.paragraphs[0];
+        assert!(
+            first.runs.iter().all(|r| r.italic.is_none()),
+            "the regular line inherits the regular style: {:?}",
+            first.runs
+        );
+        let second = &story.paragraphs[1];
+        assert_eq!(second.text(), "A mighty fortress");
+        assert!(
+            second
+                .runs
+                .iter()
+                .all(|r| r.italic == Some(true) && !r.text.is_empty()),
+            "the italic line is an italic run, not a style: {:?}",
+            second.runs
+        );
+        assert_eq!(
+            first.style, second.style,
+            "both paragraphs share the block's one style"
+        );
     }
 
     #[test]
@@ -698,7 +892,7 @@ mod tests {
             .doc
             .stories
             .iter()
-            .any(|st| st.paragraphs.iter().any(|p| p.text == "Grace Lutheran")));
+            .any(|st| st.paragraphs.iter().any(|p| p.text() == "Grace Lutheran")));
     }
 
     #[test]

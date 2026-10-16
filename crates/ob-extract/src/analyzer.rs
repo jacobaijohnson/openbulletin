@@ -207,7 +207,7 @@ pub fn analyze(
     for story in &out.doc.stories {
         let mut stand = 0usize;
         for para in &story.paragraphs {
-            let n = norm(&para.text);
+            let n = norm(&para.text());
             let words: Vec<&str> = n.split_whitespace().collect();
             let para_standing = standing_lines.contains(&n)
                 || shingles(&words).iter().any(|sh| standing.contains(sh));
@@ -227,7 +227,7 @@ pub fn analyze(
         let label: String = story
             .paragraphs
             .first()
-            .map(|p| p.text.chars().take(44).collect())
+            .map(|p| p.text().chars().take(44).collect())
             .unwrap_or_default();
         items.push(TemplateItem {
             label,
@@ -280,6 +280,7 @@ mod tests {
             align: None,
             italic: false,
             color: [0, 0, 0],
+            runs: Vec::new(),
         });
         spans.push(Span {
             page: 0,
@@ -295,6 +296,7 @@ mod tests {
             align: None,
             italic: false,
             color: [0, 0, 0],
+            runs: Vec::new(),
         });
         ExtractionDump {
             schema_version: 1,

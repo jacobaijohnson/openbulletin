@@ -35,6 +35,41 @@ impl FontSpec {
     }
 }
 
+/// One styled span over a paragraph's text: a byte range
+/// plus the EFFECTIVE face switches for it (the caller has
+/// already folded the paragraph style in:
+/// `run.bold.unwrap_or(style.bold)`). Spans are how inline
+/// formatting (G1b) reaches the shaper: one parley layout
+/// for the whole paragraph, with the weight and style
+/// pushed per range, so line breaking stays parley-true
+/// across run boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSpan {
+    pub range: std::ops::Range<usize>,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// The spans of `spans` that intersect `range`, clipped to
+/// it and rebased so `range.start` becomes 0: the spans of
+/// one display line, or of one trial string in the strict
+/// re-break.
+pub fn clip_spans(spans: &[RunSpan], range: std::ops::Range<usize>) -> Vec<RunSpan> {
+    let mut out = Vec::new();
+    for s in spans {
+        let start = s.range.start.max(range.start);
+        let end = s.range.end.min(range.end);
+        if start < end {
+            out.push(RunSpan {
+                range: start - range.start..end - range.start,
+                bold: s.bold,
+                italic: s.italic,
+            });
+        }
+    }
+    out
+}
+
 /// One shaped line of text.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShapedLine {
@@ -153,6 +188,25 @@ impl Shaper {
         leading_rel: f32,
         max_width: Option<Mpt>,
     ) -> parley::Layout<()> {
+        self.build_layout_spanned(text, spec, &[], size, leading_rel, max_width)
+    }
+
+    /// `build_layout` with per-range face switches: the
+    /// base spec supplies the family and the default weight
+    /// and style; each span pushes its own effective weight
+    /// and style over its range. Ranges the spans do not
+    /// cover keep the base face. This is the one layout the
+    /// whole runs pipeline shares, so a paragraph breaks
+    /// identically whether it carries runs or not.
+    pub(crate) fn build_layout_spanned(
+        &mut self,
+        text: &str,
+        spec: &FontSpec,
+        spans: &[RunSpan],
+        size: Mpt,
+        leading_rel: f32,
+        max_width: Option<Mpt>,
+    ) -> parley::Layout<()> {
         let size_px = size as f32 / 1000.0;
         let mut builder = self.layout.ranged_builder(&mut self.fonts, text, 1.0, true);
         builder.push_default(StyleProperty::FontFamily(FontFamily::from(
@@ -164,8 +218,31 @@ impl Shaper {
         } else {
             FontWeight::NORMAL
         }));
-        if spec.italic {
-            builder.push_default(StyleProperty::FontStyle(FontStyle::Italic));
+        builder.push_default(StyleProperty::FontStyle(if spec.italic {
+            FontStyle::Italic
+        } else {
+            FontStyle::Normal
+        }));
+        for span in spans {
+            if span.range.start >= span.range.end || span.range.end > text.len() {
+                continue;
+            }
+            builder.push(
+                StyleProperty::FontWeight(if span.bold {
+                    FontWeight::BOLD
+                } else {
+                    FontWeight::NORMAL
+                }),
+                span.range.clone(),
+            );
+            builder.push(
+                StyleProperty::FontStyle(if span.italic {
+                    FontStyle::Italic
+                } else {
+                    FontStyle::Normal
+                }),
+                span.range.clone(),
+            );
         }
         builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
             leading_rel,
@@ -173,6 +250,26 @@ impl Shaper {
         let mut layout = builder.build(text);
         layout.break_all_lines(max_width.map(|w| w as f32 / 1000.0));
         layout
+    }
+
+    /// Shaped width of a string whose face switches change
+    /// mid-string: the spans are over `text` itself.
+    pub fn measure_spanned(
+        &mut self,
+        text: &str,
+        spans: &[RunSpan],
+        spec: &FontSpec,
+        size: Mpt,
+    ) -> Mpt {
+        if text.is_empty() {
+            return 0;
+        }
+        let layout = self.build_layout_spanned(text, spec, spans, size, 1.0, None);
+        let mut max = 0.0f32;
+        for line in layout.lines() {
+            max = max.max(line.metrics().advance);
+        }
+        (max * 1000.0).round() as Mpt
     }
 
     /// Shaped width of a single-line string, in milli-points.

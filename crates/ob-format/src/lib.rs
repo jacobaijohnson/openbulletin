@@ -331,6 +331,69 @@ mod tests {
     }
 
     #[test]
+    fn runs_survive_the_v1_round_trip_in_the_runs_shape() {
+        let mut doc = test_doc();
+        doc.stories[0].paragraphs = vec![Paragraph::from_runs(
+            "body",
+            vec![
+                Run::plain("Sing "),
+                Run {
+                    text: "hymn".into(),
+                    bold: Some(true),
+                    italic: None,
+                },
+                Run::plain(" 432"),
+            ],
+        )];
+        let dir = scratch("runs");
+        let path = dir.join("runs.obd");
+        save(&doc, &path).unwrap();
+        // The document.json inside the zip speaks runs.
+        let file = std::fs::File::open(&path).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let mut json = String::new();
+        zip.by_name("document.json")
+            .unwrap()
+            .read_to_string(&mut json)
+            .unwrap();
+        assert!(json.contains("\"runs\""), "runs written: {json}");
+        let back = load(&path).unwrap();
+        assert_eq!(back.stories[0].paragraphs, doc.stories[0].paragraphs);
+        assert_eq!(back.stories[0].paragraphs[0].text(), "Sing hymn 432");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v0_file_with_text_shape_paragraphs_loads_with_words_intact() {
+        // A G1a-era (and earlier) file on disk: bare JSON,
+        // paragraphs stored as { style, text }.
+        let mut doc = test_doc();
+        doc.stories[0].paragraphs = vec![Paragraph::new("body", "Welcome to worship")];
+        let json = serde_json::to_string(&doc).expect("json");
+        assert!(
+            json.contains("\"runs\""),
+            "the writer today speaks runs even for this doc"
+        );
+        // Rewrite the story's paragraph in the old shape, as
+        // an old file on disk would hold it.
+        let old_json = json.replace(
+            r#""paragraphs":[{"style":"body","runs":[{"text":"Welcome to worship"}]}]"#,
+            r#""paragraphs":[{"style":"body","text":"Welcome to worship"}]"#,
+        );
+        assert_ne!(old_json, json, "the old shape was substituted");
+        let dir = scratch("v0runs");
+        let path = dir.join("old.obd");
+        std::fs::write(&path, old_json).unwrap();
+        let back = load(&path).unwrap();
+        assert_eq!(back.stories[0].paragraphs[0].text(), "Welcome to worship");
+        assert_eq!(
+            back.stories[0].paragraphs[0].runs,
+            vec![Run::plain("Welcome to worship")]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn v1_carries_asset_bytes_by_hash_and_v0_resaves_as_v1() {
         let dir = scratch("v1");
         // A v0 file on disk: bare JSON, an asset recorded in

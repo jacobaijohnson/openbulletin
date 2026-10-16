@@ -11,6 +11,7 @@ use ob_layout::{build_template, Preset};
 use ob_model::{ChurchProfile, ContentRole, Document};
 
 mod editmap;
+mod runsedit;
 
 const STEPS: [&str; 5] = ["Start", "This Sunday", "Announcements", "Check", "Print"];
 
@@ -863,7 +864,7 @@ fn char_findings(doc: &Document) -> Vec<CharFinding> {
     for story in &doc.stories {
         let mut chars: Vec<char> = Vec::new();
         for para in &story.paragraphs {
-            let resolved = ob_model::resolve_fields(&para.text, doc);
+            let resolved = ob_model::resolve_fields(&para.text(), doc);
             for c in ob_pdf::unsupported_chars(&resolved) {
                 if !chars.contains(&c) {
                     chars.push(c);
@@ -876,9 +877,9 @@ fn char_findings(doc: &Document) -> Vec<CharFinding> {
         let label = story
             .paragraphs
             .iter()
-            .map(|p| p.text.trim())
-            .find(|t| !t.is_empty())
-            .map(|t| t.chars().take(38).collect::<String>())
+            .map(|p| p.text())
+            .find(|t| !t.trim().is_empty())
+            .map(|t| t.trim().chars().take(38).collect::<String>())
             .unwrap_or_else(|| "A text block".to_string());
         let target = frame_target_for_story(doc, &story.id);
         out.push(CharFinding {
@@ -971,20 +972,20 @@ fn carried_lines(doc: &Document) -> Vec<String> {
         if until < bulletin {
             continue;
         }
-        let first_text = story
+        let owned_text = story
             .paragraphs
             .iter()
             .filter(|p| p.style == "body")
-            .map(|p| p.text.trim())
-            .find(|t| !t.is_empty())
+            .map(|p| p.text())
+            .find(|t| !t.trim().is_empty())
             .or_else(|| {
                 story
                     .paragraphs
                     .iter()
-                    .map(|p| p.text.trim())
-                    .find(|t| !t.is_empty())
-            })
-            .unwrap_or("An announcement");
+                    .map(|p| p.text())
+                    .find(|t| !t.trim().is_empty())
+            });
+        let first_text = owned_text.as_deref().unwrap_or("An announcement");
         let first: String = first_text
             .lines()
             .next()
@@ -1329,6 +1330,14 @@ struct App {
     editing: Option<(usize, usize)>,
     edit_text: String,
     edit_styles: Vec<String>,
+    /// The session's inline formatting (G1b): one run list
+    /// per paragraph of `edit_text`, raw text, kept in step
+    /// by runsedit on every buffer mutation. Detached means
+    /// the fallback (unshaped) editor changed the words, so
+    /// the runs no longer describe them and commit writes
+    /// plain runs rather than wrong ones.
+    edit_runs: Vec<Vec<ob_model::Run>>,
+    edit_runs_detached: bool,
     /// Story id of the current edit session, salting the text
     /// editor's identity so its private state (cursor, its own
     /// undo) never leaks from one box's session into another's
@@ -1461,6 +1470,86 @@ struct PreviewLine {
     font_family: String,
     bold: bool,
     italic: bool,
+    /// Same-face segments of the line (G1b): a bold word
+    /// inside the line draws in the bold face. `dx` is the
+    /// segment's offset from the line's left edge, in points.
+    /// Empty means "the whole line in the line's own face"
+    /// (the editor's probe lines carry none).
+    segs: Vec<PreviewSeg>,
+}
+
+/// One same-face piece of a preview line (G1b).
+#[derive(Clone)]
+struct PreviewSeg {
+    text: String,
+    dx: f32,
+    bold: bool,
+    italic: bool,
+}
+
+/// Convert one chip-free display piece to its raw range,
+/// through resolved space, and push it if it holds words.
+fn push_raw_piece(
+    map: &editmap::BufferMap,
+    start: usize,
+    end: usize,
+    out: &mut Vec<std::ops::Range<usize>>,
+) {
+    if start >= end {
+        return;
+    }
+    let rs = map.display_to_resolved(start);
+    let re = map.display_to_resolved(end);
+    let raws = map.resolved_to_raw(rs);
+    let rawe = map.resolved_to_raw(re);
+    if raws < rawe {
+        out.push(raws..rawe);
+    }
+}
+
+/// The effective face spans of a paragraph's RESOLVED runs:
+/// each run's flags with the paragraph style folded in
+/// (`run.bold.unwrap_or(style.bold)`), over the resolved
+/// text. Shared by the preview builder and the editor.
+fn effective_spans(
+    runs: &[ob_model::Run],
+    style: &ob_model::ParagraphStyle,
+) -> Vec<ob_text::shaping::RunSpan> {
+    let mut spans = Vec::new();
+    let mut at = 0usize;
+    for r in runs {
+        spans.push(ob_text::shaping::RunSpan {
+            range: at..at + r.text.len(),
+            bold: r.bold.unwrap_or(style.bold),
+            italic: r.italic.unwrap_or(style.italic),
+        });
+        at += r.text.len();
+    }
+    spans
+}
+
+/// Group a shaped line's clusters into same-face segments
+/// (G1b), in drawing order; each segment starts at its first
+/// cluster's position (the line's alignment offset folded
+/// in). Clusters in a line are adjacent by construction, so
+/// equal-flag neighbors simply extend the open segment.
+fn line_segments(line: &ob_text::text_layout::LayoutLine, text: &str) -> Vec<PreviewSeg> {
+    let mut segs: Vec<PreviewSeg> = Vec::new();
+    for c in &line.clusters {
+        let seg_text = &text[c.range.clone()];
+        match segs.last_mut() {
+            Some(last) if last.bold == c.bold && last.italic == c.italic => {
+                last.text.push_str(seg_text);
+            }
+            _ => segs.push(PreviewSeg {
+                text: seg_text.to_string(),
+                dx: line.x0 + c.x,
+                bold: c.bold,
+                italic: c.italic,
+            }),
+        }
+    }
+    segs
 }
 
 /// One paragraph of the shaped canvas editor (E1): its
@@ -1528,6 +1617,63 @@ fn line_font_id(rows: &[FontRow], line: &PreviewLine, size: f32) -> egui::FontId
     match preview_face_key(rows, &line.font_family, line.bold, line.italic) {
         Some(key) => egui::FontId::new(size, egui::FontFamily::Name(key.into())),
         None => egui::FontId::proportional(size),
+    }
+}
+
+/// Paint one preview line through `place` (a line-local x in
+/// points to the screen point at the line's baseline). With
+/// segments (G1b), each same-face piece draws in its own
+/// face at its own offset, the offsets already carrying the
+/// alignment; without them, the whole line draws in the
+/// line's face with the alignment anchor, as before.
+fn paint_line_segments(
+    painter: &egui::Painter,
+    rows: &[FontRow],
+    line: &PreviewLine,
+    scale: f32,
+    place: impl Fn(f32) -> egui::Pos2,
+) {
+    let size = (line.size * scale).max(4.0);
+    if line.segs.is_empty() {
+        let anchor = match line.align {
+            ob_model::Align::Left => egui::Align2::LEFT_BOTTOM,
+            ob_model::Align::Center => egui::Align2::CENTER_BOTTOM,
+            ob_model::Align::Right => egui::Align2::RIGHT_BOTTOM,
+        };
+        let lx = match line.align {
+            ob_model::Align::Left => line.x,
+            ob_model::Align::Center => line.x + line.w / 2.0,
+            ob_model::Align::Right => line.x + line.w,
+        };
+        painter.text(
+            place(lx),
+            anchor,
+            &line.text,
+            line_font_id(rows, line, size),
+            egui::Color32::BLACK,
+        );
+        return;
+    }
+    for seg in &line.segs {
+        let probe = PreviewLine {
+            text: seg.text.clone(),
+            size: line.size,
+            x: line.x,
+            y: line.y,
+            w: line.w,
+            align: line.align,
+            font_family: line.font_family.clone(),
+            bold: seg.bold,
+            italic: seg.italic,
+            segs: Vec::new(),
+        };
+        painter.text(
+            place(line.x + seg.dx),
+            egui::Align2::LEFT_BOTTOM,
+            &seg.text,
+            line_font_id(rows, &probe, size),
+            egui::Color32::BLACK,
+        );
     }
 }
 
@@ -1628,6 +1774,8 @@ impl Default for App {
             editing: None,
             edit_text: String::new(),
             edit_styles: Vec::new(),
+            edit_runs: Vec::new(),
+            edit_runs_detached: false,
             edit_salt: String::new(),
             edit_cursor_para: 0,
             frame_snapshot: String::new(),
@@ -1690,7 +1838,7 @@ fn weekly_body_text(doc: &Document) -> String {
         .paragraphs
         .iter()
         .filter(|p| p.style == "body")
-        .map(|p| p.text.clone())
+        .map(|p| p.text())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -1713,11 +1861,11 @@ struct ServiceLine {
 /// story a Standing frame holds; otherwise the first story
 /// with tabbed lines at all.
 fn service_story_id(doc: &Document) -> Option<String> {
-    let has_tabs = |s: &ob_model::Story| s.paragraphs.iter().any(|p| p.text.contains('\t'));
+    let has_tabs = |s: &ob_model::Story| s.paragraphs.iter().any(|p| p.text().contains('\t'));
     let has_sermon = |s: &ob_model::Story| {
         s.paragraphs
             .iter()
-            .any(|p| p.text.trim_start().starts_with("Sermon:"))
+            .any(|p| p.text().trim_start().starts_with("Sermon:"))
     };
     if let Some(s) = doc.stories.iter().find(|s| has_tabs(s) && has_sermon(s)) {
         return Some(s.id.clone());
@@ -1757,11 +1905,17 @@ fn service_lines(doc: &Document) -> Vec<ServiceLine> {
         .paragraphs
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.text.contains('\t'))
+        .filter(|(_, p)| p.text().contains('\t'))
         .map(|(i, p)| ServiceLine {
             para_index: i,
-            label: p.text.split('\t').next().unwrap_or("").trim().to_string(),
-            value: p.text.rsplit('\t').next().unwrap_or("").trim().to_string(),
+            label: p.text().split('\t').next().unwrap_or("").trim().to_string(),
+            value: p
+                .text()
+                .rsplit('\t')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string(),
         })
         .collect()
 }
@@ -1778,9 +1932,10 @@ fn set_service_line(doc: &mut Document, para_index: usize, new_value: &str) {
     let Some(para) = story.paragraphs.get_mut(para_index) else {
         return;
     };
-    if let Some(tab) = para.text.find('\t') {
-        let prefix = para.text[..=tab].to_string();
-        para.text = format!("{prefix}{new_value}");
+    let text = para.text();
+    if let Some(tab) = text.find('\t') {
+        let prefix = text[..=tab].to_string();
+        para.set_text(&format!("{prefix}{new_value}"));
     }
 }
 
@@ -1792,7 +1947,7 @@ fn sermon_para(doc: &Document) -> Option<(String, usize)> {
         story
             .paragraphs
             .iter()
-            .position(|p| p.text.trim_start().starts_with("Sermon:"))
+            .position(|p| p.text().trim_start().starts_with("Sermon:"))
     };
     if let Some(sid) = service_story_id(doc) {
         if let Some(story) = doc.story(&sid) {
@@ -1834,8 +1989,8 @@ fn sermon_title(doc: &Document) -> String {
     let Some(story) = doc.story(&sid) else {
         return String::new();
     };
-    let after = story.paragraphs[i]
-        .text
+    let sermon_text = story.paragraphs[i].text();
+    let after = sermon_text
         .trim_start()
         .strip_prefix("Sermon:")
         .unwrap_or("");
@@ -1857,13 +2012,14 @@ fn set_sermon_title(doc: &mut Document, title: &str) {
     let Some(para) = story.paragraphs.get_mut(i) else {
         return;
     };
-    let had_token = para.text.contains("{Church.pastor}");
-    para.text = match (title.is_empty(), had_token) {
+    let had_token = para.text().contains("{Church.pastor}");
+    let new_text = match (title.is_empty(), had_token) {
         (true, true) => "Sermon: {Church.pastor}".to_string(),
         (true, false) => "Sermon:".to_string(),
         (false, true) => format!("Sermon: {title} {{Church.pastor}}"),
         (false, false) => format!("Sermon: {title}"),
     };
+    para.set_text(&new_text);
 }
 
 impl App {
@@ -1990,7 +2146,7 @@ impl App {
             let mut inserted = false;
             for p in rest.drain(..) {
                 new_paras.push(p.clone());
-                if !inserted && p.style == "subheading" && p.text == "Announcements" {
+                if !inserted && p.style == "subheading" && p.text() == "Announcements" {
                     for l in &lines {
                         new_paras.push(ob_model::Paragraph::new("body", l));
                     }
@@ -2146,13 +2302,13 @@ impl App {
                         bold: style.bold,
                         italic: style.italic,
                     };
-                    let text = ob_model::resolve_fields(&para.text, &self.doc);
+                    let text = ob_model::resolve_fields(&para.text(), &self.doc);
                     paras.push((text, spec, style.font_size, style.space_after));
                 }
                 let first = story
                     .paragraphs
                     .first()
-                    .map(|p| p.text.clone())
+                    .map(|p| p.text())
                     .unwrap_or_else(|| "A text block".into());
                 work.push((pi, fi, panel.name.clone(), frame.rect, first, paras));
             }
@@ -2282,7 +2438,7 @@ impl App {
         let has_order = self.doc.stories.iter().any(|s| {
             s.paragraphs
                 .iter()
-                .any(|p| p.text.contains("Order of Service"))
+                .any(|p| p.text().contains("Order of Service"))
         });
         if has_order {
             notes.push(CheckNote::plain(
@@ -2898,6 +3054,8 @@ impl App {
         self.edit_start_text.clear();
         self.edit_text.clear();
         self.edit_styles.clear();
+        self.edit_runs.clear();
+        self.edit_runs_detached = false;
         self.edit_done = false;
         self.reset_editor_transient();
         self.status = "Typing thrown away. The page keeps the words it had.".into();
@@ -2945,6 +3103,16 @@ impl App {
         self.canvas_panel = pi;
         self.enter_edit(pi, fi);
         self.edit_text = text;
+        // The brought-back words are plain text: whatever
+        // formatting the thrown-away session had is not part
+        // of the record (J3 recorded words only), so the runs
+        // restart plain rather than describe other words.
+        self.edit_runs = self
+            .edit_text
+            .split('\n')
+            .map(|t| vec![ob_model::Run::plain(t)])
+            .collect();
+        self.edit_runs_detached = false;
         self.note(
             "Your typed words are back in the box. Click away, or use Done \
              typing, to keep them."
@@ -2974,11 +3142,13 @@ impl App {
         self.edit_text = story
             .paragraphs
             .iter()
-            .map(|p| p.text.clone())
+            .map(|p| p.text())
             .collect::<Vec<_>>()
             .join("\n");
         self.edit_start_text = self.edit_text.clone();
         self.edit_styles = story.paragraphs.iter().map(|p| p.style.clone()).collect();
+        self.edit_runs = story.paragraphs.iter().map(|p| p.runs.clone()).collect();
+        self.edit_runs_detached = false;
         self.editing = Some((pi, fi));
         self.selected_frame = Some(fi);
         self.edit_done = false;
@@ -3005,6 +3175,13 @@ impl App {
             return;
         };
         let texts: Vec<String> = self.edit_text.split('\n').map(|t| t.to_string()).collect();
+        // The session's runs go back with the words (G1b).
+        // Detached runs (the fallback editor changed the
+        // words out from under them) or a count that no
+        // longer matches the buffer fall back to plain runs
+        // for the affected paragraphs: plain words, never
+        // wrong faces on the wrong words.
+        let runs_trustworthy = !self.edit_runs_detached && self.edit_runs.len() == texts.len();
         let paragraphs: Vec<ob_model::Paragraph> = texts
             .iter()
             .enumerate()
@@ -3014,12 +3191,22 @@ impl App {
                     .get(i)
                     .cloned()
                     .unwrap_or_else(|| "body".to_string());
-                ob_model::Paragraph {
-                    style,
-                    text: t.clone(),
+                let runs_match = runs_trustworthy
+                    && runsedit::runs_len(&self.edit_runs[i]) == t.len()
+                    && self.edit_runs[i]
+                        .iter()
+                        .map(|r| r.text.as_str())
+                        .collect::<String>()
+                        == *t;
+                if runs_match {
+                    ob_model::Paragraph::from_runs(&style, self.edit_runs[i].clone())
+                } else {
+                    ob_model::Paragraph::plain(&style, t)
                 }
             })
             .collect();
+        self.edit_runs.clear();
+        self.edit_runs_detached = false;
         if let Some(story) = self.doc.stories.iter_mut().find(|st| st.id == sid) {
             story.paragraphs = paragraphs;
         }
@@ -3058,12 +3245,30 @@ impl App {
         else {
             return;
         };
+        // The runs sign the cache key too (G1b): bolding a
+        // word changes no text and no style, but the layout
+        // (faces, widths) must rebuild.
+        let runs_sig: String = self
+            .edit_runs
+            .iter()
+            .flat_map(|para| {
+                para.iter().map(|r| {
+                    format!(
+                        "{}:{}:{};",
+                        r.text,
+                        r.bold.map(|b| b as u8).unwrap_or(2),
+                        r.italic.map(|b| b as u8).unwrap_or(2)
+                    )
+                })
+            })
+            .collect();
         let key = format!(
-            "{}|{}|{}|{}|{}x{}",
+            "{}|{}|{}|{}|{}|{}x{}",
             self.frame_snapshot,
             self.edit_salt,
             self.edit_text,
             self.edit_styles.join("\u{1}"),
+            runs_sig,
             frame.w,
             frame.h
         );
@@ -3077,6 +3282,7 @@ impl App {
         }
         let doc = self.doc.clone();
         let text = self.edit_text.clone();
+        let edit_runs = self.edit_runs.clone();
         let styles: Vec<ob_model::ParagraphStyle> = (0..text.split('\n').count())
             .map(|i| {
                 style_or_body(
@@ -3122,10 +3328,48 @@ impl App {
                 if !dtext.trim().is_empty() {
                     any_text = true;
                 }
-                let layout = if flags.get(i) == Some(&true) {
-                    shaper.layout_display_line(dtext, &spec, st.font_size, 1.3, frame.w, st.align)
+                // The paragraph's face spans (G1b): resolve
+                // the session runs with the fields, fold the
+                // style in. If the runs and the map disagree
+                // about the words (they cannot, by the session
+                // invariants), fall back to the style's face
+                // for the whole paragraph rather than paint
+                // faces on the wrong words.
+                let rr = map.para_resolved_range(i);
+                let resolved_para = &map.resolved_text[rr];
+                let res_runs = edit_runs.get(i).cloned().unwrap_or_default();
+                let res_text: String = res_runs.iter().map(|r| r.text.as_str()).collect();
+                let eff_spans: Vec<ob_text::shaping::RunSpan> = if res_text == resolved_para {
+                    effective_spans(&res_runs, &st)
                 } else {
-                    shaper.layout_paragraph(dtext, &spec, st.font_size, 1.3, frame.w, st.align)
+                    vec![ob_text::shaping::RunSpan {
+                        range: 0..resolved_para.len(),
+                        bold: st.bold,
+                        italic: st.italic,
+                    }]
+                };
+                let layout = if flags.get(i) == Some(&true) {
+                    let disp =
+                        ob_text::text_layout::leader_run_spans(resolved_para, &eff_spans, dtext);
+                    shaper.layout_display_line_runs(
+                        dtext,
+                        &disp,
+                        &spec,
+                        st.font_size,
+                        1.3,
+                        frame.w,
+                        st.align,
+                    )
+                } else {
+                    shaper.layout_paragraph_runs(
+                        dtext,
+                        &eff_spans,
+                        &spec,
+                        st.font_size,
+                        1.3,
+                        frame.w,
+                        st.align,
+                    )
                 };
                 if layout.lines().iter().any(|l| !l.clusters.is_empty()) {
                     any_clusters = true;
@@ -3176,6 +3420,12 @@ impl App {
         else {
             return;
         };
+        // The same edit lands on the runs (G1b): typed text
+        // inherits the face in force at its start, runs
+        // outside the edited range keep their flags exactly.
+        if !self.edit_runs_detached {
+            runsedit::apply_edit(&mut self.edit_runs, raw_range.clone(), &rep);
+        }
         let caret_raw = raw_range.start + rep.len();
         let mut text = std::mem::take(&mut self.edit_text);
         text.replace_range(raw_range, &rep);
@@ -3204,6 +3454,76 @@ impl App {
         }
         let sel = self.editor_selection();
         self.apply_display_edit(sel, s);
+    }
+
+    /// Paste into the canvas editor (G1b). When the pasted
+    /// text carries markdown bold/italic markers (the shape
+    /// notes and web text arrive in, and the shape a chat or
+    /// a notes app copies), the markers become runs on the
+    /// way in: the stripped words insert through the normal
+    /// funnel, then the marks land as run flags over the
+    /// inserted range. Unmarked pastes are the plain insert
+    /// they always were. The whole paste is one session
+    /// edit, so still one undo step.
+    fn editor_paste(&mut self, t: &str) {
+        if self.edit_runs_detached || self.edit_layout.is_none() {
+            self.editor_insert_text(t);
+            return;
+        }
+        let parsed: Vec<Vec<ob_model::Run>> =
+            t.split('\n').map(ob_model::markdown::inline_runs).collect();
+        let stripped: Vec<String> = parsed
+            .iter()
+            .map(|runs| runs.iter().map(|r| r.text.as_str()).collect())
+            .collect();
+        let any_marks = stripped
+            .iter()
+            .zip(t.split('\n'))
+            .any(|(s, orig)| s.as_str() != orig);
+        if !any_marks {
+            self.editor_insert_text(t);
+            return;
+        }
+        // The insertion point in raw space, before the edit
+        // moves anything (selections are built from snapped
+        // carets, so the start is a true boundary).
+        let sel = self.editor_selection();
+        let raw_start = self
+            .edit_layout
+            .as_ref()
+            .map(|l| l.map.resolved_to_raw(l.map.display_to_resolved(sel.start)));
+        let joined = stripped.join("\n");
+        self.editor_insert_text(&joined);
+        let Some(raw_start) = raw_start else {
+            return;
+        };
+        let mut line_start = raw_start;
+        for runs in &parsed {
+            let mut at = line_start;
+            for r in runs {
+                let end = at + r.text.len();
+                if r.bold == Some(true) {
+                    runsedit::set_flag_range(
+                        &mut self.edit_runs,
+                        at..end,
+                        runsedit::Flag::Bold,
+                        true,
+                    );
+                }
+                if r.italic == Some(true) {
+                    runsedit::set_flag_range(
+                        &mut self.edit_runs,
+                        at..end,
+                        runsedit::Flag::Italic,
+                        true,
+                    );
+                }
+                at = end;
+            }
+            line_start = at + 1; // the '\n' between pasted lines
+        }
+        self.edit_layout = None;
+        self.refresh_editor_layout();
     }
 
     /// Set the caret to a display offset, optionally
@@ -3553,7 +3873,7 @@ impl App {
             }
             egui::Event::Paste(t) => {
                 let t = t.replace("\r\n", "\n").replace('\r', "\n");
-                self.editor_insert_text(&t);
+                self.editor_paste(&t);
             }
             egui::Event::Copy => {
                 let sel = self.editor_selection();
@@ -3602,6 +3922,132 @@ impl App {
         }
     }
 
+    /// The session paragraphs' style faces, in runsedit's
+    /// (bold, italic) pairs.
+    fn editor_styles_vec(&self) -> Vec<(bool, bool)> {
+        (0..self.edit_runs.len())
+            .map(|i| {
+                let st = style_or_body(
+                    &self.doc,
+                    self.edit_styles
+                        .get(i)
+                        .map(|s| s.as_str())
+                        .unwrap_or("body"),
+                );
+                (st.bold, st.italic)
+            })
+            .collect()
+    }
+
+    /// The current selection as RAW ranges with the chips cut
+    /// out (G1b): a toggle lands around a shaded field word,
+    /// never inside it, exactly as typing deletes around it.
+    /// Empty when there is no selection or no layout.
+    fn editor_selection_raw_ranges(&self) -> Vec<std::ops::Range<usize>> {
+        let Some(layout) = self.edit_layout.as_ref() else {
+            return Vec::new();
+        };
+        let map = &layout.map;
+        let sel = self.editor_selection();
+        if sel.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+        let first = map.para_at_display(sel.start);
+        let last = map.para_at_display(sel.end.min(map.display_text.len()));
+        for p in first..=last {
+            let dr = map.para_display_range(p);
+            let mut s = sel.start.max(dr.start);
+            let e = sel.end.min(dr.end);
+            if s >= e {
+                continue;
+            }
+            // Cut the chips out of [s, e), left to right.
+            let mut chips: Vec<std::ops::Range<usize>> = map
+                .chips
+                .iter()
+                .map(|c| c.display.clone())
+                .filter(|c| c.start < e && c.end > s)
+                .collect();
+            chips.sort_by_key(|c| c.start);
+            for chip in chips {
+                if chip.start > s {
+                    push_raw_piece(map, s, chip.start.min(e), &mut out);
+                }
+                s = s.max(chip.end);
+                if s >= e {
+                    break;
+                }
+            }
+            if s < e {
+                push_raw_piece(map, s, e, &mut out);
+            }
+        }
+        out
+    }
+
+    /// Bold or italic over the selection (G1b): if every
+    /// selected character already carries the face, take it
+    /// off; otherwise put it on (the word-processor rule).
+    /// Runs only: the words do not change, so the caret and
+    /// selection stay where they are; the layout rebuilds
+    /// because faces change widths.
+    fn editor_toggle_flag(&mut self, flag: runsedit::Flag) {
+        if self.edit_runs_detached || self.editing.is_none() {
+            return;
+        }
+        let pieces = self.editor_selection_raw_ranges();
+        if pieces.is_empty() {
+            return;
+        }
+        let styles = self.editor_styles_vec();
+        let all_on = pieces
+            .iter()
+            .all(|r| runsedit::range_all_effective(&self.edit_runs, &styles, r.clone(), flag));
+        for r in pieces {
+            runsedit::set_flag_range(&mut self.edit_runs, r, flag, !all_on);
+        }
+        self.edit_layout = None;
+        self.refresh_editor_layout();
+    }
+
+    /// (bold, italic) state for the toolbar buttons: over a
+    /// selection, whether every selected character carries
+    /// the face; at a bare caret, the face typing would take.
+    fn editor_flag_states(&self) -> (bool, bool) {
+        if self.edit_runs_detached || self.editing.is_none() {
+            return (false, false);
+        }
+        let styles = self.editor_styles_vec();
+        let pieces = self.editor_selection_raw_ranges();
+        if !pieces.is_empty() {
+            let b = pieces.iter().all(|r| {
+                runsedit::range_all_effective(
+                    &self.edit_runs,
+                    &styles,
+                    r.clone(),
+                    runsedit::Flag::Bold,
+                )
+            });
+            let i = pieces.iter().all(|r| {
+                runsedit::range_all_effective(
+                    &self.edit_runs,
+                    &styles,
+                    r.clone(),
+                    runsedit::Flag::Italic,
+                )
+            });
+            return (b, i);
+        }
+        let Some(layout) = self.edit_layout.as_ref() else {
+            return (false, false);
+        };
+        let caret_raw = layout
+            .map
+            .resolved_to_raw(layout.map.display_to_resolved(self.edit_caret));
+        runsedit::effective_flags_at(&self.edit_runs, &styles, caret_raw)
+    }
+
     /// One keypress inside the shaped editor. Escape is not
     /// handled here: the canvas still cancels the session on
     /// Escape, exactly as before. Ctrl/Cmd+Z does nothing in
@@ -3611,6 +4057,23 @@ impl App {
         use egui::Key;
         if self.ime_preedit.is_some() {
             return; // the composition owns the keyboard
+        }
+        // Bold / Italic (G1b). The keymap has no bold/italic
+        // bindings (its presets carry editing and file keys
+        // only), so these read the modifiers directly, like
+        // the session's other direct keys: Ctrl or Cmd + B/I.
+        if modifiers.command {
+            match key {
+                Key::B => {
+                    self.editor_toggle_flag(runsedit::Flag::Bold);
+                    return;
+                }
+                Key::I => {
+                    self.editor_toggle_flag(runsedit::Flag::Italic);
+                    return;
+                }
+                _ => {}
+            }
         }
         let extend = modifiers.shift;
         let word = modifiers.ctrl || modifiers.alt;
@@ -3817,6 +4280,27 @@ impl App {
                                     }
                                 }
                             });
+                        // Bold / Italic for the selected words
+                        // (G1b); the buttons show the state at
+                        // the caret or over the selection, and
+                        // Ctrl+B / Ctrl+I do the same thing.
+                        let (bold_on, italic_on) = self.editor_flag_states();
+                        let runs_live = !self.edit_runs_detached && !self.edit_layout_failed;
+                        if ui
+                            .add_enabled(runs_live, egui::SelectableLabel::new(bold_on, "Bold"))
+                            .clicked()
+                        {
+                            self.editor_toggle_flag(runsedit::Flag::Bold);
+                        }
+                        if ui
+                            .add_enabled(
+                                runs_live,
+                                egui::SelectableLabel::new(italic_on, "Italic"),
+                            )
+                            .clicked()
+                        {
+                            self.editor_toggle_flag(runsedit::Flag::Italic);
+                        }
                         if ui.button("Done typing").clicked() {
                             self.edit_done = true;
                         }
@@ -4018,23 +4502,7 @@ impl App {
                         continue;
                     }
                 }
-                let anchor = match line.align {
-                    ob_model::Align::Left => egui::Align2::LEFT_BOTTOM,
-                    ob_model::Align::Center => egui::Align2::CENTER_BOTTOM,
-                    ob_model::Align::Right => egui::Align2::RIGHT_BOTTOM,
-                };
-                let lx = match line.align {
-                    ob_model::Align::Left => line.x,
-                    ob_model::Align::Center => line.x + line.w / 2.0,
-                    ob_model::Align::Right => line.x + line.w,
-                };
-                clip.text(
-                    to_px(lx, line.y),
-                    anchor,
-                    &line.text,
-                    line_font_id(&self.font_rows, line, (line.size * scale).max(4.0)),
-                    egui::Color32::BLACK,
-                );
+                paint_line_segments(&clip, &self.font_rows, line, scale, |lx| to_px(lx, line.y));
             }
         }
 
@@ -4406,11 +4874,20 @@ impl App {
                     self.focus_edit = false;
                     ctx.memory_mut(|m| m.request_focus(edit_id));
                 }
+                // Words changed here bypass the runs funnel
+                // (this overlay edits the buffer directly), so
+                // the session's runs detach: commit will write
+                // these words as plain runs rather than lay
+                // stale faces over changed words (G1b).
+                let before = self.edit_text.clone();
                 let editor = egui::TextEdit::multiline(&mut self.edit_text)
                     .id(edit_id)
                     .font(egui::FontId::proportional(first_size))
                     .desired_width(frect.width());
                 ui.put(frect, editor);
+                if self.edit_text != before {
+                    self.edit_runs_detached = true;
+                }
             } else {
                 if self.focus_edit {
                     self.focus_edit = false;
@@ -4519,29 +4996,38 @@ impl App {
                             if line_text.is_empty() {
                                 continue;
                             }
-                            let probe = PreviewLine {
-                                text: line_text.to_string(),
-                                size: para.size,
-                                x: 0.0,
-                                y: 0.0,
-                                w: line.width,
-                                align: para.align,
-                                font_family: para.font_family.clone(),
-                                bold: para.bold,
-                                italic: para.italic,
-                            };
-                            let fid =
-                                line_font_id(&self.font_rows, &probe, (para.size * scale).max(4.0));
                             let bottom = (para.top + (li as ob_model::Mpt + 1) * para.line_h)
                                 as f32
                                 / 1000.0;
-                            clip.text(
-                                to_px(fx + line.x0, bottom),
-                                egui::Align2::LEFT_BOTTOM,
-                                line_text,
-                                fid,
-                                egui::Color32::BLACK,
-                            );
+                            // Same-face segments (G1b): a bold
+                            // word paints in the bold face even
+                            // while it is being typed.
+                            for seg in line_segments(line, para.layout.text()) {
+                                let probe = PreviewLine {
+                                    text: seg.text.clone(),
+                                    size: para.size,
+                                    x: 0.0,
+                                    y: 0.0,
+                                    w: line.width,
+                                    align: para.align,
+                                    font_family: para.font_family.clone(),
+                                    bold: seg.bold,
+                                    italic: seg.italic,
+                                    segs: Vec::new(),
+                                };
+                                let fid = line_font_id(
+                                    &self.font_rows,
+                                    &probe,
+                                    (para.size * scale).max(4.0),
+                                );
+                                clip.text(
+                                    to_px(fx + seg.dx, bottom),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    &seg.text,
+                                    fid,
+                                    egui::Color32::BLACK,
+                                );
+                            }
                         }
                     }
                     if let Some((cpara, clocal)) = self.editor_caret_local() {
@@ -4581,6 +5067,7 @@ impl App {
                                     font_family: para.font_family.clone(),
                                     bold: para.bold,
                                     italic: para.italic,
+                                    segs: Vec::new(),
                                 };
                                 let fid = line_font_id(
                                     &self.font_rows,
@@ -5106,6 +5593,7 @@ impl App {
             "idml" => self.start_idml_import(path),
             "pub" => self.start_pub_import(path),
             "sla" => self.start_sla_import(path),
+            "md" => self.start_md_import(path),
             "obd" => match ob_format::load(&path) {
                 Ok(doc) => {
                     self.adopt_document(doc, true);
@@ -5145,6 +5633,44 @@ impl App {
                 }
             }
         }
+    }
+
+    /// A Markdown file through the one open door (G1b):
+    /// the words become a one-page draft and wait for the
+    /// standard review, labeled for what they are: notes or
+    /// web text, not a designed bulletin.
+    fn start_md_import(&mut self, path: std::path::PathBuf) {
+        let name = file_name_of(&path);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.fail(format!("Could not read that file. ({e})"));
+                return;
+            }
+        };
+        let doc =
+            ob_model::markdown::document_from_markdown(&text, self.doc.profile.clone(), &name);
+        let count = doc.stories.first().map(|s| s.paragraphs.len()).unwrap_or(0);
+        self.import_review = Some(ImportReview {
+            doc,
+            items: vec![ob_extract::draft::ImportItem {
+                panel: 0,
+                label: format!("Notes from {name}"),
+                badge: ob_extract::draft::Badge::CheckThis,
+                detail: format!(
+                    "{count} paragraph{} of notes, on one page. Read them over, \
+                     then use the draft and arrange the words where they belong.",
+                    if count == 1 { "" } else { "s" }
+                ),
+            }],
+            workdir: None,
+            source_name: name,
+            note: Some(
+                "Notes or web text: bold and italic marks in the text were honored; \
+                 the layout is a plain page, ready to arrange."
+                    .into(),
+            ),
+        });
     }
 
     fn poll_import(&mut self, ctx: &egui::Context) {
@@ -5599,7 +6125,7 @@ impl App {
             return;
         }
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Old bulletins", &["pdf", "pub", "idml", "sla", "obd"])
+            .add_filter("Old bulletins", &["pdf", "pub", "idml", "sla", "obd", "md"])
             .add_filter("All files", &[] as &[&str])
             .pick_file()
         {
@@ -5679,8 +6205,25 @@ impl App {
                     Err(e) => self.fail(format!("Could not save that copy: {e}")),
                 }
             }
+            "md" => {
+                // The words as markdown (G1b): headings from
+                // the style names, bold and italic from the
+                // runs, field words filled in.
+                let text = ob_model::markdown::to_markdown(&self.doc);
+                match std::fs::write(path, text) {
+                    Ok(()) => {
+                        let msg = format!(
+                            "Saved the words as {}, for a website or newsletter.",
+                            file_name_of(path)
+                        );
+                        self.export_note = Some(msg.clone());
+                        self.note(msg);
+                    }
+                    Err(e) => self.fail(format!("Could not save that copy: {e}")),
+                }
+            }
             _ => self.fail(
-                "That kind of copy is not one we can make yet. The save dialog offers InDesign (IDML), Scribus, and PDF."
+                "That kind of copy is not one we can make yet. The save dialog offers InDesign (IDML), Scribus, PDF, and Markdown."
                     .into(),
             ),
         }
@@ -7155,6 +7698,10 @@ impl eframe::App for App {
                                 .add_filter("InDesign (IDML)", &["idml"])
                                 .add_filter("Scribus", &["sla"])
                                 .add_filter("PDF", &["pdf"])
+                                .add_filter(
+                                    "Markdown (the words, for a website or newsletter)",
+                                    &["md"],
+                                )
                                 .save_file()
                             {
                                 self.save_copy_for_program(&path);
@@ -7320,23 +7867,9 @@ impl eframe::App for App {
                     }
                     let lines = self.shaped_panel_lines(idx);
                     for line in &lines {
-                        let anchor = match line.align {
-                            ob_model::Align::Left => egui::Align2::LEFT_BOTTOM,
-                            ob_model::Align::Center => egui::Align2::CENTER_BOTTOM,
-                            ob_model::Align::Right => egui::Align2::RIGHT_BOTTOM,
-                        };
-                        let lx = match line.align {
-                            ob_model::Align::Left => line.x,
-                            ob_model::Align::Center => line.x + line.w / 2.0,
-                            ob_model::Align::Right => line.x + line.w,
-                        };
-                        painter.text(
-                            rect.min + egui::vec2(lx * scale, line.y * scale),
-                            anchor,
-                            &line.text,
-                            line_font_id(&self.font_rows, line, (line.size * scale).max(4.0)),
-                            egui::Color32::BLACK,
-                        );
+                        paint_line_segments(&painter, &self.font_rows, line, scale, |lx| {
+                            rect.min + egui::vec2(lx * scale, line.y * scale)
+                        });
                     }
                     ui.add_space(14.0);
                 }
@@ -7513,45 +8046,58 @@ fn panel_lines(
         let mut y = frame.rect.y;
         for para in &story.paragraphs {
             let style = style_or_body(doc, &para.style);
-            let resolved = ob_model::resolve_fields(&para.text, doc);
+            // Runs resolve with the fields (G1b); the layout
+            // path is the editor's and the PDF's, so the
+            // preview breaks and faces are theirs.
+            let resolved_runs = ob_model::resolve_runs(&para.runs, doc);
+            let resolved: String = resolved_runs.iter().map(|r| r.text.as_str()).collect();
+            let spans = effective_spans(&resolved_runs, &style);
             let spec = ob_text::shaping::FontSpec {
                 family: style.font_family.clone(),
                 bold: style.bold,
                 italic: style.italic,
             };
             let line_h = style.font_size * 13 / 10;
-            let shaped: Vec<(String, ob_model::Mpt)> = if resolved.contains('\t') {
-                let line =
+            let layout = if resolved.contains('\t') {
+                let expanded =
                     shaper.expand_order_line(&resolved, frame.rect.w, &spec, style.font_size);
-                let w = shaper.measure(&line, &spec, style.font_size);
-                vec![(line, w)]
+                let disp = ob_text::text_layout::leader_run_spans(&resolved, &spans, &expanded);
+                shaper.layout_display_line_runs(
+                    &expanded,
+                    &disp,
+                    &spec,
+                    style.font_size,
+                    1.3,
+                    frame.rect.w,
+                    style.align,
+                )
             } else {
-                shaper
-                    .wrap(&resolved, frame.rect.w, &spec, style.font_size, 1.3)
-                    .into_iter()
-                    .map(|l| (l.text, l.width))
-                    .collect()
+                shaper.layout_paragraph_runs(
+                    &resolved,
+                    &spans,
+                    &spec,
+                    style.font_size,
+                    1.3,
+                    frame.rect.w,
+                    style.align,
+                )
             };
-            for (line, tw) in shaped {
+            for line in layout.lines() {
                 if y + line_h > frame.rect.y + frame.rect.h {
                     break;
                 }
                 y += line_h;
-                let lx = match style.align {
-                    ob_model::Align::Left => frame.rect.x,
-                    ob_model::Align::Center => frame.rect.x + (frame.rect.w - tw) / 2,
-                    ob_model::Align::Right => frame.rect.x + frame.rect.w - tw,
-                };
                 lines.push(PreviewLine {
-                    text: line,
+                    text: layout.text()[line.range.clone()].to_string(),
                     size: style.font_size as f32 / 1000.0,
-                    x: lx as f32 / 1000.0,
+                    x: frame.rect.x as f32 / 1000.0,
                     y: y as f32 / 1000.0,
-                    w: tw as f32 / 1000.0,
+                    w: line.width,
                     align: style.align,
                     font_family: style.font_family.clone(),
                     bold: style.bold,
                     italic: style.italic,
+                    segs: line_segments(line, layout.text()),
                 });
             }
             y += style.space_after;
@@ -7870,23 +8416,7 @@ fn draw_sheet(ui: &mut egui::Ui, sheet: &PreviewSheet, rows: &[FontRow]) {
         );
         let clip = painter.with_clip_rect(prect);
         for line in &panel.lines {
-            let anchor = match line.align {
-                ob_model::Align::Left => egui::Align2::LEFT_BOTTOM,
-                ob_model::Align::Center => egui::Align2::CENTER_BOTTOM,
-                ob_model::Align::Right => egui::Align2::RIGHT_BOTTOM,
-            };
-            let lx = match line.align {
-                ob_model::Align::Left => line.x,
-                ob_model::Align::Center => line.x + line.w / 2.0,
-                ob_model::Align::Right => line.x + line.w,
-            };
-            clip.text(
-                to_px(lx, line.y),
-                anchor,
-                &line.text,
-                line_font_id(rows, line, (line.size * scale).max(4.0)),
-                egui::Color32::BLACK,
-            );
+            paint_line_segments(&clip, rows, line, scale, |lx| to_px(lx, line.y));
         }
     }
 }
@@ -8262,6 +8792,164 @@ mod settings_tests {
     }
 
     #[test]
+    fn canvas_toggle_bold_writes_runs_back_on_commit() {
+        // G1b: select a word on the canvas, bold it, commit:
+        // the story paragraph carries a bold run for exactly
+        // that word, and the words themselves are untouched.
+        let mut app = App::default();
+        app.enter_edit(0, 0);
+        app.edit_text = "Sing hymn 432".into();
+        app.edit_styles = vec!["body".into()];
+        app.edit_runs = vec![vec![ob_model::Run::plain("Sing hymn 432")]];
+        app.edit_layout = None;
+        app.refresh_editor_layout();
+        assert!(app.edit_layout.is_some(), "the shaped layout builds");
+        // "hymn" spans display 5..9 (no field words here, so
+        // display space is the buffer's own space).
+        app.edit_anchor = 5;
+        app.edit_caret = 9;
+        app.editor_toggle_flag(runsedit::Flag::Bold);
+        assert_eq!(app.edit_runs[0].len(), 3);
+        assert_eq!(app.edit_runs[0][1].text, "hymn");
+        assert_eq!(app.edit_runs[0][1].bold, Some(true));
+        assert!(app.editor_flag_states().0, "the toolbar state reads bold");
+        // The word-processor rule: toggling again unbolds.
+        app.editor_toggle_flag(runsedit::Flag::Bold);
+        assert!(!app.editor_flag_states().0);
+        app.editor_toggle_flag(runsedit::Flag::Bold);
+        app.commit_edit();
+        let sid = app.doc.panels[0].frames[0]
+            .story_id
+            .clone()
+            .expect("the frame has a story");
+        let story = app.doc.story(&sid).expect("story");
+        assert_eq!(story.paragraphs[0].text(), "Sing hymn 432");
+        assert!(
+            story.paragraphs.iter().any(|p| p
+                .runs
+                .iter()
+                .any(|r| r.text == "hymn" && r.bold == Some(true))),
+            "a bold hymn run reached the document: {:?}",
+            story.paragraphs[0].runs
+        );
+    }
+
+    #[test]
+    fn md_file_routes_to_a_notes_review() {
+        // G1b: a .md file through the one open door becomes
+        // a draft waiting in the standard review, labeled
+        // as notes or web text.
+        let mut app = App::default();
+        let dir = std::env::temp_dir().join(format!("ob-md-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("announcements.md");
+        std::fs::write(&path, "# Potluck\n\nBring a **dish** to share.\n").expect("write");
+        app.route_old_bulletin(path);
+        let review = app.import_review.expect("a review waits");
+        assert_eq!(review.items.len(), 1);
+        assert!(review.items[0].label.contains("Notes from"));
+        assert_eq!(review.items[0].badge, ob_extract::draft::Badge::CheckThis);
+        assert!(
+            review
+                .note
+                .as_deref()
+                .unwrap_or("")
+                .contains("Notes or web text"),
+            "the kind label is stated: {:?}",
+            review.note
+        );
+        let doc = &review.doc;
+        assert_eq!(doc.stories[0].paragraphs[0].text(), "Potluck");
+        assert!(
+            doc.stories[0].paragraphs[1]
+                .runs
+                .iter()
+                .any(|r| r.text == "dish" && r.bold == Some(true)),
+            "the markdown bold arrived as a run"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn paste_with_markdown_markers_lands_as_runs() {
+        // G1b: pasting "**hymn** 432" types the words plain
+        // and bolds the hymn; a marker-less paste stays the
+        // plain insert it always was.
+        let mut app = App::default();
+        app.enter_edit(0, 0);
+        app.edit_text = "Sing ".into();
+        app.edit_styles = vec!["body".into()];
+        app.edit_runs = vec![vec![ob_model::Run::plain("Sing ")]];
+        app.edit_layout = None;
+        app.refresh_editor_layout();
+        app.edit_anchor = 5;
+        app.edit_caret = 5;
+        app.editor_paste("**hymn** 432");
+        assert_eq!(app.edit_text, "Sing hymn 432");
+        assert!(
+            app.edit_runs[0]
+                .iter()
+                .any(|r| r.text == "hymn" && r.bold == Some(true)),
+            "the pasted word is a bold run: {:?}",
+            app.edit_runs[0]
+        );
+        // A plain paste changes no faces.
+        let end = app.edit_text.len();
+        app.edit_anchor = end;
+        app.edit_caret = end;
+        app.editor_paste(" today");
+        assert_eq!(app.edit_text, "Sing hymn 432 today");
+        assert_eq!(
+            app.edit_runs[0]
+                .iter()
+                .filter(|r| r.bold == Some(true))
+                .count(),
+            1,
+            "still exactly the one bold run"
+        );
+    }
+
+    #[test]
+    fn typing_after_a_bold_word_stays_plain_and_after_it_bold() {
+        // G1b inheritance at the session level: text typed
+        // at the end of a bold run is bold; text typed after
+        // the following plain run is plain.
+        let mut app = App::default();
+        app.enter_edit(0, 0);
+        app.edit_text = "Sing hymn 432".into();
+        app.edit_styles = vec!["body".into()];
+        app.edit_runs = vec![vec![
+            ob_model::Run::plain("Sing "),
+            ob_model::Run {
+                text: "hymn".into(),
+                bold: Some(true),
+                italic: None,
+            },
+            ob_model::Run::plain(" 432"),
+        ]];
+        app.edit_layout = None;
+        app.refresh_editor_layout();
+        // Caret at the end of "hymn" (display 9): type "!".
+        app.edit_anchor = 9;
+        app.edit_caret = 9;
+        app.editor_insert_text("!");
+        let bold_text: String = app.edit_runs[0]
+            .iter()
+            .filter(|r| r.bold == Some(true))
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(bold_text, "hymn!", "typed text joins the bold run");
+        // Caret at the very end: type "." — plain.
+        let end = app.edit_text.len();
+        app.edit_anchor = end;
+        app.edit_caret = end;
+        app.editor_insert_text(".");
+        let last = app.edit_runs[0].last().expect("a last run");
+        assert_eq!(last.text, " 432.");
+        assert_eq!(last.bold, None);
+    }
+
+    #[test]
     fn journal_never_touches_recovered_work_while_undecided() {
         // The closing audit's most dangerous finding, found by
         // three lanes: the tick must hold while a recovery is
@@ -8349,7 +9037,7 @@ mod settings_tests {
             .expect("story")
             .paragraphs
             .iter()
-            .map(|p| p.text.clone())
+            .map(|p| p.text())
             .collect();
         app.announcements = "Potluck next Friday".to_string();
         app.announcements_dirty = false;
@@ -8360,7 +9048,7 @@ mod settings_tests {
             .expect("story")
             .paragraphs
             .iter()
-            .map(|p| p.text.clone())
+            .map(|p| p.text())
             .collect();
         assert_eq!(before, after, "a clean buffer must not write");
         app.announcements_dirty = true;
@@ -8371,7 +9059,7 @@ mod settings_tests {
             .expect("story")
             .paragraphs
             .iter()
-            .map(|p| p.text.clone())
+            .map(|p| p.text())
             .collect();
         assert!(written.iter().any(|t| t.contains("Potluck next Friday")));
         assert!(!app.announcements_dirty, "the write clears the flag");
@@ -8385,13 +9073,13 @@ mod settings_tests {
         app.announcements_dirty = true;
         app.save_announcements();
         let sid = weekly_story_id(&app.doc).expect("story");
-        let texts: Vec<&str> = app
+        let texts: Vec<String> = app
             .doc
             .story(&sid)
             .expect("story")
             .paragraphs
             .iter()
-            .map(|p| p.text.as_str())
+            .map(|p| p.text())
             .collect();
         let joined = texts.join("|");
         assert!(
@@ -8424,19 +9112,19 @@ mod settings_tests {
             .expect("story")
             .paragraphs
             .first()
-            .map(|p| p.text.clone())
+            .map(|p| p.text())
             .unwrap_or_default();
         app.enter_edit(pi, fi);
         app.edit_text = "Line one\nLine two".to_string();
         app.sync_edit_styles();
         app.commit_edit();
-        let texts: Vec<&str> = app
+        let texts: Vec<String> = app
             .doc
             .story(&sid)
             .expect("story")
             .paragraphs
             .iter()
-            .map(|p| p.text.as_str())
+            .map(|p| p.text())
             .collect();
         assert_eq!(texts, vec!["Line one", "Line two"]);
         app.undo();
@@ -8446,7 +9134,7 @@ mod settings_tests {
             .expect("story after undo")
             .paragraphs
             .first()
-            .map(|p| p.text.clone())
+            .map(|p| p.text())
             .unwrap_or_default();
         assert_eq!(restored, original_first);
     }
@@ -8953,7 +9641,7 @@ mod settings_tests {
         let sid = service_story_id(&doc).expect("a service story");
         let story = doc.story(&sid).expect("the story");
         assert_eq!(
-            story.paragraphs[praise.para_index].text,
+            story.paragraphs[praise.para_index].text(),
             "Hymn of Praise\t433"
         );
 
@@ -8978,7 +9666,7 @@ mod settings_tests {
         assert_eq!(day.value, "77");
         set_service_line(&mut doc2, idx, "78");
         let story = doc2.story(&sid).expect("the story");
-        assert_eq!(story.paragraphs[idx].text, "Hymn of the Day\t78");
+        assert_eq!(story.paragraphs[idx].text(), "Hymn of the Day\t78");
     }
 
     #[test]
@@ -8994,7 +9682,7 @@ mod settings_tests {
         assert_eq!(sermon_title(&doc), "");
         let sermon_text = |doc: &Document| {
             let (sid, i) = sermon_para(doc).expect("a sermon line");
-            doc.story(&sid).expect("story").paragraphs[i].text.clone()
+            doc.story(&sid).expect("story").paragraphs[i].text()
         };
         // Setting a title keeps the token after it.
         set_sermon_title(&mut doc, "Grace and Truth");
@@ -9008,7 +9696,7 @@ mod settings_tests {
         // A line with no token: the title is the whole rest,
         // and clearing leaves a bare "Sermon:".
         let (sid, i) = sermon_para(&doc).expect("a sermon line");
-        doc.story_mut(&sid).expect("story").paragraphs[i].text = "Sermon: Old Title".into();
+        doc.story_mut(&sid).expect("story").paragraphs[i].set_text("Sermon: Old Title");
         assert_eq!(sermon_title(&doc), "Old Title");
         set_sermon_title(&mut doc, "New Title");
         assert_eq!(sermon_text(&doc), "Sermon: New Title");
@@ -9030,7 +9718,7 @@ mod settings_tests {
         doc.story_mut(&sid)
             .expect("story")
             .paragraphs
-            .retain(|p| !p.text.contains('\t') && !p.text.starts_with("Sermon:"));
+            .retain(|p| !p.text().contains('\t') && !p.text().starts_with("Sermon:"));
         assert!(service_lines(&doc).is_empty());
         assert_eq!(sermon_title(&doc), "");
         assert!(sermon_para(&doc).is_none());
@@ -9182,5 +9870,84 @@ mod settings_tests {
             back.printers["Brother"].mode, "long_edge",
             "printer memory survives a save/load round trip"
         );
+    }
+
+    #[test]
+    fn preview_line_segments_carry_the_run_faces() {
+        // The canvas preview of a paragraph with a bold word
+        // carries a bold segment for that word and plain
+        // segments around it (G1b, Item 2).
+        let doc = Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "T".into(),
+            profile: ChurchProfile::default(),
+            fields: Default::default(),
+            styles: ob_model::default_styles(),
+            stories: vec![ob_model::Story {
+                id: "s".into(),
+                paragraphs: vec![ob_model::Paragraph::from_runs(
+                    "body",
+                    vec![
+                        ob_model::Run::plain("Sing "),
+                        ob_model::Run {
+                            text: "hymn".into(),
+                            bold: Some(true),
+                            italic: None,
+                        },
+                        ob_model::Run::plain(" 432"),
+                    ],
+                )],
+                keep_through: None,
+            }],
+            panels: vec![ob_model::Panel {
+                background_image: None,
+                id: "p".into(),
+                name: "P".into(),
+                size: ob_model::Size::new(612_000, 792_000),
+                frames: vec![ob_model::Frame {
+                    id: "f".into(),
+                    name: "Box".into(),
+                    rect: ob_model::Rect {
+                        x: 36_000,
+                        y: 36_000,
+                        w: 540_000,
+                        h: 720_000,
+                    },
+                    kind: ob_model::FrameKind::Text,
+                    story_id: Some("s".into()),
+                    role: ob_model::ContentRole::Weekly,
+                }],
+                guides: vec![],
+            }],
+            sheet: ob_model::SheetSpec {
+                preset: "letter-portrait".into(),
+                size: ob_model::Size::new(612_000, 792_000),
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+        };
+        let mut shaper = ob_text::shaping::bundled_shaper();
+        let lines = panel_lines(&doc, &doc.panels[0], &mut shaper);
+        assert_eq!(lines.len(), 1, "one short paragraph, one line");
+        let segs = &lines[0].segs;
+        let texts: Vec<(&str, bool)> = segs.iter().map(|s| (s.text.as_str(), s.bold)).collect();
+        assert!(
+            texts.iter().any(|(t, b)| *t == "hymn" && *b),
+            "the bold word is its own bold segment: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|(t, b)| t.contains("Sing") && !*b),
+            "the lead-in stays regular: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|(t, b)| t.contains("432") && !*b),
+            "the number stays regular: {texts:?}"
+        );
+        // Segments are in reading order with growing offsets.
+        for w in segs.windows(2) {
+            assert!(w[1].dx >= w[0].dx, "segments advance");
+        }
     }
 }

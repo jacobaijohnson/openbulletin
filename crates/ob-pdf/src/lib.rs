@@ -297,46 +297,88 @@ fn draw_panel(
                     font_family: "Liberation Sans".into(),
                     font_sha256: None,
                 });
-            let resolved = ob_model::resolve_fields(&para.text, doc);
+            // Runs resolve with the fields (G1b): the words a
+            // token stands for wear the face of the run that
+            // held the token. Effective flags fold the style
+            // in, exactly as the canvas does.
+            let resolved_runs = ob_model::resolve_runs(&para.runs, doc);
+            let resolved: String = resolved_runs.iter().map(|r| r.text.as_str()).collect();
+            let mut spans: Vec<ob_text::shaping::RunSpan> = Vec::new();
+            let mut at = 0usize;
+            for r in &resolved_runs {
+                spans.push(ob_text::shaping::RunSpan {
+                    range: at..at + r.text.len(),
+                    bold: r.bold.unwrap_or(style.bold),
+                    italic: r.italic.unwrap_or(style.italic),
+                });
+                at += r.text.len();
+            }
             let line_h = style.font_size * 13 / 10;
-            // Real shaping decides line breaks and widths, and the PDF
-            // embeds the very font bytes that were shaped with, so the
-            // breaks land where print puts them.
+            // The cluster layout decides line breaks and
+            // widths, and the PDF embeds the very font bytes
+            // that were shaped with, so the breaks land where
+            // print puts them. Each maximal run of same-face
+            // clusters is drawn with its own font resource.
             let spec = ob_text::shaping::FontSpec {
                 family: style.font_family.clone(),
                 bold: style.bold,
                 italic: style.italic,
             };
-            let shaped: Vec<(String, ob_model::Mpt)> = if resolved.contains('\t') {
+            let layout = if resolved.contains('\t') {
                 let line = shaper.expand_order_line(&resolved, fr.w, &spec, style.font_size);
-                let w = shaper.measure(&line, &spec, style.font_size);
-                vec![(line, w)]
+                let disp = ob_text::text_layout::leader_run_spans(&resolved, &spans, &line);
+                shaper.layout_display_line_runs(
+                    &line,
+                    &disp,
+                    &spec,
+                    style.font_size,
+                    1.3,
+                    fr.w,
+                    style.align,
+                )
             } else {
-                shaper
-                    .wrap(&resolved, fr.w, &spec, style.font_size, 1.3)
-                    .into_iter()
-                    .map(|l| (l.text, l.width))
-                    .collect()
+                shaper.layout_paragraph_runs(
+                    &resolved,
+                    &spans,
+                    &spec,
+                    style.font_size,
+                    1.3,
+                    fr.w,
+                    style.align,
+                )
             };
-            for (line, tw) in shaped {
+            for line in layout.lines() {
                 if y + line_h > fr.y + fr.h {
                     break; // v0: clip at frame bottom (overflow indicator is a GUI feature)
                 }
                 y += line_h;
-                let x = match style.align {
-                    Align::Left => fr.x,
-                    Align::Center => fr.x + (fr.w - tw) / 2,
-                    Align::Right => fr.x + fr.w - tw,
-                };
-                pc.text(
-                    &fonts.resource_for(&style),
-                    style.font_size,
-                    x,
-                    y,
-                    page_h,
-                    &line,
-                    style.color,
-                );
+                // Group the line's clusters by face; a segment
+                // is drawn at its first cluster's position.
+                let mut segs: Vec<(usize, usize, f32, bool, bool)> = Vec::new();
+                for c in &line.clusters {
+                    match segs.last_mut() {
+                        Some((_, end, _, b, i)) if *b == c.bold && *i == c.italic => {
+                            *end = c.range.end;
+                        }
+                        _ => segs.push((c.range.start, c.range.end, c.x, c.bold, c.italic)),
+                    }
+                }
+                for (start, end, cx, bold, italic) in segs {
+                    let seg_text = &layout.text()[start..end];
+                    if seg_text.is_empty() {
+                        continue;
+                    }
+                    let x = fr.x + ((line.x0 + cx) * 1000.0).round() as ob_model::Mpt;
+                    pc.text(
+                        &fonts.resource_for_face(&style.font_family, bold, italic),
+                        style.font_size,
+                        x,
+                        y,
+                        page_h,
+                        seg_text,
+                        style.color,
+                    );
+                }
             }
             y += style.space_after;
         }
@@ -485,6 +527,26 @@ impl FontBook {
                 wanted.push(key);
             }
         }
+        // Faces the runs ask for (G1b): a bold word inside a
+        // regular paragraph needs the bold face embedded even
+        // though no style names it.
+        for story in &doc.stories {
+            for para in &story.paragraphs {
+                let Some(style) = doc.style(&para.style) else {
+                    continue;
+                };
+                for run in &para.runs {
+                    let key = (
+                        style.font_family.clone(),
+                        run.bold.unwrap_or(style.bold),
+                        run.italic.unwrap_or(style.italic),
+                    );
+                    if !wanted.contains(&key) {
+                        wanted.push(key);
+                    }
+                }
+            }
+        }
         let fallback = ("Liberation Sans".to_string(), false, false);
         if !wanted.contains(&fallback) {
             wanted.push(fallback);
@@ -527,16 +589,20 @@ impl FontBook {
 
     /// The resource name to draw a style with: its exact face when
     /// embedded, its family's plain face when not, else core fonts.
-    fn resource_for(&self, style: &ob_model::ParagraphStyle) -> String {
-        let exact = (style.font_family.clone(), style.bold, style.italic);
+    /// The resource for one explicit face, walking down the
+    /// same ladder: exact (family, bold, italic), then the
+    /// family's plain face, then the core fallback (F2 bold /
+    /// F1 regular). How a run asks for its face (G1b).
+    fn resource_for_face(&self, family: &str, bold: bool, italic: bool) -> String {
+        let exact = (family.to_string(), bold, italic);
         if let Some(r) = self.faces.get(&exact) {
             return r.clone();
         }
-        let plain = (style.font_family.clone(), false, false);
+        let plain = (family.to_string(), false, false);
         if let Some(r) = self.faces.get(&plain) {
             return r.clone();
         }
-        if style.bold {
+        if bold {
             "F2".to_string()
         } else {
             "F1".to_string()
@@ -961,6 +1027,109 @@ mod tests {
             decoded_content(&bytes).contains("Grace Lutheran Church"),
             "cover text missing"
         );
+    }
+
+    #[test]
+    fn a_bold_run_switches_font_resource_mid_line() {
+        // One paragraph, one line: "Sing " regular, "hymn"
+        // bold, " 432" regular again. The content stream must
+        // draw the middle word with the bold face's resource.
+        let mut doc = sample_doc();
+        let sid = doc.stories[0].id.clone();
+        doc.story_mut(&sid).expect("story").paragraphs = vec![ob_model::Paragraph::from_runs(
+            "body",
+            vec![
+                ob_model::Run::plain("Sing "),
+                ob_model::Run {
+                    text: "hymn".into(),
+                    bold: Some(true),
+                    italic: None,
+                },
+                ob_model::Run::plain(" 432"),
+            ],
+        )];
+        let bytes = export_reader_pdf(&doc, ExportPurpose::ForPrinting);
+        let raw = String::from_utf8_lossy(&bytes).into_owned();
+        // Map each /FE resource to whether its font object is
+        // a bold face, via the page resource tables and the
+        // font dictionaries in the raw file.
+        let mut bold_resources: Vec<String> = Vec::new();
+        let mut plain_resources: Vec<String> = Vec::new();
+        for (name, obj) in resource_object_ids(&raw) {
+            let at = raw
+                .find(&format!("\n{obj} 0 obj"))
+                .or_else(|| raw.find(&format!("{obj} 0 obj")))
+                .expect("font object present");
+            let dict = &raw[at..(at + 400).min(raw.len())];
+            if dict.contains("Bold") {
+                bold_resources.push(name);
+            } else if dict.contains("/BaseFont") {
+                plain_resources.push(name);
+            }
+        }
+        assert!(
+            !bold_resources.is_empty(),
+            "a bold face was embedded for the run"
+        );
+        let content = decoded_content(&bytes);
+        // The resource named on the text op that shows a word.
+        let resource_showing = |word: &str| -> String {
+            for line in content.lines() {
+                if line.contains(&format!("({word}) Tj")) {
+                    let after_bt = line.split("BT /").nth(1).expect("op names a font");
+                    return after_bt
+                        .split_whitespace()
+                        .next()
+                        .expect("resource name")
+                        .to_string();
+                }
+            }
+            panic!("no text op shows {word}");
+        };
+        assert!(
+            bold_resources.contains(&resource_showing("hymn")),
+            "the bold word draws with the bold resource"
+        );
+        assert!(
+            plain_resources.contains(&resource_showing("Sing ")),
+            "the plain word draws with a regular resource"
+        );
+        assert!(
+            plain_resources.contains(&resource_showing(" 432")),
+            "the trailing word is regular again"
+        );
+    }
+
+    /// (resource name, object id) pairs from the pages'
+    /// resource tables in a raw PDF.
+    fn resource_object_ids(raw: &str) -> Vec<(String, usize)> {
+        let mut out: Vec<(String, usize)> = Vec::new();
+        let bytes = raw.as_bytes();
+        let mut i = 0usize;
+        while let Some(pos) = raw[i..].find("/FE").map(|p| p + i) {
+            let rest = &raw[pos + 3..];
+            let name_end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
+            let (name, after) = if name_end > 0 {
+                (
+                    raw[pos + 1..pos + 3 + name_end].to_string(),
+                    &rest[name_end..],
+                )
+            } else {
+                i = pos + 3;
+                continue;
+            };
+            let after = after.trim_start();
+            let id_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !id_str.is_empty() && after[id_str.len()..].starts_with(" 0 R") {
+                let id: usize = id_str.parse().expect("object id");
+                if !out.iter().any(|(n, _)| *n == name) {
+                    out.push((name, id));
+                }
+            }
+            i = pos + 3;
+            let _ = bytes;
+        }
+        out
     }
 
     #[test]

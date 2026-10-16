@@ -30,6 +30,14 @@ the printed tokens `{Sunday.date}` and `{Sunday.name}` in
 existing templates keep working, and `{Service.time}` reads
 the document's service time.
 
+A paragraph's words are a list of runs: pieces of text with
+optional bold/italic switches (absent means the paragraph
+style's face speaks). Files written before runs existed
+store paragraphs as `{ style, text }`; that shape still
+loads (the words become one plain run), and saving always
+writes the runs shape. The container version did not need
+to change for this: the paragraph reader accepts both.
+
 ### Loading rules
 
 - Readers reject newer-than-known versions with a clear

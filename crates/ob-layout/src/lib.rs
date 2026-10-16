@@ -423,7 +423,7 @@ pub fn next_sunday_report_as_of(
                     let had_words = story
                         .paragraphs
                         .iter()
-                        .any(|p| p.style == "body" && !p.text.trim().is_empty());
+                        .any(|p| p.style == "body" && !p.text().trim().is_empty());
                     if had_words {
                         // Name it before the words go (J10).
                         report.ended_names.push(announcement_first_line(story));
@@ -452,12 +452,11 @@ fn announcement_first_line(story: &Story) -> String {
             .paragraphs
             .iter()
             .filter(|p| !want_body || p.style == "body")
-            .map(|p| p.text.trim())
-            .find(|t| !t.is_empty())
+            .map(|p| p.text())
+            .find(|t| !t.trim().is_empty())
     };
-    let text = first_text(true)
-        .or_else(|| first_text(false))
-        .unwrap_or("An announcement");
+    let owned = first_text(true).or_else(|| first_text(false));
+    let text = owned.as_deref().unwrap_or("An announcement");
     text.lines()
         .next()
         .unwrap_or(text)
@@ -473,7 +472,7 @@ fn announcement_first_line(story: &Story) -> String {
 fn clear_body(story: &mut Story) {
     for p in story.paragraphs.iter_mut() {
         if p.style == "body" {
-            p.text = String::new();
+            p.set_text("");
         }
     }
 }
@@ -529,7 +528,7 @@ mod tests {
         assert!(cover
             .paragraphs
             .iter()
-            .any(|p| p.text.contains("{Sunday.name}")));
+            .any(|p| p.text().contains("{Sunday.name}")));
     }
 
     #[test]
@@ -559,17 +558,17 @@ mod tests {
         assert!(notes
             .paragraphs
             .iter()
-            .any(|p| p.style == "subheading" && p.text == "Announcements"));
+            .any(|p| p.style == "subheading" && p.text() == "Announcements"));
         assert!(notes
             .paragraphs
             .iter()
             .filter(|p| p.style == "body")
-            .all(|p| p.text.is_empty()));
+            .all(|p| p.text().is_empty()));
         // Standing order of service untouched.
         assert!(n.stories[1]
             .paragraphs
             .iter()
-            .any(|p| p.text.contains("Hymn of Praise")));
+            .any(|p| p.text().contains("Hymn of Praise")));
     }
 
     #[test]
@@ -588,7 +587,7 @@ mod tests {
                 .paragraphs
                 .iter()
                 .filter(|p| p.style == "body")
-                .map(|p| p.text.clone())
+                .map(|p| p.text())
                 .collect::<Vec<_>>()
                 .join(" ")
         };
@@ -596,7 +595,7 @@ mod tests {
             .paragraphs
             .iter_mut()
             .filter(|p| p.style == "body")
-            .for_each(|p| p.text = "Food bank collection".into());
+            .for_each(|p| p.set_text("Food bank collection"));
 
         // Keep-through before the new Sunday: ended and cleared,
         // counted once, and the spent date is gone.

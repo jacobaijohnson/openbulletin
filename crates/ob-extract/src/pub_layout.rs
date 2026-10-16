@@ -1231,9 +1231,18 @@ impl<'a> Compose<'a> {
             // color are not decoded by this reader, so they
             // stay unstated (the draft falls back to Left and
             // black with no badge change).
+            // G1b: no inline runs on .pub spans. This pen
+            // emits positioned per-piece word spans and
+            // deliberately dissolves paragraph identity for
+            // placement (pieces truncate and re-emit on box
+            // overflow), so true paragraph runs would need a
+            // placement rewrite. The piece-level faces still
+            // reach the draft: the builder turns each span
+            // into a run of its paragraph (draft part_runs).
             align: None,
             italic: props.italic.unwrap_or(false),
             color: [0, 0, 0],
+            runs: Vec::new(),
         });
         self.loss.characters_emitted += text.chars().count();
     }
@@ -1392,6 +1401,7 @@ impl<'a> Compose<'a> {
                     align: None,
                     italic: false,
                     color: [0, 0, 0],
+                    runs: Vec::new(),
                 });
                 self.loss.wordart_emitted += 1;
                 emitted = true;
@@ -1520,6 +1530,7 @@ impl<'a> Compose<'a> {
                     align: None,
                     italic: false,
                     color: [0, 0, 0],
+                    runs: Vec::new(),
                 });
                 emitted = true;
             }

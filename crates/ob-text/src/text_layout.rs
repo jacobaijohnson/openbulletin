@@ -23,7 +23,7 @@
 //! parley's lines. The clusters themselves still come from
 //! parley shaping of each display line's exact text.
 
-use crate::shaping::{FontSpec, Shaper};
+use crate::shaping::{clip_spans, FontSpec, RunSpan, Shaper};
 use ob_model::{Align, Mpt};
 use std::ops::Range;
 
@@ -37,6 +37,11 @@ pub struct ClusterGeom {
     /// own left edge (before alignment offset).
     pub x: f32,
     pub width: f32,
+    /// The effective face switches of the run this cluster
+    /// belongs to (G1b): painters draw each maximal run of
+    /// same-flag clusters in that face.
+    pub bold: bool,
+    pub italic: bool,
 }
 
 /// One display line of a laid-out paragraph.
@@ -232,12 +237,33 @@ impl TextLayout {
     }
 }
 
+/// The effective flags in force at a byte offset: the span
+/// covering it, else the last span that started before it,
+/// else the plain face. Spans are sorted and non-overlapping
+/// (callers build them from run lists).
+fn flags_at(spans: &[RunSpan], offset: usize) -> (bool, bool) {
+    let mut cur = (false, false);
+    for s in spans {
+        if offset >= s.range.start && offset < s.range.end {
+            return (s.bold, s.italic);
+        }
+        if s.range.start <= offset {
+            cur = (s.bold, s.italic);
+        }
+    }
+    cur
+}
+
 /// Clusters of one exact line string, shaped standalone: the
 /// line is built with no wrap width, so its single parley line
-/// carries every cluster's range and advance.
+/// carries every cluster's range and advance. `spans` are
+/// over the line text itself; each cluster takes the flags
+/// of the span it starts in (a style boundary forces a run
+/// break in parley, so a cluster never straddles two spans).
 fn line_clusters(
     shaper: &mut Shaper,
     line_text: &str,
+    spans: &[RunSpan],
     spec: &FontSpec,
     size: Mpt,
     leading_rel: f32,
@@ -245,7 +271,7 @@ fn line_clusters(
     if line_text.is_empty() {
         return (Vec::new(), 0.0);
     }
-    let layout = shaper.build_layout(line_text, spec, size, leading_rel, None);
+    let layout = shaper.build_layout_spanned(line_text, spec, spans, size, leading_rel, None);
     let mut clusters = Vec::new();
     let mut advance = 0.0f32;
     if let Some(line) = layout.lines().next() {
@@ -253,18 +279,72 @@ fn line_clusters(
         for run in line.runs() {
             for cluster in run.clusters() {
                 let adv = cluster.advance();
+                let range = cluster.text_range();
+                let (bold, italic) = flags_at(spans, range.start);
                 clusters.push(ClusterGeom {
-                    range: cluster.text_range(),
+                    range,
                     x: clusters
                         .last()
                         .map(|c: &ClusterGeom| c.x + c.width)
                         .unwrap_or(0.0),
                     width: adv,
+                    bold,
+                    italic,
                 });
             }
         }
     }
     (clusters, advance)
+}
+
+/// Map the spans of a RESOLVED leader line ("Label\tPage 3")
+/// onto its EXPANDED form ("Label ...... Page 3", the shape
+/// `expand_order_line` builds): the left words keep their
+/// spans, the right words keep theirs (shifted), and the
+/// dots wear the face of the run that held the tab. If the
+/// expanded text does not have the documented shape, one
+/// span in the tab's face covers it: the words still print,
+/// in one face, rather than not at all.
+pub fn leader_run_spans(resolved: &str, spans: &[RunSpan], expanded: &str) -> Vec<RunSpan> {
+    let Some(tab) = resolved.find('\t') else {
+        return clip_spans(spans, 0..expanded.len().min(resolved.len()));
+    };
+    let (tab_bold, tab_italic) = flags_at(spans, tab);
+    let left_vis = resolved[..tab].trim_end();
+    let right_res = &resolved[tab + 1..];
+    let right_vis = right_res.trim();
+    let right_start_res = tab + 1 + (right_res.len() - right_res.trim_start().len());
+    if !expanded.starts_with(left_vis)
+        || right_vis.is_empty()
+        || !expanded.ends_with(right_vis)
+        || expanded.len() < left_vis.len() + right_vis.len()
+    {
+        return vec![RunSpan {
+            range: 0..expanded.len(),
+            bold: tab_bold,
+            italic: tab_italic,
+        }];
+    }
+    let right_start_exp = expanded.len() - right_vis.len();
+    let mut out = clip_spans(spans, 0..left_vis.len());
+    if right_start_exp > left_vis.len() {
+        out.push(RunSpan {
+            range: left_vis.len()..right_start_exp,
+            bold: tab_bold,
+            italic: tab_italic,
+        });
+    }
+    let shift = right_start_exp as isize - right_start_res as isize;
+    for s in clip_spans(spans, right_start_res..right_start_res + right_vis.len()) {
+        let start = ((s.range.start + right_start_res) as isize).saturating_add(shift);
+        let end = ((s.range.end + right_start_res) as isize).saturating_add(shift);
+        out.push(RunSpan {
+            range: start.max(0) as usize..end.max(0) as usize,
+            bold: s.bold,
+            italic: s.italic,
+        });
+    }
+    out
 }
 
 fn align_offset(align: Align, frame_w: f32, line_w: f32) -> f32 {
@@ -288,6 +368,32 @@ impl Shaper {
         max_width: Mpt,
         align: Align,
     ) -> TextLayout {
+        let spans = [RunSpan {
+            range: 0..text.len(),
+            bold: spec.bold,
+            italic: spec.italic,
+        }];
+        self.layout_paragraph_runs(text, &spans, spec, size, leading_rel, max_width, align)
+    }
+
+    /// `layout_paragraph` for a paragraph whose face switches
+    /// change mid-text (G1b): `spans` carry the EFFECTIVE
+    /// flags over `text`. One parley layout for the whole
+    /// paragraph, so the breaks are the breaks the same text
+    /// would get unformatted except where the wider faces
+    /// genuinely move a word; the strict re-break measures
+    /// with the spans in force.
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_paragraph_runs(
+        &mut self,
+        text: &str,
+        spans: &[RunSpan],
+        spec: &FontSpec,
+        size: Mpt,
+        leading_rel: f32,
+        max_width: Mpt,
+        align: Align,
+    ) -> TextLayout {
         let line_height = size as f32 / 1000.0 * leading_rel;
         let frame_w = max_width as f32 / 1000.0;
         if text.is_empty() {
@@ -304,7 +410,8 @@ impl Shaper {
             };
         }
         // Phase 1, parley's lines, exactly as wrap() reads them.
-        let layout = self.build_layout(text, spec, size, leading_rel, Some(max_width));
+        let layout =
+            self.build_layout_spanned(text, spec, spans, size, leading_rel, Some(max_width));
         let mut raw_lines: Vec<(Range<usize>, f32)> = Vec::new();
         for line in layout.lines() {
             let range = line.text_range();
@@ -342,17 +449,20 @@ impl Shaper {
                 }
             }
             words.push(wstart..slice.len());
+            let measured = |shaper: &mut Shaper, local: Range<usize>| -> Mpt {
+                let global = range.start + local.start..range.start + local.end;
+                let local_spans = clip_spans(spans, global);
+                shaper.measure_spanned(&slice[local], &local_spans, spec, size)
+            };
             let mut cur: Option<Range<usize>> = None;
             for w in words {
                 let trial = match &cur {
                     None => w.clone(),
                     Some(c) => c.start..w.end,
                 };
-                let trial_text = &slice[trial.clone()];
-                if cur.is_some() && self.measure(trial_text, spec, size) > max_width {
+                if cur.is_some() && measured(self, trial.clone()) > max_width {
                     let c = cur.take().expect("cur checked");
-                    let piece = &slice[c.clone()];
-                    let pw = self.measure(piece, spec, size) as f32 / 1000.0;
+                    let pw = measured(self, c.clone()) as f32 / 1000.0;
                     display.push((range.start + c.start..range.start + c.end, pw, true));
                     cur = Some(w);
                 } else {
@@ -360,8 +470,7 @@ impl Shaper {
                 }
             }
             if let Some(c) = cur {
-                let piece = &slice[c.clone()];
-                let pw = self.measure(piece, spec, size) as f32 / 1000.0;
+                let pw = measured(self, c.clone()) as f32 / 1000.0;
                 display.push((range.start + c.start..range.start + c.end, pw, true));
             }
         }
@@ -370,8 +479,9 @@ impl Shaper {
         let mut lines = Vec::new();
         for (range, width_pt, _rebroken) in display {
             let line_text = &text[range.clone()];
+            let line_spans = clip_spans(spans, range.clone());
             let (mut clusters, text_advance) =
-                line_clusters(self, line_text, spec, size, leading_rel);
+                line_clusters(self, line_text, &line_spans, spec, size, leading_rel);
             for c in &mut clusters {
                 c.range = c.range.start + range.start..c.range.end + range.start;
             }
@@ -402,9 +512,30 @@ impl Shaper {
         frame_width: Mpt,
         align: Align,
     ) -> TextLayout {
+        let spans = [RunSpan {
+            range: 0..text.len(),
+            bold: spec.bold,
+            italic: spec.italic,
+        }];
+        self.layout_display_line_runs(text, &spans, spec, size, leading_rel, frame_width, align)
+    }
+
+    /// `layout_display_line` with effective face spans over
+    /// the (already expanded) line text.
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_display_line_runs(
+        &mut self,
+        text: &str,
+        spans: &[RunSpan],
+        spec: &FontSpec,
+        size: Mpt,
+        leading_rel: f32,
+        frame_width: Mpt,
+        align: Align,
+    ) -> TextLayout {
         let line_height = size as f32 / 1000.0 * leading_rel;
         let frame_w = frame_width as f32 / 1000.0;
-        let (clusters, advance) = line_clusters(self, text, spec, size, leading_rel);
+        let (clusters, advance) = line_clusters(self, text, spans, spec, size, leading_rel);
         TextLayout {
             text: text.to_string(),
             lines: vec![LayoutLine {
@@ -518,5 +649,87 @@ mod tests {
         let (x, _, _) = layout.caret_rect(0);
         assert!((x - line.x0).abs() < 0.01);
         assert_eq!(layout.byte_offset_at(0.0, 1.0), 0);
+    }
+
+    #[test]
+    fn runs_break_like_their_plain_concatenation() {
+        // One layout for the whole paragraph: a bold word
+        // inside a sentence takes the same line breaks the
+        // plain sentence takes (at a width with slack), and
+        // its clusters carry the bold flag.
+        let mut s = bundled_shaper();
+        let text = "Sing hymn 432 with glad and generous hearts today";
+        let hymn = text.find("hymn").expect("word");
+        let spans = vec![
+            RunSpan {
+                range: 0..hymn,
+                bold: false,
+                italic: false,
+            },
+            RunSpan {
+                range: hymn..hymn + 4,
+                bold: true,
+                italic: false,
+            },
+            RunSpan {
+                range: hymn + 4..text.len(),
+                bold: false,
+                italic: false,
+            },
+        ];
+        let plain = s.layout_paragraph(text, &spec(), 12_000, 1.3, 170_000, Align::Left);
+        let with_runs =
+            s.layout_paragraph_runs(text, &spans, &spec(), 12_000, 1.3, 170_000, Align::Left);
+        let plain_ranges: Vec<Range<usize>> =
+            plain.lines().iter().map(|l| l.range.clone()).collect();
+        let run_ranges: Vec<Range<usize>> =
+            with_runs.lines().iter().map(|l| l.range.clone()).collect();
+        assert_eq!(plain_ranges, run_ranges, "run boundaries move no breaks");
+        let mut saw_bold = false;
+        let mut saw_plain = false;
+        for line in with_runs.lines() {
+            for c in &line.clusters {
+                if c.range.start >= hymn && c.range.end <= hymn + 4 {
+                    assert!(c.bold, "the hymn clusters are bold");
+                    saw_bold = true;
+                } else {
+                    assert!(!c.bold, "the rest stays regular");
+                    saw_plain = true;
+                }
+            }
+        }
+        assert!(saw_bold && saw_plain);
+    }
+
+    #[test]
+    fn leader_spans_put_the_dots_in_the_tabs_face() {
+        let resolved = "Hymn of Praise\t432";
+        let tab = resolved.find('\t').expect("tab");
+        let spans = vec![
+            RunSpan {
+                range: 0..tab,
+                bold: false,
+                italic: false,
+            },
+            RunSpan {
+                range: tab..resolved.len(),
+                bold: false,
+                italic: true,
+            },
+        ];
+        let expanded = "Hymn of Praise ......... 432";
+        let out = leader_run_spans(resolved, &spans, expanded);
+        // The left words are plain...
+        assert!(out.iter().any(|s| s.range == (0..14) && !s.italic));
+        // ...the dots wear the tab's (italic) face...
+        let dots = out
+            .iter()
+            .find(|s| s.range.start == 14 && s.range.end < expanded.len())
+            .expect("a dots span");
+        assert!(dots.italic, "dots take the tab run's face");
+        // ...and the number keeps its own italic span, shifted.
+        assert!(out
+            .iter()
+            .any(|s| s.range == (expanded.len() - 3..expanded.len()) && s.italic));
     }
 }

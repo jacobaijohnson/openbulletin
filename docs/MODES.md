@@ -42,3 +42,7 @@ Bindable actions: undo, redo, save, open, new, Pages and Fonts
 window toggles, next/previous step, copy/paste box, next/previous
 page. Escape cancels a capture. Bindings live in settings.json
 (keymap_preset + per-action overrides), never in the .obd file.
+Not bindable: the canvas editor's bold and italic (G1b). They
+are not in the bindable list, so Ctrl+B / Ctrl+I inside a
+typing session read the modifiers directly, the word-processor
+convention every preset's users already have in their fingers.

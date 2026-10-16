@@ -152,6 +152,7 @@ fn main() {
                 align: None,
                 italic,
                 color,
+                runs: Vec::new(),
             });
             page_spans += 1;
         }

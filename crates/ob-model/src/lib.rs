@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::BTreeMap;
 
+pub mod markdown;
+
 /// One milli-point: 1/1000 of a PostScript point.
 pub type Mpt = i64;
 pub const MPT_PER_INCH: Mpt = 72_000;
@@ -98,17 +100,130 @@ fn default_font_family() -> String {
     "Liberation Sans".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One span of text inside a paragraph with its own face
+/// switches (G1b): a bold word in a body paragraph, an
+/// italic scripture citation. `None` means "whatever the
+/// paragraph's style says"; the effective face of a run is
+/// `run.bold.unwrap_or(style.bold)` and likewise for
+/// italic. Runs never cross a paragraph boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Run {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bold: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub italic: Option<bool>,
+}
+
+impl Run {
+    /// A run with no switches of its own: the style's face.
+    pub fn plain(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            bold: None,
+            italic: None,
+        }
+    }
+}
+
+/// The normalized form of a run list: adjacent runs with
+/// equal switches merge, empty runs drop. A list that
+/// normalizes to nothing becomes one empty plain run, so a
+/// paragraph's run list is never empty. Idempotent: writers
+/// store normalized lists, and loading normalizes again to
+/// the same list.
+pub fn normalize_runs(runs: Vec<Run>) -> Vec<Run> {
+    let mut out: Vec<Run> = Vec::with_capacity(runs.len());
+    for run in runs {
+        if run.text.is_empty() {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if last.bold == run.bold && last.italic == run.italic => {
+                last.text.push_str(&run.text);
+            }
+            _ => out.push(run),
+        }
+    }
+    if out.is_empty() {
+        out.push(Run::plain(""));
+    }
+    out
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Paragraph {
     pub style: String,
-    pub text: String,
+    #[serde(default)]
+    pub runs: Vec<Run>,
 }
+
+/// Paragraphs are stored as runs (G1b). Every file written
+/// before runs stores `{ style, text }` instead; loading
+/// accepts BOTH shapes (the old text becomes one plain run)
+/// and saving always writes the runs shape.
+impl<'de> Deserialize<'de> for Paragraph {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Shadow {
+            style: String,
+            #[serde(default)]
+            text: Option<String>,
+            #[serde(default)]
+            runs: Option<Vec<Run>>,
+        }
+        let sh = Shadow::deserialize(deserializer)?;
+        let runs = match (sh.runs, sh.text) {
+            (Some(runs), _) => normalize_runs(runs),
+            (None, Some(text)) => vec![Run::plain(&text)],
+            (None, None) => vec![Run::plain("")],
+        };
+        Ok(Paragraph {
+            style: sh.style,
+            runs,
+        })
+    }
+}
+
 impl Paragraph {
-    pub fn new(style: &str, text: &str) -> Self {
+    /// A paragraph in one plain run (the style's face
+    /// throughout).
+    pub fn plain(style: &str, text: &str) -> Self {
         Self {
             style: style.to_string(),
-            text: text.to_string(),
+            runs: vec![Run::plain(text)],
         }
+    }
+
+    /// Kept for the many construction sites that predate
+    /// runs: same as `plain`.
+    pub fn new(style: &str, text: &str) -> Self {
+        Self::plain(style, text)
+    }
+
+    /// A paragraph from runs, normalized.
+    pub fn from_runs(style: &str, runs: Vec<Run>) -> Self {
+        Self {
+            style: style.to_string(),
+            runs: normalize_runs(runs),
+        }
+    }
+
+    /// The paragraph's whole text: its runs concatenated.
+    /// Field tokens live here, unresolved; resolution is a
+    /// render step (`resolve_fields`, `resolve_runs`).
+    pub fn text(&self) -> String {
+        self.runs.iter().map(|r| r.text.as_str()).collect()
+    }
+
+    /// Replace the paragraph's words with one plain run
+    /// (whole-text writers: Next Sunday clearing a story,
+    /// the announcements box).
+    pub fn set_text(&mut self, text: &str) {
+        self.runs = vec![Run::plain(text)];
     }
 }
 
@@ -837,6 +952,75 @@ pub fn resolve_fields(text: &str, doc: &Document) -> String {
     resolve_fields_mapped(text, doc).text
 }
 
+/// Resolve a paragraph's runs: the same single resolution
+/// pass as `resolve_fields`, carried over the run list so
+/// the shaped renderers can keep each span's face switches.
+/// A token's resolved value takes the switches of the run
+/// that holds the token's first byte (a token split across
+/// runs is still one chip; it cannot wear two faces).
+/// Literal text keeps its runs, split only at token edges.
+pub fn resolve_runs(runs: &[Run], doc: &Document) -> Vec<Run> {
+    // Run boundaries over the concatenated raw text.
+    let mut bounds: Vec<(usize, usize, Option<bool>, Option<bool>)> = Vec::new();
+    let mut raw = String::new();
+    for run in runs {
+        let start = raw.len();
+        raw.push_str(&run.text);
+        bounds.push((start, raw.len(), run.bold, run.italic));
+    }
+    if raw.is_empty() {
+        return vec![Run::plain("")];
+    }
+    let mapped = resolve_fields_mapped(&raw, doc);
+    let flags_at = |offset: usize| -> (Option<bool>, Option<bool>) {
+        for &(s, e, b, i) in &bounds {
+            if offset >= s && offset < e {
+                return (b, i);
+            }
+        }
+        bounds
+            .last()
+            .map(|&(_, _, b, i)| (b, i))
+            .unwrap_or((None, None))
+    };
+    // Pieces of the raw text, in order: literal stretches
+    // (split at run boundaries) and whole tokens.
+    let mut pieces: Vec<(String, Option<bool>, Option<bool>)> = Vec::new();
+    let mut cursor = 0usize;
+    let push_literal =
+        |from: usize, to: usize, pieces: &mut Vec<(String, Option<bool>, Option<bool>)>| {
+            let mut pos = from;
+            while pos < to {
+                let (b, i) = flags_at(pos);
+                let run_end = bounds
+                    .iter()
+                    .find(|&&(s, e, _, _)| pos >= s && pos < e)
+                    .map(|&(_, e, _, _)| e)
+                    .unwrap_or(to);
+                let next = run_end.min(to);
+                pieces.push((raw[pos..next].to_string(), b, i));
+                pos = next;
+            }
+        };
+    for span in &mapped.spans {
+        if cursor < span.raw.start {
+            push_literal(cursor, span.raw.start, &mut pieces);
+        }
+        let (b, i) = flags_at(span.raw.start);
+        pieces.push((mapped.text[span.resolved.clone()].to_string(), b, i));
+        cursor = span.raw.end;
+    }
+    if cursor < raw.len() {
+        push_literal(cursor, raw.len(), &mut pieces);
+    }
+    normalize_runs(
+        pieces
+            .into_iter()
+            .map(|(text, bold, italic)| Run { text, bold, italic })
+            .collect(),
+    )
+}
+
 /// The house style set every template starts from. Large-print leaning:
 /// body text is 11pt minimum, order-of-service lines get their own style
 /// because they carry tab-leader hymn numbers.
@@ -1257,5 +1441,157 @@ mod occasion_tests {
         assert_eq!(back.assets[0].rights.license, LicenseKind::ChurchOwned);
         assert_eq!(back.assets[0].rights.source, "the church camera");
         assert!(back.asset_bytes.is_empty());
+    }
+
+    #[test]
+    fn paragraph_loads_the_pre_runs_text_shape() {
+        // Every file written before G1b stores paragraphs
+        // as { style, text }: the words become one plain run.
+        let p: Paragraph =
+            serde_json::from_str(r#"{"style":"body","text":"Sing hymn 432"}"#).expect("parse");
+        assert_eq!(p.style, "body");
+        assert_eq!(p.text(), "Sing hymn 432");
+        assert_eq!(p.runs, vec![Run::plain("Sing hymn 432")]);
+    }
+
+    #[test]
+    fn paragraph_runs_shape_round_trips_and_writes_no_text_key() {
+        let p = Paragraph::from_runs(
+            "body",
+            vec![
+                Run::plain("Sing "),
+                Run {
+                    text: "hymn".into(),
+                    bold: Some(true),
+                    italic: None,
+                },
+                Run::plain(" 432"),
+            ],
+        );
+        let json = serde_json::to_string(&p).expect("json");
+        assert!(json.contains("\"runs\""), "runs shape written: {json}");
+        assert!(
+            !json.contains("\"style\":\"body\",\"text\""),
+            "no legacy paragraph-level text key: {json}"
+        );
+        let back: Paragraph = serde_json::from_str(&json).expect("parse");
+        assert_eq!(back, p);
+        assert_eq!(back.text(), "Sing hymn 432");
+    }
+
+    #[test]
+    fn normalize_runs_merges_and_drops_empties() {
+        let runs = normalize_runs(vec![
+            Run::plain("a"),
+            Run::plain(""),
+            Run::plain("b"),
+            Run {
+                text: "c".into(),
+                bold: Some(true),
+                italic: None,
+            },
+            Run {
+                text: "d".into(),
+                bold: Some(true),
+                italic: None,
+            },
+        ]);
+        assert_eq!(
+            runs,
+            vec![
+                Run::plain("ab"),
+                Run {
+                    text: "cd".into(),
+                    bold: Some(true),
+                    italic: None,
+                },
+            ]
+        );
+        // An all-empty list still yields one (empty) run.
+        assert_eq!(normalize_runs(vec![Run::plain("")]), vec![Run::plain("")]);
+        assert_eq!(normalize_runs(vec![]), vec![Run::plain("")]);
+    }
+
+    #[test]
+    fn resolve_runs_keeps_faces_and_resolves_tokens() {
+        let mut doc = bare_doc();
+        doc.profile.pastor = "Pastor Lee".into();
+        let runs = vec![
+            Run::plain("Sermon: "),
+            Run {
+                text: "{Church.pastor}".into(),
+                bold: Some(true),
+                italic: None,
+            },
+            Run::plain(" speaks on "),
+            Run {
+                text: "grace".into(),
+                bold: None,
+                italic: Some(true),
+            },
+        ];
+        let out = resolve_runs(&runs, &doc);
+        assert_eq!(
+            out,
+            vec![
+                Run::plain("Sermon: "),
+                Run {
+                    text: "Pastor Lee".into(),
+                    bold: Some(true),
+                    italic: None,
+                },
+                Run::plain(" speaks on "),
+                Run {
+                    text: "grace".into(),
+                    bold: None,
+                    italic: Some(true),
+                },
+            ]
+        );
+        // A token split across two runs resolves whole and
+        // wears the face of the run holding its first byte.
+        let split = vec![
+            Run {
+                text: "{Church.pa".into(),
+                bold: Some(true),
+                italic: None,
+            },
+            Run::plain("stor}"),
+        ];
+        let out = resolve_runs(&split, &doc);
+        assert_eq!(
+            out,
+            vec![Run {
+                text: "Pastor Lee".into(),
+                bold: Some(true),
+                italic: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn v0_era_document_json_loads_with_words_intact() {
+        // A whole v0-era document: paragraphs in the text
+        // shape, pre-occasions keys absent. Deserialization
+        // alone must carry the words.
+        let json = r#"{
+            "format_version": 0,
+            "title": "Old",
+            "profile": {"name": "Grace", "address": "", "service_times": "",
+                        "website": "", "giving_url": "", "pastor": ""},
+            "fields": {},
+            "styles": [],
+            "stories": [{"id": "s", "paragraphs": [
+                {"style": "body", "text": "Welcome to worship"}
+            ], "keep_through": null}],
+            "panels": [],
+            "sheet": {"preset": "letter-portrait", "size": {"w": 612000, "h": 792000}}
+        }"#;
+        let doc: Document = serde_json::from_str(json).expect("parse");
+        assert_eq!(doc.stories[0].paragraphs[0].text(), "Welcome to worship");
+        assert_eq!(
+            doc.stories[0].paragraphs[0].runs,
+            vec![Run::plain("Welcome to worship")]
+        );
     }
 }

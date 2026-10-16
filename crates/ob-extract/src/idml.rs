@@ -5,7 +5,7 @@
 //! Words come over with their frames, sizes, and fonts; placed
 //! pictures do not in this version, and the review says so.
 
-use crate::{ExtractionDump, PageInfo, SourceKind, Span, SpanTrust, DUMP_SCHEMA_VERSION};
+use crate::{ExtractionDump, PageInfo, SourceKind, Span, SpanRun, SpanTrust, DUMP_SCHEMA_VERSION};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashMap;
@@ -182,12 +182,48 @@ fn style_table(styles_xml: &str) -> HashMap<String, StyleDef> {
 
 struct ParaText {
     text: String,
+    /// The paragraph's pieces, one per CharacterStyleRange
+    /// segment (G1b): concatenating them gives `text`
+    /// exactly (the joining space rides on the earlier
+    /// piece). The paragraph's own bold/italic are its
+    /// first piece's.
+    runs: Vec<SpanRun>,
     font: Option<String>,
     size: Option<f32>,
     bold: bool,
     italic: bool,
     style_ref: Option<String>,
     align: Option<ob_model::Align>,
+}
+
+/// Close out one accumulated paragraph: runs become a
+/// ParaText (skipped when they hold no words).
+fn finish_paragraph(
+    out: &mut Vec<ParaText>,
+    runs: Vec<SpanRun>,
+    font: Option<String>,
+    size: Option<f32>,
+    style_ref: &Option<String>,
+    align: Option<ob_model::Align>,
+) {
+    let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+    if text.trim().is_empty() {
+        return;
+    }
+    let (bold, italic) = runs
+        .first()
+        .map(|r| (r.bold.unwrap_or(false), r.italic.unwrap_or(false)))
+        .unwrap_or((false, false));
+    out.push(ParaText {
+        text,
+        runs,
+        font,
+        size,
+        bold,
+        italic,
+        style_ref: style_ref.clone(),
+        align,
+    });
 }
 
 fn story_paragraphs(story_xml: &str) -> Vec<ParaText> {
@@ -205,6 +241,15 @@ fn story_paragraphs(story_xml: &str) -> Vec<ParaText> {
         if chars.is_empty() {
             chars.push(range);
         }
+        // One paragraph accumulates across the range's
+        // character ranges (G1b): each range's words become
+        // runs of the paragraph they sit in, and only a Br
+        // (or the range's end) closes the paragraph. The
+        // paragraph's font and size are the first range's
+        // that state them.
+        let mut cur: Vec<SpanRun> = Vec::new();
+        let mut cur_font: Option<String> = None;
+        let mut cur_size: Option<f32> = None;
         for cr in chars {
             let font_style = cr.attr("FontStyle").unwrap_or("");
             let font = cr
@@ -232,21 +277,38 @@ fn story_paragraphs(story_xml: &str) -> Vec<ParaText> {
                 }
             }
             walk(cr, &mut segments);
-            for seg in segments {
-                let text = seg.trim().to_string();
-                if !text.is_empty() {
-                    out.push(ParaText {
-                        text,
-                        font: font.clone(),
-                        size,
-                        bold,
-                        italic,
-                        style_ref: style_ref.clone(),
-                        align: range_align,
-                    });
+            for (si, seg) in segments.iter().enumerate() {
+                if si > 0 {
+                    finish_paragraph(
+                        &mut out,
+                        std::mem::take(&mut cur),
+                        cur_font.take(),
+                        cur_size.take(),
+                        &style_ref,
+                        range_align,
+                    );
                 }
+                let text = seg.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                if cur_font.is_none() {
+                    cur_font = font.clone();
+                }
+                if cur_size.is_none() {
+                    cur_size = size;
+                }
+                if let Some(last) = cur.last_mut() {
+                    last.text.push(' ');
+                }
+                cur.push(SpanRun {
+                    text: text.to_string(),
+                    bold: Some(bold),
+                    italic: Some(italic),
+                });
             }
         }
+        finish_paragraph(&mut out, cur, cur_font, cur_size, &style_ref, range_align);
     }
     out
 }
@@ -417,6 +479,7 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
                     align,
                     italic: para.italic,
                     color: [0, 0, 0],
+                    runs: para.runs.clone(),
                 });
             }
         }
@@ -480,6 +543,75 @@ mod tests {
         buf
     }
 
+    fn idml_with_story(story: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            let parts: &[(&str, &str)] = &[
+                (
+                    "designmap.xml",
+                    r#"<?xml version="1.0"?><Document><Spread src="Spreads/Spread_u1.xml"/></Document>"#,
+                ),
+                (
+                    "Resources/Styles.xml",
+                    r#"<?xml version="1.0"?><Root><ParagraphStyleGroup><ParagraphStyle Self="ParagraphStyle/Body" PointSize="11"><Properties><AppliedFont type="string">Calibri</AppliedFont></Properties></ParagraphStyle></ParagraphStyleGroup></Root>"#,
+                ),
+                ("Stories/Story_u9.xml", story),
+                (
+                    "Spreads/Spread_u1.xml",
+                    r#"<?xml version="1.0"?><Spread><Page Self="u2" GeometricBounds="0 0 612 396" ItemTransform="1 0 0 1 0 0"/><TextFrame Self="u3" ParentStory="u9" ItemTransform="1 0 0 1 36 48"><Properties><PathGeometry><GeometryPathType><PathPointArray><PathPointType Anchor="0 0"/><PathPointType Anchor="324 0"/><PathPointType Anchor="324 200"/><PathPointType Anchor="0 200"/></PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame></Spread>"#,
+                ),
+            ];
+            for (name, body) in parts {
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(body.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn idml_character_ranges_become_span_runs() {
+        // One paragraph, three character ranges: the bold
+        // word in the middle becomes a run of ONE span whose
+        // text is the whole sentence (G1b).
+        let story = r#"<?xml version="1.0"?><Story><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Body"><CharacterStyleRange FontStyle="Regular"><Content>Sing</Content></CharacterStyleRange><CharacterStyleRange FontStyle="Bold"><Content>hymn</Content></CharacterStyleRange><CharacterStyleRange FontStyle="Regular"><Content>432</Content></CharacterStyleRange></ParagraphStyleRange></Story>"#;
+        let dump = dump_from_idml(&idml_with_story(story), "runs.idml").expect("dump");
+        assert_eq!(dump.spans.len(), 1, "one paragraph, one span");
+        let span = &dump.spans[0];
+        assert_eq!(span.text, "Sing hymn 432");
+        let concat: String = span.runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(concat, span.text, "the runs concatenate to the span text");
+        assert_eq!(span.runs.len(), 3);
+        assert_eq!(
+            span.runs[1].text.trim(),
+            "hymn",
+            "the middle run is the bold word (its joining space rides on it)"
+        );
+        assert_eq!(span.runs[1].bold, Some(true));
+        assert_eq!(span.runs[0].bold, Some(false));
+        // And the draft paragraph carries the run through.
+        let out =
+            crate::draft::document_from_dump(&dump, ob_model::ChurchProfile::default(), false);
+        let para = out
+            .doc
+            .stories
+            .iter()
+            .flat_map(|st| &st.paragraphs)
+            .find(|p| p.text().contains("hymn"))
+            .expect("the paragraph exists");
+        assert!(
+            para.runs
+                .iter()
+                .any(|r| r.text.contains("hymn") && r.bold == Some(true)),
+            "the draft paragraph keeps the bold word: {:?}",
+            para.runs
+        );
+    }
+
     #[test]
     fn idml_dump_carries_words_frames_and_fonts() {
         let dump = dump_from_idml(&tiny_idml(), "old.idml").expect("dump");
@@ -502,7 +634,7 @@ mod tests {
         assert!(out.doc.stories.iter().any(|st| st
             .paragraphs
             .iter()
-            .any(|p| p.text.contains("Announcements"))));
+            .any(|p| p.text().contains("Announcements"))));
     }
 
     #[test]

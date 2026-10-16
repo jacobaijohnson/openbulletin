@@ -188,6 +188,11 @@ impl BufferMap {
         self.paras[para].display.clone()
     }
 
+    /// A paragraph's resolved range.
+    pub fn para_resolved_range(&self, para: usize) -> Range<usize> {
+        self.paras[para].resolved.clone()
+    }
+
     /// The chip whose display range ends exactly at `d`
     /// (the atomic a Backspace at `d` would meet).
     pub fn atomic_ending_at_display(&self, d: usize) -> Option<Range<usize>> {

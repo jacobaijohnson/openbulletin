@@ -795,6 +795,7 @@ fn flush_segment(
         align: None,
         italic: props.italic.unwrap_or(false),
         color: [0, 0, 0],
+        runs: Vec::new(),
     });
     loss.characters_emitted += segment.chars().count();
     layout.x = x + w;

@@ -1,6 +1,6 @@
 //! OpenBulletin CLI: the headless engine operations (new, export,
-//! export-idml, export-sla, next-sunday, info, fonts, trace). The
-//! import doors live in the app.
+//! export-idml, export-sla, export-md, next-sunday, info, fonts,
+//! trace). The import doors live in the app.
 //! If it cannot be done here, the GUI is hiding engine problems.
 
 use clap::{Parser, Subcommand};
@@ -62,6 +62,14 @@ enum Cmd {
     /// words, their boxes, and their fonts. Prints plain-words
     /// notes about anything the copy could not carry.
     ExportSla {
+        input: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Save the words as Markdown, for a website or
+    /// newsletter: headings from the style names, bold and
+    /// italic from the runs, field words filled in.
+    ExportMd {
         input: PathBuf,
         #[arg(long)]
         out: PathBuf,
@@ -236,6 +244,17 @@ fn run(cli: Cli) -> Result<(), String> {
             for n in &report.notes {
                 println!("not carried: {n}");
             }
+            Ok(())
+        }
+        Cmd::ExportMd { input, out } => {
+            let doc = ob_format::load(&input)?;
+            let text = ob_model::markdown::to_markdown(&doc);
+            std::fs::write(&out, &text).map_err(|e| e.to_string())?;
+            println!(
+                "wrote {} ({} bytes, Markdown: the words, for a website or newsletter)",
+                out.display(),
+                text.len()
+            );
             Ok(())
         }
         Cmd::NextSunday { input, out } => {

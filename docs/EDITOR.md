@@ -77,6 +77,34 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
   the undo step (below). If the shaping machinery ever fails
   to lay a box out, the session falls back to the plain text
   overlay it replaced, so editing is never blocked.
+- **Bold and italic inside a paragraph** (G1b, 2026-10-16).
+  A paragraph's words can carry their own bold/italic on top
+  of the paragraph style ("runs"): select words and press
+  Ctrl+B / Ctrl+I, or use the Bold / Italic buttons in the
+  bar above the page, which show the state at the caret or
+  over the selection. The rule is the word-processor one: if
+  every selected word already has the face, the press takes
+  it off, otherwise it puts it on. (The keymap has no
+  bold/italic bindings to respect; these two keys read the
+  modifiers directly, and docs/MODES.md's keymap section
+  says so.) Typing inherits the face in force where the
+  caret sits: type after a bold word and the new words are
+  bold, type after a plain word and they are plain; at the
+  start of a paragraph the first word's face leads. A
+  selection that covers a shaded field word toggles AROUND
+  it, never inside it: the field word keeps the face it
+  resolves with. Words keep their faces through the .obd
+  file, the PDF, the previews, and Markdown copies. IDML
+  and Scribus copies carry the words and their paragraph
+  styles today; the runs inside a paragraph flatten to the
+  style's face there (their exporters write per-paragraph
+  styles, and teaching them runs is a later build).
+  Pasting text that carries markdown
+  marks (**bold**, *italic*) lands the marks as faces;
+  plain paste is unchanged. If a session ever falls back to
+  the plain overlay editor, words typed there come back
+  plain: the faces from before the fallback are not laid
+  over changed words and guessed at.
 - **Undo** covers the canvas: typing sessions (one step each),
   drags, nudges (a burst counts once), right-click applies, guide
   add/move/delete, and the Next Sunday command. Ctrl+Z and the

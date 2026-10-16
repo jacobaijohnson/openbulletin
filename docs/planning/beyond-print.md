@@ -6,12 +6,40 @@ bulletin should be incorporated in this type of system."
 
 ## 1. Inline formatting: the correction, then the build
 
-Verified state today: a paragraph has ONE style. There is
-no way to bold one word or italicize a scripture citation
-inside a paragraph (completeness audit gap #12; the model
-carries style id + string, no runs). Real bulletins need
-both constantly. The build, riding the G1 format migration
-so the model changes once:
+**SHIPPED 2026-10-16 (G1b).** What shipped, against the
+plan below: Paragraph carries runs (text + optional
+bold/italic, None = inherit the paragraph style) with
+full back-compatibility for the old { style, text } shape;
+the shaped editor toggles with Ctrl+B / Ctrl+I and the
+Bold / Italic toolbar buttons, typing inherits the face
+at the caret, and toggles land around field chips, never
+inside them; the PDF and every preview draw each run in
+its face; IDML imports carry CharacterStyleRange runs,
+and the PDF/.pub draft path turns a line whose face
+differs from its block into a run of the block's
+paragraph; .pub spans carry no runs of their own (the
+reader's placement pen dissolves paragraph identity on
+purpose; each span still lands as a run via its face).
+Markdown: a `.md` file enters through the one open door
+as a draft labeled "Notes or web text"; canvas paste
+converts markdown markers to runs; the export door and
+CLI `export-md` write the words as markdown. Run scope is
+bold/italic only: no per-run color or size in this build.
+
+The paste truth, recorded not faked: egui's clipboard is
+TEXT-ONLY. A copy made in Word or a web page arrives here
+as plain text (or, from tools that offer it, as markdown
+text, which the paste conversion above honors). Truly
+rich paste, carrying Word's own formatting across, waits
+on a platform clipboard path that can read HTML/RTF
+clipboard formats; until that exists, no build claims it.
+
+Original plan text: Verified state today: a paragraph has
+ONE style. There is no way to bold one word or italicize
+a scripture citation inside a paragraph (completeness
+audit gap #12; the model carries style id + string, no
+runs). Real bulletins need both constantly. The build,
+riding the G1 format migration so the model changes once:
 
 - Paragraph gains runs: spans of text with their own
   bold/italic (and later color/size deltas), style still

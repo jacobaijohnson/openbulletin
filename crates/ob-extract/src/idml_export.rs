@@ -172,7 +172,7 @@ fn story_xml(doc: &Document, story: &ob_model::Story, report: &mut IdmlExportRep
             font_style,
             pt(size),
             esc_text(&font),
-            esc_text(&para.text),
+            esc_text(&para.text()),
         ));
         report.paragraphs += 1;
     }
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn idml_export_escapes_text() {
         let mut doc = fixture_doc();
-        doc.stories[0].paragraphs[0].text = "Fish & loaves <for> \"all\"".into();
+        doc.stories[0].paragraphs[0].set_text("Fish & loaves <for> \"all\"");
         let (bytes, _) = export_idml(&doc).expect("export");
         let dump = crate::idml::dump_from_idml(&bytes, "esc.idml").expect("re-import");
         assert!(dump

@@ -312,12 +312,12 @@ pub fn export_sla(doc: &Document) -> Result<(Vec<u8>, SlaExportReport), String> 
                             }
                             for (j, (para, look)) in paras.iter().zip(&looks).enumerate() {
                                 report.paragraphs += 1;
-                                if !para.text.is_empty() {
+                                if !para.text().is_empty() {
                                     out.push_str(&format!(
                                         "<ITEXT FONT=\"{}\" FONTSIZE=\"{}\" CH=\"{}\"/>\n",
                                         esc_attr(&look.face),
                                         look.size_pt,
-                                        esc_attr(&para.text),
+                                        esc_attr(&para.text()),
                                     ));
                                 }
                                 if j + 1 < paras.len() {
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn sla_export_escapes_text() {
         let mut doc = fixture_doc();
-        doc.stories[0].paragraphs[0].text = "Fish & loaves <for> \"all\"".into();
+        doc.stories[0].paragraphs[0].set_text("Fish & loaves <for> \"all\"");
         let (bytes, _) = export_sla(&doc).expect("export");
         let dump = crate::sla::dump_from_sla(&bytes, "esc.sla").expect("re-import");
         assert!(dump

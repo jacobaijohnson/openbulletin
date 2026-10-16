@@ -101,16 +101,28 @@ reader). This is an objective, not a polish item:
 (Jacob, 2026-10-15, extended the same night to JPEG XL.)
 
 The recognition door takes every format a church office
-can plausibly be handed: PNG, JPEG, WebP, GIF, SVG, and
-JPEG XL. Facts checked 2026-10-15: JPEG XL just crossed
-into the mainstream (Chrome 155 enables it by default this
-month via a pure-Rust decoder; Firefox 158 follows;
-Safari has carried it since 2023; iPhone ProRAW uses it),
-it beats JPEG by roughly a third on photos, and it can
-shrink an existing JPEG about 20% losslessly and
-reversibly. The Rust decoding path is pure-Rust (the
-image crate's decoder), so support costs no native
-dependencies.
+can plausibly be handed: PNG, JPEG, WebP, GIF, SVG,
+JPEG XL, and AVIF. Facts checked 2026-10-15: JPEG XL just
+crossed into the mainstream (Chrome 155 enables it by
+default this month via a pure-Rust decoder; Firefox 158
+follows; Safari has carried it since 2023; iPhone ProRAW
+uses it), it beats JPEG by roughly a third on photos, and
+it can shrink an existing JPEG about 20% losslessly and
+reversibly. Its Rust decoders are pure-Rust (jxl-rs,
+BSD-3, the decoder Chrome and Firefox ship; jxl-oxide
+beside it), so support costs no native dependencies.
+AVIF (added the same night) is the web's high-efficiency
+format: every browser decodes it and its compression at
+web sizes is excellent, but in Rust its ENCODER is the
+pure-Rust half (ravif) while DECODING binds dav1d, a
+small BSD-2 C library, the same decoder the browsers
+bundle. AVIF therefore joins the door in G2 with one
+open measurement: if the dav1d native dependency keeps
+the one-download bundle sane, it decodes in-app like the
+rest; if not, it starts as a labeled convert-first. For
+a print-first program JPEG XL is the better citizen
+(lossless, high fidelity); AVIF is the web's format, and
+the door takes both.
 
 The asymmetry from the optimization ruling holds: the
 asset store keeps originals untouched whatever their

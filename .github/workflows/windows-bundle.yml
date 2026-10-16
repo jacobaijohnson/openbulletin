@@ -3,6 +3,12 @@ name: Windows bundle
 # Builds the one-download Windows bundle Jacob asked for by
 # experience: openbulletin.exe + ob-pdfium-helper.exe + pdfium.dll
 # in a single zip. No installer, no steps: unzip, double-click.
+# ob-verovio-helper.exe rides along too: it is our own binary,
+# the door to the music engraver. The engraver itself (Verovio)
+# is NOT in the bundle yet: it publishes no standalone Windows
+# binary (its Windows form is a Python wheel), so music files
+# open with their notes standing undrawn and the app says so
+# plainly; see docs/LEGAL.md.
 on:
   workflow_dispatch:
   push:
@@ -17,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build the app and the PDF reader
-        run: cargo build --release -p openbulletin -p ob-pdfium-helper
+        run: cargo build --release -p openbulletin -p ob-pdfium-helper -p ob-verovio-helper
       - name: Fetch the PDFium library (pinned, chromium 8100)
         shell: pwsh
         run: |
@@ -30,6 +36,7 @@ jobs:
           New-Item -ItemType Directory -Force bundle | Out-Null
           Copy-Item target/release/openbulletin.exe bundle/
           Copy-Item target/release/ob-pdfium-helper.exe bundle/
+          Copy-Item target/release/ob-verovio-helper.exe bundle/
           Copy-Item crates/ob-app/assets/icon.png bundle/
           Copy-Item bin/pdfium.dll bundle/
           Copy-Item LICENSE bundle/PDFium-LICENSE.txt
@@ -42,6 +49,13 @@ jobs:
           PDF reader; keep them beside openbulletin.exe. The
           icon.png file is the program's picture, the same one
           the window wears; it does not need to stay.
+
+          Music files (MusicXML) open through the same door, but
+          their notes are drawn by a music engraver program
+          (Verovio) that is not in this download yet. Until it
+          is, a music file still opens: its title, words, and
+          credit arrive, and the app tells you plainly that the
+          notes cannot be drawn on this computer yet.
 
           Your bulletins and fonts stay on this computer. The app
           does not send them anywhere.

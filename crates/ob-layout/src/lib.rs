@@ -142,6 +142,7 @@ fn text_frame(id: &str, name: &str, panel: Size, story: &str, role: ContentRole)
         story_id: Some(story.to_string()),
         role,
         picture: None,
+        music: None,
     }
 }
 

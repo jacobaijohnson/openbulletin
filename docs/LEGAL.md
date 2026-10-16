@@ -87,6 +87,33 @@ stock Windows bundle runner, so AVIF files are recognized
 and refused with convert-first guidance instead, beside
 HEIC. No dav1d code or binary enters the tree.
 
+Music engraving (2026-10-16, M1): hymn notation is engraved
+by Verovio (LGPL-3.0), run unmodified and out-of-process by
+our own helper binary (ob-verovio-helper), the same posture
+as PDFium: nothing of Verovio is linked, copied, or modified,
+and the helper speaks to the app over versioned JSON. Checked
+2026-10-16: Verovio publishes no pre-built standalone binary
+for Windows (its command-line book says binaries exist only
+through Homebrew on macOS); the official Windows distribution
+is the Python wheel on PyPI (wheels for Windows, macOS, and
+Linux), which needs a Python runtime to run. Consequence,
+recorded rather than papered over: the Windows bundle ships
+our helper but no engraver, so on a stock Windows machine a
+music file opens with its notes standing undrawn and the app
+says so in plain words. When an engraver is staged in a later
+bundle it will be the unmodified official artifact with its
+LGPL-3.0 license text and a note offering its source, the
+same treatment PDFium gets today. Our own new dependencies
+for this build are quick-xml 0.36 and zip 2 (both already in
+the tree; see the .obd note above), so no new license family
+entered: `cargo metadata` recount is owed at the next
+material dependency change. MusicXML itself is a W3C
+Community Final Specification (Music Notation Community
+Group), free to implement. The one music file used in
+development testing (a Bach chorale edition under
+CC BY-NC-SA 4.0) lives outside this repository and never
+ships, like the bulletin corpus.
+
 ## The Publisher reader and the LibreOffice bridge
 
 Our Publisher (.pub) reader is an independent implementation

@@ -1,0 +1,19 @@
+[package]
+name = "ob-music"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenBulletin music (Phase A): our own MusicXML parse, the engraver helper's protocol and engine room, and the draft builder that lays engraved systems into a bulletin."
+
+[dependencies]
+ob-model = { path = "../ob-model" }
+ob-extract = { path = "../ob-extract" }
+ob-image = { path = "../ob-image" }
+serde.workspace = true
+serde_json.workspace = true
+quick-xml = "0.36"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+ob-pdf = { path = "../ob-pdf" }

@@ -264,6 +264,7 @@ pub fn document_from_markdown(text: &str, profile: ChurchProfile, source_name: &
                 story_id: Some("notes".into()),
                 role: ContentRole::Weekly,
                 picture: None,
+                music: None,
             }],
             guides: Vec::new(),
         }],

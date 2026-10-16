@@ -73,6 +73,31 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
   dots per inch at its shown size each get a finding
   with a working Fix-this target.
 
+## Music boxes (built 2026-10-16, M1)
+
+- A music box is a picture box carrying one engraved line
+  of music (a "Music line" from a MusicXML import), marked
+  in the model as music with the staff size it was drawn
+  at and the file it came from.
+- It can be MOVED and never resized: drag it, arrow-key
+  it, or right-click it and set its Left and Top in inches
+  (the menu offers the place only). There is no corner
+  square on a music box. The selection line says why in
+  one sentence: "This is music: its size keeps the notes
+  readable, so the box can be moved but not resized."
+  Resizing would break the legibility floor the import
+  measured (staff 6.5 mm by target, never under 5.0 mm);
+  the size is the contract, not a preference.
+- A music box takes no photograph and no clip art: the
+  picture picker refuses it in plain words, and its menu
+  carries no fit or take-out items. The drawing in it is
+  the engraved line, whole (never trimmed to fill).
+- When the engraver is not on the computer, a music box
+  stands empty with the Check finding G2 gives any empty
+  picture box, and the import's own Check-this explains
+  the notes are not drawn yet. It prints the counted
+  placeholder like any missing picture, never a silence.
+
 ## Threading: one story, many boxes (built 2026-10-16, T1)
 
 A story can run through more than one box: the words fill

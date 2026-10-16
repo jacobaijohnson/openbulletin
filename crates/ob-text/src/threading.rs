@@ -416,6 +416,7 @@ mod tests {
                 story_id: Some("s".into()),
                 role: ContentRole::Weekly,
                 picture: None,
+                music: None,
             })
             .collect();
         let doc = Document {

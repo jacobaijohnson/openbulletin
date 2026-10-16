@@ -347,6 +347,29 @@ pub fn picture_shown_rect(
     (x, y, w, h)
 }
 
+/// The mark a music box carries (M1, docs/research/
+/// music-landscape.md Phase A). A music box is a picture
+/// box whose picture is one engraved line ("system") of a
+/// MusicXML file, drawn by the engraver helper at a staff
+/// size a layperson can sing from. The mark is what makes
+/// the box music rather than a picture: the app lets it be
+/// MOVED but never resized, because its size is the
+/// legibility contract, and the Check and review words can
+/// name where its notes came from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicFrame {
+    /// Which system of the piece this box carries,
+    /// counting from 0 in reading order.
+    pub system: u32,
+    /// The staff height the engraving measured, in
+    /// millimetres. Never below the 5.0 mm floor: the
+    /// helper refuses a render that measures under it.
+    pub staff_mm: f64,
+    /// The MusicXML asset (in `Document.assets`, kind
+    /// Music) these notes were engraved from, by SHA-256.
+    pub source: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
     pub id: String,
@@ -361,6 +384,11 @@ pub struct Frame {
     /// every older file loads with no picture.
     #[serde(default)]
     pub picture: Option<PicturePlacement>,
+    /// The music mark, when this picture box carries one
+    /// engraved system of a MusicXML file. Serde-defaulted,
+    /// so every older file loads with no music.
+    #[serde(default)]
+    pub music: Option<MusicFrame>,
 }
 
 /// One layout guide on a panel: a straight line the eye (and later,
@@ -945,6 +973,12 @@ impl Document {
                     }
                     pic.crop_x = pic.crop_x.clamp(0.0, 1.0);
                     pic.crop_y = pic.crop_y.clamp(0.0, 1.0);
+                }
+                if let Some(music) = &mut frame.music {
+                    if !music.staff_mm.is_finite() || music.staff_mm <= 0.0 {
+                        music.staff_mm = 6.5;
+                    }
+                    music.staff_mm = music.staff_mm.clamp(1.0, 50.0);
                 }
             }
         }
@@ -1891,6 +1925,7 @@ mod picture_tests {
             story_id: story.map(|s| s.to_string()),
             role: ContentRole::Weekly,
             picture: None,
+            music: None,
         }
     }
 

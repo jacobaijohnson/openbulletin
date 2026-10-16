@@ -1568,6 +1568,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
                 story_id: Some(story.id.clone()),
                 role: ContentRole::Standing,
                 picture: None,
+                music: None,
             }],
             background_image: None,
             guides: Vec::new(),
@@ -1746,6 +1747,7 @@ mod tests {
             story_id: Some("s1".into()),
             role: ContentRole::Weekly,
             picture: None,
+            music: None,
         };
         Document {
             format_version: FORMAT_VERSION,
@@ -2648,6 +2650,7 @@ mod tests {
             story_id: None,
             role: ob_model::ContentRole::Weekly,
             picture: Some(ob_model::PicturePlacement::new(sha.clone())),
+            music: None,
         });
         (doc, sha)
     }
@@ -2725,6 +2728,7 @@ mod tests {
             story_id: None,
             role: ob_model::ContentRole::Weekly,
             picture: Some(ob_model::PicturePlacement::new(sha)),
+            music: None,
         });
         let (pdf, report) = export_reader_pdf_report(&doc, ExportPurpose::ForPrinting);
         assert_eq!(report.missing_pictures, 0);
@@ -2764,6 +2768,7 @@ mod tests {
             story_id: None,
             role: ob_model::ContentRole::Weekly,
             picture: None,
+            music: None,
         });
         let (_, report) = export_reader_pdf_report(&doc2, ExportPurpose::ForPrinting);
         assert_eq!(report.missing_pictures, 1);
@@ -2787,6 +2792,7 @@ mod tests {
             story_id: None,
             role: ob_model::ContentRole::Weekly,
             picture: Some(ob_model::PicturePlacement::new(sha)),
+            music: None,
         });
         // The box is 1x1 in: for printing the art renders at
         // 300 pixels, whatever its file's nominal size says.

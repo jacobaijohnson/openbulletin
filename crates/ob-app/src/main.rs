@@ -3330,6 +3330,7 @@ impl App {
             story_id: Some(sid),
             role: ob_model::ContentRole::Weekly,
             picture: None,
+            music: None,
         });
         self.selected_frame = Some(panel.frames.len() - 1);
         self.note("Text box added in the middle of the page. Drag it where it belongs.".into());
@@ -3524,6 +3525,7 @@ impl App {
             story_id: None,
             role: ob_model::ContentRole::Weekly,
             picture: None,
+            music: None,
         });
         self.selected_frame = Some(panel.frames.len() - 1);
         self.note(
@@ -5380,6 +5382,20 @@ impl App {
                         }
                     }
                 }
+                // Music boxes (M1): the selection line says
+                // the move-only rule in one plain sentence.
+                if let Some(f) = self
+                    .selected_frame
+                    .and_then(|fi| self.doc.panels[idx].frames.get(fi))
+                {
+                    if f.music.is_some() {
+                        ui.label(format!(
+                            "Selected: {}. This is music: its size keeps the notes \
+                             readable, so the box can be moved but not resized.",
+                            f.name
+                        ));
+                    }
+                }
                 if self.discarded_edit.is_some()
                     && ui.button("Bring the typed words back").clicked()
                 {
@@ -5729,12 +5745,16 @@ impl App {
                 );
                 let blue = self.theme.accent;
                 painter.rect_stroke(frect, 0.0, egui::Stroke::new(1.75_f32, blue));
-                let handle = egui::Rect::from_min_size(
-                    egui::pos2(frect.max.x - 9.0, frect.max.y - 9.0),
-                    egui::vec2(9.0, 9.0),
-                );
-                painter.rect_filled(handle, 0.0, egui::Color32::WHITE);
-                painter.rect_stroke(handle, 0.0, egui::Stroke::new(1.25_f32, blue));
+                // No corner square on a music box: there is
+                // no resize to offer (M1).
+                if f.music.is_none() {
+                    let handle = egui::Rect::from_min_size(
+                        egui::pos2(frect.max.x - 9.0, frect.max.y - 9.0),
+                        egui::vec2(9.0, 9.0),
+                    );
+                    painter.rect_filled(handle, 0.0, egui::Color32::WHITE);
+                    painter.rect_stroke(handle, 0.0, egui::Stroke::new(1.25_f32, blue));
+                }
                 if self.drag_frame == Some(fi) {
                     painter.text(
                         frect.min + egui::vec2(4.0, -16.0),
@@ -6016,7 +6036,12 @@ impl App {
                             // the square drawn stays 9 px.
                             let grip =
                                 (14_000.0 * self.settings.ui_scale.text_factor()) as ob_model::Mpt;
+                            // A music box is never resized (M1):
+                            // its size is the legibility
+                            // contract, so its corner drags it
+                            // like any other part of the box.
                             let handle = self.selected_frame == Some(fi)
+                                && f.music.is_none()
                                 && pm.0 >= f.rect.x + f.rect.w - grip
                                 && pm.1 >= f.rect.y + f.rect.h - grip;
                             // A drag that starts INSIDE an
@@ -6656,6 +6681,42 @@ impl App {
                         ];
                     }
                     ui.label(egui::RichText::new(format!("Box: {}", f.name)).strong());
+                    if f.music.is_some() {
+                        // Music boxes move but never resize
+                        // (M1): their size keeps the notes
+                        // readable, so only the place is
+                        // offered, in the same words as the
+                        // selection line.
+                        ui.label("Exact place, in inches:");
+                        for (i, label) in ["Left", "Top"].iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{label}:"));
+                                ui.text_edit_singleline(&mut self.frame_input[i]);
+                            });
+                        }
+                        ui.label(
+                            "This is music. Its size keeps the notes readable; \
+                             it can be moved, not resized.",
+                        );
+                        if ui.button("Set the place").clicked() {
+                            let left = ob_model::parse_inches(&self.frame_input[0]);
+                            let top = ob_model::parse_inches(&self.frame_input[1]);
+                            if let (Some(l), Some(t)) = (left, top) {
+                                self.push_undo_now();
+                                let fr = &mut self.doc.panels[idx].frames[fi];
+                                fr.rect.x = ob_model::inches_to_mpt(l)
+                                    .clamp(0, panel.size.w - fr.rect.w);
+                                fr.rect.y = ob_model::inches_to_mpt(t)
+                                    .clamp(0, panel.size.h - fr.rect.h);
+                                self.status = "Box moved.".into();
+                                ui.close_menu();
+                            } else {
+                                self.status =
+                                    "One of those is not a measurement I can read. Try 1.25 or 1 1/4."
+                                        .into();
+                            }
+                        }
+                    } else {
                     ui.label("Exact place and size, in inches:");
                     for (i, label) in ["Left", "Top", "Width", "Height"].iter().enumerate() {
                         ui.horizontal(|ui| {
@@ -6688,7 +6749,8 @@ impl App {
                                     .into();
                         }
                     }
-                    if f.kind == ob_model::FrameKind::Picture {
+                    }
+                    if f.kind == ob_model::FrameKind::Picture && f.music.is_none() {
                         ui.separator();
                         match &f.picture {
                             None => {
@@ -6992,6 +7054,10 @@ impl App {
     /// bulletin's asset store with an honest rights record
     /// (source: the file's name; license: not stated).
     fn pick_picture_file(&mut self, idx: usize, fi: usize) {
+        if self.frame_is_music(idx, fi) {
+            self.note("That box holds music; a picture cannot go in it.".into());
+            return;
+        }
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Pictures",
@@ -7057,7 +7123,22 @@ impl App {
 
     /// Place one of the document's own stored pictures into
     /// a box (the picker and the clip library both land here).
+    /// True when the named box carries music (M1): such a
+    /// box takes no photograph and offers no resize.
+    fn frame_is_music(&self, idx: usize, fi: usize) -> bool {
+        self.doc
+            .panels
+            .get(idx)
+            .and_then(|p| p.frames.get(fi))
+            .map(|f| f.music.is_some())
+            .unwrap_or(false)
+    }
+
     fn place_stored_picture(&mut self, idx: usize, fi: usize, sha: &str) {
+        if self.frame_is_music(idx, fi) {
+            self.note("That box holds music; a picture cannot go in it.".into());
+            return;
+        }
         self.set_frame_picture(
             idx,
             fi,
@@ -7365,6 +7446,7 @@ impl App {
             "pub" => self.start_pub_import(path),
             "sla" => self.start_sla_import(path),
             "md" => self.start_md_import(path),
+            "musicxml" | "mxl" => self.start_music_import(path),
             "obd" => match ob_format::load(&path) {
                 Ok(doc) => {
                     self.adopt_document(doc, true);
@@ -7388,8 +7470,20 @@ impl App {
                     .collect::<Vec<u8>>();
                 if head.starts_with(b"%PDF") {
                     self.start_import(path);
+                } else if String::from_utf8_lossy(&head).contains("<score-partwise") {
+                    // A music file whose name did not say so
+                    // (an extension-less or .xml MusicXML).
+                    self.start_music_import(path);
                 } else if head.starts_with(b"PK") {
-                    self.start_idml_import(path);
+                    // A zip: an IDML package, or a .mxl music
+                    // file. The music sniff reads the whole
+                    // file; IDML remains the default.
+                    let bytes = std::fs::read(&path).unwrap_or_default();
+                    if ob_music::sniff_music(&bytes) {
+                        self.start_music_import(path);
+                    } else {
+                        self.start_idml_import(path);
+                    }
                 } else if head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
                     self.start_pub_import(path);
                 } else if String::from_utf8_lossy(&head).contains("SCRIBUSUTF8NEW") {
@@ -7397,8 +7491,8 @@ impl App {
                 } else {
                     self.fail(
                         "That file does not look like a PDF, a Publisher file, an \
-                         InDesign (IDML) file, or a Scribus file, so it cannot \
-                         be brought in."
+                         InDesign (IDML) file, a Scribus file, or a music file \
+                         (MusicXML), so it cannot be brought in."
                             .into(),
                     );
                 }
@@ -7441,6 +7535,70 @@ impl App {
                  the layout is a plain page, ready to arrange."
                     .into(),
             ),
+        });
+    }
+
+    /// A music file through the one open door (M1): our own
+    /// MusicXML reader counts the file, the engraver helper
+    /// draws its lines at a singing size, and the draft goes
+    /// through the standard review. No engraver on this
+    /// computer is not a failure: the draft forms with the
+    /// notes standing undrawn and a plain Check-this saying
+    /// so. OpenBulletin never edits the music itself.
+    fn start_music_import(&mut self, path: std::path::PathBuf) {
+        let profile = self.doc.profile.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.import_rx = Some(rx);
+        self.note("Reading your music file...".into());
+        std::thread::spawn(move || {
+            let result = (|| -> Result<ImportReview, String> {
+                let bytes =
+                    std::fs::read(&path).map_err(|e| format!("cannot read that file: {e}"))?;
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "music file".into());
+                let (xml, info) = ob_music::load_music(&bytes)?;
+                let media = if bytes.starts_with(b"PK") {
+                    "application/vnd.recordare.musicxml"
+                } else {
+                    "application/vnd.recordare.musicxml+xml"
+                };
+                let (render, note) = match ob_music::render_music(
+                    &xml,
+                    ob_music::music_frame_width_mm(),
+                    ob_music::TARGET_STAFF_MM,
+                ) {
+                    Ok(r) => (Some(r), None),
+                    Err(ob_music::RenderError::NotAvailable(_)) => (
+                        None,
+                        Some(
+                            "The notes are not drawn yet: the music engraver is not on \
+                         this computer. The draft holds the music file itself, and \
+                         bringing it in again where the engraver is installed draws \
+                         every line."
+                                .to_string(),
+                        ),
+                    ),
+                    Err(ob_music::RenderError::Failed(why)) => return Err(why),
+                };
+                let out = ob_music::build_music_draft(
+                    &info,
+                    &bytes,
+                    &name,
+                    media,
+                    profile,
+                    render.as_ref(),
+                );
+                Ok(ImportReview {
+                    doc: out.doc,
+                    items: out.items,
+                    workdir: None,
+                    source_name: name,
+                    note,
+                })
+            })();
+            let _ = tx.send(result);
         });
     }
 
@@ -7896,7 +8054,10 @@ impl App {
             return;
         }
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Old bulletins", &["pdf", "pub", "idml", "sla", "obd", "md"])
+            .add_filter(
+                "Old bulletins",
+                &["pdf", "pub", "idml", "sla", "obd", "md", "musicxml", "mxl"],
+            )
             .add_filter("All files", &[] as &[&str])
             .pick_file()
         {
@@ -8988,7 +9149,7 @@ impl eframe::App for App {
                         }
                         ui.separator();
                         ui.heading("Bring in an old bulletin");
-                        ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, an InDesign file (IDML), or a Scribus file. One button for all of them; the app works out which kind it is, and the words come over as a draft you can edit. Publisher files ride in through LibreOffice (a free program) when it is installed, and through OpenBulletin's own reader when it is not; for InDesign, export the file there as IDML first.");
+                        ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, an InDesign file (IDML), or a Scribus file. A music file (MusicXML, from a music program) comes in the same door: its notes are drawn at a size people can sing from, as boxes you can move. One button for all of them; the app works out which kind it is, and what comes over arrives as a draft you can check. Publisher files ride in through LibreOffice (a free program) when it is installed, and through OpenBulletin's own reader when it is not; for InDesign, export the file there as IDML first.");
                         if self.import_rx.is_some() {
                             ui.horizontal(|ui| {
                                 ui.spinner();
@@ -9008,8 +9169,11 @@ impl eframe::App for App {
                                     self.open_old_bulletin(path);
                                 } else if let Some(path) = rfd::FileDialog::new()
                                     .add_filter(
-                                        "Old bulletins",
-                                        &["pdf", "pub", "idml", "sla", "obd"],
+                                        "Old bulletins and music",
+                                        &[
+                                            "pdf", "pub", "idml", "sla", "obd", "musicxml",
+                                            "mxl",
+                                        ],
                                     )
                                     .add_filter("All files", &[] as &[&str])
                                     .pick_file()
@@ -12053,6 +12217,7 @@ mod settings_tests {
                     story_id: Some("s".into()),
                     role: ob_model::ContentRole::Weekly,
                     picture: None,
+                    music: None,
                 }],
                 guides: vec![],
             }],
@@ -12182,6 +12347,7 @@ mod settings_tests {
                 story_id: None,
                 role: ob_model::ContentRole::Weekly,
                 picture: Some(placement.clone()),
+                music: None,
             },
             placement,
         )
@@ -12267,6 +12433,7 @@ mod settings_tests {
                 story_id: None,
                 role: ob_model::ContentRole::Weekly,
                 picture: Some(ob_model::PicturePlacement::new(placed.clone())),
+                music: None,
             }],
         });
         let found = unplaced_doc_pictures(&doc);

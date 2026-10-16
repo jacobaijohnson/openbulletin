@@ -533,6 +533,7 @@ mod tests {
                     story_id: Some("story-1".into()),
                     role: ContentRole::Weekly,
                     picture: None,
+                    music: None,
                 }],
                 guides: Vec::new(),
                 background_image: None,

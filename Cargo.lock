@@ -2893,6 +2893,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ob-music"
+version = "0.1.0"
+dependencies = [
+ "ob-extract",
+ "ob-image",
+ "ob-model",
+ "ob-pdf",
+ "quick-xml 0.36.2",
+ "serde",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
 name = "ob-pdf"
 version = "0.1.0"
 dependencies = [
@@ -2927,6 +2941,14 @@ dependencies = [
  "ob-model",
  "parley",
  "ttf-parser",
+]
+
+[[package]]
+name = "ob-verovio-helper"
+version = "0.1.0"
+dependencies = [
+ "ob-music",
+ "serde_json",
 ]
 
 [[package]]
@@ -3237,6 +3259,7 @@ dependencies = [
  "ob-impose",
  "ob-layout",
  "ob-model",
+ "ob-music",
  "ob-pdf",
  "ob-text",
  "rfd",

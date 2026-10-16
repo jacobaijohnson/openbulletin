@@ -502,6 +502,7 @@ mod tests {
                         story_id: Some("s-cover".into()),
                         role: ContentRole::Standing,
                         picture: None,
+                        music: None,
                     },
                     Frame {
                         id: "f-art".into(),
@@ -511,6 +512,7 @@ mod tests {
                         story_id: None,
                         role: ContentRole::Standing,
                         picture: None,
+                        music: None,
                     },
                 ],
                 guides: Vec::new(),
@@ -528,6 +530,7 @@ mod tests {
                     story_id: Some("s-inside".into()),
                     role: ContentRole::Weekly,
                     picture: None,
+                    music: None,
                 }],
                 guides: Vec::new(),
                 background_image: None,

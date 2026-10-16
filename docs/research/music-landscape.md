@@ -346,6 +346,75 @@ and import review wiring that already exists for other
 formats. This phase alone beats today's 150 dpi pictures
 for any hymn that arrives as a file.
 
+**Phase A as built (shipped 2026-10-16, M1).** What
+actually landed, where it differs from the sketch above:
+- The parse is our own light walk in a new crate,
+  `ob-music` (title, creators, rights, part names, and the
+  structural counts), not the `musicxml` manipulation
+  crate: Phase A needs to count and label, not to model
+  the music, and a hand-rolled walk keeps it that way.
+  `.mxl` unzips through its container; files are also
+  recognized by content sniff at the one open door. A
+  notation PDF is NOT a music door in this build; it
+  comes in through the ordinary PDF rescue as pictures,
+  as before.
+- The helper is `ob-verovio-helper`, speaking versioned
+  JSON like the PDFium helper. It drives Verovio two ways,
+  in order: a command-line program when one is present,
+  else a Python carrying the official Verovio wheel
+  (development points it at a venv through
+  `$OB_VEROVIO_PYTHON`). There is no third route: checked
+  2026-10-16, Verovio publishes no standalone Windows
+  binary, so the Windows bundle ships the helper without
+  an engraver and the app degrades honestly (the draft
+  forms, the notes stand undrawn, a Check-this says why).
+  docs/LEGAL.md carries the entry.
+- Rendering follows the spike's method (page width from
+  the staff formula, options as a dict read back after
+  setting), one tall page per score. This build does NOT
+  render one page per system; it cuts the page SVG at
+  system boundaries, each system's crop measured from its
+  own ink in a real rasterization, which keeps tempo
+  marks and dynamics that staff arithmetic alone would
+  clip.
+- The floor is enforced BY MEASUREMENT on every render:
+  the staff height is read out of the drawing, and a
+  render measuring under 5.0 mm is refused whole, naming
+  the measured size (a request for 3.0 mm came back
+  measuring 3.7 mm and was refused; a narrow 60 mm panel
+  at the 6.5 mm target simply wrapped into more systems,
+  all measuring 6.50 mm). Lyrics ride the staff size;
+  there is no separate control.
+- The draft carries the file's words as words: title and
+  composer in a heading, and the file's rights line (or a
+  composed Words/Music line) as the credit under the
+  music, closing the spike's named loss deliberately.
+  Each system is a picture box marked as music in the
+  model: it can be MOVED on Pages but not resized, and
+  its selection line and right-click menu say so in one
+  sentence. The music file itself is stored in the
+  document, so the bulletin travels complete.
+- Every import compares counts: the file's notes,
+  measures, syllables, and fermatas against the drawn
+  SVG's notehead, measure, syllable, and fermata groups.
+  Shortfalls land as Check-this items naming the numbers;
+  a full count lands as "Every note in the file is in the
+  printed music." Measured on the spike's Bach chorale
+  through the real helper: 237 of 237 notes, 14 of 14
+  measures, 13 of 13 fermatas (fermatas ARE countable in
+  the SVG), staff 6.50 mm at the 6.5 mm target. Syllables
+  drew 59 groups against 58 counted in the file: Verovio
+  also groups the extend-only lyric, so syllable counts
+  can read one high on the drawn side; the comparison
+  accuses only when the print shows FEWER than the file
+  holds, and both numbers always print in the item.
+- Print rides the G2 picture path: each system's SVG is
+  rasterized at the export purpose's resolution, so at
+  the "print shop or publication" purpose (600) the
+  notation is crisp vector-born print, and a music box
+  whose drawing is missing prints the placeholder and is
+  counted, never a silent gap.
+
 **Phase B: understand structure, choose the breaks.**
 Parse the MusicXML ourselves in Rust (the `musicxml` crate,
 version 1.1.2 on crates.io, is a real parsing and

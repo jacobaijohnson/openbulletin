@@ -21,6 +21,7 @@ ob-format = { path = "../ob-format" }
 ob-fonts = { path = "../ob-fonts" }
 ob-image = { path = "../ob-image" }
 ob-clips = { path = "../ob-clips" }
+ob-music = { path = "../ob-music" }
 rfd = "0.15"
 serde.workspace = true
 serde_json.workspace = true

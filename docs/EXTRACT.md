@@ -29,6 +29,31 @@ file came by way of LibreOffice, so small layout differences
 are normal. Without LibreOffice installed, the app says so in
 plain words and explains the Save-As-PDF route instead.
 
+## The native Publisher reader (shipped 2026-10-15)
+
+Our own reader, an independent implementation from documented
+format facts ([MS-CFB] for the container, [MS-ODRAW] for the
+drawing layer, and facts from the public reverse-engineering
+record; no libmspub code, no LibreOffice needed). It covers the
+Publisher 2002-and-later family (the 0x2C files); the 2000-and-
+earlier family gets the bridge-or-PDF guidance instead. When
+LibreOffice is absent, the app uses this reader: the file's
+words land in the boxes Publisher put them in (Contents chunk
+directory joins each text box to its story; Escher anchors give
+the box, with coordinates relative to the page center). Master
+pages, tables, and WordArt text come over marked Check this.
+Pictures are counted and their places marked, but their image
+bytes do not come over yet; the review note says so. When a
+file's layout cannot be read, the words still come over in
+reading order and the note says their places could not be read.
+Words that run past the bottom of their page keep what fits in
+the box; the rest follow in reading order at the end, counted.
+Measured on the Apache POI public sample files: every 2002+
+sample positions fully, with no placed span outside its page
+bounds; the sample newsletter places 59 of 62 shapes and the
+sample brochure 28 of 30, with tables, alternates, and picture
+counts matching the files.
+
 Spike pass bars, agreed before the real engine work: at least 98%
 character accuracy against hand-checked ground truth on real bulletins,
 100% detection of unreadable pages, and zero confident wrong sheet

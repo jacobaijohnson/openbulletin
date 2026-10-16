@@ -4038,7 +4038,7 @@ impl eframe::App for App {
                         }
                         ui.separator();
                         ui.heading("Bring in an old bulletin");
-                        ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, or an InDesign file (IDML). One button for all of them; the app works out which kind it is, and the words come over as a draft you can edit. Publisher files ride in through LibreOffice (a free program) when it is installed; for InDesign, export the file there as IDML first.");
+                        ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, or an InDesign file (IDML). One button for all of them; the app works out which kind it is, and the words come over as a draft you can edit. Publisher files ride in through LibreOffice (a free program) when it is installed, and through OpenBulletin's own reader when it is not; for InDesign, export the file there as IDML first.");
                         if self.import_rx.is_some() {
                             ui.label("Reading your old bulletin...");
                         } else if ui.button("Open an old bulletin...").clicked() {
@@ -4588,10 +4588,13 @@ fn journal_decision(
     }
 }
 
-/// The native .pub text rescue (phase 2b): our own reader,
-/// no LibreOffice needed. Words only, in reading order; the
-/// review note says so plainly, with the loss counts when
-/// anything in the file could not be read.
+/// The native .pub rescue (phases 2b and 2c): our own
+/// reader, no LibreOffice needed. The words land in the
+/// boxes Publisher put them in when the file's layout can
+/// be read; when it cannot, the words still come over in
+/// reading order. The review note says which happened,
+/// plainly, with the loss counts when anything in the file
+/// could not be read or carried.
 fn native_pub_review(
     path: &std::path::Path,
     name: &str,
@@ -4600,20 +4603,67 @@ fn native_pub_review(
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read that file: {e}"))?;
     let source_bytes = bytes.len();
     let cfb = ob_extract::cfb::Cfb::open(bytes)?;
-    let (dump, loss) = ob_extract::pub_text::extract_pub_text(&cfb, name, source_bytes)?;
+    let x = ob_extract::pub_layout::extract_pub_positioned(&cfb, name, source_bytes)?;
+    let (dump, loss) = (x.dump, x.loss);
     if dump.spans.is_empty() {
         return Err("the built-in reader found no words in that Publisher file".into());
     }
     let out = ob_extract::draft::document_from_dump(&dump, profile, false);
-    let mut note = "These words came from your Publisher file with OpenBulletin's own \
-                    reader, so no other program was needed. Only the words come over in \
-                    this step: their places on the page and any pictures arrive later, \
-                    so check the words themselves. Every piece is marked Check this."
-        .to_string();
+    let mut note = if x.positioned {
+        "These words came from your Publisher file with OpenBulletin's own \
+         reader, so no other program was needed, and they are in the boxes \
+         Publisher put them in. Pieces marked Check this need a look: their \
+         font could not be matched to a free one, or they are master-page \
+         pieces, tables, or styled text art."
+            .to_string()
+    } else {
+        "These words came from your Publisher file with OpenBulletin's own \
+         reader, so no other program was needed. Their places on the page \
+         could not be read this time, so the words are in reading order. \
+         Every piece is marked Check this."
+            .to_string()
+    };
     if loss.stories_unresolved > 0 {
         note.push_str(&format!(
             " {} of {} pieces of text in the file could not be read and were left out.",
             loss.stories_unresolved, loss.stories_total
+        ));
+    }
+    if loss.stories_unplaced > 0 {
+        note.push_str(&format!(
+            " The words from {} {} could not be placed in a box and are on \
+             the last pages in reading order.",
+            loss.stories_unplaced,
+            if loss.stories_unplaced == 1 {
+                "piece"
+            } else {
+                "pieces"
+            }
+        ));
+    }
+    if loss.stories_overflowed > 0 {
+        note.push_str(&format!(
+            " {} {} had more words than fit on the page; the words that fit \
+             stayed in their box and the rest are on the last pages in \
+             reading order.",
+            loss.stories_overflowed,
+            if loss.stories_overflowed == 1 {
+                "piece"
+            } else {
+                "pieces"
+            }
+        ));
+    }
+    if loss.pictures_found > loss.pictures_carried {
+        note.push_str(&format!(
+            " The file holds {} {}; pictures do not come over yet, and each \
+             picture's place is marked on its page.",
+            loss.pictures_found,
+            if loss.pictures_found == 1 {
+                "picture"
+            } else {
+                "pictures"
+            }
         ));
     }
     Ok(ImportReview {

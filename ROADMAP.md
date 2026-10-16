@@ -40,11 +40,15 @@ Imports are rescues with honest fidelity labels, never magic (PRINCIPLES.md):
       app; words come back as editable boxes with Good / Check this /
       Picture only labels, and each old page stays underneath as a
       tracing picture until removed. Accept / Edit / Cancel review.
-- [x] .pub rescue import (shipped 2026-10-15 as the LibreOffice
-      bridge): LibreOffice converts the Publisher file to PDF
-      headlessly, then the PDF rescue takes over (words, boxes,
-      tracing pictures, the same review). Native .pub reading via
-      libmspub stays out; the bridge covers the office case.
+- [x] .pub rescue import (shipped 2026-10-15): with LibreOffice
+      installed, the bridge converts the Publisher file to PDF
+      headlessly and the PDF rescue takes over (words, boxes,
+      tracing pictures, the same review). Without it, our own
+      native reader (no libmspub code) reads Publisher 2002+
+      files directly: words in their boxes, masters, tables,
+      and WordArt marked Check this; pictures counted and their
+      places marked, bytes not yet carried. Design and measures:
+      docs/EXTRACT.md.
 - [x] IDML import (shipped 2026-10-15): words, frames, sizes, and fonts
       out of InDesign's interchange format, through the same draft
       review as PDF rescue; placed pictures do not come over yet.

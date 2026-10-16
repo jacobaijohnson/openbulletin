@@ -72,6 +72,46 @@ pub struct LossReport {
     /// dropped, on their way into spans. Paragraph marks are
     /// structural and are not counted here.
     pub control_chars_mapped: usize,
+    // Phase 2c (positions) accounting; all zero in a
+    // text-only rescue.
+    /// Shapes listed on real pages of the file, excluding
+    /// deleted shapes and pure group containers.
+    pub shapes_total: usize,
+    /// Of those, the shapes whose contents are on a page at
+    /// the place the file gives them (words, table cells,
+    /// word art, or a picture placeholder).
+    pub shapes_placed: usize,
+    /// Of those, the shapes whose contents could not be
+    /// placed (no position, or their words never joined).
+    pub shapes_unplaced: usize,
+    /// Shapes listed on pages but marked deleted in the
+    /// drawing layer: skipped on purpose.
+    pub shapes_deleted_skipped: usize,
+    /// Alternate-shape chunks (type 0x20) set aside because
+    /// the page lists their regular counterpart.
+    pub alternate_shapes_excluded: usize,
+    /// Shapes from applied master pages whose contents were
+    /// emitted onto the page (badged Check this).
+    pub master_shapes_emitted: usize,
+    /// Table cells whose words were emitted as their own
+    /// placed pieces.
+    pub table_cells_emitted: usize,
+    /// WordArt texts recovered from the drawing layer.
+    pub wordart_emitted: usize,
+    /// Pictures named in the file's image store.
+    pub pictures_found: usize,
+    /// Pictures whose image bytes came over. The dump
+    /// schema carries no image bytes, so this stays zero
+    /// until it can; the loss is reported, not hidden.
+    pub pictures_carried: usize,
+    /// Stories whose words were emitted but landed on the
+    /// reading-order pages at the end because no shape
+    /// claimed them (or their shape had no position).
+    pub stories_unplaced: usize,
+    /// Stories whose words ran past the bottom of their
+    /// page: the words that fit stayed in the box, and the
+    /// rest moved to the reading-order pages.
+    pub stories_overflowed: usize,
     /// Structural fallbacks taken (a broken property table, an
     /// uncovered tail), in plain words.
     pub notes: Vec<String>,
@@ -199,7 +239,7 @@ struct Block<'a> {
     container: bool,
 }
 
-fn payload_fixed_len(ty: u8) -> Option<usize> {
+pub(crate) fn payload_fixed_len(ty: u8) -> Option<usize> {
     match ty {
         0x78 | 0x05 | 0x08 | 0x0A => Some(0),
         0x10 | 0x12 | 0x18 | 0x1A | 0x07 => Some(2),
@@ -211,7 +251,7 @@ fn payload_fixed_len(ty: u8) -> Option<usize> {
     }
 }
 
-fn is_variable_len(ty: u8) -> bool {
+pub(crate) fn is_variable_len(ty: u8) -> bool {
     matches!(ty, 0xC0 | 0x80 | 0x82 | 0x88 | 0x8A | 0x90 | 0x98 | 0xA0)
 }
 
@@ -253,7 +293,7 @@ fn walk_blocks(bytes: &[u8]) -> Vec<Block<'_>> {
     out
 }
 
-fn payload_int(payload: &[u8]) -> u64 {
+pub(crate) fn payload_int(payload: &[u8]) -> u64 {
     let mut v = 0u64;
     for (i, b) in payload.iter().take(8).enumerate() {
         v |= (*b as u64) << (8 * i);
@@ -284,12 +324,12 @@ fn style_blocks<'a>(chunk: &'a [u8], record_off: usize, limit: usize) -> Vec<Blo
 // Character properties
 
 #[derive(Debug, Clone, Copy, Default)]
-struct CharProps {
-    bold: Option<bool>,
-    italic: Option<bool>,
+pub(crate) struct CharProps {
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
     /// Font size in points.
-    size_pt: Option<f32>,
-    font_index: Option<usize>,
+    pub size_pt: Option<f32>,
+    pub font_index: Option<usize>,
 }
 
 impl CharProps {
@@ -618,7 +658,7 @@ impl Layout {
 /// (a "-Italic" suffix, the same convention the IDML
 /// importer uses, since the dump schema carries bold but
 /// not italic).
-fn span_font(props: &CharProps, fonts: &[String]) -> Option<String> {
+pub(crate) fn span_font(props: &CharProps, fonts: &[String]) -> Option<String> {
     let name = fonts.get(props.font_index?)?.clone();
     if props.italic == Some(true) && !name.to_lowercase().contains("italic") {
         Some(format!("{name}-Italic"))
@@ -782,16 +822,75 @@ fn para_base(
 }
 
 // ----------------------------------------------------------------
-// The rescue itself
+// The parsed Quill stream, shared by the text-only rescue
+// (this module) and the positioned reader (pub_layout).
+// Parsing accounts for every story exactly once; a layout
+// (the reading column below, or real boxes in phase 2c)
+// then turns the parsed runs into spans.
 
-/// Extract the words from Quill stream bytes: a text dump
-/// (one span per character run, reading order, synthetic
-/// letter pages) plus the loss report.
-pub fn extract_from_quill(
-    quill: &[u8],
-    source_name: &str,
-    source_bytes: usize,
-) -> Result<(ExtractionDump, LossReport), String> {
+/// One character run inside a story paragraph, with the
+/// character properties that apply to it (the paragraph's
+/// stylesheet base merged with the run's own record).
+#[derive(Clone)]
+pub(crate) struct RunParse {
+    pub props: CharProps,
+    /// Character range in TEXT.
+    pub start: usize,
+    pub end: usize,
+    /// The run's font index resolved to a name in the FONT
+    /// table: the positioned reader trusts a placed run by
+    /// this (deliverable rule in the 2c plan).
+    pub font_resolved: bool,
+}
+
+/// One paragraph of a story: its runs in order, and the
+/// character range it covers in TEXT (marks included).
+#[derive(Clone)]
+pub(crate) struct ParaParse {
+    pub runs: Vec<RunParse>,
+    /// Largest effective font size among the runs.
+    pub max_size: f32,
+    /// End of the paragraph's character range in TEXT
+    /// (the table reader measures cell ends against it).
+    pub char_end: usize,
+}
+
+/// One story of the file, after the parse's accounting.
+pub(crate) struct StoryParse {
+    pub index: usize,
+    /// The story's SYID id, when the file gives it exactly
+    /// one: the join a shape's text id uses in phase 2c.
+    pub syid: Option<u32>,
+    /// Whether the story's words are emitted (not excluded
+    /// as blank, not unresolved).
+    pub emitted: bool,
+    /// Start of the story's character range in TEXT (the
+    /// table reader measures cell ends against it).
+    pub char_start: usize,
+    /// Paragraphs with their runs; only for emitted
+    /// stories.
+    pub paragraphs: Vec<ParaParse>,
+}
+
+/// The whole Quill stream, parsed once.
+pub(crate) struct QuillParse {
+    pub chars: Vec<char>,
+    pub fonts: Vec<String>,
+    pub stories: Vec<StoryParse>,
+    /// Table cell text ends by story index, from the TCD
+    /// chunks (a TCD chunk's directory id is the story
+    /// index it describes): character ends within the
+    /// story, converted from the stored byte ends (halved;
+    /// the record compensates all but the last end by one
+    /// character for the cell's terminating mark).
+    pub table_cell_ends: Vec<Option<Vec<usize>>>,
+}
+
+/// Parse the Quill stream once: the story accounting and
+/// the run/paragraph/style resolution every layout shares.
+/// The returned loss report carries the story-level books;
+/// a layout adds its character counters on top.
+pub(crate) fn parse_quill(quill: &[u8]) -> Result<(QuillParse, LossReport), String> {
     let chunks = quill_chunks(quill);
     let mut loss = LossReport::default();
 
@@ -957,15 +1056,55 @@ pub fn extract_from_quill(
         }
     }
 
-    // Emit, story by story, in reading order.
-    let mut layout = Layout::new();
-    let mut spans: Vec<Span> = Vec::new();
+    // TCD: table cell text ends. A TCD chunk's directory id
+    // is the index of the story it describes. The chunk
+    // opens with a U32 that is one less than the number of
+    // ends; the ends themselves are U32 byte offsets within
+    // the story's text, starting at byte 12 of the chunk.
+    let mut table_cell_ends: Vec<Option<Vec<usize>>> = vec![None; stories.len()];
+    for chunk in chunks_named(&chunks, "TCD") {
+        let idx = chunk.id as usize;
+        if idx >= stories.len() || table_cell_ends[idx].is_some() {
+            continue;
+        }
+        let b = chunk.bytes;
+        if b.len() < 12 {
+            continue;
+        }
+        let n = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize + 1;
+        if n > 4096 || 12 + 4 * n > b.len() {
+            continue;
+        }
+        let story_len = stories[idx].1 - stories[idx].0;
+        let mut ends = Vec::with_capacity(n);
+        for i in 0..n {
+            let p = 12 + 4 * i;
+            let raw = u32::from_le_bytes([b[p], b[p + 1], b[p + 2], b[p + 3]]) as usize;
+            // All but the last stored end excludes the
+            // cell's terminating mark: one character back.
+            let bytes = if i + 1 == n { raw } else { raw + 2 };
+            ends.push((bytes / 2).min(story_len));
+        }
+        table_cell_ends[idx] = Some(ends);
+    }
+
+    // Account for every story, and resolve the runs of the
+    // emitted ones.
+    let mut story_parses: Vec<StoryParse> = Vec::new();
     let mut excluded_chars = 0usize;
     let mut covered_end = 0usize;
-    // Input characters handed to the piece emitter (they come
-    // out as span text, breaks, or mapped controls).
+    // Input characters covered by resolved runs (they come
+    // out of a layout as span text, breaks, or mapped
+    // controls).
     let mut consumed_chars = 0usize;
     for (si, &(s0, s1)) in stories.iter().enumerate() {
+        let mut parse = StoryParse {
+            index: si,
+            syid: None,
+            emitted: false,
+            char_start: s0,
+            paragraphs: Vec::new(),
+        };
         // The SYID join for this story.
         if !syid_ids.is_empty() {
             match syid_ids.get(si) {
@@ -986,7 +1125,7 @@ pub fn extract_from_quill(
                         id
                     ));
                 }
-                _ => {}
+                Some(id) => parse.syid = Some(*id),
             }
         }
         if s1 > text_chars {
@@ -999,6 +1138,7 @@ pub fn extract_from_quill(
                 s1,
                 text_chars
             ));
+            story_parses.push(parse);
             continue;
         }
         covered_end = covered_end.max(s1);
@@ -1009,16 +1149,22 @@ pub fn extract_from_quill(
         {
             loss.stories_excluded += 1;
             excluded_chars += s1 - s0;
+            story_parses.push(parse);
             continue;
         }
         loss.stories_emitted += 1;
+        parse.emitted = true;
         for (p0, p1, prec) in &paragraphs {
             let (a, b) = ((*p0).max(s0), (*p1).min(s1));
             if a >= b {
                 continue;
             }
             let base = para_base(&fdpp_chunks, prec, &stsh);
-            let mut para_size = DEFAULT_SIZE;
+            let mut para = ParaParse {
+                runs: Vec::new(),
+                max_size: DEFAULT_SIZE,
+                char_end: b,
+            };
             for (r0, r1, rrec) in &runs {
                 let (ra, rb) = ((*r0).max(a), (*r1).min(b));
                 if ra >= rb {
@@ -1031,19 +1177,20 @@ pub fn extract_from_quill(
                 loss.runs_emitted += 1;
                 consumed_chars += rb - ra;
                 let eff = base.merged(run_props);
-                para_size = para_size.max(eff.size_pt.unwrap_or(DEFAULT_SIZE));
-                emit_piece(
-                    &mut layout,
-                    &mut spans,
-                    &chars[ra..rb],
-                    &eff,
-                    &fonts,
-                    &mut loss,
-                );
+                para.max_size = para.max_size.max(eff.size_pt.unwrap_or(DEFAULT_SIZE));
+                para.runs.push(RunParse {
+                    props: eff,
+                    start: ra,
+                    end: rb,
+                    font_resolved: eff
+                        .font_index
+                        .map(|i| fonts.get(i).is_some())
+                        .unwrap_or(false),
+                });
             }
-            layout.paragraph_break(para_size);
+            parse.paragraphs.push(para);
         }
-        layout.story_break();
+        story_parses.push(parse);
     }
     if covered_end < text_chars {
         loss.unresolved_reasons.push(format!(
@@ -1052,13 +1199,102 @@ pub fn extract_from_quill(
         ));
     }
     // The books balance by construction: every character in
-    // TEXT was handed to the emitter (span text, a break, or
-    // a mapped control), sits in an excluded story, or is
-    // unresolved (claimed by a story that could not be read,
-    // or claimed by no story at all).
+    // TEXT is covered by a resolved run of an emitted story,
+    // sits in an excluded story, or is unresolved (claimed
+    // by a story that could not be read, or by no story).
     loss.characters_unresolved = text_chars - consumed_chars - excluded_chars;
 
-    let pages: Vec<PageInfo> = (0..=layout.page)
+    Ok((
+        QuillParse {
+            chars,
+            fonts,
+            stories: story_parses,
+            table_cell_ends,
+        },
+        loss,
+    ))
+}
+
+/// Lay the given stories (by index, in the order given) out
+/// in the plain reading column starting at `first_page`:
+/// the text-only placement. Returns the spans and how many
+/// pages they occupy from `first_page`.
+pub(crate) fn reading_column_spans(
+    parse: &QuillParse,
+    indices: &[usize],
+    first_page: u32,
+    loss: &mut LossReport,
+) -> (Vec<Span>, u32) {
+    let mut layout = Layout::new();
+    layout.page = first_page;
+    let mut spans: Vec<Span> = Vec::new();
+    for &i in indices {
+        let Some(story) = parse.stories.get(i) else {
+            continue;
+        };
+        if !story.emitted {
+            continue;
+        }
+        for para in &story.paragraphs {
+            for run in &para.runs {
+                emit_piece(
+                    &mut layout,
+                    &mut spans,
+                    &parse.chars[run.start..run.end],
+                    &run.props,
+                    &parse.fonts,
+                    loss,
+                );
+            }
+            layout.paragraph_break(para.max_size);
+        }
+        layout.story_break();
+    }
+    let pages = layout.page - first_page + 1;
+    (spans, pages)
+}
+
+/// The reading-column placement for an arbitrary list of
+/// paragraphs (phase 2c uses it for the part of a story
+/// that ran past the bottom of its page). Returns the
+/// spans and the number of pages used.
+pub(crate) fn reading_column_paras(
+    parse: &QuillParse,
+    paras: &[ParaParse],
+    first_page: u32,
+    loss: &mut LossReport,
+) -> (Vec<Span>, u32) {
+    let mut layout = Layout::new();
+    layout.page = first_page;
+    let mut spans: Vec<Span> = Vec::new();
+    for para in paras {
+        for run in &para.runs {
+            emit_piece(
+                &mut layout,
+                &mut spans,
+                &parse.chars[run.start..run.end],
+                &run.props,
+                &parse.fonts,
+                loss,
+            );
+        }
+        layout.paragraph_break(para.max_size);
+    }
+    let pages = layout.page - first_page + 1;
+    (spans, pages)
+}
+
+/// The text-only dump: every emitted story in the reading
+/// column on synthetic letter pages.
+pub(crate) fn reading_column_dump(
+    parse: &QuillParse,
+    mut loss: LossReport,
+    source_name: &str,
+    source_bytes: usize,
+) -> (ExtractionDump, LossReport) {
+    let indices: Vec<usize> = (0..parse.stories.len()).collect();
+    let (spans, npages) = reading_column_spans(parse, &indices, 0, &mut loss);
+    let pages: Vec<PageInfo> = (0..npages)
         .map(|i| PageInfo {
             index: i,
             width_pt: PAGE_W,
@@ -1075,7 +1311,19 @@ pub fn extract_from_quill(
         pages,
         spans,
     };
-    Ok((dump, loss))
+    (dump, loss)
+}
+
+/// Extract the words from Quill stream bytes: a text dump
+/// (one span per character run, reading order, synthetic
+/// letter pages) plus the loss report.
+pub fn extract_from_quill(
+    quill: &[u8],
+    source_name: &str,
+    source_bytes: usize,
+) -> Result<(ExtractionDump, LossReport), String> {
+    let (parse, loss) = parse_quill(quill)?;
+    Ok(reading_column_dump(&parse, loss, source_name, source_bytes))
 }
 
 #[cfg(test)]

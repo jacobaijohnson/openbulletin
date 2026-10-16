@@ -18,6 +18,7 @@ pub mod draft;
 pub mod helper;
 pub mod idml;
 pub mod pub_bridge;
+pub mod pub_layout;
 pub mod pub_text;
 
 use serde::{Deserialize, Serialize};

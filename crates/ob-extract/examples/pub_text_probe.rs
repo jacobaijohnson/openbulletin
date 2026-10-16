@@ -21,6 +21,7 @@
 //! Usage: pub_text_probe [samples-dir]
 //! Default samples dir: ~/workspace/openbulletin-fixtures/pub/samples
 use ob_extract::cfb::Cfb;
+use ob_extract::pub_layout::extract_pub_positioned;
 use ob_extract::pub_text::{contents_version, extract_pub_text};
 use std::path::PathBuf;
 
@@ -102,6 +103,67 @@ fn main() {
                 }
                 for note in &loss.notes {
                     println!("    note: {note}");
+                }
+                // Phase 2c: the positioned rescue.
+                match extract_pub_positioned(&cfb, &name, bytes.len()) {
+                    Ok(x) => {
+                        let l = &x.loss;
+                        println!(
+                            "    2c positioned: {}, {} pages, {} spans",
+                            x.positioned,
+                            x.dump.pages.len(),
+                            x.dump.spans.len()
+                        );
+                        if x.positioned {
+                            println!(
+                                "    shapes: {} total, {} placed, {} unplaced, \
+                                 {} deleted skipped, {} alternates excluded; \
+                                 {} master shapes, {} table cells, {} wordart, \
+                                 {} stories unplaced; pictures: {} found, {} carried",
+                                l.shapes_total,
+                                l.shapes_placed,
+                                l.shapes_unplaced,
+                                l.shapes_deleted_skipped,
+                                l.alternate_shapes_excluded,
+                                l.master_shapes_emitted,
+                                l.table_cells_emitted,
+                                l.wordart_emitted,
+                                l.stories_unplaced,
+                                l.pictures_found,
+                                l.pictures_carried
+                            );
+                            // Sanity: placed text spans sit
+                            // inside their page bounds.
+                            let mut out = 0usize;
+                            let mut out_bottom = 0usize;
+                            let mut out_right = 0usize;
+                            for sp in &x.dump.spans {
+                                if sp.trust == ob_extract::SpanTrust::PictureOnly {
+                                    continue;
+                                }
+                                let (Some(sx), Some(sy), Some(sw), Some(sh)) =
+                                    (sp.x, sp.y, sp.w, sp.h)
+                                else {
+                                    continue;
+                                };
+                                let page = &x.dump.pages[sp.page as usize];
+                                let right = sx + sw > page.width_pt + 1.0;
+                                let bottom = sy + sh > page.height_pt + 1.0;
+                                if sx < -1.0 || sy < -1.0 || right || bottom {
+                                    out += 1;
+                                    out_right += right as usize;
+                                    out_bottom += bottom as usize;
+                                }
+                            }
+                            println!(
+                                "    spans outside page bounds: {out} (right {out_right}, bottom {out_bottom})"
+                            );
+                            for note in l.notes.iter().filter(|n| !loss.notes.contains(n)) {
+                                println!("    2c note: {note}");
+                            }
+                        }
+                    }
+                    Err(e) => println!("    2c: failed ({e})"),
                 }
                 // The cross-check against POI's expected text.
                 let txt_path = path.with_extension("txt");

@@ -115,15 +115,50 @@ another format, after G2 gives it pictures to carry.
 
 ## 3. HTML import: a rescue kind, like the others
 
-Verdict: yes, later, with the standard honesty. An HTML
-page (a Mailchimp newsletter export is the real-world
-case: churches already write these) imports through the
-one door into a draft bulletin: text blocks, headings,
-pictures, bold/italic as runs. Layout fidelity is NOT
-promised; CSS positioning does not survive, and the draft
-review labels it like every other rescue. A tolerant
-parser maps block elements to frames; scripts and forms
-are dropped with a count, never silently.
+**SHIPPED 2026-10-16 (H2).** What shipped, against the
+verdict below: the importer lives in
+`ob_extract::html_import` and rides the one open door
+(.html/.htm, plus a head sniff so a renamed export still
+routes) as a draft labeled "Web page or newsletter",
+through the standard review. The parser is html5ever
+over its reference DOM (the scraper crate was evaluated
+and not taken: its selector machinery would add MPL-2.0
+crates to the tree for an API this walk does not need;
+docs/LEGAL.md records it). The walk takes the words in
+document order with their bold and italic as runs;
+headings map to the draft's heading styles by level
+(h1 to Heading, h2/h3 to Subheading, h4 and deeper to
+bold body); list items become body paragraphs starting
+with a bullet; a table whose cells hold only words
+becomes tabbed lines, one per row, while a table whose
+cells hold structure (the layout tables newsletter
+tools build) is walked as flow so the blocks inside
+land as their own paragraphs and a content table
+inside still gets its tabbed lines. Style attributes
+and CSS are ignored entirely, as promised below.
+What a bulletin cannot carry is dropped with a count,
+never silently: scripts, style blocks, forms, form
+fields, buttons, and iframes are counted by kind into
+one review item; links keep their words and lose their
+addresses, counted; pictures addressed from the web
+are counted and NOT fetched. **Import makes no
+network calls, ever:** a picture is carried only when
+its bytes are inside the page itself (a data: URI);
+those decode into the document's asset store the G1a
+way (source: the page's file name, license unknown)
+and are placed as picture boxes where the page had
+them. A page with no words we can read refuses in
+plain words ("This page has no words we can read.").
+
+Original verdict: yes, later, with the standard honesty.
+An HTML page (a Mailchimp newsletter export is the
+real-world case: churches already write these) imports
+through the one door into a draft bulletin: text blocks,
+headings, pictures, bold/italic as runs. Layout fidelity
+is NOT promised; CSS positioning does not survive, and
+the draft review labels it like every other rescue. A
+tolerant parser maps block elements to frames; scripts
+and forms are dropped with a count, never silently.
 
 ## 4. What else belongs in a bulletin system (ranked)
 

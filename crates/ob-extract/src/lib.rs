@@ -535,6 +535,7 @@ mod tests {
 }
 
 pub mod html_export;
+pub mod html_import;
 pub mod idml_export;
 pub mod learn;
 pub mod sla;

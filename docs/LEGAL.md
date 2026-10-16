@@ -87,6 +87,24 @@ stock Windows bundle runner, so AVIF files are recognized
 and refused with convert-first guidance instead, beside
 HEIC. No dav1d code or binary enters the tree.
 
+HTML import (2026-10-16, H2): the web-page door parses
+with `html5ever` 0.39 (MIT OR Apache-2.0, verified in the
+crate's own metadata) over `markup5ever_rcdom` 0.39 (MIT
+OR Apache-2.0); their whole closure (markup5ever, tendril,
+web_atoms, string_cache, phf, log) is MIT, Apache-2.0, or
+MIT OR Apache-2.0. The `scraper` crate was evaluated
+first and NOT taken: scraper itself is ISC, but its
+selector machinery depends on the `selectors` and
+`cssparser` crates, which are MPL-2.0, and this build
+walks the DOM directly and needs no selector API, so no
+copyleft family enters the tree for it. `cargo metadata`
+recount for this build: 603 packages (was 589), no new
+license family; the only LGPL mention is still the r-efi
+OR choice recorded above. The importer makes no network
+calls: pictures are carried only when their bytes are
+inside the page itself (data: URIs), and web-addressed
+pictures are counted, never fetched.
+
 Music engraving (2026-10-16, M1): hymn notation is engraved
 by Verovio (LGPL-3.0), run unmodified and out-of-process by
 our own helper binary (ob-verovio-helper), the same posture

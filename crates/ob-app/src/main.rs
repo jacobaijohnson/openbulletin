@@ -7623,6 +7623,7 @@ impl App {
             "pub" => self.start_pub_import(path),
             "sla" => self.start_sla_import(path),
             "md" => self.start_md_import(path),
+            "html" | "htm" => self.start_html_import(path),
             "musicxml" | "mxl" => self.start_music_import(path),
             "obd" => match ob_format::load(&path) {
                 Ok(doc) => {
@@ -7665,11 +7666,15 @@ impl App {
                     self.start_pub_import(path);
                 } else if String::from_utf8_lossy(&head).contains("SCRIBUSUTF8NEW") {
                     self.start_sla_import(path);
+                } else if ob_extract::html_import::sniff_html(&head) {
+                    // A web page whose name did not say so
+                    // (a newsletter export saved as .txt, say).
+                    self.start_html_import(path);
                 } else {
                     self.fail(
                         "That file does not look like a PDF, a Publisher file, an \
-                         InDesign (IDML) file, a Scribus file, or a music file \
-                         (MusicXML), so it cannot be brought in."
+                         InDesign (IDML) file, a Scribus file, a music file \
+                         (MusicXML), or a web page, so it cannot be brought in."
                             .into(),
                     );
                 }
@@ -7713,6 +7718,42 @@ impl App {
                     .into(),
             ),
         });
+    }
+
+    /// A web page or newsletter export through the one open
+    /// door (H2): the page's words become a draft and wait
+    /// for the standard review, labeled for what they are.
+    /// The parse is in-process (html5ever, no network: a
+    /// picture is carried only when its bytes are inside
+    /// the page itself), so like the markdown door this one
+    /// answers at once.
+    fn start_html_import(&mut self, path: std::path::PathBuf) {
+        let name = file_name_of(&path);
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.fail(format!("Could not read that file. ({e})"));
+                return;
+            }
+        };
+        match ob_extract::html_import::document_from_html(&bytes, &name, self.doc.profile.clone()) {
+            Ok(out) => {
+                self.import_review = Some(ImportReview {
+                    doc: out.doc,
+                    items: out.items,
+                    workdir: None,
+                    source_name: name,
+                    note: Some(
+                        "Web page or newsletter: the words came over in reading \
+                         order with their bold and italic. The page's own layout \
+                         and styling did not come over, and pictures that live \
+                         on the web stayed there."
+                            .into(),
+                    ),
+                });
+            }
+            Err(e) => self.fail(e),
+        }
     }
 
     /// A music file through the one open door (M1): our own
@@ -8233,7 +8274,9 @@ impl App {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Old bulletins",
-                &["pdf", "pub", "idml", "sla", "obd", "md", "musicxml", "mxl"],
+                &[
+                    "pdf", "pub", "idml", "sla", "obd", "md", "html", "htm", "musicxml", "mxl",
+                ],
             )
             .add_filter("All files", &[] as &[&str])
             .pick_file()
@@ -9389,7 +9432,7 @@ impl eframe::App for App {
                         }
                         ui.separator();
                         ui.heading("Bring in an old bulletin");
-                        ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, an InDesign file (IDML), or a Scribus file. A music file (MusicXML, from a music program) comes in the same door: its notes are drawn at a size people can sing from, as boxes you can move. One button for all of them; the app works out which kind it is, and what comes over arrives as a draft you can check. Publisher files ride in through LibreOffice (a free program) when it is installed, and through OpenBulletin's own reader when it is not; for InDesign, export the file there as IDML first.");
+                        ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, an InDesign file (IDML), or a Scribus file. A web page or newsletter file (HTML, like a Mailchimp export) comes in the same door too: its words arrive in reading order, ready to arrange. A music file (MusicXML, from a music program) comes in the same door: its notes are drawn at a size people can sing from, as boxes you can move. One button for all of them; the app works out which kind it is, and what comes over arrives as a draft you can check. Publisher files ride in through LibreOffice (a free program) when it is installed, and through OpenBulletin's own reader when it is not; for InDesign, export the file there as IDML first.");
                         if self.import_rx.is_some() {
                             ui.horizontal(|ui| {
                                 ui.spinner();
@@ -9411,8 +9454,8 @@ impl eframe::App for App {
                                     .add_filter(
                                         "Old bulletins and music",
                                         &[
-                                            "pdf", "pub", "idml", "sla", "obd", "musicxml",
-                                            "mxl",
+                                            "pdf", "pub", "idml", "sla", "obd", "html", "htm",
+                                            "musicxml", "mxl",
                                         ],
                                     )
                                     .add_filter("All files", &[] as &[&str])
@@ -11492,6 +11535,77 @@ mod settings_tests {
                 .iter()
                 .any(|r| r.text == "dish" && r.bold == Some(true)),
             "the markdown bold arrived as a run"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn html_file_routes_to_a_web_page_review() {
+        // H2: a newsletter export through the one open
+        // door becomes a draft waiting in the standard
+        // review, labeled as a web page or newsletter.
+        let mut app = App::default();
+        let dir = std::env::temp_dir().join(format!("ob-html-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("newsletter.html");
+        std::fs::write(
+            &path,
+            "<!DOCTYPE html><html><body><h2>News</h2>\
+             <p>Join us for the <strong>harvest supper</strong> on Saturday.</p>\
+             </body></html>",
+        )
+        .expect("write");
+        app.route_old_bulletin(path);
+        let review = app.import_review.expect("a review waits");
+        assert!(
+            review
+                .note
+                .as_deref()
+                .unwrap_or("")
+                .contains("Web page or newsletter"),
+            "the kind label is stated: {:?}",
+            review.note
+        );
+        let doc = &review.doc;
+        assert_eq!(doc.stories[0].paragraphs[0].text(), "News");
+        assert!(
+            doc.stories[0].paragraphs[1]
+                .runs
+                .iter()
+                .any(|r| r.text == "harvest supper" && r.bold == Some(true)),
+            "the page's bold arrived as a run"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn html_renamed_file_routes_by_its_head() {
+        // H2: a newsletter export saved under a name that
+        // does not say .html still routes by its first
+        // bytes, through the sniff.
+        let mut app = App::default();
+        let dir = std::env::temp_dir().join(format!("ob-html-sniff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("newsletter.txt");
+        std::fs::write(
+            &path,
+            "<html><body><p>Words from a renamed export.</p></body></html>",
+        )
+        .expect("write");
+        app.route_old_bulletin(path);
+        let review = app.import_review.expect("a review waits");
+        assert!(
+            review
+                .note
+                .as_deref()
+                .unwrap_or("")
+                .contains("Web page or newsletter"),
+            "the sniff routed it: {:?}",
+            review.note
+        );
+        assert_eq!(
+            review.doc.stories[0].paragraphs[0].text(),
+            "Words from a renamed export."
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

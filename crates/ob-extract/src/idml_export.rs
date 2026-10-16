@@ -90,8 +90,13 @@ fn justification(align: Align) -> &'static str {
     }
 }
 
-fn font_style_name(style: &ParagraphStyle) -> &'static str {
-    match (style.bold, style.italic) {
+/// The IDML FontStyle word for one effective face: a
+/// paragraph style's, or a run's switches resolved over
+/// its style's (X1). Our importer reads the word back with
+/// "contains bold / contains italic", so these four words
+/// carry every run state the model has.
+fn font_style_name(bold: bool, italic: bool) -> &'static str {
+    match (bold, italic) {
         (true, true) => "Bold Italic",
         (true, false) => "Bold",
         (false, true) => "Italic",
@@ -133,10 +138,13 @@ fn styles_xml(doc: &Document) -> String {
 }
 
 /// One Story part: the paragraphs of one frame's story, each
-/// a ParagraphStyleRange whose single CharacterStyleRange
-/// carries the run's look explicitly (as real IDML does when
-/// formatting is applied directly), so the story reads the
-/// same with or without the style table.
+/// a ParagraphStyleRange holding one CharacterStyleRange
+/// per run (X1), every range carrying its run's effective
+/// look explicitly (as real IDML does when formatting is
+/// applied directly), so the story reads the same with or
+/// without the style table. A paragraph whose runs are all
+/// plain normalizes to a single run, so it writes exactly
+/// the one range it always wrote.
 fn story_xml(doc: &Document, story: &ob_model::Story, report: &mut IdmlExportReport) -> String {
     let mut out = String::new();
     out.push_str(XML_HEAD);
@@ -146,12 +154,13 @@ fn story_xml(doc: &Document, story: &ob_model::Story, report: &mut IdmlExportRep
     ));
     for para in &story.paragraphs {
         let style = doc.style(&para.style);
-        let (self_id, font, size, font_style, justify) = match style {
+        let (self_id, font, size, base_bold, base_italic, justify) = match style {
             Some(st) => (
                 style_self(st),
                 st.font_family.clone(),
                 st.font_size,
-                font_style_name(st),
+                st.bold,
+                st.italic,
                 justification(st.align),
             ),
             None => {
@@ -160,22 +169,32 @@ fn story_xml(doc: &Document, story: &ob_model::Story, report: &mut IdmlExportRep
                     "ParagraphStyle/$ID/[No paragraph style]".to_string(),
                     "Liberation Sans".to_string(),
                     11_000,
-                    "Regular",
+                    false,
+                    false,
                     "LeftAlign",
                 )
             }
         };
+        let mut ranges = String::new();
+        for run in ob_model::normalize_runs(para.runs.clone()) {
+            ranges.push_str(&format!(
+                "<CharacterStyleRange AppliedCharacterStyle=\"$ID/[No character style]\" FontStyle=\"{}\" PointSize=\"{}\">\
+                 <Properties><AppliedFont type=\"string\">{}</AppliedFont></Properties>\
+                 <Content>{}</Content></CharacterStyleRange>",
+                font_style_name(
+                    run.bold.unwrap_or(base_bold),
+                    run.italic.unwrap_or(base_italic),
+                ),
+                pt(size),
+                esc_text(&font),
+                esc_text(&run.text),
+            ));
+        }
         out.push_str(&format!(
-            "<ParagraphStyleRange AppliedParagraphStyle=\"{}\" Justification=\"{}\">\
-             <CharacterStyleRange AppliedCharacterStyle=\"$ID/[No character style]\" FontStyle=\"{}\" PointSize=\"{}\">\
-             <Properties><AppliedFont type=\"string\">{}</AppliedFont></Properties>\
-             <Content>{}</Content></CharacterStyleRange></ParagraphStyleRange>\n",
+            "<ParagraphStyleRange AppliedParagraphStyle=\"{}\" Justification=\"{}\">{}</ParagraphStyleRange>\n",
             esc_attr(&self_id),
             justify,
-            font_style,
-            pt(size),
-            esc_text(&font),
-            esc_text(&para.text()),
+            ranges,
         ));
         report.paragraphs += 1;
     }
@@ -648,5 +667,193 @@ mod tests {
             .spans
             .iter()
             .any(|s| s.text == "Fish & loaves <for> \"all\""));
+    }
+
+    /// One frame whose story carries inline runs: a bold
+    /// word and an italic phrase in a body paragraph, and a
+    /// scripture paragraph (an italic style) with a run that
+    /// turns the italic OFF.
+    fn runs_doc() -> Document {
+        let styles = vec![
+            style("body", "Calibri", 11_000, false, false, Align::Left),
+            style(
+                "scripture",
+                "Liberation Serif",
+                11_000,
+                false,
+                true,
+                Align::Left,
+            ),
+        ];
+        let stories = vec![Story {
+            keep_through: None,
+            id: "s-runs".into(),
+            paragraphs: vec![
+                Paragraph::from_runs(
+                    "body",
+                    vec![
+                        ob_model::Run::plain("Sing "),
+                        ob_model::Run {
+                            text: "hymn".into(),
+                            bold: Some(true),
+                            italic: None,
+                        },
+                        ob_model::Run::plain(" 432 with "),
+                        ob_model::Run {
+                            text: "gladness".into(),
+                            bold: None,
+                            italic: Some(true),
+                        },
+                        ob_model::Run::plain(" today"),
+                    ],
+                ),
+                Paragraph::new("body", "All are welcome"),
+                Paragraph::from_runs(
+                    "scripture",
+                    vec![
+                        ob_model::Run::plain("Be still"),
+                        ob_model::Run {
+                            text: " and know".into(),
+                            bold: None,
+                            italic: Some(false),
+                        },
+                    ],
+                ),
+            ],
+        }];
+        let panels = vec![Panel {
+            id: "p1".into(),
+            name: "Page".into(),
+            size: Size::new(396_000, 612_000),
+            frames: vec![Frame {
+                id: "f-runs".into(),
+                name: "Words".into(),
+                kind: FrameKind::Text,
+                rect: Rect::new(36_000, 48_000, 324_000, 300_000),
+                story_id: Some("s-runs".into()),
+                role: ContentRole::Weekly,
+                picture: None,
+                music: None,
+            }],
+            guides: Vec::new(),
+            background_image: None,
+        }];
+        Document {
+            format_version: FORMAT_VERSION,
+            title: "Runs".into(),
+            profile: ChurchProfile::default(),
+            fields: BTreeMap::new(),
+            styles,
+            stories,
+            panels,
+            sheet: SheetSpec {
+                preset: "letter-bifold".into(),
+                size: Size::new(792_000, 612_000),
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+        }
+    }
+
+    #[test]
+    fn idml_export_carries_runs_and_they_round_trip() {
+        let doc = runs_doc();
+        let (bytes, report) = export_idml(&doc).expect("export");
+        assert_eq!(report.paragraphs, 3);
+
+        let dump = crate::idml::dump_from_idml(&bytes, "runs.idml").expect("re-import");
+        let span = |text: &str| {
+            dump.spans
+                .iter()
+                .find(|s| s.text == text)
+                .unwrap_or_else(|| panic!("span {text:?} survived; got {:?}", dump.spans))
+        };
+        // The runs as (trimmed text, bold, italic): the
+        // importer's joining space rides on the earlier run,
+        // so boundaries compare trimmed.
+        let shape = |s: &crate::Span| -> Vec<(String, Option<bool>, Option<bool>)> {
+            s.runs
+                .iter()
+                .map(|r| (r.text.trim().to_string(), r.bold, r.italic))
+                .collect()
+        };
+        let sing = span("Sing hymn 432 with gladness today");
+        assert_eq!(
+            shape(sing),
+            vec![
+                ("Sing".to_string(), Some(false), Some(false)),
+                ("hymn".to_string(), Some(true), Some(false)),
+                ("432 with".to_string(), Some(false), Some(false)),
+                ("gladness".to_string(), Some(false), Some(true)),
+                ("today".to_string(), Some(false), Some(false)),
+            ],
+            "the bold word and the italic phrase keep their boundaries and faces"
+        );
+        let still = span("Be still and know");
+        assert!(still.italic, "the scripture paragraph opens italic");
+        assert_eq!(
+            shape(still),
+            vec![
+                ("Be still".to_string(), Some(false), Some(true)),
+                ("and know".to_string(), Some(false), Some(false)),
+            ],
+            "a run that turns its style's italic off comes back off"
+        );
+
+        // The draft paragraph holds the same faces as runs
+        // (effective against its style), not as new styles.
+        let out = crate::draft::document_from_dump(&dump, ChurchProfile::default(), false);
+        let para = out
+            .doc
+            .stories
+            .iter()
+            .flat_map(|st| &st.paragraphs)
+            .find(|p| p.text().contains("hymn"))
+            .expect("the paragraph exists");
+        let pstyle = out.doc.style(&para.style).expect("the paragraph's style");
+        let eff = |needle: &str| {
+            para.runs.iter().find(|r| r.text.contains(needle)).map(|r| {
+                (
+                    r.bold.unwrap_or(pstyle.bold),
+                    r.italic.unwrap_or(pstyle.italic),
+                )
+            })
+        };
+        assert_eq!(eff("hymn"), Some((true, false)), "the bold word");
+        assert_eq!(eff("gladness"), Some((false, true)), "the italic phrase");
+        assert_eq!(eff("Sing"), Some((false, false)), "the plain words");
+    }
+
+    #[test]
+    fn idml_export_unformatted_paragraphs_keep_one_range_each() {
+        // No churn for documents without runs: one
+        // CharacterStyleRange per paragraph, its FontStyle
+        // the paragraph style's face, exactly as before X1.
+        let doc = fixture_doc();
+        let (bytes, report) = export_idml(&doc).expect("export");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("package is a zip");
+        let mut stories_xml = String::new();
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i).expect("entry");
+            if entry.name().starts_with("Stories/") {
+                use std::io::Read;
+                entry
+                    .read_to_string(&mut stories_xml)
+                    .expect("story part is text");
+            }
+        }
+        assert_eq!(
+            stories_xml.matches("<CharacterStyleRange").count(),
+            report.paragraphs,
+            "one range per paragraph: {stories_xml}"
+        );
+        assert!(stories_xml.contains("FontStyle=\"Bold\""), "the heading");
+        assert!(
+            stories_xml.contains("FontStyle=\"Italic\""),
+            "the scripture"
+        );
+        assert!(stories_xml.contains("FontStyle=\"Regular\""), "the body");
     }
 }

@@ -221,10 +221,18 @@ so no two views can disagree.
   it, never inside it: the field word keeps the face it
   resolves with. Words keep their faces through the .obd
   file, the PDF, the previews, and Markdown copies. IDML
-  and Scribus copies carry the words and their paragraph
-  styles today; the runs inside a paragraph flatten to the
-  style's face there (their exporters write per-paragraph
-  styles, and teaching them runs is a later build).
+  and Scribus copies carry the runs too (X1, 2026-10-16):
+  the IDML exporter writes one character range per run
+  with the run's effective face in FontStyle, and the
+  Scribus exporter names each run's own effective face on
+  its text chunk, the only place Scribus states bold or
+  italic. One Scribus limit remains, and the export counts
+  it in its notes rather than hiding it: a run that wants
+  bold or italic OFF inside a font whose name itself
+  carries that word (a family named "Acme Bold") cannot
+  be stated exactly, because Scribus reads the name. No
+  such limit exists in the IDML copy: FontStyle states
+  all four faces for every run.
 - **Spoken only** (Extras, 2026-10-16). The "Spoken only"
   button in the same bar marks the caret's whole paragraph:
   it will be read aloud in the service and never printed

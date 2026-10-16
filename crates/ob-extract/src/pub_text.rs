@@ -75,7 +75,8 @@ pub struct LossReport {
     // Phase 2c (positions) accounting; all zero in a
     // text-only rescue.
     /// Shapes listed on real pages of the file, excluding
-    /// deleted shapes and pure group containers.
+    /// deleted shapes, pure group containers, and
+    /// decoration shapes (see `decoration_shapes_skipped`).
     pub shapes_total: usize,
     /// Of those, the shapes whose contents are on a page at
     /// the place the file gives them (words, table cells,
@@ -83,7 +84,25 @@ pub struct LossReport {
     pub shapes_placed: usize,
     /// Of those, the shapes whose contents could not be
     /// placed (no position, or their words never joined).
+    /// Every one of them has its cause counted in
+    /// `unplaced_shape_reasons`.
     pub shapes_unplaced: usize,
+    /// Non-group shapes carrying nothing placeable at all:
+    /// no story, no picture, no word art. Lines, rectangles,
+    /// and empty frames are the page's furniture, not
+    /// content that missed its place, so they are counted
+    /// here and kept out of `shapes_total`/`shapes_unplaced`.
+    pub decoration_shapes_skipped: usize,
+    /// Why each unplaced content shape missed, counted by
+    /// cause, in plain words, with example pages and shape
+    /// numbers: "the drawing layer has no entry for it, so
+    /// its place on the page is unknown (2): page 3 shape
+    /// 87, page 5 shape 91".
+    pub unplaced_shape_reasons: Vec<String>,
+    /// Stories whose words were placed inside shape boxes
+    /// on their pages (counted once per story, however many
+    /// boxes the story flows through).
+    pub stories_placed_in_boxes: usize,
     /// Shapes listed on pages but marked deleted in the
     /// drawing layer: skipped on purpose.
     pub shapes_deleted_skipped: usize,

@@ -117,21 +117,29 @@ fn main() {
                         if x.positioned {
                             println!(
                                 "    shapes: {} total, {} placed, {} unplaced, \
-                                 {} deleted skipped, {} alternates excluded; \
-                                 {} master shapes, {} table cells, {} wordart, \
-                                 {} stories unplaced; pictures: {} found, {} carried",
+                                 {} deleted skipped, {} alternates excluded, \
+                                 {} decorations skipped; \
+                                 {} master shapes, {} table cells, {} wordart; \
+                                 stories: {} placed in boxes, {} overflowed, {} unplaced; \
+                                 pictures: {} found, {} carried",
                                 l.shapes_total,
                                 l.shapes_placed,
                                 l.shapes_unplaced,
                                 l.shapes_deleted_skipped,
                                 l.alternate_shapes_excluded,
+                                l.decoration_shapes_skipped,
                                 l.master_shapes_emitted,
                                 l.table_cells_emitted,
                                 l.wordart_emitted,
+                                l.stories_placed_in_boxes,
+                                l.stories_overflowed,
                                 l.stories_unplaced,
                                 l.pictures_found,
                                 l.pictures_carried
                             );
+                            for reason in &l.unplaced_shape_reasons {
+                                println!("    unplaced because: {reason}");
+                            }
                             // Sanity: placed text spans sit
                             // inside their page bounds.
                             let mut out = 0usize;

@@ -227,7 +227,7 @@ struct ChunkRef {
     parent: u32,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct PageChunk {
     shapes: Vec<u32>,
     applied_master: Option<u32>,
@@ -267,6 +267,15 @@ struct ContentsLayout {
     page_order: Vec<u32>,
     pages: HashMap<u32, PageChunk>,
     shapes: HashMap<u32, ShapeChunk>,
+    /// Every chunk the directory names, by seqNum: when a
+    /// page lists a shape that never reached `shapes`, this
+    /// says whether the file describes it as some other
+    /// kind of chunk, or holds no chunk for it at all.
+    chunk_types: HashMap<u32, u8>,
+    /// Shape chunks whose bytes could not be read (their
+    /// directory offset lands outside the stream), so they
+    /// never reached `shapes` either.
+    chunks_unread: HashSet<u32>,
 }
 
 /// The byte range blocks live in for one chunk: the chunk
@@ -398,6 +407,9 @@ fn parse_contents(
         return None;
     }
 
+    let chunk_types: HashMap<u32, u8> = refs.iter().map(|r| (r.seq, r.ty)).collect();
+    let mut chunks_unread: HashSet<u32> = HashSet::new();
+
     // Table cells chunks first: tables point at them.
     let mut cells_by_seq: HashMap<u32, Vec<CellRect>> = HashMap::new();
     for r in refs.iter().filter(|r| r.ty == 0x63) {
@@ -467,6 +479,7 @@ fn parse_contents(
         .filter(|r| matches!(r.ty, 0x01 | 0x20 | 0x30 | 0x31 | 0x10))
     {
         let Some(region) = region_of(r, notes) else {
+            chunks_unread.insert(r.seq);
             continue;
         };
         let (blocks, _) = walk_scoped(region, unknowns);
@@ -522,6 +535,8 @@ fn parse_contents(
         page_order,
         pages,
         shapes,
+        chunk_types,
+        chunks_unread,
     })
 }
 
@@ -956,6 +971,21 @@ struct Compose<'a> {
     remainder_stories: HashSet<usize>,
     spans: Vec<Span>,
     loss: LossReport,
+    /// Why unplaced content shapes missed, counted by
+    /// cause: (plain-words label, count, example places).
+    /// Every `shapes_unplaced` increment records here.
+    unplaced_causes: Vec<(String, usize, Vec<String>)>,
+    /// Continuation threads: a story index whose words
+    /// more than one listed shape claims, with its boxes
+    /// in document order (dump page index, shape seqNum).
+    /// Publisher links boxes by giving them the same text
+    /// id: the columns of one article are consecutive
+    /// shapes under one parent, listed in reading order
+    /// (verified on the POI newsletter sample).
+    thread_boxes: HashMap<usize, Vec<(u32, u32)>>,
+    /// Paragraphs of a threaded story that earlier boxes
+    /// have already taken: the next box starts here.
+    thread_next_para: HashMap<usize, usize>,
 }
 
 /// The pen for placing one story's words inside a box:
@@ -974,22 +1004,27 @@ impl<'a> Compose<'a> {
     /// (already inset). `review` forces every span to
     /// NeedsReview; otherwise a run is trusted (RawText)
     /// exactly when its font resolved in the FONT table.
-    /// Place paragraphs into a box. Words may run past
-    /// the box's own bottom (a rescue keeps the words near
-    /// their home), but never past the bottom of the page:
-    /// the first paragraph that would cross it, and every
-    /// paragraph after, are reported back by index so the
-    /// caller can move them to the reading-order pages.
+    /// Words may run past the box's own bottom (a rescue
+    /// keeps the words near their home), but never past
+    /// `bottom`: the first paragraph that would cross it,
+    /// and every paragraph after, are reported back by
+    /// index so the caller can move them on (the next box
+    /// of a threaded story, or the reading-order pages).
+    /// Callers pass the page's bottom for a story's only
+    /// box, and the box's own bottom for a box in a
+    /// continuation thread, so threaded words fill their
+    /// boxes instead of spilling down the page.
     fn place_paras(
         &mut self,
         paras: &[crate::pub_text::ParaParse],
         rect: (f32, f32, f32, f32),
         page: u32,
         review: bool,
+        bottom: f32,
     ) -> Option<usize> {
         let (rx, ry, rw, _) = rect;
         let right = rx + rw;
-        let page_bottom = self.layout.page_h_pt - 1.0;
+        let page_bottom = bottom;
         let mut pen = RectPen {
             x: rx,
             y: ry,
@@ -1224,6 +1259,37 @@ impl<'a> Compose<'a> {
             || y + h > self.layout.page_h_pt + 1.0
     }
 
+    /// Record why one unplaced content shape missed,
+    /// counted by cause in the plain-words form the loss
+    /// report carries, with example places.
+    fn note_unplaced(&mut self, label: String, page: u32, seq: u32) {
+        let example = format!("page {} shape {}", page + 1, seq);
+        match self
+            .unplaced_causes
+            .iter_mut()
+            .find(|(l, _, _)| *l == label)
+        {
+            Some((_, count, examples)) => {
+                *count += 1;
+                if examples.len() < 3 {
+                    examples.push(example);
+                }
+            }
+            None => self.unplaced_causes.push((label, 1, vec![example])),
+        }
+    }
+
+    /// The cause for a shape whose words never joined for
+    /// want of a position: no drawing-layer entry at all,
+    /// or an entry with no anchor box.
+    fn no_position_cause(&self, esch: Option<&EscherShape>) -> String {
+        if esch.is_none() {
+            "the drawing layer has no entry for it, so its place on the page is unknown".into()
+        } else {
+            "the drawing layer names it but gives it no position box".into()
+        }
+    }
+
     /// Emit one listed shape onto a page. `master` marks
     /// shapes arriving through an applied master page:
     /// always Check this, counted separately.
@@ -1247,27 +1313,60 @@ impl<'a> Compose<'a> {
             if !master {
                 self.loss.shapes_total += 1;
                 self.loss.shapes_unplaced += 1;
+                let cause = if self.layout.chunks_unread.contains(&seq) {
+                    "its description chunk sits outside the file's readable streams".into()
+                } else if let Some(ty) = self.layout.chunk_types.get(&seq) {
+                    format!(
+                        "the file describes it as another kind of chunk (type {ty:#04x}), not a shape"
+                    )
+                } else {
+                    "the page names it, but the file holds no description chunk for it".into()
+                };
+                self.note_unplaced(cause, page, seq);
             }
             return;
         };
         if chunk.ty == 0x10 && chunk.table.is_some() {
-            let emitted = self.emit_table(page, chunk, esch);
-            if master {
-                if emitted {
-                    self.loss.master_shapes_emitted += 1;
+            let outcome = self.emit_table(page, chunk, esch);
+            match outcome {
+                TableOutcome::Emitted | TableOutcome::BlankStory => {
+                    if master {
+                        self.loss.master_shapes_emitted += 1;
+                    } else {
+                        self.loss.shapes_total += 1;
+                        self.loss.shapes_placed += 1;
+                    }
                 }
-            } else {
-                self.loss.shapes_total += 1;
-                if emitted {
-                    self.loss.shapes_placed += 1;
-                } else {
-                    self.loss.shapes_unplaced += 1;
+                outcome => {
+                    if !master {
+                        self.loss.shapes_total += 1;
+                        self.loss.shapes_unplaced += 1;
+                        let cause = match outcome {
+                            TableOutcome::StoryNotFound => "its story number is not in the \
+                                 file's story table, so its words could not be found"
+                                .into(),
+                            TableOutcome::NoStoryNamed => "it names no story at all".into(),
+                            TableOutcome::NoPosition => self.no_position_cause(esch),
+                            TableOutcome::NoWords => {
+                                "its cells held no words that could be placed".into()
+                            }
+                            TableOutcome::Emitted | TableOutcome::BlankStory => {
+                                unreachable!()
+                            }
+                        };
+                        self.note_unplaced(cause, page, seq);
+                    }
                 }
             }
             return;
         }
         let rect = esch.and_then(|e| self.rect_pt(e));
         let mut emitted = false;
+        // Why this shape's words (if it names any) could
+        // not be placed; recorded only when nothing at all
+        // was emitted for the shape, so a shape placed by
+        // its picture does not also report a text miss.
+        let mut pending_cause: Option<String> = None;
         // WordArt: the text lives in the drawing layer.
         if let (Some(e), Some(r)) = (esch, rect) {
             if let Some(wa) = &e.wordart {
@@ -1289,38 +1388,105 @@ impl<'a> Compose<'a> {
         }
         // Quill text joined through the shape's text id.
         if let Some(tid) = chunk.text_id {
-            if let Some(&si) = self.by_syid.get(&tid) {
-                if !self.parse.stories[si].emitted {
-                    emitted = true; // a blank story: nothing lost
-                } else if self.placed_stories.contains(&si) || self.remainder_stories.contains(&si)
-                {
-                    emitted = true; // already placed by its first shape
-                } else if let (Some(e), Some(r)) = (esch, rect) {
-                    let review = master || self.shape_needs_review(e, r);
-                    let (il, it, ir, ib) = e.insets_pt;
-                    let text_rect = (
-                        r.0 + il,
-                        r.1 + it,
-                        (r.2 - il - ir).max(1.0),
-                        (r.3 - it - ib).max(1.0),
+            match self.by_syid.get(&tid) {
+                None => {
+                    pending_cause = Some(
+                        "its story number is not in the file's story table, \
+                         so its words could not be found"
+                            .into(),
                     );
-                    let parse: &QuillParse = self.parse;
-                    match self.place_paras(&parse.stories[si].paragraphs, text_rect, page, review) {
-                        None => {
-                            self.placed_stories.insert(si);
+                }
+                Some(&si) => {
+                    if !self.parse.stories[si].emitted {
+                        emitted = true; // a blank story: nothing lost
+                    } else if self.placed_stories.contains(&si)
+                        || self.remainder_stories.contains(&si)
+                        || (master && self.thread_next_para.contains_key(&si))
+                    {
+                        emitted = true; // its words live in an earlier box
+                    } else if let (Some(e), Some(r)) = (esch, rect) {
+                        let review = master || self.shape_needs_review(e, r);
+                        let (il, it, ir, ib) = e.insets_pt;
+                        let text_rect = (
+                            r.0 + il,
+                            r.1 + it,
+                            (r.2 - il - ir).max(1.0),
+                            (r.3 - it - ib).max(1.0),
+                        );
+                        let parse: &QuillParse = self.parse;
+                        let threaded = !master
+                            && self
+                                .thread_boxes
+                                .get(&si)
+                                .map(|b| b.len() > 1)
+                                .unwrap_or(false);
+                        if threaded {
+                            // A continuation box: fill this
+                            // box with the words the earlier
+                            // boxes left, bounded by this
+                            // box's own bottom; what the last
+                            // box cannot take moves to the
+                            // reading-order pages.
+                            let start = self.thread_next_para.get(&si).copied().unwrap_or(0);
+                            let paras = &parse.stories[si].paragraphs;
+                            if start < paras.len() {
+                                let boxes = self.thread_boxes.get(&si).cloned().unwrap_or_default();
+                                let position = boxes.iter().position(|b| *b == (page, seq));
+                                let is_last =
+                                    position.map(|p| p + 1 >= boxes.len()).unwrap_or(true);
+                                let bottom = text_rect.1 + text_rect.3;
+                                match self.place_paras(
+                                    &paras[start..],
+                                    text_rect,
+                                    page,
+                                    review,
+                                    bottom,
+                                ) {
+                                    None => {
+                                        self.placed_stories.insert(si);
+                                        self.thread_next_para.remove(&si);
+                                    }
+                                    Some(k) => {
+                                        let consumed = start + k;
+                                        if is_last {
+                                            self.remainders.push(paras[consumed..].to_vec());
+                                            self.remainder_stories.insert(si);
+                                            self.loss.stories_overflowed += 1;
+                                        } else {
+                                            self.thread_next_para.insert(si, consumed);
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            match self.place_paras(
+                                &parse.stories[si].paragraphs,
+                                text_rect,
+                                page,
+                                review,
+                                self.layout.page_h_pt - 1.0,
+                            ) {
+                                None => {
+                                    self.placed_stories.insert(si);
+                                }
+                                Some(first_unplaced) => {
+                                    // The words that fit stayed
+                                    // in the box; the rest of
+                                    // the story moves to the
+                                    // reading-order pages,
+                                    // counted, never dropped.
+                                    self.remainders.push(
+                                        parse.stories[si].paragraphs[first_unplaced..].to_vec(),
+                                    );
+                                    self.remainder_stories.insert(si);
+                                    self.loss.stories_overflowed += 1;
+                                }
+                            }
                         }
-                        Some(first_unplaced) => {
-                            // The words that fit stayed in
-                            // the box; the rest of the story
-                            // moves to the reading-order
-                            // pages, counted, never dropped.
-                            self.remainders
-                                .push(parse.stories[si].paragraphs[first_unplaced..].to_vec());
-                            self.remainder_stories.insert(si);
-                            self.loss.stories_overflowed += 1;
-                        }
+                        emitted = true;
+                    } else {
+                        pending_cause = Some(self.no_position_cause(esch));
                     }
-                    emitted = true;
                 }
             }
         }
@@ -1360,34 +1526,67 @@ impl<'a> Compose<'a> {
         if is_group && !has_content {
             return;
         }
-        self.loss.shapes_total += 1;
         if emitted {
+            self.loss.shapes_total += 1;
             self.loss.shapes_placed += 1;
-        } else {
-            self.loss.shapes_unplaced += 1;
+            return;
         }
+        // Decoration: a non-group shape carrying nothing
+        // placeable at all (it names no story, and the
+        // drawing layer gives it neither a picture nor word
+        // art) is the page's furniture: a line, a rectangle,
+        // an empty frame. It is not content that missed its
+        // place, so it leaves the shape books entirely. A
+        // shape whose drawing entry is missing cannot be
+        // classified this way (its picture, if any, would
+        // live in that entry), so it stays a counted miss.
+        let decoration = !is_group
+            && chunk.text_id.is_none()
+            && esch
+                .map(|e| e.picture_id.is_none() && e.wordart.is_none())
+                .unwrap_or(false);
+        if decoration {
+            self.loss.decoration_shapes_skipped += 1;
+            return;
+        }
+        self.loss.shapes_total += 1;
+        self.loss.shapes_unplaced += 1;
+        self.note_unplaced(
+            pending_cause.unwrap_or_else(|| "nothing in it could be placed".into()),
+            page,
+            seq,
+        );
     }
 
     /// A table: its story's paragraphs split into cells by
     /// the Quill TCD ends, each cell placed by the table's
     /// row/column size arrays when the file carries them,
     /// else stacked in the table's box. Always Check this.
-    /// Returns whether anything was emitted.
-    fn emit_table(&mut self, page: u32, chunk: &ShapeChunk, esch: Option<&EscherShape>) -> bool {
+    fn emit_table(
+        &mut self,
+        page: u32,
+        chunk: &ShapeChunk,
+        esch: Option<&EscherShape>,
+    ) -> TableOutcome {
         let Some(table) = &chunk.table else {
-            return false;
+            return TableOutcome::NoWords;
         };
-        let Some(&si) = chunk.text_id.and_then(|tid| self.by_syid.get(&tid)) else {
-            return false;
+        let Some(tid) = chunk.text_id else {
+            return TableOutcome::NoStoryNamed;
+        };
+        let Some(&si) = self.by_syid.get(&tid) else {
+            return TableOutcome::StoryNotFound;
         };
         if !self.parse.stories[si].emitted {
-            return true; // a blank table: nothing lost
+            return TableOutcome::BlankStory; // a blank table: nothing lost
         }
         let Some(rect) = esch.and_then(|e| self.rect_pt(e)) else {
-            return false; // no position: the story overflows whole
+            // No position: the story keeps its words on the
+            // reading-order pages via the unplaced scan.
+            return TableOutcome::NoPosition;
         };
-        if self.placed_stories.contains(&si) {
-            return true;
+        if self.placed_stories.contains(&si) || self.remainder_stories.contains(&si) {
+            return TableOutcome::Emitted;
         }
         // Cells in reading order; the file's cell records
         // when present, else the plain grid.
@@ -1439,6 +1638,7 @@ impl<'a> Compose<'a> {
             && table.row_heights.len() == table.rows;
         let band_h = rect.3 / ncells as f32;
         let mut emitted_any = false;
+        let mut overflowed = false;
         for (ci, cell) in cells.iter().enumerate() {
             if cell_paras[ci].is_empty() {
                 continue;
@@ -1473,17 +1673,78 @@ impl<'a> Compose<'a> {
                 .map(|&pi| self.parse.stories[si].paragraphs[pi].clone())
                 .collect();
             let before = self.spans.len();
-            self.place_paras(&paras, cell_rect, page, true);
+            if let Some(k) =
+                self.place_paras(&paras, cell_rect, page, true, self.layout.page_h_pt - 1.0)
+            {
+                // The cell's tail ran past the bottom of the
+                // page: those words move to the reading-order
+                // pages with the other remainders, never
+                // dropped.
+                self.remainders.push(paras[k..].to_vec());
+                if self.remainder_stories.insert(si) {
+                    self.loss.stories_overflowed += 1;
+                }
+                overflowed = true;
+            }
             if self.spans.len() > before {
                 self.loss.table_cells_emitted += 1;
                 emitted_any = true;
             }
         }
-        if emitted_any {
+        if !overflowed && emitted_any {
             self.placed_stories.insert(si);
         }
-        emitted_any
+        if emitted_any || overflowed {
+            // Overflow alone also counts as emitted: the
+            // story's words landed on the reading-order
+            // pages by this table's hand.
+            TableOutcome::Emitted
+        } else {
+            TableOutcome::NoWords
+        }
     }
+}
+
+/// How a table shape's emission ended, so the caller can
+/// account for it (placed, or unplaced with its cause).
+enum TableOutcome {
+    Emitted,
+    /// The table's story is blank: nothing was lost.
+    BlankStory,
+    /// The table names a story number the story table
+    /// does not hold.
+    StoryNotFound,
+    /// The table names no story at all.
+    NoStoryNamed,
+    /// No drawing entry, or an entry with no anchor box.
+    NoPosition,
+    /// The cells resolved but held no placeable words.
+    NoWords,
+}
+
+/// Alternate-shape pairing on one page: a listed
+/// alternate (0x20) whose parent also lists a regular
+/// shape (0x01) is the same object twice; the regular
+/// one wins.
+fn paired_alts_for(layout: &ContentsLayout, listed_seqs: &[u32]) -> HashSet<u32> {
+    let listed: HashSet<u32> = listed_seqs.iter().copied().collect();
+    let regular_parents: HashSet<u32> = listed
+        .iter()
+        .filter_map(|s| layout.shapes.get(s))
+        .filter(|c| c.ty == 0x01)
+        .map(|c| c.parent)
+        .collect();
+    listed
+        .iter()
+        .copied()
+        .filter(|s| {
+            layout
+                .shapes
+                .get(s)
+                .map(|c| c.ty == 0x20 && regular_parents.contains(&c.parent))
+                .unwrap_or(false)
+        })
+        .collect()
 }
 
 fn compose(
@@ -1499,6 +1760,71 @@ fn compose(
         .iter()
         .filter_map(|s| s.syid.map(|id| (id, s.index)))
         .collect();
+    // Index the content pages first, in page-list order.
+    // A page the list names but the file holds no chunk
+    // for keeps its place as a blank page; master pages
+    // serve other pages and are not pages. Indexing up
+    // front lets continuation threads be collected in
+    // document order before anything is placed.
+    enum Slot {
+        Blank(u32),
+        Real(u32, PageChunk),
+    }
+    let mut slots: Vec<Slot> = Vec::new();
+    for &page_seq in &layout.page_order {
+        if DUMMY_PAGES.contains(&page_seq) {
+            continue;
+        }
+        match layout.pages.get(&page_seq) {
+            None => {
+                loss.notes.push(format!(
+                    "the page list names page chunk {page_seq}, but the file holds \
+                     no chunk for it; the page was kept blank"
+                ));
+                slots.push(Slot::Blank(slots.len() as u32));
+            }
+            Some(page_chunk) if page_chunk.is_master => continue,
+            Some(page_chunk) => {
+                slots.push(Slot::Real(slots.len() as u32, page_chunk.clone()));
+            }
+        }
+    }
+    // Continuation threads: stories more than one listed
+    // shape claims, with their boxes in document order.
+    // Paired alternates and deleted shapes never take
+    // words; tables keep their own path.
+    let mut thread_boxes: HashMap<usize, Vec<(u32, u32)>> = HashMap::new();
+    for slot in &slots {
+        let Slot::Real(page_index, page_chunk) = slot else {
+            continue;
+        };
+        let alts = paired_alts_for(layout, &page_chunk.shapes);
+        for &seq in &page_chunk.shapes {
+            if alts.contains(&seq) {
+                continue;
+            }
+            let Some(chunk) = layout.shapes.get(&seq) else {
+                continue;
+            };
+            if chunk.ty == 0x10 {
+                continue;
+            }
+            let Some(tid) = chunk.text_id else {
+                continue;
+            };
+            let Some(&si) = by_syid.get(&tid) else {
+                continue;
+            };
+            if !parse.stories[si].emitted {
+                continue;
+            }
+            if escher.by_seq.get(&seq).map(|e| e.deleted).unwrap_or(false) {
+                continue;
+            }
+            thread_boxes.entry(si).or_default().push((*page_index, seq));
+        }
+    }
+    thread_boxes.retain(|_, boxes| boxes.len() > 1);
     let mut cx = Compose {
         parse,
         layout,
@@ -1509,69 +1835,44 @@ fn compose(
         remainder_stories: HashSet::new(),
         spans: Vec::new(),
         loss: std::mem::take(loss),
+        unplaced_causes: Vec::new(),
+        thread_boxes,
+        thread_next_para: HashMap::new(),
     };
     let mut pages: Vec<PageInfo> = Vec::new();
-    for &page_seq in &layout.page_order {
-        if DUMMY_PAGES.contains(&page_seq) {
-            continue;
-        }
-        let Some(page_chunk) = layout.pages.get(&page_seq) else {
-            cx.loss.notes.push(format!(
-                "the page list names page chunk {page_seq}, but the file holds \
-                 no chunk for it; the page was kept blank"
-            ));
-            pages.push(PageInfo {
-                index: pages.len() as u32,
-                width_pt: layout.page_w_pt,
-                height_pt: layout.page_h_pt,
-                picture_only: false,
-            });
-            continue;
-        };
-        if page_chunk.is_master {
-            continue; // master pages serve other pages; they are not pages
-        }
-        let page_index = pages.len() as u32;
-        pages.push(PageInfo {
-            index: page_index,
-            width_pt: layout.page_w_pt,
-            height_pt: layout.page_h_pt,
-            picture_only: false,
-        });
-        // Alternate-shape pairing on this page: a listed
-        // alternate (0x20) whose parent also lists a
-        // regular shape (0x01) is the same object twice;
-        // the regular one wins.
-        let listed: HashSet<u32> = page_chunk.shapes.iter().copied().collect();
-        let regular_parents: HashSet<u32> = listed
-            .iter()
-            .filter_map(|s| layout.shapes.get(s))
-            .filter(|c| c.ty == 0x01)
-            .map(|c| c.parent)
-            .collect();
-        let paired_alts: HashSet<u32> = listed
-            .iter()
-            .copied()
-            .filter(|s| {
-                layout
-                    .shapes
-                    .get(s)
-                    .map(|c| c.ty == 0x20 && regular_parents.contains(&c.parent))
-                    .unwrap_or(false)
-            })
-            .collect();
-        // The applied master's shapes sit underneath.
-        if let Some(mseq) = page_chunk.applied_master {
-            if let Some(master) = layout.pages.get(&mseq) {
-                let master_shapes = master.shapes.clone();
-                for seq in master_shapes {
-                    cx.emit_shape(page_index, seq, true, &paired_alts);
+    for slot in &slots {
+        match slot {
+            Slot::Blank(index) => {
+                pages.push(PageInfo {
+                    index: *index,
+                    width_pt: layout.page_w_pt,
+                    height_pt: layout.page_h_pt,
+                    picture_only: false,
+                });
+            }
+            Slot::Real(page_index, page_chunk) => {
+                let page_index = *page_index;
+                pages.push(PageInfo {
+                    index: page_index,
+                    width_pt: layout.page_w_pt,
+                    height_pt: layout.page_h_pt,
+                    picture_only: false,
+                });
+                let paired_alts = paired_alts_for(layout, &page_chunk.shapes);
+                // The applied master's shapes sit underneath.
+                if let Some(mseq) = page_chunk.applied_master {
+                    if let Some(master) = layout.pages.get(&mseq) {
+                        let master_shapes = master.shapes.clone();
+                        for seq in master_shapes {
+                            cx.emit_shape(page_index, seq, true, &paired_alts);
+                        }
+                    }
+                }
+                let own_shapes = page_chunk.shapes.clone();
+                for seq in own_shapes {
+                    cx.emit_shape(page_index, seq, false, &paired_alts);
                 }
             }
-        }
-        let own_shapes = page_chunk.shapes.clone();
-        for seq in own_shapes {
-            cx.emit_shape(page_index, seq, false, &paired_alts);
         }
     }
     // Stories no shape claimed (or whose shape had no
@@ -1630,6 +1931,12 @@ fn compose(
             }
         ));
     }
+    cx.loss.stories_placed_in_boxes = cx.placed_stories.len();
+    cx.loss.unplaced_shape_reasons = cx
+        .unplaced_causes
+        .iter()
+        .map(|(label, count, examples)| format!("{label} ({count}): {}", examples.join(", ")))
+        .collect();
     *loss = std::mem::take(&mut cx.loss);
     let mut spans = std::mem::take(&mut cx.spans);
     // Span widths are estimates (character count times a
@@ -1983,5 +2290,265 @@ mod tests {
             "{:?}",
             x.loss.notes
         );
+    }
+    // ---- Multi-shape fixtures ------------------------------
+    //
+    // The same miniature Publisher file as above, generalized:
+    // the page lists the given shape seqNums, the directory
+    // carries one chunk per entry of `chunks` (directory
+    // ordinals 2, 3, ... in order), and the Escher stream
+    // carries the given shape instances.
+
+    /// A Contents stream whose page lists `listed` and whose
+    /// shape chunks are `chunks` (type, block bytes) at
+    /// directory ordinals 2, 3, ... The page size and story
+    /// plumbing match the single-shape fixture.
+    fn contents_multi(listed: &[u32], chunks: &[(u8, Vec<u8>)]) -> Vec<u8> {
+        let mut out = vec![0u8; 0x30];
+        out[0] = 0xE8;
+        out[1] = 0xAC;
+        out[2] = 0x2C;
+        let mut size_subs = Vec::new();
+        size_subs.extend_from_slice(&blk_int(0x01, 0x20, PAGE_W_EMU as u32));
+        size_subs.extend_from_slice(&blk_int(0x02, 0x20, PAGE_H_EMU as u32));
+        let mut doc_blocks = Vec::new();
+        doc_blocks.extend_from_slice(&blk_box(0x12, 0x88, &size_subs));
+        doc_blocks.extend_from_slice(&blk_box(0x02, 0x88, &blk_int(0x00, 0x20, 1)));
+        out.extend_from_slice(&chunk(&doc_blocks));
+        let page_off = out.len();
+        let mut page_subs = Vec::new();
+        for seq in listed {
+            page_subs.extend_from_slice(&blk_int(0x00, 0x70, *seq));
+        }
+        out.extend_from_slice(&chunk(&blk_box(0x02, 0x88, &page_subs)));
+        let mut chunk_offs = Vec::new();
+        for (_, blocks) in chunks {
+            chunk_offs.push(out.len());
+            out.extend_from_slice(&chunk(blocks));
+        }
+        let trailer_off = out.len();
+        out[0x1A..0x1E].copy_from_slice(&(trailer_off as u32).to_le_bytes());
+        let mut dir = Vec::new();
+        dir.extend_from_slice(&chunk_ref(0x44, 0x30, 0));
+        dir.extend_from_slice(&chunk_ref(0x43, page_off, 0));
+        for (i, (ty, _)) in chunks.iter().enumerate() {
+            dir.extend_from_slice(&chunk_ref(*ty as u32, chunk_offs[i], 0));
+        }
+        let dir_block = blk_box(0x00, 0x90, &dir);
+        out.extend_from_slice(&((dir_block.len() + 4) as u32).to_le_bytes());
+        out.extend_from_slice(&dir_block);
+        while out.len() + 2 <= 4096 {
+            out.extend_from_slice(&[0x00, 0x78]);
+        }
+        out.resize(4096, 0);
+        out
+    }
+
+    /// A Quill stream holding one story with the given text
+    /// and SYID, in the single-shape fixture's shape.
+    fn quill_story(text: &str, syid: u32) -> Vec<u8> {
+        let text_bytes: Vec<u8> = text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let nchars = text.chars().count() as u32;
+        let mut strs = Vec::new();
+        strs.extend_from_slice(&1u32.to_le_bytes());
+        strs.extend_from_slice(&8u32.to_le_bytes());
+        strs.extend_from_slice(&255u32.to_le_bytes());
+        strs.extend_from_slice(&nchars.to_le_bytes());
+        let mut syid_b = Vec::new();
+        syid_b.extend_from_slice(&3u32.to_le_bytes());
+        syid_b.extend_from_slice(&1u32.to_le_bytes());
+        syid_b.extend_from_slice(&syid.to_le_bytes());
+        let chunks: Vec<(&str, Vec<u8>)> =
+            vec![("TEXT", text_bytes), ("STRS", strs), ("SYID", syid_b)];
+        let text_off = 0x18 + 8 + 24 * chunks.len();
+        let mut out = vec![0u8; 0x18];
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&(chunks.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        let mut at = text_off;
+        let mut offsets = Vec::new();
+        for (_, b) in &chunks {
+            offsets.push(at);
+            at += b.len();
+        }
+        for (i, (name, b)) in chunks.iter().enumerate() {
+            out.extend_from_slice(&24u16.to_le_bytes());
+            let mut nm = [b' '; 4];
+            nm[..name.len()].copy_from_slice(name.as_bytes());
+            out.extend_from_slice(&nm);
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0x0100_0000u32.to_le_bytes());
+            out.extend_from_slice(&nm);
+            out.extend_from_slice(&(offsets[i] as u32).to_le_bytes());
+            out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        }
+        for (_, b) in &chunks {
+            out.extend_from_slice(b);
+        }
+        out.resize(4096, 0);
+        out
+    }
+
+    /// One Escher shape instance: client data naming `seq`,
+    /// and, when `anchor` is given, a client anchor with the
+    /// box (center-relative EMU: left, top, right, bottom).
+    fn escher_shape(seq: u32, anchor: Option<(i64, i64, i64, i64)>) -> Vec<u8> {
+        let mut fsp = Vec::new();
+        fsp.extend_from_slice(&0x1001u32.to_le_bytes());
+        fsp.extend_from_slice(&0u32.to_le_bytes());
+        let mut sp = Vec::new();
+        sp.extend_from_slice(&escher_record(0xF00A, 0x0010, &fsp));
+        if let Some((xs, ys, xe, ye)) = anchor {
+            let mut a = Vec::new();
+            a.extend_from_slice(&28u32.to_le_bytes());
+            for (id, val) in [(0x2001u16, xs), (0x2002, ys), (0x2003, xe), (0x2004, ye)] {
+                a.extend_from_slice(&id.to_le_bytes());
+                a.extend_from_slice(&(val as u32).to_le_bytes());
+            }
+            sp.extend_from_slice(&escher_record(0xF010, 0x0000, &a));
+        }
+        let mut cdata = Vec::new();
+        cdata.extend_from_slice(&10u32.to_le_bytes());
+        cdata.extend_from_slice(&0x6801u16.to_le_bytes());
+        cdata.extend_from_slice(&seq.to_le_bytes());
+        sp.extend_from_slice(&escher_record(0xF011, 0x0000, &cdata));
+        escher_record(0xF004, 0x000F, &sp)
+    }
+
+    /// An Escher stream holding the given shape instances.
+    fn escher_multi(shapes: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut dg_content = Vec::new();
+        for s in shapes {
+            dg_content.extend_from_slice(&s);
+        }
+        let mut dg = escher_record(0xF002, 0x000F, &dg_content);
+        dg.extend_from_slice(&[0, 0, 0, 0]);
+        dg.resize(4096, 0);
+        dg
+    }
+
+    /// A box in page points, as a center-relative EMU
+    /// anchor: (left, top, width, height) in points.
+    fn emu_box(x_pt: i64, y_pt: i64, w_pt: i64, h_pt: i64) -> (i64, i64, i64, i64) {
+        let xs = x_pt * 12_700 - PAGE_W_EMU / 2;
+        let ys = y_pt * 12_700 - PAGE_H_EMU / 2;
+        (xs, ys, xs + w_pt * 12_700, ys + h_pt * 12_700)
+    }
+
+    #[test]
+    fn unplaced_shapes_record_their_causes() {
+        // Shape 2 names story 99, which the story table does
+        // not hold. Shape 3 names the real story but has no
+        // drawing-layer entry at all. Shape 9 is listed on
+        // the page but the directory holds no chunk for it.
+        let contents = contents_multi(
+            &[2, 3, 9],
+            &[
+                (0x01, blk_int(0x27, 0x20, 99)),
+                (0x01, blk_int(0x27, 0x20, 7)),
+            ],
+        );
+        let escher = escher_multi(vec![escher_shape(2, Some(emu_box(72, 72, 200, 100)))]);
+        let bytes = build_cfb(contents, quill_story("Hello placed world\r", 7), escher);
+        let cfb = Cfb::open(bytes).expect("cfb opens");
+        let x = extract_pub_positioned(&cfb, "test.pub", 1000).expect("extract");
+        assert!(x.positioned);
+        assert_eq!(x.loss.shapes_total, 3);
+        assert_eq!(x.loss.shapes_placed, 0);
+        assert_eq!(x.loss.shapes_unplaced, 3);
+        assert_eq!(
+            x.loss.unplaced_shape_reasons.len(),
+            3,
+            "{:?}",
+            x.loss.unplaced_shape_reasons
+        );
+        let joined = x.loss.unplaced_shape_reasons.join("\n");
+        assert!(
+            joined.contains("story number is not in the file's story table"),
+            "{joined}"
+        );
+        assert!(joined.contains("drawing layer has no entry"), "{joined}");
+        assert!(joined.contains("holds no description chunk"), "{joined}");
+        // The words themselves are never dropped: the real
+        // story lands on the reading-order pages.
+        assert_eq!(x.loss.stories_unplaced, 1);
+        let texts: Vec<&str> = x.dump.spans.iter().map(|s| s.text.as_str()).collect();
+        assert!(texts.join(" ").contains("Hello placed world"), "{texts:?}");
+    }
+
+    #[test]
+    fn decoration_shapes_are_not_counted_as_misses() {
+        // Shape 2 is the real text shape. Shape 3 names no
+        // story and its drawing entry carries neither a
+        // picture nor word art: a rectangle, the page's
+        // furniture.
+        let contents = contents_multi(
+            &[2, 3],
+            &[(0x01, blk_int(0x27, 0x20, 7)), (0x01, Vec::new())],
+        );
+        let escher = escher_multi(vec![
+            escher_shape(2, Some(emu_box(72, 72, 200, 100))),
+            escher_shape(3, Some(emu_box(72, 300, 200, 40))),
+        ]);
+        let bytes = build_cfb(contents, quill_story("Hello placed world\r", 7), escher);
+        let cfb = Cfb::open(bytes).expect("cfb opens");
+        let x = extract_pub_positioned(&cfb, "test.pub", 1000).expect("extract");
+        assert!(x.positioned);
+        assert_eq!(x.loss.decoration_shapes_skipped, 1);
+        assert_eq!(x.loss.shapes_total, 1);
+        assert_eq!(x.loss.shapes_placed, 1);
+        assert_eq!(x.loss.shapes_unplaced, 0);
+        assert!(x.loss.unplaced_shape_reasons.is_empty());
+    }
+
+    #[test]
+    fn threaded_story_fills_its_second_box() {
+        // Two shapes share text id 7: Publisher's linked
+        // boxes. The first box is short (one paragraph
+        // fits); the story must continue in the second box
+        // instead of spilling down the page or overflowing.
+        let contents = contents_multi(
+            &[2, 3],
+            &[
+                (0x01, blk_int(0x27, 0x20, 7)),
+                (0x01, blk_int(0x27, 0x20, 7)),
+            ],
+        );
+        let escher = escher_multi(vec![
+            escher_shape(2, Some(emu_box(72, 72, 200, 26))),
+            escher_shape(3, Some(emu_box(72, 200, 200, 300))),
+        ]);
+        let text = "Alpha one\rBravo two\rCharlie three\rDelta four\r";
+        let bytes = build_cfb(contents, quill_story(text, 7), escher);
+        let cfb = Cfb::open(bytes).expect("cfb opens");
+        let x = extract_pub_positioned(&cfb, "test.pub", 1000).expect("extract");
+        assert!(x.positioned, "{:?}", x.loss.notes);
+        assert_eq!(x.loss.shapes_total, 2);
+        assert_eq!(x.loss.shapes_placed, 2);
+        assert_eq!(x.loss.stories_placed_in_boxes, 1);
+        assert_eq!(x.loss.stories_overflowed, 0);
+        assert_eq!(x.loss.stories_unplaced, 0);
+        // No reading-order pages were needed.
+        assert_eq!(x.dump.pages.len(), 1);
+        let span_at = |word: &str| {
+            x.dump
+                .spans
+                .iter()
+                .find(|s| s.text.contains(word))
+                .unwrap_or_else(|| panic!("span with {word}"))
+        };
+        // The first paragraph sits in the first box; the
+        // last paragraph sits in the second box.
+        let alpha = span_at("Alpha");
+        assert!(alpha.y.unwrap() < 120.0, "alpha at {:?}", alpha.y);
+        let delta = span_at("Delta");
+        assert!(delta.y.unwrap() >= 200.0, "delta at {:?}", delta.y);
+        assert!(delta.y.unwrap() < 500.0, "delta at {:?}", delta.y);
+        // And every paragraph's words are on the page.
+        let joined: Vec<&str> = x.dump.spans.iter().map(|s| s.text.as_str()).collect();
+        let joined = joined.join(" ");
+        for word in ["Alpha", "Bravo", "Charlie", "Delta"] {
+            assert!(joined.contains(word), "{joined}");
+        }
     }
 }

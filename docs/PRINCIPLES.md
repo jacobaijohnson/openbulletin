@@ -16,8 +16,11 @@
    "imposition" in the guided flow. Say "panels", "this week's text",
    "print copy". Two working rules ride along: show people their options
    instead of making them remember and type (Apple's See-and-Point), and
-   name every action noun first, then verb ("Save print copy", never a
-   bare "Save") (Apple's Explicit and Implied Actions).
+   name every action for its object, in plain words ("Open the print
+   copy" is a fine label; a bare "OK" is not) (Apple's Explicit and
+   Implied Actions, which is about acting on a visible object, noun
+   first in the hand, not label grammar; settled 2026-10-15 in the
+   lens review synthesis).
 4. **Guided, with the next step always visible.** The home screen is the
    weekly flow: Start, This Sunday, Announcements, Check, Print. One
    primary action per step. The app suggests the next step after every

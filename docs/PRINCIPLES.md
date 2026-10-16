@@ -39,3 +39,13 @@
    the shapes they already know, one visible step at a time. If a
    feature makes them learn us instead of the other way round, the
    feature is wrong, however elegant the engine is.
+
+## Design reference
+
+docs/DESIGN.md carries the adopted design reference library: the
+OS X Human Interface Guidelines philosophy set (incorporated
+2026-10-15 on Jacob's order) and the InDesign and Publisher
+interaction habits we borrow, each marked adopted, adapted, or
+left behind. It is a reference, not a replacement: the nine
+principles above remain the law, and where DESIGN.md and this
+list disagree, this list wins.

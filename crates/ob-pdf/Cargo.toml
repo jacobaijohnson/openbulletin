@@ -11,6 +11,7 @@ ob-model = { path = "../ob-model" }
 ob-text = { path = "../ob-text" }
 ob-fonts = { path = "../ob-fonts" }
 ob-impose = { path = "../ob-impose" }
+ob-image = { path = "../ob-image" }
 ttf-parser = "0.25"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 subsetter = "0.2.6"

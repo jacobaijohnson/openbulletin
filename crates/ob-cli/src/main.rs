@@ -499,6 +499,7 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
                 ),
                 story_id: Some(sid),
                 role: ob_model::ContentRole::Weekly,
+                picture: None,
             }],
             background_image: Some(format!("assets/page-{:02}.png", i + 1)),
             guides: Vec::new(),

@@ -68,6 +68,25 @@ fingerprints. Both were already in the tree; the permissive
 posture above is unchanged and no new license family
 entered.
 
+Picture decoding (2026-10-16, G2): the new ob-image crate
+decodes pictures through `image` (MIT OR Apache-2.0, already
+in the tree), `jxl-oxide` 0.12 (JPEG XL, pure Rust, MIT OR
+Apache-2.0 for the whole crate family), and `resvg` 0.45.1
+for SVG. The resvg pass the build planned for: older resvg
+releases were MPL-2.0, but resvg and `usvg` 0.45.1 state
+"Apache-2.0 OR MIT" in their own Cargo.toml metadata, and
+their rendering dependencies are MIT, Apache-2.0, or
+BSD-3-Clause (tiny-skia). `cargo metadata` re-run for this
+build: 586 packages, no new copyleft family, the only
+LGPL mention still the r-efi OR choice recorded above.
+AVIF decoding was evaluated and NOT taken: the `image`
+crate's AVIF decode feature binds dav1d (a C library)
+through a system-library lookup (dav1d-sys needs libdav1d
+>= 1.3.0 via pkg-config), which is absent here and on the
+stock Windows bundle runner, so AVIF files are recognized
+and refused with convert-first guidance instead, beside
+HEIC. No dav1d code or binary enters the tree.
+
 ## The Publisher reader and the LibreOffice bridge
 
 Our Publisher (.pub) reader is an independent implementation

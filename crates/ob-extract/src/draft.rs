@@ -620,6 +620,7 @@ fn build_draft(
                 },
                 story_id: Some(sid),
                 role: ContentRole::Weekly,
+                picture: None,
             });
             // Words set along a curve or in steps in the old
             // file cannot be read back in a certain order: flag

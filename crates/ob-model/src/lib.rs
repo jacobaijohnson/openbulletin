@@ -258,6 +258,93 @@ pub enum FrameKind {
     Text,
     /// A simple rectangle/placeholder (cover art block, QR placeholder).
     Shape,
+    /// A picture box: its picture (when it has one) is the
+    /// `Frame::picture` placement beside this kind.
+    Picture,
+}
+
+/// How a picture sits in its box (G2). The office words are
+/// "Fill the box (sides may be trimmed)" and "Show the whole
+/// picture"; these are the two shapes those words mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PictureFit {
+    /// Scale to cover the box; the overflow is trimmed away.
+    #[default]
+    Fill,
+    /// Scale to fit inside the box; empty space may show.
+    ShowWhole,
+}
+
+/// One picture placed in a picture box: which stored asset,
+/// how it fits, and where its center sits when Fill trims it.
+/// The crop offsets are fractions of the trimmed overflow:
+/// 0.0 shows the left/top edge of the picture, 1.0 the
+/// right/bottom edge, 0.5 (the default) centers it. They are
+/// fractions, not pixels, so the same placement survives the
+/// box being resized.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PicturePlacement {
+    /// The asset's SHA-256 fingerprint into `Document.assets`
+    /// and `Document.asset_bytes`.
+    pub asset: String,
+    #[serde(default)]
+    pub fit: PictureFit,
+    #[serde(default = "half")]
+    pub crop_x: f64,
+    #[serde(default = "half")]
+    pub crop_y: f64,
+}
+
+fn half() -> f64 {
+    0.5
+}
+
+impl PicturePlacement {
+    pub fn new(asset: String) -> Self {
+        PicturePlacement {
+            asset,
+            fit: PictureFit::Fill,
+            crop_x: 0.5,
+            crop_y: 0.5,
+        }
+    }
+}
+
+/// The rectangle a picture actually occupies when shown in a
+/// box of `box_w` x `box_h` (same units throughout, caller's
+/// choice), as (x, y, w, h) relative to the box's top-left.
+/// Fill covers the box and may extend past it (negative x/y);
+/// the caller clips to the box and uses the crop fractions to
+/// choose which part of the overflow shows. ShowWhole fits
+/// inside, centered. One function, shared by the canvas, the
+/// previews, the PDF writer, and the blur check, so they can
+/// never disagree about where a picture sits.
+pub fn picture_shown_rect(
+    fit: PictureFit,
+    pic_w: f64,
+    pic_h: f64,
+    box_w: f64,
+    box_h: f64,
+    crop_x: f64,
+    crop_y: f64,
+) -> (f64, f64, f64, f64) {
+    if pic_w <= 0.0 || pic_h <= 0.0 || box_w <= 0.0 || box_h <= 0.0 {
+        return (0.0, 0.0, box_w.max(0.0), box_h.max(0.0));
+    }
+    let scale = match fit {
+        PictureFit::Fill => (box_w / pic_w).max(box_h / pic_h),
+        PictureFit::ShowWhole => (box_w / pic_w).min(box_h / pic_h),
+    };
+    let w = pic_w * scale;
+    let h = pic_h * scale;
+    let (x, y) = match fit {
+        PictureFit::Fill => (
+            -(w - box_w) * crop_x.clamp(0.0, 1.0),
+            -(h - box_h) * crop_y.clamp(0.0, 1.0),
+        ),
+        PictureFit::ShowWhole => ((box_w - w) / 2.0, (box_h - h) / 2.0),
+    };
+    (x, y, w, h)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -268,6 +355,12 @@ pub struct Frame {
     pub rect: Rect,
     pub story_id: Option<String>,
     pub role: ContentRole,
+    /// The picture in this box, when the kind is Picture and
+    /// a picture has been put in it. An empty picture box has
+    /// kind Picture and no placement. Serde-defaulted, so
+    /// every older file loads with no picture.
+    #[serde(default)]
+    pub picture: Option<PicturePlacement>,
 }
 
 /// One layout guide on a panel: a straight line the eye (and later,
@@ -843,6 +936,16 @@ impl Document {
                 frame.rect.y = frame.rect.y.clamp(-10_000_000, 10_000_000);
                 frame.rect.w = frame.rect.w.clamp(0, 10_000_000);
                 frame.rect.h = frame.rect.h.clamp(0, 10_000_000);
+                if let Some(pic) = &mut frame.picture {
+                    if !pic.crop_x.is_finite() {
+                        pic.crop_x = 0.5;
+                    }
+                    if !pic.crop_y.is_finite() {
+                        pic.crop_y = 0.5;
+                    }
+                    pic.crop_x = pic.crop_x.clamp(0.0, 1.0);
+                    pic.crop_y = pic.crop_y.clamp(0.0, 1.0);
+                }
             }
         }
         self
@@ -1593,5 +1696,55 @@ mod occasion_tests {
             doc.stories[0].paragraphs[0].runs,
             vec![Run::plain("Welcome to worship")]
         );
+    }
+}
+
+#[cfg(test)]
+mod picture_tests {
+    use super::*;
+
+    #[test]
+    fn frames_written_before_pictures_load_without_one() {
+        // A frame JSON from before picture boxes existed: no
+        // `picture` key at all, and the kind names only the
+        // old two.
+        let json = r#"{"id":"f","name":"Box","kind":"Text",
+            "rect":{"x":0,"y":0,"w":1000,"h":1000},
+            "story_id":"s","role":"Weekly"}"#;
+        let frame: Frame = serde_json::from_str(json).expect("parse");
+        assert_eq!(frame.kind, FrameKind::Text);
+        assert_eq!(frame.picture, None);
+    }
+
+    #[test]
+    fn a_picture_placement_defaults_to_fill_centered() {
+        let json = r#"{"asset":"abc123"}"#;
+        let p: PicturePlacement = serde_json::from_str(json).expect("parse");
+        assert_eq!(p.fit, PictureFit::Fill);
+        assert_eq!(p.crop_x, 0.5);
+        assert_eq!(p.crop_y, 0.5);
+    }
+
+    #[test]
+    fn shown_rect_fill_covers_and_crop_chooses_the_part() {
+        // A wide picture (200x100) in a square box (100x100):
+        // Fill scales to 200x100 shown, half hidden sideways.
+        let (x, y, w, h) =
+            picture_shown_rect(PictureFit::Fill, 200.0, 100.0, 100.0, 100.0, 0.5, 0.5);
+        assert_eq!((x, y, w, h), (-50.0, 0.0, 200.0, 100.0));
+        // Crop hard left shows the picture's left edge.
+        let (x, ..) = picture_shown_rect(PictureFit::Fill, 200.0, 100.0, 100.0, 100.0, 0.0, 0.5);
+        assert_eq!(x, 0.0);
+        // Crop hard right shows the right edge (box ends at
+        // the picture's right edge).
+        let (x, ..) = picture_shown_rect(PictureFit::Fill, 200.0, 100.0, 100.0, 100.0, 1.0, 0.5);
+        assert_eq!(x, -100.0);
+    }
+
+    #[test]
+    fn shown_rect_show_whole_fits_inside_centered() {
+        let (x, y, w, h) =
+            picture_shown_rect(PictureFit::ShowWhole, 200.0, 100.0, 100.0, 100.0, 0.5, 0.5);
+        assert_eq!((x, y, w, h), (0.0, 25.0, 100.0, 50.0));
     }
 }

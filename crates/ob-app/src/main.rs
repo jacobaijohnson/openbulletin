@@ -12,6 +12,7 @@ use ob_model::{ChurchProfile, ContentRole, Document};
 
 mod editmap;
 mod runsedit;
+mod starter_clips;
 
 const STEPS: [&str; 5] = ["Start", "This Sunday", "Announcements", "Check", "Print"];
 
@@ -720,6 +721,8 @@ impl App {
         self.drag_guide = None;
         self.drag_frame = None;
         self.drag_resize = false;
+        self.drag_pan = None;
+        self.pan_origin = None;
         self.selected_frame = None;
         self.canvas_panel = 0;
         self.guide_menu_for = None;
@@ -1461,6 +1464,26 @@ struct App {
     guide_menu_for: Option<(usize, ob_model::Mpt)>,
     bg_tex_key: String,
     bg_tex: Option<egui::TextureHandle>,
+    /// Decoded picture textures for the canvas, the previews,
+    /// and the pickers: (content key, size class in pixels) ->
+    /// (texture, decoded width, decoded height). A decode
+    /// happens once per key per class; the stored asset bytes
+    /// themselves never change (G2).
+    pic_tex: std::collections::HashMap<(String, u32), (egui::TextureHandle, u32, u32)>,
+    /// The picture box whose crop is being panned by a drag
+    /// inside it, and where that drag began: (crop_x, crop_y,
+    /// pointer x, pointer y) in milli-points.
+    drag_pan: Option<usize>,
+    pan_origin: Option<(f64, f64, ob_model::Mpt, ob_model::Mpt)>,
+    /// The clip art library window and its state.
+    show_clips: bool,
+    clips_ensured: bool,
+    clip_collection: Option<String>,
+    clip_query: String,
+    clip_status: Option<String>,
+    /// The "put a picture in the box" picker (a file door
+    /// plus the document's loose pictures).
+    show_pic_picker: bool,
     show_fonts: bool,
     show_comfort: bool,
     show_keys: bool,
@@ -1606,6 +1629,17 @@ struct PreviewSheet {
     panels: Vec<PreviewPanel>,
 }
 
+/// One placed picture in a preview: its content key (the
+/// asset fingerprint), the box it sits in, and the rect it
+/// actually shows in, sheet points.
+#[derive(Clone)]
+struct PreviewPicture {
+    asset: String,
+    clip: egui::Rect,
+    shown: egui::Rect,
+    fit: ob_model::PictureFit,
+}
+
 #[derive(Clone)]
 struct PreviewPanel {
     x: f32,
@@ -1614,6 +1648,8 @@ struct PreviewPanel {
     h: f32,
     name: String,
     lines: Vec<PreviewLine>,
+    /// Placed pictures, painted under the panel's words.
+    pictures: Vec<PreviewPicture>,
 }
 
 #[derive(Clone)]
@@ -1916,6 +1952,15 @@ impl Default for App {
             guide_menu_for: None,
             bg_tex_key: String::new(),
             bg_tex: None,
+            pic_tex: std::collections::HashMap::new(),
+            drag_pan: None,
+            pan_origin: None,
+            show_clips: false,
+            clips_ensured: false,
+            clip_collection: None,
+            clip_query: String::new(),
+            clip_status: None,
+            show_pic_picker: false,
             show_fonts: false,
             show_comfort: false,
             show_keys: false,
@@ -2512,6 +2557,78 @@ impl App {
         } else {
             notes.extend(fit_notes);
         }
+        // Pictures (G2): an empty box, a box whose picture is
+        // not in the bulletin, and a picture too small for
+        // its box in print. The blur line is 120 dots per
+        // inch: the church's own rescued pictures live near
+        // 150, so the note waits until a picture is clearly
+        // under the line instead of crying wolf weekly.
+        {
+            let mut probes: std::collections::HashMap<String, Option<ob_image::Probe>> =
+                std::collections::HashMap::new();
+            for (pi, panel) in self.doc.panels.iter().enumerate() {
+                for (fi, frame) in panel.frames.iter().enumerate() {
+                    if frame.kind != ob_model::FrameKind::Picture {
+                        continue;
+                    }
+                    let Some(placement) = &frame.picture else {
+                        notes.push(CheckNote::aimed(
+                            format!(
+                                "Check: the picture box on \"{}\" is empty. Put a picture in it in the Pages window, or delete the box.",
+                                panel.name
+                            ),
+                            pi,
+                            Some(fi),
+                        ));
+                        continue;
+                    };
+                    let Some(bytes) = self.doc.asset_data(&placement.asset) else {
+                        notes.push(CheckNote::aimed(
+                            format!(
+                                "Check: the picture in the box on \"{}\" could not be found in this bulletin. Put the picture in again in the Pages window.",
+                                panel.name
+                            ),
+                            pi,
+                            Some(fi),
+                        ));
+                        continue;
+                    };
+                    let probe = probes
+                        .entry(placement.asset.clone())
+                        .or_insert_with(|| ob_image::probe(bytes).ok());
+                    let Some(probe) = probe else {
+                        let words = match ob_image::sniff(bytes) {
+                            ob_image::PictureFormat::Avif | ob_image::PictureFormat::Heic => {
+                                format!(
+                                    "Check: the picture in the box on \"{}\" is a kind this program cannot use yet. Convert it to JPEG or PNG and put it in again.",
+                                    panel.name
+                                )
+                            }
+                            _ => format!(
+                                "Check: the picture in the box on \"{}\" could not be read. Put a good copy of it in again in the Pages window.",
+                                panel.name
+                            ),
+                        };
+                        notes.push(CheckNote::aimed(words, pi, Some(fi)));
+                        continue;
+                    };
+                    if probe.format == ob_image::PictureFormat::Svg {
+                        continue; // vector art has no dots to count
+                    }
+                    let dpi = picture_effective_dpi(frame, placement, probe);
+                    if dpi < 120.0 {
+                        notes.push(CheckNote::aimed(
+                            format!(
+                                "Check: the picture in the box on \"{}\" may look blurry in print. At this size it has about {:.0} dots per inch; a clearer copy of the picture would print better.",
+                                panel.name, dpi
+                            ),
+                            pi,
+                            Some(fi),
+                        ));
+                    }
+                }
+            }
+        }
         // Missing fonts: a style naming a family that is neither
         // bundled nor in the Font Library prints in a stand-in.
         {
@@ -3057,6 +3174,27 @@ impl App {
         ));
         let sheets = self.preview_sheets().clone();
         let rows = self.font_rows.clone();
+        // The sheets' pictures, decoded through the same
+        // door as the canvas (G2), keyed by fingerprint.
+        let mut textures: std::collections::HashMap<String, egui::TextureHandle> =
+            std::collections::HashMap::new();
+        for sheet in &sheets {
+            for panel in &sheet.panels {
+                for pic in &panel.pictures {
+                    if textures.contains_key(&pic.asset) {
+                        continue;
+                    }
+                    if let Some(bytes) = self.doc.asset_data(&pic.asset).map(|b| b.to_vec()) {
+                        let key = format!("asset:{}", pic.asset);
+                        if let Some((tex, _, _)) =
+                            self.picture_texture(ui.ctx(), &key, &bytes, 1024)
+                        {
+                            textures.insert(pic.asset.clone(), tex);
+                        }
+                    }
+                }
+            }
+        }
         // The preview is a picture, not the point of the
         // step: cap the room it takes (its own little scroll
         // box) so the copy buttons stay within reach on
@@ -3070,7 +3208,7 @@ impl App {
                     let pair = i / 2 + 1;
                     let face = if i % 2 == 0 { "front" } else { "back" };
                     ui.label(egui::RichText::new(format!("Sheet {pair}, {face}")).strong());
-                    draw_sheet(ui, sheet, &rows);
+                    draw_sheet(ui, sheet, &rows, &textures);
                 }
             });
     }
@@ -3196,9 +3334,43 @@ impl App {
             },
             story_id: Some(sid),
             role: ob_model::ContentRole::Weekly,
+            picture: None,
         });
         self.selected_frame = Some(panel.frames.len() - 1);
         self.note("Text box added in the middle of the page. Drag it where it belongs.".into());
+    }
+
+    /// Add a fresh picture box to a panel: empty, in the
+    /// middle, waiting for its picture (G2).
+    fn add_picture_box(&mut self, idx: usize) {
+        if self.editing.is_some() {
+            self.commit_edit();
+        }
+        self.push_undo_now();
+        self.box_seq += 1;
+        let seq = self.box_seq;
+        let panel = &mut self.doc.panels[idx];
+        let w = 216_000.min(panel.size.w);
+        let h = 162_000.min(panel.size.h);
+        panel.frames.push(ob_model::Frame {
+            id: format!("frame-pic-{seq}"),
+            name: "Picture box".into(),
+            kind: ob_model::FrameKind::Picture,
+            rect: ob_model::Rect {
+                x: (panel.size.w - w) / 2,
+                y: (panel.size.h - h) / 2,
+                w,
+                h,
+            },
+            story_id: None,
+            role: ob_model::ContentRole::Weekly,
+            picture: None,
+        });
+        self.selected_frame = Some(panel.frames.len() - 1);
+        self.note(
+            "Picture box added in the middle of the page. With it selected, use Picture... to fill it."
+                .into(),
+        );
     }
 
     fn cancel_edit(&mut self) {
@@ -4332,6 +4504,417 @@ impl App {
     /// the tracing picture, frame outlines, and the panel's guides.
     /// Guides follow office habits: drag to move, right-click to
     /// type the exact place (docs/EDITOR.md).
+    /// The "put a picture in the box" window (G2): one file
+    /// door, plus the pictures this bulletin already carries
+    /// that no box uses yet ("Pictures from the old
+    /// bulletin", from a PDF rescue).
+    fn picture_picker_window(&mut self, ctx: &egui::Context) {
+        if !self.show_pic_picker {
+            return;
+        }
+        let target = match self.selected_frame {
+            Some(fi) if self.doc.panels.get(self.canvas_panel).is_some() => {
+                Some((self.canvas_panel, fi))
+            }
+            _ => None,
+        };
+        let loose = unplaced_doc_pictures(&self.doc);
+        let mut open = self.show_pic_picker;
+        let mut close = false;
+        let mut place: Option<String> = None;
+        let mut pick_file = false;
+        egui::Window::new("Put a picture in the box")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                match target {
+                    None => {
+                        ui.label(
+                            "First click a box on the page in the Pages window, \
+                             then choose its picture here.",
+                        );
+                    }
+                    Some(_) => {
+                        if ui.button("Pick a picture file...").clicked() {
+                            pick_file = true;
+                        }
+                        ui.separator();
+                        ui.label(egui::RichText::new("Pictures from the old bulletin").strong());
+                        ui.label(
+                            "Pictures this bulletin already carries that no box uses yet. \
+                             Click one to put it in the box.",
+                        );
+                        if loose.is_empty() {
+                            ui.label("No loose pictures from an old bulletin are waiting.");
+                        }
+                        egui::ScrollArea::vertical()
+                            .id_salt("loose-pictures")
+                            .max_height(280.0)
+                            .show(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    for asset in &loose {
+                                        ui.vertical(|ui| {
+                                            let bytes = self
+                                                .doc
+                                                .asset_data(&asset.sha256)
+                                                .map(|b| b.to_vec());
+                                            let mut clicked = false;
+                                            match bytes {
+                                                Some(bytes) => {
+                                                    let key = format!("asset:{}", asset.sha256);
+                                                    match self.picture_texture(
+                                                        ui.ctx(),
+                                                        &key,
+                                                        &bytes,
+                                                        160,
+                                                    ) {
+                                                        Some((tex, _, _)) => {
+                                                            if ui
+                                                                .add(egui::ImageButton::new(
+                                                                    egui::load::SizedTexture::new(
+                                                                        tex.id(),
+                                                                        egui::vec2(72.0, 72.0),
+                                                                    ),
+                                                                ))
+                                                                .clicked()
+                                                            {
+                                                                clicked = true;
+                                                            }
+                                                        }
+                                                        None => {
+                                                            ui.label("(could not be shown)");
+                                                        }
+                                                    }
+                                                }
+                                                None => {
+                                                    ui.label("(missing)");
+                                                }
+                                            }
+                                            let label = if asset.rights.source.is_empty() {
+                                                "From the old bulletin".to_string()
+                                            } else {
+                                                asset.rights.source.clone()
+                                            };
+                                            if ui.small_button(label).clicked() || clicked {
+                                                place = Some(asset.sha256.clone());
+                                            }
+                                        });
+                                    }
+                                });
+                            });
+                    }
+                }
+                ui.separator();
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        self.show_pic_picker = open && !close;
+        if let (Some((idx, fi)), true) = (target, pick_file) {
+            self.pick_picture_file(idx, fi);
+            self.show_pic_picker = false;
+        }
+        if let (Some((idx, fi)), Some(sha)) = (target, place) {
+            self.place_stored_picture(idx, fi, &sha);
+            self.show_pic_picker = false;
+        }
+    }
+
+    /// The clip art library window (G2, per
+    /// docs/research/clipart-landscape.md section 4):
+    /// collections on the left, a thumbnail grid with name
+    /// search on the right, and the add-a-collection doors.
+    fn clips_window(&mut self, ctx: &egui::Context) {
+        if !self.show_clips {
+            return;
+        }
+        self.ensure_starter_clips();
+        let lib = ob_clips::ClipLibrary::open(ob_clips::default_library_dir()).ok();
+        let collections: Vec<ob_clips::Collection> =
+            lib.as_ref().map(|l| l.collections()).unwrap_or_default();
+        if self.clip_collection.is_none() {
+            self.clip_collection = collections.first().map(|c| c.name.clone());
+        }
+        let selected = collections
+            .iter()
+            .find(|c| Some(&c.name) == self.clip_collection.as_ref());
+        let target = match self.selected_frame {
+            Some(fi) if self.doc.panels.get(self.canvas_panel).is_some() => {
+                Some((self.canvas_panel, fi))
+            }
+            _ => None,
+        };
+        let mut open = self.show_clips;
+        let mut place_item: Option<(String, String, Option<ob_image::PictureFormat>, String)> =
+            None;
+        let mut add_folder = false;
+        let mut add_zip = false;
+        egui::Window::new("Clip art")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(640.0)
+            .default_height(440.0)
+            .show(ctx, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(170.0);
+                        ui.label(egui::RichText::new("Collections").strong());
+                        for c in &collections {
+                            let label = format!("{} ({})", c.name, c.items.len());
+                            if ui
+                                .selectable_label(
+                                    self.clip_collection.as_deref() == Some(c.name.as_str()),
+                                    label,
+                                )
+                                .clicked()
+                            {
+                                self.clip_collection = Some(c.name.clone());
+                            }
+                        }
+                        if collections.is_empty() {
+                            ui.label("No collections yet. Add one below.");
+                        }
+                        ui.separator();
+                        if ui.button("Add a collection from a folder...").clicked() {
+                            add_folder = true;
+                        }
+                        if ui.button("Add a collection from a zip file...").clicked() {
+                            add_zip = true;
+                        }
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        ui.label("Find a clip by words in its name:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.clip_query)
+                                .hint_text("try: dove, candle, cross"),
+                        );
+                        match selected {
+                            None => {
+                                ui.label("Pick a collection on the left.");
+                            }
+                            Some(coll) => {
+                                if target.is_none() {
+                                    ui.label(
+                                        "Tip: click a box on the page in the Pages window first; \
+                                         then a clip here goes straight into that box.",
+                                    );
+                                }
+                                let hits = coll.matching(&self.clip_query);
+                                egui::ScrollArea::vertical()
+                                    .id_salt("clip-grid")
+                                    .max_height(300.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal_wrapped(|ui| {
+                                            for item in &hits {
+                                                ui.vertical(|ui| {
+                                                    let bytes =
+                                                        std::fs::read(&item.path).ok();
+                                                    let mut clicked = false;
+                                                    match (bytes, item.format) {
+                                                        (Some(bytes), Some(_)) => {
+                                                            let key = format!(
+                                                                "file:{}",
+                                                                item.path.display()
+                                                            );
+                                                            match self.picture_texture(
+                                                                ui.ctx(),
+                                                                &key,
+                                                                &bytes,
+                                                                160,
+                                                            ) {
+                                                                Some((tex, _, _)) => {
+                                                                    if ui
+                                                                        .add(egui::ImageButton::new(
+                                                                            egui::load::SizedTexture::new(
+                                                                                tex.id(),
+                                                                                egui::vec2(72.0, 72.0),
+                                                                            ),
+                                                                        ))
+                                                                        .clicked()
+                                                                    {
+                                                                        clicked = true;
+                                                                    }
+                                                                    // The library's own
+                                                                    // thumbnail cache,
+                                                                    // written the first
+                                                                    // time a clip shows.
+                                                                    if let Some(l) = &lib {
+                                                                        if let Some(tp) =
+                                                                            l.thumb_path(&item.path)
+                                                                        {
+                                                                            if !tp.exists() {
+                                                                                if let Some(dir) =
+                                                                                    tp.parent()
+                                                                                {
+                                                                                    let _ = std::fs::create_dir_all(dir);
+                                                                                }
+                                                                                if let Ok(d) = ob_image::decode_fitted(&bytes, 192, 192) {
+                                                                                    if let Ok(png) = ob_image::encode_png(&d) {
+                                                                                        let _ = std::fs::write(&tp, png);
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                None => {
+                                                                    ui.label("(could not be shown)");
+                                                                }
+                                                            }
+                                                        }
+                                                        _ => {
+                                                            ui.label("(could not be read)");
+                                                        }
+                                                    }
+                                                    if ui.small_button(&item.file_name).clicked()
+                                                        || clicked
+                                                    {
+                                                        place_item = Some((
+                                                            item.path.display().to_string(),
+                                                            item.file_name.clone(),
+                                                            item.format,
+                                                            coll.name.clone(),
+                                                        ));
+                                                    }
+                                                });
+                                            }
+                                        });
+                                        if hits.is_empty() {
+                                            ui.label(
+                                                "No clips in this collection match those words.",
+                                            );
+                                        }
+                                    });
+                            }
+                        }
+                    });
+                });
+                ui.separator();
+                if let Some(status) = &self.clip_status {
+                    ui.label(status.clone());
+                }
+                ui.label(
+                    "Clips you add are copied into the library, and a copy goes into the bulletin, so the bulletin always travels complete.",
+                );
+            });
+        self.show_clips = open;
+        if add_folder {
+            self.add_clips_from_folder();
+        }
+        if add_zip {
+            self.add_clips_from_zip();
+        }
+        if let Some((path, file_name, format, collection)) = place_item {
+            match target {
+                None => {
+                    self.clip_status =
+                        Some("Click a box on the page first, then pick the clip.".into());
+                }
+                Some((idx, fi)) => match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        let lib2 =
+                            ob_clips::ClipLibrary::open(ob_clips::default_library_dir()).ok();
+                        let license = lib2
+                            .as_ref()
+                            .and_then(|l| l.collection(&collection))
+                            .and_then(|c| c.notes)
+                            .map(|n| n.license_kind())
+                            .unwrap_or(ob_model::LicenseKind::Unknown);
+                        let media = format
+                            .map(|f| f.media_type().to_string())
+                            .unwrap_or_else(|| "application/octet-stream".into());
+                        let title = file_name
+                            .rsplit_once('.')
+                            .map(|(stem, _)| stem.to_string())
+                            .unwrap_or(file_name.clone());
+                        let sha = self.doc.add_asset(
+                            &bytes,
+                            ob_model::AssetKind::Picture,
+                            &media,
+                            ob_model::RightsRecord {
+                                source: collection.clone(),
+                                license,
+                                title,
+                                ..Default::default()
+                            },
+                        );
+                        self.place_stored_picture(idx, fi, &sha);
+                        self.clip_status =
+                            Some(format!("\"{file_name}\" is in the box on the page."));
+                    }
+                    Err(e) => {
+                        self.clip_status = Some(format!("Could not read that clip: {e}"));
+                    }
+                },
+            }
+        }
+    }
+
+    /// "Add a collection" from a folder of pictures.
+    fn add_clips_from_folder(&mut self) {
+        let Some(folder) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        let Ok(lib) = ob_clips::ClipLibrary::open(ob_clips::default_library_dir()) else {
+            self.fail("The clip art library folder could not be opened.".into());
+            return;
+        };
+        let converter = wmf_converter();
+        let name = file_name_of(&folder);
+        match lib.add_collection_from_folder(
+            &folder,
+            &ob_clips::CollectionNotes::default(),
+            converter.as_deref(),
+        ) {
+            Ok(report) => {
+                self.clip_collection = Some(name.clone());
+                self.clip_status = Some(collection_result_sentence(&name, &report));
+            }
+            Err(e) => self.fail(e),
+        }
+    }
+
+    /// "Add a collection" from a .zip of pictures.
+    fn add_clips_from_zip(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Zip files", &["zip"])
+            .pick_file()
+        else {
+            return;
+        };
+        let name = file_name_of(&path);
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.fail(format!("Could not read {name}: {e}"));
+                return;
+            }
+        };
+        let Ok(lib) = ob_clips::ClipLibrary::open(ob_clips::default_library_dir()) else {
+            self.fail("The clip art library folder could not be opened.".into());
+            return;
+        };
+        let converter = wmf_converter();
+        let coll_name = name
+            .rsplit_once('.')
+            .map(|(stem, _)| stem.to_string())
+            .unwrap_or(name.clone());
+        match lib.add_collection_from_zip(
+            &name,
+            &bytes,
+            &ob_clips::CollectionNotes::default(),
+            converter.as_deref(),
+        ) {
+            Ok(report) => {
+                self.clip_collection = Some(coll_name.clone());
+                self.clip_status = Some(collection_result_sentence(&coll_name, &report));
+            }
+            Err(e) => self.fail(e),
+        }
+    }
+
     fn pages_window(&mut self, ctx: &egui::Context) {
         if !self.show_pages {
             return;
@@ -4377,6 +4960,22 @@ impl App {
                     if ui.button("Add a text box").clicked() {
                         self.add_text_box(idx);
                     }
+                    if ui.button("Add a picture box").clicked() {
+                        self.add_picture_box(idx);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.selected_frame.is_some(),
+                            egui::Button::new("Picture..."),
+                        )
+                        .clicked()
+                    {
+                        self.show_pic_picker = true;
+                    }
+                    if ui.button("Clip art...").clicked() {
+                        self.ensure_starter_clips();
+                        self.show_clips = true;
+                    }
                     if self.doc.panels[idx].background_image.is_some() {
                         ui.separator();
                         if ui.button("Remove the old page picture").clicked() {
@@ -4392,6 +4991,7 @@ impl App {
                 });
                 ui.label("Click a box to select it, then drag to move it. Drag the corner square to size it.");
                 ui.label("Double-click a box to type in it. Arrow keys nudge a selected box.");
+                ui.label("A filled picture box that is already selected: drag inside it to move the picture within its box; double-click to center the picture again.");
                 ui.label("Right-click anything for its exact place in inches. The blue guides never print.");
                 ui.small("Keys: Tab moves to the next box, Enter types in it, arrows move a box (Shift for bigger steps), Ctrl+C and Ctrl+V copy a box, Ctrl+Z undoes.");
                 if self.discarded_edit.is_some()
@@ -4615,6 +5215,125 @@ impl App {
                 egui::Stroke::new(0.75_f32, egui::Color32::LIGHT_GRAY),
             );
         }
+        // Picture boxes show their pictures (G2), decoded
+        // through the same door the print path uses, so the
+        // page and the sheet cannot disagree about the art.
+        for frame in &panel.frames {
+            if frame.kind != ob_model::FrameKind::Picture {
+                continue;
+            }
+            let r = frame.rect;
+            let frect = egui::Rect::from_min_max(
+                to_px(r.x as f32 / 1000.0, r.y as f32 / 1000.0),
+                to_px((r.x + r.w) as f32 / 1000.0, (r.y + r.h) as f32 / 1000.0),
+            );
+            let box_pt = (r.w as f32 / 1000.0, r.h as f32 / 1000.0);
+            match &frame.picture {
+                None => {
+                    dashed_rect(&painter, frect, egui::Color32::from_gray(150));
+                    painter.text(
+                        frect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "No picture yet",
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_gray(130),
+                    );
+                }
+                Some(placement) => {
+                    let bytes = self.doc.asset_data(&placement.asset).map(|b| b.to_vec());
+                    match bytes {
+                        None => {
+                            dashed_rect(&painter, frect, self.theme.problem);
+                            painter.text(
+                                frect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "The picture for this box\ncould not be found.",
+                                egui::FontId::proportional(11.0),
+                                self.theme.problem,
+                            );
+                        }
+                        Some(bytes) => {
+                            let key = format!("asset:{}", placement.asset);
+                            match self.picture_texture(ctx, &key, &bytes, 1024) {
+                                Some((tex, _, _)) => {
+                                    let probe = ob_image::probe(&bytes);
+                                    let (pw, ph) = probe
+                                        .map(|p| (p.width as f32, p.height as f32))
+                                        .unwrap_or((box_pt.0, box_pt.1));
+                                    let (sx, sy, sw, sh) = ob_model::picture_shown_rect(
+                                        placement.fit,
+                                        pw as f64,
+                                        ph as f64,
+                                        box_pt.0 as f64,
+                                        box_pt.1 as f64,
+                                        placement.crop_x,
+                                        placement.crop_y,
+                                    );
+                                    let shown = egui::Rect::from_min_max(
+                                        to_px(
+                                            r.x as f32 / 1000.0 + sx as f32,
+                                            r.y as f32 / 1000.0 + sy as f32,
+                                        ),
+                                        to_px(
+                                            r.x as f32 / 1000.0 + (sx as f32 + sw as f32),
+                                            r.y as f32 / 1000.0 + (sy as f32 + sh as f32),
+                                        ),
+                                    );
+                                    let clip = painter.with_clip_rect(frect);
+                                    if placement.fit == ob_model::PictureFit::ShowWhole {
+                                        clip.image(
+                                            tex.id(),
+                                            shown,
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(0.0, 0.0),
+                                                egui::pos2(1.0, 1.0),
+                                            ),
+                                            egui::Color32::WHITE,
+                                        );
+                                    } else {
+                                        // Fill: the frame shows
+                                        // the crop fractions'
+                                        // slice of the picture.
+                                        let fx = (box_pt.0 as f64 / sw).clamp(0.0, 1.0) as f32;
+                                        let fy = (box_pt.1 as f64 / sh).clamp(0.0, 1.0) as f32;
+                                        let ux = (placement.crop_x as f32) * (1.0 - fx);
+                                        let uy = (placement.crop_y as f32) * (1.0 - fy);
+                                        clip.image(
+                                            tex.id(),
+                                            frect,
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(ux, uy),
+                                                egui::pos2(ux + fx, uy + fy),
+                                            ),
+                                            egui::Color32::WHITE,
+                                        );
+                                    }
+                                }
+                                None => {
+                                    let words = match ob_image::sniff(&bytes) {
+                                        ob_image::PictureFormat::Avif => {
+                                            "This is an AVIF picture.\nConvert it to JPEG or PNG\nand put it in again."
+                                        }
+                                        ob_image::PictureFormat::Heic => {
+                                            "This is a HEIC picture.\nConvert it to JPEG or PNG\nand put it in again."
+                                        }
+                                        _ => "This picture could not be read.",
+                                    };
+                                    dashed_rect(&painter, frect, self.theme.problem);
+                                    painter.text(
+                                        frect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        words,
+                                        egui::FontId::proportional(11.0),
+                                        self.theme.problem,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Some(fi) = self.selected_frame {
             if let Some(f) = panel.frames.get(fi) {
                 let r = f.rect;
@@ -4733,12 +5452,26 @@ impl App {
             if let Some(pos) = pointer {
                 let pm = to_mpt(pos);
                 if let Some(fi) = frame_hit(pm) {
-                    // A double-click on the box already being
-                    // edited selects a word in the shaped
-                    // editor (handled below), not a re-entry.
-                    if self.editing != Some((idx, fi))
+                    // A double-click on a picture box centers
+                    // its picture again (G2); it never starts
+                    // typing, a picture box holds no words.
+                    let pic = self.doc.panels[idx].frames[fi].picture.clone();
+                    if self.doc.panels[idx].frames[fi].kind == ob_model::FrameKind::Picture {
+                        if let Some(mut p) = pic {
+                            if p.crop_x != 0.5 || p.crop_y != 0.5 {
+                                self.push_undo_now();
+                                p.crop_x = 0.5;
+                                p.crop_y = 0.5;
+                                self.doc.panels[idx].frames[fi].picture = Some(p);
+                                self.note("Picture centered in its box.".into());
+                            }
+                        }
+                    } else if self.editing != Some((idx, fi))
                         && self.doc.panels[idx].frames[fi].story_id.is_some()
                     {
+                        // A double-click on the box already being
+                        // edited selects a word in the shaped
+                        // editor (handled below), not a re-entry.
                         self.enter_edit(idx, fi);
                     }
                 }
@@ -4786,11 +5519,40 @@ impl App {
                             let handle = self.selected_frame == Some(fi)
                                 && pm.0 >= f.rect.x + f.rect.w - grip
                                 && pm.1 >= f.rect.y + f.rect.h - grip;
+                            // A drag that starts INSIDE an
+                            // already-selected filled picture
+                            // box pans the picture within its
+                            // box instead of moving the box
+                            // (G2): grab the thing itself. The
+                            // box still moves by its edges,
+                            // its corner, the arrow keys, and
+                            // the right-click numbers.
+                            let edge = (8.0 / scale * 1000.0) as ob_model::Mpt;
+                            let interior = pm.0 >= f.rect.x + edge
+                                && pm.0 <= f.rect.x + f.rect.w - edge
+                                && pm.1 >= f.rect.y + edge
+                                && pm.1 <= f.rect.y + f.rect.h - edge;
+                            let pan = self.selected_frame == Some(fi)
+                                && !handle
+                                && interior
+                                && f.kind == ob_model::FrameKind::Picture
+                                && f.picture
+                                    .as_ref()
+                                    .map(|p| p.fit == ob_model::PictureFit::Fill)
+                                    .unwrap_or(false);
                             self.selected_frame = Some(fi);
-                            self.drag_frame = Some(fi);
-                            self.drag_resize = handle;
-                            self.grab_dx = pm.0 - f.rect.x;
-                            self.grab_dy = pm.1 - f.rect.y;
+                            if pan {
+                                let p = f.picture.as_ref().expect("pan checked a picture");
+                                self.drag_pan = Some(fi);
+                                self.pan_origin = Some((p.crop_x, p.crop_y, pm.0, pm.1));
+                                self.drag_frame = None;
+                                self.drag_resize = false;
+                            } else {
+                                self.drag_frame = Some(fi);
+                                self.drag_resize = handle;
+                                self.grab_dx = pm.0 - f.rect.x;
+                                self.grab_dy = pm.1 - f.rect.y;
+                            }
                         }
                         None => self.selected_frame = None,
                     }
@@ -4811,6 +5573,51 @@ impl App {
                     (((pos.y - origin.y) / scale) * 1000.0) as ob_model::Mpt
                 };
                 g.pos = new_pos.clamp(0, extent);
+            }
+            if let (Some(fi), Some(pos)) = (self.drag_pan, pointer) {
+                // Panning a picture inside its box: the
+                // picture follows the pointer, expressed in
+                // the model's crop fractions (the share of
+                // the trimmed overflow showing on each side).
+                if let Some((crop_x, crop_y, start_x, start_y)) = self.pan_origin {
+                    let pm = to_mpt(pos);
+                    let (asset, fit, box_rect) = {
+                        let f = &self.doc.panels[idx].frames[fi];
+                        (
+                            f.picture.as_ref().map(|p| p.asset.clone()),
+                            f.picture.as_ref().map(|p| p.fit),
+                            f.rect,
+                        )
+                    };
+                    if let (Some(asset), Some(fit)) = (asset, fit) {
+                        if let Some(bytes) = self.doc.asset_data(&asset).map(|b| b.to_vec()) {
+                            if let Ok(probe) = ob_image::probe(&bytes) {
+                                let (_, _, shown_w, shown_h) = ob_model::picture_shown_rect(
+                                    fit,
+                                    probe.width as f64,
+                                    probe.height as f64,
+                                    box_rect.w as f64,
+                                    box_rect.h as f64,
+                                    crop_x,
+                                    crop_y,
+                                );
+                                let over_x = shown_w - box_rect.w as f64;
+                                let over_y = shown_h - box_rect.h as f64;
+                                let f = &mut self.doc.panels[idx].frames[fi];
+                                if let Some(p) = &mut f.picture {
+                                    if over_x > 0.0 {
+                                        p.crop_x = (crop_x - (pm.0 - start_x) as f64 / over_x)
+                                            .clamp(0.0, 1.0);
+                                    }
+                                    if over_y > 0.0 {
+                                        p.crop_y = (crop_y - (pm.1 - start_y) as f64 / over_y)
+                                            .clamp(0.0, 1.0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if let (Some(fi), Some(pos)) = (self.drag_frame, pointer) {
                 let pm = to_mpt(pos);
@@ -4861,6 +5668,8 @@ impl App {
             self.drag_guide = None;
             self.drag_frame = None;
             self.drag_resize = false;
+            self.drag_pan = None;
+            self.pan_origin = None;
             self.end_gesture();
         }
         if response.clicked() {
@@ -5339,6 +6148,63 @@ impl App {
                                     .into();
                         }
                     }
+                    if f.kind == ob_model::FrameKind::Picture {
+                        ui.separator();
+                        match &f.picture {
+                            None => {
+                                ui.label("This picture box is empty.");
+                                if ui.button("Put a picture in this box...").clicked() {
+                                    self.show_pic_picker = true;
+                                    ui.close_menu();
+                                }
+                            }
+                            Some(p) => {
+                                ui.label(match p.fit {
+                                    ob_model::PictureFit::Fill => {
+                                        "The picture fills the box; its sides may be trimmed."
+                                    }
+                                    ob_model::PictureFit::ShowWhole => {
+                                        "The whole picture shows; empty space may show."
+                                    }
+                                });
+                                let other = match p.fit {
+                                    ob_model::PictureFit::Fill => {
+                                        (ob_model::PictureFit::ShowWhole, "Show the whole picture")
+                                    }
+                                    ob_model::PictureFit::ShowWhole => (
+                                        ob_model::PictureFit::Fill,
+                                        "Fill the box (sides may be trimmed)",
+                                    ),
+                                };
+                                if ui.button(other.1).clicked() {
+                                    self.push_undo_now();
+                                    if let Some(slot) = &mut self.doc.panels[idx].frames[fi].picture
+                                    {
+                                        slot.fit = other.0;
+                                    }
+                                    self.status = "Picture fit changed.".into();
+                                    ui.close_menu();
+                                }
+                                if p.fit == ob_model::PictureFit::Fill
+                                    && (p.crop_x != 0.5 || p.crop_y != 0.5)
+                                    && ui.button("Center the picture").clicked()
+                                {
+                                    self.push_undo_now();
+                                    if let Some(slot) = &mut self.doc.panels[idx].frames[fi].picture
+                                    {
+                                        slot.crop_x = 0.5;
+                                        slot.crop_y = 0.5;
+                                    }
+                                    self.status = "Picture centered.".into();
+                                    ui.close_menu();
+                                }
+                                if ui.button("Take the picture out").clicked() {
+                                    self.set_frame_picture(idx, fi, None);
+                                    ui.close_menu();
+                                }
+                            }
+                        }
+                    }
                     ui.separator();
                     if ui.button("Copy this box (Ctrl+C)").clicked() {
                         let story = f
@@ -5494,6 +6360,179 @@ impl App {
         let color =
             egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
         Some(ctx.load_texture("trace-bg", color, egui::TextureOptions::LINEAR))
+    }
+
+    /// The decoded texture for one picture, at a size class
+    /// (the longest pixel edge the caller needs), decoded
+    /// once and cached: (texture, pixel width, pixel height)
+    /// of the decoded picture. `key` names the CONTENT (an
+    /// asset fingerprint, a library file path), never the
+    /// document, so the cache survives document swaps. None
+    /// when the bytes do not decode (missing formats and
+    /// broken files alike; callers that need the reason ask
+    /// ob_image themselves).
+    fn picture_texture(
+        &mut self,
+        ctx: &egui::Context,
+        key: &str,
+        bytes: &[u8],
+        max_px: u32,
+    ) -> Option<(egui::TextureHandle, u32, u32)> {
+        let cache_key = (key.to_string(), max_px);
+        if let Some(hit) = self.pic_tex.get(&cache_key) {
+            return Some(hit.clone());
+        }
+        let decoded = ob_image::decode_fitted(bytes, max_px, max_px).ok()?;
+        let color = egui::ColorImage::from_rgba_unmultiplied(
+            [decoded.width as usize, decoded.height as usize],
+            &decoded.rgba,
+        );
+        let tex = ctx.load_texture(
+            format!("pic:{key}#{max_px}"),
+            color,
+            egui::TextureOptions::LINEAR,
+        );
+        let entry = (tex, decoded.width, decoded.height);
+        self.pic_tex.insert(cache_key, entry.clone());
+        Some(entry)
+    }
+
+    /// Put a picture (already in the document's asset store)
+    /// into a box, or take the picture out when `placement`
+    /// is None (the box stays). One undo step either way.
+    fn set_frame_picture(
+        &mut self,
+        idx: usize,
+        fi: usize,
+        placement: Option<ob_model::PicturePlacement>,
+    ) {
+        if self.editing.is_some() {
+            self.commit_edit();
+        }
+        self.push_undo_now();
+        let has_picture = placement.is_some();
+        let frame = &mut self.doc.panels[idx].frames[fi];
+        frame.kind = ob_model::FrameKind::Picture;
+        frame.picture = placement;
+        if has_picture {
+            // A box holds a picture OR words, never both at
+            // once; the words' story stays in the document
+            // (undo and the file keep it), the box lets go.
+            frame.story_id = None;
+        }
+        self.note(if has_picture {
+            "Picture put in the box.".into()
+        } else {
+            "Picture taken out. The box stays.".into()
+        });
+    }
+
+    /// The "Picture..." file door: pick ONE picture file and
+    /// put it in the box. The file's bytes copy into the
+    /// bulletin's asset store with an honest rights record
+    /// (source: the file's name; license: not stated).
+    fn pick_picture_file(&mut self, idx: usize, fi: usize) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Pictures",
+                &[
+                    "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "svg", "jxl",
+                    "avif", "heic", "heif",
+                ],
+            )
+            .add_filter("All files", &[] as &[&str])
+            .pick_file()
+        else {
+            return;
+        };
+        let name = file_name_of(&path);
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.fail(format!("Could not read {name}: {e}"));
+                return;
+            }
+        };
+        // The door recognizes by the bytes first, the name
+        // second, and says in plain words what it cannot take.
+        let format = match ob_image::sniff(&bytes) {
+            ob_image::PictureFormat::Unknown => {
+                ob_image::format_for_name(&name).unwrap_or(ob_image::PictureFormat::Unknown)
+            }
+            f => f,
+        };
+        match format {
+            ob_image::PictureFormat::Avif | ob_image::PictureFormat::Heic => {
+                self.fail(format!(
+                    "{name} is a {} picture. This program cannot use that kind yet. \
+                     Convert it to JPEG or PNG first (your photo program can save a copy that way), then put it in.",
+                    if format == ob_image::PictureFormat::Avif { "AVIF" } else { "HEIC" }
+                ));
+            }
+            f if f.decodable() => {
+                if ob_image::probe(&bytes).is_err() {
+                    self.fail(format!(
+                        "{name} could not be read as a picture. It may be broken, or not a picture at all."
+                    ));
+                    return;
+                }
+                let sha = self.doc.add_asset(
+                    &bytes,
+                    ob_model::AssetKind::Picture,
+                    f.media_type(),
+                    ob_model::RightsRecord {
+                        source: name.clone(),
+                        ..Default::default()
+                    },
+                );
+                self.set_frame_picture(idx, fi, Some(ob_model::PicturePlacement::new(sha)));
+            }
+            _ => {
+                self.fail(format!(
+                    "{name} is not a picture this program knows. Pictures it can use: PNG, JPEG, WebP, GIF, BMP, TIFF, SVG, and JPEG XL."
+                ));
+            }
+        }
+    }
+
+    /// Place one of the document's own stored pictures into
+    /// a box (the picker and the clip library both land here).
+    fn place_stored_picture(&mut self, idx: usize, fi: usize, sha: &str) {
+        self.set_frame_picture(
+            idx,
+            fi,
+            Some(ob_model::PicturePlacement::new(sha.to_string())),
+        );
+    }
+
+    /// Make sure the bundled starter set is in the Clipart
+    /// Library (first open of the window only): the set's
+    /// own collection, installed from the files and manifest
+    /// shipped with the app.
+    fn ensure_starter_clips(&mut self) {
+        if self.clips_ensured {
+            return;
+        }
+        self.clips_ensured = true;
+        if starter_clips::STARTER_FILES.is_empty() {
+            return;
+        }
+        let Ok(lib) = ob_clips::ClipLibrary::open(ob_clips::default_library_dir()) else {
+            return;
+        };
+        if lib.collection("Starter set").is_some() {
+            return;
+        }
+        let files: Vec<(String, Vec<u8>)> = starter_clips::STARTER_FILES
+            .iter()
+            .map(|(name, text)| (name.to_string(), text.as_bytes().to_vec()))
+            .collect();
+        let notes = ob_clips::CollectionNotes {
+            source: "OpenBulletin starter set (bundled with the program)".into(),
+            license: "CC0".into(),
+            added: String::new(),
+        };
+        let _ = lib.add_collection("Starter set", &files, &notes, None);
     }
 
     /// Begin a PDF rescue on a worker thread: read the old
@@ -6362,14 +7401,15 @@ impl App {
                 // The finished pages, made for the purpose the
                 // radio above the button remembers (O1).
                 let purpose = self.settings.pdf_purpose();
-                let bytes = ob_pdf::export_reader_pdf(&self.doc, purpose);
+                let (bytes, report) = ob_pdf::export_reader_pdf_report(&self.doc, purpose);
                 match std::fs::write(path, &bytes) {
                     Ok(()) => {
                         let msg = format!(
-                            "Saved a copy as {}, {}, {}.",
+                            "Saved a copy as {}, {}, {}.{}",
                             file_name_of(path),
                             human_file_size(bytes.len()),
-                            purpose.words()
+                            purpose.words(),
+                            missing_pictures_sentence(&report)
                         );
                         self.export_note = Some(msg.clone());
                         self.note(msg);
@@ -7812,7 +8852,7 @@ impl eframe::App for App {
                         if ui.button(egui::RichText::new("Open the print copy").strong()).clicked() {
                             self.commit_if_editing();
                             self.pin_fonts();
-                            let bytes = ob_pdf::export_imposed_pdf(
+                            let (bytes, report) = ob_pdf::export_imposed_pdf_report(
                                 &self.doc,
                                 ob_pdf::ExportPurpose::ForPrinting,
                             );
@@ -7826,9 +8866,10 @@ impl eframe::App for App {
                                     self.store_doc_state();
                                     let guidance = self.current_print_guidance();
                                     self.status = format!(
-                                        "Print copy opened in your PDF viewer ({}, {}). {guidance}",
+                                        "Print copy opened in your PDF viewer ({}, {}).{} {guidance}",
                                         human_file_size(bytes.len()),
-                                        ob_pdf::ExportPurpose::ForPrinting.words()
+                                        ob_pdf::ExportPurpose::ForPrinting.words(),
+                                        missing_pictures_sentence(&report)
                                     );
                                 }
                                 Err(e) => self.status = e,
@@ -7849,7 +8890,7 @@ impl eframe::App for App {
                                 .save_file()
                             {
                                 self.pin_fonts();
-                                let bytes = ob_pdf::export_imposed_pdf(
+                                let (bytes, report) = ob_pdf::export_imposed_pdf_report(
                                     &self.doc,
                                     ob_pdf::ExportPurpose::ForPrinting,
                                 );
@@ -7859,10 +8900,11 @@ impl eframe::App for App {
                                         self.store_doc_state();
                                         let guidance = self.current_print_guidance();
                                         self.status = format!(
-                                            "Print copy written: {}, {}, {}. {guidance}",
+                                            "Print copy written: {}, {}, {}.{} {guidance}",
                                             file_name_of(&path),
                                             human_file_size(bytes.len()),
-                                            ob_pdf::ExportPurpose::ForPrinting.words()
+                                            ob_pdf::ExportPurpose::ForPrinting.words(),
+                                            missing_pictures_sentence(&report)
                                         );
                                     }
                                     Err(e) => self.status = format!("Could not save the print copy: {e}"),
@@ -7879,7 +8921,7 @@ impl eframe::App for App {
                                 .save_file()
                             {
                                 self.pin_fonts();
-                                let bytes = ob_pdf::export_reader_pdf(
+                                let (bytes, report) = ob_pdf::export_reader_pdf_report(
                                     &self.doc,
                                     ob_pdf::ExportPurpose::ForEmailOrWeb,
                                 );
@@ -7892,10 +8934,11 @@ impl eframe::App for App {
                                         // never claim one exists
                                         // (UI audit round 2).
                                         self.status = format!(
-                                            "Reading copy written: {}, {}, {}.",
+                                            "Reading copy written: {}, {}, {}.{}",
                                             file_name_of(&path),
                                             human_file_size(bytes.len()),
-                                            ob_pdf::ExportPurpose::ForEmailOrWeb.words()
+                                            ob_pdf::ExportPurpose::ForEmailOrWeb.words(),
+                                            missing_pictures_sentence(&report)
                                         );
                                     }
                                     Err(e) => self.status = format!("Could not save the reading copy: {e}"),
@@ -8049,6 +9092,8 @@ impl eframe::App for App {
 
         let pages_were_open = self.show_pages;
         self.pages_window(ctx);
+        self.picture_picker_window(ctx);
+        self.clips_window(ctx);
         if pages_were_open && !self.show_pages && self.step == 3 {
             // A fix made on the canvas can clear a finding:
             // never leave the Check step showing a solved
@@ -8635,6 +9680,209 @@ fn choose_menu_target(
     }
 }
 
+/// A dashed rectangle (an empty or lost picture box's
+/// outline): egui has no dashed stroke, so it is drawn as
+/// segments along each edge.
+fn dashed_rect(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let stroke = egui::Stroke::new(1.0_f32, color);
+    let dash = 6.0_f32;
+    let gap = 4.0_f32;
+    let mut x = rect.min.x;
+    while x < rect.max.x {
+        let end = (x + dash).min(rect.max.x);
+        painter.line_segment(
+            [egui::pos2(x, rect.min.y), egui::pos2(end, rect.min.y)],
+            stroke,
+        );
+        painter.line_segment(
+            [egui::pos2(x, rect.max.y), egui::pos2(end, rect.max.y)],
+            stroke,
+        );
+        x += dash + gap;
+    }
+    let mut y = rect.min.y;
+    while y < rect.max.y {
+        let end = (y + dash).min(rect.max.y);
+        painter.line_segment(
+            [egui::pos2(rect.min.x, y), egui::pos2(rect.min.x, end)],
+            stroke,
+        );
+        painter.line_segment(
+            [egui::pos2(rect.max.x, y), egui::pos2(rect.max.x, end)],
+            stroke,
+        );
+        y += dash + gap;
+    }
+}
+
+/// The clause a copy's status line adds when some picture
+/// boxes printed as "No picture yet" (G2): the copy is
+/// still written; the sentence says what the boxes did.
+fn missing_pictures_sentence(report: &ob_pdf::ExportReport) -> String {
+    match report.missing_pictures {
+        0 => String::new(),
+        1 => " 1 picture box had no picture and printed as \"No picture yet\".".to_string(),
+        n => format!(" {n} picture boxes had no picture and printed as \"No picture yet\"."),
+    }
+}
+
+/// How many dots per inch a placed picture effectively has
+/// in print, at the size it SHOWS (a Fill picture is trimmed
+/// to its shown size, so its dots spread over the shown
+/// picture, not the box). The lower of the two axes: the
+/// worse direction is how blurry it can look.
+fn picture_effective_dpi(
+    frame: &ob_model::Frame,
+    placement: &ob_model::PicturePlacement,
+    probe: &ob_image::Probe,
+) -> f64 {
+    let (_, _, shown_w, shown_h) = ob_model::picture_shown_rect(
+        placement.fit,
+        probe.width as f64,
+        probe.height as f64,
+        frame.rect.w as f64,
+        frame.rect.h as f64,
+        placement.crop_x,
+        placement.crop_y,
+    );
+    let dpi_x = probe.width as f64 / (shown_w / 72_000.0);
+    let dpi_y = probe.height as f64 / (shown_h / 72_000.0);
+    dpi_x.min(dpi_y)
+}
+
+/// The pictures a document carries that no box and no panel
+/// background uses: the rescue's loose pictures, offered by
+/// the picture picker as "Pictures from the old bulletin".
+fn unplaced_doc_pictures(doc: &Document) -> Vec<ob_model::Asset> {
+    let mut used: std::collections::HashSet<&str> = Default::default();
+    for panel in &doc.panels {
+        if let Some(bg) = &panel.background_image {
+            used.insert(bg.as_str());
+        }
+        for frame in &panel.frames {
+            if let Some(p) = &frame.picture {
+                used.insert(p.asset.as_str());
+            }
+        }
+    }
+    doc.assets
+        .iter()
+        .filter(|a| a.kind == ob_model::AssetKind::Picture && !used.contains(a.sha256.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// The sentence an "add a collection" flow reports, in
+/// plain words, with a clause for every kind of file that
+/// was left out and why (nothing is ever silently dropped).
+fn collection_result_sentence(name: &str, report: &ob_clips::AddReport) -> String {
+    let landed = report.added + report.converted;
+    let mut out = if landed == 0 {
+        format!("No clips were added to \"{name}\".")
+    } else {
+        format!(
+            "{} clip{} added to \"{name}\".",
+            landed,
+            if landed == 1 { " was" } else { "s were" }
+        )
+    };
+    let clause = |n: usize, one: String, many: String| -> Option<String> {
+        if n == 0 {
+            None
+        } else if n == 1 {
+            Some(one)
+        } else {
+            Some(many.replace("{n}", &n.to_string()))
+        }
+    };
+    let clauses: Vec<Option<String>> = vec![
+        clause(
+            report.converted,
+            " 1 old Windows picture (WMF/EMF) was converted so it can be used.".into(),
+            " {n} old Windows pictures (WMF/EMF) were converted so they can be used.".into(),
+        ),
+        clause(
+            report.skipped_not_pictures,
+            " 1 file was not a picture and was left out.".into(),
+            " {n} files were not pictures and were left out.".into(),
+        ),
+        clause(
+            report.skipped_metafiles,
+            " 1 old Windows picture (WMF/EMF) was left out: converting it needs LibreOffice on this computer.".into(),
+            " {n} old Windows pictures (WMF/EMF) were left out: converting them needs LibreOffice on this computer.".into(),
+        ),
+        clause(
+            report.skipped_convert_first,
+            " 1 picture (AVIF or HEIC) was left out: this program cannot use that kind yet; convert it to JPEG or PNG first.".into(),
+            " {n} pictures (AVIF or HEIC) were left out: this program cannot use that kind yet; convert them to JPEG or PNG first.".into(),
+        ),
+        clause(
+            report.skipped_unreadable,
+            " 1 picture file could not be read and was left out.".into(),
+            " {n} picture files could not be read and were left out.".into(),
+        ),
+    ];
+    for c in clauses.into_iter().flatten() {
+        out.push_str(&c);
+    }
+    out
+}
+
+/// The WMF/EMF converter for the clip library (G2): when a
+/// user-installed LibreOffice is on this computer (found
+/// the same way the .pub bridge finds it), each old Windows
+/// picture is converted to PNG through it, headless, in a
+/// scratch folder. Without LibreOffice there is no
+/// converter and the library counts those files and leaves
+/// them out; they are never shown as blank thumbnails.
+fn wmf_converter() -> Option<Box<ob_clips::MetafileConverter>> {
+    let soffice = ob_extract::pub_bridge::find_soffice()?;
+    Some(Box::new(move |name: &str, bytes: &[u8]| {
+        let dir = std::env::temp_dir().join(format!(
+            "openbulletin-wmf-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).ok()?;
+        let input = dir.join(name);
+        std::fs::write(&input, bytes).ok()?;
+        let stem = name
+            .rsplit_once('.')
+            .map(|(s, _)| s.to_string())
+            .unwrap_or_else(|| name.to_string());
+        let output = dir.join(format!("{stem}.png"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let soffice2 = soffice.clone();
+        let input2 = input.clone();
+        let dir2 = dir.clone();
+        std::thread::spawn(move || {
+            let r = std::process::Command::new(&soffice2)
+                .arg("--headless")
+                .arg("--norestore")
+                .arg("--convert-to")
+                .arg("png")
+                .arg("--outdir")
+                .arg(&dir2)
+                .arg(&input2)
+                .output();
+            let _ = tx.send(r.is_ok() && r.unwrap().status.success());
+        });
+        let ok = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap_or(false);
+        let bytes = if ok {
+            std::fs::read(&output).ok()
+        } else {
+            None
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        bytes
+    }))
+}
+
 fn build_preview(doc_in: &Document) -> Vec<PreviewSheet> {
     let padded = ob_impose::padded_document(doc_in);
     let doc = &padded;
@@ -8665,6 +9913,7 @@ fn build_preview(doc_in: &Document) -> Vec<PreviewSheet> {
                 h: panel.size.h as f32 / 1000.0,
                 name: panel.name.clone(),
                 lines: Vec::new(),
+                pictures: panel_pictures(panel, doc, pl.x as f32 / 1000.0, pl.y as f32 / 1000.0),
             };
             pp.lines = panel_lines(doc, panel, &mut shaper)
                 .into_iter()
@@ -8685,7 +9934,66 @@ fn build_preview(doc_in: &Document) -> Vec<PreviewSheet> {
 /// lines, panel outlines, panel names, and the shaped lines in
 /// their own faces. The outlines and names are guides (the
 /// caption above the preview says they do not print).
-fn draw_sheet(ui: &mut egui::Ui, sheet: &PreviewSheet, rows: &[FontRow]) {
+/// The placed pictures of one panel, in sheet points, for
+/// the previews (G2): each picture frame's shown rect,
+/// from the one geometry function every view shares.
+fn panel_pictures(
+    panel: &ob_model::Panel,
+    doc: &Document,
+    off_x: f32,
+    off_y: f32,
+) -> Vec<PreviewPicture> {
+    let mut out = Vec::new();
+    for frame in &panel.frames {
+        if frame.kind != ob_model::FrameKind::Picture {
+            continue;
+        }
+        let Some(placement) = &frame.picture else {
+            continue;
+        };
+        let Some(bytes) = doc.asset_data(&placement.asset) else {
+            continue;
+        };
+        let Ok(probe) = ob_image::probe(bytes) else {
+            continue;
+        };
+        let box_pt = (frame.rect.w as f64 / 1000.0, frame.rect.h as f64 / 1000.0);
+        let (sx, sy, sw, sh) = ob_model::picture_shown_rect(
+            placement.fit,
+            probe.width as f64,
+            probe.height as f64,
+            box_pt.0,
+            box_pt.1,
+            placement.crop_x,
+            placement.crop_y,
+        );
+        let fx = frame.rect.x as f32 / 1000.0 + off_x;
+        let fy = frame.rect.y as f32 / 1000.0 + off_y;
+        out.push(PreviewPicture {
+            asset: placement.asset.clone(),
+            clip: egui::Rect::from_min_max(
+                egui::pos2(fx, fy),
+                egui::pos2(
+                    fx + frame.rect.w as f32 / 1000.0,
+                    fy + frame.rect.h as f32 / 1000.0,
+                ),
+            ),
+            shown: egui::Rect::from_min_max(
+                egui::pos2(fx + sx as f32, fy + sy as f32),
+                egui::pos2(fx + (sx + sw) as f32, fy + (sy + sh) as f32),
+            ),
+            fit: placement.fit,
+        });
+    }
+    out
+}
+
+fn draw_sheet(
+    ui: &mut egui::Ui,
+    sheet: &PreviewSheet,
+    rows: &[FontRow],
+    textures: &std::collections::HashMap<String, egui::TextureHandle>,
+) {
     let avail = ui.available_width().min(560.0);
     let scale = avail / sheet.w;
     let height = sheet.h * scale;
@@ -8716,6 +10024,41 @@ fn draw_sheet(ui: &mut egui::Ui, sheet: &PreviewSheet, rows: &[FontRow]) {
             egui::FontId::proportional(9.0),
             egui::Color32::from_gray(140),
         );
+        // Pictures first, under the words (G2), with the
+        // same crop geometry the canvas shows.
+        for pic in &panel.pictures {
+            let Some(tex) = textures.get(&pic.asset) else {
+                continue;
+            };
+            let clip = egui::Rect::from_min_max(
+                to_px(pic.clip.min.x, pic.clip.min.y),
+                to_px(pic.clip.max.x, pic.clip.max.y),
+            );
+            let shown = egui::Rect::from_min_max(
+                to_px(pic.shown.min.x, pic.shown.min.y),
+                to_px(pic.shown.max.x, pic.shown.max.y),
+            );
+            let painter2 = painter.with_clip_rect(clip);
+            if pic.fit == ob_model::PictureFit::ShowWhole {
+                painter2.image(
+                    tex.id(),
+                    shown,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            } else {
+                let fx = (pic.clip.width() / pic.shown.width()).clamp(0.0, 1.0);
+                let fy = (pic.clip.height() / pic.shown.height()).clamp(0.0, 1.0);
+                let ux = ((pic.clip.min.x - pic.shown.min.x) / pic.shown.width()).clamp(0.0, 1.0);
+                let uy = ((pic.clip.min.y - pic.shown.min.y) / pic.shown.height()).clamp(0.0, 1.0);
+                painter2.image(
+                    tex.id(),
+                    clip,
+                    egui::Rect::from_min_max(egui::pos2(ux, uy), egui::pos2(ux + fx, uy + fy)),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
         let clip = painter.with_clip_rect(prect);
         for line in &panel.lines {
             paint_line_segments(&clip, rows, line, scale, |lx| to_px(lx, line.y));
@@ -10221,6 +11564,7 @@ mod settings_tests {
                     kind: ob_model::FrameKind::Text,
                     story_id: Some("s".into()),
                     role: ob_model::ContentRole::Weekly,
+                    picture: None,
                 }],
                 guides: vec![],
             }],
@@ -10325,5 +11669,148 @@ mod settings_tests {
         // The standard warn tone is why the variant exists:
         // as words on white it does not meet the 7:1 bar.
         assert!(contrast_ratio(WARN, egui::Color32::WHITE) < 7.0);
+    }
+
+    // ---- G2: pictures ----
+
+    fn picture_frame(
+        w: ob_model::Mpt,
+        h: ob_model::Mpt,
+        fit: ob_model::PictureFit,
+    ) -> (ob_model::Frame, ob_model::PicturePlacement) {
+        let placement = ob_model::PicturePlacement {
+            asset: "a".into(),
+            fit,
+            crop_x: 0.5,
+            crop_y: 0.5,
+        };
+        (
+            ob_model::Frame {
+                id: "f".into(),
+                name: "Picture box".into(),
+                kind: ob_model::FrameKind::Picture,
+                rect: ob_model::Rect { x: 0, y: 0, w, h },
+                story_id: None,
+                role: ob_model::ContentRole::Weekly,
+                picture: Some(placement.clone()),
+            },
+            placement,
+        )
+    }
+
+    #[test]
+    fn picture_dpi_is_measured_at_the_shown_size() {
+        // 600x400 px shown whole in a 3x2 inch box: 200 dpi,
+        // no finding (above the 120 floor).
+        let (frame, placement) = picture_frame(216_000, 144_000, ob_model::PictureFit::ShowWhole);
+        let probe = ob_image::Probe {
+            format: ob_image::PictureFormat::Png,
+            width: 600,
+            height: 400,
+        };
+        assert!((picture_effective_dpi(&frame, &placement, &probe) - 200.0).abs() < 0.5);
+        // The same picture in a 6x4 inch box: 100 dpi, the
+        // blur finding's territory.
+        let (frame, placement) = picture_frame(432_000, 288_000, ob_model::PictureFit::ShowWhole);
+        assert!((picture_effective_dpi(&frame, &placement, &probe) - 100.0).abs() < 0.5);
+        // Fill: a 800x400 picture filling a 2x2 inch box
+        // shows at 4x2 inches (sides trimmed): 200 dpi, not
+        // the box's naive 400.
+        let (frame, placement) = picture_frame(144_000, 144_000, ob_model::PictureFit::Fill);
+        let probe = ob_image::Probe {
+            format: ob_image::PictureFormat::Jpeg,
+            width: 800,
+            height: 400,
+        };
+        assert!((picture_effective_dpi(&frame, &placement, &probe) - 200.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn loose_pictures_are_the_unplaced_ones() {
+        let mut doc = Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "T".into(),
+            profile: ChurchProfile::default(),
+            fields: Default::default(),
+            styles: ob_model::default_styles(),
+            stories: vec![],
+            panels: vec![],
+            sheet: ob_model::SheetSpec {
+                preset: "letter-portrait".into(),
+                size: ob_model::Size::new(612_000, 792_000),
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+        };
+        let placed = doc.add_asset(
+            &[1, 2, 3],
+            ob_model::AssetKind::Picture,
+            "image/png",
+            ob_model::RightsRecord::default(),
+        );
+        let loose = doc.add_asset(
+            &[4, 5, 6],
+            ob_model::AssetKind::Picture,
+            "image/png",
+            ob_model::RightsRecord::default(),
+        );
+        doc.panels.push(ob_model::Panel {
+            id: "p".into(),
+            name: "Front".into(),
+            size: ob_model::Size {
+                w: 396_000,
+                h: 612_000,
+            },
+            guides: vec![],
+            background_image: None,
+            frames: vec![ob_model::Frame {
+                id: "f".into(),
+                name: "Picture box".into(),
+                kind: ob_model::FrameKind::Picture,
+                rect: ob_model::Rect {
+                    x: 0,
+                    y: 0,
+                    w: 72_000,
+                    h: 72_000,
+                },
+                story_id: None,
+                role: ob_model::ContentRole::Weekly,
+                picture: Some(ob_model::PicturePlacement::new(placed.clone())),
+            }],
+        });
+        let found = unplaced_doc_pictures(&doc);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].sha256, loose);
+    }
+
+    #[test]
+    fn collection_sentence_counts_every_kind() {
+        let report = ob_clips::AddReport {
+            added: 4,
+            converted: 1,
+            skipped_not_pictures: 3,
+            skipped_metafiles: 2,
+            skipped_convert_first: 0,
+            skipped_unreadable: 1,
+        };
+        let s = collection_result_sentence("Easter", &report);
+        assert!(s.contains("5 clips were added"), "{s}");
+        assert!(
+            s.contains("1 old Windows picture (WMF/EMF) was converted"),
+            "{s}"
+        );
+        assert!(
+            s.contains("3 files were not pictures and were left out"),
+            "{s}"
+        );
+        assert!(
+            s.contains("2 old Windows pictures (WMF/EMF) were left out"),
+            "{s}"
+        );
+        assert!(s.contains("1 picture file could not be read"), "{s}");
+        let none = collection_result_sentence("Empty", &ob_clips::AddReport::default());
+        assert!(none.starts_with("No clips were added"), "{none}");
     }
 }

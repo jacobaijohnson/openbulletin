@@ -87,6 +87,13 @@ are dropped with a count, never silently.
 
 ## 4. What else belongs in a bulletin system (ranked)
 
+Status (2026-10-16, G2): the three adopted extras below
+remain planned; they ride the Extras batch. What shipped
+in this neighborhood with G2 is the graphics pipeline
+itself: picture boxes on the page, the recognition door,
+the clip art library with its starter set, and
+resolution-honest printing, recorded in section 6.
+
 Adopted into the plan:
 - **Large-print edition** as an export purpose beside the
   PDF ones: same content reflowed at 16pt+, for the
@@ -155,7 +162,54 @@ reader). This is an objective, not a polish item:
 
 ## 6. Image formats: wide door, conservative exports
 
-(Jacob, 2026-10-15, extended the same night to JPEG XL.)
+**SHIPPED 2026-10-16 (G2).** What shipped, against the
+plan below: a picture box is a frame kind on the page
+(born empty with the words "No picture yet"; filled from
+a file, from the clip library, or from the pictures a
+rescue already carried). One geometry function in the
+model decides how a picture shows in its box (Fill, its
+sides trimmed by crop fractions, or ShowWhole), and the
+canvas, the previews, the print writer, and the blur
+check all read that same function, so the views cannot
+disagree. The recognition door is the ob-image crate:
+PNG, JPEG, WebP, GIF, BMP, and TIFF decode through the
+image crate (EXIF orientation applied, so phone photos
+do not land sideways); JPEG XL decodes pure-Rust through
+jxl-oxide; SVG renders through resvg at whatever
+resolution the caller asks for. **AVIF came out
+convert-first, beside HEIC, by measurement:** the image
+crate's AVIF support is encode-only, and decoding needs
+dav1d through a system library this machine does not
+have and the one-download Windows bundle does not carry
+(the build fails at the dav1d pkg-config probe; the
+evidence is in docs/LEGAL.md). AVIF and HEIC files are
+recognized, named, and refused in plain words with the
+convert-to-JPEG-or-PNG guidance, never silently dropped.
+Printing: a picture is right-sized to its placed inches
+times the copy purpose's PPI cap (never upscaled),
+encoded JPEG at quality 85 when opaque, Flate with an
+alpha mask when it has real transparency. **SVG sources
+rasterize at that same target resolution (600 PPI when
+the purpose sets no cap): pictures print at the
+resolution for the copy's purpose.** A box whose picture
+is missing prints the "No picture yet" placeholder and
+is counted in the copy's status line; Check flags empty
+boxes, missing pictures, and pictures under 120
+effective dots per inch at their shown size (the
+church's own rescued pictures live near 150, so the line
+waits below them). The clip art library
+(docs/research/clipart-landscape.md) shipped with it:
+collections in a managed folder beside the Font Library,
+name search, thumbnails, folder and zip intake with
+every skipped file counted and explained, WMF/EMF
+converted through a user-installed LibreOffice when one
+is present and otherwise counted and left out, and a
+bundled starter set of twelve public-domain/CC0 pieces
+(see crates/ob-app/assets/clipart/manifest.json for its
+per-piece record and the subjects still to find).
+
+Original plan text: (Jacob, 2026-10-15, extended the
+same night to JPEG XL.)
 
 The recognition door takes every format a church office
 can plausibly be handed: PNG, JPEG, WebP, GIF, SVG,

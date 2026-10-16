@@ -39,6 +39,40 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
 - While dragging, a readout shows the frame's place and size in
   inches, live.
 
+## Picture boxes (built 2026-10-16, G2)
+
+- "Add a picture box" puts an empty box mid-page: dashed
+  outline, the words "No picture yet". A picture box is a
+  frame: it moves, resizes, snaps, and takes exact numbers
+  like every other box. It holds a picture or nothing,
+  never words.
+- "Picture..." (any box selected) opens the put-a-picture
+  window: one file door, plus "Pictures from the old
+  bulletin", the pictures a rescue carried that no box
+  uses yet. "Clip art..." opens the clip library window:
+  collections, name search, thumbnails; a clip goes into
+  the selected box, and its bytes copy into the bulletin,
+  so the bulletin always travels complete.
+- A picture shows one of two ways, in the right-click
+  menu's own words: "Fill the box (sides may be trimmed)"
+  or "Show the whole picture". "Take the picture out"
+  empties the box; the box stays.
+- Fill is direct manipulation: with the box already
+  selected, drag INSIDE it and the picture follows the
+  pointer (the crop is stored as fractions of the trimmed
+  overflow, so it survives resizing the box).
+  Double-click centers the picture again. The box itself
+  still moves by its edges, its corner, the arrow keys,
+  and the right-click numbers.
+- One geometry function in the model decides the shown
+  picture; the canvas, the previews, the print writer,
+  and the Check blur finding all read it, so no two views
+  can disagree about the crop.
+- Check speaks for pictures: an empty box, a picture
+  missing from the bulletin, and a picture under 120
+  dots per inch at its shown size each get a finding
+  with a working Fix-this target.
+
 ## Typing on the page, and Undo (built 2026-10-15)
 
 - The canvas draws every frame's text, shaped by the same code

@@ -30,6 +30,9 @@ pub struct IdmlExportReport {
     /// Shape frames (rectangles, placeholders): IDML export
     /// does not carry them in this version.
     pub shape_frames_left_behind: usize,
+    /// Picture frames: IDML export does not carry placed
+    /// pictures in this version; the count is stated.
+    pub picture_frames_left_behind: usize,
     /// Panels whose tracing-guide picture was not carried.
     /// Those pictures are editing guides that never print, so
     /// leaving them is correct, but the count is still stated.
@@ -268,6 +271,7 @@ pub fn export_idml(doc: &Document) -> Result<(Vec<u8>, IdmlExportReport), String
         for frame in &panel.frames {
             match frame.kind {
                 FrameKind::Shape => report.shape_frames_left_behind += 1,
+                FrameKind::Picture => report.picture_frames_left_behind += 1,
                 FrameKind::Text => {
                     let Some(story_id) = &frame.story_id else {
                         continue;
@@ -369,6 +373,12 @@ pub fn export_idml(doc: &Document) -> Result<(Vec<u8>, IdmlExportReport), String
         report.notes.push(format!(
             "{} shape frame(s) (plain rectangles and placeholders) were not carried into the IDML file.",
             report.shape_frames_left_behind
+        ));
+    }
+    if report.picture_frames_left_behind > 0 {
+        report.notes.push(format!(
+            "{} picture box(es) were not carried into the IDML file; the pictures are in the .obd and the print copies.",
+            report.picture_frames_left_behind
         ));
     }
     if report.tracing_pictures_left_behind > 0 {
@@ -491,6 +501,7 @@ mod tests {
                         rect: Rect::new(36_000, 48_000, 324_000, 200_000),
                         story_id: Some("s-cover".into()),
                         role: ContentRole::Standing,
+                        picture: None,
                     },
                     Frame {
                         id: "f-art".into(),
@@ -499,6 +510,7 @@ mod tests {
                         rect: Rect::new(36_000, 400_000, 324_000, 120_000),
                         story_id: None,
                         role: ContentRole::Standing,
+                        picture: None,
                     },
                 ],
                 guides: Vec::new(),
@@ -515,6 +527,7 @@ mod tests {
                     rect: Rect::new(24_000, 24_000, 400_000, 100_000),
                     story_id: Some("s-inside".into()),
                     role: ContentRole::Weekly,
+                    picture: None,
                 }],
                 guides: Vec::new(),
                 background_image: None,

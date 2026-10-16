@@ -19,6 +19,8 @@ ob-extract = { path = "../ob-extract" }
 ob-impose = { path = "../ob-impose" }
 ob-format = { path = "../ob-format" }
 ob-fonts = { path = "../ob-fonts" }
+ob-image = { path = "../ob-image" }
+ob-clips = { path = "../ob-clips" }
 rfd = "0.15"
 serde.workspace = true
 serde_json.workspace = true

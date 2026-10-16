@@ -352,11 +352,27 @@ enum DrawFont {
 /// first; only after every side is drawn are the faces subset
 /// to the glyphs these operations actually use, and the
 /// operations rendered to a content stream.
+/// One picture to embed: the asset's fingerprint and the
+/// pixel size it is right-sized to for this copy's purpose.
+/// The same picture placed at two sizes is two keys (two
+/// embedded copies); placed twice at one size it is one.
+type ImageKey = (String, u32, u32);
+
 enum ContentOp {
     /// A literal fragment (the shape-guide color push).
     Raw(String),
     RectStroke {
         r: Rect,
+        page_h: ob_model::Mpt,
+    },
+    /// A placed picture: clip to the box, draw the (possibly
+    /// larger, for Fill) shown rectangle, both in page
+    /// coordinates with a top-left origin like everything
+    /// else here.
+    Image {
+        key: ImageKey,
+        clip: Rect,
+        draw: Rect,
         page_h: ob_model::Mpt,
     },
     Text {
@@ -406,6 +422,28 @@ impl PageContent {
         self.ops.push(ContentOp::RectStroke { r, page_h });
     }
 
+    fn image(&mut self, key: ImageKey, clip: Rect, draw: Rect, page_h: ob_model::Mpt) {
+        self.ops.push(ContentOp::Image {
+            key,
+            clip,
+            draw,
+            page_h,
+        });
+    }
+
+    /// The picture keys this page uses, in first-use order.
+    fn image_keys(&self) -> Vec<ImageKey> {
+        let mut out: Vec<ImageKey> = Vec::new();
+        for op in &self.ops {
+            if let ContentOp::Image { key, .. } = op {
+                if !out.contains(key) {
+                    out.push(key.clone());
+                }
+            }
+        }
+        out
+    }
+
     /// Every character this page draws, per embedded face: the
     /// glyph set the subsetter is allowed to keep.
     fn collect_used(
@@ -427,12 +465,59 @@ impl PageContent {
 
     /// Render the recorded operations to a content stream, now
     /// that the FontBook has embedded the faces and knows each
-    /// one's encoding.
-    fn render(&self, fonts: &FontBook) -> String {
+    /// one's encoding, and the pictures are embedded under
+    /// their resource names.
+    fn render(
+        &self,
+        fonts: &FontBook,
+        images: &std::collections::HashMap<ImageKey, (String, usize)>,
+    ) -> String {
         let mut buf = String::new();
         for op in &self.ops {
             match op {
                 ContentOp::Raw(s) => buf.push_str(s),
+                ContentOp::Image {
+                    key,
+                    clip,
+                    draw,
+                    page_h,
+                } => match images.get(key) {
+                    Some((name, _obj)) => {
+                        let cy = page_h - clip.y - clip.h;
+                        let dy = page_h - draw.y - draw.h;
+                        let _ = writeln!(
+                            buf,
+                            "q {:.2} {:.2} {:.2} {:.2} re W n {:.2} 0 0 {:.2} {:.2} {:.2} cm /{} Do Q",
+                            pt(clip.x),
+                            pt(cy),
+                            pt(clip.w),
+                            pt(clip.h),
+                            pt(draw.w),
+                            pt(draw.h),
+                            pt(draw.x),
+                            pt(dy),
+                            name
+                        );
+                    }
+                    None => {
+                        // The picture's bytes could not be
+                        // decoded at embed time: the box prints
+                        // as the same placeholder the canvas
+                        // shows, never as a hole or a wrong
+                        // picture.
+                        let y = page_h - clip.y - clip.h;
+                        let _ = writeln!(
+                            buf,
+                            "0.5 g 0.75 w {:.2} {:.2} {:.2} {:.2} re S 0 g BT /F1 10.00 Tf 1 0 0 1 {:.2} {:.2} Tm (No picture yet) Tj ET",
+                            pt(clip.x),
+                            pt(y),
+                            pt(clip.w),
+                            pt(clip.h),
+                            pt(clip.x + 6_000),
+                            pt(page_h - clip.y - clip.h / 2 - 3_500)
+                        );
+                    }
+                },
                 ContentOp::RectStroke { r, page_h } => {
                     let y = page_h - r.y - r.h;
                     let _ = writeln!(
@@ -498,9 +583,99 @@ impl PageContent {
     }
 }
 
+/// Draw one picture box. Returns how many pictures on it
+/// could not be drawn (an empty box, a missing asset, bytes
+/// that do not decode): each prints as the "No picture yet"
+/// placeholder instead, and the export report counts them,
+/// so a copy never fails over a picture.
+#[allow(clippy::too_many_arguments)]
+fn draw_picture_frame(
+    pc: &mut PageContent,
+    doc: &Document,
+    frame: &ob_model::Frame,
+    fr: Rect,
+    page_h: ob_model::Mpt,
+    purpose: ExportPurpose,
+    fonts: &FontBook,
+) -> usize {
+    let placeholder = |pc: &mut PageContent| -> usize {
+        pc.rect_stroke(fr, page_h);
+        pc.text(
+            fonts.resource_for_face("Liberation Sans", false, false),
+            10_000,
+            fr.x + 6_000,
+            fr.y + fr.h / 2 + 3_500,
+            page_h,
+            "No picture yet",
+            ob_model::Rgb {
+                r: 110,
+                g: 110,
+                b: 110,
+            },
+        );
+        1
+    };
+    let Some(placement) = &frame.picture else {
+        return placeholder(pc);
+    };
+    let Some(bytes) = doc.asset_data(&placement.asset) else {
+        return placeholder(pc);
+    };
+    let Ok(probe) = ob_image::probe(bytes) else {
+        return placeholder(pc);
+    };
+    // Where the picture shows, in points: the one geometry
+    // function the canvas and the Check step also use.
+    let (dx, dy, dw, dh) = ob_model::picture_shown_rect(
+        placement.fit,
+        probe.width as f64,
+        probe.height as f64,
+        pt(fr.w) as f64,
+        pt(fr.h) as f64,
+        placement.crop_x,
+        placement.crop_y,
+    );
+    // The pixels this copy needs: the purpose's cap at the
+    // DRAWN size (a picture trimmed by Fill prints at its
+    // shown size, not its box size), and never more than the
+    // picture has. SVG has no pixels of its own; it renders
+    // at the purpose's resolution (600 per inch when the
+    // purpose sets no cap).
+    let ppi = purpose.ppi_cap().map(|p| p as f64);
+    let (tw, th) = if probe.format == ob_image::PictureFormat::Svg {
+        let p = ppi.unwrap_or(600.0);
+        (
+            ((dw / 72.0 * p).round() as u32).clamp(1, 16_384),
+            ((dh / 72.0 * p).round() as u32).clamp(1, 16_384),
+        )
+    } else {
+        match ppi {
+            Some(p) => {
+                let k = ((dw / 72.0 * p) / probe.width as f64)
+                    .min((dh / 72.0 * p) / probe.height as f64)
+                    .min(1.0);
+                (
+                    ((probe.width as f64 * k).round() as u32).max(1),
+                    ((probe.height as f64 * k).round() as u32).max(1),
+                )
+            }
+            None => (probe.width, probe.height),
+        }
+    };
+    let draw = Rect::new(
+        fr.x + (dx * 1000.0).round() as ob_model::Mpt,
+        fr.y + (dy * 1000.0).round() as ob_model::Mpt,
+        (dw * 1000.0).round() as ob_model::Mpt,
+        (dh * 1000.0).round() as ob_model::Mpt,
+    );
+    pc.image((placement.asset.clone(), tw, th), fr, draw, page_h);
+    0
+}
+
 /// Draw one panel's frames into `pc`, offset by (ox, oy) in a space whose
 /// total height is `page_h` (panel height for reader PDFs, sheet height for
-/// imposed PDFs).
+/// imposed PDFs). Returns the count of pictures that printed
+/// as placeholders (see draw_picture_frame).
 #[allow(clippy::too_many_arguments)]
 fn draw_panel(
     pc: &mut PageContent,
@@ -511,7 +686,9 @@ fn draw_panel(
     ox: ob_model::Mpt,
     oy: ob_model::Mpt,
     page_h: ob_model::Mpt,
-) {
+    purpose: ExportPurpose,
+) -> usize {
+    let mut missing_pictures = 0usize;
     for frame in &panel.frames {
         let fr = Rect::new(
             frame.rect.x + ox,
@@ -521,6 +698,10 @@ fn draw_panel(
         );
         if frame.kind == ob_model::FrameKind::Shape {
             pc.rect_stroke(fr, page_h);
+            continue;
+        }
+        if frame.kind == ob_model::FrameKind::Picture {
+            missing_pictures += draw_picture_frame(pc, doc, frame, fr, page_h, purpose, fonts);
             continue;
         }
         let Some(story_id) = &frame.story_id else {
@@ -632,6 +813,7 @@ fn draw_panel(
             y += style.space_after;
         }
     }
+    missing_pictures
 }
 
 /// Compress a stream's bytes for /FlateDecode (zlib form, via
@@ -1185,19 +1367,102 @@ fn info_object(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
 }
 
 /// Build a PDF from a set of sheet sides (each side becomes one page).
-fn build_pdf(doc: &Document, sides: &[SheetSide], purpose: ExportPurpose) -> Vec<u8> {
+/// Embed one decoded picture as an image XObject and return
+/// its object id. Opaque pictures ride as JPEG (the print
+/// path's photo encoding, quality 85); a picture with real
+/// transparency rides as FlateDecode samples with a
+/// grayscale SMask, so its see-through parts stay see-through.
+fn add_image_object(pdf: &mut Pdf, decoded: &ob_image::Decoded) -> Option<usize> {
+    let (w, h) = (decoded.width, decoded.height);
+    if decoded.has_alpha {
+        let mut rgb = Vec::with_capacity(decoded.rgba.len() / 4 * 3);
+        let mut alpha = Vec::with_capacity(decoded.rgba.len() / 4);
+        for px in decoded.rgba.chunks_exact(4) {
+            rgb.extend_from_slice(&px[0..3]);
+            alpha.push(px[3]);
+        }
+        let smask = add_stream(
+            pdf,
+            &format!(
+                "/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 8"
+            ),
+            &alpha,
+        );
+        Some(add_stream(
+            pdf,
+            &format!(
+                "/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask {smask} 0 R"
+            ),
+            &rgb,
+        ))
+    } else {
+        match ob_image::encode_jpeg(decoded, 85) {
+            Ok(jpeg) => {
+                let mut obj = format!(
+                    "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
+                    jpeg.len()
+                )
+                .into_bytes();
+                obj.extend_from_slice(&jpeg);
+                obj.extend_from_slice(b"\nendstream");
+                Some(pdf.add(obj))
+            }
+            Err(_) => Some(add_stream(
+                pdf,
+                &format!(
+                    "/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8"
+                ),
+                &decoded
+                    .rgba
+                    .chunks_exact(4)
+                    .flat_map(|px| [px[0], px[1], px[2]])
+                    .collect::<Vec<u8>>(),
+            )),
+        }
+    }
+}
+
+/// Decode and embed every picture the drawn pages use, once
+/// per (asset, right-sized size). Returns the resource name
+/// and object id per key; a key whose bytes fail to decode
+/// is simply absent, and its operations render as
+/// placeholders (the caller counts those placements from
+/// the same absence).
+fn prepare_images(
+    pdf: &mut Pdf,
+    doc: &Document,
+    keys: &[ImageKey],
+) -> std::collections::HashMap<ImageKey, (String, usize)> {
+    let mut names = std::collections::HashMap::new();
+    for (i, key) in keys.iter().enumerate() {
+        let (sha, tw, th) = key;
+        let Some(bytes) = doc.asset_data(sha) else {
+            continue;
+        };
+        let Ok(decoded) = ob_image::decode_at(bytes, *tw, *th) else {
+            continue;
+        };
+        if let Some(obj) = add_image_object(pdf, &decoded) {
+            names.insert(key.clone(), (format!("Im{i}"), obj));
+        }
+    }
+    names
+}
+
+fn build_pdf(doc: &Document, sides: &[SheetSide], purpose: ExportPurpose) -> (Vec<u8>, usize) {
     build_pdf_with_library(doc, sides, purpose, &library_font_bytes())
 }
 
 /// [`build_pdf`] with the Font Library snapshot given, so tests
 /// can put a document in front of faces the machine's real
-/// library does not hold.
+/// library does not hold. Returns the bytes and the number of
+/// picture placements that printed as placeholders.
 fn build_pdf_with_library(
     doc: &Document,
     sides: &[SheetSide],
     purpose: ExportPurpose,
     library: &[(ob_fonts::FontInfo, Vec<u8>)],
-) -> Vec<u8> {
+) -> (Vec<u8>, usize) {
     let mut pdf = Pdf {
         objects: Vec::new(),
     };
@@ -1217,12 +1482,13 @@ fn build_pdf_with_library(
     // needs the final draw list (the resolved words, dot
     // leaders and all) before any face can be cut down to it.
     let mut drawn: Vec<PageContent> = Vec::new();
+    let mut missing_pictures = 0usize;
     for side in sides {
         let mut pc = PageContent::default();
         pc.push_raw("0.92 0.92 0.92 RG "); // light frame guides color for shapes
         for pl in &side.placements {
             if let Some(panel) = doc.panels.get(pl.panel) {
-                draw_panel(
+                missing_pictures += draw_panel(
                     &mut pc,
                     doc,
                     &mut shaper,
@@ -1231,6 +1497,7 @@ fn build_pdf_with_library(
                     pl.x,
                     pl.y,
                     side.size.h,
+                    purpose,
                 );
             }
         }
@@ -1242,9 +1509,31 @@ fn build_pdf_with_library(
         pc.collect_used(&mut used);
     }
     fonts.embed(&mut pdf, &used);
+    // Pictures embed once per (asset, right-sized size)
+    // across the whole copy; a placement whose picture
+    // failed to embed renders as a placeholder and counts
+    // here, beside the ones already counted at draw time.
+    let mut image_keys: Vec<ImageKey> = Vec::new();
+    for pc in &drawn {
+        for key in pc.image_keys() {
+            if !image_keys.contains(&key) {
+                image_keys.push(key);
+            }
+        }
+    }
+    let images = prepare_images(&mut pdf, doc, &image_keys);
+    for pc in &drawn {
+        for op in &pc.ops {
+            if let ContentOp::Image { key, .. } = op {
+                if !images.contains_key(key) {
+                    missing_pictures += 1;
+                }
+            }
+        }
+    }
     let mut page_ids = Vec::new();
     for (side, pc) in sides.iter().zip(drawn.iter()) {
-        let content = pc.render(&fonts).into_bytes();
+        let content = pc.render(&fonts, &images).into_bytes();
         let (content, compressed) = flate(&content);
         let filter = if compressed {
             " /Filter /FlateDecode"
@@ -1267,19 +1556,30 @@ endstream",
             );
             v
         });
+        let mut xobjects = String::new();
+        for key in pc.image_keys() {
+            if let Some((name, obj)) = images.get(&key) {
+                xobjects.push_str(&format!(" /{name} {obj} 0 R"));
+            }
+        }
+        let xobject_dict = if xobjects.is_empty() {
+            String::new()
+        } else {
+            format!(" /XObject <<{xobjects} >>")
+        };
         let page_id = pdf.add(
             format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources << /Font << /F1 {} 0 R /F2 {} 0 R{} >> >> /Contents {} 0 R >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources << /Font << /F1 {} 0 R /F2 {} 0 R{} >>{} >> /Contents {} 0 R >>",
                 pt(side.size.w),
                 pt(side.size.h),
-                f1, f2, fonts.resources, content_id
+                f1, f2, fonts.resources, xobject_dict, content_id
             )
             .into_bytes(),
         );
         page_ids.push(page_id);
     }
     let info = pdf.add(info_object(doc, purpose));
-    pdf.finish(&page_ids, f1, f2, Some(info))
+    (pdf.finish(&page_ids, f1, f2, Some(info)), missing_pictures)
 }
 
 /// The two-sided printing test sheet (one sheet, FRONT and BACK).
@@ -1319,6 +1619,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
                 rect: frame_rect,
                 story_id: Some(story.id.clone()),
                 role: ContentRole::Standing,
+                picture: None,
             }],
             background_image: None,
             guides: Vec::new(),
@@ -1411,19 +1712,44 @@ pub fn library_font_bytes() -> Vec<(ob_fonts::FontInfo, Vec<u8>)> {
     out
 }
 
-pub fn export_reader_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
-    let sides = ob_impose::impose_single(doc);
-    build_pdf(doc, &sides, purpose)
+/// What an export wants to say about itself beside the
+/// bytes: today, how many picture placements printed as
+/// "No picture yet" placeholders because their box was
+/// empty, their asset was missing, or its bytes would not
+/// decode. The export itself never fails over a picture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExportReport {
+    pub missing_pictures: usize,
 }
 
-/// Imposed PDF: printer sheets, ready to print duplex and fold.
+pub fn export_reader_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
+    export_reader_pdf_report(doc, purpose).0
+}
+
+/// Reader PDF with its export report.
+pub fn export_reader_pdf_report(doc: &Document, purpose: ExportPurpose) -> (Vec<u8>, ExportReport) {
+    let sides = ob_impose::impose_single(doc);
+    let (bytes, missing_pictures) = build_pdf(doc, &sides, purpose);
+    (bytes, ExportReport { missing_pictures })
+}
+
 pub fn export_imposed_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
+    export_imposed_pdf_report(doc, purpose).0
+}
+
+/// Imposed PDF with its export report: printer sheets,
+/// ready to print duplex and fold.
+pub fn export_imposed_pdf_report(
+    doc: &Document,
+    purpose: ExportPurpose,
+) -> (Vec<u8>, ExportReport) {
     // Lay out the padded document so a file with the wrong
     // number of panels prints with blanks, never crashes and
     // never drops a page (closing audit).
     let padded = ob_impose::padded_document(doc);
     let sides = ob_impose::impose(&padded);
-    build_pdf(&padded, &sides, purpose)
+    let (bytes, missing_pictures) = build_pdf(&padded, &sides, purpose);
+    (bytes, ExportReport { missing_pictures })
 }
 
 #[cfg(test)]
@@ -2080,7 +2406,7 @@ mod tests {
         doc.story_mut(&sid).expect("story").paragraphs =
             vec![ob_model::Paragraph::new("body", "Peace \u{271D}")];
         let sides = ob_impose::impose_single(&doc);
-        let pdf = build_pdf_with_library(&doc, &sides, ExportPurpose::ForPrinting, &library);
+        let (pdf, _) = build_pdf_with_library(&doc, &sides, ExportPurpose::ForPrinting, &library);
         let text = extracted_text(&pdf);
         assert!(
             text.contains('\u{271D}'),
@@ -2238,6 +2564,197 @@ mod tests {
         assert!(
             imposed.contains("/MediaBox [0 0 792.00 612.00]"),
             "imposed pages must be sheet-sized"
+        );
+    }
+
+    /// A document with one picture box on its first panel,
+    /// plus the picture's bytes when `with_bytes` (the asset
+    /// record always exists; the bytes are what can go
+    /// missing).
+    fn picture_doc(with_bytes: bool) -> (Document, String) {
+        let mut doc = sample_doc();
+        let png = {
+            let mut rgba = vec![0u8; 1200 * 900 * 4];
+            for px in rgba.chunks_exact_mut(4) {
+                px[0] = 30;
+                px[1] = 90;
+                px[2] = 160;
+                px[3] = 255;
+            }
+            let decoded = ob_image::Decoded {
+                width: 1200,
+                height: 900,
+                rgba,
+                has_alpha: false,
+            };
+            ob_image::encode_png(&decoded).expect("encode test png")
+        };
+        let sha = doc.add_asset(
+            &png,
+            ob_model::AssetKind::Picture,
+            "image/png",
+            ob_model::RightsRecord::default(),
+        );
+        if !with_bytes {
+            doc.asset_bytes.remove(&sha);
+        }
+        let panel = &mut doc.panels[0];
+        panel.frames.push(ob_model::Frame {
+            id: "pic-1".into(),
+            name: "Cover picture".into(),
+            kind: ob_model::FrameKind::Picture,
+            rect: Rect::new(36_000, 36_000, 216_000, 162_000),
+            story_id: None,
+            role: ob_model::ContentRole::Weekly,
+            picture: Some(ob_model::PicturePlacement::new(sha.clone())),
+        });
+        (doc, sha)
+    }
+
+    #[test]
+    fn a_placed_picture_embeds_right_sized_for_the_purpose() {
+        let (doc, _sha) = picture_doc(true);
+        // The box is 3 x 2.25 in. For printing (300/in) the
+        // 1200x900 picture right-sizes to 900x675 as a JPEG.
+        let (pdf, report) = export_reader_pdf_report(&doc, ExportPurpose::ForPrinting);
+        assert_eq!(report.missing_pictures, 0);
+        let text = String::from_utf8_lossy(&pdf).to_string();
+        assert!(
+            text.contains("/Subtype /Image"),
+            "an image XObject is embedded"
+        );
+        assert!(
+            text.contains("/Width 900 /Height 675"),
+            "right-sized to 300/in: {text:.0}"
+        );
+        assert!(
+            text.contains("/Filter /DCTDecode"),
+            "opaque pictures ride as JPEG"
+        );
+        let content = decoded_content(&pdf);
+        assert!(
+            content.contains(" re W n "),
+            "the picture is clipped to its box"
+        );
+        assert!(content.contains("/Im0 Do"), "the picture is drawn");
+        // For email or the web (150/in) it right-sizes to half.
+        let (pdf, _) = export_reader_pdf_report(&doc, ExportPurpose::ForEmailOrWeb);
+        let text = String::from_utf8_lossy(&pdf).to_string();
+        assert!(
+            text.contains("/Width 450 /Height 337") || text.contains("/Width 450 /Height 338"),
+            "right-sized to 150/in"
+        );
+        // Full resolution keeps the picture's own pixels.
+        let (pdf, _) = export_reader_pdf_report(&doc, ExportPurpose::FullResolution);
+        let text = String::from_utf8_lossy(&pdf).to_string();
+        assert!(
+            text.contains("/Width 1200 /Height 900"),
+            "no cap, no shrink"
+        );
+    }
+
+    #[test]
+    fn a_picture_with_transparency_embeds_with_a_mask() {
+        let mut doc = sample_doc();
+        let decoded = ob_image::Decoded {
+            width: 40,
+            height: 40,
+            rgba: {
+                let mut v = vec![0u8; 40 * 40 * 4];
+                for px in v.chunks_exact_mut(4) {
+                    px[0] = 200;
+                    px[3] = 128;
+                }
+                v
+            },
+            has_alpha: true,
+        };
+        let png = ob_image::encode_png(&decoded).expect("encode alpha png");
+        let sha = doc.add_asset(
+            &png,
+            ob_model::AssetKind::Picture,
+            "image/png",
+            ob_model::RightsRecord::default(),
+        );
+        doc.panels[0].frames.push(ob_model::Frame {
+            id: "pic-a".into(),
+            name: "See-through picture".into(),
+            kind: ob_model::FrameKind::Picture,
+            rect: Rect::new(36_000, 36_000, 72_000, 72_000),
+            story_id: None,
+            role: ob_model::ContentRole::Weekly,
+            picture: Some(ob_model::PicturePlacement::new(sha)),
+        });
+        let (pdf, report) = export_reader_pdf_report(&doc, ExportPurpose::ForPrinting);
+        assert_eq!(report.missing_pictures, 0);
+        let text = String::from_utf8_lossy(&pdf).to_string();
+        assert!(text.contains("/SMask"), "alpha rides as a mask");
+        assert!(
+            text.contains("/ColorSpace /DeviceGray"),
+            "the mask is grayscale"
+        );
+        assert!(
+            text.contains("/Filter /FlateDecode"),
+            "alpha pictures ride flate"
+        );
+    }
+
+    #[test]
+    fn a_missing_picture_prints_the_placeholder_and_counts() {
+        let (doc, _sha) = picture_doc(false);
+        let (pdf, report) = export_reader_pdf_report(&doc, ExportPurpose::ForPrinting);
+        assert_eq!(
+            report.missing_pictures, 1,
+            "the export counts the placeholder"
+        );
+        let text = extracted_text(&pdf);
+        assert!(
+            text.contains("No picture yet"),
+            "the box says what happened, in words: {text:.200}"
+        );
+        // An empty picture box (no placement at all) counts
+        // the same way.
+        let mut doc2 = sample_doc();
+        doc2.panels[0].frames.push(ob_model::Frame {
+            id: "pic-empty".into(),
+            name: "Empty picture box".into(),
+            kind: ob_model::FrameKind::Picture,
+            rect: Rect::new(36_000, 36_000, 72_000, 72_000),
+            story_id: None,
+            role: ob_model::ContentRole::Weekly,
+            picture: None,
+        });
+        let (_, report) = export_reader_pdf_report(&doc2, ExportPurpose::ForPrinting);
+        assert_eq!(report.missing_pictures, 1);
+    }
+
+    #[test]
+    fn an_svg_picture_prints_at_the_purposes_resolution() {
+        let mut doc = sample_doc();
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><rect width="72" height="72" fill="#336699"/></svg>"##;
+        let sha = doc.add_asset(
+            svg,
+            ob_model::AssetKind::Picture,
+            "image/svg+xml",
+            ob_model::RightsRecord::default(),
+        );
+        doc.panels[0].frames.push(ob_model::Frame {
+            id: "pic-svg".into(),
+            name: "Vector picture".into(),
+            kind: ob_model::FrameKind::Picture,
+            rect: Rect::new(36_000, 36_000, 72_000, 72_000),
+            story_id: None,
+            role: ob_model::ContentRole::Weekly,
+            picture: Some(ob_model::PicturePlacement::new(sha)),
+        });
+        // The box is 1x1 in: for printing the art renders at
+        // 300 pixels, whatever its file's nominal size says.
+        let (pdf, report) = export_reader_pdf_report(&doc, ExportPurpose::ForPrinting);
+        assert_eq!(report.missing_pictures, 0);
+        let text = String::from_utf8_lossy(&pdf).to_string();
+        assert!(
+            text.contains("/Width 300 /Height 300"),
+            "SVG renders at the copy's purpose resolution"
         );
     }
 }

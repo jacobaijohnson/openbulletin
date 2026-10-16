@@ -531,6 +531,7 @@ mod tests {
                     rect: Rect::new(72_000, 72_000, 468_000, 600_000),
                     story_id: Some("story-1".into()),
                     role: ContentRole::Weekly,
+                    picture: None,
                 }],
                 guides: Vec::new(),
                 background_image: None,

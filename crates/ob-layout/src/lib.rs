@@ -141,6 +141,7 @@ fn text_frame(id: &str, name: &str, panel: Size, story: &str, role: ContentRole)
         rect: Rect::new(m, inch(0.4), panel.w - 2 * m, panel.h - inch(0.8)),
         story_id: Some(story.to_string()),
         role,
+        picture: None,
     }
 }
 

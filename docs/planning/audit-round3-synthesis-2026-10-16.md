@@ -334,3 +334,77 @@ Batch R3-B shipped:
   usual, and reading still moves nothing.
 
 No other batch's dispositions change.
+
+## Shipped addendum, R3-C: hymns, memory, participants (2026-10-16)
+
+Batch R3-C shipped:
+
+- R3-3: renaming a serving line no longer strands its
+  names. Saving the Church Profile's serving lines
+  runs `ob_model::migrate_serving_line_renames`: for
+  each position whose name changed, a value stored
+  under the old name's slug, or under the built-in
+  canonical slug for that position, moves to the new
+  name's slug (an existing value at the target is
+  never overwritten) and the old keys clear. Token
+  resolution also bridges by position for anything
+  not yet moved, and Next Sunday clears a renamed
+  line's leftovers under its built-in keys and names
+  the line by its profile name. Tests pin the review
+  lane's scenario end to end, including the token
+  side the old regression test never asserted:
+  `{Sunday.acolytes}` prints the new names after the
+  rename to "Candle lighters". FORMAT.md's
+  participants paragraph now describes the migration
+  instead of claiming resolution alone carries a
+  rename.
+- R3-6 + RT3-H: a hymn-memory pair can be corrected
+  and can be forgotten. The learn rule is now
+  confirmation order: a newer Sunday wins, the SAME
+  Sunday's last confirmation wins (a re-save is a
+  correction), and an older Sunday still never
+  overwrites; re-confirming the identical pair is a
+  no-op. One pre-existing model test changed
+  knowingly: `memory_learns_pairs_and_the_newer_sunday_wins`
+  asserted the old same-Sunday first-stands rule and
+  now asserts the correction rule. The Check
+  disagreement finding says the pair was "printed
+  as" the remembered title "for" its date, and
+  carries a "Forget this pairing" button
+  (`HymnMemory::forget` / `forget_key`) that removes
+  the pair, persists the memory, and re-runs Check;
+  the pair can be learned again by the next save
+  carrying it. Residual, accepted with RT3-H: a
+  future-dated wrong pair still outranks older
+  corrections until it is forgotten; the forget
+  action is the stated answer.
+- R3-12: the analyzer-accept hymn learn call is
+  gone. It could never learn (a learned document
+  carries no occasion date, and `learn_hymns`
+  requires one), and its comment claimed the
+  opposite of the truth. The hymn memory learns from
+  saved weekly bulletins only; the save-side comment
+  and the `HymnMemory` doc say so. `persist_hymn_memory`
+  now writes atomically (temp sibling plus rename),
+  the settings pattern, so a crash mid-write cannot
+  truncate the memory into silently starting over.
+- R3-15: the music proof prints the piece, not the
+  layout: systems are sorted by `MusicFrame.system`
+  and deduped (a duplicated box prints its system
+  once), and `MusicProofCounts` carries the
+  spoken-only count, so the Print status ends with
+  the shared sentence ("N names are spoken only and
+  were left out of this copy.") like every other
+  door.
+- R3-17: two hymn lines are duplicates when their
+  numbers match and their hymnals agree or either
+  side names no hymnal; the mixed case is worded
+  "...is listed twice, once as ELW 432 and once with
+  no hymnal named." Next Sunday's hymn clearing is
+  scoped to the service story through the new shared
+  `ob_model::service_story_id` (the app's lookup now
+  delegates to it), so an announcement line like
+  "Hymn Sing\t7 PM" survives and is never reported
+  as a cleared hymn.
+
+No other batch's dispositions change.

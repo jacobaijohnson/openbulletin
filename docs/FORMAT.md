@@ -94,12 +94,23 @@ names, keyed by serving-line slug. A value is stored
 under the slug of the line's name AS SHOWN (lowercase,
 non-alphanumerics become underscores, trimmed). A
 template prints a line's names with the token
-`{Sunday.<slug>}`, and resolution honors BOTH the
-slug of the current name and the built-in slug from
-the alias table in `ob_model::PARTICIPANT_FIELDS`
-(display names matched case-insensitively), so
+`{Sunday.<slug>}`. When the church renames a line in
+the Church Profile and saves, the stored names move
+with the rename: saving migrates values by position,
+from the old name's slug (or the built-in canonical
+slug for that position, when the value sits under it)
+to the new name's slug, clearing the old keys
+(`ob_model::migrate_serving_line_renames`), so the
+renamed row shows the names in the editor and the old
+name's token stops printing them (round 3, R3-3).
+Resolution also bridges by position for anything not
+yet moved: it honors the slug of the current name,
+the built-in slug from the alias table in
+`ob_model::PARTICIPANT_FIELDS` (display names matched
+case-insensitively), and, when a position's shown
+name is a rename, the other side of that rename, so
 `{Sunday.childrens_message}` and `{Sunday.acolytes}`
-keep resolving after the church renames a line.
+keep resolving for values saved before the rename.
 Before the map existed, the four original lines kept
 their names in ordinary document fields under their
 slugs (`readers`, `ushers`, `greeters`,

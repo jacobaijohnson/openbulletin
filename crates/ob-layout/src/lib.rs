@@ -571,24 +571,30 @@ pub fn next_sunday_report_as_of(
     // that sang it, and a standing template that kept last
     // week's number would print it as this week's. The
     // label stays; the value goes; the report names the
-    // lines that had one. Any tabbed line whose label
-    // names a hymn is a hymn line, wherever it sits.
-    for story in out.stories.iter_mut() {
-        for para in story.paragraphs.iter_mut() {
-            let text = para.text();
-            let Some(tab) = text.find('\t') else {
-                continue;
-            };
-            let label = text[..tab].trim().to_string();
-            if !ob_model::hymns::is_hymn_label(&label) {
-                continue;
+    // lines that had one. Only the SERVICE story clears:
+    // it is the one story the This Sunday editor and the
+    // hymn slotting mean, and a hymn-labelled line
+    // anywhere else (an announcement's "Hymn Sing\t7 PM")
+    // is not the week's hymn and keeps its words
+    // (round 3, R3-17).
+    if let Some(sid) = ob_model::service_story_id(&out) {
+        if let Some(story) = out.story_mut(&sid) {
+            for para in story.paragraphs.iter_mut() {
+                let text = para.text();
+                let Some(tab) = text.find('\t') else {
+                    continue;
+                };
+                let label = text[..tab].trim().to_string();
+                if !ob_model::hymns::is_hymn_label(&label) {
+                    continue;
+                }
+                let value = text.rsplit('\t').next().unwrap_or("").trim();
+                if value.is_empty() {
+                    continue;
+                }
+                para.set_text(&text[..=tab]);
+                report.cleared_hymns.push(label);
             }
-            let value = text.rsplit('\t').next().unwrap_or("").trim();
-            if value.is_empty() {
-                continue;
-            }
-            para.set_text(&text[..=tab]);
-            report.cleared_hymns.push(label);
         }
     }
     for sid in weekly {
@@ -674,12 +680,29 @@ fn clear_participants(doc: &mut Document) -> Vec<String> {
     // The profile's lines, in shown order. A value can
     // sit under the slug of the name as shown or, for a
     // built-in line, under its permanent slug: clear
-    // both keys, name the line once.
-    for name in doc.profile.serving_lines.clone() {
-        let mut keys = vec![ob_model::serving_slug(&name)];
-        if let Some(bslug) = ob_model::builtin_serving_slug(&name) {
+    // both keys, name the line once. A renamed line (a
+    // name at a built-in's position that is no built-in
+    // name) also clears the keys of the built-in whose
+    // position it holds, and is named by its shown,
+    // profile name (round 3, R3-3).
+    for (i, name) in doc.profile.serving_lines.clone().iter().enumerate() {
+        let mut keys = vec![ob_model::serving_slug(name)];
+        if let Some(bslug) = ob_model::builtin_serving_slug(name) {
             if !keys.contains(&bslug.to_string()) {
                 keys.push(bslug.to_string());
+            }
+        }
+        if ob_model::builtin_serving_slug(name).is_none() {
+            if let Some((bslug, bname)) = ob_model::PARTICIPANT_FIELDS.get(i) {
+                if !bname.eq_ignore_ascii_case(name) {
+                    if !keys.contains(&bslug.to_string()) {
+                        keys.push(bslug.to_string());
+                    }
+                    let derived = ob_model::serving_slug(bname);
+                    if !keys.contains(&derived) {
+                        keys.push(derived);
+                    }
+                }
             }
         }
         let mut held = false;
@@ -691,7 +714,7 @@ fn clear_participants(doc: &mut Document) -> Vec<String> {
             }
         }
         if held {
-            push_name(&mut named, name);
+            push_name(&mut named, name.clone());
         }
     }
     // Whatever is left in the map belongs to a line the
@@ -930,6 +953,39 @@ mod tests {
     }
 
     #[test]
+    fn next_sunday_keeps_a_hymn_labelled_line_outside_the_service() {
+        // Round 3, R3-17: hymn clearing is scoped to the
+        // service story. A hymn-labelled line anywhere
+        // else (an announcement for a hymn sing) is not
+        // the week's hymn: its words survive, and it is
+        // not reported as a cleared hymn.
+        let mut d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "Sunday",
+        );
+        d.stories.push(Story {
+            id: "church-night".to_string(),
+            keep_through: None,
+            paragraphs: vec![Paragraph::plain("order-line", "Hymn Sing\t7 PM")],
+        });
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert!(
+            report.cleared_hymns.iter().any(|l| l == "Hymn of Praise"),
+            "{:?}",
+            report.cleared_hymns
+        );
+        assert!(
+            !report.cleared_hymns.iter().any(|l| l == "Hymn Sing"),
+            "{:?}",
+            report.cleared_hymns
+        );
+        let night = n.story("church-night").expect("the story rides along");
+        assert_eq!(night.paragraphs[0].text(), "Hymn Sing\t7 PM");
+    }
+
+    #[test]
     fn next_sunday_refuses_to_leave_the_year_9999() {
         // Audit Batch 3: the last week of the supported
         // calendar has no next week; the advance used to
@@ -1123,6 +1179,32 @@ mod tests {
         assert_eq!(
             resolve_fields("Acolytes: {Sunday.acolytes}", &n),
             "Acolytes: "
+        );
+    }
+
+    #[test]
+    fn next_sunday_names_a_renamed_line_by_its_profile_name() {
+        // Round 3, R3-3: a value left under a renamed
+        // line's built-in slug still clears with the line,
+        // and the report names the line by the name the
+        // profile shows, not the built-in name it no
+        // longer goes by.
+        let mut prof = profile();
+        prof.serving_lines = ob_model::default_serving_lines();
+        prof.serving_lines[5] = "Candle lighters".to_string();
+        let mut d = build_template(
+            Preset::LetterBifold,
+            prof,
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "Sunday",
+        );
+        d.participants
+            .insert("acolytes".to_string(), "Sam, Jo".to_string());
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert!(n.participants.is_empty(), "the new week starts empty");
+        assert_eq!(
+            report.cleared_participants,
+            vec!["Candle lighters".to_string()]
         );
     }
 

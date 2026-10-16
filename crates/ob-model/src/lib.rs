@@ -1340,9 +1340,21 @@ impl Document {
     /// 2. the built-in alias: for a built-in slug, the
     ///    slug its display name derives (and the other
     ///    way round), because the two differ for
-    ///    "Children's message" and because a renamed
-    ///    line's stored key follows its current name;
-    /// 3. the legacy weekly fields, for a document that
+    ///    "Children's message";
+    /// 3. the profile position bridge: a built-in line
+    ///    the church renamed in its profile is the same
+    ///    line, at the same position in the serving
+    ///    lines, under its new name (round 3, R3-3).
+    ///    A renamed line's token reads the value stored
+    ///    under the new name, and the renamed line's
+    ///    row reads a value still stored under the
+    ///    built-in slug, so neither side can strand the
+    ///    names the other side wrote. The profile save
+    ///    also moves the stored value itself
+    ///    (`migrate_serving_line_renames`); the bridge
+    ///    covers documents renamed before that move
+    ///    existed, and templates, which print by token;
+    /// 4. the legacy weekly fields, for a document that
     ///    has not been through the load migration
     ///    (importers and tests build documents in
     ///    memory).
@@ -1361,6 +1373,31 @@ impl Document {
             }
             if derived == slug {
                 if let Some(v) = self.participants.get(bslug) {
+                    return v.clone();
+                }
+            }
+        }
+        for (i, (bslug, bname)) in PARTICIPANT_FIELDS.iter().enumerate() {
+            let Some(shown) = self.profile.serving_lines.get(i) else {
+                continue;
+            };
+            if shown.eq_ignore_ascii_case(bname) || builtin_serving_slug(shown).is_some() {
+                // The position holds a built-in name (this
+                // line's own, or another line's after a
+                // reorder): no rename to bridge.
+                continue;
+            }
+            let shown_slug = serving_slug(shown);
+            if slug == *bslug || slug == serving_slug(bname) {
+                if let Some(v) = self.participants.get(&shown_slug) {
+                    return v.clone();
+                }
+            }
+            if slug == shown_slug {
+                if let Some(v) = self.participants.get(*bslug) {
+                    return v.clone();
+                }
+                if let Some(v) = self.participants.get(&serving_slug(bname)) {
                     return v.clone();
                 }
             }
@@ -1566,6 +1603,69 @@ pub fn default_serving_lines() -> Vec<String> {
         .collect()
 }
 
+/// Move stored serving names across a profile edit
+/// that renamed lines (round 3, R3-3). The profile
+/// editor works on the list of names, so a rename
+/// presents as the same POSITION carrying a new name:
+/// for each position where the name changed, a value
+/// stored under the old name's keys moves to the new
+/// name's slug, and the old keys are cleared. The old
+/// keys are the old name's shown slug, its built-in
+/// slug when the old name is a built-in, and the
+/// built-in slug of the line at that position (a
+/// rename of a rename can leave the value under the
+/// position's permanent slug). A value already stored
+/// under the new name's slug is the fresher typing
+/// and is never overwritten. Positions past the
+/// shorter list (lines added or removed around the
+/// edit) are left alone, and values under keys no
+/// rename points at are untouched. Pure over the two
+/// lists and the map, so the rule is testable without
+/// the app; the app calls it when the profile's
+/// serving lines are saved.
+pub fn migrate_serving_line_renames(
+    old_lines: &[String],
+    new_lines: &[String],
+    participants: &mut BTreeMap<String, String>,
+) {
+    let common = old_lines.len().min(new_lines.len());
+    for i in 0..common {
+        let old_name = old_lines[i].trim();
+        let new_name = new_lines[i].trim();
+        if old_name == new_name {
+            continue;
+        }
+        let target = serving_slug(new_name);
+        let mut sources: Vec<String> = vec![serving_slug(old_name)];
+        if let Some(bslug) = builtin_serving_slug(old_name) {
+            if !sources.contains(&bslug.to_string()) {
+                sources.push(bslug.to_string());
+            }
+        }
+        if let Some((bslug, bname)) = PARTICIPANT_FIELDS.get(i) {
+            if !sources.contains(&bslug.to_string()) {
+                sources.push(bslug.to_string());
+            }
+            let derived = serving_slug(bname);
+            if !sources.contains(&derived) {
+                sources.push(derived);
+            }
+        }
+        let found = sources
+            .iter()
+            .filter(|k| k.as_str() != target)
+            .find_map(|k| participants.get(k).cloned());
+        for k in &sources {
+            if *k != target {
+                participants.remove(k);
+            }
+        }
+        if let Some(value) = found {
+            participants.entry(target).or_insert(value);
+        }
+    }
+}
+
 /// Clamp one style table's numbers to the sane bounds
 /// [`Document::sanitized`] promises.
 fn sanitize_styles(styles: &mut [ParagraphStyle]) {
@@ -1655,6 +1755,46 @@ impl Document {
         }
         out
     }
+}
+
+/// The story the service lines live in (J2): the one
+/// holding the tabbed order lines. Tabbed lines with a
+/// "Sermon:" line alongside confirm it (the fallback for
+/// imported bulletins, whose frames carry no roles worth
+/// trusting); otherwise a story a Standing frame holds;
+/// otherwise the first story with tabbed lines at all.
+/// This is the ONE lookup every surface shares: the This
+/// Sunday editor, the hymn slotting, Check's hymn pass,
+/// and Next Sunday's hymn clearing all mean the same
+/// story when they say "the service" (round 3, R3-17).
+pub fn service_story_id(doc: &Document) -> Option<String> {
+    let has_tabs = |s: &Story| s.paragraphs.iter().any(|p| p.text().contains('\t'));
+    let has_sermon = |s: &Story| {
+        s.paragraphs
+            .iter()
+            .any(|p| p.text().trim_start().starts_with("Sermon:"))
+    };
+    if let Some(s) = doc.stories.iter().find(|s| has_tabs(s) && has_sermon(s)) {
+        return Some(s.id.clone());
+    }
+    let standing: Vec<&str> = doc
+        .panels
+        .iter()
+        .flat_map(|p| p.frames.iter())
+        .filter(|f| f.role == ContentRole::Standing)
+        .filter_map(|f| f.story_id.as_deref())
+        .collect();
+    if let Some(s) = doc
+        .stories
+        .iter()
+        .find(|s| standing.contains(&s.id.as_str()) && has_tabs(s))
+    {
+        return Some(s.id.clone());
+    }
+    doc.stories
+        .iter()
+        .find(|s| has_tabs(s))
+        .map(|s| s.id.clone())
 }
 
 /// One field token found in raw text: where it sits in the raw
@@ -2239,6 +2379,72 @@ mod tests {
         doc.set_participant_value("Candle lighters", "Rae");
         assert_eq!(doc.participant_value_for_name("Candle lighters"), "Rae");
         assert_eq!(resolve_fields("{Sunday.candle_lighters}", &doc), "Rae");
+    }
+
+    #[test]
+    fn a_profile_rename_moves_the_stored_names() {
+        // Round 3, R3-3: renaming "Acolytes" to "Candle
+        // lighters" in the profile moves the stored names
+        // to the renamed line: the row shows them, typing
+        // replaces them, and the built-in token prints
+        // the NEW names afterwards (the audit's gap was a
+        // regression test that asserted only the row).
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = default_serving_lines();
+        doc.set_participant_value("Acolytes", "Sam, Jo");
+        let old_lines = doc.profile.serving_lines.clone();
+        let mut new_lines = old_lines.clone();
+        new_lines[5] = "Candle lighters".to_string();
+        migrate_serving_line_renames(&old_lines, &new_lines, &mut doc.participants);
+        doc.profile.serving_lines = new_lines;
+        // The value moved; the built-in key is cleared.
+        assert_eq!(
+            doc.participants.get("candle_lighters").map(String::as_str),
+            Some("Sam, Jo")
+        );
+        assert!(!doc.participants.contains_key("acolytes"));
+        // The renamed row shows the names.
+        assert_eq!(doc.participant_value_for_name("Candle lighters"), "Sam, Jo");
+        // Typing new names in the renamed row replaces
+        // them...
+        doc.set_participant_value("Candle lighters", "Rae, Kim");
+        assert_eq!(
+            doc.participant_value_for_name("Candle lighters"),
+            "Rae, Kim"
+        );
+        // ...and the template's built-in token prints the
+        // NEW names, not the stranded ones.
+        assert_eq!(resolve_fields("{Sunday.acolytes}", &doc), "Rae, Kim");
+        assert_eq!(resolve_fields("{Sunday.candle_lighters}", &doc), "Rae, Kim");
+    }
+
+    #[test]
+    fn a_rename_moves_names_from_either_stored_key() {
+        // "Children's message" is stored under its shown
+        // slug (children_s_message) by the row, but a
+        // value can also sit under the permanent slug
+        // (childrens_message); a rename moves either.
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = default_serving_lines();
+        doc.participants
+            .insert("childrens_message".to_string(), "Ms. Dee".to_string());
+        let old_lines = doc.profile.serving_lines.clone();
+        let mut new_lines = old_lines.clone();
+        new_lines[4] = "Kids' message".to_string();
+        migrate_serving_line_renames(&old_lines, &new_lines, &mut doc.participants);
+        doc.profile.serving_lines = new_lines;
+        assert_eq!(doc.participant_value_for_name("Kids' message"), "Ms. Dee");
+        assert_eq!(
+            resolve_fields("{Sunday.childrens_message}", &doc),
+            "Ms. Dee"
+        );
+        assert!(!doc.participants.contains_key("childrens_message"));
+        // A save with no renames moves nothing.
+        doc.set_participant_value("Readers", "Ana Ruiz");
+        let before = doc.participants.clone();
+        let lines_now = doc.profile.serving_lines.clone();
+        migrate_serving_line_renames(&lines_now, &lines_now, &mut doc.participants);
+        assert_eq!(doc.participants, before);
     }
 
     #[test]

@@ -188,8 +188,11 @@ pub struct HymnPair {
 /// The church's own hymn memory: number and title pairs
 /// learned from the church's confirmed bulletins, nothing
 /// else. The app keeps it in a small file beside its
-/// settings and feeds it every saved bulletin and every
-/// learned template.
+/// settings and feeds it every saved bulletin. A learned
+/// template teaches nothing: it carries no occasion date
+/// of its own (it spans many Sundays), so its pairs
+/// arrive when the template is saved as a real week
+/// (round 3, R3-12).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HymnMemory {
     pub pairs: BTreeMap<String, HymnPair>,
@@ -202,11 +205,34 @@ impl HymnMemory {
         self.pairs.get(&hymn_key(hymnal, number))
     }
 
+    /// Forget one remembered pair outright (round 3,
+    /// R3-6): Check's disagreement finding offers this
+    /// when the office says the memory is the wrong one.
+    /// The pair is not barred from returning: the next
+    /// saved bulletin carrying it teaches it again, with
+    /// that bulletin's date. Answers true when a pair
+    /// was actually there to forget.
+    pub fn forget(&mut self, hymnal: Option<&str>, number: &str) -> bool {
+        self.forget_key(&hymn_key(hymnal, number))
+    }
+
+    /// Forget by the memory's own key (the shape the
+    /// finding carries): see `forget`.
+    pub fn forget_key(&mut self, key: &str) -> bool {
+        self.pairs.remove(key).is_some()
+    }
+
     /// Learn one entry, when it carries both a number and
-    /// a title. A newer Sunday wins a disagreement; on the
-    /// same Sunday the first confirmation stands (it was
-    /// confirmed first). Answers true when the memory
-    /// changed, so the caller knows to save it.
+    /// a title. Confirmation order is save order, and the
+    /// last confirmation for a Sunday wins it: a newer
+    /// Sunday wins a disagreement, and on the SAME
+    /// Sunday a different title is a correction, because
+    /// re-saving the same bulletin with the title fixed
+    /// is how a typo gets repaired (round 3, R3-6). An
+    /// older Sunday never overwrites. Answers true when
+    /// the memory changed, so the caller knows to save
+    /// it; confirming the same pair for the same Sunday
+    /// again changes nothing.
     pub fn learn(&mut self, entry: &HymnEntry, date: SimpleDate) -> bool {
         let (Some(number), Some(title)) = (entry.number.as_deref(), entry.title.as_deref()) else {
             return false;
@@ -218,7 +244,8 @@ impl HymnMemory {
         }
         let key = hymn_key(entry.hymnal.as_deref(), number);
         match self.pairs.get(&key) {
-            Some(old) if old.last_seen >= date => false,
+            Some(old) if old.last_seen > date => false,
+            Some(old) if old.last_seen == date && old.title == title => false,
             _ => {
                 self.pairs.insert(
                     key,
@@ -399,8 +426,24 @@ mod tests {
             mem.lookup(Some("ELW"), "432").unwrap().title,
             "O Come, All Ye Faithful"
         );
-        // The same Sunday keeps the first confirmation.
+        // The same Sunday: the last confirmation wins.
+        // Re-saving the same bulletin with the title
+        // corrected is how a typo gets repaired; the
+        // first confirmation keeping the seat made a
+        // wrong pair unfixable (round 3, R3-6).
+        assert!(mem.learn(&older, d(2026, 10, 4)));
+        assert_eq!(
+            mem.lookup(Some("ELW"), "432").unwrap().title,
+            "A Different Song"
+        );
+        assert_eq!(
+            mem.lookup(Some("ELW"), "432").unwrap().last_seen,
+            d(2026, 10, 4)
+        );
+        // Confirming the same pair again changes nothing.
         assert!(!mem.learn(&older, d(2026, 10, 4)));
+        // An older Sunday still never overwrites.
+        assert!(!mem.learn(&e, d(2026, 9, 27)));
         // A newer Sunday wins.
         assert!(mem.learn(&older, d(2026, 10, 11)));
         assert_eq!(
@@ -461,6 +504,57 @@ mod tests {
         assert_eq!(mem.pairs.len(), 1);
         // The same document again changes nothing.
         assert!(!mem.learn_from_document(&doc, d(2026, 10, 18)));
+    }
+
+    #[test]
+    fn a_typo_saved_then_corrected_on_the_same_sunday_heals() {
+        // Round 3, R3-6: next Sunday's bulletin is drafted
+        // early with a wrong title and saved; the office
+        // spots it, fixes the same file, and saves again.
+        // The correction must displace the typo, or Check
+        // flags the correct bulletin forever.
+        let mut mem = HymnMemory::default();
+        let typo = entry(Some("ELW"), Some("432"), Some("O Come, All Ye Faithful"));
+        let fixed = entry(
+            Some("ELW"),
+            Some("432"),
+            Some("Joyful, Joyful We Adore Thee"),
+        );
+        assert!(mem.learn(&typo, d(2026, 10, 25)));
+        assert!(mem.learn(&fixed, d(2026, 10, 25)));
+        let pair = mem.lookup(Some("ELW"), "432").expect("remembered");
+        assert_eq!(pair.title, "Joyful, Joyful We Adore Thee");
+        assert_eq!(pair.last_seen, d(2026, 10, 25));
+    }
+
+    #[test]
+    fn forgetting_a_pair_removes_it_and_it_can_be_learned_again() {
+        // Round 3, R3-6: the office can tell Check to
+        // forget a pairing outright; the removal is what
+        // the persisted file carries, and nothing bars
+        // the pair from being taught again by a later
+        // save.
+        let mut mem = HymnMemory::default();
+        let e = entry(Some("ELW"), Some("432"), Some("O Come, All Ye Faithful"));
+        assert!(mem.learn(&e, d(2026, 10, 4)));
+        assert!(
+            mem.forget(Some("elw"), "432"),
+            "the hymnal's case does not matter"
+        );
+        assert!(mem.lookup(Some("ELW"), "432").is_none());
+        assert!(!mem.forget(Some("ELW"), "432"), "nothing left to forget");
+        assert!(!mem.forget_key("elw|999"));
+        // The forgotten state is what a round trip keeps.
+        let text = serde_json::to_string(&mem).expect("serializes");
+        let back: HymnMemory = serde_json::from_str(&text).expect("parses");
+        assert_eq!(back, mem);
+        // And the pair can be learned again, at its new
+        // confirmation date.
+        assert!(mem.learn(&e, d(2026, 10, 11)));
+        assert_eq!(
+            mem.lookup(Some("ELW"), "432").unwrap().last_seen,
+            d(2026, 10, 11)
+        );
     }
 
     #[test]

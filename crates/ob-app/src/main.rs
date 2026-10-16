@@ -1080,6 +1080,13 @@ struct CheckNote {
     /// sheet with no words, a dated sheet past its date):
     /// the button opens it.
     inserts: bool,
+    /// A hymn pairing the note disagrees with, named by
+    /// its hymn-memory key: the Check step puts a "Forget
+    /// this pairing" button under the note that removes
+    /// the pair from the church's hymn memory, for when
+    /// the office says the memory is the wrong one
+    /// (round 3, R3-6).
+    forget_hymn: Option<String>,
 }
 
 impl CheckNote {
@@ -1090,6 +1097,7 @@ impl CheckNote {
             step: None,
             fonts: false,
             inserts: false,
+            forget_hymn: None,
         }
     }
 
@@ -1100,6 +1108,7 @@ impl CheckNote {
             step: None,
             fonts: false,
             inserts: false,
+            forget_hymn: None,
         }
     }
 
@@ -1110,6 +1119,7 @@ impl CheckNote {
             step: Some(step),
             fonts: false,
             inserts: false,
+            forget_hymn: None,
         }
     }
 
@@ -1120,6 +1130,7 @@ impl CheckNote {
             step: None,
             fonts: true,
             inserts: false,
+            forget_hymn: None,
         }
     }
 
@@ -1130,6 +1141,7 @@ impl CheckNote {
             step: None,
             fonts: false,
             inserts: true,
+            forget_hymn: None,
         }
     }
 }
@@ -1251,14 +1263,17 @@ fn children_names_note(profile: &ob_model::ChurchProfile) -> Option<CheckNote> {
 /// church's hymn memory. A number with no title and a
 /// title with no number are both easy to mistype and hard
 /// to spot; a pair the church has printed differently
-/// before names both versions. When the memory holds no
-/// pair, it says nothing: nothing is invented. Pure over
-/// (document, memory); every finding points at the This
-/// Sunday step, where the hymn fields live.
+/// before names both versions, and the note carries a
+/// "Forget this pairing" button for when the office says
+/// the memory is the wrong one (round 3, R3-6). When the
+/// memory holds no pair, it says nothing: nothing is
+/// invented. Pure over (document, memory); every finding
+/// points at the This Sunday step, where the hymn fields
+/// live.
 fn hymn_findings(doc: &Document, memory: &ob_model::hymns::HymnMemory) -> Vec<CheckNote> {
     use ob_model::hymns::{compose_hymn_value, is_hymn_label, parse_hymn_value};
     let mut out = Vec::new();
-    let mut by_number: Vec<(String, String, String)> = Vec::new(); // (key, shown, label)
+    let mut by_number: Vec<(String, Option<String>, String, String)> = Vec::new(); // (number, hymnal, shown, label)
     for line in service_lines(doc) {
         if !is_hymn_label(&line.label) {
             continue;
@@ -1292,14 +1307,22 @@ fn hymn_findings(doc: &Document, memory: &ob_model::hymns::HymnMemory) -> Vec<Ch
                             Some(h) => format!("{h} {number}"),
                             None => number.clone(),
                         };
-                        out.push(CheckNote::to_step(
+                        let mut note = CheckNote::to_step(
                             format!(
-                                "Check: hymn {hymn_words} was \u{2018}{remembered}\u{2019} last time ({}). \
-                                 This says \u{2018}{title}\u{2019}. One of them may be wrong.",
+                                "Check: hymn {hymn_words} was printed as \u{2018}{remembered}\u{2019} \
+                                 for {}. This week it says \u{2018}{title}\u{2019}. One of them may be wrong.",
                                 ob_layout::long_date(naive_of(pair.last_seen))
                             ),
                             1,
+                        );
+                        // If the office says the memory is
+                        // the wrong one, the note's button
+                        // forgets the pairing (R3-6).
+                        note.forget_hymn = Some(ob_model::hymns::hymn_key(
+                            entry.hymnal.as_deref(),
+                            number,
                         ));
+                        out.push(note);
                     }
                 }
             }
@@ -1307,39 +1330,61 @@ fn hymn_findings(doc: &Document, memory: &ob_model::hymns::HymnMemory) -> Vec<Ch
         }
         if let Some(number) = &entry.number {
             by_number.push((
-                ob_model::hymns::hymn_key(entry.hymnal.as_deref(), number),
+                number.clone(),
+                entry.hymnal.clone(),
                 compose_hymn_value(&entry),
                 line.label.clone(),
             ));
         }
     }
     // The same number on two hymn lines: named once,
-    // however many lines share it.
+    // however many lines share it. Two lines name the
+    // same hymn when their numbers match and their
+    // hymnals agree, or when either line names no hymnal
+    // at all (round 3, R3-17): "ELW 432" on one line and
+    // a bare "432" on another are one song sung twice,
+    // not two. Different hymnals with the same number
+    // are different books, and stay quiet.
     let mut named: Vec<String> = Vec::new();
-    for (i, (key, shown, label)) in by_number.iter().enumerate() {
-        if named.contains(key) {
+    for (i, (number, hymnal, shown, label)) in by_number.iter().enumerate() {
+        if named.contains(number) {
             continue;
         }
-        if let Some((_, _, other)) = by_number.iter().skip(i + 1).find(|(k, _, _)| k == key) {
-            named.push(key.clone());
-            out.push(CheckNote::to_step(
-                format!(
-                    "Check: hymn {shown} is named by two hymn lines, {label} and {other}. \
-                     Only one of them can be right."
-                ),
-                1,
-            ));
-        }
+        let other = by_number.iter().skip(i + 1).find(|(n2, h2, _, _)| {
+            n2 == number
+                && match (hymnal, h2) {
+                    (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                    _ => true,
+                }
+        });
+        let Some((_, other_hymnal, _other_shown, other_label)) = other else {
+            continue;
+        };
+        named.push(number.clone());
+        let text = match (hymnal.as_deref(), other_hymnal.as_deref()) {
+            (Some(h), None) | (None, Some(h)) => format!(
+                "Check: hymn {number} is listed twice, once as {h} {number} and once with no hymnal named. \
+                 Only one of them can be right."
+            ),
+            _ => format!(
+                "Check: hymn {shown} is named by two hymn lines, {label} and {other_label}. \
+                 Only one of them can be right."
+            ),
+        };
+        out.push(CheckNote::to_step(text, 1));
     }
     out
 }
 
 /// What a music proof carries, counted for its status
-/// line (R-2a).
+/// line (R-2a). The spoken-only count rides along so the
+/// Print status says what was left out, like every other
+/// door does (round 3, R3-15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MusicProofCounts {
     hymns: usize,
     music_pages: usize,
+    spoken_only_left_out: usize,
 }
 
 /// Compose the music proof document (R-2a): a heading,
@@ -1347,12 +1392,17 @@ struct MusicProofCounts {
 /// music system at its bulletin size, then the anthem
 /// and special music lines. Composed from the
 /// publication copy, so spoken-only words never reach
-/// it. The music director checks this sheet, or carries
-/// it to the piano; the organist's copy is the same
-/// sheet. Pure: the same document in, the same proof out.
+/// it. The music pages follow the piece's own order,
+/// system by system, however the systems' boxes sit in
+/// the bulletin, and a system carried by two boxes
+/// prints once: the proof is a reading copy of the
+/// piece, not of the layout (round 3, R3-15). The music
+/// director checks this sheet, or carries it to the
+/// piano; the organist's copy is the same sheet. Pure:
+/// the same document in, the same proof out.
 fn music_proof_document(doc: &Document) -> (Document, MusicProofCounts) {
     use ob_model::hymns::{compose_hymn_value, is_hymn_label, parse_hymn_value};
-    let (base, _) = doc.without_spoken_only();
+    let (base, spoken_only_left_out) = doc.without_spoken_only();
     let page = ob_model::Size::new(612_000, 792_000); // US Letter portrait
     let margin: ob_model::Mpt = 54_000; // 3/4 inch
     let usable_w = page.w - 2 * margin;
@@ -1436,41 +1486,50 @@ fn music_proof_document(doc: &Document) -> (Document, MusicProofCounts) {
     // One page per music system, at its bulletin size
     // (shrunk only when the bulletin box is bigger than
     // this page), the whole system shown: notation is
-    // never trimmed.
-    let mut music_pages = 0usize;
+    // never trimmed. The systems come in the piece's
+    // own order (round 3, R3-15): a box moved on the
+    // page in the editor reorders the bulletin, not the
+    // piece, and two boxes carrying the same system
+    // print that system once.
+    let mut systems: Vec<&ob_model::Frame> = Vec::new();
     for panel in &base.panels {
         for frame in &panel.frames {
-            if frame.music.is_none() {
-                continue;
+            if frame.music.is_some() && frame.picture.is_some() {
+                systems.push(frame);
             }
-            let Some(picture) = &frame.picture else {
-                continue;
-            };
-            music_pages += 1;
-            let (mut w, mut h) = (frame.rect.w.max(1), frame.rect.h.max(1));
-            if w > usable_w || h > usable_h {
-                let scale = (usable_w as f64 / w as f64).min(usable_h as f64 / h as f64);
-                w = (w as f64 * scale).round() as ob_model::Mpt;
-                h = (h as f64 * scale).round() as ob_model::Mpt;
-            }
-            let mut nf = frame.clone();
-            nf.id = format!("proof-music-{music_pages}");
-            nf.name = "Printed music".to_string();
-            nf.rect = ob_model::Rect::new(margin, margin, w, h);
-            nf.story_id = None;
-            nf.picture = Some(ob_model::PicturePlacement {
-                fit: ob_model::PictureFit::ShowWhole,
-                ..picture.clone()
-            });
-            panels.push(ob_model::Panel {
-                id: format!("proof-music-page-{music_pages}"),
-                name: "Printed music".to_string(),
-                size: page,
-                frames: vec![nf],
-                guides: Vec::new(),
-                background_image: None,
-            });
         }
+    }
+    systems.sort_by_key(|f| f.music.as_ref().map(|m| m.system).unwrap_or(0));
+    systems.dedup_by_key(|f| f.music.as_ref().map(|m| m.system).unwrap_or(0));
+    let mut music_pages = 0usize;
+    for frame in systems {
+        let Some(picture) = &frame.picture else {
+            continue;
+        };
+        music_pages += 1;
+        let (mut w, mut h) = (frame.rect.w.max(1), frame.rect.h.max(1));
+        if w > usable_w || h > usable_h {
+            let scale = (usable_w as f64 / w as f64).min(usable_h as f64 / h as f64);
+            w = (w as f64 * scale).round() as ob_model::Mpt;
+            h = (h as f64 * scale).round() as ob_model::Mpt;
+        }
+        let mut nf = frame.clone();
+        nf.id = format!("proof-music-{music_pages}");
+        nf.name = "Printed music".to_string();
+        nf.rect = ob_model::Rect::new(margin, margin, w, h);
+        nf.story_id = None;
+        nf.picture = Some(ob_model::PicturePlacement {
+            fit: ob_model::PictureFit::ShowWhole,
+            ..picture.clone()
+        });
+        panels.push(ob_model::Panel {
+            id: format!("proof-music-page-{music_pages}"),
+            name: "Printed music".to_string(),
+            size: page,
+            frames: vec![nf],
+            guides: Vec::new(),
+            background_image: None,
+        });
     }
     if !anthem_paras.is_empty() {
         stories.push(ob_model::Story {
@@ -1499,7 +1558,14 @@ fn music_proof_document(doc: &Document) -> (Document, MusicProofCounts) {
         preset: "letter-portrait".to_string(),
         size: page,
     };
-    (out, MusicProofCounts { hymns, music_pages })
+    (
+        out,
+        MusicProofCounts {
+            hymns,
+            music_pages,
+            spoken_only_left_out,
+        },
+    )
 }
 
 fn char_findings(doc: &Document) -> Vec<CharFinding> {
@@ -4048,40 +4114,14 @@ struct ServiceLine {
     value: String,
 }
 
-/// The story the service lines live in (J2): the one holding
-/// the tabbed order lines. Tabbed lines with a "Sermon:" line
-/// alongside confirm it (the fallback for imported bulletins,
-/// whose frames carry no roles worth trusting); otherwise a
-/// story a Standing frame holds; otherwise the first story
-/// with tabbed lines at all.
+/// The story the service lines live in (J2): the one
+/// holding the tabbed order lines. The lookup itself is
+/// the model's (`ob_model::service_story_id`), shared
+/// with Next Sunday's hymn clearing, so every surface
+/// means the same story by "the service" (round 3,
+/// R3-17).
 fn service_story_id(doc: &Document) -> Option<String> {
-    let has_tabs = |s: &ob_model::Story| s.paragraphs.iter().any(|p| p.text().contains('\t'));
-    let has_sermon = |s: &ob_model::Story| {
-        s.paragraphs
-            .iter()
-            .any(|p| p.text().trim_start().starts_with("Sermon:"))
-    };
-    if let Some(s) = doc.stories.iter().find(|s| has_tabs(s) && has_sermon(s)) {
-        return Some(s.id.clone());
-    }
-    let standing: Vec<&str> = doc
-        .panels
-        .iter()
-        .flat_map(|p| p.frames.iter())
-        .filter(|f| f.role == ContentRole::Standing)
-        .filter_map(|f| f.story_id.as_deref())
-        .collect();
-    if let Some(s) = doc
-        .stories
-        .iter()
-        .find(|s| standing.contains(&s.id.as_str()) && has_tabs(s))
-    {
-        return Some(s.id.clone());
-    }
-    doc.stories
-        .iter()
-        .find(|s| has_tabs(s))
-        .map(|s| s.id.clone())
+    ob_model::service_story_id(doc)
 }
 
 /// The tabbed lines of the order of service (J2), in page
@@ -11451,11 +11491,6 @@ impl App {
         self.analyzer_armed = false;
         self.asset_base = Some(review.workdir.clone());
         self.adopt_document(review.doc, true);
-        // A template learned from the church's own old
-        // bulletins is confirmed ground for the hymn
-        // memory (R-2a): its pairs were printed, week
-        // after week, by this church.
-        self.learn_hymns_from_current();
         self.path = None;
         self.print_fingerprint = None;
         self.checked_fingerprint = None;
@@ -11953,9 +11988,15 @@ impl App {
 
     /// Feed the open document's hymn pairs to the church's
     /// hymn memory (R-2a), and write the memory back when
-    /// it learned something. Called where a document
-    /// becomes confirmed: a successful save, and accepting
-    /// a learned template.
+    /// it learned something. Its one call site is a
+    /// successful save of a weekly bulletin: that is the
+    /// only moment a document is confirmed with a date
+    /// the memory can learn pairs for. Accepting a learned
+    /// template teaches nothing, by design (round 3,
+    /// R3-12): a template spans many Sundays and carries
+    /// no occasion date of its own. (An earlier version
+    /// called this on template accept too, where it could
+    /// never learn a thing, and said it could.)
     fn learn_hymns_from_current(&mut self) {
         if learn_hymns(&mut self.hymn_memory, &self.doc) {
             self.persist_hymn_memory();
@@ -11965,9 +12006,17 @@ impl App {
     /// Write the hymn memory beside the settings. Best
     /// effort, like the settings themselves: a memory that
     /// will not write never blocks the work it came from.
+    /// The write is atomic, the settings pattern (round
+    /// 3, R3-12): a crash mid-write leaves the old memory
+    /// whole rather than a truncated file that parses as
+    /// nothing and silently starts the memory over.
     fn persist_hymn_memory(&self) {
         if let Ok(text) = serde_json::to_string_pretty(&self.hymn_memory) {
-            let _ = std::fs::write(hymn_memory_path(), text);
+            let path = hymn_memory_path();
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, text).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
         }
     }
 
@@ -13278,6 +13327,20 @@ impl eframe::App for App {
                             let parsed = parse_expected_parts(&self.profile_serving_lines);
                             if parsed != self.doc.profile.serving_lines {
                                 let before = snapshot(&self.doc);
+                                // A renamed line keeps its
+                                // names: the stored values
+                                // follow the rename by
+                                // position, so the renamed
+                                // row still shows them and
+                                // the old slug stops printing
+                                // them (round 3, R3-3).
+                                let old_lines =
+                                    std::mem::take(&mut self.doc.profile.serving_lines);
+                                ob_model::migrate_serving_line_renames(
+                                    &old_lines,
+                                    &parsed,
+                                    &mut self.doc.participants,
+                                );
                                 self.doc.profile.serving_lines = parsed;
                                 self.record_undo(before);
                             }
@@ -13597,6 +13660,21 @@ impl eframe::App for App {
                                     self.goto_step(step);
                                 }
                             }
+                            if let Some(key) = &n.forget_hymn {
+                                // The office says the remembered
+                                // pairing is the wrong one: drop
+                                // it from the hymn memory, save
+                                // the memory, and look again
+                                // (round 3, R3-6). The pairing is
+                                // not barred: the next bulletin
+                                // saved with it teaches it again.
+                                if ui.button("Forget this pairing").clicked() {
+                                    if self.hymn_memory.forget_key(key) {
+                                        self.persist_hymn_memory();
+                                    }
+                                    self.run_checks();
+                                }
+                            }
                             if let Some((pi, fi)) = n.target {
                                 if ui.button("Fix this").clicked() {
                                     self.open_pages_at(pi, fi);
@@ -13817,11 +13895,14 @@ impl eframe::App for App {
                                 );
                                 self.status = match std::fs::write(&path, &bytes) {
                                     Ok(()) => format!(
-                                        "Music proof saved: {} hymn{}, {} page{} of printed music.",
+                                        "Music proof saved: {} hymn{}, {} page{} of printed music.{}",
                                         counts.hymns,
                                         if counts.hymns == 1 { "" } else { "s" },
                                         counts.music_pages,
-                                        if counts.music_pages == 1 { "" } else { "s" }
+                                        if counts.music_pages == 1 { "" } else { "s" },
+                                        ob_model::spoken_only_left_out_sentence(
+                                            counts.spoken_only_left_out
+                                        )
                                     ),
                                     Err(e) => {
                                         format!("Could not save the music proof: {e}")
@@ -17921,8 +18002,18 @@ Prelude is at 9:25 this week.
             texts
                 .iter()
                 .filter(|t| t.contains(
-                    "was \u{2018}O Come, All Ye Faithful\u{2019} last time (October 4, 2026)"
+                    "was printed as \u{2018}O Come, All Ye Faithful\u{2019} for October 4, 2026"
                 ))
+                .count(),
+            2,
+            "{texts:?}"
+        );
+        // Both disagreement notes carry the pairing the
+        // office can tell Check to forget (round 3, R3-6).
+        assert_eq!(
+            notes
+                .iter()
+                .filter(|n| n.forget_hymn.as_deref() == Some("elw|432"))
                 .count(),
             2,
             "{texts:?}"
@@ -18004,6 +18095,10 @@ Prelude is at 9:25 this week.
         let (proof, counts) = music_proof_document(&doc);
         assert_eq!(counts.hymns, 2);
         assert_eq!(counts.music_pages, 1);
+        assert_eq!(
+            counts.spoken_only_left_out, 1,
+            "the one spoken-only name is counted, so the Print status can say it was left out (R3-15)"
+        );
         let all_text: Vec<String> = proof
             .stories
             .iter()
@@ -18076,6 +18171,181 @@ Prelude is at 9:25 this week.
         assert!(
             !learn_hymns(&mut memory, &doc),
             "nothing new the second time"
+        );
+    }
+
+    #[test]
+    fn a_same_sunday_correction_and_forgetting_silence_check() {
+        // Round 3, R3-6, end to end: next Sunday's bulletin
+        // is saved early with a wrong hymn title; the
+        // office spots it, fixes the same file, and saves
+        // again. The correction must displace the typo in
+        // the memory, or Check flags the correct bulletin
+        // forever. And when the office instead says the
+        // memory is the wrong one, the finding's forget
+        // pairing makes Check drop it.
+        fn set_title(doc: &mut Document, title: &str) {
+            let sid = service_story_id(doc).expect("service story");
+            let story = doc.story_mut(&sid).expect("story");
+            for p in story.paragraphs.iter_mut() {
+                if p.text().starts_with("Hymn of Praise") {
+                    p.set_text(&format!("Hymn of Praise\tELW 432 \u{00b7} {title}"));
+                }
+            }
+        }
+        let mut doc = r1_template();
+        set_title(&mut doc, "O Come, All Ye Fiathful");
+        let mut memory = ob_model::hymns::HymnMemory::default();
+        assert!(learn_hymns(&mut memory, &doc), "the typo is learned");
+        // The office fixes the file; before the re-save,
+        // Check disagrees with the (correct) bulletin and
+        // names the pairing the office could forget.
+        set_title(&mut doc, "O Come, All Ye Faithful");
+        let notes = hymn_findings(&doc, &memory);
+        let flagged: Vec<&CheckNote> = notes
+            .iter()
+            .filter(|n| n.text.contains("was printed as"))
+            .collect();
+        assert_eq!(
+            flagged.len(),
+            1,
+            "{:?}",
+            notes.iter().map(|n| &n.text).collect::<Vec<_>>()
+        );
+        assert_eq!(flagged[0].forget_hymn.as_deref(), Some("elw|432"));
+        // Saving the corrected bulletin heals the memory:
+        // the same Sunday's last confirmation stands.
+        assert!(learn_hymns(&mut memory, &doc), "the correction lands");
+        assert_eq!(
+            memory
+                .lookup(Some("ELW"), "432")
+                .expect("still remembered")
+                .title,
+            "O Come, All Ye Faithful"
+        );
+        assert!(
+            hymn_findings(&doc, &memory)
+                .iter()
+                .all(|n| !n.text.contains("was printed as")),
+            "Check is silent once the memory matches"
+        );
+        // The other road: teach the typo once more, see
+        // the finding, forget the pairing, and Check has
+        // nothing left to disagree with.
+        set_title(&mut doc, "O Come, All Ye Fiathful");
+        assert!(learn_hymns(&mut memory, &doc));
+        set_title(&mut doc, "O Come, All Ye Faithful");
+        assert!(hymn_findings(&doc, &memory)
+            .iter()
+            .any(|n| n.forget_hymn.as_deref() == Some("elw|432")));
+        assert!(memory.forget_key("elw|432"));
+        assert!(memory.lookup(Some("ELW"), "432").is_none());
+        assert!(hymn_findings(&doc, &memory)
+            .iter()
+            .all(|n| n.forget_hymn.is_none() && !n.text.contains("was printed as")));
+    }
+
+    #[test]
+    fn hymn_findings_treat_a_bare_number_as_the_same_hymn_listed_twice() {
+        // Round 3, R3-17: "ELW 432" on one line and a bare
+        // "432" on another used to slip past the duplicate
+        // check, which keyed on hymnal AND number together.
+        // The finding says which shape each listing took.
+        let mut doc = r1_template();
+        let sid = service_story_id(&doc).expect("service story");
+        {
+            let story = doc.story_mut(&sid).expect("story");
+            for p in story.paragraphs.iter_mut() {
+                if p.text().starts_with("Hymn of Praise") {
+                    p.set_text("Hymn of Praise\tELW 432 \u{00b7} O Come, All Ye Faithful");
+                }
+                if p.text().starts_with("Hymn of Response") {
+                    p.set_text("Hymn of Response\t432 \u{00b7} O Come, All Ye Faithful");
+                }
+            }
+        }
+        let notes = hymn_findings(&doc, &ob_model::hymns::HymnMemory::default());
+        let dup: Vec<&CheckNote> = notes
+            .iter()
+            .filter(|n| n.text.contains("listed twice"))
+            .collect();
+        assert_eq!(
+            dup.len(),
+            1,
+            "{:?}",
+            notes.iter().map(|n| &n.text).collect::<Vec<_>>()
+        );
+        assert!(
+            dup[0].text.contains(
+                "hymn 432 is listed twice, once as ELW 432 and once with no hymnal named"
+            ),
+            "{}",
+            dup[0].text
+        );
+        // A different hymnal's 432 is a different book:
+        // no duplicate is named.
+        {
+            let story = doc.story_mut(&sid).expect("story");
+            for p in story.paragraphs.iter_mut() {
+                if p.text().starts_with("Hymn of Response") {
+                    p.set_text("Hymn of Response\tLBW 432 \u{00b7} O Come, All Ye Faithful");
+                }
+            }
+        }
+        assert!(hymn_findings(&doc, &ob_model::hymns::HymnMemory::default())
+            .iter()
+            .all(
+                |n| !n.text.contains("listed twice") && !n.text.contains("named by two hymn lines")
+            ));
+    }
+
+    #[test]
+    fn music_proof_prints_systems_in_the_pieces_order_once_each() {
+        // Round 3, R3-15: the bulletin holds the piece's
+        // systems out of order (a box was moved while
+        // arranging the page) and one system twice (a box
+        // was duplicated). The proof is a reading copy of
+        // the piece: systems in the piece's order, each
+        // printed once.
+        let mut doc = r1_template();
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"20\"><path d=\"M0 0h100\"/></svg>";
+        let asset = doc.add_asset(
+            svg,
+            ob_model::AssetKind::Picture,
+            "image/svg+xml",
+            ob_model::RightsRecord::default(),
+        );
+        let frame = |id: &str, system: u32| ob_model::Frame {
+            id: id.to_string(),
+            name: "Music".to_string(),
+            kind: ob_model::FrameKind::Picture,
+            rect: ob_model::Rect::new(36_000, 36_000, 468_000, 60_000),
+            story_id: None,
+            role: ob_model::ContentRole::Standing,
+            picture: Some(ob_model::PicturePlacement::new(asset.clone())),
+            music: Some(ob_model::MusicFrame {
+                system,
+                staff_mm: 6.5,
+                source: asset.clone(),
+            }),
+        };
+        doc.panels[0].frames.push(frame("m-a", 2));
+        doc.panels[0].frames.push(frame("m-b", 0));
+        doc.panels[0].frames.push(frame("m-c", 2));
+        doc.panels[0].frames.push(frame("m-d", 1));
+        let (proof, counts) = music_proof_document(&doc);
+        assert_eq!(counts.music_pages, 3, "the duplicated system prints once");
+        let systems: Vec<u32> = proof
+            .panels
+            .iter()
+            .flat_map(|p| p.frames.iter())
+            .filter_map(|f| f.music.as_ref().map(|m| m.system))
+            .collect();
+        assert_eq!(systems, vec![0, 1, 2]);
+        assert_eq!(
+            proof.panels.len(),
+            1 + 3,
+            "the words page plus one page per system"
         );
     }
 

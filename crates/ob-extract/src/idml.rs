@@ -343,6 +343,29 @@ fn story_paragraphs(story_xml: &str) -> Result<Vec<ParaText>, String> {
     Ok(out)
 }
 
+/// Back a cut text off to just before a CDATA section
+/// it ends inside (round 3, RT3-C). Inside CDATA
+/// nothing is markup, so the closing tags the cut
+/// rescue appends would be swallowed as section text:
+/// the story then parses to nothing at all and even
+/// paragraphs finished long before the section are
+/// lost. Closed sections earlier in the text are left
+/// alone; only a section the text ends inside costs
+/// its opening, and everything before it stands.
+fn cdata_backoff(text: &str) -> &str {
+    let mut from = 0;
+    loop {
+        let Some(open) = text[from..].find("<![CDATA[").map(|o| from + o) else {
+            return text;
+        };
+        let body = open + "<![CDATA[".len();
+        let Some(close) = text[body..].find("]]>").map(|c| body + c) else {
+            return &text[..open];
+        };
+        from = close + "]]>".len();
+    }
+}
+
 /// Close off a part that was cut at the per-part cap,
 /// so the parser can read everything in it that was
 /// complete before the cut (round 2, RT-5): drop the
@@ -353,7 +376,12 @@ fn story_paragraphs(story_xml: &str) -> Result<Vec<ParaText>, String> {
 /// paragraphs read as nothing. The importer's loss
 /// note already says the words past the point are
 /// gone; this is how the words before it survive.
+/// The cut is first backed out of any CDATA section
+/// it landed inside (cdata_backoff): the closing tags
+/// appended here would otherwise land inside the
+/// section and count for nothing.
 fn close_off_cut(text: &str) -> String {
+    let text = cdata_backoff(text);
     let Some(at) = text.rfind('>') else {
         return String::new();
     };
@@ -408,6 +436,10 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
     }
     let mut files: HashMap<String, String> = HashMap::new();
     let mut loss_notes: Vec<String> = Vec::new();
+    // Parts cut at the per-part cap, in archive order;
+    // their loss notes are written once the walk shows
+    // what the rescue kept (see the note loop below).
+    let mut cut_parts: Vec<String> = Vec::new();
     let mut total_read: u64 = 0;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
@@ -434,10 +466,11 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
             return Err("that IDML file's insides are too large to read safely".into());
         }
         let text = if raw.len() as u64 > MAX_ENTRY {
-            loss_notes.push(format!(
-                "One part of that IDML file ({name}) was too large to read whole, \
-                 so its words past a point were left out of this draft."
-            ));
+            // The loss note is written after the walk,
+            // not here (round 3, RT3-C): only then is it
+            // known whether the rescue kept any of this
+            // part's words, and the note must say which.
+            cut_parts.push(name.clone());
             raw.truncate(MAX_ENTRY as usize);
             // The cut can land inside a character; the
             // tail is already counted as lost, so a
@@ -481,6 +514,9 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
 
     let mut pages: Vec<PageInfo> = Vec::new();
     let mut spans: Vec<Span> = Vec::new();
+    // Story parts the walk actually kept words from:
+    // the honest half of the cut parts' loss notes.
+    let mut rescued: std::collections::HashSet<String> = std::collections::HashSet::new();
     for src in &spread_srcs {
         let Some(spread_xml) = files.get(src) else {
             continue;
@@ -550,13 +586,15 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
             else {
                 continue;
             };
-            let Some(story_xml) = files.get(&format!("Stories/Story_{story_id}.xml")) else {
+            let story_name = format!("Stories/Story_{story_id}.xml");
+            let Some(story_xml) = files.get(&story_name) else {
                 continue;
             };
             let paras = story_paragraphs(story_xml)?;
             if paras.is_empty() {
                 continue;
             }
+            rescued.insert(story_name);
             // One span per paragraph, stacked down the frame.
             let slice = fh / paras.len() as f32;
             for (k, para) in paras.iter().enumerate() {
@@ -607,6 +645,29 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
                     pages[rect.index as usize].picture_only = true;
                 }
             }
+        }
+    }
+    // One loss note per cut part, worded by what the
+    // rescue actually kept (round 3, RT3-C): the old
+    // note always claimed a tail trim ("words past a
+    // point were left out"), even when a cut landing
+    // inside a CDATA section had cost the part every
+    // word it held. A story part that yielded nothing
+    // is counted whole; any other cut part, including
+    // a story the walk kept words from, keeps the
+    // tail-trim words, which are then true.
+    for name in &cut_parts {
+        if name.starts_with("Stories/") && !rescued.contains(name) {
+            loss_notes.push(format!(
+                "One part of that IDML file ({name}) was too large to read whole, \
+                 and none of its words could be kept; the whole part was left out \
+                 of this draft."
+            ));
+        } else {
+            loss_notes.push(format!(
+                "One part of that IDML file ({name}) was too large to read whole, \
+                 so its words past a point were left out of this draft."
+            ));
         }
     }
     Ok(ExtractionDump {
@@ -964,6 +1025,91 @@ mod tests {
             1,
             "the loss is counted: {:?}",
             dump.loss_notes
+        );
+    }
+
+    #[test]
+    fn idml_a_story_cut_inside_cdata_keeps_the_paragraphs_before_it() {
+        // Round 3, RT3-C: the cut lands inside a CDATA
+        // section. Nothing inside CDATA is markup, so
+        // the closing tags the rescue appends used to be
+        // swallowed as section text and the story parsed
+        // to nothing, the finished paragraph before the
+        // section included. The cut now backs off to
+        // just before the section opens.
+        let range = |inner: &str| {
+            format!(
+                "<ParagraphStyleRange AppliedParagraphStyle=\"ParagraphStyle/Body\">\
+                 <CharacterStyleRange FontStyle=\"Regular\">{inner}\
+                 </CharacterStyleRange></ParagraphStyleRange>"
+            )
+        };
+        let mut story = String::from("<?xml version=\"1.0\"?><Story>");
+        story.push_str(&range("<Content>Words before the flood</Content>"));
+        let mut cdata = String::from("<Content><![CDATA[");
+        cdata.push_str(&">".repeat(33 * 1024 * 1024));
+        cdata.push_str("]]></Content>");
+        story.push_str(&range(&cdata));
+        story.push_str("</Story>");
+        assert!(story.len() > 33 * 1024 * 1024, "the story passes the cap");
+        let dump = dump_from_idml(&idml_with_story(&story), "cdata.idml").expect("dump");
+        assert!(
+            dump.spans
+                .iter()
+                .any(|s| s.text.contains("Words before the flood")),
+            "the paragraph before the section is rescued"
+        );
+        assert!(
+            !dump.spans.iter().any(|s| s.text.contains(">>>")),
+            "no section text came over as words"
+        );
+        assert_eq!(
+            dump.loss_notes.len(),
+            1,
+            "the loss is counted once: {:?}",
+            dump.loss_notes
+        );
+        assert!(
+            dump.loss_notes[0].contains("Story_u9")
+                && dump.loss_notes[0].contains("words past a point"),
+            "a rescued part keeps the tail-trim words: {}",
+            dump.loss_notes[0]
+        );
+    }
+
+    #[test]
+    fn idml_a_story_cut_inside_its_first_cdata_is_counted_whole() {
+        // The other half of RT3-C: the CDATA section
+        // opens inside the story's FIRST paragraph, so
+        // the back-off leaves that paragraph empty and
+        // the rescue keeps nothing. The note must say
+        // so, not claim a tail trim: the whole part was
+        // left out, and it is counted.
+        let mut story = String::from("<?xml version=\"1.0\"?><Story>");
+        story.push_str(
+            "<ParagraphStyleRange AppliedParagraphStyle=\"ParagraphStyle/Body\">\
+             <CharacterStyleRange FontStyle=\"Regular\">\
+             <Content><![CDATA[Words inside the section",
+        );
+        story.push_str(&">".repeat(33 * 1024 * 1024));
+        story.push_str("]]></Content></CharacterStyleRange></ParagraphStyleRange></Story>");
+        let dump = dump_from_idml(&idml_with_story(&story), "cdata-first.idml").expect("dump");
+        assert!(
+            dump.spans.is_empty(),
+            "nothing of the story was kept: {} spans",
+            dump.spans.len()
+        );
+        assert_eq!(
+            dump.loss_notes.len(),
+            1,
+            "the loss is counted once: {:?}",
+            dump.loss_notes
+        );
+        assert!(
+            dump.loss_notes[0].contains("Story_u9")
+                && dump.loss_notes[0].contains("none of its words could be kept"),
+            "the note counts the whole part: {}",
+            dump.loss_notes[0]
         );
     }
 

@@ -1106,23 +1106,64 @@ fn scan_tag_name(bytes: &[u8], from: usize) -> (String, usize) {
     )
 }
 
-/// The offset just past a tag's closing '>', honoring
-/// quoted attribute values (a '>' inside quotes ends
-/// nothing). None when the tag never ends.
+/// The offset just past a tag's closing '>'. A quote
+/// opens a quoted value only where HTML says a value
+/// begins: immediately after an attribute's '='
+/// (whitespace allowed), as the value's first
+/// character (round 3, RT3-A). A quote anywhere
+/// else, sitting inside an unquoted value or loose
+/// in the tag, is ordinary data. The first version of
+/// this scan opened quote state on any quote byte,
+/// so one stray apostrophe in an unquoted value
+/// (title=x') blinded it to every tag end that
+/// followed: the page's nesting went unmeasured, the
+/// budget passed it, and the parser took minutes
+/// over what the budget exists to refuse in a blink.
+/// Fail-safe: a quoted value still open at the next
+/// '>' closes there for counting purposes, so the
+/// tag is treated as ending and the page past it is
+/// still measured.
 fn scan_tag_end(bytes: &[u8], from: usize) -> Option<usize> {
-    let mut quote: Option<u8> = None;
+    #[derive(Clone, Copy, PartialEq)]
+    enum Scan {
+        // Between attributes, or inside an attribute
+        // name: a quote here is data.
+        Tag,
+        // Just past '=': the value has not started, so
+        // a quote here opens a quoted value.
+        BeforeValue,
+        // Inside an unquoted value: quotes and '=' are
+        // data; whitespace ends the value.
+        Unquoted,
+        // Inside a quoted value, waiting for its match.
+        Quoted(u8),
+    }
+    let mut state = Scan::Tag;
     let mut j = from;
     while j < bytes.len() {
         let b = bytes[j];
-        match quote {
-            Some(q) => {
+        match state {
+            Scan::Quoted(q) => {
                 if b == q {
-                    quote = None;
+                    state = Scan::Tag;
+                } else if b == b'>' {
+                    return Some(j + 1);
                 }
             }
-            None => match b {
-                b'"' | b'\'' => quote = Some(b),
+            Scan::Tag => match b {
+                b'=' => state = Scan::BeforeValue,
                 b'>' => return Some(j + 1),
+                _ => {}
+            },
+            Scan::BeforeValue => match b {
+                b'"' | b'\'' => state = Scan::Quoted(b),
+                b'>' => return Some(j + 1),
+                _ if b.is_ascii_whitespace() => {}
+                _ => state = Scan::Unquoted,
+            },
+            Scan::Unquoted => match b {
+                b'>' => return Some(j + 1),
+                _ if b.is_ascii_whitespace() => state = Scan::Tag,
                 _ => {}
             },
         }
@@ -1910,6 +1951,61 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.contains("too many pieces"), "{err}");
+    }
+
+    #[test]
+    fn a_stray_quote_in_an_unquoted_value_no_longer_blinds_the_budget() {
+        // Round 3, RT3-A: the red team's page. One stray
+        // apostrophe in an unquoted attribute value put
+        // the old scan into quote state for good, so the
+        // nesting below was never measured, the budget
+        // passed the page, and the import froze for
+        // minutes inside the parser. A quote opens a
+        // value only as the value's first character now:
+        // the depth is counted and the page refuses with
+        // the budget's own sentence, fast.
+        let mut page = String::from("<div title=x'>");
+        for _ in 0..600 {
+            page.push_str("<div>");
+        }
+        page.push_str("words at the bottom");
+        for _ in 0..600 {
+            page.push_str("</div>");
+        }
+        page.push_str("</div>");
+        let err = match document_from_html(page.as_bytes(), "stray.html", ChurchProfile::default())
+        {
+            Ok(_) => panic!("the deep page must be refused"),
+            Err(e) => e,
+        };
+        assert_eq!(err, TOO_BIG_PAGE);
+        let err = pre_parse_budget(page.as_bytes()).expect_err("the budget itself refuses");
+        assert_eq!(err, TOO_BIG_PAGE);
+    }
+
+    #[test]
+    fn honest_quotes_still_scan_and_a_stray_one_costs_nothing_shallow() {
+        // Quoted values keep their privileges: a '>'
+        // and the other quote kind inside a quoted value
+        // do not confuse the count, and a stray quote in
+        // an unquoted value on a shallow page changes
+        // nothing about what comes over.
+        let quoted = "<html><body>\
+            <div title=\"2 > 1, and that's fine\" data-note='say \"welcome\"'>\
+            <p>Words inside honest quotes</p></div></body></html>";
+        pre_parse_budget(quoted.as_bytes()).expect("honest quotes pass the budget");
+        let out = document_from_html(quoted.as_bytes(), "quoted.html", ChurchProfile::default())
+            .expect("the quoted page imports");
+        assert!(all_paragraphs(&out.doc)
+            .iter()
+            .any(|p| p.text().contains("Words inside honest quotes")));
+        let stray = "<html><body><p title=x'>Words beside a stray quote</p></body></html>";
+        pre_parse_budget(stray.as_bytes()).expect("a stray quote passes the budget");
+        let out = document_from_html(stray.as_bytes(), "stray.html", ChurchProfile::default())
+            .expect("the stray-quote page imports");
+        assert!(all_paragraphs(&out.doc)
+            .iter()
+            .any(|p| p.text().contains("Words beside a stray quote")));
     }
 
     #[test]

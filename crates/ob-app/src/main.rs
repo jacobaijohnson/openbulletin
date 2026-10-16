@@ -3831,6 +3831,36 @@ struct InboxItem {
     parsed: Result<ob_extract::contribution::Contribution, String>,
 }
 
+/// The largest contribution file the inbox will read
+/// (round 3, RT3-E). A part is a page or two of
+/// markdown, so 512 KB is already generous. Past it
+/// the file is listed as unreadable with the reason
+/// below and is never parsed: the scan used to read
+/// every file whole and parse whatever came back, so
+/// one 5 MB file cost the Start step seconds before
+/// anything could be shown.
+const MAX_PART_BYTES: u64 = 512 * 1024;
+
+/// Read one inbox file through a cap, counting actual
+/// bytes as they arrive, so no file, however the
+/// filesystem describes it, can make the scan hold
+/// more than the cap plus one byte. Read failures
+/// keep the scan's long-standing words.
+fn read_part_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("This file could not be read. ({e})"))?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(MAX_PART_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("This file could not be read. ({e})"))?;
+    if bytes.len() as u64 > MAX_PART_BYTES {
+        return Err("This file is too large to read as a part.".to_string());
+    }
+    Ok(bytes)
+}
+
 /// Read every `.md` file in a folder (the inbox, or the
 /// filed folder when arrivals are counted) and parse each
 /// as a contribution. Reading never moves a file.
@@ -3856,18 +3886,14 @@ fn scan_contribution_folder(dir: &std::path::Path, today: ob_model::SimpleDate) 
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let (fingerprint, text, parsed) = match std::fs::read(&path) {
+        let (fingerprint, text, parsed) = match read_part_file(&path) {
             Ok(bytes) => {
                 let fp = content_fingerprint(&bytes);
                 let text = String::from_utf8_lossy(&bytes).into_owned();
                 let parsed = ob_extract::contribution::parse_contribution(&text, today);
                 (fp, text, parsed)
             }
-            Err(e) => (
-                String::new(),
-                String::new(),
-                Err(format!("This file could not be read. ({e})")),
-            ),
+            Err(reason) => (String::new(), String::new(), Err(reason)),
         };
         items.push(InboxItem {
             path,
@@ -17567,6 +17593,46 @@ mod settings_tests {
         );
         assert!(dir.join("sue.md").exists(), "reading never moves a file");
         assert!(dir.join("empty.md").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inbox_scan_lists_an_oversize_part_unreadable_and_reads_the_rest() {
+        // Round 3, RT3-E: a part file past 512 KB is
+        // listed with the plain reason and never parsed,
+        // while an ordinary part beside it reads as
+        // usual. Neither file is moved.
+        let dir =
+            std::env::temp_dir().join(format!("openbulletin-r3-inbox-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("big.md"), "x".repeat(512 * 1024 + 1)).expect("write big");
+        std::fs::write(
+            dir.join("sue.md"),
+            "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n",
+        )
+        .expect("write");
+        let items = scan_contribution_folder(&dir, r1_today());
+        assert_eq!(items.len(), 2, "both files are listed");
+        let big = items
+            .iter()
+            .find(|i| i.file_name == "big.md")
+            .expect("the oversize file is listed");
+        match &big.parsed {
+            Err(reason) => assert_eq!(reason, "This file is too large to read as a part."),
+            Ok(_) => panic!("the oversize file must not be parsed"),
+        }
+        assert!(big.text.is_empty(), "none of it was read in");
+        assert!(
+            items
+                .iter()
+                .find(|i| i.file_name == "sue.md")
+                .expect("the small file is listed")
+                .parsed
+                .is_ok(),
+            "the ordinary part still parses"
+        );
+        assert!(dir.join("big.md").exists(), "reading never moves a file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

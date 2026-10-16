@@ -271,3 +271,66 @@ after the disk-emergency cache clean):
   Fonts window and the CLI already read out.
 
 No other batch's dispositions change.
+
+## Shipped addendum, R3-B: hostile input (2026-10-16)
+
+Batch R3-B shipped:
+
+- RT3-B: the .obd and .obdi loaders in ob-format no
+  longer sum the zip directory's declared entry sizes
+  toward the 512 MB total cap. Every entry is read
+  through a cap against a running total of actual
+  bytes (the IDML discipline), the document entry
+  keeps its own 64 MB cap measured the same way, and
+  a total breach refuses with "That file's insides
+  are too large to read safely." Tests patch a built
+  archive's declared sizes down to 5 bytes over a
+  real payload one byte past the cap, for both
+  loaders, and pin the capped reader at small caps.
+  The audit of every other zip reader found the clip
+  library's zip intake with the same shape: it now
+  counts actual bytes against its 512 MB cap the
+  same way, keeping its own refusal words, and a
+  test pack whose two small pictures declare 400 MB
+  each now loads. The remaining readers already
+  counted actuals and are unchanged: font pack
+  intake (capped read per entry, actual running
+  total), the DejaVu catalog install (declared sizes
+  never consulted; the download itself is capped),
+  .mxl in ob-music (capped entry reads), and the
+  IDML importer (capped reads, actual total).
+- RT3-A: the HTML pre-scan's tag-end scan is now a
+  state machine with HTML's own quote rule: a quote
+  opens a quoted value only immediately after an
+  attribute's '=' (whitespace allowed), as the
+  value's first character; a quote anywhere else is
+  data. A quoted value still open at the next '>'
+  closes there for counting, so depth is never
+  unmeasured. The red team's page (a stray apostrophe
+  in an unquoted value over deep nesting) now refuses
+  with the budget's own sentence instead of freezing
+  the import; honestly quoted attributes carrying
+  '>' and the other quote kind scan and import as
+  before, and a stray quote on a shallow page costs
+  nothing.
+- RT3-C: the IDML cut rescue backs off to just
+  before a CDATA section the cut lands inside, so
+  the closing tags it appends are no longer
+  swallowed as section text. The loss note moved
+  after the walk and is worded by what the rescue
+  kept: a cut story part that yielded no words now
+  reads "...and none of its words could be kept;
+  the whole part was left out of this draft.", while
+  rescued parts and other parts keep the tail-trim
+  words, which are then true. Tests cover both: a
+  pre-CDATA paragraph rescued with the tail-trim
+  note, and a story whose first words sit inside the
+  unclosed section counted whole.
+- RT3-E: the inbox scan reads each part file through
+  a 512 KB cap (actual bytes, as they arrive). A
+  file past the cap is listed as unreadable with
+  "This file is too large to read as a part." and is
+  never parsed; ordinary parts beside it read as
+  usual, and reading still moves nothing.
+
+No other batch's dispositions change.

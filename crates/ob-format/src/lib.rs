@@ -31,6 +31,50 @@ const MAX_TOTAL_UNCOMPRESSED: u64 = 512 * 1024 * 1024;
 /// The first four bytes of a zip container ("PK" + 0x03 0x04).
 const ZIP_MAGIC: [u8; 4] = [b'P', b'K', 0x03, 0x04];
 
+/// The words for a container whose actual insides pass
+/// the total cap, whichever container it is.
+const TOTAL_TOO_LARGE: &str = "That file's insides are too large to read safely.";
+
+/// Read one zip entry's bytes through a cap, counting
+/// ACTUAL bytes as they arrive (round 3, RT3-B). The
+/// loaders used to cap by summing the sizes the file's
+/// own directory declares, and a directory can lie: a
+/// 612 KB file whose entries claimed 5 bytes expanded
+/// to 600 MB in memory on open, because zip streams are
+/// not bound by their declared size. The reading itself
+/// is the count now, the IDML importer's discipline:
+/// one byte past the cap is read, so an entry exactly
+/// at the cap still counts as inside; anything more
+/// refuses in plain words, and memory never holds more
+/// than the cap plus that one byte for this entry.
+fn read_entry_capped(
+    entry: &mut zip::read::ZipFile,
+    cap: u64,
+    too_large: &str,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    entry
+        .by_ref()
+        .take(cap + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > cap {
+        return Err(too_large.to_string());
+    }
+    Ok(bytes)
+}
+
+/// The text variant of `read_entry_capped`, for the
+/// container's JSON entry.
+fn read_entry_text_capped(
+    entry: &mut zip::read::ZipFile,
+    cap: u64,
+    too_large: &str,
+) -> Result<String, String> {
+    let bytes = read_entry_capped(entry, cap, too_large)?;
+    String::from_utf8(bytes).map_err(|_| "that file does not hold text we can read".to_string())
+}
+
 pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
     let mut doc = doc.clone();
     // Save what the document will say it is: the current
@@ -125,29 +169,22 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip =
         zip::ZipArchive::new(file).map_err(|e| format!("that file's container is damaged: {e}"))?;
-    // The total cap is checked from the directory before a
-    // single entry is decompressed.
+    // The total cap counts actual bytes as each entry is
+    // read (round 3, RT3-B): the directory's declared
+    // sizes are never summed, because a directory can
+    // lie about them. `total` never passes the cap:
+    // every read is capped at what is left of it.
     let mut total: u64 = 0;
-    for i in 0..zip.len() {
-        let entry = zip.by_index(i).map_err(|e| e.to_string())?;
-        total = total.saturating_add(entry.size());
-        if total > MAX_TOTAL_UNCOMPRESSED {
-            return Err(
-                "what is inside that file adds up to far more than a bulletin ever holds; \
-                 it was not opened."
-                    .to_string(),
-            );
-        }
-    }
     let mut doc: Document = {
         let mut entry = zip
             .by_name("document.json")
             .map_err(|_| "that file has no bulletin inside it (no document.json)".to_string())?;
-        if entry.size() > MAX_JSON_BYTES {
-            return Err("that file is far larger than a bulletin ever is".to_string());
-        }
-        let mut text = String::new();
-        entry.read_to_string(&mut text).map_err(|e| e.to_string())?;
+        let text = read_entry_text_capped(
+            &mut entry,
+            MAX_JSON_BYTES,
+            "that file is far larger than a bulletin ever is",
+        )?;
+        total += text.len() as u64;
         serde_json::from_str(&text).map_err(|e| e.to_string())?
     };
     check_version(&doc)?;
@@ -158,8 +195,8 @@ fn load_v1(path: &Path) -> Result<Document, String> {
             continue;
         };
         let hash = hash.to_string();
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        let bytes = read_entry_capped(&mut entry, MAX_TOTAL_UNCOMPRESSED - total, TOTAL_TOO_LARGE)?;
+        total += bytes.len() as u64;
         if ob_model::sha256_hex(&bytes) != hash {
             let short: String = hash.chars().take(12).collect();
             return Err(format!(
@@ -247,10 +284,12 @@ pub fn save_insert(insert: &Insert, host: &Document, path: &Path) -> Result<(), 
 /// Load an .obdi file: the sheet, the asset records it
 /// carried, and the picture bytes it packed, by hash.
 /// The .obd discipline throughout: the total is capped
-/// from the directory before anything is decompressed,
-/// and every asset entry's bytes are checked against
-/// the fingerprint in its name before anything is
-/// trusted; a mismatch refuses in plain words.
+/// by counting actual bytes as entries are read (the
+/// directory's declared sizes are never trusted —
+/// round 3, RT3-B), and every asset entry's bytes are
+/// checked against the fingerprint in its name before
+/// anything is trusted; a mismatch refuses in plain
+/// words.
 /// What a sheet file carries out: the sheet itself,
 /// the records of the pictures it uses, and their
 /// bytes keyed by fingerprint.
@@ -264,27 +303,19 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip =
         zip::ZipArchive::new(file).map_err(|e| format!("that file's container is damaged: {e}"))?;
+    // Actual bytes, counted as they are read — the same
+    // discipline as the bulletin loader (round 3, RT3-B).
     let mut total: u64 = 0;
-    for i in 0..zip.len() {
-        let entry = zip.by_index(i).map_err(|e| e.to_string())?;
-        total = total.saturating_add(entry.size());
-        if total > MAX_TOTAL_UNCOMPRESSED {
-            return Err(
-                "what is inside that file adds up to far more than a loose sheet \
-                 ever holds; it was not opened."
-                    .to_string(),
-            );
-        }
-    }
     let mut package: InsertPackage = {
         let mut entry = zip
             .by_name("insert.json")
             .map_err(|_| "that file has no loose sheet inside it (no insert.json)".to_string())?;
-        if entry.size() > MAX_JSON_BYTES {
-            return Err("that file is far larger than a loose sheet ever is".to_string());
-        }
-        let mut text = String::new();
-        entry.read_to_string(&mut text).map_err(|e| e.to_string())?;
+        let text = read_entry_text_capped(
+            &mut entry,
+            MAX_JSON_BYTES,
+            "that file is far larger than a loose sheet ever is",
+        )?;
+        total += text.len() as u64;
         serde_json::from_str(&text).map_err(|e| e.to_string())?
     };
     let mut bytes_by_hash: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -295,8 +326,8 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
             continue;
         };
         let hash = hash.to_string();
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        let bytes = read_entry_capped(&mut entry, MAX_TOTAL_UNCOMPRESSED - total, TOTAL_TOO_LARGE)?;
+        total += bytes.len() as u64;
         if ob_model::sha256_hex(&bytes) != hash {
             let short: String = hash.chars().take(12).collect();
             return Err(format!(
@@ -977,6 +1008,166 @@ mod tests {
         // The occasion keys were renamed on the way in.
         assert_eq!(doc.fields["occasion_date"], "2026-10-18");
         assert_eq!(doc.fields["occasion_name"], "Pentecost");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Find a byte pattern in a slice (fixture plumbing).
+    fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// Rewrite the declared uncompressed size of one
+    /// entry, in both its local header and its central
+    /// directory record, leaving the real bytes and the
+    /// honest checksum untouched: the red team's lie
+    /// (round 3, RT3-B). The declared field sits at a
+    /// fixed distance ahead of the entry's name in each
+    /// record, 12 bytes in a local header and 22 in a
+    /// central one, and the record's signature says
+    /// which record a name belongs to.
+    fn patch_declared_size(zip_bytes: &mut [u8], entry_name: &str, declared: u32) {
+        let name = entry_name.as_bytes();
+        let mut patched = 0;
+        let mut from = 0;
+        while let Some(found) = find_bytes(&zip_bytes[from..], name) {
+            let at = from + found;
+            if at >= 30 && &zip_bytes[at - 30..at - 26] == b"PK\x03\x04" {
+                zip_bytes[at - 12..at - 8].copy_from_slice(&declared.to_le_bytes());
+                patched += 1;
+            } else if at >= 46 && &zip_bytes[at - 46..at - 42] == b"PK\x01\x02" {
+                zip_bytes[at - 22..at - 18].copy_from_slice(&declared.to_le_bytes());
+                patched += 1;
+            }
+            from = at + 1;
+        }
+        assert_eq!(patched, 2, "both records for {entry_name} were patched");
+    }
+
+    #[test]
+    fn capped_reads_count_actual_bytes_not_declared_ones() {
+        // One 100-byte entry in a fresh in-memory zip
+        // each time. A cap of 100 reads it whole; a cap
+        // of 50 refuses it, and patching the declared
+        // size down to 5 changes neither outcome,
+        // because the count follows the bytes that
+        // actually arrive.
+        let honest = || {
+            let mut buf = Vec::new();
+            {
+                let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+                zip.start_file(
+                    "entry.bin",
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated),
+                )
+                .expect("start");
+                zip.write_all(&[7u8; 100]).expect("write");
+                zip.finish().expect("finish");
+            }
+            buf
+        };
+        let mut lying = honest();
+        patch_declared_size(&mut lying, "entry.bin", 5);
+        for bytes in [honest(), lying] {
+            let mut zip =
+                zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("archive opens");
+            let mut entry = zip.by_index(0).expect("entry");
+            assert_eq!(
+                read_entry_capped(&mut entry, 100, "too large")
+                    .expect("at the cap reads")
+                    .len(),
+                100
+            );
+            drop(entry);
+            let mut entry = zip.by_index(0).expect("entry again");
+            let err =
+                read_entry_capped(&mut entry, 50, "too large").expect_err("past the cap refuses");
+            assert_eq!(err, "too large");
+        }
+    }
+
+    #[test]
+    fn a_bulletin_whose_directory_lies_about_its_size_is_refused() {
+        // The red team's .obd bomb: one asset of zeroes
+        // a byte past the whole-container cap, deflated
+        // down to a small file, with its declared size
+        // patched down to 5 bytes. The old loader summed
+        // the declarations, saw a tiny file, and read
+        // the whole thing into memory. The loader now
+        // counts actual bytes and refuses.
+        let zeros = vec![0u8; (MAX_TOTAL_UNCOMPRESSED + 1) as usize];
+        let mut doc = test_doc();
+        let hash = doc.add_asset(
+            &zeros,
+            AssetKind::Picture,
+            "image/png",
+            RightsRecord::default(),
+        );
+        let dir = scratch("bomb-obd");
+        let honest_path = dir.join("honest.obd");
+        save(&doc, &honest_path).expect("save");
+        assert!(load(&honest_path).is_err(), "even honest, it is too big");
+        let mut bytes = std::fs::read(&honest_path).expect("read");
+        let entry_name = format!("assets/{hash}");
+        patch_declared_size(&mut bytes, &entry_name, 5);
+        let lying_path = dir.join("lying.obd");
+        std::fs::write(&lying_path, &bytes).expect("write lying copy");
+        let err = load(&lying_path).expect_err("the lie no longer opens it");
+        assert_eq!(err, TOTAL_TOO_LARGE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loose_sheet_whose_directory_lies_about_its_size_is_refused() {
+        // The same bomb through the .obdi door.
+        let zeros = vec![0u8; (MAX_TOTAL_UNCOMPRESSED + 1) as usize];
+        let mut host = test_doc();
+        let hash = host.add_asset(
+            &zeros,
+            AssetKind::Picture,
+            "image/png",
+            RightsRecord::default(),
+        );
+        let insert = Insert {
+            id: "sheet-big".into(),
+            name: "Big art".into(),
+            life: ob_model::InsertLife::ThisWeekOnly,
+            keep_through: None,
+            panels: vec![Panel {
+                background_image: None,
+                id: "sheet-big-p1".into(),
+                name: "Big art".into(),
+                size: Size::new(396_000, 612_000),
+                frames: vec![Frame {
+                    id: "sheet-big-f1".into(),
+                    name: "Photo".into(),
+                    kind: FrameKind::Picture,
+                    rect: Rect::new(0, 0, 100_000, 100_000),
+                    story_id: None,
+                    role: ContentRole::Standing,
+                    picture: Some(PicturePlacement::new(hash.clone())),
+                    music: None,
+                }],
+                guides: vec![],
+            }],
+            stories: vec![],
+            styles: default_styles(),
+            sheet: ob_model::InsertSheet {
+                preset: "half-letter".into(),
+                copies: 1,
+                paper_note: String::new(),
+            },
+        };
+        let dir = scratch("bomb-obdi");
+        let honest_path = dir.join("honest.obdi");
+        save_insert(&insert, &host, &honest_path).expect("save");
+        let mut bytes = std::fs::read(&honest_path).expect("read");
+        let entry_name = format!("assets/{hash}");
+        patch_declared_size(&mut bytes, &entry_name, 5);
+        let lying_path = dir.join("lying.obdi");
+        std::fs::write(&lying_path, &bytes).expect("write lying copy");
+        let err = load_insert(&lying_path).expect_err("the lie no longer opens it");
+        assert_eq!(err, TOTAL_TOO_LARGE);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

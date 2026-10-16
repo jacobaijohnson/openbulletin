@@ -372,7 +372,13 @@ impl ClipLibrary {
     /// paths are flattened to bare file names (the font
     /// library's traversal rule: nothing may write outside
     /// the collection folder, ever), and the whole archive
-    /// is refused when it decompresses past the cap.
+    /// is refused when it decompresses past the cap. The
+    /// cap counts actual bytes as each entry is read
+    /// (round 3, RT3-B): the sizes the archive's own
+    /// directory declares are never summed, because a
+    /// directory can lie about them, claiming a few bytes
+    /// for an entry that expands to hundreds of
+    /// megabytes.
     pub fn add_collection_from_zip(
         &self,
         zip_name: &str,
@@ -394,6 +400,11 @@ impl ClipLibrary {
             .to_string();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
             .map_err(|e| format!("that zip file cannot be read: {e}"))?;
+        // Actual bytes, counted as they arrive; `total`
+        // never passes the cap, so each read is capped at
+        // what is left of it and memory stays bounded no
+        // matter what the entries expand to.
+        const MAX_TOTAL_UNCOMPRESSED: u64 = 512 * 1024 * 1024;
         let mut total: u64 = 0;
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
         for i in 0..archive.len() {
@@ -403,17 +414,19 @@ impl ClipLibrary {
             if entry.is_dir() {
                 continue;
             }
-            total += entry.size();
-            if total > 512 * 1024 * 1024 {
+            let mut buf = Vec::new();
+            entry
+                .by_ref()
+                .take(MAX_TOTAL_UNCOMPRESSED + 1 - total)
+                .read_to_end(&mut buf)
+                .map_err(|e| format!("a file in that zip cannot be read: {e}"))?;
+            total += buf.len() as u64;
+            if total > MAX_TOTAL_UNCOMPRESSED {
                 return Err(
                     "that zip holds more than 512 MB unzipped; a clipart pack is not that big"
                         .into(),
                 );
             }
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("a file in that zip cannot be read: {e}"))?;
             files.push((entry.name().to_string(), buf));
         }
         self.add_collection(&name, &files, notes, convert)
@@ -672,6 +685,64 @@ mod tests {
             .iter()
             .all(|i| i.path.starts_with(&collection.path)));
         assert!(!dir.parent().expect("parent").join("evil.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zip_declared_sizes_no_longer_decide_the_cap() {
+        // Round 3, RT3-B: the intake used to sum the
+        // sizes the archive's directory declares toward
+        // its 512 MB cap. This pack's two small pictures
+        // declare 400 MB each, so the old sum refused a
+        // pack that really holds a few hundred bytes.
+        // The count now follows the bytes that actually
+        // arrive, and the pack loads.
+        let dir = temp_dir("zip-lying");
+        let lib = ClipLibrary::open(dir.clone()).expect("open");
+        let mut zip_bytes = {
+            let mut buf = Vec::new();
+            {
+                let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+                let opts = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
+                writer.start_file("dove.png", opts).expect("start");
+                use std::io::Write as _;
+                writer.write_all(&tiny_png()).expect("write");
+                writer.start_file("cross.png", opts).expect("start 2");
+                writer.write_all(&tiny_png()).expect("write 2");
+                writer.finish().expect("finish");
+            }
+            buf
+        };
+        for name in ["dove.png", "cross.png"] {
+            let needle = name.as_bytes();
+            let mut patched = 0;
+            let mut from = 0;
+            while let Some(found) = zip_bytes[from..]
+                .windows(needle.len())
+                .position(|w| w == needle)
+            {
+                let at = from + found;
+                if at >= 30 && &zip_bytes[at - 30..at - 26] == b"PK\x03\x04" {
+                    zip_bytes[at - 12..at - 8].copy_from_slice(&400_000_000u32.to_le_bytes());
+                    patched += 1;
+                } else if at >= 46 && &zip_bytes[at - 46..at - 42] == b"PK\x01\x02" {
+                    zip_bytes[at - 22..at - 18].copy_from_slice(&400_000_000u32.to_le_bytes());
+                    patched += 1;
+                }
+                from = at + 1;
+            }
+            assert_eq!(patched, 2, "both records for {name} were patched");
+        }
+        let report = lib
+            .add_collection_from_zip(
+                "honest-pack.zip",
+                &zip_bytes,
+                &CollectionNotes::default(),
+                None,
+            )
+            .expect("small pack with lying declarations loads");
+        assert_eq!(report.added, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

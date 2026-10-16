@@ -10,6 +10,8 @@ use eframe::egui;
 use ob_layout::{build_template, Preset};
 use ob_model::{ChurchProfile, ContentRole, Document};
 
+mod editmap;
+
 const STEPS: [&str; 5] = ["Start", "This Sunday", "Announcements", "Check", "Print"];
 
 /// The app's small, named palette (UI audit round 2, batch 3).
@@ -1301,6 +1303,30 @@ struct App {
     /// area and the Pages window offer to bring them back.
     /// Any new edit session or document swap clears it.
     discarded_edit: Option<(String, usize, usize, String)>,
+    /// E1 shaped editor: caret and selection anchor as byte
+    /// offsets in DISPLAY space (see editmap::BufferMap). The
+    /// session buffer stays the raw '\n'-joined text; every
+    /// edit is translated through the map.
+    edit_caret: usize,
+    edit_anchor: usize,
+    /// A chip the first Backspace/Delete press selected
+    /// whole; a second press deletes it whole.
+    edit_chip_armed: Option<std::ops::Range<usize>>,
+    /// True while a pointer drag is extending the selection.
+    edit_sel_drag: bool,
+    /// The x position (frame points) Up/Down movement tries
+    /// to keep across lines.
+    edit_desired_x: Option<f32>,
+    /// Cached shaped geometry for the session's buffer.
+    edit_layout: Option<EditorLayout>,
+    /// Set when shaped layout construction produced nothing
+    /// usable: the session falls back to the plain overlay
+    /// editor rather than blocking editing (E1 fallback).
+    edit_layout_failed: bool,
+    /// IME composition in progress: (display offset, text).
+    /// Drawn at the caret, never part of the buffer until
+    /// the composition commits.
+    ime_preedit: Option<(usize, String)>,
     preview_cache: Option<(String, Vec<PreviewSheet>)>,
     saved_snapshot: String,
     journal_snapshot: String,
@@ -1345,6 +1371,35 @@ struct PreviewLine {
     font_family: String,
     bold: bool,
     italic: bool,
+}
+
+/// One paragraph of the shaped canvas editor (E1): its
+/// parley layout in DISPLAY space plus where it sits inside
+/// the frame, stacked exactly as panel_lines stacks the
+/// idle preview.
+struct EditorPara {
+    layout: ob_text::text_layout::TextLayout,
+    /// Top of the first line box, frame-local milli-points.
+    top: ob_model::Mpt,
+    /// Line height in milli-points (style size x 1.3).
+    line_h: ob_model::Mpt,
+    /// Lines within the frame's bottom edge. Lines past this
+    /// exist for caret math but are not drawn, the same
+    /// clipping the idle canvas applies.
+    drawn: usize,
+    size: f32,
+    font_family: String,
+    bold: bool,
+    italic: bool,
+    align: ob_model::Align,
+}
+
+/// The shaped editor's geometry for one buffer state: the
+/// raw/resolved/display map plus one layout per paragraph.
+struct EditorLayout {
+    key: String,
+    map: editmap::BufferMap,
+    paras: Vec<EditorPara>,
 }
 
 /// The egui family key for the library face a preview line
@@ -1507,6 +1562,14 @@ impl Default for App {
             edit_start: None,
             edit_start_text: String::new(),
             discarded_edit: None,
+            edit_caret: 0,
+            edit_anchor: 0,
+            edit_chip_armed: None,
+            edit_sel_drag: false,
+            edit_desired_x: None,
+            edit_layout: None,
+            edit_layout_failed: false,
+            ime_preedit: None,
             preview_cache: None,
             saved_snapshot: String::new(),
             journal_snapshot: String::new(),
@@ -2741,7 +2804,23 @@ impl App {
         self.edit_text.clear();
         self.edit_styles.clear();
         self.edit_done = false;
+        self.reset_editor_transient();
         self.status = "Typing thrown away. The page keeps the words it had.".into();
+    }
+
+    /// Clear the shaped editor's per-session state (E1):
+    /// caret, selection, chip arm, cached layout, and any
+    /// IME composition. Called when a session opens and when
+    /// it closes, so no stale geometry survives a buffer swap.
+    fn reset_editor_transient(&mut self) {
+        self.edit_caret = 0;
+        self.edit_anchor = 0;
+        self.edit_chip_armed = None;
+        self.edit_sel_drag = false;
+        self.edit_desired_x = None;
+        self.edit_layout = None;
+        self.edit_layout_failed = false;
+        self.ime_preedit = None;
     }
 
     /// Bring back the words a cancelled typing session threw
@@ -2808,6 +2887,7 @@ impl App {
         self.editing = Some((pi, fi));
         self.selected_frame = Some(fi);
         self.edit_done = false;
+        self.reset_editor_transient();
         self.focus_edit = true;
     }
 
@@ -2818,6 +2898,7 @@ impl App {
         let Some((pi, fi)) = self.editing.take() else {
             return;
         };
+        self.reset_editor_transient();
         self.edit_start_text.clear();
         self.sync_edit_styles();
         let Some(frame) = self.doc.panels[pi].frames.get(fi) else {
@@ -2859,6 +2940,639 @@ impl App {
             if start != snapshot(&self.doc) {
                 self.record_undo(start);
             }
+        }
+    }
+
+    /// Build (or reuse) the shaped editor geometry for the
+    /// current session buffer (E1). The cache key covers the
+    /// document snapshot, the buffer, the per-paragraph
+    /// styles, and the frame size, so any change rebuilds.
+    /// Paragraphs stack with the same arithmetic panel_lines
+    /// uses, so editing shows exactly what the idle canvas
+    /// and the PDF show.
+    fn refresh_editor_layout(&mut self) {
+        let Some((pi, fi)) = self.editing else {
+            return;
+        };
+        let Some(frame) = self
+            .doc
+            .panels
+            .get(pi)
+            .and_then(|p| p.frames.get(fi))
+            .map(|f| f.rect)
+        else {
+            return;
+        };
+        let key = format!(
+            "{}|{}|{}|{}|{}x{}",
+            self.frame_snapshot,
+            self.edit_salt,
+            self.edit_text,
+            self.edit_styles.join("\u{1}"),
+            frame.w,
+            frame.h
+        );
+        if self
+            .edit_layout
+            .as_ref()
+            .map(|l| l.key == key)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let doc = self.doc.clone();
+        let text = self.edit_text.clone();
+        let styles: Vec<ob_model::ParagraphStyle> = (0..text.split('\n').count())
+            .map(|i| {
+                style_or_body(
+                    &doc,
+                    self.edit_styles
+                        .get(i)
+                        .map(|s| s.as_str())
+                        .unwrap_or("body"),
+                )
+            })
+            .collect();
+        let (map, paras, failed) = {
+            let shaper = self.shaper();
+            let mut flags: Vec<bool> = Vec::new();
+            let map = editmap::BufferMap::build(&text, &doc, |pi, resolved| {
+                if resolved.contains('\t') {
+                    let st = &styles[pi.min(styles.len() - 1)];
+                    let spec = ob_text::shaping::FontSpec {
+                        family: st.font_family.clone(),
+                        bold: st.bold,
+                        italic: st.italic,
+                    };
+                    flags.push(true);
+                    Some(shaper.expand_order_line(resolved, frame.w, &spec, st.font_size))
+                } else {
+                    flags.push(false);
+                    None
+                }
+            });
+            let mut paras: Vec<EditorPara> = Vec::new();
+            let mut y = frame.y;
+            let mut any_text = false;
+            let mut any_clusters = false;
+            for i in 0..map.para_count() {
+                let st = styles[i.min(styles.len() - 1)].clone();
+                let spec = ob_text::shaping::FontSpec {
+                    family: st.font_family.clone(),
+                    bold: st.bold,
+                    italic: st.italic,
+                };
+                let dr = map.para_display_range(i);
+                let dtext = &map.display_text[dr];
+                if !dtext.trim().is_empty() {
+                    any_text = true;
+                }
+                let layout = if flags.get(i) == Some(&true) {
+                    shaper.layout_display_line(dtext, &spec, st.font_size, 1.3, frame.w, st.align)
+                } else {
+                    shaper.layout_paragraph(dtext, &spec, st.font_size, 1.3, frame.w, st.align)
+                };
+                if layout.lines().iter().any(|l| !l.clusters.is_empty()) {
+                    any_clusters = true;
+                }
+                let line_h = st.font_size * 13 / 10;
+                let mut yy = y;
+                let mut drawn = 0usize;
+                for _ in 0..layout.lines().len() {
+                    if yy + line_h > frame.y + frame.h {
+                        break;
+                    }
+                    yy += line_h;
+                    drawn += 1;
+                }
+                paras.push(EditorPara {
+                    layout,
+                    top: y,
+                    line_h,
+                    drawn,
+                    size: st.font_size as f32 / 1000.0,
+                    font_family: st.font_family.clone(),
+                    bold: st.bold,
+                    italic: st.italic,
+                    align: st.align,
+                });
+                y = yy + st.space_after;
+            }
+            (map, paras, any_text && !any_clusters)
+        };
+        self.edit_layout = Some(EditorLayout { key, map, paras });
+        self.edit_layout_failed = failed;
+    }
+
+    /// The current selection in display space.
+    fn editor_selection(&self) -> std::ops::Range<usize> {
+        self.edit_anchor.min(self.edit_caret)..self.edit_anchor.max(self.edit_caret)
+    }
+
+    /// Apply one display-space edit to the session buffer
+    /// through the byte map, park the caret after the
+    /// inserted text, and resync the paragraph style list
+    /// (the same bookkeeping commit_edit relies on).
+    fn apply_display_edit(&mut self, range: std::ops::Range<usize>, replacement: &str) {
+        let Some((raw_range, rep)) = self
+            .edit_layout
+            .as_ref()
+            .map(|l| l.map.translate_edit(range, replacement))
+        else {
+            return;
+        };
+        let caret_raw = raw_range.start + rep.len();
+        let mut text = std::mem::take(&mut self.edit_text);
+        text.replace_range(raw_range, &rep);
+        self.edit_text = text;
+        self.edit_chip_armed = None;
+        self.edit_desired_x = None;
+        self.edit_layout = None;
+        self.refresh_editor_layout();
+        let d = self
+            .edit_layout
+            .as_ref()
+            .map(|l| l.map.raw_to_display(caret_raw))
+            .unwrap_or(caret_raw);
+        self.edit_caret = d;
+        self.edit_anchor = d;
+        if let Some(l) = &self.edit_layout {
+            self.edit_cursor_para = l.map.para_at_display(d);
+        }
+        self.sync_edit_styles();
+    }
+
+    /// Type or paste text at the selection, replacing it.
+    fn editor_insert_text(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        let sel = self.editor_selection();
+        self.apply_display_edit(sel, s);
+    }
+
+    /// Set the caret to a display offset, optionally
+    /// extending the selection. `forward` picks which end of
+    /// an atomic (a chip or a dot leader) a stop inside it
+    /// snaps to, so one keypress crosses a chip in one step.
+    fn editor_set_caret(&mut self, target: usize, extend: bool, forward: bool) {
+        let Some(layout) = &self.edit_layout else {
+            return;
+        };
+        let target = layout.map.snap_display_caret_dir(target, forward);
+        self.edit_caret = target;
+        if !extend {
+            self.edit_anchor = target;
+        }
+        self.edit_cursor_para = layout.map.para_at_display(target);
+        self.edit_chip_armed = None;
+    }
+
+    /// Hit-test a screen point against the editor geometry:
+    /// the display byte offset under the pointer. x and y are
+    /// converted into the paragraph's layout space (points,
+    /// paragraph top-left origin) exactly as the layouts were
+    /// built.
+    fn editor_hit(
+        &self,
+        pos: egui::Pos2,
+        origin: egui::Pos2,
+        scale: f32,
+        frame: &ob_model::Rect,
+    ) -> Option<usize> {
+        let layout = self.edit_layout.as_ref()?;
+        if layout.paras.is_empty() {
+            return None;
+        }
+        let px = (pos.x - origin.x) / scale;
+        let py = (pos.y - origin.y) / scale;
+        let lx = px - frame.x as f32 / 1000.0;
+        let mut chosen = layout.paras.len() - 1;
+        for (i, para) in layout.paras.iter().enumerate() {
+            let top = para.top as f32 / 1000.0;
+            let bottom = top + para.layout.lines().len() as f32 * para.layout.line_height();
+            if py <= bottom {
+                chosen = i;
+                break;
+            }
+        }
+        let para = &layout.paras[chosen];
+        let top = para.top as f32 / 1000.0;
+        let local = para.layout.byte_offset_at(lx, py - top);
+        Some(layout.map.para_display_range(chosen).start + local)
+    }
+
+    /// Place the caret from a pointer position, snapped to
+    /// the nearest atomic boundary (a click inside a chip
+    /// lands on its nearer end). With `extend`, the anchor
+    /// stays and only the caret moves (drag selection).
+    fn editor_click_caret(&mut self, d: usize, extend: bool) {
+        let Some(layout) = &self.edit_layout else {
+            return;
+        };
+        let d = layout.map.snap_display_caret(d);
+        self.edit_caret = d;
+        if !extend {
+            self.edit_anchor = d;
+        }
+        self.edit_cursor_para = layout.map.para_at_display(d);
+        self.edit_chip_armed = None;
+        self.edit_desired_x = None;
+    }
+
+    /// Select the word under a display offset (double-click),
+    /// grown over any chip it touches.
+    fn editor_select_word(&mut self, d: usize) {
+        let (range, para) = {
+            let Some(layout) = &self.edit_layout else {
+                return;
+            };
+            let para = layout.map.para_at_display(d);
+            let start = layout.map.para_display_range(para).start;
+            let wr = layout.paras[para].layout.word_range_at(d - start);
+            (
+                layout
+                    .map
+                    .expand_display_range(start + wr.start..start + wr.end),
+                para,
+            )
+        };
+        self.edit_anchor = range.start;
+        self.edit_caret = range.end;
+        self.edit_cursor_para = para;
+        self.edit_chip_armed = None;
+        self.edit_desired_x = None;
+    }
+
+    /// The caret's paragraph index and its byte offset
+    /// within that paragraph's display text.
+    fn editor_caret_local(&self) -> Option<(usize, usize)> {
+        let layout = self.edit_layout.as_ref()?;
+        let para = layout.map.para_at_display(self.edit_caret);
+        let start = layout.map.para_display_range(para).start;
+        Some((para, self.edit_caret - start))
+    }
+
+    /// Step one cluster stop left or right, crossing into
+    /// the next paragraph at its edge. A plain arrow with a
+    /// selection collapses it, as editors do.
+    fn editor_step(&mut self, forward: bool, extend: bool) {
+        if !extend {
+            let sel = self.editor_selection();
+            if sel.start != sel.end {
+                let t = if forward { sel.end } else { sel.start };
+                self.editor_set_caret(t, false, forward);
+                return;
+            }
+        }
+        let Some((para, local)) = self.editor_caret_local() else {
+            return;
+        };
+        let target = {
+            let layout = self.edit_layout.as_ref().unwrap();
+            let stops = cluster_stops(&layout.paras[para].layout);
+            let range = layout.map.para_display_range(para);
+            if forward {
+                match stops.iter().find(|&&s| s > local) {
+                    Some(&s) => range.start + s,
+                    None => {
+                        if para + 1 < layout.map.para_count() {
+                            range.end + 1
+                        } else {
+                            range.end
+                        }
+                    }
+                }
+            } else {
+                match stops.iter().rev().find(|&&s| s < local) {
+                    Some(&s) => range.start + s,
+                    None => {
+                        if para > 0 {
+                            range.start - 1
+                        } else {
+                            range.start
+                        }
+                    }
+                }
+            }
+        };
+        self.edit_desired_x = None;
+        self.editor_set_caret(target, extend, forward);
+    }
+
+    /// Move the caret one visual line up or down, keeping
+    /// the x it started from until a horizontal move resets
+    /// it. Lines flow across paragraphs in order.
+    fn editor_step_line(&mut self, down: bool, extend: bool) {
+        let (target, keep_x) = {
+            let Some(layout) = self.edit_layout.as_ref() else {
+                return;
+            };
+            let para = layout.map.para_at_display(self.edit_caret);
+            let start = layout.map.para_display_range(para).start;
+            let local = self.edit_caret - start;
+            let pl = &layout.paras[para];
+            let (x0, y0, _) = pl.layout.caret_rect(local);
+            let line_h = pl.layout.line_height();
+            let cur_line = if line_h > 0.0 {
+                (y0 / line_h).round() as usize
+            } else {
+                0
+            };
+            let x = self.edit_desired_x.unwrap_or(x0);
+            let spot = if down {
+                if cur_line + 1 < pl.layout.lines().len() {
+                    Some((para, cur_line + 1))
+                } else if para + 1 < layout.paras.len() {
+                    Some((para + 1, 0))
+                } else {
+                    None
+                }
+            } else if cur_line > 0 {
+                Some((para, cur_line - 1))
+            } else if para > 0 {
+                Some((
+                    para - 1,
+                    layout.paras[para - 1]
+                        .layout
+                        .lines()
+                        .len()
+                        .saturating_sub(1),
+                ))
+            } else {
+                None
+            };
+            match spot {
+                Some((tp, tl)) => {
+                    let tpl = &layout.paras[tp];
+                    let mid_y = (tl as f32 + 0.5) * tpl.layout.line_height();
+                    let tlocal = tpl.layout.byte_offset_at(x, mid_y);
+                    (layout.map.para_display_range(tp).start + tlocal, Some(x))
+                }
+                None => (
+                    if down {
+                        layout.map.display_text.len()
+                    } else {
+                        0
+                    },
+                    None,
+                ),
+            }
+        };
+        self.editor_set_caret(target, extend, down);
+        self.edit_desired_x = keep_x;
+    }
+
+    /// Jump to the start or end of the caret's visual line.
+    fn editor_line_edge(&mut self, end: bool, extend: bool) {
+        let Some((para, local)) = self.editor_caret_local() else {
+            return;
+        };
+        let target = {
+            let layout = self.edit_layout.as_ref().unwrap();
+            let pl = &layout.paras[para].layout;
+            let (_, y0, _) = pl.caret_rect(local);
+            let line_h = pl.line_height();
+            let cur = if line_h > 0.0 {
+                (y0 / line_h).round() as usize
+            } else {
+                0
+            };
+            let Some(line) = pl.lines().get(cur) else {
+                return;
+            };
+            let t = if end {
+                line.range.end
+            } else {
+                line.range.start
+            };
+            layout.map.para_display_range(para).start + t
+        };
+        self.edit_desired_x = None;
+        self.editor_set_caret(target, extend, end);
+    }
+
+    /// Jump by whole words over the display text.
+    fn editor_step_word(&mut self, forward: bool, extend: bool) {
+        let target = {
+            let Some(layout) = self.edit_layout.as_ref() else {
+                return;
+            };
+            word_stop(&layout.map.display_text, self.edit_caret, forward)
+        };
+        self.edit_desired_x = None;
+        self.editor_set_caret(target, extend, forward);
+    }
+
+    /// Backspace (backward) or Delete, with chip semantics:
+    /// the first press next to a chip or leader selects it
+    /// whole; the second press (or any press with a
+    /// selection) deletes the whole selection. A plain press
+    /// removes one cluster stop, or the paragraph break at a
+    /// paragraph edge.
+    fn editor_delete(&mut self, backward: bool) {
+        let sel = self.editor_selection();
+        if sel.start != sel.end {
+            self.apply_display_edit(sel, "");
+            return;
+        }
+        let caret = self.edit_caret;
+        let arm = {
+            let Some(layout) = self.edit_layout.as_ref() else {
+                return;
+            };
+            if backward {
+                layout.map.atomic_ending_at_display(caret)
+            } else {
+                layout.map.atomic_starting_at_display(caret)
+            }
+        };
+        if let Some(a) = arm {
+            let para = self
+                .edit_layout
+                .as_ref()
+                .map(|l| l.map.para_at_display(a.start));
+            self.edit_anchor = a.start;
+            self.edit_caret = a.end;
+            self.edit_chip_armed = Some(a);
+            self.edit_desired_x = None;
+            if let Some(p) = para {
+                self.edit_cursor_para = p;
+            }
+            return;
+        }
+        let range = {
+            let Some((para, local)) = self.editor_caret_local() else {
+                return;
+            };
+            let layout = self.edit_layout.as_ref().unwrap();
+            let range = layout.map.para_display_range(para);
+            let stops = cluster_stops(&layout.paras[para].layout);
+            if backward {
+                if caret == 0 {
+                    return;
+                }
+                let from = if local == 0 {
+                    caret - 1
+                } else {
+                    let prev = stops
+                        .iter()
+                        .rev()
+                        .find(|&&s| s < local)
+                        .copied()
+                        .unwrap_or(0);
+                    range.start + prev
+                };
+                from..caret
+            } else {
+                if caret >= layout.map.display_text.len() {
+                    return;
+                }
+                let to = if local >= range.end - range.start {
+                    caret + 1
+                } else {
+                    let next = stops
+                        .iter()
+                        .find(|&&s| s > local)
+                        .copied()
+                        .unwrap_or(range.end - range.start);
+                    range.start + next
+                };
+                caret..to
+            }
+        };
+        self.apply_display_edit(range, "");
+    }
+
+    /// Feed one input event to the shaped editor (E1). Runs
+    /// only while the editor's focus sink holds focus. Text
+    /// and IME commits go through the same display-space
+    /// edit path as the mouse, so chips stay atomic.
+    fn editor_event(&mut self, ctx: &egui::Context, event: &egui::Event) {
+        match event {
+            egui::Event::Text(t) => {
+                if self.ime_preedit.is_none() {
+                    let clean: String = t.chars().filter(|c| !c.is_control()).collect();
+                    self.editor_insert_text(&clean);
+                }
+            }
+            egui::Event::Paste(t) => {
+                let t = t.replace("\r\n", "\n").replace('\r', "\n");
+                self.editor_insert_text(&t);
+            }
+            egui::Event::Copy => {
+                let sel = self.editor_selection();
+                if sel.start != sel.end {
+                    if let Some(l) = &self.edit_layout {
+                        ctx.copy_text(l.map.display_text[sel.clone()].to_string());
+                    }
+                }
+            }
+            egui::Event::Cut => {
+                let sel = self.editor_selection();
+                if sel.start != sel.end {
+                    if let Some(l) = &self.edit_layout {
+                        ctx.copy_text(l.map.display_text[sel.clone()].to_string());
+                    }
+                    self.apply_display_edit(sel, "");
+                }
+            }
+            egui::Event::Ime(ime) => match ime {
+                egui::ImeEvent::Enabled | egui::ImeEvent::Disabled => {
+                    self.ime_preedit = None;
+                }
+                egui::ImeEvent::Preedit(s) => {
+                    if s.is_empty() {
+                        self.ime_preedit = None;
+                    } else {
+                        let at = self.editor_selection().start;
+                        self.ime_preedit = Some((at, s.clone()));
+                    }
+                }
+                egui::ImeEvent::Commit(s) => {
+                    self.ime_preedit = None;
+                    let s = s.clone();
+                    self.editor_insert_text(&s);
+                }
+            },
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                self.editor_key(*key, *modifiers);
+            }
+            _ => {}
+        }
+    }
+
+    /// One keypress inside the shaped editor. Escape is not
+    /// handled here: the canvas still cancels the session on
+    /// Escape, exactly as before. Ctrl/Cmd+Z does nothing in
+    /// a session on purpose: the session is one undo step
+    /// from its begin snapshot.
+    fn editor_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+        use egui::Key;
+        if self.ime_preedit.is_some() {
+            return; // the composition owns the keyboard
+        }
+        let extend = modifiers.shift;
+        let word = modifiers.ctrl || modifiers.alt;
+        match key {
+            Key::Enter => self.editor_insert_text("\n"),
+            Key::Backspace => self.editor_delete(true),
+            Key::Delete => self.editor_delete(false),
+            Key::ArrowLeft => {
+                if word {
+                    self.editor_step_word(false, extend);
+                } else if modifiers.mac_cmd {
+                    self.editor_line_edge(false, extend);
+                } else {
+                    self.editor_step(false, extend);
+                }
+            }
+            Key::ArrowRight => {
+                if word {
+                    self.editor_step_word(true, extend);
+                } else if modifiers.mac_cmd {
+                    self.editor_line_edge(true, extend);
+                } else {
+                    self.editor_step(true, extend);
+                }
+            }
+            Key::ArrowUp => self.editor_step_line(false, extend),
+            Key::ArrowDown => self.editor_step_line(true, extend),
+            Key::Home => {
+                if modifiers.command {
+                    self.editor_set_caret(0, extend, false);
+                } else {
+                    self.editor_line_edge(false, extend);
+                }
+            }
+            Key::End => {
+                if modifiers.command {
+                    let len = self
+                        .edit_layout
+                        .as_ref()
+                        .map(|l| l.map.display_text.len())
+                        .unwrap_or(0);
+                    self.editor_set_caret(len, extend, true);
+                } else {
+                    self.editor_line_edge(true, extend);
+                }
+            }
+            Key::A if modifiers.command => {
+                let len = self
+                    .edit_layout
+                    .as_ref()
+                    .map(|l| l.map.display_text.len())
+                    .unwrap_or(0);
+                self.edit_anchor = 0;
+                self.edit_caret = len;
+                self.edit_chip_armed = None;
+            }
+            _ => {}
         }
     }
 
@@ -2973,7 +3687,14 @@ impl App {
                         .map(|f| f.name.clone())
                         .unwrap_or_default();
                     self.sync_edit_styles();
-                    let para = cursor_paragraph(ctx, &self.edit_text, &self.edit_salt);
+                    // The caret's paragraph comes from the
+                    // shaped editor's own position (E1).
+                    self.refresh_editor_layout();
+                    let para = self
+                        .edit_layout
+                        .as_ref()
+                        .map(|l| l.map.para_at_display(self.edit_caret))
+                        .unwrap_or(0);
                     self.edit_cursor_para = para;
                     let cur_style = self
                         .edit_styles
@@ -3005,11 +3726,10 @@ impl App {
                             self.edit_done = true;
                         }
                     });
-                    // The raw field tokens are visible while
-                    // typing (a known fidelity debt); say what
-                    // the braces mean before someone "repairs"
-                    // one (J12, Wonder lane 2 finding 6).
-                    ui.small("Words in {braces} fill themselves in from your church and this Sunday.");
+                    // Field words show filled in, shaded, and
+                    // cannot be typed over (E1); say where to
+                    // change them before someone tries (J12).
+                    ui.small("Shaded words fill themselves in from your church and this Sunday. They cannot be typed over; change them on the Start and This Sunday steps.");
                 }
                 ui.separator();
                 egui::ScrollArea::both()
@@ -3283,7 +4003,12 @@ impl App {
             if let Some(pos) = pointer {
                 let pm = to_mpt(pos);
                 if let Some(fi) = frame_hit(pm) {
-                    if self.doc.panels[idx].frames[fi].story_id.is_some() {
+                    // A double-click on the box already being
+                    // edited selects a word in the shaped
+                    // editor (handled below), not a re-entry.
+                    if self.editing != Some((idx, fi))
+                        && self.doc.panels[idx].frames[fi].story_id.is_some()
+                    {
                         self.enter_edit(idx, fi);
                     }
                 }
@@ -3543,35 +4268,248 @@ impl App {
             egui::Stroke::new(1.0_f32, egui::Color32::DARK_GRAY),
         );
 
-        // The inline editor, standing exactly where the frame is.
+        // The inline editor, standing exactly where the frame
+        // is (E1): the shaped editor. The frame's text is drawn
+        // from the session buffer with the real faces, sizes,
+        // and dot leaders, field words show as shaded chips
+        // with their filled-in text, and the caret and
+        // selection come from the same parley geometry as the
+        // print path. Keyboard input lands on a focus sink:
+        // the edit id holds keyboard focus in egui's memory
+        // (no widget needs to exist for that), and this code
+        // reads the raw input events while it does.
         if self.editing.map(|(pi, _)| pi) == Some(idx) {
             let (_, efi) = self.editing.expect("editing checked");
             self.sync_edit_styles();
             let f = panel.frames[efi].clone();
+            let fx = f.rect.x as f32 / 1000.0;
             let frect = egui::Rect::from_min_max(
-                to_px(f.rect.x as f32 / 1000.0, f.rect.y as f32 / 1000.0),
+                to_px(fx, f.rect.y as f32 / 1000.0),
                 to_px(
                     (f.rect.x + f.rect.w) as f32 / 1000.0,
                     (f.rect.y + f.rect.h) as f32 / 1000.0,
                 ),
             );
-            let first_size = self
-                .edit_styles
-                .first()
-                .and_then(|sid| self.doc.style(sid))
-                .map(|st| st.font_size as f32 / 1000.0 * scale)
-                .unwrap_or(12.0)
-                .clamp(10.0, 20.0);
             let edit_id = egui::Id::new(("canvas-edit", self.edit_salt.as_str()));
-            if self.focus_edit {
-                self.focus_edit = false;
-                ctx.memory_mut(|m| m.request_focus(edit_id));
+            self.refresh_editor_layout();
+            if self.edit_layout_failed || self.edit_layout.is_none() {
+                // FALLBACK (E1): shaped layout construction
+                // produced nothing usable (the shaping stack
+                // found no clusters for non-empty text), so
+                // this session uses the plain overlay editor
+                // rather than blocking editing. Field words
+                // show as raw {braces} here, as they did
+                // before the shaped editor.
+                let first_size = self
+                    .edit_styles
+                    .first()
+                    .and_then(|sid| self.doc.style(sid))
+                    .map(|st| st.font_size as f32 / 1000.0 * scale)
+                    .unwrap_or(12.0)
+                    .clamp(10.0, 20.0);
+                if self.focus_edit {
+                    self.focus_edit = false;
+                    ctx.memory_mut(|m| m.request_focus(edit_id));
+                }
+                let editor = egui::TextEdit::multiline(&mut self.edit_text)
+                    .id(edit_id)
+                    .font(egui::FontId::proportional(first_size))
+                    .desired_width(frect.width());
+                ui.put(frect, editor);
+            } else {
+                if self.focus_edit {
+                    self.focus_edit = false;
+                    ctx.memory_mut(|m| m.request_focus(edit_id));
+                }
+                // Mouse: press places the caret, drag extends
+                // the selection, double-click selects a word.
+                let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+                if ui.input(|i| i.pointer.primary_pressed()) {
+                    if let Some(pos) = pointer_pos {
+                        if frect.contains(pos) {
+                            ctx.memory_mut(|m| m.request_focus(edit_id));
+                            if let Some(d) = self.editor_hit(pos, origin, scale, &f.rect) {
+                                self.editor_click_caret(d, false);
+                                self.edit_sel_drag = true;
+                            }
+                        }
+                    }
+                }
+                if self.edit_sel_drag && response.dragged() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        if let Some(d) = self.editor_hit(pos, origin, scale, &f.rect) {
+                            self.editor_click_caret(d, true);
+                        }
+                    }
+                }
+                if response.drag_stopped() {
+                    self.edit_sel_drag = false;
+                }
+                if response.double_clicked() {
+                    if let Some(pos) = pointer_pos {
+                        if frect.contains(pos) {
+                            if let Some(d) = self.editor_hit(pos, origin, scale, &f.rect) {
+                                self.editor_select_word(d);
+                            }
+                        }
+                    }
+                }
+                // Keyboard, clipboard, and IME events.
+                if ctx.memory(|m| m.has_focus(edit_id)) {
+                    let events = ctx.input(|i| i.events.clone());
+                    for ev in &events {
+                        self.editor_event(ctx, ev);
+                    }
+                }
+                if let Some(pos) = pointer_pos {
+                    if frect.contains(pos) {
+                        ctx.output_mut(|o| o.cursor_icon = egui::CursorIcon::Text);
+                    }
+                }
+                // Draw: chips and selection under the text,
+                // then the shaped lines, caret, and any IME
+                // composition preview.
+                let clip = painter.with_clip_rect(panel_rect);
+                let sel = self.editor_selection();
+                if let Some(layout) = &self.edit_layout {
+                    for (pno, para) in layout.paras.iter().enumerate() {
+                        let prange = layout.map.para_display_range(pno);
+                        let ptop = para.top as f32 / 1000.0;
+                        let lo = sel.start.max(prange.start);
+                        let hi = sel.end.min(prange.end);
+                        if sel.start != sel.end && lo < hi {
+                            let rects = para
+                                .layout
+                                .selection_rects(lo - prange.start..hi - prange.start);
+                            for (rx, ry, rw, rh) in rects {
+                                let r = egui::Rect::from_min_size(
+                                    to_px(fx + rx, ptop + ry),
+                                    egui::vec2(rw * scale, rh * scale),
+                                );
+                                clip.rect_filled(r, 2.0, ctx.style().visuals.selection.bg_fill);
+                            }
+                        }
+                        for chip in &layout.map.chips {
+                            if chip.display.start >= prange.start && chip.display.end <= prange.end
+                            {
+                                let armed = self.edit_chip_armed.as_ref() == Some(&chip.display);
+                                let rects = para.layout.selection_rects(
+                                    chip.display.start - prange.start
+                                        ..chip.display.end - prange.start,
+                                );
+                                for (rx, ry, rw, rh) in rects {
+                                    let r = egui::Rect::from_min_size(
+                                        to_px(fx + rx, ptop + ry),
+                                        egui::vec2(rw * scale, rh * scale),
+                                    );
+                                    clip.rect_filled(
+                                        r,
+                                        2.0,
+                                        egui::Color32::from_rgba_unmultiplied(0, 120, 195, 42),
+                                    );
+                                    if armed {
+                                        clip.rect_stroke(
+                                            r,
+                                            2.0,
+                                            egui::Stroke::new(1.5_f32, PROBLEM),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for para in &layout.paras {
+                        for (li, line) in para.layout.lines().iter().enumerate().take(para.drawn) {
+                            let line_text = &para.layout.text()[line.range.clone()];
+                            if line_text.is_empty() {
+                                continue;
+                            }
+                            let probe = PreviewLine {
+                                text: line_text.to_string(),
+                                size: para.size,
+                                x: 0.0,
+                                y: 0.0,
+                                w: line.width,
+                                align: para.align,
+                                font_family: para.font_family.clone(),
+                                bold: para.bold,
+                                italic: para.italic,
+                            };
+                            let fid =
+                                line_font_id(&self.font_rows, &probe, (para.size * scale).max(4.0));
+                            let bottom = (para.top + (li as ob_model::Mpt + 1) * para.line_h)
+                                as f32
+                                / 1000.0;
+                            clip.text(
+                                to_px(fx + line.x0, bottom),
+                                egui::Align2::LEFT_BOTTOM,
+                                line_text,
+                                fid,
+                                egui::Color32::BLACK,
+                            );
+                        }
+                    }
+                    if let Some((cpara, clocal)) = self.editor_caret_local() {
+                        let para = &layout.paras[cpara];
+                        let (cx, cy, ch) = para.layout.caret_rect(clocal);
+                        let line_h = para.layout.line_height();
+                        let line_idx = if line_h > 0.0 {
+                            (cy / line_h).round() as usize
+                        } else {
+                            0
+                        };
+                        if line_idx < para.drawn {
+                            let ptop = para.top as f32 / 1000.0;
+                            let caret_rect = egui::Rect::from_min_size(
+                                to_px(fx + cx, ptop + cy),
+                                egui::vec2(1.5, ch * scale),
+                            );
+                            let t = ctx.input(|i| i.time);
+                            if (t * 1.2) % 1.2 < 0.75 {
+                                clip.rect_filled(caret_rect, 0.0, egui::Color32::BLACK);
+                            }
+                            ctx.request_repaint_after(std::time::Duration::from_millis(450));
+                            ctx.output_mut(|o| {
+                                o.ime = Some(egui::output::IMEOutput {
+                                    rect: frect,
+                                    cursor_rect: caret_rect,
+                                });
+                            });
+                            if let Some((_, pre)) = &self.ime_preedit {
+                                let probe = PreviewLine {
+                                    text: pre.clone(),
+                                    size: para.size,
+                                    x: 0.0,
+                                    y: 0.0,
+                                    w: 0.0,
+                                    align: para.align,
+                                    font_family: para.font_family.clone(),
+                                    bold: para.bold,
+                                    italic: para.italic,
+                                };
+                                let fid = line_font_id(
+                                    &self.font_rows,
+                                    &probe,
+                                    (para.size * scale).max(4.0),
+                                );
+                                let galley =
+                                    clip.layout_no_wrap(pre.clone(), fid, egui::Color32::BLACK);
+                                let pos = to_px(fx + cx, ptop + cy);
+                                let gw = galley.size().x;
+                                let gh = galley.size().y;
+                                clip.galley(pos, galley, egui::Color32::BLACK);
+                                clip.line_segment(
+                                    [
+                                        egui::pos2(pos.x, pos.y + gh),
+                                        egui::pos2(pos.x + gw, pos.y + gh),
+                                    ],
+                                    egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
+                                );
+                            }
+                        }
+                    }
+                }
             }
-            let editor = egui::TextEdit::multiline(&mut self.edit_text)
-                .id(edit_id)
-                .font(egui::FontId::proportional(first_size))
-                .desired_width(frect.width());
-            ui.put(frect, editor);
         }
 
         // Right-click: exact position for a guide, or add one here.
@@ -6206,6 +7144,78 @@ fn main() -> eframe::Result<()> {
 /// point coordinates. Shared by the print preview (which offsets
 /// them onto sheets) and the Pages canvas (which draws them in
 /// place), so both always agree.
+/// A paragraph style by id, or the default body style when
+/// the document has no style with that id (the fallback the
+/// canvas preview has always used).
+fn style_or_body(doc: &Document, id: &str) -> ob_model::ParagraphStyle {
+    doc.style(id)
+        .cloned()
+        .unwrap_or_else(|| ob_model::ParagraphStyle {
+            id: "body".into(),
+            name: "Body".into(),
+            font_size: 11_000,
+            bold: false,
+            italic: false,
+            align: ob_model::Align::Left,
+            space_after: 4_000,
+            color: ob_model::Rgb::BLACK,
+            font_family: "Liberation Sans".into(),
+            font_sha256: None,
+        })
+}
+
+/// Every caret stop inside one paragraph layout, in
+/// paragraph-local byte offsets: line starts and ends plus
+/// every cluster boundary, sorted and deduped.
+fn cluster_stops(layout: &ob_text::text_layout::TextLayout) -> Vec<usize> {
+    let mut stops: Vec<usize> = Vec::new();
+    for line in layout.lines() {
+        stops.push(line.range.start);
+        stops.push(line.range.end);
+        for c in &line.clusters {
+            stops.push(c.range.start);
+            stops.push(c.range.end);
+        }
+    }
+    stops.sort_unstable();
+    stops.dedup();
+    stops
+}
+
+/// The next word boundary in `text` from `pos`: words are
+/// runs of non-whitespace. Moving forward lands on the end
+/// of the current or next word; moving back on its start.
+/// Byte-wise: ASCII whitespace is never part of a multi-byte
+/// character, so stops stay on char boundaries.
+fn word_stop(text: &str, pos: usize, forward: bool) -> usize {
+    let bytes = text.as_bytes();
+    let is_ws = |b: u8| (b as char).is_whitespace();
+    if forward {
+        let mut i = pos;
+        while i < bytes.len() && !is_ws(bytes[i]) {
+            i += 1;
+        }
+        if i == pos {
+            while i < bytes.len() && is_ws(bytes[i]) {
+                i += 1;
+            }
+            while i < bytes.len() && !is_ws(bytes[i]) {
+                i += 1;
+            }
+        }
+        i
+    } else {
+        let mut i = pos;
+        while i > 0 && is_ws(bytes[i - 1]) {
+            i -= 1;
+        }
+        while i > 0 && !is_ws(bytes[i - 1]) {
+            i -= 1;
+        }
+        i
+    }
+}
+
 fn panel_lines(
     doc: &Document,
     panel: &ob_model::Panel,
@@ -6222,21 +7232,7 @@ fn panel_lines(
         };
         let mut y = frame.rect.y;
         for para in &story.paragraphs {
-            let style =
-                doc.style(&para.style)
-                    .cloned()
-                    .unwrap_or_else(|| ob_model::ParagraphStyle {
-                        id: "body".into(),
-                        name: "Body".into(),
-                        font_size: 11_000,
-                        bold: false,
-                        italic: false,
-                        align: ob_model::Align::Left,
-                        space_after: 4_000,
-                        color: ob_model::Rgb::BLACK,
-                        font_family: "Liberation Sans".into(),
-                        font_sha256: None,
-                    });
+            let style = style_or_body(doc, &para.style);
             let resolved = ob_model::resolve_fields(&para.text, doc);
             let spec = ob_text::shaping::FontSpec {
                 family: style.font_family.clone(),
@@ -6509,17 +7505,6 @@ fn choose_menu_target(
     } else {
         MenuTarget::Page
     }
-}
-
-fn cursor_paragraph(ctx: &egui::Context, text: &str, salt: &str) -> usize {
-    let id = egui::Id::new(("canvas-edit", salt));
-    if let Some(state) = egui::widgets::text_edit::TextEditState::load(ctx, id) {
-        if let Some(range) = state.cursor.char_range() {
-            let idx = range.primary.index;
-            return text.chars().take(idx).filter(|c| *c == '\n').count();
-        }
-    }
-    0
 }
 
 fn build_preview(doc_in: &Document) -> Vec<PreviewSheet> {

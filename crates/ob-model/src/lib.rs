@@ -315,19 +315,91 @@ impl Document {
     }
 }
 
-/// Resolve `{...}` field tokens in text against the profile and field map.
-pub fn resolve_fields(text: &str, doc: &Document) -> String {
+/// One field token found in raw text: where it sits in the raw
+/// text, where its value sits in the resolved text, and the
+/// token as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldSpan {
+    pub raw: std::ops::Range<usize>,
+    pub resolved: std::ops::Range<usize>,
+    pub token: String,
+}
+
+/// Text with its field tokens resolved, plus the span map the
+/// canvas editor needs to treat each token as one indivisible
+/// chip (E1): the resolved text is what prints; the spans say
+/// which raw bytes produced which resolved bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedText {
+    pub text: String,
+    pub spans: Vec<FieldSpan>,
+}
+
+/// The field tokens and where their values come from, in one
+/// table so the plain resolver and the mapped resolver can
+/// never disagree about the set.
+fn field_tokens(doc: &Document) -> Vec<(&'static str, String)> {
     let p = &doc.profile;
     let get = |k: &str| doc.fields.get(k).cloned().unwrap_or_default();
-    text.replace("{Church.name}", &p.name)
-        .replace("{Church.address}", &p.address)
-        .replace("{Church.times}", &p.service_times)
-        .replace("{Church.website}", &p.website)
-        .replace("{Church.giving}", &p.giving_url)
-        .replace("{Church.pastor}", &p.pastor)
-        .replace("{Sunday.date}", &get("sunday_date_long"))
-        .replace("{Sunday.name}", &get("sunday_name"))
-        .replace("{Sunday.reading}", &get("reading"))
+    vec![
+        ("{Church.name}", p.name.clone()),
+        ("{Church.address}", p.address.clone()),
+        ("{Church.times}", p.service_times.clone()),
+        ("{Church.website}", p.website.clone()),
+        ("{Church.giving}", p.giving_url.clone()),
+        ("{Church.pastor}", p.pastor.clone()),
+        ("{Sunday.date}", get("sunday_date_long")),
+        ("{Sunday.name}", get("sunday_name")),
+        ("{Sunday.reading}", get("reading")),
+    ]
+}
+
+/// Resolve `{...}` field tokens in text against the profile and
+/// field map, remembering where each token went.
+///
+/// Resolution is a single left-to-right pass: a value that
+/// itself contains a token-looking string is data, not a
+/// template, and is never re-resolved. (The previous chained
+/// `.replace` implementation could re-resolve inside values;
+/// every display surface now shares this one pass, so the
+/// canvas, the previews, and the PDF always agree.)
+pub fn resolve_fields_mapped(text: &str, doc: &Document) -> ResolvedText {
+    let tokens = field_tokens(doc);
+    let mut out = String::with_capacity(text.len());
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i < text.len() {
+        let rest = &text[i..];
+        let hit = tokens
+            .iter()
+            .find(|(tok, _)| rest.starts_with(tok))
+            .map(|(tok, val)| (*tok, val));
+        match hit {
+            Some((tok, val)) => {
+                let raw = i..i + tok.len();
+                let resolved = out.len()..out.len() + val.len();
+                out.push_str(val);
+                spans.push(FieldSpan {
+                    raw,
+                    resolved,
+                    token: tok.to_string(),
+                });
+                i += tok.len();
+            }
+            None => {
+                // Copy one character (never split a UTF-8 boundary).
+                let ch_len = rest.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                out.push_str(&rest[..ch_len]);
+                i += ch_len;
+            }
+        }
+    }
+    ResolvedText { text: out, spans }
+}
+
+/// Resolve `{...}` field tokens in text against the profile and field map.
+pub fn resolve_fields(text: &str, doc: &Document) -> String {
+    resolve_fields_mapped(text, doc).text
 }
 
 /// The house style set every template starts from. Large-print leaning:
@@ -469,6 +541,69 @@ mod tests {
             resolve_fields("{Church.name} - {Sunday.name}, {Sunday.date}", &doc),
             "Grace Lutheran - Twentieth Sunday after Pentecost, October 18, 2026"
         );
+    }
+
+    fn mapped_doc() -> Document {
+        let mut fields = BTreeMap::new();
+        fields.insert("sunday_name".to_string(), "Pentecost".to_string());
+        Document {
+            format_version: FORMAT_VERSION,
+            title: "t".into(),
+            profile: ChurchProfile {
+                name: "Grace".into(),
+                pastor: "Pastor Lee".into(),
+                ..Default::default()
+            },
+            fields,
+            styles: vec![],
+            stories: vec![],
+            panels: vec![],
+            sheet: SheetSpec {
+                preset: "letter-portrait".into(),
+                size: Size::new(0, 0),
+            },
+            no_announcements: false,
+        }
+    }
+
+    #[test]
+    fn mapped_resolution_records_exact_spans() {
+        let doc = mapped_doc();
+        let raw = "Sermon: {Church.pastor} on {Sunday.name}";
+        let r = resolve_fields_mapped(raw, &doc);
+        assert_eq!(r.text, "Sermon: Pastor Lee on Pentecost");
+        assert_eq!(r.spans.len(), 2);
+        let s0 = &r.spans[0];
+        assert_eq!(&raw[s0.raw.clone()], "{Church.pastor}");
+        assert_eq!(&r.text[s0.resolved.clone()], "Pastor Lee");
+        let s1 = &r.spans[1];
+        assert_eq!(&raw[s1.raw.clone()], "{Sunday.name}");
+        assert_eq!(&r.text[s1.resolved.clone()], "Pentecost");
+        // The plain resolver and the mapped one agree.
+        assert_eq!(resolve_fields(raw, &doc), r.text);
+    }
+
+    #[test]
+    fn mapped_resolution_handles_empty_values_and_no_tokens() {
+        let doc = mapped_doc();
+        let r = resolve_fields_mapped("At {Church.website} now", &doc);
+        assert_eq!(r.text, "At  now");
+        assert_eq!(r.spans.len(), 1);
+        assert_eq!(r.spans[0].resolved.len(), 0);
+        let plain = resolve_fields_mapped("No tokens here.", &doc);
+        assert_eq!(plain.text, "No tokens here.");
+        assert!(plain.spans.is_empty());
+    }
+
+    #[test]
+    fn mapped_resolution_never_re_resolves_inside_a_value() {
+        // A church literally named with braces is data: the
+        // single pass must not treat the value as a template.
+        let mut doc = mapped_doc();
+        doc.profile.name = "{Sunday.name} Church".into();
+        let r = resolve_fields_mapped("{Church.name}", &doc);
+        assert_eq!(r.text, "{Sunday.name} Church");
+        assert_eq!(r.spans.len(), 1);
     }
 }
 

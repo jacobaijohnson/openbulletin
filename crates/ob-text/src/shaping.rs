@@ -145,7 +145,7 @@ impl Shaper {
             .register_fonts(fontique::Blob::new(std::sync::Arc::new(data)), None);
     }
 
-    fn build_layout(
+    pub(crate) fn build_layout(
         &mut self,
         text: &str,
         spec: &FontSpec,

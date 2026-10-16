@@ -55,12 +55,35 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
   differed from what was there is kept: the status line offers
   "Bring the typed words back", reopening the box with them.
   Cancel still cancels; it no longer destroys.
+- **Typing shows the page as it will print** (E1, 2026-10-15).
+  While a box is being edited, its words stay in their real
+  typefaces and sizes, break lines exactly where the idle page
+  and the PDF break them, and tabbed lines (a hymn name and its
+  number) show their row of dots. Words that fill themselves in
+  from the church and the Sunday (the pastor's name, the date)
+  appear filled in and shaded, as one unbreakable piece: the
+  caret steps over the whole piece in one move, Backspace next
+  to one selects it whole and a second press removes it, and
+  typing over a selected piece replaces it. They cannot be
+  typed inside. The bar above the page says where those words
+  are changed (the Start and This Sunday steps). Composition
+  input (IME, for languages that compose characters) works:
+  the composition previews at the caret underlined and lands
+  as ordinary text when it commits. Two recorded limits: text
+  that overflows the bottom of its box is not drawn while
+  typing (the Check step's overflow finding still names it;
+  the idle page clips the same way), and Ctrl+Z inside a
+  typing session does nothing, because the session itself is
+  the undo step (below). If the shaping machinery ever fails
+  to lay a box out, the session falls back to the plain text
+  overlay it replaced, so editing is never blocked.
 - **Undo** covers the canvas: typing sessions (one step each),
   drags, nudges (a burst counts once), right-click applies, guide
   add/move/delete, and the Next Sunday command. Ctrl+Z and the
   Undo button in the top bar; Ctrl+Y or Ctrl+Shift+Z and Redo
-  put it back. While a text box anywhere has the keyboard, that
-  box keeps its own undo, as in Office.
+  put it back. The Announcements step's box is a plain text box
+  and keeps its own undo while it has the keyboard, as in
+  Office; the canvas editor's session is one step as a whole.
 - Undo history is per session and per file opened; it is not
   saved into the bulletin.
 

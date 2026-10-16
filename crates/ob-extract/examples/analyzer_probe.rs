@@ -12,7 +12,7 @@ fn main() {
             ExtractionDump::from_json(&text).expect("parse dump")
         })
         .collect();
-    let out = analyze(&dumps, ChurchProfile::default()).expect("analyze");
+    let out = analyze(&dumps, ChurchProfile::default(), &[]).expect("analyze");
     let standing = out.items.iter().filter(|i| i.standing).count();
     println!(
         "corpus={} family={} panels={} stories={} standing={} weekly={}",

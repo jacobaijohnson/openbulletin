@@ -2612,8 +2612,12 @@ mod tests {
         // And the draft the dump builds holds ONE story for
         // the thread, named by both boxes' frames, its words
         // exactly once across the document.
-        let outcome =
-            crate::draft::document_from_dump(&x.dump, ob_model::ChurchProfile::default(), false);
+        let outcome = crate::draft::document_from_dump(
+            &x.dump,
+            ob_model::ChurchProfile::default(),
+            false,
+            &[],
+        );
         let doc = &outcome.doc;
         let carriers: Vec<&ob_model::Story> = doc
             .stories

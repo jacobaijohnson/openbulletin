@@ -2866,6 +2866,7 @@ dependencies = [
  "libc",
  "lopdf",
  "markup5ever_rcdom",
+ "ob-fonts",
  "ob-image",
  "ob-layout",
  "ob-model",
@@ -2983,6 +2984,7 @@ name = "ob-text"
 version = "0.1.0"
 dependencies = [
  "fontique",
+ "ob-fonts",
  "ob-model",
  "parley",
  "ttf-parser",

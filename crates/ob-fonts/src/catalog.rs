@@ -207,6 +207,49 @@ pub fn search(query: &str) -> Result<Vec<CatalogEntry>, String> {
     Ok(hits)
 }
 
+/// Choose the files of one family that an install fetches:
+/// the four core static faces when the family ships them;
+/// a variable font ships as a single file (or an upright
+/// and an italic) and is taken as it comes. Match on the
+/// exact style suffix after the last dash: substring
+/// matching is a trap ("SemiBold" contains "Bold", "Thin"
+/// is nobody's Regular). Pure list work, no network: the
+/// catalog tests pin the shapes real families ship,
+/// Cabin's among them.
+fn core_face_files(files: &[String]) -> Vec<String> {
+    let style_of = |f: &str| -> String {
+        let stem = f.trim_end_matches(".ttf").trim_end_matches(".otf");
+        match stem.rfind('-') {
+            Some(i) => stem[i + 1..].to_string(),
+            None => String::new(),
+        }
+    };
+    let pick = |styles: &[&str]| {
+        files
+            .iter()
+            .find(|f| styles.contains(&style_of(f).as_str()))
+            .cloned()
+    };
+    let core: Vec<String> = [
+        pick(&["BoldItalic"]),
+        pick(&["Regular", ""]),
+        pick(&["Bold"]),
+        pick(&["Italic"]),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let mut files = if core.is_empty() {
+        files.to_vec()
+    } else {
+        core
+    };
+    files.sort();
+    files.dedup();
+    files.truncate(4);
+    files
+}
+
 /// Download the core faces of one catalog family into the library,
 /// with a license note beside them. Network call.
 ///
@@ -260,38 +303,7 @@ pub fn install(lib: &FontLibrary, id: &str) -> Result<Vec<FontInfo>, String> {
     if files.is_empty() {
         return Err(format!("no font files listed for {id}"));
     }
-    // Prefer the four core static faces; a variable font ships as a
-    // single file and is taken as it comes. Match on the exact style
-    // suffix after the last dash: substring matching is a trap
-    // ("SemiBold" contains "Bold", "Thin" is nobody's Regular).
-    let style_of = |f: &str| -> String {
-        let stem = f.trim_end_matches(".ttf").trim_end_matches(".otf");
-        match stem.rfind('-') {
-            Some(i) => stem[i + 1..].to_string(),
-            None => String::new(),
-        }
-    };
-    let pick = |styles: &[&str]| {
-        files
-            .iter()
-            .find(|f| styles.contains(&style_of(f).as_str()))
-            .cloned()
-    };
-    let core: Vec<String> = [
-        pick(&["BoldItalic"]),
-        pick(&["Regular", ""]),
-        pick(&["Bold"]),
-        pick(&["Italic"]),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    if !core.is_empty() {
-        files = core;
-    }
-    files.sort();
-    files.dedup();
-    files.truncate(4);
+    files = core_face_files(&files);
 
     let mut installed = Vec::new();
     for file_name in &files {
@@ -479,6 +491,57 @@ mod tests {
         let json = r#"[{"id":"lato","family":"Lato","category":"sans-serif","license":"OFL-1.1"}]"#;
         let entries: Vec<CatalogEntry> = serde_json::from_str(json).expect("parse");
         assert_eq!(entries[0].family, "Lato");
+    }
+
+    #[test]
+    fn cabin_is_a_free_catalog_family_the_installer_can_fetch() {
+        // Cabin (docs/FONTS.md): the Gill Sans lookalike,
+        // drawn by Pablo Impallari after Edward Johnston's
+        // and Eric Gill's typefaces, under the SIL Open Font
+        // License 1.1. It is not a static list entry here:
+        // the catalog is the live Fontsource index, and this
+        // is the entry shape that index serves for it. The
+        // license gate must pass it, and the resolution
+        // table's lookalike must be this very family.
+        let json =
+            r#"[{"id":"cabin","family":"Cabin","category":"sans-serif","license":"OFL-1.1"}]"#;
+        let entries: Vec<CatalogEntry> = serde_json::from_str(json).expect("parse");
+        assert_eq!(entries[0].id, "cabin");
+        assert_eq!(entries[0].family, "Cabin");
+        assert!(license_is_free(&entries[0].license));
+        let sub = crate::resolve::substitution_for("GillSansMT").expect("gill is in the table");
+        assert_eq!(sub.substitute, entries[0].family);
+        assert_eq!(sub.tier, crate::resolve::SubstituteTier::Lookalike);
+        // The installer's own road for it: google/fonts
+        // carries Cabin as a variable font (an upright and
+        // an italic file), and the core-face pick takes a
+        // variable family as it comes, the upright first.
+        let files = vec![
+            "Cabin[wdth,wght].ttf".to_string(),
+            "Cabin-Italic[wdth,wght].ttf".to_string(),
+        ];
+        let picked = core_face_files(&files);
+        assert!(
+            picked.contains(&"Cabin[wdth,wght].ttf".to_string()),
+            "{picked:?}"
+        );
+        // A family shipping static faces yields its four
+        // core faces, no more.
+        let statics: Vec<String> = [
+            "Fam-Thin.ttf",
+            "Fam-Regular.ttf",
+            "Fam-Bold.ttf",
+            "Fam-Italic.ttf",
+            "Fam-BoldItalic.ttf",
+            "Fam-Black.ttf",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let picked = core_face_files(&statics);
+        assert_eq!(picked.len(), 4, "{picked:?}");
+        assert!(picked.contains(&"Fam-Regular.ttf".to_string()));
+        assert!(picked.contains(&"Fam-BoldItalic.ttf".to_string()));
     }
 
     #[test]

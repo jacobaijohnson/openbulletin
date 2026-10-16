@@ -90,9 +90,12 @@ This is early software (version 0.1). Here is the honest list.
   tap from the same panel, or added as files or zip packs.
 - **Fonts do not travel inside a bulletin file.** A style names its
   font family; the face itself comes from the Font Library on the
-  computer that opens the file. Open a bulletin on a computer whose
-  library lacks a named font and the Check step names the font as
-  missing, so nothing quietly prints in a stand-in.
+  computer that opens the file. If that library lacks a named font,
+  the bulletin still opens and prints in a free stand-in, and the
+  app says so out loud, never quietly: the import review and the
+  Check step both name the real font and the stand-in in use. Add
+  the real font in the Fonts panel and the bulletin uses it by
+  itself, with no editing.
 - **PDFs include the real fonts.** Print and reading PDFs embed the
   same font files the layout measured with (when the font's license
   lets it travel), so what the Check step measured is what prints.
@@ -148,7 +151,7 @@ desktop app, CLI, or (someday) web.
 | `ob-image` | Opens the picture files (PNG, JPEG, WebP, GIF, BMP, TIFF, SVG, JPEG XL) at the size each place needs. AVIF and HEIC are recognized and honestly refused as convert-first. |
 | `ob-extract` | Imports and exports: reads old bulletins (PDFs through the helper, Publisher files with our own reader or the LibreOffice bridge, InDesign IDML, Scribus, Markdown, web pages, MusicXML) into one shared dump the Template Analyzer learns from, and writes documents back out as IDML for InDesign, as a Scribus file, as Markdown, or as a web page. |
 | `ob-format` | Reads and writes `.obd` files. The format is version 1: a zip holding the document as JSON plus each picture file under its own fingerprint, checked on open. Font files do not travel inside it: a style names its font, and the Font Library on the computer opening the file supplies the face. Older files migrate on open and save as version 1. |
-| `ob-fonts` | The Font Library: one folder of fonts the app owns, each font's sharing rights read from the file itself, and the catalog of free fonts it can fetch when asked. |
+| `ob-fonts` | The Font Library: one folder of fonts the app owns, each font's sharing rights read from the file itself, the catalog of free fonts it can fetch when asked, and the table that matches a font a bulletin names to the free twin or lookalike that stands in for it. |
 | `ob-clips` | The clip art library: collections the church adds, copied into one managed folder, with thumbnails and the hand-checked starter set. |
 | `ob-music` | Reads MusicXML scores: the notes, measures, words, and credits the music door counts before anything is drawn. |
 | `ob-pdfium-helper` | A small separate program that reads PDFs with the PDFium library and hands the words and pictures back as data. |
@@ -207,9 +210,12 @@ Honest labels, in plain words:
   to write, not ours.)
 - **One limit that will never change:** we will never copy fonts out of
   old PDFs. Those fonts are usually partial copies, and the law usually
-  does not allow it. Instead, imports swap in a free font with the
-  same letter widths where one exists (Arial to Liberation Sans, for
-  example), and flag the piece Check this where none does.
+  does not allow it. Instead, an import keeps the real font's name on
+  the bulletin and notes it as a font we do not have; a free font
+  stands in for now (one with the same letter widths where one
+  exists, Arial to Liberation Sans, for example, or a close
+  lookalike), and adding the real font later upgrades the bulletin
+  by itself.
 
 We will help you get your text and pictures out of old files. We will not
 pretend any tool opens Publisher files perfectly.

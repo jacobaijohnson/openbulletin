@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(span.runs[0].bold, Some(false));
         // And the draft paragraph carries the run through.
         let out =
-            crate::draft::document_from_dump(&dump, ob_model::ChurchProfile::default(), false);
+            crate::draft::document_from_dump(&dump, ob_model::ChurchProfile::default(), false, &[]);
         let para = out
             .doc
             .stories
@@ -744,7 +744,7 @@ mod tests {
         assert_eq!(dump.spans[1].bold, Some(true));
         // And the draft builder turns it into an editable draft.
         let out =
-            crate::draft::document_from_dump(&dump, ob_model::ChurchProfile::default(), false);
+            crate::draft::document_from_dump(&dump, ob_model::ChurchProfile::default(), false, &[]);
         assert_eq!(out.doc.panels.len(), 1);
         assert_eq!(out.doc.panels[0].frames.len(), 1);
         assert!(out.doc.stories.iter().any(|st| st
@@ -913,7 +913,7 @@ mod tests {
             dump.loss_notes[0]
         );
         let out =
-            crate::draft::document_from_dump(&dump, ob_model::ChurchProfile::default(), false);
+            crate::draft::document_from_dump(&dump, ob_model::ChurchProfile::default(), false, &[]);
         assert!(
             out.items.iter().any(|i| {
                 i.badge == crate::draft::Badge::CheckThis

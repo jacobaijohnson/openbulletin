@@ -523,6 +523,7 @@ mod tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         }
     }
 

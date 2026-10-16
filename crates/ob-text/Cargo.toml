@@ -8,6 +8,7 @@ description = "OpenBulletin text helpers: measurement estimate, wrapping, dot-le
 
 [dependencies]
 ob-model = { path = "../ob-model" }
+ob-fonts = { path = "../ob-fonts" }
 
 # Shaping runs on registered fonts only: no system font backends in the
 # engine. That keeps the headless core deterministic on every OS (and out

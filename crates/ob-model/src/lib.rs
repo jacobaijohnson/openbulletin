@@ -916,6 +916,34 @@ pub struct Document {
     /// the time is part of which occasion this document is.
     #[serde(default)]
     pub occasion_time: Option<String>,
+    /// Fonts this document was made in that the Font Library
+    /// did not hold when it was imported (docs/FONTS.md,
+    /// wanted fonts): the real name, kept on the document,
+    /// and the free font standing in for it at import time.
+    /// The styles keep the real family name too, and the
+    /// stand-in is chosen fresh at every shaping and print
+    /// from the library as it stands then, so adding the
+    /// real font later upgrades the document by itself.
+    #[serde(default)]
+    pub wanted_fonts: Vec<WantedFont>,
+}
+
+/// One font an imported document names that the library did
+/// not hold (docs/FONTS.md): the name as the source file
+/// stated it, in the form a person would search for, and
+/// the free family that stood in for it when the record
+/// was made. The record is information, never a lock: what
+/// actually prints is resolved against the library at use
+/// time, so `substituted_by` can go stale on purpose (the
+/// real font arrived) without the record lying about where
+/// the document came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WantedFont {
+    /// The real font's name, e.g. "Gill Sans MT".
+    pub name: String,
+    /// The free family standing in for it at import time,
+    /// e.g. "Cabin" (a lookalike) or "Liberation Sans".
+    pub substituted_by: String,
 }
 
 impl Document {
@@ -1522,6 +1550,7 @@ mod tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         };
         assert_eq!(
             resolve_fields("{Church.name} - {Sunday.name}, {Sunday.date}", &doc),
@@ -1546,6 +1575,7 @@ mod tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         }
     }
 
@@ -1664,6 +1694,7 @@ mod tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         }
     }
 
@@ -1842,6 +1873,7 @@ mod occasion_tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         }
     }
 
@@ -2069,6 +2101,11 @@ mod occasion_tests {
             doc.stories[0].paragraphs[0].runs,
             vec![Run::plain("Welcome to worship")]
         );
+        // Fields added since (occasion time, wanted fonts,
+        // assets) all arrive at their defaults: a file from
+        // before wanted fonts simply wants none.
+        assert!(doc.wanted_fonts.is_empty());
+        assert!(doc.occasion_time.is_none());
     }
 }
 
@@ -2153,6 +2190,7 @@ mod picture_tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         }
     }
 

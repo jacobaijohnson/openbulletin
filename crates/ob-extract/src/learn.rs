@@ -591,6 +591,7 @@ mod tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         }
     }
 
@@ -677,7 +678,7 @@ mod tests {
         assert!(dumps
             .iter()
             .all(|d| d.spans.iter().all(|s| !s.text.contains("Wilhelmina"))));
-        let out = analyze(&dumps, ChurchProfile::default()).expect("analyze");
+        let out = analyze(&dumps, ChurchProfile::default(), &[]).expect("analyze");
         let template_text: Vec<String> = out
             .doc
             .stories
@@ -760,7 +761,7 @@ mod tests {
                 "youth group car wash on saturday morning",
             ),
         ];
-        let out = analyze(&dumps, ChurchProfile::default()).expect("analyze mixed");
+        let out = analyze(&dumps, ChurchProfile::default(), &[]).expect("analyze mixed");
         assert_eq!(out.family, 3);
         assert_eq!(out.corpus, 3);
         let mix = mix_summary(&counts_of_dumps(&dumps));

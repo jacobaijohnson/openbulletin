@@ -539,15 +539,22 @@ fn run(cli: Cli) -> Result<(), String> {
                                 }
                             }
                         } else {
-                            match lib.add_path(file) {
-                                Ok(info) => {
-                                    added += 1;
-                                    println!("added {} ({})", info.full_name, info.file_name);
-                                    println!("{}", info.rights.plain_words());
-                                }
-                                Err(e) => {
-                                    println!("skipped {}: {e}", file.display());
-                                    skipped += 1;
+                            // One result per font the file
+                            // carries (a collection adds each
+                            // face); a refusal names the file
+                            // and counts as skipped, the same
+                            // as any other bad file here.
+                            for result in lib.add_path(file) {
+                                match result {
+                                    Ok(info) => {
+                                        added += 1;
+                                        println!("added {} ({})", info.full_name, info.file_name);
+                                        println!("{}", info.rights.plain_words());
+                                    }
+                                    Err(e) => {
+                                        println!("skipped {}: {e}", file.display());
+                                        skipped += 1;
+                                    }
                                 }
                             }
                         }
@@ -718,6 +725,7 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
         assets: Vec::new(),
         asset_bytes: Default::default(),
         occasion_time: None,
+        wanted_fonts: Vec::new(),
     };
     let out_file = out.join(format!("{stem}-traced.obd"));
     ob_format::save(&doc, &out_file)?;

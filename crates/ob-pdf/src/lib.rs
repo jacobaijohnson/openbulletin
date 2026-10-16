@@ -230,22 +230,37 @@ fn face_sources(
     sources
 }
 
+/// The distinct families a face-source map holds, in the
+/// order they first appear: the availability list the
+/// resolution chain walks (docs/FONTS.md).
+fn source_families(sources: &std::collections::HashMap<FaceKey, FaceSource>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (family, _, _) in sources.keys() {
+        if !out.contains(family) {
+            out.push(family.clone());
+        }
+    }
+    out
+}
+
 /// A glyph-presence oracle over the bundled faces plus one Font
 /// Library snapshot: it resolves a requested face exactly the way
-/// the writer does (exact face, then the family's plain face,
-/// then the core Helvetica fallback) and answers which characters
+/// the writer does (the resolution chain to a family, then the
+/// exact face, then the family's plain face, then the core
+/// Helvetica fallback) and answers which characters
 /// that printing face can actually draw. The Check step builds
 /// one oracle and asks about every paragraph, so the warning and
 /// the printed output can never disagree.
 pub struct FaceOracle {
     sources: std::collections::HashMap<FaceKey, FaceSource>,
+    families: Vec<String>,
 }
 
 impl FaceOracle {
     pub fn new(library: &[(ob_fonts::FontInfo, Vec<u8>)]) -> FaceOracle {
-        FaceOracle {
-            sources: face_sources(library),
-        }
+        let sources = face_sources(library);
+        let families = source_families(&sources);
+        FaceOracle { sources, families }
     }
 
     /// The distinct characters in `text` that the face which
@@ -264,8 +279,13 @@ impl FaceOracle {
         bold: bool,
         italic: bool,
     ) -> Vec<char> {
-        let exact: FaceKey = (family.to_string(), bold, italic);
-        let plain: FaceKey = (family.to_string(), false, false);
+        // The chain first (docs/FONTS.md): a family the
+        // library does not hold is answered by the face
+        // that would actually print, its twin, lookalike,
+        // or the house default, never by a guess.
+        let family = ob_fonts::resolve::resolve_family(family, &self.families).family;
+        let exact: FaceKey = (family.clone(), bold, italic);
+        let plain: FaceKey = (family, false, false);
         let chosen = self
             .sources
             .get(&exact)
@@ -908,6 +928,9 @@ struct FontBook {
     faces: std::collections::HashMap<FaceKey, String>,
     order: Vec<FaceKey>,
     sources: std::collections::HashMap<FaceKey, FaceSource>,
+    /// The families the sources hold: the availability
+    /// list for the resolution chain at draw time.
+    families: Vec<String>,
     /// Face key -> encoding, filled by `embed`.
     encodings: std::collections::HashMap<FaceKey, FaceEncoding>,
     /// Extra resource entries for the page dictionary,
@@ -951,6 +974,21 @@ impl FontBook {
         if !wanted.contains(&fallback) {
             wanted.push(fallback);
         }
+        // Wanted fonts (docs/FONTS.md): a style naming a
+        // family the sources do not hold prints in the
+        // resolution chain's stand-in, so the stand-in's
+        // faces (in the style's own bold and italic) are
+        // wanted too.
+        let families = source_families(&sources);
+        let mut expanded = wanted.clone();
+        for key in &wanted {
+            let resolved = ob_fonts::resolve::resolve_family(&key.0, &families).family;
+            let rkey = (resolved, key.1, key.2);
+            if !expanded.contains(&rkey) {
+                expanded.push(rkey);
+            }
+        }
+        let wanted = expanded;
         let mut faces = std::collections::HashMap::new();
         let mut order = Vec::new();
         let mut n = 0;
@@ -971,6 +1009,7 @@ impl FontBook {
             faces,
             order,
             sources,
+            families,
             encodings: std::collections::HashMap::new(),
             resources: String::new(),
         }
@@ -1004,16 +1043,20 @@ impl FontBook {
     }
 
     /// The font to draw one face request with, walking down the
-    /// ladder: the exact (family, bold, italic) face when
-    /// embedded, the family's plain face when not, else the
-    /// core fallback (F2 bold / F1 regular). How a style and a
-    /// run ask for their faces (G1b).
+    /// ladder: the resolution chain answers the family first
+    /// (docs/FONTS.md: the real family when the library holds
+    /// it, else its twin, its lookalike, or the house default),
+    /// then the exact (family, bold, italic) face of the
+    /// answered family when embedded, its plain face when not,
+    /// else the core fallback (F2 bold / F1 regular). How a
+    /// style and a run ask for their faces (G1b).
     fn resource_for_face(&self, family: &str, bold: bool, italic: bool) -> DrawFont {
-        let exact: FaceKey = (family.to_string(), bold, italic);
+        let family = ob_fonts::resolve::resolve_family(family, &self.families).family;
+        let exact: FaceKey = (family.clone(), bold, italic);
         if self.faces.contains_key(&exact) {
             return DrawFont::Embedded(exact);
         }
-        let plain: FaceKey = (family.to_string(), false, false);
+        let plain: FaceKey = (family, false, false);
         if self.faces.contains_key(&plain) {
             return DrawFont::Embedded(plain);
         }
@@ -1651,6 +1694,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
         assets: Vec::new(),
         asset_bytes: Default::default(),
         occasion_time: None,
+        wanted_fonts: Vec::new(),
     };
     // The sheet exists to be printed, so it takes the print purpose.
     export_reader_pdf(&doc, ExportPurpose::ForPrinting)
@@ -2045,6 +2089,7 @@ mod tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         }
     }
 
@@ -2142,20 +2187,15 @@ mod tests {
             ),
             vec!['\u{1F600}']
         );
-        // A family no source provides falls back to the core
-        // fonts, and the WinAnsi rule applies there.
+        // A family no source provides resolves to the house
+        // default (docs/FONTS.md): it prints in Liberation
+        // Sans, so the oracle answers with that face's map
+        // (Greek is drawable there; the cross is not).
+        assert!(undrawable_chars("\u{3B1}", "No Such Family", false, false, &[]).is_empty());
         assert_eq!(
-            undrawable_chars("\u{3B1}", "No Such Family", false, false, &[]),
-            vec!['\u{3B1}']
+            undrawable_chars("\u{271D}", "No Such Family", false, false, &[]),
+            vec!['\u{271D}']
         );
-        assert!(undrawable_chars(
-            "plain \u{201C}quotes\u{201D}",
-            "No Such Family",
-            false,
-            false,
-            &[]
-        )
-        .is_empty());
         // A tab is the dot-leader marker, never a character:
         // skipped.
         assert!(undrawable_chars("Prelude\t", "Liberation Sans", false, false, &[]).is_empty());
@@ -2853,6 +2893,253 @@ mod tests {
             text.contains('\u{271D}'),
             "the cross extracts back out of the PDF: {text:.300}"
         );
+    }
+
+    /// A copy of a font whose family-name records (IDs 1
+    /// and 16) say `new` instead of `old`: the fixture for
+    /// a font the library gains later (see ob-text's copy
+    /// of this helper).
+    fn renamed_family(bytes: &[u8], old: &str, new: &str) -> Vec<u8> {
+        let mut out = bytes.to_vec();
+        let num_tables = u16::from_be_bytes([out[4], out[5]]) as usize;
+        let mut name_off = 0usize;
+        for i in 0..num_tables {
+            let rec = 12 + i * 16;
+            if &out[rec..rec + 4] == b"name" {
+                name_off =
+                    u32::from_be_bytes([out[rec + 8], out[rec + 9], out[rec + 10], out[rec + 11]])
+                        as usize;
+            }
+        }
+        assert!(name_off > 0, "the font has a name table");
+        let count = u16::from_be_bytes([out[name_off + 2], out[name_off + 3]]) as usize;
+        let storage = u16::from_be_bytes([out[name_off + 4], out[name_off + 5]]) as usize;
+        let mut patched: Vec<usize> = Vec::new();
+        for i in 0..count {
+            let rec = name_off + 6 + i * 12;
+            let platform = u16::from_be_bytes([out[rec], out[rec + 1]]);
+            let name_id = u16::from_be_bytes([out[rec + 6], out[rec + 7]]);
+            if name_id != 1 && name_id != 16 {
+                continue;
+            }
+            let len = u16::from_be_bytes([out[rec + 8], out[rec + 9]]) as usize;
+            let off = u16::from_be_bytes([out[rec + 10], out[rec + 11]]) as usize;
+            let abs = name_off + storage + off;
+            let raw = &bytes[abs..abs + len];
+            let text: String = if platform == 1 {
+                raw.iter().map(|&b| b as char).collect()
+            } else {
+                let units: Vec<u16> = raw
+                    .chunks(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
+                String::from_utf16_lossy(&units)
+            };
+            if text != old {
+                continue;
+            }
+            let enc_len = if platform == 1 {
+                new.len()
+            } else {
+                new.len() * 2
+            };
+            if !patched.contains(&abs) {
+                let encoded: Vec<u8> = if platform == 1 {
+                    new.bytes().collect()
+                } else {
+                    new.encode_utf16().flat_map(|u| u.to_be_bytes()).collect()
+                };
+                assert!(encoded.len() <= len, "the new name must fit the record");
+                out[abs..abs + encoded.len()].copy_from_slice(&encoded);
+                for b in &mut out[abs + encoded.len()..abs + len] {
+                    *b = 0;
+                }
+                patched.push(abs);
+            }
+            out[rec + 8..rec + 10].copy_from_slice(&(enc_len as u16).to_be_bytes());
+        }
+        assert!(!patched.is_empty(), "a family record was patched");
+        out
+    }
+
+    /// One style, one story, one page: a document made in
+    /// `family`, saying words that include the Latin cross.
+    fn gill_doc(family: &str) -> Document {
+        use ob_model::{
+            ContentRole, Frame, FrameKind, Paragraph, SheetSpec, Size, Story, FORMAT_VERSION,
+        };
+        let style = ob_model::ParagraphStyle {
+            id: "body".into(),
+            name: "Body".into(),
+            font_size: 11_000,
+            bold: false,
+            italic: false,
+            align: ob_model::Align::Left,
+            space_after: 4_000,
+            color: ob_model::Rgb::BLACK,
+            font_family: family.into(),
+            font_sha256: None,
+        };
+        Document {
+            format_version: FORMAT_VERSION,
+            title: "Gill test".into(),
+            profile: ChurchProfile::default(),
+            fields: Default::default(),
+            styles: vec![style],
+            stories: vec![Story {
+                id: "s1".into(),
+                paragraphs: vec![Paragraph::new(
+                    "body",
+                    "Peace \u{271D} and quiet rest for all who gather \
+                     here this morning in the house of prayer",
+                )],
+                keep_through: None,
+            }],
+            panels: vec![Panel {
+                id: "p1".into(),
+                name: "Page 1".into(),
+                size: Size::new(612_000, 792_000),
+                frames: vec![Frame {
+                    id: "f1".into(),
+                    name: "Words".into(),
+                    kind: FrameKind::Text,
+                    rect: Rect::new(72_000, 72_000, 200_000, 400_000),
+                    story_id: Some("s1".into()),
+                    role: ContentRole::Weekly,
+                    picture: None,
+                    music: None,
+                }],
+                guides: Vec::new(),
+                background_image: None,
+            }],
+            sheet: SheetSpec {
+                preset: "letter-portrait".into(),
+                size: Size::new(612_000, 792_000),
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+            wanted_fonts: Vec::new(),
+        }
+    }
+
+    /// Page content with the embedded-face resource names
+    /// (FE1, FE2, ...) normalized away: two exports draw
+    /// the same words in the same face exactly when their
+    /// normalized content agrees, whatever order the faces
+    /// were assigned in.
+    fn normalized_content(pdf: &[u8]) -> String {
+        let raw = decoded_content(pdf);
+        let mut out = String::with_capacity(raw.len());
+        let mut rest = raw.as_str();
+        while let Some(i) = rest.find("/FE") {
+            out.push_str(&rest[..i]);
+            out.push_str("/FE");
+            rest = &rest[i + 3..];
+            let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+            rest = &rest[digits..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn a_wanted_font_prints_in_its_lookalike_then_in_itself() {
+        // The install-later promise on the print path
+        // (docs/FONTS.md). The document is made in Gill
+        // Sans MT, a commercial font no test may ship; the
+        // faces here are free fonts wearing other names,
+        // which is exactly what the library holds at each
+        // stage. DejaVu carries the cross and Liberation
+        // does not, so the cross in the extracted text tells
+        // us which face truly printed.
+        let path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+        let Ok(dejavu) = std::fs::read(path) else {
+            eprintln!("DejaVu Sans not present at {path}; wanted-font print test skipped");
+            return;
+        };
+        // Cabin wears DejaVu's bytes (it carries the
+        // cross); the Gill-named face wears Liberation
+        // Sans's (it does not). Which face printed is
+        // therefore visible in the extracted text.
+        let cabin = renamed_family(&dejavu, "DejaVu Sans", "Cabin");
+        let gill = renamed_family(
+            include_bytes!("../../ob-text/assets/fonts/LiberationSans-Regular.ttf"),
+            "Liberation Sans",
+            "Gill Sans MT",
+        );
+        let cabin_lib = vec![(
+            ob_fonts::inspect(&cabin, "Cabin.ttf").expect("cabin inspects"),
+            cabin.clone(),
+        )];
+        let full_lib = vec![
+            (
+                ob_fonts::inspect(&cabin, "Cabin.ttf").expect("cabin inspects"),
+                cabin,
+            ),
+            (
+                ob_fonts::inspect(&gill, "GillSansMT.ttf").expect("gill inspects"),
+                gill,
+            ),
+        ];
+        let export = |doc: &Document,
+                      library: &[(ob_fonts::FontInfo, Vec<u8>)]|
+         -> (Vec<u8>, String) {
+            let sides = ob_impose::impose_single(doc);
+            let (pdf, _) = build_pdf_full(doc, &sides, ExportPurpose::ForPrinting, library, None);
+            let text = extracted_text(&pdf);
+            (pdf, text)
+        };
+        let doc = gill_doc("Gill Sans MT");
+        // Stage 1: only the lookalike is in the library.
+        // The export must draw exactly as the same words
+        // set in DejaVu Sans itself (the bytes Cabin wears
+        // here), cross and all.
+        let (pdf_look, text_look) = export(&doc, &cabin_lib);
+        let control = gill_doc("DejaVu Sans");
+        let dejavu_lib = vec![(
+            ob_fonts::inspect(&dejavu, "DejaVuSans.ttf").expect("dejavu inspects"),
+            dejavu.clone(),
+        )];
+        let (pdf_dejavu, _) = export(&control, &dejavu_lib);
+        assert_eq!(
+            normalized_content(&pdf_look),
+            normalized_content(&pdf_dejavu),
+            "with only its lookalike present, the Gill words print in the lookalike"
+        );
+        assert!(
+            text_look.contains('\u{271D}'),
+            "the lookalike face carries the cross: {text_look:.200}"
+        );
+        // Stage 2: the real name joins the library (a face
+        // whose own family is Gill Sans MT). The same
+        // document, unedited, now prints in that face:
+        // exactly as the words set in Liberation Sans
+        // itself (the bytes the Gill-named face wears),
+        // and the cross is gone with the stand-in.
+        let (pdf_real, text_real) = export(&doc, &full_lib);
+        let control = gill_doc("Liberation Sans");
+        let (pdf_sans, _) = export(&control, &[]);
+        assert_eq!(
+            normalized_content(&pdf_real),
+            normalized_content(&pdf_sans),
+            "once the real font is in the library, the same document prints in it"
+        );
+        assert!(
+            !text_real.contains('\u{271D}'),
+            "the real face here has no cross: {text_real:.200}"
+        );
+        // And the Check oracle walks the same chain.
+        let oracle = FaceOracle::new(&full_lib);
+        assert_eq!(
+            oracle.undrawable_chars("\u{271D}", "Gill Sans MT", false, false),
+            vec!['\u{271D}']
+        );
+        let oracle = FaceOracle::new(&cabin_lib);
+        assert!(oracle
+            .undrawable_chars("\u{271D}", "Gill Sans MT", false, false)
+            .is_empty());
     }
 
     #[test]

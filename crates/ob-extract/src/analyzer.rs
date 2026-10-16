@@ -122,9 +122,14 @@ fn doc_shingle_set(dump: &ExtractionDump) -> HashSet<String> {
 /// Analyze a corpus (3 or more dumps from one church). The
 /// largest family of look-alike bulletins drives the template;
 /// the base is the family member carrying the most text.
+/// `library_families` is the Font Library's family list at
+/// learn time: learned styles keep the source names either
+/// way, and the learned document's wanted-font records form
+/// against it exactly as a single import's do.
 pub fn analyze(
     dumps: &[ExtractionDump],
     profile: ChurchProfile,
+    library_families: &[String],
 ) -> Result<TemplateOutcome, String> {
     if dumps.len() < 3 {
         return Err("three or more old bulletins are needed to see what stands still".into());
@@ -257,7 +262,7 @@ pub fn analyze(
         .iter()
         .max_by_key(|j| doc_lines(&dumps[**j]).join(" ").len())
         .unwrap_or(&family[0]);
-    let mut out = document_from_dump(&dumps[base_idx], profile, true);
+    let mut out = document_from_dump(&dumps[base_idx], profile, true, library_families);
     // Classify each story: standing when most of its paragraphs
     // are standing lines (or carry a standing shingle).
     let mut items = Vec::new();
@@ -384,7 +389,7 @@ mod tests {
             dump_with("b.pdf", "choir rehearsal moved to thursday evening"),
             dump_with("c.pdf", "youth group car wash on saturday morning"),
         ];
-        let out = analyze(&dumps, ChurchProfile::default()).expect("analyze");
+        let out = analyze(&dumps, ChurchProfile::default(), &[]).expect("analyze");
         assert_eq!(out.family, 3);
         assert!(out.items.iter().any(|i| i.standing), "the psalm stands");
         assert!(out.items.iter().any(|i| !i.standing), "the notice changes");
@@ -402,7 +407,7 @@ mod tests {
     #[test]
     fn analyzer_needs_three() {
         let dumps = vec![dump_with("a.pdf", "x"), dump_with("b.pdf", "y")];
-        assert!(analyze(&dumps, ChurchProfile::default()).is_err());
+        assert!(analyze(&dumps, ChurchProfile::default(), &[]).is_err());
     }
 
     /// A block of distinct words sharing a tag ("ab00",
@@ -474,7 +479,7 @@ mod tests {
             dump_words("easter.pdf", vec![special.clone(), dated.clone()]),
             dump_words("easter-copy.pdf", vec![special, changed]),
         ];
-        let out = analyze(&dumps, ChurchProfile::default()).expect("analyze");
+        let out = analyze(&dumps, ChurchProfile::default(), &[]).expect("analyze");
         assert_eq!(out.family, 3, "the three regulars are the family");
         assert!(
             out.base_source.starts_with("week"),
@@ -501,7 +506,7 @@ mod tests {
             dump_words("pair-b.pdf", vec![shared, block("bonly", 12)]),
             dump_words("loner.pdf", vec![block("alone", 52)]),
         ];
-        let out = analyze(&dumps, ChurchProfile::default()).expect("analyze");
+        let out = analyze(&dumps, ChurchProfile::default(), &[]).expect("analyze");
         assert_eq!(out.family, 2);
         let note = out.family_note.expect("the reason is said out loud");
         assert!(note.contains("three alike"), "{note}");
@@ -541,7 +546,7 @@ mod tests {
             dump_words("c.pdf", vec![bc, cd.clone(), ac]),
             dump_words("d.pdf", vec![cd, bd, block("fd", 28)]),
         ];
-        let out = analyze(&dumps, ChurchProfile::default()).expect("analyze");
+        let out = analyze(&dumps, ChurchProfile::default(), &[]).expect("analyze");
         assert_eq!(out.family, 3, "the tail stays out of the family");
         assert_ne!(out.base_source, "d.pdf");
         assert!(out.family_note.is_none());

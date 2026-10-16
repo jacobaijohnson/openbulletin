@@ -2,8 +2,12 @@
 //! the Opus import rule): a rescue produces a draft the admin
 //! reviews, never a silent conversion. Text becomes real stories
 //! and frames placed where the words were; pages with no readable
-//! text become tracing-guide panels. Fonts are matched by name to
-//! free fonts or metric twins, never extracted (docs/FONTS.md).
+//! text become tracing-guide panels. Fonts are never extracted
+//! (docs/FONTS.md): styles keep the family name the source file
+//! stated, a free font stands in at shaping and print time, and
+//! the names the library does not hold are recorded as wanted
+//! fonts on the document, so adding the real font later upgrades
+//! the draft by itself.
 
 use crate::{ExtractionDump, SpanTrust};
 use ob_model::*;
@@ -79,50 +83,16 @@ fn span_geometry_sane(sp: &crate::Span, pw: f32, ph: f32) -> bool {
         }
 }
 
-/// The free font a source font name maps to, when one is known:
-/// the font itself when it is a free family we ship or stock,
-/// else its metric twin (same letter widths, docs/FONTS.md).
-pub fn font_match(source_name: &str) -> Option<String> {
-    let clean = source_name
-        .split('+')
-        .next_back()
-        .unwrap_or(source_name)
-        .trim()
-        .to_lowercase();
-    let base = clean
-        .split(['-', ','])
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let table: &[(&str, &str)] = &[
-        ("arial", "Liberation Sans"),
-        ("helvetica", "Liberation Sans"),
-        ("liberation sans", "Liberation Sans"),
-        ("times new roman", "Liberation Serif"),
-        ("timesnewroman", "Liberation Serif"),
-        ("liberation serif", "Liberation Serif"),
-        ("calibri", "Carlito"),
-        ("carlito", "Carlito"),
-        ("cambria", "Caladea"),
-        ("caladea", "Caladea"),
-        ("georgia", "Gelasio"),
-        ("gelasio", "Gelasio"),
-        ("lora", "Lora"),
-        ("playfair display", "Playfair Display"),
-        ("garamond", "EB Garamond"),
-        ("book antiqua", "Gelasio"),
-        ("bookman old style", "Bookman URW"),
-        ("century schoolbook", "Century Schoolbook URW"),
-    ];
-    for (from, to) in table {
-        if base == *from || clean.starts_with(from) {
-            return Some(to.to_string());
-        }
-    }
-    None
-}
-
+/// The substitution table and the resolution chain moved
+/// to ob-fonts (`ob_fonts::resolve`) when wanted fonts
+/// landed: styles stopped taking the substitute's name at
+/// import (they keep the name the source file stated),
+/// and what stands in is resolved at use time against the
+/// library as it stands then. The draft builder's one job
+/// here is to record, per source family the library does
+/// not hold exactly, the wanted name and the stand-in the
+/// chain picks today.
+///
 /// One text fragment: x, width, text, font size, bold,
 /// font name, italic, color, stated alignment, and the
 /// span's inline runs (G1b; empty when the source states
@@ -448,12 +418,24 @@ pub fn rebuilt_page_lines(dump: &ExtractionDump, page: u32) -> Vec<String> {
 /// Build the draft. `with_backgrounds` names each picture page's
 /// tracing image the way the renderers write it
 /// (assets/page-NN.png), so the caller only renders the pages.
+/// `library_families` is the Font Library's family list at
+/// import time: it decides which source fonts count as
+/// "we have it" and what stands in for the rest (the wanted
+/// fonts record, docs/FONTS.md). Styles always keep the
+/// source family name; the list never renames anything.
 pub fn document_from_dump(
     dump: &ExtractionDump,
     profile: ChurchProfile,
     with_backgrounds: bool,
+    library_families: &[String],
 ) -> DraftOutcome {
-    build_draft(dump, profile, with_backgrounds, &HashMap::new())
+    build_draft(
+        dump,
+        profile,
+        with_backgrounds,
+        &HashMap::new(),
+        library_families,
+    )
 }
 
 /// Build the draft, carrying the dump's page pictures into
@@ -471,8 +453,15 @@ pub fn document_from_dump_with_assets(
     profile: ChurchProfile,
     with_backgrounds: bool,
     image_bytes: &HashMap<String, Vec<u8>>,
+    library_families: &[String],
 ) -> DraftOutcome {
-    build_draft(dump, profile, with_backgrounds, image_bytes)
+    build_draft(
+        dump,
+        profile,
+        with_backgrounds,
+        image_bytes,
+        library_families,
+    )
 }
 
 fn build_draft(
@@ -480,6 +469,7 @@ fn build_draft(
     profile: ChurchProfile,
     with_backgrounds: bool,
     image_bytes: &HashMap<String, Vec<u8>>,
+    library_families: &[String],
 ) -> DraftOutcome {
     let mut items: Vec<ImportItem> = Vec::new();
     // Losses the extractor itself counted while reading
@@ -526,6 +516,10 @@ fn build_draft(
     // of a thread names ONE story and the words live in the
     // document once.
     let mut thread_stories: HashMap<String, String> = HashMap::new();
+    // Wanted fonts, in the order the pages first name them:
+    // one record per distinct source family the library does
+    // not hold exactly (docs/FONTS.md).
+    let mut wanted_fonts: Vec<WantedFont> = Vec::new();
 
     // Preset: the booklet rule the corpus taught us; otherwise
     // one page per sheet, which always prints safely.
@@ -679,10 +673,36 @@ fn build_draft(
             let src_font = rep.font().unwrap_or_default();
             let italic = rep.italic();
             let size_pt = rep.size();
-            let mapped = font_match(&src_font);
-            let family = mapped
-                .clone()
-                .unwrap_or_else(|| "Liberation Sans".to_string());
+            // Wanted fonts (docs/FONTS.md): the style keeps
+            // the name the source file stated, in the form a
+            // person would search for, never the stand-in's
+            // name. The chain is walked now only to name the
+            // stand-in in the review and in the document's
+            // wanted record; the real choice is made again
+            // at every shaping and print, against the
+            // library as it stands then (ob_fonts::resolve).
+            let resolution = if src_font.is_empty() {
+                None
+            } else {
+                Some(ob_fonts::resolve::resolve_family(
+                    &src_font,
+                    library_families,
+                ))
+            };
+            let family = match &resolution {
+                Some(r) => r.display_name.clone(),
+                None => "Liberation Sans".to_string(),
+            };
+            if let Some(r) = &resolution {
+                if r.tier != ob_fonts::resolve::SubstituteTier::Exact
+                    && !wanted_fonts.iter().any(|w| w.name == r.display_name)
+                {
+                    wanted_fonts.push(WantedFont {
+                        name: r.display_name.clone(),
+                        substituted_by: r.family.clone(),
+                    });
+                }
+            }
             let block_align_v = block_align(block);
             let block_color_v = block_color(block);
             let key = format!(
@@ -787,10 +807,22 @@ fn build_draft(
             let unvouched = block.iter().any(|l| l.review);
             let first_text: String = paras[0].iter().map(|r| r.text.as_str()).collect();
             let first_line: String = first_text.chars().take(38).collect();
+            // Matched means the words print in the font they
+            // were made in, or in its metric twin (same
+            // letter widths, so nothing moves). A lookalike
+            // or the house default standing in is honest
+            // work, but it needs the admin's eye.
+            let font_ok = matches!(
+                resolution.as_ref().map(|r| r.tier),
+                Some(
+                    ob_fonts::resolve::SubstituteTier::Exact
+                        | ob_fonts::resolve::SubstituteTier::MetricTwin
+                )
+            );
             items.push(ImportItem {
                 panel: pi,
                 label: first_line,
-                badge: if mapped.is_some() && !jittery && !unvouched {
+                badge: if font_ok && !jittery && !unvouched {
                     Badge::Matched
                 } else {
                     Badge::CheckThis
@@ -799,18 +831,48 @@ fn build_draft(
                     format!("Words from page {}; they came over as words only, without their places on the page, so check them against the original file.", page.index + 1)
                 } else if jittery {
                     format!("Words from page {}; they were set along a curve or in steps in the old file, so their order may be off. The old page sits underneath as a picture to check against.", page.index + 1)
-                } else if mapped.is_some() {
-                    format!("Words from page {}, in a font we have or a twin of {src_font}.", page.index + 1)
                 } else if src_font.is_empty() {
                     format!("Words from page {}; the file did not name their font, so the look may differ.", page.index + 1)
                 } else {
-                    format!("Words from page {}; we do not have {src_font}, so the look may differ until a font is added.", page.index + 1)
+                    let r = resolution.as_ref().expect("a named font was resolved");
+                    match r.tier {
+                        ob_fonts::resolve::SubstituteTier::Exact => format!(
+                            "Words from page {}, in {family}, the font they were made in.",
+                            page.index + 1
+                        ),
+                        ob_fonts::resolve::SubstituteTier::MetricTwin => format!(
+                            "Words from page {}, made in {family}. Its metric twin {} stands in, with the same letter widths.",
+                            page.index + 1,
+                            r.family
+                        ),
+                        ob_fonts::resolve::SubstituteTier::Lookalike => format!(
+                            "Words from page {}, made in {family}. We do not have that font, so its lookalike {} stands in for now.",
+                            page.index + 1,
+                            r.family
+                        ),
+                        ob_fonts::resolve::SubstituteTier::HouseDefault => format!(
+                            "Words from page {}, made in {family}. We do not have that font, so {} stands in for now.",
+                            page.index + 1,
+                            r.family
+                        ),
+                    }
                 },
             });
         }
         panels.push(panel);
     }
 
+    // One review item per wanted font, in the shared words:
+    // the admin learns the real name (so they can find and
+    // add the font) and what is standing in for it today.
+    for w in &wanted_fonts {
+        items.push(ImportItem {
+            panel: 0,
+            label: format!("Font we do not have: {}", w.name),
+            badge: Badge::CheckThis,
+            detail: ob_fonts::resolve::wanted_font_words(&w.name, &w.substituted_by),
+        });
+    }
     let mut doc = Document {
         format_version: FORMAT_VERSION,
         title: dump.source_name.clone(),
@@ -827,6 +889,7 @@ fn build_draft(
         assets: Vec::new(),
         asset_bytes: Default::default(),
         occasion_time: None,
+        wanted_fonts,
     };
     // The picture channel: bytes the caller supplied ride
     // into the asset store, one review item per page that
@@ -924,7 +987,7 @@ mod tests {
             images: Vec::new(),
             loss_notes: Vec::new(),
         };
-        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &[]);
         let losses: Vec<_> = out
             .items
             .iter()
@@ -981,7 +1044,7 @@ mod tests {
             images: Vec::new(),
             loss_notes: Vec::new(),
         };
-        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &[]);
         let story = &out.doc.stories[0];
         assert_eq!(story.paragraphs.len(), 2);
         let first = &story.paragraphs[0];
@@ -1057,7 +1120,7 @@ mod tests {
             images: Vec::new(),
             loss_notes: Vec::new(),
         };
-        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &[]);
         // The good words arrived; the impossible ones did not.
         let all_text: String = out
             .doc
@@ -1169,12 +1232,15 @@ mod tests {
             images: Vec::new(),
             loss_notes: Vec::new(),
         };
-        let out = document_from_dump(&dump, ChurchProfile::default(), true);
+        let out = document_from_dump(&dump, ChurchProfile::default(), true, &[]);
         assert_eq!(out.doc.sheet.preset, "saddle-booklet");
         assert_eq!(out.doc.panels.len(), 4);
         // Page 1: a heading block and a body block.
         assert_eq!(out.doc.panels[0].frames.len(), 2);
-        // Arial maps to its twin; Calibri to Carlito; GillSans is unknown.
+        // Arial's twin is bundled, so its words match;
+        // Calibri's words are Check this in this empty
+        // library (neither Calibri nor Carlito is in it);
+        // GillSans is a name we know but do not have.
         assert!(out
             .items
             .iter()
@@ -1188,12 +1254,20 @@ mod tests {
             out.doc.panels[3].background_image.as_deref(),
             Some("assets/page-04.png")
         );
-        // The Arial style names the twin family.
+        // The Arial style keeps the name Arial; the twin
+        // stands in when the words are shaped and printed,
+        // and the want is on the document with the twin
+        // named as the stand-in.
         assert!(out
             .doc
             .styles
             .iter()
-            .any(|s| s.font_family == "Liberation Sans" && s.font_size == 20_000));
+            .any(|s| s.font_family == "Arial" && s.font_size == 20_000));
+        assert!(out
+            .doc
+            .wanted_fonts
+            .iter()
+            .any(|w| w.name == "Arial" && w.substituted_by == "Liberation Sans"));
     }
 
     #[test]
@@ -1219,10 +1293,14 @@ mod tests {
             images: Vec::new(),
             loss_notes: Vec::new(),
         };
-        let out = document_from_dump(&dump, ChurchProfile::default(), false);
-        assert_eq!(out.items.len(), 1);
-        assert_eq!(out.items[0].badge, Badge::CheckThis);
-        assert!(out.items[0].detail.contains("without their places"));
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &[]);
+        let item = out
+            .items
+            .iter()
+            .find(|i| i.label.contains("Grace"))
+            .expect("the words carry their own item");
+        assert_eq!(item.badge, Badge::CheckThis);
+        assert!(item.detail.contains("without their places"));
         // And the words themselves still land in a story.
         assert!(out
             .doc
@@ -1235,9 +1313,9 @@ mod tests {
     fn v2_spans_carry_alignment_color_and_italic_into_the_draft_style() {
         // A centered, red, italic two-line block: the draft
         // style must state Center, the red, and italic, and
-        // the family must come from the plain font name
-        // (Calibri -> Carlito), not a name with the italic
-        // glued on.
+        // the family must be the plain font name the file
+        // stated (Calibri), not a substitute's name and not
+        // a name with the italic glued on.
         let mut s1 = span(0, "A Mighty Fortress", 120.0, 40.0, 14.0, "Calibri", false);
         s1.align = Some(Align::Center);
         s1.italic = true;
@@ -1262,7 +1340,7 @@ mod tests {
             images: Vec::new(),
             loss_notes: Vec::new(),
         };
-        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &[]);
         let story = &out.doc.stories[0];
         let style = out
             .doc
@@ -1271,7 +1349,7 @@ mod tests {
         assert_eq!(style.align, Align::Center);
         assert_eq!(style.color, Rgb::new(170, 30, 20));
         assert!(style.italic);
-        assert_eq!(style.font_family, "Carlito");
+        assert_eq!(style.font_family, "Calibri");
     }
 
     #[test]
@@ -1306,7 +1384,8 @@ mod tests {
             }],
             loss_notes: Vec::new(),
         };
-        let out = document_from_dump_with_assets(&dump, ChurchProfile::default(), false, &bytes);
+        let out =
+            document_from_dump_with_assets(&dump, ChurchProfile::default(), false, &bytes, &[]);
         assert_eq!(out.doc.assets.len(), 1);
         assert_eq!(out.doc.assets[0].kind, AssetKind::Picture);
         assert_eq!(out.doc.assets[0].rights.source, "old.pdf");
@@ -1318,22 +1397,135 @@ mod tests {
             .iter()
             .any(|i| i.label == "Pictures from page 1" && i.badge == Badge::CheckThis));
         // The plain builder (analyzer path) carries nothing.
-        let plain = document_from_dump(&dump, ChurchProfile::default(), false);
+        let plain = document_from_dump(&dump, ChurchProfile::default(), false, &[]);
         assert!(plain.doc.assets.is_empty());
     }
 
     #[test]
-    fn font_twins_are_matched() {
+    fn gill_sans_keeps_its_real_name_and_is_wanted() {
+        // Wanted fonts (docs/FONTS.md): a dump set in Gill
+        // Sans MT (subset-tagged, the way real PDFs state
+        // it) drafts styles that KEEP the real name, and
+        // the document records the want with the stand-in
+        // the chain picks: the lookalike Cabin when the
+        // library holds it, the house default when not.
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pdf,
+            source_name: "old.pdf".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![span(
+                0,
+                "Welcome to worship",
+                60.0,
+                90.0,
+                18.0,
+                "UOETYK+GillSansMT",
+                true,
+            )],
+            images: Vec::new(),
+            loss_notes: Vec::new(),
+        };
+        let families: Vec<String> = vec!["Cabin".to_string()];
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &families);
+        let import_styles: Vec<_> = out
+            .doc
+            .styles
+            .iter()
+            .filter(|s| s.id.starts_with("import-"))
+            .collect();
+        assert_eq!(import_styles.len(), 1);
+        assert_eq!(import_styles[0].font_family, "Gill Sans MT");
         assert_eq!(
-            font_match("ABCDEF+ArialMT").as_deref(),
-            Some("Liberation Sans")
+            out.doc.wanted_fonts,
+            vec![WantedFont {
+                name: "Gill Sans MT".to_string(),
+                substituted_by: "Cabin".to_string(),
+            }]
         );
+        let wanted_item = out
+            .items
+            .iter()
+            .find(|i| i.label == "Font we do not have: Gill Sans MT")
+            .expect("one review item per wanted font");
+        assert_eq!(wanted_item.badge, Badge::CheckThis);
         assert_eq!(
-            font_match("TimesNewRomanPSMT").as_deref(),
-            Some("Liberation Serif")
+            wanted_item.detail,
+            ob_fonts::resolve::wanted_font_words("Gill Sans MT", "Cabin")
         );
-        assert_eq!(font_match("Calibri").as_deref(), Some("Carlito"));
-        assert_eq!(font_match("GillSansMT"), None);
+        // Without Cabin in the library, the same record
+        // names the house default as the stand-in.
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &[]);
+        assert_eq!(out.doc.wanted_fonts.len(), 1);
+        assert_eq!(out.doc.wanted_fonts[0].substituted_by, "Liberation Sans");
+        // A library holding the real font makes no record
+        // at all: nothing is wanted.
+        let families: Vec<String> = vec!["Gill Sans MT".to_string()];
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &families);
+        assert!(out.doc.wanted_fonts.is_empty());
+        assert!(out
+            .items
+            .iter()
+            .all(|i| !i.label.starts_with("Font we do not have")));
+    }
+
+    #[test]
+    fn a_twin_font_keeps_its_name_and_matches() {
+        // Calibri's words keep "Calibri" on their style;
+        // the want records Carlito as the stand-in, and
+        // because a twin has the same letter widths the
+        // words still badge Matched.
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pdf,
+            source_name: "old.pdf".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![span(
+                0,
+                "Welcome to worship",
+                60.0,
+                90.0,
+                11.0,
+                "Calibri",
+                false,
+            )],
+            images: Vec::new(),
+            loss_notes: Vec::new(),
+        };
+        let families: Vec<String> = vec!["Carlito".to_string()];
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &families);
+        let style = out
+            .doc
+            .styles
+            .iter()
+            .find(|s| s.id.starts_with("import-"))
+            .expect("an import style");
+        assert_eq!(style.font_family, "Calibri");
+        assert_eq!(
+            out.doc.wanted_fonts,
+            vec![WantedFont {
+                name: "Calibri".to_string(),
+                substituted_by: "Carlito".to_string(),
+            }]
+        );
+        assert!(out
+            .items
+            .iter()
+            .any(|i| i.badge == Badge::Matched && i.label.contains("Welcome")));
     }
 
     #[test]
@@ -1364,7 +1556,7 @@ mod tests {
             images: Vec::new(),
             loss_notes: Vec::new(),
         };
-        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        let out = document_from_dump(&dump, ChurchProfile::default(), false, &[]);
         let doc = &out.doc;
         assert_eq!(doc.stories.len(), 2, "thread story + lone story");
         let shared = doc

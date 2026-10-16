@@ -155,6 +155,12 @@ pub fn bundled_shaper() -> Shaper {
 pub struct Shaper {
     fonts: FontContext,
     layout: LayoutContext<()>,
+    /// Requested family -> the family the resolution chain
+    /// answered with, against the registered families at
+    /// answer time. Registering a font clears the cache:
+    /// the new face may be the real font a document was
+    /// waiting for (docs/FONTS.md, wanted fonts).
+    resolved: std::collections::HashMap<String, String>,
 }
 
 impl Default for Shaper {
@@ -169,6 +175,7 @@ impl Shaper {
         Self {
             fonts: FontContext::new(),
             layout: LayoutContext::new(),
+            resolved: std::collections::HashMap::new(),
         }
     }
 
@@ -178,6 +185,30 @@ impl Shaper {
         self.fonts
             .collection
             .register_fonts(fontique::Blob::new(std::sync::Arc::new(data)), None);
+        self.resolved.clear();
+    }
+
+    /// The family a request for `family` shapes with: the
+    /// shared resolution chain (ob_fonts::resolve) walked
+    /// against the families registered in this shaper right
+    /// now. Every layout built here resolves its spec's
+    /// family through this, so a document naming a font
+    /// the library lacked shapes in the stand-in, and
+    /// shapes in the real font the moment it is registered,
+    /// with no edit to the document.
+    pub fn resolved_family(&mut self, family: &str) -> String {
+        if let Some(hit) = self.resolved.get(family) {
+            return hit.clone();
+        }
+        let available: Vec<String> = self
+            .fonts
+            .collection
+            .family_names()
+            .map(|s| s.to_string())
+            .collect();
+        let answer = ob_fonts::resolve::resolve_family(family, &available).family;
+        self.resolved.insert(family.to_string(), answer.clone());
+        answer
     }
 
     pub(crate) fn build_layout(
@@ -208,10 +239,14 @@ impl Shaper {
         max_width: Option<Mpt>,
     ) -> parley::Layout<()> {
         let size_px = size as f32 / 1000.0;
+        // The resolution chain, at the one place every
+        // layout is built: the spec names the family the
+        // document asks for, and the words shape in the
+        // family the chain answers with (real font, twin,
+        // lookalike, or house default).
+        let family = self.resolved_family(&spec.family);
         let mut builder = self.layout.ranged_builder(&mut self.fonts, text, 1.0, true);
-        builder.push_default(StyleProperty::FontFamily(FontFamily::from(
-            spec.family.as_str(),
-        )));
+        builder.push_default(StyleProperty::FontFamily(FontFamily::from(family.as_str())));
         builder.push_default(StyleProperty::FontSize(size_px));
         builder.push_default(StyleProperty::FontWeight(if spec.bold {
             FontWeight::BOLD
@@ -433,6 +468,122 @@ mod tests {
     }
 
     /// The bundled set is complete: eight faces, all parseable.
+    /// A copy of a bundled face whose family-name records
+    /// (name IDs 1 and 16) say `new` instead of `old`: the
+    /// install-later fixture. A church's real Gill Sans MT
+    /// is a commercial file we cannot ship in a test; a
+    /// free face WEARING the name is exactly what the
+    /// library holds the day the admin adds the real one,
+    /// as far as every name-based lookup can tell.
+    fn renamed_family(bytes: &[u8], old: &str, new: &str) -> Vec<u8> {
+        let mut out = bytes.to_vec();
+        let num_tables = u16::from_be_bytes([out[4], out[5]]) as usize;
+        let mut name_off = 0usize;
+        for i in 0..num_tables {
+            let rec = 12 + i * 16;
+            if &out[rec..rec + 4] == b"name" {
+                name_off =
+                    u32::from_be_bytes([out[rec + 8], out[rec + 9], out[rec + 10], out[rec + 11]])
+                        as usize;
+            }
+        }
+        assert!(name_off > 0, "the font has a name table");
+        let count = u16::from_be_bytes([out[name_off + 2], out[name_off + 3]]) as usize;
+        let storage = u16::from_be_bytes([out[name_off + 4], out[name_off + 5]]) as usize;
+        let mut patched: Vec<usize> = Vec::new();
+        for i in 0..count {
+            let rec = name_off + 6 + i * 12;
+            let platform = u16::from_be_bytes([out[rec], out[rec + 1]]);
+            let name_id = u16::from_be_bytes([out[rec + 6], out[rec + 7]]);
+            if name_id != 1 && name_id != 16 {
+                continue;
+            }
+            let len = u16::from_be_bytes([out[rec + 8], out[rec + 9]]) as usize;
+            let off = u16::from_be_bytes([out[rec + 10], out[rec + 11]]) as usize;
+            let abs = name_off + storage + off;
+            let raw = &bytes[abs..abs + len];
+            let text: String = if platform == 1 {
+                raw.iter().map(|&b| b as char).collect()
+            } else {
+                let units: Vec<u16> = raw
+                    .chunks(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
+                String::from_utf16_lossy(&units)
+            };
+            if text != old {
+                continue;
+            }
+            let enc_len = if platform == 1 {
+                new.len()
+            } else {
+                new.len() * 2
+            };
+            if !patched.contains(&abs) {
+                let encoded: Vec<u8> = if platform == 1 {
+                    new.bytes().collect()
+                } else {
+                    new.encode_utf16().flat_map(|u| u.to_be_bytes()).collect()
+                };
+                assert!(encoded.len() <= len, "the new name must fit the record");
+                out[abs..abs + encoded.len()].copy_from_slice(&encoded);
+                for b in &mut out[abs + encoded.len()..abs + len] {
+                    *b = 0;
+                }
+                patched.push(abs);
+            }
+            out[rec + 8..rec + 10].copy_from_slice(&(enc_len as u16).to_be_bytes());
+        }
+        assert!(!patched.is_empty(), "a family record was patched");
+        out
+    }
+
+    #[test]
+    fn the_chain_decides_what_a_missing_family_shapes_in() {
+        // Only Liberation registered: Gill Sans MT falls
+        // to the house default (its lookalike is absent).
+        let mut s = shaper();
+        assert_eq!(s.resolved_family("Gill Sans MT"), "Liberation Sans");
+        // A face named Cabin arrives: the lookalike tier.
+        s.register_font(renamed_family(
+            include_bytes!("../assets/fonts/LiberationSerif-Regular.ttf"),
+            "Liberation Serif",
+            "Cabin",
+        ));
+        assert_eq!(s.resolved_family("Gill Sans MT"), "Cabin");
+        // The real name arrives: exact, and the shaped
+        // widths are the Gill-named face's own (here the
+        // serif bytes wearing the name), not the stand-in's.
+        s.register_font(renamed_family(
+            include_bytes!("../assets/fonts/LiberationSerif-Regular.ttf"),
+            "Liberation Serif",
+            "Gill Sans MT",
+        ));
+        assert_eq!(s.resolved_family("Gill Sans MT"), "Gill Sans MT");
+        let text = "Hymn of the Day";
+        let gill = s.measure(text, &FontSpec::new("Gill Sans MT"), 11_000);
+        let face = ttf_parser::Face::parse(
+            include_bytes!("../assets/fonts/LiberationSerif-Regular.ttf"),
+            0,
+        )
+        .unwrap();
+        let upem = face.units_per_em() as i64;
+        let want: i64 = text
+            .chars()
+            .map(|c| {
+                let gid = face.glyph_index(c).map(|g| g.0).unwrap_or(0);
+                face.glyph_hor_advance(ttf_parser::GlyphId(gid))
+                    .unwrap_or(0) as i64
+            })
+            .sum::<i64>()
+            * 11_000
+            / upem;
+        assert!(
+            (gill - want).abs() <= 30,
+            "shaped {gill} should be the Gill-named face's widths {want}"
+        );
+    }
+
     #[test]
     fn bundled_set_has_all_eight_faces() {
         let files = bundled_font_files();

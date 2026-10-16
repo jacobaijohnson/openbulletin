@@ -320,6 +320,7 @@ pub fn document_from_markdown(text: &str, profile: ChurchProfile, source_name: &
         assets: Vec::new(),
         asset_bytes: Default::default(),
         occasion_time: None,
+        wanted_fonts: Vec::new(),
     }
 }
 
@@ -426,6 +427,7 @@ fn spoken_only_paragraphs_stay_out_of_markdown() {
         assets: Vec::new(),
         asset_bytes: Default::default(),
         occasion_time: None,
+        wanted_fonts: Vec::new(),
     };
     let (md, left_out) = to_markdown_report(&doc);
     assert_eq!(left_out, 1);

@@ -1044,6 +1044,9 @@ struct CheckNote {
     /// window, when the fix lives on a step (the date
     /// finding's fix lives on This Sunday, J1).
     step: Option<usize>,
+    /// The fix lives in the Fonts window (a wanted font
+    /// still missing): the button opens it.
+    fonts: bool,
 }
 
 impl CheckNote {
@@ -1052,6 +1055,7 @@ impl CheckNote {
             text,
             target: None,
             step: None,
+            fonts: false,
         }
     }
 
@@ -1060,6 +1064,7 @@ impl CheckNote {
             text,
             target: Some((panel, frame)),
             step: None,
+            fonts: false,
         }
     }
 
@@ -1068,6 +1073,16 @@ impl CheckNote {
             text,
             target: None,
             step: Some(step),
+            fonts: false,
+        }
+    }
+
+    fn to_fonts(text: String) -> Self {
+        CheckNote {
+            text,
+            target: None,
+            step: None,
+            fonts: true,
         }
     }
 }
@@ -1103,6 +1118,28 @@ struct CharFinding {
 /// resolved exactly the way the PDF writer resolves it, so a
 /// character is only named when that face truly has no glyph
 /// for it.
+/// The Check step's wanted-font findings (docs/FONTS.md):
+/// for each font the document was made in that the
+/// library still does not hold exactly, one finding in
+/// the import review's own words, with the stand-in the
+/// chain picks TODAY (a nearer font added since the
+/// import is named, not the stale one on the record).
+/// Pure over (document, available families) so the words
+/// are testable without a library on disk.
+fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<CheckNote> {
+    let mut out = Vec::new();
+    for w in &doc.wanted_fonts {
+        let r = ob_fonts::resolve::resolve_family(&w.name, available);
+        if r.tier != ob_fonts::resolve::SubstituteTier::Exact {
+            out.push(CheckNote::to_fonts(format!(
+                "Check: {}",
+                ob_fonts::resolve::wanted_font_words(&w.name, &r.family)
+            )));
+        }
+    }
+    out
+}
+
 fn char_findings(doc: &Document) -> Vec<CharFinding> {
     let oracle = ob_pdf::FaceOracle::new(&ob_pdf::library_font_bytes());
     let mut out = Vec::new();
@@ -2081,10 +2118,34 @@ struct EditorLayout {
 /// family (keyed by its hash), so the face is chosen among
 /// the rows of the line's family by the face's full name:
 /// the exact face when the library holds it (Bold, Italic,
-/// Bold Italic), else the family's regular face. None when
-/// the family is not in the library at all; the caller then
-/// falls back to the interface font.
+/// Bold Italic), else the family's regular face. A family
+/// the library does not hold paints in the resolution
+/// chain's stand-in (docs/FONTS.md, wanted fonts), the
+/// same face shaping and print use, so the screen never
+/// shows a different font than the paper gets. None when
+/// no face answers at all; the caller then falls back to
+/// the interface font.
 fn preview_face_key(rows: &[FontRow], family: &str, bold: bool, italic: bool) -> Option<String> {
+    if let Some(key) = face_key_in_rows(rows, family, bold, italic) {
+        return Some(key);
+    }
+    let mut available: Vec<String> = Vec::new();
+    for row in rows {
+        if !available.contains(&row.family) {
+            available.push(row.family.clone());
+        }
+    }
+    let resolved = ob_fonts::resolve::resolve_family(family, &available).family;
+    if resolved != family {
+        return face_key_in_rows(rows, &resolved, bold, italic);
+    }
+    None
+}
+
+/// The face-key lookup itself: among the rows of one
+/// family, the exact face by full name, else the regular
+/// face, else any face of the family.
+fn face_key_in_rows(rows: &[FontRow], family: &str, bold: bool, italic: bool) -> Option<String> {
     let mut regular: Option<&FontRow> = None;
     let mut any: Option<&FontRow> = None;
     for row in rows {
@@ -3131,6 +3192,15 @@ impl App {
         for line in carried_lines(&self.doc) {
             notes.push(CheckNote::plain(line));
         }
+        // Wanted fonts the library still does not hold
+        // (docs/FONTS.md): one finding per font, in the
+        // same words as the import review, its fix button
+        // opening the Fonts window. The stand-in named is
+        // today's resolution, so if a nearer font was
+        // added since the import, the words keep up; when
+        // the real font itself arrives, the finding is
+        // simply gone.
+        notes.extend(wanted_font_notes(&self.doc, &current_library_families()));
         // Characters the print copy cannot show get their own
         // findings (not plain notes) so the Check step can put
         // a fix button under each one.
@@ -7697,11 +7767,13 @@ impl App {
                         image_bytes.insert(img.file.clone(), b);
                     }
                 }
+                let families = current_library_families();
                 let out = ob_extract::draft::document_from_dump_with_assets(
                     &dump,
                     profile,
                     true,
                     &image_bytes,
+                    &families,
                 );
                 Ok(ImportReview {
                     doc: out.doc,
@@ -7745,7 +7817,12 @@ impl App {
                 if dump.pages.is_empty() {
                     return Err("that IDML file has no pages we can read".into());
                 }
-                let out = ob_extract::draft::document_from_dump(&dump, profile, false);
+                let out = ob_extract::draft::document_from_dump(
+                    &dump,
+                    profile,
+                    false,
+                    &current_library_families(),
+                );
                 Ok(ImportReview {
                     doc: out.doc,
                     items: out.items,
@@ -7783,7 +7860,12 @@ impl App {
                 if dump.pages.is_empty() {
                     return Err("that Scribus file has no pages we can read".into());
                 }
-                let out = ob_extract::draft::document_from_dump(&dump, profile, false);
+                let out = ob_extract::draft::document_from_dump(
+                    &dump,
+                    profile,
+                    false,
+                    &current_library_families(),
+                );
                 let mut note = "This came from a Scribus file: the words, their                                 boxes, and their fonts came over as a draft to check."
                     .to_string();
                 for n in &loss_notes {
@@ -7847,11 +7929,13 @@ impl App {
                         image_bytes.insert(img.file.clone(), b);
                     }
                 }
+                let families = current_library_families();
                 let out = ob_extract::draft::document_from_dump_with_assets(
                     &dump,
                     profile,
                     true,
                     &image_bytes,
+                    &families,
                 );
                 let note = if pictured {
                     "This came from your Publisher file by way of LibreOffice, \
@@ -8378,7 +8462,8 @@ impl App {
                         &counts, &skipped,
                     ));
                 }
-                let out = ob_extract::analyzer::analyze(&dumps, profile)?;
+                let out =
+                    ob_extract::analyzer::analyze(&dumps, profile, &current_library_families())?;
                 if let Some((_, Some(pdf))) = entries
                     .iter()
                     .find(|(d, _)| d.source_name == out.base_source)
@@ -9213,7 +9298,10 @@ impl App {
                 ui.separator();
                 if ui.button("Add fonts...").clicked() {
                     if let Some(paths) = rfd::FileDialog::new()
-                        .add_filter("Font files and packs", &["ttf", "otf", "zip"])
+                        .add_filter(
+                            "Font files and packs",
+                            &["ttf", "otf", "ttc", "zip", "woff", "woff2", "pfb", "afm"],
+                        )
                         .pick_files()
                     {
                         match ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
@@ -9251,20 +9339,30 @@ impl App {
                                                 .push(format!("could not read a zip: {e}")),
                                         }
                                     } else {
-                                        match lib.add_path(path) {
-                                            Ok(info) => {
-                                                if !info.rights.may_package() {
-                                                    caution = format!(
-                                                        " Note: {} did not come from the \
-                                                         free catalog; only share bulletins \
-                                                         using it if you have the right to \
-                                                         share that font.",
-                                                        info.full_name
-                                                    );
+                                        // One result per font
+                                        // the file carries: a
+                                        // collection adds each
+                                        // of its faces, and a
+                                        // format we cannot use
+                                        // answers with its
+                                        // refusal, counted and
+                                        // named like any other.
+                                        for result in lib.add_path(path) {
+                                            match result {
+                                                Ok(info) => {
+                                                    if !info.rights.may_package() {
+                                                        caution = format!(
+                                                            " Note: {} did not come from the \
+                                                             free catalog; only share bulletins \
+                                                             using it if you have the right to \
+                                                             share that font.",
+                                                            info.full_name
+                                                        );
+                                                    }
+                                                    added.push(info.full_name);
                                                 }
-                                                added.push(info.full_name);
+                                                Err(e) => problems.push(e),
                                             }
-                                            Err(e) => problems.push(e),
                                         }
                                     }
                                 }
@@ -9448,9 +9546,16 @@ impl App {
                     });
                 }
                 if let Some(path) = add_copy {
-                    match ob_fonts::FontLibrary::open(ob_fonts::default_library_dir())
-                        .and_then(|lib| lib.add_path(&path))
-                    {
+                    // The list only offers single font files,
+                    // so the copy answers with one result.
+                    let copied = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir())
+                        .and_then(|lib| {
+                            lib.add_path(&path)
+                                .into_iter()
+                                .next()
+                                .unwrap_or_else(|| Err("that font file held no font".into()))
+                        });
+                    match copied {
                         Ok(info) => {
                             if info.rights.may_package() {
                                 self.note(format!("Font copied in: {}", info.full_name));
@@ -10202,6 +10307,9 @@ impl eframe::App for App {
                                     self.open_pages_at(pi, fi);
                                 }
                             }
+                            if n.fonts && ui.button("Fix this").clicked() {
+                                self.show_fonts = true;
+                            }
                         }
                         let findings = self.char_findings.clone();
                         for f in &findings {
@@ -10935,7 +11043,8 @@ fn native_pub_review(
     if dump.spans.is_empty() {
         return Err("the built-in reader found no words in that Publisher file".into());
     }
-    let out = ob_extract::draft::document_from_dump(&dump, profile, false);
+    let out =
+        ob_extract::draft::document_from_dump(&dump, profile, false, &current_library_families());
     let mut note = if x.positioned {
         "These words came from your Publisher file with OpenBulletin's own \
          reader, so no other program was needed, and they are in the boxes \
@@ -11305,6 +11414,25 @@ fn wmf_converter() -> Option<Box<ob_clips::MetafileConverter>> {
     }))
 }
 
+/// The Font Library's family names right now, for the
+/// import doors: which source fonts count as "we have
+/// it", and what stands in for the rest, is decided
+/// against this list at import time (docs/FONTS.md,
+/// wanted fonts). An unreadable library answers empty:
+/// imports still work, and every non-bundled font is
+/// simply wanted.
+fn current_library_families() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+        for info in lib.scan() {
+            if !out.contains(&info.family) {
+                out.push(info.family);
+            }
+        }
+    }
+    out
+}
+
 fn build_preview(doc_in: &Document) -> Vec<PreviewSheet> {
     let padded = ob_impose::padded_document(doc_in);
     let doc = &padded;
@@ -11599,6 +11727,64 @@ mod settings_tests {
     use super::*;
 
     #[test]
+    fn a_wanted_font_warns_on_check_until_the_font_arrives() {
+        // The install-later promise, at the Check step
+        // (docs/FONTS.md): the finding names the font the
+        // bulletin was made in and the stand-in in use
+        // TODAY; the day the real font is added to the
+        // library, the finding is gone, with no edit to
+        // the document.
+        let doc = Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "T".into(),
+            profile: ChurchProfile::default(),
+            fields: Default::default(),
+            styles: vec![],
+            stories: vec![],
+            panels: vec![],
+            sheet: ob_model::SheetSpec {
+                preset: "letter-portrait".into(),
+                size: ob_model::Size::new(612_000, 792_000),
+            },
+            no_announcements: false,
+            assets: vec![],
+            asset_bytes: Default::default(),
+            occasion_time: None,
+            wanted_fonts: vec![ob_model::WantedFont {
+                name: "Gill Sans MT".into(),
+                substituted_by: "Cabin".into(),
+            }],
+        };
+        // Nothing in the library: today's stand-in is the
+        // house default, and the words say so (the record
+        // still remembers Cabin was the import-time pick).
+        let notes = wanted_font_notes(&doc, &[]);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].text.contains("made in Gill Sans MT"),
+            "{}",
+            notes[0].text
+        );
+        assert!(
+            notes[0].text.contains("shown in Liberation Sans"),
+            "{}",
+            notes[0].text
+        );
+        assert!(notes[0].fonts, "the fix button opens Fonts");
+        // Cabin added: the stand-in named is Cabin now.
+        let notes = wanted_font_notes(&doc, &["Cabin".to_string()]);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].text.contains("shown in Cabin"),
+            "{}",
+            notes[0].text
+        );
+        // The real font added: no finding at all.
+        let notes = wanted_font_notes(&doc, &["Gill Sans MT".to_string()]);
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    #[test]
     fn pdf_purpose_defaults_to_printing_and_remembers() {
         // A settings file from before O1 has no purpose word:
         // the chooser's default is For printing.
@@ -11786,11 +11972,20 @@ mod settings_tests {
             preview_face_key(&rows, "Liberation Serif", true, false).as_deref(),
             Some("lib-serif")
         );
-        // A family the library does not hold: no key, and the
-        // caller falls back to the interface font.
+        // A family the library does not hold paints in the
+        // resolution chain's stand-in (docs/FONTS.md): the
+        // house default's regular face here, so the preview
+        // shows the font the paper will get. A face style
+        // the stand-in lacks falls to its regular face, the
+        // same rule as any one-face family.
         assert_eq!(
-            preview_face_key(&rows, "No Such Family", false, false),
-            None
+            preview_face_key(&rows, "No Such Family", false, false).as_deref(),
+            Some("lib-reg")
+        );
+        assert_eq!(
+            preview_face_key(&rows, "Gill Sans MT", true, false).as_deref(),
+            Some("lib-bold"),
+            "Gill Sans MT's stand-in here is the house default"
         );
     }
 
@@ -13369,6 +13564,7 @@ mod settings_tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         };
         let mut shaper = ob_text::shaping::bundled_shaper();
         let threads = ob_text::threading::layout_document_threads(&mut shaper, &doc);
@@ -13554,6 +13750,7 @@ mod settings_tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         };
         let placed = doc.add_asset(
             &[1, 2, 3],

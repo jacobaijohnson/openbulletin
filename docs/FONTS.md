@@ -53,9 +53,55 @@ is the concrete proof of short answer 3 for these files.
   rebuild is line-for-line faithful even though the letterforms are
   a hair different.
 - **Lookalikes:** Gill Sans, Bookman, Franklin Gothic, Rockwell have
-  no metric twins. The app offers the closest free lookalikes and
-  the admin judges with the preview below. Close is often fine for a
-  heading; body text is where twins matter most.
+  no metric twins. A lookalike shares the feel, not the letter
+  widths, and is always called a lookalike, never a twin or a match.
+  The one lookalike in the table today is Gill Sans (every spelling
+  the corpus uses, GillSansMT included) -> Cabin, an OFL family drawn
+  by Pablo Impallari after the typefaces of Edward Johnston and
+  Eric Gill. A commercial font with no twin and no lookalike in the
+  table prints in the house default, Liberation Sans, until the
+  church adds the real font.
+
+## Wanted fonts: the real name is kept (2026-10-16)
+
+Jacob's ruling: when an imported bulletin names a font the library
+does not have, substitute a similar free font, BUT note the actual
+font name, so the user can find and install the real font
+themselves; and once it is installed, documents must use it with no
+editing. Built that way:
+
+- Styles an import creates carry the SOURCE family name from the
+  file ("Gill Sans MT"), never the substitute's name. The document
+  records what it was made in.
+- The document also gains a wanted-fonts record (`wanted_fonts` in
+  the .obd): each font the library did not hold at import time, with
+  the free family that stood in for it then. The import review
+  shows one "Check this" line per wanted font, in these words:
+  "This bulletin was made in Gill Sans MT. We do not have that
+  font, so its words are shown in Cabin for now. If you add Gill
+  Sans MT in Fonts, this bulletin will use it by itself."
+- The stand-in is chosen fresh every time text is shaped, painted,
+  or printed, by one resolution chain (`ob-fonts`, walked by the
+  draft builder, the text shaper's one layout path, the PDF writer
+  and its Check oracle, and the app's preview painters): the real
+  family if the library holds it now, else its metric twin, else
+  its lookalike, else the house default. So adding the real font
+  later upgrades every old bulletin by itself, with no document
+  edit, and the Check step's wanted-font finding (the same words)
+  clears itself.
+- The app never points at font download sites. A church's fonts
+  come from the places fonts legitimately come from: the free
+  catalog inside the app, the computer's own fonts copied in, or
+  the church's own purchases and subscriptions, added as files.
+
+A note on Gill Sans MT specifically, because the corpus runs on it:
+it is Monotype's commercial font. Web sites offering it as a "free
+download" are handing out Monotype's own file under a personal-use
+label; neither we nor our users should take fonts from there. The
+legitimate ways a church ends up with it: it ships with Microsoft
+Office (most church office computers already have it, and the Fonts
+panel can copy system fonts into the library), or Monotype sells it
+directly. The free lookalike is Cabin, above.
 
 ## The font library (desktop and Docker behave identically)
 
@@ -66,15 +112,18 @@ laptop). So fonts live in one app-managed folder, the Font Library:
 
 - **Bundled starters** ship with the app (Liberation family today;
   a small OFL starter set later), each with its license text.
-- **Add a font:** pick a .ttf/.otf. The app reads the font's real
-  names and its built-in embedding permission bits (the OpenType
-  fsType field: installable, editable, preview-and-print, or
-  restricted) and says in plain words what that font may be used
-  for. A copy goes into the library; the original stays untouched.
-- **Find a font:** search the free catalog (an index shipped with
-  the app; downloads come from the google/fonts repository or
+- **Add a font:** pick a font file (which formats, next section).
+  The app reads the font's real names and its built-in embedding
+  permission bits (the OpenType fsType field: installable, editable,
+  preview-and-print, or restricted) and says in plain words what
+  that font may be used for. A copy goes into the library; the
+  original stays untouched.
+- **Find a font:** search the free catalog (the Fontsource index,
+  read live; downloads come from the google/fonts repository or
   Fontsource, both license-clean), one tap installs into the
   library, license text saved alongside, file hash verified.
+  Cabin, the Gill Sans lookalike, is in that catalog under the
+  OFL-1.1 license and installs by this same road.
 - **System fonts (desktop):** offered as "copy into the library,"
   never linked live, for the determinism reason above. In the
   Docker shape the library is a folder in the data volume, and the
@@ -85,13 +134,42 @@ fonts may ride inside the package only when their license or
 embedding bits allow it (OFL and Apache: yes; installable/editable:
 yes; preview-and-print: the font stays out and the receiver is told
 which font to get; restricted: never carried, with a plain warning).
-Print PDFs follow the same rule, and the writer now embeds: every
-export carries the exact library faces it shaped with, as embedded
-TrueType with real width tables, whenever the face's rights allow
-travel; a face that may not travel falls back to a core font for
-that face only. Text is WinAnsi-encoded today; CID embedding for
-the full Unicode range is a later step. Full fonts are embedded
-whole (a reader PDF is about a megabyte); subsetting comes later.
+Print PDFs follow the same rule: every export embeds the library
+faces it shaped with, as CID-keyed TrueType (Type0/CIDFontType2,
+Identity encoding, a ToUnicode map of the characters actually
+drawn), subset to the glyphs used whenever the face's rights allow
+subsetting, whole-face when they do not or the subsetter declines;
+a face that may not travel at all falls back to a core font for
+that face only. (One boundary: CFF-flavored OpenType faces keep
+the older simple-font embedding; see docs/LEGAL.md.)
+
+## Font file formats (Jacob's rulings, 2026-10-16)
+
+Users supply fonts themselves; the app never bundles or links
+commercial fonts. What the Fonts doors accept:
+
+- **.ttf**: full support.
+- **.otf**: accepted, both outline flavors (TrueType-flavored and
+  CFF-flavored; a CFF face keeps its recorded print path in the
+  PDF writer).
+- **.zip packs**: already in; every file inside is counted, and a
+  pack can carry collections and refusals like any other door.
+- **System fonts**: copied into the library, never linked live.
+- **.ttc collections**: a collection is several fonts sharing one
+  file. Intake splits it and copies each face in as its own font
+  file, named after the face itself, so the library stays one file
+  per face. (The splitter copies each face's tables byte for byte
+  and validates every result by parsing it before it is believed.)
+- **WOFF / WOFF2**: refused, in these words: "That is the web
+  version of a font. OpenBulletin prints, so it needs the TTF or
+  OTF version of the same font."
+- **Type 1 (.pfb / .afm)**: refused plainly as a format too old
+  for OpenBulletin to use; the TTF or OTF version of the same font
+  works.
+
+Every refusal names the file it refused and counts in the door's
+result, in the Fonts panel and in `fonts add` alike. Nothing is
+silently skipped.
 
 ## Live preview and comparison
 
@@ -149,6 +227,19 @@ pack families are variable fonts and currently shape at their
 default weight only; the static families carry all four faces.
 Remaining: the side-by-side comparison preview in the import
 review (that belongs to the analyzer's review screen).
+
+Wanted fonts landed later on 2026-10-16 (see the section above):
+styles keep the real source family name, documents carry the
+`wanted_fonts` record, and one resolution chain in `ob-fonts`
+(exact, then metric twin, then lookalike, then the house default)
+is walked at draft-build time, by the shaper's single layout path,
+by the PDF writer and Check's glyph oracle, and by the app's
+preview painters, so a font added later upgrades old documents
+with no edits. The substitution table moved into `ob-fonts` with
+it, gaining its first distinctly-typed lookalike (Gill Sans ->
+Cabin). Font intake learned collections (.ttc split into per-face
+files at the door) and the plain-words refusals for web fonts
+(WOFF/WOFF2) and Type 1.
 
 DejaVu Sans joined the pack 2026-10-16, for one plain reason: it
 carries the marks the Liberation faces do not. O2 read the cmap of

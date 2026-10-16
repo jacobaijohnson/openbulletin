@@ -584,6 +584,7 @@ mod tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         }
     }
 
@@ -754,6 +755,7 @@ mod tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         }
     }
 
@@ -804,7 +806,7 @@ mod tests {
 
         // The draft paragraph holds the same faces as runs
         // (effective against its style), not as new styles.
-        let out = crate::draft::document_from_dump(&dump, ChurchProfile::default(), false);
+        let out = crate::draft::document_from_dump(&dump, ChurchProfile::default(), false, &[]);
         let para = out
             .doc
             .stories

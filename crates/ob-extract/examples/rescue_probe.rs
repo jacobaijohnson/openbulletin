@@ -9,7 +9,7 @@ fn main() {
     let path = std::env::args().nth(1).expect("dump.json path");
     let text = std::fs::read_to_string(&path).expect("read dump");
     let dump = ExtractionDump::from_json(&text).expect("parse dump");
-    let out = document_from_dump(&dump, ChurchProfile::default(), true);
+    let out = document_from_dump(&dump, ChurchProfile::default(), true, &[]);
     let (mut m, mut c, mut pic) = (0, 0, 0);
     for item in &out.items {
         match item.badge {

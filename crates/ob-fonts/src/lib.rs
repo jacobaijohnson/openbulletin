@@ -12,6 +12,8 @@
 //! also says exactly which font file it was laid out with.
 
 pub mod catalog;
+pub mod resolve;
+pub mod ttc;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -145,6 +147,59 @@ pub fn default_library_dir() -> PathBuf {
     base.join("OpenBulletin").join("fonts")
 }
 
+/// The plain-words refusal for a font file in a format
+/// OpenBulletin cannot use (docs/FONTS.md, font file
+/// formats), naming the file: web fonts (WOFF and WOFF2
+/// are the same font dressed for a browser; the file's
+/// magic bytes say so even when the name lies) and Type 1
+/// fonts (the 1980s format modern systems have retired).
+/// None for anything else: the font parser is the judge
+/// of the formats we do take.
+pub fn format_refusal(bytes: &[u8], file_name: &str) -> Option<String> {
+    let lower = file_name.to_lowercase();
+    let web = bytes.starts_with(b"wOFF")
+        || bytes.starts_with(b"wOF2")
+        || lower.ends_with(".woff")
+        || lower.ends_with(".woff2");
+    if web {
+        return Some(format!(
+            "{file_name}: That is the web version of a font. OpenBulletin \
+             prints, so it needs the TTF or OTF version of the same font."
+        ));
+    }
+    let type1 = lower.ends_with(".pfb")
+        || lower.ends_with(".afm")
+        || lower.ends_with(".pfm")
+        || bytes.starts_with(b"%!PS")
+        || bytes.starts_with(b"StartFontMetrics");
+    if type1 {
+        return Some(format!(
+            "{file_name}: That font is in the Type 1 format, which is too \
+             old for OpenBulletin to use. The TTF or OTF version of the \
+             same font will work."
+        ));
+    }
+    None
+}
+
+/// The file name a split-out collection face is saved
+/// under: its own full name, spaces out, with the
+/// extension its outlines call for. A face that will not
+/// inspect keeps the collection's stem and its number.
+fn collection_face_name(face: &[u8], stem: &str, index: usize) -> String {
+    match inspect(face, "face") {
+        Ok(info) => {
+            let ext = if face.starts_with(b"OTTO") {
+                "otf"
+            } else {
+                "ttf"
+            };
+            format!("{}.{ext}", info.full_name.replace(' ', ""))
+        }
+        Err(_) => format!("{stem}-{index}.ttf"),
+    }
+}
+
 /// Reduce any suggested or archived name to a bare file name:
 /// split on both slash kinds (a zip made on Windows can carry
 /// backslash paths), drop anything empty or dotty.
@@ -206,11 +261,70 @@ impl FontLibrary {
     }
 
     /// Copy a font into the library. Identical bytes already present
-    /// are returned as-is (no duplicates).
+    /// are returned as-is (no duplicates). Formats we cannot
+    /// use are refused in plain words (see `format_refusal`).
+    /// A font collection (.ttc) is split and every face is
+    /// added; the first face's facts are returned, so callers
+    /// that need every face's outcome (the Fonts doors) use
+    /// `add_path` or `add_collection_bytes` instead.
     pub fn add_bytes(&self, bytes: &[u8], suggested_name: &str) -> Result<FontInfo, String> {
+        let clean = sanitize_file_name(suggested_name);
+        if let Some(msg) = format_refusal(bytes, &clean) {
+            return Err(msg);
+        }
+        if ttc::is_collection(bytes) {
+            let mut first_err: Option<String> = None;
+            for result in self.add_collection_bytes(bytes, &clean) {
+                match result {
+                    Ok(info) => return Ok(info),
+                    Err(e) => {
+                        if first_err.is_none() {
+                            first_err = Some(e);
+                        }
+                    }
+                }
+            }
+            return Err(first_err.unwrap_or_else(|| "that collection held no fonts".into()));
+        }
+        self.add_single(bytes, suggested_name)
+    }
+
+    /// Add one single-face font (the funnel `add_bytes`
+    /// ends at once the format questions are answered).
+    fn add_single(&self, bytes: &[u8], suggested_name: &str) -> Result<FontInfo, String> {
         let mut known: std::collections::HashSet<String> =
             self.scan().iter().map(|f| f.sha256.clone()).collect();
         self.add_bytes_known(bytes, suggested_name, &mut known)
+    }
+
+    /// Split a font collection and add every face as its
+    /// own font file, one result per face: a collection is
+    /// several fonts that happen to share a file, and the
+    /// library keeps one file per face (docs/FONTS.md).
+    pub fn add_collection_bytes(
+        &self,
+        bytes: &[u8],
+        suggested_name: &str,
+    ) -> Vec<Result<FontInfo, String>> {
+        let clean = sanitize_file_name(suggested_name);
+        let stem = clean
+            .rsplit_once('.')
+            .map(|(s, _)| s.to_string())
+            .unwrap_or_else(|| clean.clone());
+        let faces = match ttc::split_collection(bytes) {
+            Ok(faces) => faces,
+            Err(e) => return vec![Err(format!("{clean}: {e}"))],
+        };
+        let mut known: std::collections::HashSet<String> =
+            self.scan().iter().map(|f| f.sha256.clone()).collect();
+        faces
+            .iter()
+            .enumerate()
+            .map(|(i, face)| {
+                let name = collection_face_name(face, &stem, i);
+                self.add_bytes_known(face, &name, &mut known)
+            })
+            .collect()
     }
 
     /// add_bytes with the library's known hashes already collected:
@@ -258,15 +372,27 @@ impl FontLibrary {
     }
 
     /// Add a font from a file on disk (a download, a USB stick, a
-    /// system font being copied in). Same door as add_bytes.
-    pub fn add_path(&self, path: &std::path::Path) -> Result<FontInfo, String> {
-        let bytes =
-            std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    /// system font being copied in): one result per font the
+    /// file carries. A plain font gives one result; a
+    /// collection gives one per face; a format we cannot use
+    /// gives one refusal naming the file.
+    pub fn add_path(&self, path: &std::path::Path) -> Vec<Result<FontInfo, String>> {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => return vec![Err(format!("cannot read {}: {e}", path.display()))],
+        };
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("font.ttf");
-        self.add_bytes(&bytes, name)
+        let clean = sanitize_file_name(name);
+        if let Some(msg) = format_refusal(&bytes, &clean) {
+            return vec![Err(msg)];
+        }
+        if ttc::is_collection(&bytes) {
+            return self.add_collection_bytes(&bytes, &clean);
+        }
+        vec![self.add_single(&bytes, name)]
     }
 
     /// Add every font inside a zip archive (how font sites ship
@@ -309,7 +435,40 @@ impl FontLibrary {
                 break;
             }
             if lower.ends_with(".ttf") || lower.ends_with(".otf") {
-                results.push(self.add_bytes_known(&content, &file_name, &mut known));
+                // A web font wearing a .ttf name is still a
+                // web font: the refusal names it, the pack
+                // goes on without it.
+                match format_refusal(&content, &file_name) {
+                    Some(msg) => results.push(Err(msg)),
+                    None => results.push(self.add_bytes_known(&content, &file_name, &mut known)),
+                }
+            } else if lower.ends_with(".ttc") {
+                // A collection inside the pack: split it,
+                // one result per face, like the file door.
+                let stem = file_name
+                    .rsplit_once('.')
+                    .map(|(s, _)| s.to_string())
+                    .unwrap_or_else(|| file_name.clone());
+                match ttc::split_collection(&content) {
+                    Ok(faces) => {
+                        for (i, face) in faces.iter().enumerate() {
+                            let name = collection_face_name(face, &stem, i);
+                            results.push(self.add_bytes_known(face, &name, &mut known));
+                        }
+                    }
+                    Err(e) => results.push(Err(format!("{file_name}: {e}"))),
+                }
+            } else if lower.ends_with(".woff")
+                || lower.ends_with(".woff2")
+                || lower.ends_with(".pfb")
+                || lower.ends_with(".afm")
+                || lower.ends_with(".pfm")
+            {
+                // Named and refused, never silently skipped:
+                // the pack's result list is the count.
+                if let Some(msg) = format_refusal(&content, &file_name) {
+                    results.push(Err(msg));
+                }
             } else if (lower.ends_with(".txt") || lower.ends_with(".md"))
                 && (lower.contains("license") || lower.contains("ofl") || lower.contains("copying"))
             {
@@ -318,7 +477,7 @@ impl FontLibrary {
         }
         if results.is_empty() {
             results.push(Err(
-                "no font files (.ttf or .otf) inside that zip".to_string()
+                "no font files (.ttf, .otf, or .ttc) inside that zip".to_string()
             ));
         }
         results
@@ -380,9 +539,10 @@ fn system_font_dirs() -> Vec<std::path::PathBuf> {
 }
 
 /// Every font file on this computer (recursive, .ttf and .otf),
-/// deduplicated by hash. Font collections (.ttc) are skipped in
-/// this version: a collection holds many faces and needs
-/// face-by-face handling.
+/// deduplicated by hash. Font collections (.ttc) are not listed
+/// here (each row is one face, and a collection is several);
+/// adding a collection through the Fonts panel's file pick
+/// splits it into its faces instead.
 pub fn system_fonts() -> Vec<SystemFont> {
     fn walk(
         dir: &std::path::Path,
@@ -439,16 +599,30 @@ pub fn system_fonts() -> Vec<SystemFont> {
 /// Record, on each of the document's styles, the SHA-256 of the
 /// exact library font file that style will be laid out with
 /// (docs/FONTS.md). Run before saving or exporting, so the file
-/// remembers which font bytes its layout depends on. Styles whose
-/// family is not in the library keep whatever pin they had.
+/// remembers which font bytes its layout depends on. The family
+/// a style names is walked through the resolution chain first:
+/// a style made in a font the library does not hold is laid out
+/// with the chain's stand-in, so the pin names the stand-in's
+/// file, the one the layout truly used. When the real font is
+/// added later, the next save re-pins to it by itself.
 pub fn pin_document_fonts(doc: &mut ob_model::Document, lib: &FontLibrary) {
     let fonts = lib.scan();
+    let families: Vec<String> = {
+        let mut out: Vec<String> = Vec::new();
+        for f in &fonts {
+            if !out.contains(&f.family) {
+                out.push(f.family.clone());
+            }
+        }
+        out
+    };
     for style in &mut doc.styles {
+        let resolved = resolve::resolve_family(&style.font_family, &families).family;
         let face = fonts
             .iter()
-            .filter(|f| f.family == style.font_family)
+            .filter(|f| f.family == resolved)
             .find(|f| f.bold == style.bold && !f.italic)
-            .or_else(|| fonts.iter().find(|f| f.family == style.font_family));
+            .or_else(|| fonts.iter().find(|f| f.family == resolved));
         if let Some(face) = face {
             style.font_sha256 = Some(face.sha256.clone());
         }
@@ -645,6 +819,134 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Two bundled fonts behind a collection header (the
+    /// same construction ttc::tests proves the splitter
+    /// against): the fixture for the intake door.
+    fn make_ttc(faces: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"ttcf");
+        out.extend_from_slice(&1u16.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes());
+        out.extend_from_slice(&(faces.len() as u32).to_be_bytes());
+        let header = 12 + faces.len() * 4;
+        let mut bases = Vec::new();
+        let mut at = header;
+        for f in faces {
+            bases.push(at);
+            at += f.len();
+            while at % 4 != 0 {
+                at += 1;
+            }
+        }
+        for b in &bases {
+            out.extend_from_slice(&(*b as u32).to_be_bytes());
+        }
+        for (face, base) in faces.iter().zip(&bases) {
+            while out.len() < *base {
+                out.push(0);
+            }
+            let start = out.len();
+            out.extend_from_slice(face);
+            let num_tables = u16::from_be_bytes([face[4], face[5]]) as usize;
+            for t in 0..num_tables {
+                let rec = start + 12 + t * 16;
+                let off = u32::from_be_bytes([
+                    face[12 + t * 16 + 8],
+                    face[12 + t * 16 + 9],
+                    face[12 + t * 16 + 10],
+                    face[12 + t * 16 + 11],
+                ]) as usize;
+                out[rec + 8..rec + 12].copy_from_slice(&((start + off) as u32).to_be_bytes());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_collection_added_by_path_lands_as_its_faces() {
+        let dir = temp_dir("ttc-intake");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let ttc = make_ttc(&[
+            &bundled("LiberationSans-Regular.ttf"),
+            &bundled("LiberationSerif-Regular.ttf"),
+        ]);
+        let path = dir.join("TwoFaces.ttc");
+        std::fs::write(&path, &ttc).expect("write fixture");
+        let results = lib.add_path(&path);
+        assert_eq!(results.len(), 2, "one result per face: {results:?}");
+        assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
+        let scanned = lib.scan();
+        let families: Vec<&str> = scanned
+            .iter()
+            .map(|f| f.family.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        assert!(families.contains(&"Liberation Sans"), "{families:?}");
+        assert!(families.contains(&"Liberation Serif"), "{families:?}");
+        // And a collection inside a zip pack splits the
+        // same way.
+        let mut zip_bytes = Vec::new();
+        {
+            use std::io::Write as _;
+            let cursor = std::io::Cursor::new(&mut zip_bytes);
+            let mut zw = zip::ZipWriter::new(cursor);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("TwoFaces.ttc", opts).expect("start");
+            zw.write_all(&ttc).expect("write ttc");
+            zw.finish().expect("finish zip");
+        }
+        let dir2 = temp_dir("ttc-zip");
+        let lib2 = FontLibrary::open(dir2.clone()).expect("open");
+        let results = lib2.add_zip_bytes(&zip_bytes);
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert!(results.iter().all(|r| r.is_ok()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn web_fonts_are_refused_in_plain_words() {
+        let lib = FontLibrary::open(temp_dir("woff")).expect("open");
+        // Magic bytes decide, not the name: a WOFF wearing
+        // a .ttf name is refused with the web sentence.
+        let mut woff = b"wOFF".to_vec();
+        woff.extend_from_slice(&bundled("LiberationSans-Regular.ttf"));
+        let err = lib
+            .add_bytes(&woff, "LiberationSans-Regular.ttf")
+            .expect_err("a web font is refused");
+        assert!(
+            err.contains(
+                "That is the web version of a font. OpenBulletin \
+                          prints, so it needs the TTF or OTF version of the same font."
+            ),
+            "{err}"
+        );
+        assert!(err.contains("LiberationSans-Regular.ttf"), "named: {err}");
+        // And by extension at the path door, WOFF2 as well.
+        let dir = temp_dir("woff2");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let path = dir.join("SomeFont.woff2");
+        std::fs::write(&path, b"wOF2 dressed for the web").expect("write");
+        let results = lib.add_path(&path);
+        assert_eq!(results.len(), 1);
+        let err = results[0].as_ref().expect_err("refused");
+        assert!(err.contains("SomeFont.woff2"), "named: {err}");
+        assert!(err.contains("web version of a font"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn type1_fonts_are_refused_in_plain_words() {
+        let lib = FontLibrary::open(temp_dir("type1")).expect("open");
+        let err = lib
+            .add_bytes(b"%!PS-AdobeFont-1.0: Old 1.0", "OldFont.pfb")
+            .expect_err("a Type 1 font is refused");
+        assert!(err.contains("Type 1 format"), "{err}");
+        assert!(err.contains("OldFont.pfb"), "named: {err}");
+        assert!(err.contains("too old for OpenBulletin to use"), "{err}");
+    }
+
     #[test]
     fn system_scan_never_errors() {
         // Whatever this machine has (possibly nothing), the scan
@@ -696,6 +998,7 @@ mod tests {
             assets: Vec::new(),
             asset_bytes: Default::default(),
             occasion_time: None,
+            wanted_fonts: Vec::new(),
         };
         pin_document_fonts(&mut doc, &lib);
         assert_eq!(

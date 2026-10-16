@@ -61,6 +61,19 @@ fields (`readers`, `ushers`, `greeters`,
 `{Sunday.readers}`, `{Sunday.ushers}`, `{Sunday.greeters}`,
 and `{Sunday.communion_assistants}`.
 
+A document may carry `wanted_fonts` (2026-10-16): one
+entry per font the document was made in that the Font
+Library did not hold when it was imported, each
+`{ name, substituted_by }`, the real font's name as a
+person would search for it and the free family that stood
+in at import time. The styles keep the real family name
+too. The record is information, never a lock: shaping and
+printing resolve the family against the library as it
+stands at that moment, so `substituted_by` may go stale
+on purpose (the real font arrived, and the document now
+uses it with no edit). Files written before the field
+existed load with an empty list; `format_version` stays 1.
+
 ### Loading rules
 
 - Readers reject newer-than-known versions with a clear

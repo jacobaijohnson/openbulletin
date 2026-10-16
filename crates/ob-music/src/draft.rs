@@ -247,6 +247,7 @@ pub fn build_music_draft(
         assets: Vec::new(),
         asset_bytes: Default::default(),
         occasion_time: None,
+        wanted_fonts: Vec::new(),
     };
     // The music file itself rides in the document, so the
     // bulletin travels complete and the music can be

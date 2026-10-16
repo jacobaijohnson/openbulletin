@@ -35,7 +35,10 @@ guarantee (every 1.x opens every 1.x file).
 
 ## Import and conversion track (Jacob, 2026-10-15)
 Imports are rescues with honest fidelity labels, never magic (PRINCIPLES.md):
-- [x] Native .obd (v0) — ours, full fidelity by definition.
+- [x] Native .obd (v1 since 2026-10-16: zip container with
+      content-addressed assets and rights records; v0 files
+      still open and migrate) — ours, full fidelity by
+      definition.
 - [x] PDF rescue (shipped 2026-10-15): open an old bulletin PDF in the
       app; words come back as editable boxes with Good / Check this /
       Picture only labels, and each old page stays underneath as a

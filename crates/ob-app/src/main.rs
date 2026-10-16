@@ -629,7 +629,7 @@ impl App {
         self.date_input = self
             .doc
             .fields
-            .get("sunday_date")
+            .get("occasion_date")
             .cloned()
             .unwrap_or_default();
         self.service_inputs = service_lines(&self.doc)
@@ -640,26 +640,32 @@ impl App {
     }
 
     /// Set the bulletin's date from the Step 2 field, in the
-    /// printed long form too. Plain failure words when the date
-    /// does not read (blocker 1: the date used to be unchangeable).
+    /// printed long form too. The field accepts any format a
+    /// person types (docs/planning/occasions.md): ISO, US
+    /// numeric, month names, an optional weekday that must
+    /// be right, a missing year meaning the coming one.
+    /// Plain failure words when the date does not read
+    /// (blocker 1: the date used to be unchangeable).
     fn apply_date(&mut self) {
-        match chrono::NaiveDate::parse_from_str(self.date_input.trim(), "%Y-%m-%d") {
-            Ok(d) => {
+        match ob_model::parse_flexible_date(self.date_input.trim(), today_simple()) {
+            Some(d) => {
+                let nd = naive_of(d);
                 let before = snapshot(&self.doc);
-                self.doc
-                    .fields
-                    .insert("sunday_date".to_string(), d.format("%Y-%m-%d").to_string());
                 self.doc.fields.insert(
-                    "sunday_date_long".to_string(),
-                    d.format("%A, %B %-d, %Y").to_string(),
+                    "occasion_date".to_string(),
+                    nd.format("%Y-%m-%d").to_string(),
+                );
+                self.doc.fields.insert(
+                    "occasion_date_long".to_string(),
+                    nd.format("%A, %B %-d, %Y").to_string(),
                 );
                 if before != snapshot(&self.doc) {
                     self.record_undo(before);
                 }
-                self.note(format!("Date set to {}.", d.format("%A, %B %-d, %Y")));
+                self.note(format!("Date set to {}.", nd.format("%A, %B %-d, %Y")));
             }
-            Err(_) => {
-                self.fail("That date does not read. Use year-month-day, like 2026-10-18.".into());
+            None => {
+                self.fail("That date does not read. Try year-month-day, like 2026-10-18, or write it out, like October 18, 2026.".into());
             }
         }
     }
@@ -674,7 +680,7 @@ impl App {
     fn apply_edited_date(&mut self) {
         if date_differs(
             &self.date_input,
-            self.doc.fields.get("sunday_date").map(String::as_str),
+            self.doc.fields.get("occasion_date").map(String::as_str),
         ) {
             self.apply_date();
         }
@@ -692,13 +698,12 @@ impl App {
         let parsed = if text.is_empty() {
             Some(None)
         } else {
-            chrono::NaiveDate::parse_from_str(&text, "%Y-%m-%d")
-                .ok()
-                .map(|d| Some(d.format("%Y-%m-%d").to_string()))
+            ob_model::parse_flexible_date(&text, today_simple())
+                .map(|d| Some(format!("{:04}-{:02}-{:02}", d.year, d.month, d.day)))
         };
         let Some(value) = parsed else {
             self.fail(
-                "That keep-through date does not read. Use year-month-day, like 2026-11-08, or leave it blank.".into(),
+                "That keep-through date does not read. Try year-month-day, like 2026-11-08, or write it out, like November 8, 2026, or leave it blank.".into(),
             );
             self.ann_keep_through = self
                 .doc
@@ -765,7 +770,7 @@ fn snapshot(doc: &Document) -> String {
 fn suggested_save_name(doc: &Document) -> String {
     match doc
         .fields
-        .get("sunday_date")
+        .get("occasion_date")
         .and_then(|iso| chrono::NaiveDate::parse_from_str(iso.trim(), "%Y-%m-%d").ok())
     {
         Some(d) => format!("Bulletin {}.obd", d.format("%Y-%m-%d")),
@@ -950,7 +955,7 @@ fn carried_lines(doc: &Document) -> Vec<String> {
     use chrono::Datelike;
     let Some(bulletin) = doc
         .fields
-        .get("sunday_date")
+        .get("occasion_date")
         .and_then(|iso| chrono::NaiveDate::parse_from_str(iso.trim(), "%Y-%m-%d").ok())
     else {
         return Vec::new();
@@ -1010,32 +1015,81 @@ fn long_form(d: chrono::NaiveDate) -> String {
     format!("{}, {}", d.format("%A"), ob_layout::long_date(d))
 }
 
-/// The Check step's date finding (J1): a bulletin whose date
-/// is not the coming Sunday, in plain words naming both
-/// dates. The coming Sunday is today when today is a Sunday.
-/// A date that does not read gets no verdict here; the
-/// missing-date note covers that case.
-fn date_verdict(doc_iso: &str, today: chrono::NaiveDate) -> Option<String> {
-    let date = chrono::NaiveDate::parse_from_str(doc_iso.trim(), "%Y-%m-%d").ok()?;
-    let coming = sunday_on_or_after(today);
-    if date == coming {
-        return None;
+/// Today's date in the model's own date type, for the
+/// occasions parser (docs/planning/occasions.md).
+fn today_simple() -> ob_model::SimpleDate {
+    use chrono::Datelike;
+    let t = chrono::Local::now().date_naive();
+    ob_model::SimpleDate {
+        year: t.year(),
+        month: t.month(),
+        day: t.day(),
     }
-    Some(format!(
-        "Check: this bulletin says {}, but this coming Sunday is {}.",
-        long_form(date),
-        long_form(coming)
-    ))
+}
+
+/// A chrono date in the model's own date type.
+fn simple_of(d: chrono::NaiveDate) -> ob_model::SimpleDate {
+    use chrono::Datelike;
+    ob_model::SimpleDate {
+        year: d.year(),
+        month: d.month(),
+        day: d.day(),
+    }
+}
+
+/// The model's date type back as a chrono date (for the
+/// weekday-inclusive formatting the steps speak in).
+fn naive_of(d: ob_model::SimpleDate) -> chrono::NaiveDate {
+    chrono::NaiveDate::from_ymd_opt(d.year, d.month, d.day)
+        .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch"))
+}
+
+/// The Check step's date finding (J1, generalized by
+/// occasions): a Sunday-dated bulletin whose date is not
+/// the coming Sunday keeps the coming-Sunday wording; a
+/// bulletin for another day (Ash Wednesday, a wedding)
+/// is only flagged when its day has passed, and the words
+/// say so without claiming Sunday. A date that does not
+/// read gets no verdict here; the missing-date note
+/// covers that case.
+fn date_verdict(doc_iso: &str, today: chrono::NaiveDate) -> Option<String> {
+    let parsed = ob_model::parse_flexible_date(doc_iso.trim(), simple_of(today))?;
+    let date = naive_of(parsed);
+    if parsed.weekday() == 0 {
+        let coming = sunday_on_or_after(today);
+        if date == coming {
+            return None;
+        }
+        return Some(format!(
+            "Check: this bulletin says {}, but this coming Sunday is {}.",
+            long_form(date),
+            long_form(coming)
+        ));
+    }
+    if date < today {
+        return Some(format!(
+            "Check: this bulletin says {}, and that day has passed.",
+            long_form(date)
+        ));
+    }
+    None
 }
 
 /// The stale-date sentence (J1), shared by the Start status
 /// and the This Sunday step: the bulletin's date is behind
-/// today, so the bulletin on screen is for a Sunday that has
-/// already happened.
+/// today, so the bulletin on screen is for a day that has
+/// already happened. A Sunday keeps the coming-Sunday
+/// wording; another day is named plainly.
 fn date_passed_sentence(doc_iso: Option<&str>, today: chrono::NaiveDate) -> Option<String> {
-    let date = chrono::NaiveDate::parse_from_str(doc_iso?.trim(), "%Y-%m-%d").ok()?;
-    (date < today).then(|| {
+    let parsed = ob_model::parse_flexible_date(doc_iso?.trim(), simple_of(today))?;
+    let date = naive_of(parsed);
+    if date >= today {
+        return None;
+    }
+    Some(if parsed.weekday() == 0 {
         "That date has passed. Set the date for this Sunday on the This Sunday step.".to_string()
+    } else {
+        "That date has passed. Set the date on the This Sunday step.".to_string()
     })
 }
 
@@ -1073,20 +1127,31 @@ fn start_status(
 ) -> (String, String) {
     let long = doc
         .fields
-        .get("sunday_date_long")
+        .get("occasion_date_long")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
-    let headline = match long {
-        Some(d) => format!("Working on: Sunday, {d}"),
-        None => "Working on: a new bulletin".to_string(),
+    // The headline names the day the bulletin is for,
+    // weekday included, whatever day of the week it is
+    // (occasions). When the stored date does not parse,
+    // fall back to the stored long form as before.
+    let headline = match doc
+        .fields
+        .get("occasion_date")
+        .and_then(|iso| ob_model::parse_flexible_date(iso.trim(), simple_of(today)))
+    {
+        Some(d) => format!("Working on: {}", long_form(naive_of(d))),
+        None => match long {
+            Some(d) => format!("Working on: Sunday, {d}"),
+            None => "Working on: a new bulletin".to_string(),
+        },
     };
     let date_missing = long.is_none()
         || doc
             .fields
-            .get("sunday_date")
+            .get("occasion_date")
             .map(|s| s.trim().is_empty())
             .unwrap_or(true);
-    let passed = date_passed_sentence(doc.fields.get("sunday_date").map(String::as_str), today);
+    let passed = date_passed_sentence(doc.fields.get("occasion_date").map(String::as_str), today);
     let mut next = if let Some(sentence) = passed {
         sentence
     } else if doc.profile.name.trim().is_empty() {
@@ -1493,7 +1558,7 @@ impl Default for App {
             "Sunday",
         );
         let announcements = weekly_body_text(&doc);
-        let date_input = doc.fields.get("sunday_date").cloned().unwrap_or_default();
+        let date_input = doc.fields.get("occasion_date").cloned().unwrap_or_default();
         let service_inputs: Vec<String> =
             service_lines(&doc).into_iter().map(|l| l.value).collect();
         let sermon_input = sermon_title(&doc);
@@ -1855,9 +1920,14 @@ impl App {
         );
         let mut doc = doc;
         // Changing only the shape must not reset the week: the
-        // date, its long form, the Sunday name, and the reading
+        // date, its long form, the occasion name, and the reading
         // carry across (closing audit).
-        for key in ["sunday_date", "sunday_date_long", "sunday_name", "reading"] {
+        for key in [
+            "occasion_date",
+            "occasion_date_long",
+            "occasion_name",
+            "reading",
+        ] {
             if let Some(v) = keep_fields.get(key) {
                 doc.fields.insert(key.to_string(), v.clone());
             }
@@ -2012,11 +2082,11 @@ impl App {
         let verdict = self
             .doc
             .fields
-            .get("sunday_date")
+            .get("occasion_date")
             .and_then(|iso| date_verdict(iso, chrono::Local::now().date_naive()));
         match verdict {
             Some(words) => notes.push(CheckNote::to_step(words, 1)),
-            None => match self.doc.fields.get("sunday_date_long") {
+            None => match self.doc.fields.get("occasion_date_long") {
                 Some(d) if !d.is_empty() => {
                     notes.push(CheckNote::plain(format!("OK: bulletin date is {d}.")))
                 }
@@ -2272,7 +2342,7 @@ impl App {
                 self.remember_step();
                 let mut msg = format!(
                     "Started the {} bulletin. Weekly announcements were cleared; standing items carried over. Save it under its own name.",
-                    self.doc.fields.get("sunday_date_long").cloned().unwrap_or_default()
+                    self.doc.fields.get("occasion_date_long").cloned().unwrap_or_default()
                 );
                 if report.weeks_advanced > 1 {
                     msg.push_str(&format!(
@@ -4740,9 +4810,19 @@ impl App {
         });
     }
 
-    /// Load a panel's tracing picture (PNG beside the document)
-    /// as an egui texture, or None when it cannot be read.
+    /// Load a panel's tracing picture as an egui texture, or
+    /// None when it cannot be read. A v1 document carries
+    /// the picture's bytes in its asset store and the panel
+    /// names the asset's fingerprint; older documents name
+    /// a file beside the .obd, read as before.
     fn load_bg_texture(&self, ctx: &egui::Context, rel: &str) -> Option<egui::TextureHandle> {
+        if let Some(stored) = self.doc.asset_data(rel) {
+            let img = image::load_from_memory(stored).ok()?.to_rgba8();
+            let (w, h) = img.dimensions();
+            let color =
+                egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
+            return Some(ctx.load_texture("trace-bg", color, egui::TextureOptions::LINEAR));
+        }
         let base = self
             .path
             .as_ref()
@@ -4768,13 +4848,27 @@ impl App {
         std::thread::spawn(move || {
             let result = (|| -> Result<ImportReview, String> {
                 let helper = ob_extract::helper::resolve_helper(None);
-                let dump = ob_extract::helper::dump_pdf(&helper, &pdf)?;
                 let workdir = std::env::temp_dir()
                     .join(format!("openbulletin-import-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&workdir);
+                // Schema v2: the pictures inside the PDF ride
+                // along into the draft's asset store.
+                let pictures_dir = workdir.join("pictures");
+                let dump = ob_extract::helper::dump_pdf_with_images(&helper, &pdf, &pictures_dir)?;
                 let pictured =
                     ob_extract::helper::render_pdf(&helper, &pdf, &workdir.join("assets")).is_ok();
-                let out = ob_extract::draft::document_from_dump(&dump, profile, true);
+                let mut image_bytes = std::collections::HashMap::new();
+                for img in &dump.images {
+                    if let Ok(b) = std::fs::read(pictures_dir.join(&img.file)) {
+                        image_bytes.insert(img.file.clone(), b);
+                    }
+                }
+                let out = ob_extract::draft::document_from_dump_with_assets(
+                    &dump,
+                    profile,
+                    true,
+                    &image_bytes,
+                );
                 Ok(ImportReview {
                     doc: out.doc,
                     items: out.items,
@@ -4909,10 +5003,22 @@ impl App {
                 let _ = std::fs::remove_dir_all(&workdir);
                 let pdf = ob_extract::pub_bridge::convert_pub_to_pdf(&soffice, &path, &workdir)?;
                 let helper = ob_extract::helper::resolve_helper(None);
-                let dump = ob_extract::helper::dump_pdf(&helper, &pdf)?;
+                let pictures_dir = workdir.join("pictures");
+                let dump = ob_extract::helper::dump_pdf_with_images(&helper, &pdf, &pictures_dir)?;
                 let pictured =
                     ob_extract::helper::render_pdf(&helper, &pdf, &workdir.join("assets")).is_ok();
-                let out = ob_extract::draft::document_from_dump(&dump, profile, true);
+                let mut image_bytes = std::collections::HashMap::new();
+                for img in &dump.images {
+                    if let Ok(b) = std::fs::read(pictures_dir.join(&img.file)) {
+                        image_bytes.insert(img.file.clone(), b);
+                    }
+                }
+                let out = ob_extract::draft::document_from_dump_with_assets(
+                    &dump,
+                    profile,
+                    true,
+                    &image_bytes,
+                );
                 let note = if pictured {
                     "This came from your Publisher file by way of LibreOffice, \
                      so small layout differences from the original are normal. \
@@ -5580,6 +5686,68 @@ impl App {
         }
     }
 
+    /// Gather tracing pictures that panels still reference
+    /// by file path into the document's asset store, so a
+    /// v1 save carries their bytes. A reference that cannot
+    /// be read anywhere it might live stays a path, and the
+    /// panel keeps its missing-picture note, as before.
+    fn absorb_tracing_pictures(&mut self, target_dir: Option<&std::path::Path>) {
+        let mut jobs: Vec<(usize, String, Vec<u8>, String)> = Vec::new();
+        for (pi, panel) in self.doc.panels.iter().enumerate() {
+            let Some(r) = panel.background_image.clone() else {
+                continue;
+            };
+            if self.doc.asset_data(&r).is_some() {
+                continue; // already carried, by fingerprint
+            }
+            let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+            if let Some(dir) = self.path.as_ref().and_then(|p| p.parent()) {
+                candidates.push(dir.join(&r));
+            }
+            if let Some(dir) = target_dir {
+                candidates.push(dir.join(&r));
+            }
+            if let Some(base) = &self.asset_base {
+                candidates.push(base.join(&r));
+            }
+            for c in candidates {
+                if let Ok(bytes) = std::fs::read(&c) {
+                    let media = match std::path::Path::new(&r)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .as_str()
+                    {
+                        "jpg" | "jpeg" => "image/jpeg",
+                        "gif" => "image/gif",
+                        "webp" => "image/webp",
+                        _ => "image/png",
+                    }
+                    .to_string();
+                    jobs.push((pi, r.clone(), bytes, media));
+                    break;
+                }
+            }
+        }
+        for (pi, old, bytes, media) in jobs {
+            let hash = self.doc.add_asset(
+                &bytes,
+                ob_model::AssetKind::TracingPicture,
+                &media,
+                ob_model::RightsRecord {
+                    source: old.clone(),
+                    ..Default::default()
+                },
+            );
+            if let Some(panel) = self.doc.panels.get_mut(pi) {
+                if panel.background_image.as_deref() == Some(old.as_str()) {
+                    panel.background_image = Some(hash);
+                }
+            }
+        }
+    }
+
     /// The Save button's work, shared with its key.
     fn save_flow(&mut self) {
         self.commit_if_editing();
@@ -5592,6 +5760,10 @@ impl App {
                 .save_file()
         });
         if let Some(path) = target {
+            // v1 packaging: tracing pictures still named by
+            // a file path move INTO the document before the
+            // save, so the .obd carries them (docs/FORMAT.md).
+            self.absorb_tracing_pictures(path.parent());
             match ob_format::save(&self.doc, &path) {
                 Ok(()) => {
                     self.note(format!("Saved as {}", file_name_of(&path)));
@@ -6602,10 +6774,17 @@ impl eframe::App for App {
                     }
                     1 => {
                         ui.heading("This Sunday");
-                        ui.label(format!(
-                            "Date: {}",
-                            self.doc.fields.get("sunday_date_long").cloned().unwrap_or_default()
-                        ));
+                        ui.label(match &self.doc.occasion_time {
+                            Some(t) if !t.trim().is_empty() => format!(
+                                "Date: {} · {}",
+                                self.doc.fields.get("occasion_date_long").cloned().unwrap_or_default(),
+                                t.trim()
+                            ),
+                            _ => format!(
+                                "Date: {}",
+                                self.doc.fields.get("occasion_date_long").cloned().unwrap_or_default()
+                            ),
+                        });
                         ui.horizontal(|ui| {
                             ui.label("Change it:");
                             let date_edit = ui.text_edit_singleline(&mut self.date_input);
@@ -6627,22 +6806,38 @@ impl eframe::App for App {
                                 self.apply_date();
                             }
                         });
-                        ui.small("Year-month-day, like 2026-10-18. This is the date printed on the bulletin.");
+                        ui.small("Type the date any way you like: 2026-10-18, 10/18/2026, or October 18, 2026. This is the date printed on the bulletin.");
                         if let Some(words) = date_passed_sentence(
-                            self.doc.fields.get("sunday_date").map(String::as_str),
+                            self.doc.fields.get("occasion_date").map(String::as_str),
                             chrono::Local::now().date_naive(),
                         ) {
                             ui.label(egui::RichText::new(words).color(PROBLEM));
                         }
-                        ui.label("Name of the Sunday");
-                        let mut sn = self.doc.fields.get("sunday_name").cloned().unwrap_or_default();
+                        ui.label("Name of the service");
+                        let mut sn = self.doc.fields.get("occasion_name").cloned().unwrap_or_default();
                         let resp_sn = ui.text_edit_singleline(&mut sn);
                         if resp_sn.lost_focus()
-                            && self.doc.fields.get("sunday_name").map(|v| v.as_str()) != Some(sn.as_str())
+                            && self.doc.fields.get("occasion_name").map(|v| v.as_str()) != Some(sn.as_str())
                         {
                                 let before = snapshot(&self.doc);
-                                self.doc.fields.insert("sunday_name".to_string(), sn);
+                                self.doc.fields.insert("occasion_name".to_string(), sn);
                                 self.record_undo(before);
+                        }
+                        ui.label("Service time");
+                        let mut st = self.doc.occasion_time.clone().unwrap_or_default();
+                        let resp_st = ui.add(
+                            egui::TextEdit::singleline(&mut st).hint_text("Like 9:00 AM"),
+                        );
+                        if resp_st.lost_focus()
+                            && self.doc.occasion_time.as_deref() != Some(st.as_str())
+                        {
+                                let before = snapshot(&self.doc);
+                                let trimmed = st.trim().to_string();
+                                self.doc.occasion_time =
+                                    if trimmed.is_empty() { None } else { Some(trimmed) };
+                                if before != snapshot(&self.doc) {
+                                    self.record_undo(before);
+                                }
                         }
                         ui.label("Scripture reading");
                         let mut rd = self.doc.fields.get("reading").cloned().unwrap_or_default();
@@ -8372,12 +8567,12 @@ mod settings_tests {
         );
         assert_eq!(suggested_save_name(&doc), "Bulletin 2026-10-18.obd");
         let mut no_date = doc.clone();
-        no_date.fields.remove("sunday_date");
+        no_date.fields.remove("occasion_date");
         assert_eq!(suggested_save_name(&no_date), "bulletin.obd");
         let mut bad_date = doc;
         bad_date
             .fields
-            .insert("sunday_date".into(), "next Sunday-ish".into());
+            .insert("occasion_date".into(), "next Sunday-ish".into());
         assert_eq!(suggested_save_name(&bad_date), "bulletin.obd");
     }
 
@@ -8589,8 +8784,8 @@ mod settings_tests {
         assert_eq!(next, "Ready to print.");
         // No date at all: the This Sunday step is next, and the
         // headline cannot name a Sunday.
-        doc.fields.remove("sunday_date");
-        doc.fields.remove("sunday_date_long");
+        doc.fields.remove("occasion_date");
+        doc.fields.remove("occasion_date_long");
         let (headline, next) = start_status(&doc, false, today, None);
         assert_eq!(headline, "Working on: a new bulletin");
         assert!(next.contains("This Sunday step"), "next: {next}");
@@ -8904,7 +9099,7 @@ mod settings_tests {
         // And the fresh date is the coming Sunday, never a
         // weekday the app happened to launch on (J7).
         let fresh = chrono::NaiveDate::parse_from_str(
-            app.doc.fields.get("sunday_date").expect("a date"),
+            app.doc.fields.get("occasion_date").expect("a date"),
             "%Y-%m-%d",
         )
         .expect("the fresh date reads");
@@ -8927,24 +9122,24 @@ mod settings_tests {
         let stored = app
             .doc
             .fields
-            .get("sunday_date")
+            .get("occasion_date")
             .cloned()
             .expect("the template has a date");
         // The field starts holding the bulletin's own date,
         // so leaving the step untouched changes nothing.
         assert_eq!(app.date_input, stored);
         app.apply_edited_date();
-        assert_eq!(app.doc.fields.get("sunday_date"), Some(&stored));
+        assert_eq!(app.doc.fields.get("occasion_date"), Some(&stored));
         // A typed date applies through the same path focus
         // loss and step changes use.
         app.date_input = "2030-01-06".into();
         app.apply_edited_date();
         assert_eq!(
-            app.doc.fields.get("sunday_date").map(String::as_str),
+            app.doc.fields.get("occasion_date").map(String::as_str),
             Some("2030-01-06")
         );
         assert_eq!(
-            app.doc.fields.get("sunday_date_long").map(String::as_str),
+            app.doc.fields.get("occasion_date_long").map(String::as_str),
             Some("Sunday, January 6, 2030")
         );
         assert!(!app.status_error, "a good date is not a failure");
@@ -8954,7 +9149,7 @@ mod settings_tests {
         app.apply_edited_date();
         assert!(app.status_error, "a bad date raises the banner");
         assert_eq!(
-            app.doc.fields.get("sunday_date").map(String::as_str),
+            app.doc.fields.get("occasion_date").map(String::as_str),
             Some("2030-01-06")
         );
     }

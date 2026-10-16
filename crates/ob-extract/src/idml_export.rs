@@ -533,6 +533,9 @@ mod tests {
                 size: Size::new(792_000, 612_000),
             },
             no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
         }
     }
 
@@ -576,9 +579,11 @@ mod tests {
         assert_eq!(body.font_size, Some(11.0));
         assert_eq!(body.bold, Some(false));
 
-        // Italic travels as the importer's font-name convention.
+        // Italic travels as the span's own field (schema
+        // v2); the font name stays the plain family name.
         let scripture = span("Be still, and know that I am God");
-        assert_eq!(scripture.font.as_deref(), Some("Liberation Serif-Italic"));
+        assert_eq!(scripture.font.as_deref(), Some("Liberation Serif"));
+        assert!(scripture.italic);
         assert_eq!(scripture.font_size, Some(11.0));
 
         let centered = span("All are welcome at the table");

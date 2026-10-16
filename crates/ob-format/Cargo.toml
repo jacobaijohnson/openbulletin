@@ -4,9 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "OpenBulletin file format: .obd documents (v0: JSON; v1: zip container with the same document.json)."
+description = "OpenBulletin file format: .obd documents (v0: JSON; v1: zip container with the same document.json plus content-addressed assets)."
 
 [dependencies]
 ob-model = { path = "../ob-model" }
 serde.workspace = true
 serde_json.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }

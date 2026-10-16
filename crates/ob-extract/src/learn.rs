@@ -323,6 +323,14 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> ExtractionDump {
                     font_size: Some(size_pt),
                     bold: Some(style.map(|s| s.bold).unwrap_or(false)),
                     font: style.map(|s| s.font_family.clone()),
+                    // A document knows its own styles
+                    // exactly: alignment, italic and color
+                    // come from the paragraph's style.
+                    align: style.map(|s| s.align),
+                    italic: style.map(|s| s.italic).unwrap_or(false),
+                    color: style
+                        .map(|s| [s.color.r, s.color.g, s.color.b])
+                        .unwrap_or([0, 0, 0]),
                 });
                 y += size_pt * 1.25 + style.map(|s| s.space_after as f32 / 1000.0).unwrap_or(0.0);
             }
@@ -343,6 +351,7 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> ExtractionDump {
         extractor: "openbulletin (from a saved bulletin)".to_string(),
         pages,
         spans,
+        images: Vec::new(),
     }
 }
 
@@ -529,6 +538,9 @@ mod tests {
                 preset: "letter-portrait".into(),
                 size: Size::new(612_000, 792_000),
             },
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
         }
     }
 
@@ -570,6 +582,9 @@ mod tests {
                 font_size: Some(11.0),
                 bold: Some(false),
                 font: Some("Calibri".into()),
+                align: None,
+                italic: false,
+                color: [0, 0, 0],
             };
             ExtractionDump {
                 schema_version: 1,
@@ -584,6 +599,7 @@ mod tests {
                     picture_only: false,
                 }],
                 spans: vec![mk(standing, 40.0), mk(weekly, 120.0)],
+                images: Vec::new(),
             }
         }
         let dumps = vec![

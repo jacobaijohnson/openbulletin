@@ -24,7 +24,12 @@ pub mod pub_text;
 use serde::{Deserialize, Serialize};
 
 /// Bump when the dump shape changes incompatibly.
-pub const DUMP_SCHEMA_VERSION: u32 = 1;
+/// v2: spans carry alignment, italic, and fill color, and
+/// the dump has an image channel (bytes in sidecar files,
+/// see DumpImage). Readers accept v1 dumps unchanged: the
+/// new span fields default (no alignment known, not italic,
+/// black) and the image list defaults empty.
+pub const DUMP_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,6 +77,42 @@ pub struct Span {
     /// files themselves are never extracted (docs/FONTS.md).
     #[serde(default)]
     pub font: Option<String>,
+    /// The line's alignment, when the extractor knows or can
+    /// infer it (the PDFium helper infers it from line
+    /// geometry against its block; see infer_alignments).
+    /// None means nobody knows, and the draft builder falls
+    /// back to Left without a badge change, as v1 drafts did.
+    #[serde(default)]
+    pub align: Option<ob_model::Align>,
+    /// Italic face, from the source's own signals (PDFium
+    /// font flags, IDML FontStyle, a Scribus face name), no
+    /// longer smuggled through the font name. Defaults false
+    /// for v1 dumps, whose names the draft still sniffs as a
+    /// fallback.
+    #[serde(default)]
+    pub italic: bool,
+    /// Text fill color as RGB. Defaults to black, which is
+    /// also what the source usually says; the draft builder
+    /// takes the block's consensus.
+    #[serde(default)]
+    pub color: [u8; 3],
+}
+
+/// One picture found in the source, carried beside the dump:
+/// the JSON names the file, the bytes live in that file next
+/// to wherever the dump was written (the helper's output
+/// folder). Geometry is in points, top-left origin, the
+/// dump's convention for spans.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DumpImage {
+    pub id: String,
+    pub page: u32,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// File name (not a path) holding the PNG bytes.
+    pub file: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +133,10 @@ pub struct ExtractionDump {
     pub extractor: String,
     pub pages: Vec<PageInfo>,
     pub spans: Vec<Span>,
+    /// Pictures the extractor pulled out of the source
+    /// (schema v2). Absent in v1 dumps.
+    #[serde(default)]
+    pub images: Vec<DumpImage>,
 }
 
 impl ExtractionDump {
@@ -136,6 +181,9 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
                 font_size: None,
                 bold: None,
                 font: None,
+                align: None,
+                italic: false,
+                color: [0, 0, 0],
             });
         } else {
             for line in text.lines() {
@@ -154,6 +202,9 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
                     font_size: None,
                     bold: None,
                     font: None,
+                    align: None,
+                    italic: false,
+                    color: [0, 0, 0],
                 });
             }
         }
@@ -166,7 +217,139 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
         extractor: "ob-extract lopdf scaffold 0.1".to_string(),
         pages,
         spans,
+        images: Vec::new(),
     })
+}
+
+/// Infer line alignment from geometry, for dumps whose
+/// extractor cannot state it (the PDFium helper's text
+/// segments carry no justification). Lines are grouped and
+/// blocked with the same tolerances the draft builder uses,
+/// so the two never disagree about what a line is. For each
+/// line, the gaps between the line's edges and its block's
+/// edges decide: both gaps real and near-equal is Center, a
+/// flush right edge with a real left gap is Right, anything
+/// else is Left. A line that IS its block's widest line says
+/// nothing (both gaps are zero by construction) and keeps
+/// the alignment it had; spans that already state an
+/// alignment are never overridden.
+pub fn infer_alignments(dump: &mut ExtractionDump) {
+    use ob_model::Align;
+    // Page index -> span indices, in reading order.
+    let mut order: Vec<usize> = (0..dump.spans.len())
+        .filter(|&i| dump.spans[i].x.is_some() && dump.spans[i].y.is_some())
+        .collect();
+    order.sort_by(|&a, &b| {
+        let (sa, sb) = (&dump.spans[a], &dump.spans[b]);
+        sa.page
+            .cmp(&sb.page)
+            .then(sa.y.unwrap_or(0.0).total_cmp(&sb.y.unwrap_or(0.0)))
+            .then(sa.x.unwrap_or(0.0).total_cmp(&sb.x.unwrap_or(0.0)))
+    });
+    // Group into lines: (page, line's span indices).
+    let mut lines: Vec<Vec<usize>> = Vec::new();
+    for &i in &order {
+        let sp = &dump.spans[i];
+        let y = sp.y.unwrap_or(0.0);
+        let size = sp.font_size.unwrap_or(11.0);
+        let joins = lines.last().and_then(|l: &Vec<usize>| {
+            let first = &dump.spans[l[0]];
+            if first.page != sp.page {
+                return None;
+            }
+            let tol = (first.font_size.unwrap_or(11.0).max(size) * 0.4).max(2.0);
+            Some((y - first.y.unwrap_or(0.0)).abs() <= tol)
+        });
+        if joins == Some(true) {
+            lines.last_mut().expect("line").push(i);
+        } else {
+            lines.push(vec![i]);
+        }
+    }
+    // Group lines into blocks: a vertical gap larger than
+    // three quarters of the line above starts a new block.
+    let mut blocks: Vec<Vec<usize>> = Vec::new(); // line indices
+    for (li, line) in lines.iter().enumerate() {
+        let split = blocks.last().map(|b: &Vec<usize>| {
+            let prev = &lines[*b.last().expect("block line")];
+            let (py, ph) = line_geom(&dump.spans, prev);
+            let (ly, _) = line_geom(&dump.spans, line);
+            ly - (py + ph) > ph * 0.75
+        });
+        if split == Some(true) || blocks.is_empty() {
+            blocks.push(vec![li]);
+        } else {
+            blocks.last_mut().expect("block").push(li);
+        }
+    }
+    // Decide per line against its block's edges.
+    let mut decided: Vec<(usize, Align)> = Vec::new();
+    for block in &blocks {
+        let mut bx0 = f32::MAX;
+        let mut bx1 = f32::MIN;
+        for &li in block {
+            let (x0, x1) = line_edges(&dump.spans, &lines[li]);
+            bx0 = bx0.min(x0);
+            bx1 = bx1.max(x1);
+        }
+        for &li in block {
+            let (x0, x1) = line_edges(&dump.spans, &lines[li]);
+            let left_gap = x0 - bx0;
+            let right_gap = bx1 - x1;
+            // Real: wider than a rounding error (2pt) and
+            // wider than a hair of the block's own width.
+            let real = |g: f32| g > 2.0 && g > (bx1 - bx0) * 0.02;
+            let align = if real(left_gap) && real(right_gap) {
+                if (left_gap - right_gap).abs() <= (left_gap + right_gap) * 0.25 {
+                    Align::Center
+                } else {
+                    Align::Left
+                }
+            } else if real(left_gap) && right_gap <= 2.0 {
+                Align::Right
+            } else {
+                Align::Left
+            };
+            for &si in &lines[li] {
+                decided.push((si, align));
+            }
+        }
+    }
+    for (si, align) in decided {
+        if dump.spans[si].align.is_none() {
+            dump.spans[si].align = Some(align);
+        }
+    }
+}
+
+/// A line's (y, height) from its spans.
+fn line_geom(spans: &[Span], line: &[usize]) -> (f32, f32) {
+    let y = line
+        .iter()
+        .map(|&i| spans[i].y.unwrap_or(0.0))
+        .fold(f32::MAX, f32::min);
+    let h = line
+        .iter()
+        .map(|&i| {
+            spans[i]
+                .h
+                .unwrap_or(spans[i].font_size.unwrap_or(11.0) * 1.2)
+        })
+        .fold(0.0, f32::max);
+    (y, h)
+}
+
+/// A line's (left, right) edges from its spans.
+fn line_edges(spans: &[Span], line: &[usize]) -> (f32, f32) {
+    let x0 = line
+        .iter()
+        .map(|&i| spans[i].x.unwrap_or(0.0))
+        .fold(f32::MAX, f32::min);
+    let x1 = line
+        .iter()
+        .map(|&i| spans[i].x.unwrap_or(0.0) + spans[i].w.unwrap_or(0.0))
+        .fold(f32::MIN, f32::max);
+    (x0, x1)
 }
 
 fn page_size(doc: &lopdf::Document, page_id: &lopdf::ObjectId) -> Option<(f32, f32)> {
@@ -229,6 +412,92 @@ mod tests {
     #[test]
     fn garbage_is_an_error_not_a_panic() {
         assert!(extract_pdf(b"this is not a pdf", "x.pdf").is_err());
+    }
+
+    fn geom_span(text: &str, x: f32, y: f32, w: f32) -> Span {
+        Span {
+            page: 0,
+            text: text.into(),
+            trust: SpanTrust::RawText,
+            x: Some(x),
+            y: Some(y),
+            w: Some(w),
+            h: Some(13.0),
+            font_size: Some(11.0),
+            bold: Some(false),
+            font: None,
+            align: None,
+            italic: false,
+            color: [0, 0, 0],
+        }
+    }
+
+    fn geom_dump(spans: Vec<Span>) -> ExtractionDump {
+        ExtractionDump {
+            schema_version: DUMP_SCHEMA_VERSION,
+            source_kind: SourceKind::Pdf,
+            source_name: "t.pdf".into(),
+            source_bytes: 1,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 396.0,
+                height_pt: 612.0,
+                picture_only: false,
+            }],
+            spans,
+            images: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn alignment_is_inferred_from_line_geometry() {
+        // One block, three lines: a wide line sets the block
+        // edges (36..360), a centered line floats in the
+        // middle, a right-flush line hugs the right edge.
+        let mut dump = geom_dump(vec![
+            geom_span("A wide line of body text here", 36.0, 40.0, 324.0),
+            geom_span("Centered title", 141.0, 56.0, 114.0),
+            geom_span("Page 4", 324.0, 72.0, 36.0),
+        ]);
+        infer_alignments(&mut dump);
+        assert_eq!(dump.spans[1].align, Some(ob_model::Align::Center));
+        assert_eq!(dump.spans[2].align, Some(ob_model::Align::Right));
+        // The widest line itself says Left (its gaps are 0 by
+        // construction, so it proves nothing either way).
+        assert_eq!(dump.spans[0].align, Some(ob_model::Align::Left));
+        // A stated alignment is never overridden.
+        let mut dump = geom_dump(vec![
+            geom_span("A wide line of body text here", 36.0, 40.0, 324.0),
+            geom_span("Centered title", 141.0, 56.0, 114.0),
+        ]);
+        dump.spans[1].align = Some(ob_model::Align::Right);
+        infer_alignments(&mut dump);
+        assert_eq!(dump.spans[1].align, Some(ob_model::Align::Right));
+    }
+
+    #[test]
+    fn a_v1_dump_still_reads() {
+        // Schema v1 JSON: no align, no italic, no color, no
+        // images. It parses with defaults (the old fixtures
+        // and old helper binaries keep working).
+        let json = r#"{
+            "schema_version": 1,
+            "source_kind": "pdf",
+            "source_name": "old.pdf",
+            "source_bytes": 10,
+            "extractor": "old helper",
+            "pages": [{"index": 0, "width_pt": 396.0, "height_pt": 612.0, "picture_only": false}],
+            "spans": [{"page": 0, "text": "Hello", "trust": "raw_text",
+                       "x": 40.0, "y": 40.0, "w": 60.0, "h": 13.0,
+                       "font_size": 11.0, "bold": false, "font": "Calibri"}]
+        }"#;
+        let dump = ExtractionDump::from_json(json).expect("v1 parses");
+        assert_eq!(dump.schema_version, 1);
+        assert_eq!(dump.spans[0].align, None);
+        assert!(!dump.spans[0].italic);
+        assert_eq!(dump.spans[0].color, [0, 0, 0]);
+        assert!(dump.images.is_empty());
     }
 }
 

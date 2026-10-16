@@ -262,11 +262,11 @@ pub fn build_template(
 
     let mut fields = BTreeMap::new();
     fields.insert(
-        "sunday_date".to_string(),
+        "occasion_date".to_string(),
         sunday.format("%Y-%m-%d").to_string(),
     );
-    fields.insert("sunday_date_long".to_string(), long_date(sunday));
-    fields.insert("sunday_name".to_string(), sunday_name.to_string());
+    fields.insert("occasion_date_long".to_string(), long_date(sunday));
+    fields.insert("occasion_name".to_string(), sunday_name.to_string());
     fields.insert("reading".to_string(), "Romans 8:18-25".to_string());
 
     Document {
@@ -282,6 +282,9 @@ pub fn build_template(
             size: preset.sheet_size(),
         },
         no_announcements: false,
+        assets: Vec::new(),
+        asset_bytes: Default::default(),
+        occasion_time: None,
     }
 }
 
@@ -328,12 +331,12 @@ pub fn next_sunday(doc: &Document) -> Result<Document, String> {
 }
 
 /// The bulletin's own Sunday date, parsed.
-fn doc_sunday_date(doc: &Document) -> Result<NaiveDate, String> {
+fn doc_occasion_date(doc: &Document) -> Result<NaiveDate, String> {
     let iso = doc
         .fields
-        .get("sunday_date")
-        .ok_or("document has no sunday_date field")?;
-    NaiveDate::parse_from_str(iso, "%Y-%m-%d").map_err(|e| format!("bad sunday_date {iso}: {e}"))
+        .get("occasion_date")
+        .ok_or("document has no occasion_date field")?;
+    NaiveDate::parse_from_str(iso, "%Y-%m-%d").map_err(|e| format!("bad occasion_date {iso}: {e}"))
 }
 
 /// Where Next Sunday lands: one week on from the file's date,
@@ -359,7 +362,7 @@ fn advance_target(date: NaiveDate, today: NaiveDate) -> (NaiveDate, u32) {
 /// today (the app) use [`next_sunday_report_as_of`] instead,
 /// so a stale file snaps forward to the coming Sunday.
 pub fn next_sunday_report(doc: &Document) -> Result<(Document, NextSundayReport), String> {
-    let date = doc_sunday_date(doc)?;
+    let date = doc_occasion_date(doc)?;
     next_sunday_report_as_of(doc, date)
 }
 
@@ -374,14 +377,14 @@ pub fn next_sunday_report_as_of(
     today: NaiveDate,
 ) -> Result<(Document, NextSundayReport), String> {
     let mut out = doc.clone();
-    let date = doc_sunday_date(doc)?;
+    let date = doc_occasion_date(doc)?;
     let (next, weeks_advanced) = advance_target(date, today);
     out.fields.insert(
-        "sunday_date".to_string(),
+        "occasion_date".to_string(),
         next.format("%Y-%m-%d").to_string(),
     );
     out.fields
-        .insert("sunday_date_long".to_string(), long_date(next));
+        .insert("occasion_date_long".to_string(), long_date(next));
     out.no_announcements = false;
 
     // Find weekly story ids from frames marked Weekly. Two
@@ -549,8 +552,8 @@ mod tests {
             "X",
         );
         let n = next_sunday(&d).unwrap();
-        assert_eq!(n.fields["sunday_date"], "2026-10-25");
-        assert_eq!(n.fields["sunday_date_long"], "October 25, 2026");
+        assert_eq!(n.fields["occasion_date"], "2026-10-25");
+        assert_eq!(n.fields["occasion_date_long"], "October 25, 2026");
         // Announcements (body in the weekly story) cleared; heading kept.
         let notes = &n.stories[2];
         assert!(notes
@@ -649,27 +652,27 @@ mod tests {
         // the past, so the target snaps to the coming Sunday.
         let (n, report) =
             next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 10, 15).unwrap()).unwrap();
-        assert_eq!(n.fields["sunday_date"], "2026-10-18");
-        assert_eq!(n.fields["sunday_date_long"], "October 18, 2026");
+        assert_eq!(n.fields["occasion_date"], "2026-10-18");
+        assert_eq!(n.fields["occasion_date_long"], "October 18, 2026");
         assert_eq!(report.weeks_advanced, 2);
 
         // Today IS the +7 Sunday: strictly after today means
         // one more week.
         let (n, report) =
             next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 10, 11).unwrap()).unwrap();
-        assert_eq!(n.fields["sunday_date"], "2026-10-18");
+        assert_eq!(n.fields["occasion_date"], "2026-10-18");
         assert_eq!(report.weeks_advanced, 2);
 
         // A current file moves exactly one week, as always.
         let (n, report) =
             next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 10, 4).unwrap()).unwrap();
-        assert_eq!(n.fields["sunday_date"], "2026-10-11");
+        assert_eq!(n.fields["occasion_date"], "2026-10-11");
         assert_eq!(report.weeks_advanced, 1);
 
         // The plain wrapper keeps file-date semantics: one
         // week on, whatever the calendar says.
         let (n, report) = next_sunday_report(&d).unwrap();
-        assert_eq!(n.fields["sunday_date"], "2026-10-11");
+        assert_eq!(n.fields["occasion_date"], "2026-10-11");
         assert_eq!(report.weeks_advanced, 1);
     }
 

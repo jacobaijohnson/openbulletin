@@ -7,6 +7,7 @@
 //!   order). Sheets and folds belong to layout/imposition, never to the reader model.
 
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::BTreeMap;
 
 /// One milli-point: 1/1000 of a PostScript point.
@@ -223,6 +224,267 @@ pub fn parse_inches(text: &str) -> Option<f64> {
     }
 }
 
+/// A calendar date as plain numbers. ob-model carries no
+/// date library; the little calendar math a bulletin needs
+/// (valid days, weekdays) is here and tested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SimpleDate {
+    pub year: i32,
+    pub month: u32,
+    pub day: u32,
+}
+
+impl SimpleDate {
+    pub fn is_valid(&self) -> bool {
+        (1..=12).contains(&self.month)
+            && self.day >= 1
+            && self.day <= days_in_month(self.year, self.month)
+    }
+    /// 0 = Sunday .. 6 = Saturday.
+    pub fn weekday(&self) -> u32 {
+        // Days since 1970-01-01 (a Thursday) in the proleptic
+        // Gregorian calendar (Howard Hinnant's algorithm).
+        let y = if self.month <= 2 {
+            self.year - 1
+        } else {
+            self.year
+        };
+        let era = if y >= 0 { y } else { y - 399 } / 400;
+        let yoe = (y - era * 400) as i64;
+        let mp = ((self.month + 9) % 12) as i64;
+        let doy = (153 * mp + 2) / 5 + self.day as i64 - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era as i64 * 146_097 + doe - 719_468;
+        ((days % 7 + 7 + 4) % 7) as u32
+    }
+}
+
+fn is_leap(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap(year) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
+fn month_number(word: &str) -> Option<u32> {
+    let w = word.trim_end_matches('.').to_ascii_lowercase();
+    Some(match w.as_str() {
+        "jan" | "january" => 1,
+        "feb" | "february" => 2,
+        "mar" | "march" => 3,
+        "apr" | "april" => 4,
+        "may" => 5,
+        "jun" | "june" => 6,
+        "jul" | "july" => 7,
+        "aug" | "august" => 8,
+        "sep" | "sept" | "september" => 9,
+        "oct" | "october" => 10,
+        "nov" | "november" => 11,
+        "dec" | "december" => 12,
+        _ => return None,
+    })
+}
+
+fn weekday_number(word: &str) -> Option<u32> {
+    let w = word.trim_end_matches('.').to_ascii_lowercase();
+    Some(match w.as_str() {
+        "sun" | "sunday" => 0,
+        "mon" | "monday" => 1,
+        "tue" | "tues" | "tuesday" => 2,
+        "wed" | "wednesday" => 3,
+        "thu" | "thur" | "thurs" | "thursday" => 4,
+        "fri" | "friday" => 5,
+        "sat" | "saturday" => 6,
+        _ => return None,
+    })
+}
+
+/// A day-of-month as typed: "18", or with its spoken suffix
+/// still on ("18th"). Nothing else reads as a day.
+fn day_number(word: &str) -> Option<u32> {
+    let w = word.to_ascii_lowercase();
+    let w = w
+        .strip_suffix("st")
+        .or_else(|| w.strip_suffix("nd"))
+        .or_else(|| w.strip_suffix("rd"))
+        .or_else(|| w.strip_suffix("th"))
+        .unwrap_or(&w);
+    w.parse::<u32>().ok().filter(|d| (1..=31).contains(d))
+}
+
+/// A year as typed: four digits, or two meaning 20xx (the
+/// pivot a church office means: "26" is 2026, never 1926).
+fn year_number(word: &str) -> Option<i32> {
+    if word.len() == 4 {
+        word.parse::<i32>().ok().filter(|y| *y >= 1)
+    } else if word.len() == 2 {
+        word.parse::<i32>().ok().map(|y| 2000 + y)
+    } else {
+        None
+    }
+}
+
+/// Read a date the way an office worker writes it
+/// (docs/planning/occasions.md): ISO (2026-10-18), US
+/// numeric (10/18/2026, 10/18/26, 10-18-2026, also without
+/// a year), month names (Oct 18, October 18 2026, 18 October
+/// 2026), any of them with a weekday in front (Wed, Feb 18,
+/// 2026). A stated weekday is CHECKED against the real one:
+/// a date whose weekday disagrees does not read at all,
+/// rather than being silently believed. A date with no year
+/// means its coming occurrence: today, or the next time it
+/// falls. Anything else returns None; callers refuse in
+/// plain words with an example, never guess.
+pub fn parse_flexible_date(text: &str, today: SimpleDate) -> Option<SimpleDate> {
+    let cleaned = text.trim().replace(',', " ");
+    if cleaned.is_empty() {
+        return None;
+    }
+    // Split the input into a numeric-slash/dash candidate and
+    // word tokens; a bare numeric token with separators is
+    // read whole, anything else token by token.
+    let mut weekday: Option<u32> = None;
+    let mut tokens: Vec<String> = Vec::new();
+    for raw in cleaned.split_whitespace() {
+        if weekday.is_none() && tokens.is_empty() {
+            if let Some(w) = weekday_number(raw) {
+                weekday = Some(w);
+                continue;
+            }
+        }
+        tokens.push(raw.to_string());
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+    // Finish the date: check a stated weekday, apply the
+    // coming-occurrence rule to a missing year.
+    let finish = |month: u32, day: u32, year: Option<i32>| -> Option<SimpleDate> {
+        let date = match year {
+            Some(y) => {
+                let d = SimpleDate {
+                    year: y,
+                    month,
+                    day,
+                };
+                if !d.is_valid() {
+                    return None;
+                }
+                d
+            }
+            None => {
+                // The coming occurrence: this year when the
+                // day is still ahead (or today), else the
+                // next year it falls (Feb 29 may skip).
+                let mut found = None;
+                for y in today.year..=today.year + 4 {
+                    let d = SimpleDate {
+                        year: y,
+                        month,
+                        day,
+                    };
+                    if d.is_valid() && d >= today {
+                        found = Some(d);
+                        break;
+                    }
+                }
+                found?
+            }
+        };
+        if let Some(w) = weekday {
+            if date.weekday() != w {
+                return None;
+            }
+        }
+        Some(date)
+    };
+    // One numeric token with separators: ISO, or US order.
+    if tokens.len() == 1 {
+        let t = &tokens[0];
+        let sep = if t.contains('/') {
+            '/'
+        } else if t.contains('-') {
+            '-'
+        } else {
+            return None;
+        };
+        let parts: Vec<&str> = t.split(sep).collect();
+        let nums: Vec<i64> = parts
+            .iter()
+            .map(|p| p.parse::<i64>().ok())
+            .collect::<Option<Vec<_>>>()?;
+        return match nums.len() {
+            3 => {
+                if parts[0].len() == 4 {
+                    // ISO: year first.
+                    finish(
+                        u32::try_from(nums[1]).ok()?,
+                        u32::try_from(nums[2]).ok()?,
+                        year_number(parts[0]),
+                    )
+                } else {
+                    finish(
+                        u32::try_from(nums[0]).ok()?,
+                        u32::try_from(nums[1]).ok()?,
+                        year_number(parts[2]),
+                    )
+                }
+            }
+            2 => finish(
+                u32::try_from(nums[0]).ok()?,
+                u32::try_from(nums[1]).ok()?,
+                None,
+            ),
+            _ => None,
+        };
+    }
+    // Words: a month name, a day, maybe a year, in either
+    // order (Oct 18 2026 / 18 October 2026).
+    let mut month: Option<u32> = None;
+    let mut day: Option<u32> = None;
+    let mut year: Option<i32> = None;
+    for tok in &tokens {
+        if month.is_none() {
+            if let Some(m) = month_number(tok) {
+                month = Some(m);
+                continue;
+            }
+        }
+        if year.is_none() && tok.chars().all(|c| c.is_ascii_digit()) {
+            // A four-digit number is a year outright; a
+            // two-digit one is a year only once the day is
+            // spoken for, so "Oct 18" reads 18 as the day
+            // and "18 Oct 26" reads 26 as the year.
+            if tok.len() == 4 || (tok.len() == 2 && day.is_some()) {
+                if let Some(y) = year_number(tok) {
+                    year = Some(y);
+                    continue;
+                }
+            }
+        }
+        if day.is_none() {
+            if let Some(d) = day_number(tok) {
+                day = Some(d);
+                continue;
+            }
+        }
+        return None;
+    }
+    finish(month?, day?, year)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Panel {
     pub id: String,
@@ -232,10 +494,18 @@ pub struct Panel {
     /// Layout guides on this panel (docs/EDITOR.md).
     #[serde(default)]
     pub guides: Vec<Guide>,
-    /// Optional tracing-guide picture under this panel: an asset
-    /// file name (the page of the old bulletin this panel rebuilds,
-    /// from the trace rescue in docs/EXTRACT.md). A guide is shown
-    /// under the text while editing and never prints.
+    /// Optional tracing-guide picture under this panel (the
+    /// page of the old bulletin this panel rebuilds, from the
+    /// trace rescue in docs/EXTRACT.md). A guide is shown
+    /// under the text while editing and never prints. In a v1
+    /// document this names the picture's asset by SHA-256 and
+    /// the bytes ride inside the file; a value that is not an
+    /// asset hash is an old sidecar path (v0 files, or a draft
+    /// whose pictures have not been gathered in yet), resolved
+    /// beside the bulletin file. Loading migrates a resolvable
+    /// path into the asset store; an unresolvable one stays a
+    /// path, and the app says the picture is missing, exactly
+    /// as it always has.
     #[serde(default)]
     pub background_image: Option<String>,
 }
@@ -257,14 +527,109 @@ pub struct SheetSpec {
     pub size: Size,
 }
 
-pub const FORMAT_VERSION: u32 = 0;
+pub const FORMAT_VERSION: u32 = 1;
+
+/// The SHA-256 of some bytes, lowercase hex: the name every
+/// asset travels under in the v1 package (docs/FORMAT.md).
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = sha2::Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// What an asset in the document's store is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetKind {
+    /// A picture placed (or waiting to be placed) in the
+    /// bulletin: cover art, a photo, clipart.
+    Picture,
+    /// A tracing-guide picture under a panel, from an import
+    /// rescue. Shown while editing, never printed.
+    TracingPicture,
+    /// A music file carried with the bulletin (MusicXML and
+    /// friends; the music build gives it frames).
+    Music,
+    Other,
+}
+
+/// The license an asset's rights record claims, in the
+/// vocabulary of docs/research/clipart-landscape.md section 5.
+/// The record is a claim the office asserts, never a proof:
+/// the app records, composes credit lines, and reminds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LicenseKind {
+    PublicDomain,
+    Cc0,
+    /// Creative Commons Attribution, with its version ("4.0").
+    CcBy(String),
+    /// Creative Commons Attribution-ShareAlike, with version.
+    CcBySa(String),
+    /// The church's own work, or a work it holds outright.
+    ChurchOwned,
+    /// Reprinted under a church license (CCLI, One License).
+    LicensedReprint,
+    #[serde(other)]
+    #[default]
+    Unknown,
+}
+
+/// Where an asset came from and what credit it is owed
+/// (clipart-landscape.md section 5). Every field defaults, so
+/// a partial record loads and simply says less.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RightsRecord {
+    /// Where it came from, in words ("Openclipart", "the
+    /// church camera", the imported file it rode in on).
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub license: LicenseKind,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub creator: String,
+    /// The copyright line as it should print, when one is
+    /// owed ("\u{00a9} 2019 Jane Doe").
+    #[serde(default)]
+    pub copyright_line: String,
+    /// The exact credit text the license requires, when it
+    /// requires one.
+    #[serde(default)]
+    pub credit_text: String,
+    /// The licensor's reference: a CCLI or One License
+    /// number, a catalog id, a permission letter's date.
+    #[serde(default)]
+    pub licensor_ref: String,
+    /// Who in the office asserted this record.
+    #[serde(default)]
+    pub asserted_by: String,
+    /// When they asserted it (ISO date).
+    #[serde(default)]
+    pub asserted_at: String,
+}
+
+/// One asset in the document's store. Its bytes live in
+/// `Document::asset_bytes` under the same hash and travel as
+/// the zip entry `assets/<sha256>` in a v1 file; the metadata
+/// (including the rights record) rides in document.json.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Asset {
+    pub sha256: String,
+    pub kind: AssetKind,
+    /// IANA media type, e.g. "image/png".
+    pub media_type: String,
+    #[serde(default)]
+    pub rights: RightsRecord,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub format_version: u32,
     pub title: String,
     pub profile: ChurchProfile,
-    /// Field values: sunday_date (ISO), sunday_date_long, sunday_name, reading.
+    /// Field values: occasion_date (ISO), occasion_date_long, occasion_name, reading.
     pub fields: BTreeMap<String, String>,
     pub styles: Vec<ParagraphStyle>,
     pub stories: Vec<Story>,
@@ -277,6 +642,72 @@ pub struct Document {
     /// for itself. Serde-defaulted for older files.
     #[serde(default)]
     pub no_announcements: bool,
+    /// The asset table: pictures, tracing pictures, and music
+    /// the bulletin carries (v1). Bytes live in `asset_bytes`.
+    #[serde(default)]
+    pub assets: Vec<Asset>,
+    /// Asset bytes by SHA-256. Never serialized into
+    /// document.json: in a v1 file they are the zip entries
+    /// `assets/<sha256>`, and ob-format joins the two halves
+    /// on load and splits them on save.
+    #[serde(skip)]
+    pub asset_bytes: BTreeMap<String, Vec<u8>>,
+    /// When the service starts, "9:00 AM" (docs/planning/
+    /// occasions.md): one day can carry several services, and
+    /// the time is part of which occasion this document is.
+    #[serde(default)]
+    pub occasion_time: Option<String>,
+}
+
+impl Document {
+    /// Store asset bytes in the document, recording (or
+    /// keeping) their metadata, and return the SHA-256 they
+    /// travel under. Adding the same bytes twice is one asset.
+    pub fn add_asset(
+        &mut self,
+        bytes: &[u8],
+        kind: AssetKind,
+        media_type: &str,
+        rights: RightsRecord,
+    ) -> String {
+        let hash = sha256_hex(bytes);
+        if !self.assets.iter().any(|a| a.sha256 == hash) {
+            self.assets.push(Asset {
+                sha256: hash.clone(),
+                kind,
+                media_type: media_type.to_string(),
+                rights,
+            });
+        }
+        self.asset_bytes.insert(hash.clone(), bytes.to_vec());
+        hash
+    }
+
+    /// The bytes of one stored asset, when the file carried
+    /// them (a metadata record whose bytes never arrived
+    /// reads as missing, never as empty).
+    pub fn asset_data(&self, sha256: &str) -> Option<&[u8]> {
+        self.asset_bytes.get(sha256).map(|v| v.as_slice())
+    }
+
+    /// The pre-occasions field keys, renamed: v0 files and
+    /// early v1 drafts name the service date and name
+    /// "sunday_*"; the document calls them "occasion_*" now
+    /// (docs/planning/occasions.md). Loading runs this so
+    /// every file the app holds speaks the new names; the
+    /// {Sunday.*} tokens resolve from the new keys, so old
+    /// templates print unchanged.
+    pub fn migrate_occasion_keys(&mut self) {
+        for (old, new) in [
+            ("sunday_date", "occasion_date"),
+            ("sunday_date_long", "occasion_date_long"),
+            ("sunday_name", "occasion_name"),
+        ] {
+            if let Some(v) = self.fields.remove(old) {
+                self.fields.entry(new.to_string()).or_insert(v);
+            }
+        }
+    }
 }
 
 impl Document {
@@ -348,9 +779,13 @@ fn field_tokens(doc: &Document) -> Vec<(&'static str, String)> {
         ("{Church.website}", p.website.clone()),
         ("{Church.giving}", p.giving_url.clone()),
         ("{Church.pastor}", p.pastor.clone()),
-        ("{Sunday.date}", get("sunday_date_long")),
-        ("{Sunday.name}", get("sunday_name")),
+        ("{Sunday.date}", get("occasion_date_long")),
+        ("{Sunday.name}", get("occasion_name")),
         ("{Sunday.reading}", get("reading")),
+        (
+            "{Service.time}",
+            doc.occasion_time.clone().unwrap_or_default(),
+        ),
     ]
 }
 
@@ -513,11 +948,11 @@ mod tests {
     fn fields_resolve() {
         let mut fields = BTreeMap::new();
         fields.insert(
-            "sunday_name".to_string(),
+            "occasion_name".to_string(),
             "Twentieth Sunday after Pentecost".to_string(),
         );
         fields.insert(
-            "sunday_date_long".to_string(),
+            "occasion_date_long".to_string(),
             "October 18, 2026".to_string(),
         );
         let doc = Document {
@@ -536,6 +971,9 @@ mod tests {
                 size: Size::new(0, 0),
             },
             no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
         };
         assert_eq!(
             resolve_fields("{Church.name} - {Sunday.name}, {Sunday.date}", &doc),
@@ -545,7 +983,7 @@ mod tests {
 
     fn mapped_doc() -> Document {
         let mut fields = BTreeMap::new();
-        fields.insert("sunday_name".to_string(), "Pentecost".to_string());
+        fields.insert("occasion_name".to_string(), "Pentecost".to_string());
         Document {
             format_version: FORMAT_VERSION,
             title: "t".into(),
@@ -563,6 +1001,9 @@ mod tests {
                 size: Size::new(0, 0),
             },
             no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
         }
     }
 
@@ -637,5 +1078,184 @@ mod guide_tests {
         assert_eq!(parse_inches(""), None);
         assert_eq!(parse_inches("-1"), None);
         assert_eq!(parse_inches("1/0"), None);
+    }
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::*;
+
+    fn d(year: i32, month: u32, day: u32) -> SimpleDate {
+        SimpleDate { year, month, day }
+    }
+
+    #[test]
+    fn weekday_math_matches_known_days() {
+        // 1970-01-01 was a Thursday; 2026-10-18 is a Sunday;
+        // 2026-02-18 (Ash Wednesday) is a Wednesday;
+        // 2000-01-01 was a Saturday.
+        assert_eq!(d(1970, 1, 1).weekday(), 4);
+        assert_eq!(d(2026, 10, 18).weekday(), 0);
+        assert_eq!(d(2026, 2, 18).weekday(), 3);
+        assert_eq!(d(2000, 1, 1).weekday(), 6);
+        assert!(d(2028, 2, 29).is_valid());
+        assert!(!d(2026, 2, 29).is_valid());
+    }
+
+    #[test]
+    fn flexible_dates_read_every_office_format() {
+        // Today: Thursday 2026-10-15.
+        let today = d(2026, 10, 15);
+        let want = Some(d(2026, 10, 18));
+        // ISO.
+        assert_eq!(parse_flexible_date("2026-10-18", today), want);
+        // US numeric, four- and two-digit years, both separators.
+        assert_eq!(parse_flexible_date("10/18/2026", today), want);
+        assert_eq!(parse_flexible_date("10/18/26", today), want);
+        assert_eq!(parse_flexible_date("10-18-2026", today), want);
+        // Month names, both orders, with and without the year.
+        assert_eq!(parse_flexible_date("Oct 18", today), want);
+        assert_eq!(parse_flexible_date("October 18, 2026", today), want);
+        assert_eq!(parse_flexible_date("18 October 2026", today), want);
+        assert_eq!(parse_flexible_date("Oct. 18th, 2026", today), want);
+        // A correct weekday in front is fine in any of them.
+        assert_eq!(parse_flexible_date("Sun, Oct 18, 2026", today), want);
+        assert_eq!(parse_flexible_date("Sunday, October 18, 2026", today), want);
+        assert_eq!(
+            parse_flexible_date("Wed, Feb 18, 2026", today),
+            Some(d(2026, 2, 18))
+        );
+    }
+
+    #[test]
+    fn flexible_dates_reject_rather_than_guess() {
+        let today = d(2026, 10, 15);
+        // 2026-10-18 is a Sunday, not a Wednesday: a wrong
+        // stated weekday never reads.
+        assert_eq!(parse_flexible_date("Wed, Oct 18, 2026", today), None);
+        assert_eq!(
+            parse_flexible_date("Wednesday, October 18, 2026", today),
+            None
+        );
+        // Impossible and unparseable dates do not read.
+        assert_eq!(parse_flexible_date("2026-02-30", today), None);
+        assert_eq!(parse_flexible_date("13/1/2026", today), None);
+        assert_eq!(parse_flexible_date("next Friday", today), None);
+        assert_eq!(parse_flexible_date("18", today), None);
+        assert_eq!(parse_flexible_date("", today), None);
+    }
+
+    #[test]
+    fn flexible_dates_without_a_year_mean_the_coming_occurrence() {
+        let today = d(2026, 10, 15);
+        // Later this year stays this year.
+        assert_eq!(parse_flexible_date("Dec 25", today), Some(d(2026, 12, 25)));
+        // Today itself counts.
+        assert_eq!(parse_flexible_date("10/15", today), Some(d(2026, 10, 15)));
+        // Already gone by: next year.
+        assert_eq!(parse_flexible_date("Oct 11", today), Some(d(2027, 10, 11)));
+        assert_eq!(parse_flexible_date("1/1", today), Some(d(2027, 1, 1)));
+        // Leap day skips to the next year it exists.
+        assert_eq!(parse_flexible_date("Feb 29", today), Some(d(2028, 2, 29)));
+    }
+}
+
+#[cfg(test)]
+mod occasion_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn bare_doc() -> Document {
+        Document {
+            format_version: FORMAT_VERSION,
+            title: "t".into(),
+            profile: ChurchProfile::default(),
+            fields: BTreeMap::new(),
+            styles: vec![],
+            stories: vec![],
+            panels: vec![],
+            sheet: SheetSpec {
+                preset: "letter-portrait".into(),
+                size: Size::new(0, 0),
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+        }
+    }
+
+    #[test]
+    fn old_field_keys_rename_on_migration() {
+        let mut doc = bare_doc();
+        doc.fields.insert("sunday_date".into(), "2026-10-18".into());
+        doc.fields
+            .insert("sunday_date_long".into(), "October 18, 2026".into());
+        doc.fields.insert("sunday_name".into(), "Pentecost".into());
+        doc.migrate_occasion_keys();
+        assert_eq!(doc.fields["occasion_date"], "2026-10-18");
+        assert_eq!(doc.fields["occasion_date_long"], "October 18, 2026");
+        assert_eq!(doc.fields["occasion_name"], "Pentecost");
+        assert!(!doc.fields.contains_key("sunday_date"));
+        // A document already speaking the new names is left
+        // exactly as it is (the new value wins over a stale
+        // old one riding along).
+        let mut doc = bare_doc();
+        doc.fields
+            .insert("occasion_date".into(), "2026-12-25".into());
+        doc.fields.insert("sunday_date".into(), "2026-10-18".into());
+        doc.migrate_occasion_keys();
+        assert_eq!(doc.fields["occasion_date"], "2026-12-25");
+        assert!(!doc.fields.contains_key("sunday_date"));
+    }
+
+    #[test]
+    fn sunday_tokens_and_service_time_resolve_from_occasion_fields() {
+        let mut doc = bare_doc();
+        doc.fields
+            .insert("occasion_date_long".into(), "October 18, 2026".into());
+        doc.fields
+            .insert("occasion_name".into(), "Pentecost".into());
+        doc.occasion_time = Some("9:00 AM".into());
+        assert_eq!(
+            resolve_fields("{Sunday.name}, {Sunday.date} at {Service.time}", &doc),
+            "Pentecost, October 18, 2026 at 9:00 AM"
+        );
+        // No time set: the token resolves to nothing, not a
+        // leftover brace.
+        doc.occasion_time = None;
+        assert_eq!(resolve_fields("at {Service.time}!", &doc), "at !");
+    }
+
+    #[test]
+    fn assets_store_bytes_by_hash_with_rights() {
+        let mut doc = bare_doc();
+        let rights = RightsRecord {
+            source: "the church camera".into(),
+            license: LicenseKind::ChurchOwned,
+            ..Default::default()
+        };
+        let h1 = doc.add_asset(b"PNGDATA", AssetKind::Picture, "image/png", rights);
+        assert_eq!(h1, sha256_hex(b"PNGDATA"));
+        assert_eq!(doc.asset_data(&h1), Some(b"PNGDATA".as_slice()));
+        assert_eq!(doc.assets.len(), 1);
+        assert_eq!(doc.assets[0].kind, AssetKind::Picture);
+        // The same bytes again are the same asset.
+        let h2 = doc.add_asset(
+            b"PNGDATA",
+            AssetKind::Picture,
+            "image/png",
+            RightsRecord::default(),
+        );
+        assert_eq!(h1, h2);
+        assert_eq!(doc.assets.len(), 1);
+        // Rights and license kinds survive JSON (they ride in
+        // document.json; the bytes never do).
+        let json = serde_json::to_string(&doc).expect("json");
+        assert!(!json.contains("PNGDATA"), "bytes stay out of the JSON");
+        let back: Document = serde_json::from_str(&json).expect("parse");
+        assert_eq!(back.assets[0].rights.license, LicenseKind::ChurchOwned);
+        assert_eq!(back.assets[0].rights.source, "the church camera");
+        assert!(back.asset_bytes.is_empty());
     }
 }

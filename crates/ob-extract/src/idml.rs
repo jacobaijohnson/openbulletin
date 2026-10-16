@@ -137,6 +137,21 @@ fn geometric_bounds(s: Option<&str>) -> Option<(f32, f32, f32, f32)> {
 struct StyleDef {
     font: Option<String>,
     size: Option<f32>,
+    align: Option<ob_model::Align>,
+}
+
+/// An IDML Justification value as one of our three
+/// alignments. The justified variants have no counterpart
+/// in the model (there is no Justify), so they read as
+/// Left; the values our own exporter writes (LeftAlign,
+/// CenterAlign, RightAlign) round-trip exactly.
+fn justification_align(value: Option<&str>) -> Option<ob_model::Align> {
+    match value {
+        Some("CenterAlign") => Some(ob_model::Align::Center),
+        Some("RightAlign") => Some(ob_model::Align::Right),
+        Some(_) => Some(ob_model::Align::Left),
+        None => None,
+    }
 }
 
 fn style_table(styles_xml: &str) -> HashMap<String, StyleDef> {
@@ -155,6 +170,7 @@ fn style_table(styles_xml: &str) -> HashMap<String, StyleDef> {
                 StyleDef {
                     font,
                     size: st.attr("PointSize").and_then(|v| v.parse().ok()),
+                    align: justification_align(st.attr("Justification")),
                 },
             );
         }
@@ -171,6 +187,7 @@ struct ParaText {
     bold: bool,
     italic: bool,
     style_ref: Option<String>,
+    align: Option<ob_model::Align>,
 }
 
 fn story_paragraphs(story_xml: &str) -> Vec<ParaText> {
@@ -182,6 +199,7 @@ fn story_paragraphs(story_xml: &str) -> Vec<ParaText> {
     root.find_all("ParagraphStyleRange", &mut ranges);
     for range in ranges {
         let style_ref = range.attr("AppliedParagraphStyle").map(|s| s.to_string());
+        let range_align = justification_align(range.attr("Justification"));
         let mut chars = Vec::new();
         range.find_all("CharacterStyleRange", &mut chars);
         if chars.is_empty() {
@@ -224,6 +242,7 @@ fn story_paragraphs(story_xml: &str) -> Vec<ParaText> {
                         bold,
                         italic,
                         style_ref: style_ref.clone(),
+                        align: range_align,
                     });
                 }
             }
@@ -367,6 +386,7 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
             for (k, para) in paras.iter().enumerate() {
                 let mut font = para.font.clone();
                 let mut size = para.size;
+                let mut align = para.align;
                 if let Some(sid) = &para.style_ref {
                     if let Some(def) = styles.get(sid) {
                         if font.is_none() {
@@ -374,6 +394,9 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
                         }
                         if size.is_none() {
                             size = def.size;
+                        }
+                        if align.is_none() {
+                            align = def.align;
                         }
                     }
                 }
@@ -387,13 +410,13 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
                     h: Some(slice),
                     font_size: Some(size.unwrap_or(11.0)),
                     bold: Some(para.bold),
-                    font: font.map(|f| {
-                        if para.italic && !f.to_lowercase().contains("italic") {
-                            format!("{f}-Italic")
-                        } else {
-                            f
-                        }
-                    }),
+                    font,
+                    // Schema v2: italic rides its own field,
+                    // no longer smuggled through the font name
+                    // as a "-Italic" suffix.
+                    align,
+                    italic: para.italic,
+                    color: [0, 0, 0],
                 });
             }
         }
@@ -416,6 +439,7 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
         extractor: "openbulletin-idml".into(),
         pages,
         spans,
+        images: Vec::new(),
     })
 }
 
@@ -484,5 +508,47 @@ mod tests {
     #[test]
     fn idml_rejects_non_packages() {
         assert!(dump_from_idml(b"not a zip", "x.idml").is_err());
+    }
+
+    #[test]
+    fn idml_justification_and_italic_ride_the_spans() {
+        // The round trip our own exporter depends on: it
+        // writes Justification="CenterAlign"; the importer
+        // must read it back as Align::Center. Italic rides
+        // its own field, not a "-Italic" font-name suffix.
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            let parts: &[(&str, &str)] = &[
+                (
+                    "designmap.xml",
+                    r#"<?xml version="1.0"?><Document><Spread src="Spreads/Spread_u1.xml"/></Document>"#,
+                ),
+                (
+                    "Resources/Styles.xml",
+                    r#"<?xml version="1.0"?><Root><ParagraphStyleGroup><ParagraphStyle Self="ParagraphStyle/Body" PointSize="11"><Properties><AppliedFont type="string">Calibri</AppliedFont></Properties></ParagraphStyle></ParagraphStyleGroup></Root>"#,
+                ),
+                (
+                    "Stories/Story_u9.xml",
+                    r#"<?xml version="1.0"?><Story><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Body" Justification="CenterAlign"><CharacterStyleRange FontStyle="Italic"><Content>A mighty fortress</Content></CharacterStyleRange></ParagraphStyleRange></Story>"#,
+                ),
+                (
+                    "Spreads/Spread_u1.xml",
+                    r#"<?xml version="1.0"?><Spread><Page Self="u2" GeometricBounds="0 0 612 396" ItemTransform="1 0 0 1 0 0"/><TextFrame Self="u3" ParentStory="u9" ItemTransform="1 0 0 1 36 48"><Properties><PathGeometry><GeometryPathType><PathPointArray><PathPointType Anchor="0 0"/><PathPointType Anchor="324 0"/><PathPointType Anchor="324 200"/><PathPointType Anchor="0 200"/></PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame></Spread>"#,
+                ),
+            ];
+            for (name, body) in parts {
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(body.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        let dump = dump_from_idml(&buf, "centered.idml").expect("dump");
+        assert_eq!(dump.spans.len(), 1);
+        assert_eq!(dump.spans[0].align, Some(ob_model::Align::Center));
+        assert!(dump.spans[0].italic);
+        assert_eq!(dump.spans[0].font.as_deref(), Some("Calibri"));
     }
 }

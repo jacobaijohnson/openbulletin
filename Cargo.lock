@@ -2480,6 +2480,7 @@ dependencies = [
  "ob-model",
  "serde",
  "serde_json",
+ "zip",
 ]
 
 [[package]]
@@ -2504,6 +2505,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

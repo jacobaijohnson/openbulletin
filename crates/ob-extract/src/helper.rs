@@ -59,6 +59,25 @@ pub fn dump_pdf(helper: &Path, pdf: &Path) -> Result<ExtractionDump, String> {
     ExtractionDump::from_json(&text)
 }
 
+/// Extract the dump AND the page pictures (schema v2's
+/// image channel): the helper writes each picture as a PNG
+/// into `images_dir`, and the dump's `images` entries name
+/// the files, ready for the draft builder to read into the
+/// document's asset store.
+pub fn dump_pdf_with_images(
+    helper: &Path,
+    pdf: &Path,
+    images_dir: &Path,
+) -> Result<ExtractionDump, String> {
+    let bytes = run_helper(
+        helper,
+        &[&pdf.to_string_lossy(), &images_dir.to_string_lossy()],
+    )?;
+    let text =
+        String::from_utf8(bytes).map_err(|e| format!("the PDF reader answered oddly: {e}"))?;
+    ExtractionDump::from_json(&text)
+}
+
 /// Render each page to out_dir/page-NN.png (about 200 dpi), the
 /// tracing pictures a rescue draft carries.
 pub fn render_pdf(helper: &Path, pdf: &Path, out_dir: &Path) -> Result<(), String> {

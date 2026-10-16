@@ -58,6 +58,10 @@ fn main() {
         return;
     }
     let path = first;
+    // Dump mode's optional second argument: a folder for the
+    // page pictures (schema v2's image channel). Without it,
+    // the dump carries no image files, as v1 did.
+    let images_dir = args.next();
     let bytes = std::fs::read(&path).unwrap_or_else(|e| {
         eprintln!("cannot read {path}: {e}");
         exit(1);
@@ -85,7 +89,14 @@ fn main() {
         extractor: "pdfium-157.0.8100.0".to_string(),
         pages: Vec::new(),
         spans: Vec::new(),
+        images: Vec::new(),
     };
+    if let Some(dir) = &images_dir {
+        std::fs::create_dir_all(dir).unwrap_or_else(|e| {
+            eprintln!("cannot create image folder {dir}: {e}");
+            exit(1);
+        });
+    }
 
     for (index, page) in doc.pages().iter().enumerate() {
         let width = page.width().value;
@@ -102,19 +113,28 @@ fn main() {
                 continue;
             }
             let b = segment.bounds();
-            let (font_size, bold, font) = match segment.chars() {
+            // Schema v2: italic from the font flags and the
+            // fill color from the character itself, not from
+            // guesses about the font's name.
+            let (font_size, bold, font, italic, color) = match segment.chars() {
                 Ok(chars) => match chars.iter().next() {
                     Some(c) => {
                         let name = c.font_name();
+                        let fill = c
+                            .fill_color()
+                            .map(|col| [col.red(), col.green(), col.blue()])
+                            .unwrap_or([0, 0, 0]);
                         (
                             Some(c.scaled_font_size().value),
                             Some(name.to_lowercase().contains("bold")),
                             Some(name),
+                            c.font_is_italic(),
+                            fill,
                         )
                     }
-                    None => (None, None, None),
+                    None => (None, None, None, false, [0, 0, 0]),
                 },
-                Err(_) => (None, None, None),
+                Err(_) => (None, None, None, false, [0, 0, 0]),
             };
             dump.spans.push(Span {
                 page: index as u32,
@@ -129,8 +149,51 @@ fn main() {
                 font_size,
                 bold,
                 font,
+                align: None,
+                italic,
+                color,
             });
             page_spans += 1;
+        }
+        // The image channel: every picture object on the
+        // page, decoded to a PNG beside the dump. A picture
+        // that will not decode is reported on stderr and
+        // skipped; the page's words (and its tracing render)
+        // do not depend on it.
+        if let Some(dir) = &images_dir {
+            let mut n = 0usize;
+            for object in page.objects().iter() {
+                let PdfPageObject::Image(image) = &object else {
+                    continue;
+                };
+                n += 1;
+                let id = format!("p{}-img{}", index + 1, n);
+                let file = format!("{id}.png");
+                let saved = image.get_raw_image().ok().and_then(|img| {
+                    let target = format!("{dir}/{file}");
+                    img.save_with_format(&target, image::ImageFormat::Png).ok()
+                });
+                match (saved, image.bounds()) {
+                    (Some(()), Ok(q)) => {
+                        dump.images.push(ob_extract::DumpImage {
+                            id,
+                            page: index as u32,
+                            x: q.left().value,
+                            y: height - q.top().value,
+                            w: q.right().value - q.left().value,
+                            h: q.top().value - q.bottom().value,
+                            file,
+                        });
+                    }
+                    _ => {
+                        eprintln!(
+                            "page {} picture {} not carried (decode or bounds failed)",
+                            index + 1,
+                            n
+                        );
+                    }
+                }
+            }
         }
         dump.pages.push(PageInfo {
             index: index as u32,
@@ -139,6 +202,11 @@ fn main() {
             picture_only: page_spans == 0,
         });
     }
+
+    // Alignment is not a segment property in PDFium; it is
+    // inferred from line geometry against each block, in the
+    // one implementation every consumer shares.
+    ob_extract::infer_alignments(&mut dump);
 
     println!("{}", serde_json::to_string(&dump).expect("serialize dump"));
 }

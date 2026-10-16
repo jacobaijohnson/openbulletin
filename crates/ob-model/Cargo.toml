@@ -9,3 +9,4 @@ description = "OpenBulletin document model: panels, frames, stories, styles, fie
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"

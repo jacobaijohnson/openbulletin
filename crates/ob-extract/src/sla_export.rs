@@ -520,6 +520,9 @@ mod tests {
                 size: Size::new(792_000, 612_000),
             },
             no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
         }
     }
 

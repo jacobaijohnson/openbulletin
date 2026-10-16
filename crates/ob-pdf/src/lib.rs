@@ -208,6 +208,7 @@ struct PageContent {
 }
 
 impl PageContent {
+    #[allow(clippy::too_many_arguments)]
     fn text(
         &mut self,
         font: &str,
@@ -216,11 +217,18 @@ impl PageContent {
         y_top: ob_model::Mpt,
         page_h: ob_model::Mpt,
         s: &str,
+        color: ob_model::Rgb,
     ) {
         let y = page_h - y_top; // baseline approx: y_top is the top of the line box
+                                // The paragraph style's color, set on every text op
+                                // (non-stroking `rg`), so color never leaks from one
+                                // paragraph into the next. Black stays the default.
         let _ = writeln!(
             self.buf,
-            "BT /{} {:.2} Tf 1 0 0 1 {:.2} {:.2} Tm ({}) Tj ET",
+            "{:.2} {:.2} {:.2} rg BT /{} {:.2} Tf 1 0 0 1 {:.2} {:.2} Tm ({}) Tj ET",
+            color.r as f32 / 255.0,
+            color.g as f32 / 255.0,
+            color.b as f32 / 255.0,
             font,
             pt(size_mpt),
             pt(x),
@@ -327,6 +335,7 @@ fn draw_panel(
                     y,
                     page_h,
                     &line,
+                    style.color,
                 );
             }
             y += style.space_after;
@@ -805,6 +814,9 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
             size: page,
         },
         no_announcements: false,
+        assets: Vec::new(),
+        asset_bytes: Default::default(),
+        occasion_time: None,
     };
     // The sheet exists to be printed, so it takes the print purpose.
     export_reader_pdf(&doc, ExportPurpose::ForPrinting)
@@ -948,6 +960,30 @@ mod tests {
         assert!(
             decoded_content(&bytes).contains("Grace Lutheran Church"),
             "cover text missing"
+        );
+    }
+
+    #[test]
+    fn style_color_is_set_in_the_content_stream() {
+        // A paragraph styled pure red must print red: the
+        // decoded content stream carries `1.00 0.00 0.00 rg`
+        // alongside its words, set on the text op itself.
+        let mut doc = sample_doc();
+        for style in &mut doc.styles {
+            style.color = ob_model::Rgb::new(255, 0, 0);
+        }
+        let bytes = export_reader_pdf(&doc, ExportPurpose::ForEmailOrWeb);
+        let content = decoded_content(&bytes);
+        assert!(
+            content.contains("1.00 0.00 0.00 rg"),
+            "red text op missing its color: {content:.400}"
+        );
+        // And the default black still states itself plainly.
+        let bytes = export_reader_pdf(&sample_doc(), ExportPurpose::ForEmailOrWeb);
+        let content = decoded_content(&bytes);
+        assert!(
+            content.contains("0.00 0.00 0.00 rg"),
+            "black text ops state black: {content:.400}"
         );
     }
 

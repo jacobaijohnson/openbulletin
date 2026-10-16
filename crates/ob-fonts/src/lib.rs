@@ -693,6 +693,9 @@ mod tests {
                 },
             },
             no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
         };
         pin_document_fonts(&mut doc, &lib);
         assert_eq!(

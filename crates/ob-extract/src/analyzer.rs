@@ -277,6 +277,9 @@ mod tests {
             font_size: Some(11.0),
             bold: Some(false),
             font: Some("Calibri".into()),
+            align: None,
+            italic: false,
+            color: [0, 0, 0],
         });
         spans.push(Span {
             page: 0,
@@ -289,6 +292,9 @@ mod tests {
             font_size: Some(11.0),
             bold: Some(false),
             font: Some("Calibri".into()),
+            align: None,
+            italic: false,
+            color: [0, 0, 0],
         });
         ExtractionDump {
             schema_version: 1,
@@ -303,6 +309,7 @@ mod tests {
                 picture_only: false,
             }],
             spans,
+            images: Vec::new(),
         }
     }
 

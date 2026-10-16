@@ -39,6 +39,14 @@ CID-embedding migration of the writer; it must not be bolted
 onto the WinAnsi path. `subsetter` is therefore NOT a
 dependency today.
 
+.obd v1 packaging (2026-10-16): the `zip` crate (v2, MIT) is
+now also a direct dependency of ob-format, which writes and
+reads the v1 zip container, and `sha2` (MIT OR Apache-2.0)
+is a direct dependency of ob-model for the assets'
+fingerprints. Both were already in the tree; the permissive
+posture above is unchanged and no new license family
+entered.
+
 ## The Publisher reader and the LibreOffice bridge
 
 Our Publisher (.pub) reader is an independent implementation

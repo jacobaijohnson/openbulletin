@@ -245,9 +245,12 @@ fn run(cli: Cli) -> Result<(), String> {
             println!(
                 "wrote {} for {} ({})",
                 out.display(),
-                next.fields.get("sunday_date").cloned().unwrap_or_default(),
                 next.fields
-                    .get("sunday_date_long")
+                    .get("occasion_date")
+                    .cloned()
+                    .unwrap_or_default(),
+                next.fields
+                    .get("occasion_date_long")
                     .cloned()
                     .unwrap_or_default()
             );
@@ -264,10 +267,10 @@ fn run(cli: Cli) -> Result<(), String> {
             println!(
                 "sunday: {} ({})",
                 doc.fields
-                    .get("sunday_date_long")
+                    .get("occasion_date_long")
                     .cloned()
                     .unwrap_or_default(),
-                doc.fields.get("sunday_date").cloned().unwrap_or_default()
+                doc.fields.get("occasion_date").cloned().unwrap_or_default()
             );
             Ok(())
         }
@@ -496,6 +499,9 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
         panels,
         sheet,
         no_announcements: false,
+        assets: Vec::new(),
+        asset_bytes: Default::default(),
+        occasion_time: None,
     };
     let out_file = out.join(format!("{stem}-traced.obd"));
     ob_format::save(&doc, &out_file)?;

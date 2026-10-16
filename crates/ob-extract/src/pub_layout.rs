@@ -1226,6 +1226,14 @@ impl<'a> Compose<'a> {
             font_size: props.size_pt,
             bold: Some(props.bold.unwrap_or(false)),
             font: span_font(props, &self.parse.fonts),
+            // Schema v2: italic from the run's own character
+            // properties, stated on the span. Alignment and
+            // color are not decoded by this reader, so they
+            // stay unstated (the draft falls back to Left and
+            // black with no badge change).
+            align: None,
+            italic: props.italic.unwrap_or(false),
+            color: [0, 0, 0],
         });
         self.loss.characters_emitted += text.chars().count();
     }
@@ -1381,6 +1389,9 @@ impl<'a> Compose<'a> {
                     font_size: None,
                     bold: None,
                     font: None,
+                    align: None,
+                    italic: false,
+                    color: [0, 0, 0],
                 });
                 self.loss.wordart_emitted += 1;
                 emitted = true;
@@ -1506,6 +1517,9 @@ impl<'a> Compose<'a> {
                     font_size: None,
                     bold: None,
                     font: None,
+                    align: None,
+                    italic: false,
+                    color: [0, 0, 0],
                 });
                 emitted = true;
             }
@@ -1960,6 +1974,7 @@ fn compose(
         extractor: "openbulletin-pub 0.2".to_string(),
         pages,
         spans,
+        images: Vec::new(),
     }
 }
 

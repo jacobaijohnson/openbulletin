@@ -497,7 +497,7 @@ mod tests {
 
     fn test_doc() -> Document {
         let mut fields = BTreeMap::new();
-        fields.insert("sunday_name".to_string(), "Pentecost".to_string());
+        fields.insert("occasion_name".to_string(), "Pentecost".to_string());
         Document {
             format_version: ob_model::FORMAT_VERSION,
             title: "t".into(),
@@ -515,6 +515,9 @@ mod tests {
                 size: ob_model::Size::new(0, 0),
             },
             no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
         }
     }
 

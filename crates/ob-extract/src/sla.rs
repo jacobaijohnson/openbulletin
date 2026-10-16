@@ -132,6 +132,21 @@ fn parse_xml(text: &str) -> Result<Node, String> {
 struct StyleDef {
     font: Option<String>,
     size: Option<f32>,
+    align: Option<ob_model::Align>,
+}
+
+/// A Scribus ALIGN value (on a para, a STYLE, or a story's
+/// DefaultStyle): 0 left, 1 center, 2 right, 3 justified,
+/// 4 forced. The model has no Justify, so the justified
+/// values read as Left; our own exporter's 0/1/2 round-trip
+/// exactly (sla_export.rs writes the same table).
+fn align_value(raw: Option<&str>) -> Option<ob_model::Align> {
+    match raw?.trim() {
+        "1" => Some(ob_model::Align::Center),
+        "2" => Some(ob_model::Align::Right),
+        "0" | "3" | "4" => Some(ob_model::Align::Left),
+        _ => None,
+    }
 }
 
 /// Paragraph style definitions: DOCUMENT/STYLE elements by
@@ -149,6 +164,7 @@ fn style_table(document: &Node) -> HashMap<String, StyleDef> {
         let mut def = StyleDef {
             font: st.attr("FONT").map(|s| s.to_string()),
             size: st.attr("FONTSIZE").and_then(|v| v.parse().ok()),
+            align: align_value(st.attr("ALIGN")),
         };
         if let Some(cs) = st.child("CSTYLE") {
             if def.font.is_none() {
@@ -174,6 +190,9 @@ struct Segment {
     /// True when font and size both came from the file's
     /// statements for this story, not the document defaults.
     stated: bool,
+    /// The paragraph's alignment, when the file states one
+    /// (on the para itself, its style, or the story's base).
+    align: Option<ob_model::Align>,
 }
 
 /// True when a Scribus face name carries a bold face, the
@@ -181,6 +200,15 @@ struct Segment {
 fn face_is_bold(face: &str) -> bool {
     face.split(|c: char| !c.is_alphanumeric())
         .any(|w| w.eq_ignore_ascii_case("bold"))
+}
+
+/// True when a Scribus face name carries an italic face:
+/// the format's only italic signal, now read into the
+/// span's italic field instead of being left for the draft
+/// builder to sniff back out of the name.
+fn face_is_italic(face: &str) -> bool {
+    face.split(|c: char| !c.is_alphanumeric())
+        .any(|w| w.eq_ignore_ascii_case("italic") || w.eq_ignore_ascii_case("oblique"))
 }
 
 /// Walk a story's child elements (a StoryText's children,
@@ -191,6 +219,7 @@ fn story_segments(
     children: &[Node],
     base_font: &Option<String>,
     base_size: &Option<f32>,
+    base_align: &Option<ob_model::Align>,
     styles: &HashMap<String, StyleDef>,
     doc_font: &Option<String>,
     doc_size: &Option<f32>,
@@ -202,12 +231,16 @@ fn story_segments(
     let mut paragraph: Vec<(String, Option<String>, Option<f32>)> = Vec::new();
     let flush = |paragraph: &mut Vec<(String, Option<String>, Option<f32>)>,
                  style_name: &Option<String>,
+                 para_align: &Option<ob_model::Align>,
                  out: &mut Vec<Segment>| {
         let pdef = style_name
             .as_ref()
             .and_then(|n| styles.get(n))
             .cloned()
             .unwrap_or_default();
+        // Alignment resolves like the look does: the para's
+        // own ALIGN, then its style's, then the story's base.
+        let align = para_align.or(pdef.align).or(*base_align);
         for (text, run_font, run_size) in paragraph.drain(..) {
             if text.trim().is_empty() {
                 continue;
@@ -234,6 +267,7 @@ fn story_segments(
                 font,
                 size,
                 stated: stated && size_stated,
+                align,
             });
         }
     };
@@ -268,14 +302,15 @@ fn story_segments(
             }
             "para" | "trail" => {
                 let style_name = node.attr("PARENT").map(|s| s.to_string());
-                flush(&mut paragraph, &style_name, &mut out);
+                let para_align = align_value(node.attr("ALIGN"));
+                flush(&mut paragraph, &style_name, &para_align, &mut out);
             }
             _ => {}
         }
     }
     // A story that never closes its last paragraph still
     // has words; take them with no style claim.
-    flush(&mut paragraph, &None, &mut out);
+    flush(&mut paragraph, &None, &None, &mut out);
     out
 }
 
@@ -403,19 +438,30 @@ pub fn import_sla(
                 }
                 // The story: a StoryText child (1.5/1.6), or
                 // the object's own ITEXT children (1.4).
-                let (children, base_font, base_size): (Vec<Node>, Option<String>, Option<f32>) =
-                    if let Some(story) = obj.child("StoryText") {
-                        let (mut bf, mut bs) = (None, None);
-                        if let Some(ds) = story.child("DefaultStyle") {
-                            bf = ds.attr("FONT").map(|s| s.to_string());
-                            bs = num(ds, "FONTSIZE");
-                        }
-                        (story.children.clone(), bf, bs)
-                    } else {
-                        (obj.children.clone(), None, None)
-                    };
+                let (children, base_font, base_size, base_align): (
+                    Vec<Node>,
+                    Option<String>,
+                    Option<f32>,
+                    Option<ob_model::Align>,
+                ) = if let Some(story) = obj.child("StoryText") {
+                    let (mut bf, mut bs, mut ba) = (None, None, None);
+                    if let Some(ds) = story.child("DefaultStyle") {
+                        bf = ds.attr("FONT").map(|s| s.to_string());
+                        bs = num(ds, "FONTSIZE");
+                        ba = align_value(ds.attr("ALIGN"));
+                    }
+                    (story.children.clone(), bf, bs, ba)
+                } else {
+                    (obj.children.clone(), None, None, None)
+                };
                 let segments = story_segments(
-                    &children, &base_font, &base_size, &styles, &doc_font, &doc_size,
+                    &children,
+                    &base_font,
+                    &base_size,
+                    &base_align,
+                    &styles,
+                    &doc_font,
+                    &doc_size,
                 );
                 if segments.is_empty() {
                     empty_text_frames += 1;
@@ -426,6 +472,7 @@ pub fn import_sla(
                 let slice = fh.max(1.0) / segments.len() as f32;
                 for (k, seg) in segments.iter().enumerate() {
                     let bold = seg.font.as_deref().map(face_is_bold).unwrap_or(false);
+                    let italic = seg.font.as_deref().map(face_is_italic).unwrap_or(false);
                     spans.push(Span {
                         page: page.index,
                         text: seg.text.clone(),
@@ -441,6 +488,9 @@ pub fn import_sla(
                         font_size: Some(seg.size.unwrap_or(12.0)),
                         bold: Some(bold),
                         font: seg.font.clone(),
+                        align: seg.align,
+                        italic,
+                        color: [0, 0, 0],
                     });
                 }
             }
@@ -493,6 +543,7 @@ pub fn import_sla(
         extractor: format!("openbulletin-sla (Scribus {version})"),
         pages: page_infos,
         spans,
+        images: Vec::new(),
     };
     Ok((dump, notes))
 }

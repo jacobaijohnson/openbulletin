@@ -7,7 +7,7 @@
 
 use crate::{ExtractionDump, SpanTrust};
 use ob_model::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// How sure the rescue is about one piece of the draft, in the
 /// words the review screen uses.
@@ -83,13 +83,25 @@ pub fn font_match(source_name: &str) -> Option<String> {
     None
 }
 
-/// One text fragment: x, width, text, font size, bold, font.
-type Fragment = (f32, f32, String, f32, bool, Option<String>);
+/// One text fragment: x, width, text, font size, bold,
+/// font name, italic, color, stated alignment.
+type Fragment = (
+    f32,
+    f32,
+    String,
+    f32,
+    bool,
+    Option<String>,
+    bool,
+    [u8; 3],
+    Option<Align>,
+);
 
 struct Line {
     y: f32,
     h: f32,
-    /// x, width, text, font size, bold, font name: one fragment.
+    /// x, width, text, font size, bold, font name, italic,
+    /// color, stated alignment: one fragment.
     parts: Vec<Fragment>,
     /// Baseline wander inside the line: large on text set along
     /// a curve or in steps, which no reading order fully heals.
@@ -119,7 +131,7 @@ impl Line {
         parts.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut out = String::new();
         let mut prev_end: Option<f32> = None;
-        for (x, w, text, size, _, _) in parts {
+        for (x, w, text, size, _, _, _, _, _) in parts {
             // Some producers draw the same words twice (a fill
             // pass and an outline pass, a point or two apart):
             // a fragment that starts deep inside the previous
@@ -146,6 +158,56 @@ impl Line {
     fn bold(&self) -> bool {
         self.parts.iter().any(|p| p.4)
     }
+    /// Italic: the span flag is authoritative (schema v2
+    /// producers read the font's own flags); the old
+    /// name sniff remains only as the v1 fallback, where
+    /// no flag existed. The matched FAMILY still comes
+    /// from the plain font name, so an italic line in
+    /// Calibri matches Carlito and gets the italic face of
+    /// it, never a name with "-Italic" glued on.
+    fn italic(&self) -> bool {
+        if self.parts.iter().any(|p| p.6) {
+            return true;
+        }
+        let f = self.font().unwrap_or_default().to_lowercase();
+        f.contains("italic") || f.contains("oblique")
+    }
+    /// This line's stated alignment: the one most of its
+    /// parts state, earliest first on ties. None when no
+    /// part states one.
+    fn align(&self) -> Option<Align> {
+        majority(self.parts.iter().filter_map(|p| p.8))
+    }
+    /// This line's color: the one most of its parts carry.
+    fn color(&self) -> [u8; 3] {
+        majority(self.parts.iter().map(|p| p.7)).unwrap_or([0, 0, 0])
+    }
+}
+
+/// The most common value in an iterator, earliest first on
+/// ties. None only for an empty iterator.
+fn majority<T: Copy + PartialEq>(values: impl Iterator<Item = T>) -> Option<T> {
+    let mut counts: Vec<(T, usize)> = Vec::new();
+    for v in values {
+        match counts.iter_mut().find(|(t, _)| *t == v) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((v, 1)),
+        }
+    }
+    counts.into_iter().max_by_key(|(_, n)| *n).map(|(t, _)| t)
+}
+
+/// A block's paragraph alignment: the alignment most of
+/// its lines state. None when no line states one (the
+/// draft falls back to Left, as before schema v2).
+fn block_align(block: &[Line]) -> Option<Align> {
+    majority(block.iter().filter_map(|l| l.align()))
+}
+
+/// A block's paragraph color: the color most of its lines
+/// carry. Black only when the dump itself says black.
+fn block_color(block: &[Line]) -> [u8; 3] {
+    majority(block.iter().map(|l| l.color())).unwrap_or([0, 0, 0])
 }
 
 /// Group a page's spans into visual lines (top to bottom).
@@ -175,6 +237,9 @@ fn lines_of(spans: &[&crate::Span]) -> Vec<Line> {
             size,
             sp.bold.unwrap_or(false),
             sp.font.clone(),
+            sp.italic,
+            sp.color,
+            sp.align,
         );
         if joins == Some(true) {
             let line = lines.last_mut().expect("line");
@@ -216,6 +281,34 @@ pub fn document_from_dump(
     dump: &ExtractionDump,
     profile: ChurchProfile,
     with_backgrounds: bool,
+) -> DraftOutcome {
+    build_draft(dump, profile, with_backgrounds, &HashMap::new())
+}
+
+/// Build the draft, carrying the dump's page pictures into
+/// the document's asset store. `image_bytes` maps each
+/// `DumpImage.file` name to its bytes (the caller read the
+/// helper's picture files); pictures whose bytes are not
+/// supplied stay out, exactly as with `document_from_dump`.
+/// Each carried picture is an asset with an honest rights
+/// record (source: the imported file, license unknown),
+/// and each page with pictures gets one review item saying
+/// they arrived. Placing them on the page is the picture
+/// tools' job, not the rescue's.
+pub fn document_from_dump_with_assets(
+    dump: &ExtractionDump,
+    profile: ChurchProfile,
+    with_backgrounds: bool,
+    image_bytes: &HashMap<String, Vec<u8>>,
+) -> DraftOutcome {
+    build_draft(dump, profile, with_backgrounds, image_bytes)
+}
+
+fn build_draft(
+    dump: &ExtractionDump,
+    profile: ChurchProfile,
+    with_backgrounds: bool,
+    image_bytes: &HashMap<String, Vec<u8>>,
 ) -> DraftOutcome {
     let mut items: Vec<ImportItem> = Vec::new();
     let mut styles: Vec<ParagraphStyle> = default_styles();
@@ -320,17 +413,29 @@ pub fn document_from_dump(
             if paras.is_empty() {
                 continue;
             }
-            // One style per (font, size, bold, italic) on demand.
+            // One style per look on demand. Alignment and
+            // color come from the block's spans (schema v2),
+            // no longer hardcoded: the alignment most of
+            // the block's lines state, the color most of
+            // them carry; a dump that states neither (v1)
+            // lands on Left and black exactly as before.
             let rep = &block[0];
             let src_font = rep.font().unwrap_or_default();
-            let italic = src_font.to_lowercase().contains("italic")
-                || src_font.to_lowercase().contains("oblique");
+            let italic = rep.italic();
             let size_pt = rep.size();
             let mapped = font_match(&src_font);
             let family = mapped
                 .clone()
                 .unwrap_or_else(|| "Liberation Sans".to_string());
-            let key = format!("{family}|{size_pt:.0}|{}|{italic}", rep.bold());
+            let block_align_v = block_align(block);
+            let block_color_v = block_color(block);
+            let key = format!(
+                "{family}|{size_pt:.0}|{}|{italic}|{block_align_v:?}|{},{},{}",
+                rep.bold(),
+                block_color_v[0],
+                block_color_v[1],
+                block_color_v[2]
+            );
             let style_id = style_ids.entry(key).or_insert_with(|| {
                 let id = format!("import-{}", styles.len());
                 styles.push(ParagraphStyle {
@@ -339,9 +444,9 @@ pub fn document_from_dump(
                     font_size: pt(size_pt),
                     bold: rep.bold(),
                     italic,
-                    align: Align::Left,
+                    align: block_align_v.unwrap_or(Align::Left),
                     space_after: 4_000,
-                    color: Rgb::BLACK,
+                    color: Rgb::new(block_color_v[0], block_color_v[1], block_color_v[2]),
                     font_family: family.clone(),
                     font_sha256: None,
                 });
@@ -408,23 +513,57 @@ pub fn document_from_dump(
         panels.push(panel);
     }
 
-    DraftOutcome {
-        doc: Document {
-            format_version: FORMAT_VERSION,
-            title: dump.source_name.clone(),
-            profile,
-            fields: Default::default(),
-            styles,
-            stories,
-            panels,
-            sheet: SheetSpec {
-                preset,
-                size: sheet,
-            },
-            no_announcements: false,
+    let mut doc = Document {
+        format_version: FORMAT_VERSION,
+        title: dump.source_name.clone(),
+        profile,
+        fields: Default::default(),
+        styles,
+        stories,
+        panels,
+        sheet: SheetSpec {
+            preset,
+            size: sheet,
         },
-        items,
+        no_announcements: false,
+        assets: Vec::new(),
+        asset_bytes: Default::default(),
+        occasion_time: None,
+    };
+    // The picture channel: bytes the caller supplied ride
+    // into the asset store, one review item per page that
+    // had pictures, in panel order.
+    let mut picture_items: Vec<ImportItem> = Vec::new();
+    for img in &dump.images {
+        let Some(bytes) = image_bytes.get(&img.file) else {
+            continue;
+        };
+        doc.add_asset(
+            bytes,
+            AssetKind::Picture,
+            "image/png",
+            RightsRecord {
+                source: dump.source_name.clone(),
+                ..Default::default()
+            },
+        );
+        let panel = img.page as usize;
+        if !picture_items.iter().any(|i| i.panel == panel) {
+            picture_items.push(ImportItem {
+                panel,
+                label: format!("Pictures from page {}", img.page + 1),
+                badge: Badge::CheckThis,
+                detail: "Pictures from the old file were brought into this bulletin. They are kept with it; placing them on the page comes with the picture tools.".into(),
+            });
+        }
     }
+    if !picture_items.is_empty() {
+        items.extend(picture_items);
+        // Stable: the review list stays in page order, with
+        // a page's words ahead of its pictures.
+        items.sort_by_key(|i| i.panel);
+    }
+    DraftOutcome { doc, items }
 }
 
 #[cfg(test)]
@@ -444,6 +583,9 @@ mod tests {
             font_size: Some(size),
             bold: Some(bold),
             font: Some(font.into()),
+            align: None,
+            italic: false,
+            color: [0, 0, 0],
         }
     }
 
@@ -496,6 +638,7 @@ mod tests {
                 span(0, "bring a friend", 60.0, 118.0, 11.0, "Calibri", false),
                 span(1, "Mystery words", 60.0, 40.0, 11.0, "GillSansMT", false),
             ],
+            images: Vec::new(),
         };
         let out = document_from_dump(&dump, ChurchProfile::default(), true);
         assert_eq!(out.doc.sheet.preset, "saddle-booklet");
@@ -544,6 +687,7 @@ mod tests {
                 picture_only: false,
             }],
             spans: vec![s],
+            images: Vec::new(),
         };
         let out = document_from_dump(&dump, ChurchProfile::default(), false);
         assert_eq!(out.items.len(), 1);
@@ -555,6 +699,95 @@ mod tests {
             .stories
             .iter()
             .any(|st| st.paragraphs.iter().any(|p| p.text == "Grace Lutheran")));
+    }
+
+    #[test]
+    fn v2_spans_carry_alignment_color_and_italic_into_the_draft_style() {
+        // A centered, red, italic two-line block: the draft
+        // style must state Center, the red, and italic, and
+        // the family must come from the plain font name
+        // (Calibri -> Carlito), not a name with the italic
+        // glued on.
+        let mut s1 = span(0, "A Mighty Fortress", 120.0, 40.0, 14.0, "Calibri", false);
+        s1.align = Some(Align::Center);
+        s1.italic = true;
+        s1.color = [170, 30, 20];
+        let mut s2 = span(0, "is our God", 140.0, 58.0, 14.0, "Calibri", false);
+        s2.align = Some(Align::Center);
+        s2.italic = true;
+        s2.color = [170, 30, 20];
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pdf,
+            source_name: "hymn.pdf".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![s1, s2],
+            images: Vec::new(),
+        };
+        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        let story = &out.doc.stories[0];
+        let style = out
+            .doc
+            .style(&story.paragraphs[0].style)
+            .expect("style exists");
+        assert_eq!(style.align, Align::Center);
+        assert_eq!(style.color, Rgb::new(170, 30, 20));
+        assert!(style.italic);
+        assert_eq!(style.font_family, "Carlito");
+    }
+
+    #[test]
+    fn carried_pictures_become_assets_with_a_review_item() {
+        let mut dump_s = span(0, "Welcome", 60.0, 40.0, 14.0, "Calibri", false);
+        dump_s.page = 0;
+        let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3];
+        let bytes: HashMap<String, Vec<u8>> = [("p1-img1.png".to_string(), png.clone())]
+            .into_iter()
+            .collect();
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pdf,
+            source_name: "old.pdf".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![dump_s],
+            images: vec![crate::DumpImage {
+                id: "p1-img1".into(),
+                page: 0,
+                x: 40.0,
+                y: 100.0,
+                w: 200.0,
+                h: 150.0,
+                file: "p1-img1.png".into(),
+            }],
+        };
+        let out = document_from_dump_with_assets(&dump, ChurchProfile::default(), false, &bytes);
+        assert_eq!(out.doc.assets.len(), 1);
+        assert_eq!(out.doc.assets[0].kind, AssetKind::Picture);
+        assert_eq!(out.doc.assets[0].rights.source, "old.pdf");
+        assert_eq!(out.doc.assets[0].rights.license, LicenseKind::Unknown);
+        let hash = out.doc.assets[0].sha256.clone();
+        assert_eq!(out.doc.asset_data(&hash), Some(png.as_slice()));
+        assert!(out
+            .items
+            .iter()
+            .any(|i| i.label == "Pictures from page 1" && i.badge == Badge::CheckThis));
+        // The plain builder (analyzer path) carries nothing.
+        let plain = document_from_dump(&dump, ChurchProfile::default(), false);
+        assert!(plain.doc.assets.is_empty());
     }
 
     #[test]

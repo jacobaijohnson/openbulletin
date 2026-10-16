@@ -792,6 +792,9 @@ fn flush_segment(
         font_size: props.size_pt,
         bold: Some(props.bold.unwrap_or(false)),
         font: span_font(props, fonts),
+        align: None,
+        italic: props.italic.unwrap_or(false),
+        color: [0, 0, 0],
     });
     loss.characters_emitted += segment.chars().count();
     layout.x = x + w;
@@ -1329,6 +1332,7 @@ pub(crate) fn reading_column_dump(
         extractor: "openbulletin-pub-text 0.1".to_string(),
         pages,
         spans,
+        images: Vec::new(),
     };
     (dump, loss)
 }

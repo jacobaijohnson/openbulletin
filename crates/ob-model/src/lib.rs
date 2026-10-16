@@ -156,6 +156,22 @@ pub struct Paragraph {
     pub style: String,
     #[serde(default)]
     pub runs: Vec<Run>,
+    /// Spoken only: this paragraph is read aloud in the
+    /// service (a prayer-list name, above all) and must never
+    /// reach a publication. Every export except the native
+    /// .obd working file leaves spoken-only paragraphs out
+    /// (docs/planning/beyond-print.md section 4). The canvas
+    /// still shows them, tagged, so the state is never
+    /// hidden. Serde-defaulted: files written before the
+    /// flag load with every paragraph printable, as they
+    /// were. Not written when false, so printable
+    /// paragraphs serialize exactly as they always have.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub spoken_only: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Paragraphs are stored as runs (G1b). Every file written
@@ -174,6 +190,8 @@ impl<'de> Deserialize<'de> for Paragraph {
             text: Option<String>,
             #[serde(default)]
             runs: Option<Vec<Run>>,
+            #[serde(default)]
+            spoken_only: bool,
         }
         let sh = Shadow::deserialize(deserializer)?;
         let runs = match (sh.runs, sh.text) {
@@ -184,6 +202,7 @@ impl<'de> Deserialize<'de> for Paragraph {
         Ok(Paragraph {
             style: sh.style,
             runs,
+            spoken_only: sh.spoken_only,
         })
     }
 }
@@ -195,6 +214,7 @@ impl Paragraph {
         Self {
             style: style.to_string(),
             runs: vec![Run::plain(text)],
+            spoken_only: false,
         }
     }
 
@@ -209,6 +229,7 @@ impl Paragraph {
         Self {
             style: style.to_string(),
             runs: normalize_runs(runs),
+            spoken_only: false,
         }
     }
 
@@ -944,7 +965,68 @@ impl Document {
             }
         }
     }
+
+    /// How many paragraphs in the document are spoken only
+    /// (read aloud in the service, never published).
+    pub fn spoken_only_count(&self) -> usize {
+        self.stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter())
+            .filter(|p| p.spoken_only)
+            .count()
+    }
+
+    /// The publication copy of this document: a clone with
+    /// every spoken-only paragraph removed, plus how many
+    /// were removed. This is the ONE rule every export
+    /// follows (docs/planning/beyond-print.md section 4):
+    /// the native .obd working file keeps spoken-only
+    /// paragraphs; reader and imposed PDFs, the large-print
+    /// copy, the web page, markdown, IDML, and .sla never
+    /// carry them. Exporters take their document through
+    /// here so no door can leak a prayer-list name by
+    /// forgetting the rule.
+    pub fn without_spoken_only(&self) -> (Document, usize) {
+        let mut out = self.clone();
+        let mut removed = 0usize;
+        for story in &mut out.stories {
+            let before = story.paragraphs.len();
+            story.paragraphs.retain(|p| !p.spoken_only);
+            removed += before - story.paragraphs.len();
+        }
+        (out, removed)
+    }
 }
+
+/// The sentence an export door adds when spoken-only
+/// paragraphs were left out of a copy, in the words the
+/// office hears everywhere (the count is paragraphs; on a
+/// prayer list each paragraph is one name). Empty when
+/// nothing was left out.
+pub fn spoken_only_left_out_sentence(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => " 1 name is spoken only and was left out of this copy.".to_string(),
+        n => format!(" {n} names are spoken only and were left out of this copy."),
+    }
+}
+
+/// The participant fields (docs/planning/beyond-print.md
+/// section 4): who is serving this week, beside the sermon
+/// title on the This Sunday step (the J2 pattern). Each is
+/// (field key in `Document::fields`, the step's label, the
+/// token a template prints it with). Weekly by nature:
+/// Next Sunday clears them and names what it cleared.
+pub const PARTICIPANT_FIELDS: [(&str, &str, &str); 4] = [
+    ("readers", "Readers", "{Sunday.readers}"),
+    ("ushers", "Ushers", "{Sunday.ushers}"),
+    ("greeters", "Greeters", "{Sunday.greeters}"),
+    (
+        "communion_assistants",
+        "Communion assistants",
+        "{Sunday.communion_assistants}",
+    ),
+];
 
 impl Document {
     /// Clamp the numbers a hostile or hand-edited file could set
@@ -1053,6 +1135,10 @@ fn field_tokens(doc: &Document) -> Vec<(&'static str, String)> {
         ("{Sunday.date}", get("occasion_date_long")),
         ("{Sunday.name}", get("occasion_name")),
         ("{Sunday.reading}", get("reading")),
+        ("{Sunday.readers}", get("readers")),
+        ("{Sunday.ushers}", get("ushers")),
+        ("{Sunday.greeters}", get("greeters")),
+        ("{Sunday.communion_assistants}", get("communion_assistants")),
         (
             "{Service.time}",
             doc.occasion_time.clone().unwrap_or_default(),
@@ -1241,11 +1327,18 @@ pub fn split_story_paragraphs(
     let (head_runs, tail_runs) = split_runs_at(&target.runs, byte);
     let mut head: Vec<Paragraph> = paras[..para].to_vec();
     let mut tail: Vec<Paragraph> = Vec::new();
+    // The two pieces of the cut paragraph keep its
+    // spoken-only flag: splitting a prayer name in two
+    // must never make either half printable.
     if byte > 0 || para == 0 {
-        head.push(Paragraph::from_runs(&target.style, head_runs));
+        let mut p = Paragraph::from_runs(&target.style, head_runs);
+        p.spoken_only = target.spoken_only;
+        head.push(p);
     }
     if byte < target.text().len() || para == paras.len() - 1 {
-        tail.push(Paragraph::from_runs(&target.style, tail_runs));
+        let mut p = Paragraph::from_runs(&target.style, tail_runs);
+        p.spoken_only = target.spoken_only;
+        tail.push(p);
     }
     tail.extend_from_slice(&paras[para + 1..]);
     if head.is_empty() {
@@ -1432,6 +1525,118 @@ mod tests {
             resolve_fields("{Church.name} - {Sunday.name}, {Sunday.date}", &doc),
             "Grace Lutheran - Twentieth Sunday after Pentecost, October 18, 2026"
         );
+    }
+
+    fn bare_doc() -> Document {
+        Document {
+            format_version: FORMAT_VERSION,
+            title: "t".into(),
+            profile: ChurchProfile::default(),
+            fields: BTreeMap::new(),
+            styles: vec![],
+            stories: vec![],
+            panels: vec![],
+            sheet: SheetSpec {
+                preset: "letter-portrait".into(),
+                size: Size::new(0, 0),
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+        }
+    }
+
+    #[test]
+    fn participant_tokens_resolve_with_and_without_values() {
+        let mut doc = bare_doc();
+        // Unset: every participant token resolves to nothing,
+        // exactly like the other weekly fields.
+        assert_eq!(
+            resolve_fields(
+                "Readers: {Sunday.readers}|Ushers: {Sunday.ushers}|Greeters: {Sunday.greeters}|Communion: {Sunday.communion_assistants}",
+                &doc
+            ),
+            "Readers: |Ushers: |Greeters: |Communion: "
+        );
+        doc.fields
+            .insert("readers".to_string(), "Ana Ruiz".to_string());
+        doc.fields
+            .insert("ushers".to_string(), "Tom and Bea".to_string());
+        doc.fields.insert("greeters".to_string(), "Sam".to_string());
+        doc.fields
+            .insert("communion_assistants".to_string(), "Pat, Jo".to_string());
+        assert_eq!(
+            resolve_fields(
+                "Readers: {Sunday.readers}|Ushers: {Sunday.ushers}|Greeters: {Sunday.greeters}|Communion: {Sunday.communion_assistants}",
+                &doc
+            ),
+            "Readers: Ana Ruiz|Ushers: Tom and Bea|Greeters: Sam|Communion: Pat, Jo"
+        );
+        // The spec table's tokens and the resolver's agree.
+        for (key, _label, token) in PARTICIPANT_FIELDS {
+            assert!(doc.fields.contains_key(key), "test setup covers {key}");
+            assert_eq!(
+                resolve_fields(token, &doc),
+                doc.fields[key],
+                "{token} resolves from {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn spoken_only_paragraphs_leave_the_publication_copy_only() {
+        let mut doc = bare_doc();
+        let mut spoken = Paragraph::plain("body", "For Mary, quietly");
+        spoken.spoken_only = true;
+        doc.stories.push(Story {
+            id: "prayers".into(),
+            paragraphs: vec![
+                Paragraph::plain("subheading", "Prayers"),
+                spoken,
+                Paragraph::plain("body", "For the food bank"),
+            ],
+            keep_through: None,
+        });
+        assert_eq!(doc.spoken_only_count(), 1);
+        let (pub_doc, removed) = doc.without_spoken_only();
+        assert_eq!(removed, 1);
+        let texts: Vec<String> = pub_doc.stories[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.text())
+            .collect();
+        assert_eq!(texts, vec!["Prayers", "For the food bank"]);
+        // The working document itself is untouched.
+        assert_eq!(doc.stories[0].paragraphs.len(), 3);
+        assert_eq!(spoken_only_left_out_sentence(0), "");
+        assert_eq!(
+            spoken_only_left_out_sentence(1),
+            " 1 name is spoken only and was left out of this copy."
+        );
+        assert_eq!(
+            spoken_only_left_out_sentence(2),
+            " 2 names are spoken only and were left out of this copy."
+        );
+    }
+
+    #[test]
+    fn paragraphs_written_before_the_flag_load_as_printable() {
+        // Both paragraph shapes as old files carry them: the
+        // text shape and the runs shape, neither with a
+        // spoken_only key.
+        let old_text: Paragraph =
+            serde_json::from_str(r#"{"style":"body","text":"Hello"}"#).expect("old text shape");
+        assert!(!old_text.spoken_only);
+        assert_eq!(old_text.text(), "Hello");
+        let old_runs: Paragraph =
+            serde_json::from_str(r#"{"style":"body","runs":[{"text":"Hello"}]}"#)
+                .expect("old runs shape");
+        assert!(!old_runs.spoken_only);
+        let flagged: Paragraph =
+            serde_json::from_str(r#"{"style":"body","text":"Quiet","spoken_only":true}"#)
+                .expect("flagged shape");
+        assert!(flagged.spoken_only);
     }
 
     fn mapped_doc() -> Document {

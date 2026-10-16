@@ -11,6 +11,44 @@ use serde::Deserialize;
 const LIST_URL: &str = "https://api.fontsource.org/v1/fonts";
 const DETAIL_URL: &str = "https://api.fontsource.org/v1/fonts";
 
+/// A catalog face's verified glyph coverage: characters a
+/// downloaded face's own cmap was checked to carry, and
+/// no others. Only faces whose downloaded cmap was
+/// actually read may be listed here; the Check step points
+/// at these when a bulletin uses a mark the printing face
+/// lacks, so an entry is a promise the app makes out loud.
+pub struct CatalogGlyphCoverage {
+    /// Catalog id (the Fontsource id).
+    pub id: &'static str,
+    /// The family name as the Fonts list shows it.
+    pub family: &'static str,
+    /// Characters verified present in the face's cmap.
+    pub chars: &'static [char],
+}
+
+/// The verified coverage registry. DejaVu Sans is here
+/// because the bundled Liberation faces carry neither the
+/// Latin cross (U+271D) nor the check mark (U+2713): O2's
+/// cmap dump proved the absence, and the DejaVu Sans
+/// face's own cmap was read and does carry both (the full
+/// face holds 6,253 glyphs, verified 2026-10-16).
+pub const VERIFIED_GLYPH_COVERAGE: &[CatalogGlyphCoverage] = &[CatalogGlyphCoverage {
+    id: "dejavu-sans",
+    family: "DejaVu Sans",
+    chars: &['\u{271D}', '\u{2713}'],
+}];
+
+/// The family of a catalog face that verifiably carries
+/// `c`, when one is registered: the Check step's "this
+/// face has this letter" pointer. Registry data only; the
+/// cmap test in this crate keeps the promise honest.
+pub fn catalog_face_with_glyph(c: char) -> Option<&'static str> {
+    VERIFIED_GLYPH_COVERAGE
+        .iter()
+        .find(|cov| cov.chars.contains(&c))
+        .map(|cov| cov.family)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogEntry {
     pub id: String,
@@ -184,6 +222,11 @@ pub fn install(lib: &FontLibrary, id: &str) -> Result<Vec<FontInfo>, String> {
             "{id} is under {license}, which is not one of the free licenses we can offer"
         ));
     }
+    // DejaVu is not in the google/fonts repository the probe
+    // below walks; it has its own route (see install_dejavu).
+    if id == "dejavu-sans" {
+        return install_dejavu(lib, &detail);
+    }
     // The family's folder in google/fonts, by license directory.
     // Repository folders drop dashes (Open Sans lives in opensans/),
     // so probe the plain id and the dash-less id in each directory.
@@ -265,6 +308,103 @@ pub fn install(lib: &FontLibrary, id: &str) -> Result<Vec<FontInfo>, String> {
     Ok(installed)
 }
 
+/// DejaVu Sans's own install route. The family is not in
+/// the google/fonts repository; its home is the DejaVu
+/// project's own releases, whose sans zip carries the four
+/// core faces and the project's LICENSE file. The license
+/// note says what is actually true, both halves of it: the
+/// Fontsource catalog records the family as OFL-1.1, and
+/// the font's own embedded license text (and the release's
+/// LICENSE file) is the DejaVu license: the Bitstream Vera
+/// terms, with the DejaVu changes in the public domain.
+/// Both are permissive; the note carries the project's own
+/// text verbatim so nothing rests on the catalog's word
+/// alone.
+fn install_dejavu(lib: &FontLibrary, detail: &serde_json::Value) -> Result<Vec<FontInfo>, String> {
+    const FACES: [&str; 4] = [
+        "DejaVuSans.ttf",
+        "DejaVuSans-Bold.ttf",
+        "DejaVuSans-Oblique.ttf",
+        "DejaVuSans-BoldOblique.ttf",
+    ];
+    let catalog_license = detail["license"].as_str().unwrap_or("OFL-1.1");
+    let source = detail["source"]
+        .as_str()
+        .unwrap_or("https://github.com/dejavu-fonts/dejavu-fonts");
+    let mut installed: Vec<FontInfo> = Vec::new();
+    let mut project_license: Option<String> = None;
+
+    // First route: the project's own release zip.
+    let zip_url = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-sans-ttf-2.37.zip";
+    if let Ok(bytes) = get_bytes(zip_url) {
+        if let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) {
+            use std::io::Read;
+            let names: Vec<String> = (0..archive.len())
+                .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+                .collect();
+            for want in FACES {
+                if let Some(entry) = names.iter().find(|n| n.ends_with(want)) {
+                    if let Ok(mut f) = archive.by_name(entry) {
+                        let mut data = Vec::new();
+                        if f.read_to_end(&mut data).is_ok() && !data.is_empty() {
+                            if let Ok(info) = lib.add_bytes(&data, want) {
+                                installed.push(info);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(entry) = names.iter().find(|n| n.ends_with("LICENSE")) {
+                if let Ok(mut f) = archive.by_name(entry) {
+                    let mut text = String::new();
+                    if f.read_to_string(&mut text).is_ok() {
+                        project_license = Some(text);
+                    }
+                }
+            }
+        }
+    }
+    if !installed.is_empty() {
+        let note = format!(
+            "DejaVu Sans\nCatalog license record: {catalog_license} (Fontsource catalog)\nSource: {source}\n\nThe font's own license, from the project's release:\n\n{}",
+            project_license.as_deref().unwrap_or(
+                "The release's LICENSE file could not be read back; the license text lives at https://dejavu-fonts.github.io/License.html"
+            )
+        );
+        let _ = std::fs::write(lib.dir().join("dejavu-sans-LICENSE.txt"), note);
+        return Ok(installed);
+    }
+
+    // Second route: the Fontsource CDN files, one face at a
+    // time (the full faces, not subsets).
+    const CDN: [(&str, &str); 4] = [
+        ("latin-400-normal.ttf", "DejaVuSans.ttf"),
+        ("latin-700-normal.ttf", "DejaVuSans-Bold.ttf"),
+        ("latin-400-italic.ttf", "DejaVuSans-Oblique.ttf"),
+        ("latin-700-italic.ttf", "DejaVuSans-BoldOblique.ttf"),
+    ];
+    for (cdn_name, file_name) in CDN {
+        let url =
+            format!("https://cdn.jsdelivr.net/fontsource/fonts/dejavu-sans@latest/{cdn_name}");
+        if let Ok(bytes) = get_bytes(&url) {
+            if let Ok(info) = lib.add_bytes(&bytes, file_name) {
+                installed.push(info);
+            }
+        }
+    }
+    if installed.is_empty() {
+        return Err(
+            "dejavu-sans could not be downloaded from the DejaVu project or the font catalog"
+                .to_string(),
+        );
+    }
+    let note = format!(
+        "DejaVu Sans\nCatalog license record: {catalog_license} (Fontsource catalog)\nSource: {source}\nThe font's own license text: https://dejavu-fonts.github.io/License.html\n"
+    );
+    let _ = std::fs::write(lib.dir().join("dejavu-sans-LICENSE.txt"), note);
+    Ok(installed)
+}
+
 fn write_license_note(lib: &FontLibrary, repo_id: &str, detail: &serde_json::Value) {
     let license = detail["license"].as_str().unwrap_or("unknown");
     let source = detail["source"].as_str().unwrap_or("Fontsource");
@@ -294,6 +434,10 @@ pub const CHURCH_STARTER_PACK: &[&str] = &[
     "gelasio",          // Georgia twin
     "lora",             // a warm reading serif
     "playfair-display", // a display face for titles and holidays
+    // DejaVu Sans rides along because it carries the marks
+    // the Liberation faces do not: the Latin cross and the
+    // check mark (see VERIFIED_GLYPH_COVERAGE).
+    "dejavu-sans",
 ];
 
 /// What a pack install did: the faces that landed, and the families
@@ -335,5 +479,77 @@ mod tests {
         let json = r#"[{"id":"lato","family":"Lato","category":"sans-serif","license":"OFL-1.1"}]"#;
         let entries: Vec<CatalogEntry> = serde_json::from_str(json).expect("parse");
         assert_eq!(entries[0].family, "Lato");
+    }
+
+    #[test]
+    fn the_registry_names_dejavu_for_the_marks_liberation_lacks() {
+        assert_eq!(catalog_face_with_glyph('\u{271D}'), Some("DejaVu Sans"));
+        assert_eq!(catalog_face_with_glyph('\u{2713}'), Some("DejaVu Sans"));
+        // An ordinary letter is in every face; the registry
+        // must not claim it (the pointer is only for marks
+        // the printing faces are known to lack).
+        assert_eq!(catalog_face_with_glyph('A'), None);
+        assert!(CHURCH_STARTER_PACK.contains(&"dejavu-sans"));
+    }
+
+    /// The DejaVu Sans face's own cmap, wherever a real copy
+    /// lives on this machine (an OS copy or a test-provided
+    /// directory): every character the registry promises
+    /// must really be there. Skips cleanly where no copy
+    /// exists; the promise is only made from verified data,
+    /// and this test is what keeps it verified.
+    fn dejavu_sans_bytes() -> Option<Vec<u8>> {
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(dir) = std::env::var("OB_DEJAVU_DIR") {
+            candidates.push(std::path::PathBuf::from(dir).join("DejaVuSans.ttf"));
+        }
+        candidates.push("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into());
+        candidates.push("/usr/share/fonts/TTF/DejaVuSans.ttf".into());
+        candidates.push("/Library/Fonts/DejaVuSans.ttf".into());
+        candidates.push("C:\\Windows\\Fonts\\DejaVuSans.ttf".into());
+        candidates.iter().find_map(|p| std::fs::read(p).ok())
+    }
+
+    #[test]
+    fn dejavu_sans_cmap_carries_the_registered_marks() {
+        let Some(bytes) = dejavu_sans_bytes() else {
+            return; // no DejaVu on this machine: nothing to verify against
+        };
+        let face = ttf_parser::Face::parse(&bytes, 0).expect("parse DejaVu Sans");
+        assert_eq!(
+            crate::inspect(&bytes, "DejaVuSans.ttf").map(|i| i.family),
+            Ok("DejaVu Sans".to_string()),
+            "the located copy really is DejaVu Sans"
+        );
+        for cov in VERIFIED_GLYPH_COVERAGE {
+            if cov.id != "dejavu-sans" {
+                continue;
+            }
+            for c in cov.chars {
+                assert!(
+                    face.glyph_index(*c).is_some(),
+                    "DejaVu Sans is registered as carrying {c} (U+{:04X}) but its cmap has no glyph",
+                    *c as u32
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_liberation_sans_has_no_latin_cross() {
+        // The registry's premise, pinned: if a future
+        // Liberation ever gains the cross, this test says
+        // the DejaVu pointer has become unnecessary, not
+        // wrong, and the registry should be revisited.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ob-text/assets/fonts/LiberationSans-Regular.ttf"
+        );
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+        let face = ttf_parser::Face::parse(&bytes, 0).expect("parse Liberation Sans");
+        assert!(face.glyph_index('\u{271D}').is_none());
+        assert!(face.glyph_index('\u{2713}').is_none());
     }
 }

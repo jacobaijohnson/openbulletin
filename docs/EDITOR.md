@@ -225,6 +225,15 @@ so no two views can disagree.
   styles today; the runs inside a paragraph flatten to the
   style's face there (their exporters write per-paragraph
   styles, and teaching them runs is a later build).
+- **Spoken only** (Extras, 2026-10-16). The "Spoken only"
+  button in the same bar marks the caret's whole paragraph:
+  it will be read aloud in the service and never printed
+  (prayer-list names belong in such a paragraph). The idle
+  page tags it SPOKEN ONLY in small type above its first
+  line, so the state is visible wherever the words are.
+  The .obd keeps the paragraph; every export leaves it
+  out and counts it, and Check leaves it alone, because
+  words that never print cannot go wrong in print.
   Pasting text that carries markdown
   marks (**bold**, *italic*) lands the marks as faces;
   plain paste is unchanged. If a session ever falls back to

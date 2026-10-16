@@ -773,6 +773,7 @@ impl App {
             .map(|l| l.value)
             .collect();
         self.sermon_input = sermon_title(&self.doc);
+        self.participant_inputs = participant_values(&self.doc);
     }
 
     /// Set the bulletin's date from the Step 2 field, in the
@@ -1005,6 +1006,12 @@ struct CharFinding {
     /// one: the Check step's fix button opens the Pages
     /// window there.
     target: Option<(usize, Option<usize>)>,
+    /// A catalog face that verifiably carries one of the
+    /// missing marks (its downloaded cmap was checked, see
+    /// ob_fonts::catalog): the character and the family, so
+    /// the note can point at the way out instead of only
+    /// naming the problem.
+    helper: Option<(char, String)>,
 }
 
 /// Every story in the document that uses characters the print
@@ -1021,6 +1028,12 @@ fn char_findings(doc: &Document) -> Vec<CharFinding> {
     for story in &doc.stories {
         let mut chars: Vec<char> = Vec::new();
         for para in &story.paragraphs {
+            // Spoken-only paragraphs never print, so their
+            // marks can never go missing from a printed
+            // copy: not a finding (working as intended).
+            if para.spoken_only {
+                continue;
+            }
             // The same fallback style the PDF writer draws
             // with when a paragraph names a style the document
             // no longer carries.
@@ -1060,11 +1073,17 @@ fn char_findings(doc: &Document) -> Vec<CharFinding> {
             .map(|t| t.trim().chars().take(38).collect::<String>())
             .unwrap_or_else(|| "A text block".to_string());
         let target = frame_target_for_story(doc, &story.id);
+        // The way out, when the catalog holds one: a face
+        // whose cmap verifiably carries the missing mark.
+        let helper = chars.iter().find_map(|c| {
+            ob_fonts::catalog::catalog_face_with_glyph(*c).map(|fam| (*c, fam.to_string()))
+        });
         out.push(CharFinding {
             story_id: story.id.clone(),
             label,
             chars,
             target,
+            helper,
         });
     }
     out
@@ -1093,7 +1112,7 @@ fn char_note(f: &CharFinding) -> String {
         .map(|c| format!("\"{c}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    if f.chars.len() == 1 {
+    let mut note = if f.chars.len() == 1 {
         format!(
             "Check: the words in \"{}\" use a mark the print copy cannot show: {marks}. \
              It would print as an empty box. Type a plain mark instead, or take it out.",
@@ -1105,7 +1124,15 @@ fn char_note(f: &CharFinding) -> String {
              They would print as empty boxes. Type plain marks instead, or take them out.",
             f.label
         )
+    };
+    // The way out, when the catalog verifiably holds the
+    // mark: name the face that carries it.
+    if let Some((_, family)) = &f.helper {
+        note.push_str(&format!(
+            " {family} has this letter; it is in the Fonts list."
+        ));
     }
+    note
 }
 
 /// The Check-step line about announcements, in plain words.
@@ -1447,6 +1474,11 @@ struct App {
     /// title field. Synced from the document on every swap.
     service_inputs: Vec<String>,
     sermon_input: String,
+    /// The This Sunday step's participant fields (readers,
+    /// ushers, greeters, communion assistants), parallel to
+    /// `ob_model::PARTICIPANT_FIELDS`, synced from the
+    /// document's weekly fields on every swap.
+    participant_inputs: Vec<String>,
     announcements_dirty: bool,
     step: usize,
     announcements: String,
@@ -1559,6 +1591,13 @@ struct App {
     /// plain runs rather than wrong ones.
     edit_runs: Vec<Vec<ob_model::Run>>,
     edit_runs_detached: bool,
+    /// The session's spoken-only flags, one per paragraph of
+    /// `edit_text`, kept in step by `sync_edit_spoken`
+    /// exactly as `edit_styles` is kept by
+    /// `sync_edit_styles`, and written back at commit: a
+    /// spoken-only paragraph is read aloud in the service
+    /// and never printed (prayer-list privacy).
+    edit_spoken: Vec<bool>,
     /// Story id of the current edit session, salting the text
     /// editor's identity so its private state (cursor, its own
     /// undo) never leaks from one box's session into another's
@@ -1716,6 +1755,12 @@ struct PreviewLine {
     /// Empty means "the whole line in the line's own face"
     /// (the editor's probe lines carry none).
     segs: Vec<PreviewSeg>,
+    /// This line starts a spoken-only paragraph: the Pages
+    /// canvas tags it "SPOKEN ONLY" above the line, so the
+    /// state is visible on the page and never hidden. Only
+    /// the canvas paints the tag, never the print previews:
+    /// spoken-only words are not in any printed copy.
+    spoken_tag: bool,
 }
 
 /// One same-face piece of a preview line (G1b).
@@ -1917,6 +1962,7 @@ fn paint_line_segments(
             bold: seg.bold,
             italic: seg.italic,
             segs: Vec::new(),
+            spoken_tag: false,
         };
         painter.text(
             place(line.x + seg.dx),
@@ -1959,6 +2005,7 @@ impl Default for App {
         let service_inputs: Vec<String> =
             service_lines(&doc).into_iter().map(|l| l.value).collect();
         let sermon_input = sermon_title(&doc);
+        let participant_inputs = participant_values(&doc);
         let settings = load_settings();
         // Reopen on the step the user left (J6), clamped to
         // the steps that exist.
@@ -1977,6 +2024,7 @@ impl Default for App {
             date_input,
             service_inputs,
             sermon_input,
+            participant_inputs,
             announcements_dirty: false,
             step,
             announcements,
@@ -2041,6 +2089,7 @@ impl Default for App {
             edit_styles: Vec::new(),
             edit_runs: Vec::new(),
             edit_runs_detached: false,
+            edit_spoken: Vec::new(),
             edit_salt: String::new(),
             edit_cursor_para: 0,
             frame_snapshot: String::new(),
@@ -2248,6 +2297,17 @@ fn strip_field_tokens(text: &str) -> String {
 /// says once the field tokens are taken out. Empty when the
 /// line carries only the pastor token, and when the bulletin
 /// has no sermon line at all.
+/// The participant values (readers, ushers, greeters,
+/// communion assistants) from the document's weekly
+/// fields, in `ob_model::PARTICIPANT_FIELDS` order: the
+/// This Sunday rows' starting text.
+fn participant_values(doc: &Document) -> Vec<String> {
+    ob_model::PARTICIPANT_FIELDS
+        .iter()
+        .map(|(key, _label, _token)| doc.fields.get(*key).cloned().unwrap_or_default())
+        .collect()
+}
+
 fn sermon_title(doc: &Document) -> String {
     let Some((sid, i)) = sermon_para(doc) else {
         return String::new();
@@ -2401,6 +2461,25 @@ impl App {
             lines.pop();
         }
         if let Some(story) = self.doc.story_mut(&sid) {
+            // Spoken-only flags ride with their words: the
+            // body paragraphs are rebuilt from the typed
+            // lines, so a line whose words match a body
+            // paragraph that was here keeps that paragraph's
+            // flag (a prayer name typed here must not lose
+            // its privacy because the box was saved).
+            let spoken_by_text: std::collections::HashMap<String, bool> = story
+                .paragraphs
+                .iter()
+                .filter(|p| p.style == "body")
+                .map(|p| (p.text(), p.spoken_only))
+                .collect();
+            let body_para = |l: &String| {
+                let mut p = ob_model::Paragraph::new("body", l);
+                if let Some(spoken) = spoken_by_text.get(l) {
+                    p.spoken_only = *spoken;
+                }
+                p
+            };
             let mut rest: Vec<ob_model::Paragraph> = story
                 .paragraphs
                 .iter()
@@ -2414,14 +2493,14 @@ impl App {
                 new_paras.push(p.clone());
                 if !inserted && p.style == "subheading" && p.text() == "Announcements" {
                     for l in &lines {
-                        new_paras.push(ob_model::Paragraph::new("body", l));
+                        new_paras.push(body_para(l));
                     }
                     inserted = true;
                 }
             }
             if !inserted {
                 for l in &lines {
-                    new_paras.push(ob_model::Paragraph::new("body", l));
+                    new_paras.push(body_para(l));
                 }
             }
             story.paragraphs = new_paras;
@@ -2810,6 +2889,16 @@ impl App {
                 // automation shows its hand.
                 if !report.ended_names.is_empty() {
                     msg.push_str(&format!(" Ended: {}.", report.ended_names.join(", ")));
+                }
+                // The participant fields cleared for the new
+                // week get named the same way (J10's shape):
+                // who served is last week's news, said out
+                // loud rather than silently dropped.
+                if !report.cleared_participants.is_empty() {
+                    msg.push_str(&format!(
+                        " Cleared for the new week: {}.",
+                        report.cleared_participants.join(", ")
+                    ));
                 }
                 // An accidental click lands here too; say
                 // the way back out loud (UI audit round 2).
@@ -3264,6 +3353,30 @@ impl App {
         }
     }
 
+    /// Keep `edit_spoken` the same length as the edit
+    /// buffer's paragraph list, with the same cursor-side
+    /// growth and shrink as [`App::sync_edit_styles`]: a
+    /// paragraph split in two keeps the flag on both halves
+    /// (a split prayer list stays private), a deleted
+    /// paragraph takes its flag with it.
+    fn sync_edit_spoken(&mut self) {
+        let count = self.edit_text.split('\n').count();
+        let cur = self
+            .edit_cursor_para
+            .min(self.edit_spoken.len().saturating_sub(1));
+        if self.edit_spoken.len() < count {
+            let inherit = self.edit_spoken.get(cur).copied().unwrap_or(false);
+            while self.edit_spoken.len() < count {
+                let at = (cur + 1).min(self.edit_spoken.len());
+                self.edit_spoken.insert(at, inherit);
+            }
+        } else if self.edit_spoken.len() > count {
+            let excess = self.edit_spoken.len() - count;
+            let start = (cur + 1).min(self.edit_spoken.len() - excess);
+            self.edit_spoken.drain(start..start + excess);
+        }
+    }
+
     /// Enter inline editing for one frame's story. Any session
     /// already open commits first: starting a new one must never
     /// silently drop the words in the old one (blocker 6).
@@ -3569,6 +3682,7 @@ impl App {
         self.edit_styles.clear();
         self.edit_runs.clear();
         self.edit_runs_detached = false;
+        self.edit_spoken.clear();
         self.edit_done = false;
         self.reset_editor_transient();
         self.status = "Typing thrown away. The page keeps the words it had.".into();
@@ -3666,6 +3780,7 @@ impl App {
         self.edit_styles = story.paragraphs.iter().map(|p| p.style.clone()).collect();
         self.edit_runs = story.paragraphs.iter().map(|p| p.runs.clone()).collect();
         self.edit_runs_detached = false;
+        self.edit_spoken = story.paragraphs.iter().map(|p| p.spoken_only).collect();
         self.editing = Some((pi, fi));
         self.selected_frame = Some(fi);
         self.edit_done = false;
@@ -3687,6 +3802,7 @@ impl App {
         self.reset_editor_transient();
         self.edit_start_text.clear();
         self.sync_edit_styles();
+        self.sync_edit_spoken();
         let Some(frame) = self.doc.panels[pi].frames.get(fi) else {
             self.edit_start = None;
             return;
@@ -3719,15 +3835,21 @@ impl App {
                         .map(|r| r.text.as_str())
                         .collect::<String>()
                         == *t;
-                if runs_match {
+                let mut para = if runs_match {
                     ob_model::Paragraph::from_runs(&style, self.edit_runs[i].clone())
                 } else {
                     ob_model::Paragraph::plain(&style, t)
-                }
+                };
+                // The spoken-only flag rides with the
+                // paragraph, like its style (both
+                // constructors start it printable).
+                para.spoken_only = self.edit_spoken.get(i).copied().unwrap_or(false);
+                para
             })
             .collect();
         self.edit_runs.clear();
         self.edit_runs_detached = false;
+        self.edit_spoken.clear();
         if let Some(story) = self.doc.stories.iter_mut().find(|st| st.id == sid) {
             story.paragraphs = paragraphs;
         }
@@ -4087,6 +4209,7 @@ impl App {
             self.edit_cursor_para = l.map.para_at_display(d);
         }
         self.sync_edit_styles();
+        self.sync_edit_spoken();
     }
 
     /// Type or paste text at the selection, replacing it.
@@ -4840,7 +4963,7 @@ impl App {
         }
         let lines = {
             let cache = self.lines_cache.as_ref().expect("cache refreshed");
-            panel_lines_from_threads(idx, &self.doc.panels[idx], &cache.threads)
+            panel_lines_from_threads(&self.doc, idx, &self.doc.panels[idx], &cache.threads)
         };
         if let Some(cache) = &mut self.lines_cache {
             cache.lines.insert(idx, lines.clone());
@@ -5427,6 +5550,7 @@ impl App {
                         .map(|f| f.name.clone())
                         .unwrap_or_default();
                     self.sync_edit_styles();
+                    self.sync_edit_spoken();
                     // The caret's paragraph comes from the
                     // shaped editor's own position (E1).
                     self.refresh_editor_layout();
@@ -5482,6 +5606,26 @@ impl App {
                             .clicked()
                         {
                             self.editor_toggle_flag(runsedit::Flag::Italic);
+                        }
+                        // Spoken only: this paragraph is read
+                        // aloud in the service and never
+                        // printed (prayer-list privacy). A
+                        // paragraph flag, not a run flag, so
+                        // it works even when the runs are
+                        // detached.
+                        let spoken_on =
+                            self.edit_spoken.get(para).copied().unwrap_or(false);
+                        if ui
+                            .add(egui::SelectableLabel::new(spoken_on, "Spoken only"))
+                            .on_hover_text(
+                                "Spoken only: this paragraph is read aloud in the \
+                                 service but never printed. Prayer-list names \
+                                 belong here.",
+                            )
+                            .clicked()
+                            && para < self.edit_spoken.len()
+                        {
+                            self.edit_spoken[para] = !spoken_on;
                         }
                         if ui.button("Done typing").clicked() {
                             self.edit_done = true;
@@ -5808,6 +5952,20 @@ impl App {
                     }
                 }
                 paint_line_segments(&clip, &self.font_rows, line, scale, |lx| to_px(lx, line.y));
+                // The spoken-only tag (prayer-list privacy):
+                // small caps above the paragraph's first line,
+                // in the info color, so the state is seen on
+                // the page and never hidden. Canvas only; no
+                // printed copy ever carries these words.
+                if line.spoken_tag {
+                    clip.text(
+                        to_px(line.x, line.y - line.size * 1.45),
+                        egui::Align2::LEFT_BOTTOM,
+                        "SPOKEN ONLY",
+                        egui::FontId::proportional((7.5 * scale).clamp(6.0, 11.0)),
+                        self.theme.info,
+                    );
+                }
             }
         }
 
@@ -6373,6 +6531,7 @@ impl App {
         if self.editing.map(|(pi, _)| pi) == Some(idx) {
             let (_, efi) = self.editing.expect("editing checked");
             self.sync_edit_styles();
+            self.sync_edit_spoken();
             let f = panel.frames[efi].clone();
             let fx = f.rect.x as f32 / 1000.0;
             let frect = egui::Rect::from_min_max(
@@ -6571,6 +6730,7 @@ impl App {
                                     bold: seg.bold,
                                     italic: seg.italic,
                                     segs: Vec::new(),
+                                    spoken_tag: false,
                                 };
                                 let fid = line_font_id(
                                     &self.font_rows,
@@ -6630,6 +6790,7 @@ impl App {
                                     bold: para.bold,
                                     italic: para.italic,
                                     segs: Vec::new(),
+                                    spoken_tag: false,
                                 };
                                 let fid = line_font_id(
                                     &self.font_rows,
@@ -8088,6 +8249,28 @@ impl App {
     /// adding one arm here. The confirmation keeps the
     /// export report's plain-words notes: what was saved
     /// and what the copy could not carry.
+    /// The large-print copy (beyond-print.md section 4):
+    /// the same words at 17pt or bigger, one Letter page at
+    /// a time. Not the print copy: it never touches the
+    /// print fingerprint, and its status line says what it
+    /// is, with the usual counts beside it.
+    fn save_large_print_copy(&mut self, path: &std::path::Path) {
+        let (bytes, report) =
+            ob_pdf::export_large_print_pdf_report(&self.doc, ob_pdf::ExportPurpose::ForPrinting);
+        match std::fs::write(path, &bytes) {
+            Ok(()) => {
+                self.status = format!(
+                    "Large-print copy written: {}, {}, for printing.{}{}",
+                    file_name_of(path),
+                    human_file_size(bytes.len()),
+                    missing_pictures_sentence(&report),
+                    spoken_only_sentence(&report)
+                );
+            }
+            Err(e) => self.fail(format!("Could not save the large-print copy: {e}")),
+        }
+    }
+
     fn save_copy_for_program(&mut self, path: &std::path::Path) {
         let ext = path
             .extension()
@@ -8142,11 +8325,12 @@ impl App {
                 match std::fs::write(path, &bytes) {
                     Ok(()) => {
                         let msg = format!(
-                            "Saved a copy as {}, {}, {}.{}",
+                            "Saved a copy as {}, {}, {}.{}{}",
                             file_name_of(path),
                             human_file_size(bytes.len()),
                             purpose.words(),
-                            missing_pictures_sentence(&report)
+                            missing_pictures_sentence(&report),
+                            spoken_only_sentence(&report)
                         );
                         self.export_note = Some(msg.clone());
                         self.note(msg);
@@ -8157,13 +8341,15 @@ impl App {
             "md" => {
                 // The words as markdown (G1b): headings from
                 // the style names, bold and italic from the
-                // runs, field words filled in.
-                let text = ob_model::markdown::to_markdown(&self.doc);
+                // runs, field words filled in. Spoken-only
+                // words never publish, markdown included.
+                let (text, spoken_left_out) = ob_model::markdown::to_markdown_report(&self.doc);
                 match std::fs::write(path, text) {
                     Ok(()) => {
                         let msg = format!(
-                            "Saved the words as {}, for a website or newsletter.",
-                            file_name_of(path)
+                            "Saved the words as {}, for a website or newsletter.{}",
+                            file_name_of(path),
+                            ob_model::spoken_only_left_out_sentence(spoken_left_out)
                         );
                         self.export_note = Some(msg.clone());
                         self.note(msg);
@@ -8197,6 +8383,9 @@ impl App {
                                         report.missing_pictures
                                     ));
                                 }
+                                msg.push_str(&ob_model::spoken_only_left_out_sentence(
+                                    report.spoken_only_left_out,
+                                ));
                                 self.export_note = Some(msg.clone());
                                 self.note(msg);
                             }
@@ -9496,6 +9685,38 @@ impl eframe::App for App {
                                 }
                             }
                         }
+                        // Who serves this week (the participant
+                        // fields): a template prints the names
+                        // where it carries the field words
+                        // ({Sunday.readers} and friends). Next
+                        // Sunday clears them: the new week has
+                        // new people.
+                        ui.separator();
+                        ui.label(egui::RichText::new("Serving this week").strong());
+                        if self.participant_inputs.len() != ob_model::PARTICIPANT_FIELDS.len() {
+                            self.participant_inputs = participant_values(&self.doc);
+                        }
+                        for (row, (key, label, _token)) in
+                            ob_model::PARTICIPANT_FIELDS.iter().enumerate()
+                        {
+                            ui.label(*label);
+                            let resp =
+                                ui.text_edit_singleline(&mut self.participant_inputs[row]);
+                            if resp.lost_focus() {
+                                let value = self.participant_inputs[row].trim().to_string();
+                                let current =
+                                    self.doc.fields.get(*key).cloned().unwrap_or_default();
+                                if value != current {
+                                    let before = snapshot(&self.doc);
+                                    self.doc.fields.insert(key.to_string(), value.clone());
+                                    if before != snapshot(&self.doc) {
+                                        self.record_undo(before);
+                                    }
+                                    self.participant_inputs[row] = value;
+                                }
+                            }
+                        }
+                        ui.small("These names print where the bulletin carries the words for them. They start empty each week.");
                         ui.separator();
                         if ui.button("Start next Sunday").clicked() {
                             self.next_sunday();
@@ -9641,10 +9862,11 @@ impl eframe::App for App {
                                     self.store_doc_state();
                                     let guidance = self.current_print_guidance();
                                     self.status = format!(
-                                        "Print copy opened in your PDF viewer ({}, {}).{} {guidance}",
+                                        "Print copy opened in your PDF viewer ({}, {}).{}{} {guidance}",
                                         human_file_size(bytes.len()),
                                         ob_pdf::ExportPurpose::ForPrinting.words(),
-                                        missing_pictures_sentence(&report)
+                                        missing_pictures_sentence(&report),
+                                        spoken_only_sentence(&report)
                                     );
                                 }
                                 Err(e) => self.status = e,
@@ -9675,11 +9897,12 @@ impl eframe::App for App {
                                         self.store_doc_state();
                                         let guidance = self.current_print_guidance();
                                         self.status = format!(
-                                            "Print copy written: {}, {}, {}.{} {guidance}",
+                                            "Print copy written: {}, {}, {}.{}{} {guidance}",
                                             file_name_of(&path),
                                             human_file_size(bytes.len()),
                                             ob_pdf::ExportPurpose::ForPrinting.words(),
-                                            missing_pictures_sentence(&report)
+                                            missing_pictures_sentence(&report),
+                                            spoken_only_sentence(&report)
                                         );
                                     }
                                     Err(e) => self.status = format!("Could not save the print copy: {e}"),
@@ -9709,15 +9932,29 @@ impl eframe::App for App {
                                         // never claim one exists
                                         // (UI audit round 2).
                                         self.status = format!(
-                                            "Reading copy written: {}, {}, {}.{}",
+                                            "Reading copy written: {}, {}, {}.{}{}",
                                             file_name_of(&path),
                                             human_file_size(bytes.len()),
                                             ob_pdf::ExportPurpose::ForEmailOrWeb.words(),
-                                            missing_pictures_sentence(&report)
+                                            missing_pictures_sentence(&report),
+                                            spoken_only_sentence(&report)
                                         );
                                     }
                                     Err(e) => self.status = format!("Could not save the reading copy: {e}"),
                                 }
+                            }
+                        }
+                        ui.label("Large print: the same words, bigger, one page at a time, for readers who need them.");
+                        if ui.button("Large-print copy (big words)...").clicked() {
+                            self.commit_if_editing();
+                            self.save_announcements();
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_file_name("bulletin-large-print.pdf")
+                                .add_filter("PDF", &["pdf"])
+                                .save_file()
+                            {
+                                self.pin_fonts();
+                                self.save_large_print_copy(&path);
                             }
                         }
                         ui.separator();
@@ -10161,6 +10398,7 @@ fn word_stop(text: &str, pos: usize, forward: bool) -> usize {
 /// exactly once, flowing box to box, the same lines the
 /// PDF writer prints.
 fn panel_lines_from_threads(
+    doc: &Document,
     panel_idx: usize,
     panel: &ob_model::Panel,
     threads: &std::collections::HashMap<String, ob_text::threading::StoryThread>,
@@ -10179,6 +10417,16 @@ fn panel_lines_from_threads(
         };
         for piece in &slice.paras {
             let style = &piece.style;
+            // A spoken-only paragraph is tagged on its first
+            // line in this box, and only where the paragraph
+            // starts: a continuation piece in a later box
+            // gets no second tag (the words there are the
+            // middle of a paragraph that began tagged).
+            let para_spoken = doc
+                .story(sid)
+                .and_then(|s| s.paragraphs.get(piece.para))
+                .map(|p| p.spoken_only)
+                .unwrap_or(false);
             for (li, line) in piece.layout.lines().iter().enumerate() {
                 lines.push(PreviewLine {
                     text: piece.layout.text()[line.range.clone()].to_string(),
@@ -10191,6 +10439,7 @@ fn panel_lines_from_threads(
                     bold: style.bold,
                     italic: style.italic,
                     segs: line_segments(line, piece.layout.text()),
+                    spoken_tag: para_spoken && li == 0 && piece.text_range.start == 0,
                 });
             }
         }
@@ -10471,6 +10720,13 @@ fn missing_pictures_sentence(report: &ob_pdf::ExportReport) -> String {
     }
 }
 
+/// The spoken-only sentence for a status line, same shape
+/// as the missing-pictures one: empty when nothing was left
+/// out, so doors can append it unconditionally.
+fn spoken_only_sentence(report: &ob_pdf::ExportReport) -> String {
+    ob_model::spoken_only_left_out_sentence(report.spoken_only_left_out)
+}
+
 /// How many dots per inch a placed picture effectively has
 /// in print, at the size it SHOWS (a Fill picture is trimmed
 /// to its shown size, so its dots spread over the shown
@@ -10664,7 +10920,7 @@ fn build_preview(doc_in: &Document) -> Vec<PreviewSheet> {
                 lines: Vec::new(),
                 pictures: panel_pictures(panel, doc, pl.x as f32 / 1000.0, pl.y as f32 / 1000.0),
             };
-            pp.lines = panel_lines_from_threads(pl.panel, panel, &threads)
+            pp.lines = panel_lines_from_threads(doc, pl.panel, panel, &threads)
                 .into_iter()
                 .map(|mut l| {
                     l.x += pp.x;
@@ -12287,7 +12543,7 @@ mod settings_tests {
         };
         let mut shaper = ob_text::shaping::bundled_shaper();
         let threads = ob_text::threading::layout_document_threads(&mut shaper, &doc);
-        let lines = panel_lines_from_threads(0, &doc.panels[0], &threads);
+        let lines = panel_lines_from_threads(&doc, 0, &doc.panels[0], &threads);
         assert_eq!(lines.len(), 1, "one short paragraph, one line");
         let segs = &lines[0].segs;
         let texts: Vec<(&str, bool)> = segs.iter().map(|s| (s.text.as_str(), s.bold)).collect();

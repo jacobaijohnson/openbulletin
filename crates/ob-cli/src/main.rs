@@ -37,14 +37,19 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Export a PDF. Default: reader panels. --imposed: printer sheets.
+    /// Export a PDF. Default: reader panels. --imposed: printer
+    /// sheets. --large-print: the large-print copy (the same
+    /// words at 17pt or bigger, one Letter page at a time).
     Export {
         input: PathBuf,
         #[arg(long)]
         imposed: bool,
+        /// The large-print copy instead of the ordinary one.
+        #[arg(long)]
+        large_print: bool,
         /// What the copy is for: web, print, shop, or full.
-        /// Defaults follow the door: print for imposed sheets,
-        /// web for reader panels.
+        /// Defaults follow the door: print for imposed sheets
+        /// and for large print, web for reader panels.
         #[arg(long, value_parser = ["web", "print", "shop", "full"])]
         purpose: Option<String>,
         #[arg(long)]
@@ -198,6 +203,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Cmd::Export {
             input,
             imposed,
+            large_print,
             purpose,
             out,
         } => {
@@ -205,26 +211,36 @@ fn run(cli: Cli) -> Result<(), String> {
             let purpose = match purpose.as_deref() {
                 Some(slug) => ob_pdf::ExportPurpose::from_slug(slug)
                     .ok_or_else(|| format!("unknown purpose: {slug}"))?,
-                None if imposed => ob_pdf::ExportPurpose::ForPrinting,
+                None if imposed || large_print => ob_pdf::ExportPurpose::ForPrinting,
                 None => ob_pdf::ExportPurpose::ForEmailOrWeb,
             };
-            let bytes = if imposed {
-                ob_pdf::export_imposed_pdf(&doc, purpose)
+            let (bytes, report) = if large_print {
+                ob_pdf::export_large_print_pdf_report(&doc, purpose)
+            } else if imposed {
+                ob_pdf::export_imposed_pdf_report(&doc, purpose)
             } else {
-                ob_pdf::export_reader_pdf(&doc, purpose)
+                ob_pdf::export_reader_pdf_report(&doc, purpose)
             };
             std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
             println!(
                 "wrote {} ({} bytes, {}, {})",
                 out.display(),
                 bytes.len(),
-                if imposed {
+                if large_print {
+                    "large print: the same words, bigger"
+                } else if imposed {
                     "imposed sheets"
                 } else {
                     "reader panels"
                 },
                 purpose.words()
             );
+            if report.spoken_only_left_out > 0 {
+                println!(
+                    "note:{}",
+                    ob_model::spoken_only_left_out_sentence(report.spoken_only_left_out)
+                );
+            }
             Ok(())
         }
         Cmd::ExportIdml { input, out } => {
@@ -261,13 +277,19 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Cmd::ExportMd { input, out } => {
             let doc = ob_format::load(&input)?;
-            let text = ob_model::markdown::to_markdown(&doc);
+            let (text, spoken_left_out) = ob_model::markdown::to_markdown_report(&doc);
             std::fs::write(&out, &text).map_err(|e| e.to_string())?;
             println!(
                 "wrote {} ({} bytes, Markdown: the words, for a website or newsletter)",
                 out.display(),
                 text.len()
             );
+            if spoken_left_out > 0 {
+                println!(
+                    "note:{}",
+                    ob_model::spoken_only_left_out_sentence(spoken_left_out)
+                );
+            }
             Ok(())
         }
         Cmd::ExportHtml { input, out } => {
@@ -296,6 +318,12 @@ fn run(cli: Cli) -> Result<(), String> {
                 println!(
                     "note: {} picture boxes had no picture to carry; the page says so where they belong",
                     report.missing_pictures
+                );
+            }
+            if report.spoken_only_left_out > 0 {
+                println!(
+                    "note:{}",
+                    ob_model::spoken_only_left_out_sentence(report.spoken_only_left_out)
                 );
             }
             Ok(())

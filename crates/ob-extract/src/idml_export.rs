@@ -258,10 +258,23 @@ fn spread_xml(doc: &Document, panel_index: usize) -> String {
 /// Export the document as an IDML package. Returns the
 /// package bytes and the report of what was not carried.
 pub fn export_idml(doc: &Document) -> Result<(Vec<u8>, IdmlExportReport), String> {
+    // Spoken-only paragraphs never publish (the one rule,
+    // ob_model::Document::without_spoken_only); the note
+    // names what was left out, like every other count.
+    let (filtered, spoken_left_out) = doc.without_spoken_only();
+    let doc = &filtered;
     let mut report = IdmlExportReport {
         pages: doc.panels.len(),
         ..Default::default()
     };
+    if spoken_left_out > 0 {
+        report.notes.push(
+            ob_model::spoken_only_left_out_sentence(spoken_left_out)
+                .trim()
+                .trim_end_matches('.')
+                .to_string(),
+        );
+    }
 
     // Story parts first: one per text frame, so the design
     // map and spreads can name them.

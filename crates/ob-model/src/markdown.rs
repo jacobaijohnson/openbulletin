@@ -296,8 +296,21 @@ fn run_markdown(run: &Run) -> String {
 /// The document as markdown, the reading copy's sibling:
 /// panels in order, each story once, headings from the
 /// style names, field words resolved as the reading copy
-/// resolves them.
+/// resolves them. Spoken-only paragraphs never publish, so
+/// they are not in here (the one rule; the count of them
+/// rides with [`to_markdown_report`]).
 pub fn to_markdown(doc: &Document) -> String {
+    to_markdown_report(doc).0
+}
+
+/// [`to_markdown`] with the spoken-only count, so a door
+/// can say how many names it left out.
+pub fn to_markdown_report(doc: &Document) -> (String, usize) {
+    let (filtered, spoken_left_out) = doc.without_spoken_only();
+    (to_markdown_filtered(&filtered), spoken_left_out)
+}
+
+fn to_markdown_filtered(doc: &Document) -> String {
     let mut out = String::new();
     let mut seen: Vec<&str> = Vec::new();
     for panel in &doc.panels {
@@ -327,6 +340,59 @@ pub fn to_markdown(doc: &Document) -> String {
         }
     }
     out
+}
+
+#[test]
+fn spoken_only_paragraphs_stay_out_of_markdown() {
+    let mut spoken = Paragraph::new("body", "For Wilhelmina Quietname");
+    spoken.spoken_only = true;
+    let doc = crate::Document {
+        format_version: crate::FORMAT_VERSION,
+        title: "Test".to_string(),
+        profile: crate::ChurchProfile::default(),
+        fields: Default::default(),
+        styles: crate::default_styles(),
+        stories: vec![crate::Story {
+            id: "notes".to_string(),
+            keep_through: None,
+            paragraphs: vec![Paragraph::new("body", "For the food bank crew"), spoken],
+        }],
+        panels: vec![crate::Panel {
+            id: "p1".to_string(),
+            name: "Panel".to_string(),
+            size: crate::Size::new(396_000, 612_000),
+            frames: vec![crate::Frame {
+                id: "f1".to_string(),
+                name: "Notes".to_string(),
+                kind: crate::FrameKind::Text,
+                rect: crate::Rect::new(0, 0, 300_000, 500_000),
+                story_id: Some("notes".to_string()),
+                role: crate::ContentRole::Weekly,
+                picture: None,
+                music: None,
+            }],
+            background_image: None,
+            guides: Vec::new(),
+        }],
+        sheet: crate::SheetSpec {
+            preset: "letter-bifold".to_string(),
+            size: crate::Size::new(792_000, 612_000),
+        },
+        no_announcements: false,
+        assets: Vec::new(),
+        asset_bytes: Default::default(),
+        occasion_time: None,
+    };
+    let (md, left_out) = to_markdown_report(&doc);
+    assert_eq!(left_out, 1);
+    assert!(
+        md.contains("food bank crew"),
+        "the printable line stays: {md}"
+    );
+    assert!(
+        !md.contains("Wilhelmina"),
+        "the spoken name stays out: {md}"
+    );
 }
 
 #[cfg(test)]

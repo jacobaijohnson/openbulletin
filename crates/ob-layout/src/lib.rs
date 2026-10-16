@@ -313,6 +313,12 @@ pub struct NextSundayReport {
     /// when a stale file had to snap forward to the coming
     /// Sunday (see [`next_sunday_report_as_of`]).
     pub weeks_advanced: u32,
+    /// The participant fields that held names and were
+    /// cleared for the new week (Readers, Ushers, and
+    /// friends), by their This Sunday labels, in field
+    /// order, so the app can name what it cleared the same
+    /// way it names ended announcements (J10).
+    pub cleared_participants: Vec<String>,
 }
 
 /// The signature command: clone the document for next Sunday.
@@ -326,6 +332,10 @@ pub struct NextSundayReport {
 ///   date counts as none ("this Sunday only").
 /// - The no-announcements mark is reset: each week answers
 ///   for itself.
+/// - Participant fields (readers, ushers, greeters,
+///   communion assistants) are cleared: the new week has
+///   new people, and the report names the fields that
+///   held names.
 ///
 /// Returns an error string if the stored date cannot be parsed.
 pub fn next_sunday(doc: &Document) -> Result<Document, String> {
@@ -406,6 +416,16 @@ pub fn next_sunday_report_as_of(
         weeks_advanced,
         ..NextSundayReport::default()
     };
+    // Participants are weekly people: the new week starts
+    // with empty rows, and the report names the fields that
+    // held names, in field order (J10's carried-list shape).
+    for (key, label, _token) in ob_model::PARTICIPANT_FIELDS {
+        if let Some(v) = out.fields.remove(key) {
+            if !v.trim().is_empty() {
+                report.cleared_participants.push(label.to_string());
+            }
+        }
+    }
     for sid in weekly {
         if let Some(story) = out.story_mut(&sid) {
             let keep = story
@@ -675,6 +695,39 @@ mod tests {
         let (n, report) = next_sunday_report(&d).unwrap();
         assert_eq!(n.fields["occasion_date"], "2026-10-11");
         assert_eq!(report.weeks_advanced, 1);
+    }
+
+    #[test]
+    fn next_sunday_clears_participants_and_names_them() {
+        let mut d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "X",
+        );
+        // No participants set: nothing cleared, nothing named.
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert!(report.cleared_participants.is_empty());
+        assert_eq!(resolve_fields("Readers: {Sunday.readers}", &n), "Readers: ");
+
+        d.fields
+            .insert("readers".to_string(), "Ana Ruiz".to_string());
+        d.fields
+            .insert("ushers".to_string(), "Tom and Bea".to_string());
+        d.fields.insert("greeters".to_string(), "  ".to_string());
+        let (n, report) = next_sunday_report(&d).unwrap();
+        // Named in field order; a whitespace-only value held
+        // no name and is not named.
+        assert_eq!(
+            report.cleared_participants,
+            vec!["Readers".to_string(), "Ushers".to_string()]
+        );
+        for (key, _label, _token) in ob_model::PARTICIPANT_FIELDS {
+            assert!(
+                !n.fields.contains_key(key),
+                "{key} starts the new week empty"
+            );
+        }
     }
 
     #[test]

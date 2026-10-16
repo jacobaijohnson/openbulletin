@@ -48,6 +48,19 @@ story by id, so threading needed no format change:
 `format_version` stays 1, and a file written before T1
 reads exactly as it did.
 
+A paragraph may carry `spoken_only: true` (Extras,
+2026-10-16): it is read aloud in the service and never
+printed. The field is absent (read as false) in files
+written before it existed, so no version change was
+needed. The .obd keeps spoken-only paragraphs; every
+export leaves them out and counts them.
+
+The weekly participant fields are ordinary document
+fields (`readers`, `ushers`, `greeters`,
+`communion_assistants`), printed by the tokens
+`{Sunday.readers}`, `{Sunday.ushers}`, `{Sunday.greeters}`,
+and `{Sunday.communion_assistants}`.
+
 ### Loading rules
 
 - Readers reject newer-than-known versions with a clear

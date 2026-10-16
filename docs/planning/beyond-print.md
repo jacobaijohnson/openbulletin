@@ -134,6 +134,52 @@ itself: picture boxes on the page, the recognition door,
 the clip art library with its starter set, and
 resolution-honest printing, recorded in section 6.
 
+**SHIPPED 2026-10-16 (Extras).** All three, as built:
+
+- **Large-print copy.** A "Large-print copy (big
+  words)..." button on the Print step and `export
+  --large-print` at the CLI write a reader-layout PDF of
+  single Letter-portrait pages. The build transforms the
+  document: every style scales by the factor that brings
+  the body style to at least 17pt, each panel's content
+  becomes a section of Letter pages (pictures and music
+  at the top of the first page at their proportions,
+  text boxes stacked at the full text width), and a
+  story flows from page to page of its section through
+  the ordinary threading until every word fits; sections
+  gain pages until nothing is left over. The file names
+  itself in its metadata: "Large print. The same words,
+  bigger." The imposed booklet flow is untouched. On
+  the sample bulletin with its announcements box full,
+  the reader copy is 4 pages and the large-print copy is
+  5 (body 11pt to 17pt).
+- **Participant fields.** Readers, Ushers, Greeters,
+  and Communion assistants are four labeled rows on the
+  This Sunday step under "Serving this week", stored as
+  weekly fields and resolved by the tokens
+  `{Sunday.readers}`, `{Sunday.ushers}`,
+  `{Sunday.greeters}`, and `{Sunday.communion_assistants}`,
+  so a template prints the names wherever it carries
+  those words. They start empty, and Next Sunday clears
+  them (the new week has new people) and names what it
+  cleared: "Cleared for the new week: Readers, Ushers."
+- **Spoken-only paragraphs.** The rule, in plain words:
+  a prayer name can be marked spoken only, and then it
+  is read aloud in the service and never printed. The
+  working file (the .obd) keeps it; every copy made from
+  the file leaves it out: the reader PDF, the print
+  copy, the large-print copy, the web page, markdown,
+  and the InDesign and Scribus copies alike. Each door
+  says how many it left out ("2 names are spoken only
+  and were left out of this copy."). On the page, the
+  paragraph is tagged SPOKEN ONLY in small type above
+  its first line, so the state is seen, never hidden;
+  the Pages editor's "Spoken only" button beside Bold
+  and Italic sets it for the paragraph being typed.
+  Check does not flag spoken-only words: they never
+  print, so nothing about them can go wrong in print.
+  Next Sunday treats them like the rest of their story.
+
 Adopted into the plan:
 - **Large-print edition** as an export purpose beside the
   PDF ones: same content reflowed at 16pt+, for the

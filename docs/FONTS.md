@@ -149,3 +149,20 @@ pack families are variable fonts and currently shape at their
 default weight only; the static families carry all four faces.
 Remaining: the side-by-side comparison preview in the import
 review (that belongs to the analyzer's review screen).
+
+DejaVu Sans joined the pack 2026-10-16, for one plain reason: it
+carries the marks the Liberation faces do not. O2 read the cmap of
+every bundled Liberation face and found neither the Latin cross
+(✝, U+271D) nor the check mark (✓, U+2713); DejaVu Sans has both,
+verified by reading its own cmap, and the catalog keeps that
+verification as data (`VERIFIED_GLYPH_COVERAGE`), so when a
+bulletin uses a mark the printing face lacks, Check can say
+"DejaVu Sans has this letter; it is in the Fonts list." DejaVu is
+not in the google/fonts repository, so its install takes its own
+route: the DejaVu project's own release (the four core faces plus
+its LICENSE file). Its license needs two true sentences: the
+Fontsource catalog records the family as OFL-1.1, and the font's
+own embedded license is the DejaVu license (the Bitstream Vera
+terms, DejaVu changes in the public domain). The license note
+saved beside the faces carries the project's own text, so the
+record never rests on the catalog's classification alone.

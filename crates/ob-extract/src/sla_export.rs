@@ -182,10 +182,23 @@ struct ParaLook {
 /// Export the document as a Scribus .sla file. Returns the
 /// file bytes and the report of what was not carried.
 pub fn export_sla(doc: &Document) -> Result<(Vec<u8>, SlaExportReport), String> {
+    // Spoken-only paragraphs never publish (the one rule,
+    // ob_model::Document::without_spoken_only); the note
+    // names what was left out, like every other count.
+    let (filtered, spoken_left_out) = doc.without_spoken_only();
+    let doc = &filtered;
     let mut report = SlaExportReport {
         pages: doc.panels.len(),
         ..Default::default()
     };
+    if spoken_left_out > 0 {
+        report.notes.push(
+            ob_model::spoken_only_left_out_sentence(spoken_left_out)
+                .trim()
+                .trim_end_matches('.')
+                .to_string(),
+        );
+    }
 
     // The document default look: the first style's, or the
     // genuine file's own defaults when the document defines

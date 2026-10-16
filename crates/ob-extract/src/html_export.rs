@@ -45,6 +45,10 @@ pub struct HtmlExportReport {
     /// credits, plus the missing-credit note when one is
     /// owed and cannot be composed).
     pub credits: usize,
+    /// Spoken-only paragraphs left out: they are read
+    /// aloud in the service and never publish, this web
+    /// page included.
+    pub spoken_only_left_out: usize,
 }
 
 /// The reading-edition sentence, the page's first line
@@ -690,7 +694,16 @@ fn credit_lines(doc: &Document, carried: &[String], doc_text: &str) -> Vec<Strin
 /// the counts of what it carries and what it had to
 /// leave as a note.
 pub fn export_html(doc: &Document) -> Result<(Vec<u8>, HtmlExportReport), String> {
-    let mut report = HtmlExportReport::default();
+    // Spoken-only paragraphs never publish (the one rule,
+    // ob_model::Document::without_spoken_only): the whole
+    // page below is composed from the publication copy, so
+    // headings, credits dedupe, and words all agree.
+    let (filtered, spoken_only_left_out) = doc.without_spoken_only();
+    let doc = &filtered;
+    let mut report = HtmlExportReport {
+        spoken_only_left_out,
+        ..HtmlExportReport::default()
+    };
     let headings = heading_levels(doc);
     // Every story's resolved words, for the credits
     // pass's "already in the bulletin" check.
@@ -830,6 +843,31 @@ mod tests {
 
     const DOVE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 5 L9 5 L5 9 Z"/></svg>"#;
     const MUSIC_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="30" viewBox="0 0 120 30"><g class="system"><path d="M0 15h120"/></g></svg>"#;
+
+    #[test]
+    fn spoken_only_words_never_reach_the_web_page() {
+        let mut doc = sample_doc();
+        let notes = &mut doc.stories[2];
+        let mut spoken = Paragraph::new("body", "For Wilhelmina Quietname");
+        spoken.spoken_only = true;
+        notes.paragraphs.push(spoken);
+        notes
+            .paragraphs
+            .push(Paragraph::new("body", "For the food bank crew"));
+        let (bytes, report) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            !html.contains("Wilhelmina"),
+            "a spoken-only name leaked onto the web page"
+        );
+        assert!(
+            html.contains("food bank crew"),
+            "the printable neighbor still publishes"
+        );
+        assert_eq!(report.spoken_only_left_out, 1);
+        // The working document still holds the paragraph.
+        assert_eq!(doc.spoken_only_count(), 1);
+    }
 
     /// The standard sample: the LetterBifold template for
     /// Grace Lutheran, dressed with a bold run, a <3, a

@@ -1296,16 +1296,21 @@ fn postscript_name(face: &ttf_parser::Face) -> String {
 /// The document information dictionary: title, producer, and
 /// the export purpose in words, so the file itself says what it
 /// was made for (and at what picture cap, once pictures exist).
-fn info_object(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
-    let cap_note = match purpose.ppi_cap() {
-        Some(ppi) => format!(" Pictures are capped at {ppi} pixels per inch."),
-        None => " Pictures are kept at full resolution.".to_string(),
+fn info_object(doc: &Document, purpose: ExportPurpose, subject: Option<&str>) -> Vec<u8> {
+    let subject = match subject {
+        Some(s) => s.to_string(),
+        None => {
+            let cap_note = match purpose.ppi_cap() {
+                Some(ppi) => format!(" Pictures are capped at {ppi} pixels per inch."),
+                None => " Pictures are kept at full resolution.".to_string(),
+            };
+            format!("Made {}.{}", purpose.words(), cap_note)
+        }
     };
     format!(
-        "<< /Title ({}) /Producer (OpenBulletin) /Subject (Made {}.{}) >>",
+        "<< /Title ({}) /Producer (OpenBulletin) /Subject ({}) >>",
         esc(&doc.title),
-        purpose.words(),
-        cap_note
+        esc(&subject)
     )
     .into_bytes()
 }
@@ -1393,20 +1398,34 @@ fn prepare_images(
     names
 }
 
-fn build_pdf(doc: &Document, sides: &[SheetSide], purpose: ExportPurpose) -> (Vec<u8>, usize) {
-    build_pdf_with_library(doc, sides, purpose, &library_font_bytes())
+fn build_pdf(
+    doc: &Document,
+    sides: &[SheetSide],
+    purpose: ExportPurpose,
+) -> (Vec<u8>, ExportReport) {
+    build_pdf_full(doc, sides, purpose, &library_font_bytes(), None)
 }
 
-/// [`build_pdf`] with the Font Library snapshot given, so tests
-/// can put a document in front of faces the machine's real
-/// library does not hold. Returns the bytes and the number of
-/// picture placements that printed as placeholders.
-fn build_pdf_with_library(
+/// The full build: [`build_pdf`] with the Font Library
+/// snapshot given (so tests can put a document in front of
+/// faces the machine's real library does not hold) plus an
+/// optional /Subject line that replaces the purpose's own
+/// words (the large-print copy names itself, whatever
+/// purpose's picture cap it rides with).
+fn build_pdf_full(
     doc: &Document,
     sides: &[SheetSide],
     purpose: ExportPurpose,
     library: &[(ob_fonts::FontInfo, Vec<u8>)],
-) -> (Vec<u8>, usize) {
+    subject: Option<&str>,
+) -> (Vec<u8>, ExportReport) {
+    // Spoken-only paragraphs never reach a PDF (the one
+    // publication rule, ob_model::Document::without_spoken_only):
+    // every PDF door flows through here, so filtering here
+    // covers the reader, imposed, and large-print copies
+    // alike, and the count rides out in the report.
+    let (filtered, spoken_only_left_out) = doc.without_spoken_only();
+    let doc = &filtered;
     let mut pdf = Pdf {
         objects: Vec::new(),
     };
@@ -1526,8 +1545,14 @@ endstream",
         );
         page_ids.push(page_id);
     }
-    let info = pdf.add(info_object(doc, purpose));
-    (pdf.finish(&page_ids, f1, f2, Some(info)), missing_pictures)
+    let info = pdf.add(info_object(doc, purpose, subject));
+    (
+        pdf.finish(&page_ids, f1, f2, Some(info)),
+        ExportReport {
+            missing_pictures,
+            spoken_only_left_out,
+        },
+    )
 }
 
 /// The two-sided printing test sheet (one sheet, FRONT and BACK).
@@ -1662,13 +1687,16 @@ pub fn library_font_bytes() -> Vec<(ob_fonts::FontInfo, Vec<u8>)> {
 }
 
 /// What an export wants to say about itself beside the
-/// bytes: today, how many picture placements printed as
+/// bytes: how many picture placements printed as
 /// "No picture yet" placeholders because their box was
 /// empty, their asset was missing, or its bytes would not
-/// decode. The export itself never fails over a picture.
+/// decode, and how many spoken-only paragraphs were left
+/// out (they are read aloud in the service and never
+/// publish). The export itself never fails over either.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExportReport {
     pub missing_pictures: usize,
+    pub spoken_only_left_out: usize,
 }
 
 pub fn export_reader_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
@@ -1678,8 +1706,7 @@ pub fn export_reader_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
 /// Reader PDF with its export report.
 pub fn export_reader_pdf_report(doc: &Document, purpose: ExportPurpose) -> (Vec<u8>, ExportReport) {
     let sides = ob_impose::impose_single(doc);
-    let (bytes, missing_pictures) = build_pdf(doc, &sides, purpose);
-    (bytes, ExportReport { missing_pictures })
+    build_pdf(doc, &sides, purpose)
 }
 
 pub fn export_imposed_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
@@ -1697,8 +1724,254 @@ pub fn export_imposed_pdf_report(
     // never drops a page (closing audit).
     let padded = ob_impose::padded_document(doc);
     let sides = ob_impose::impose(&padded);
-    let (bytes, missing_pictures) = build_pdf(&padded, &sides, purpose);
-    (bytes, ExportReport { missing_pictures })
+    build_pdf(&padded, &sides, purpose)
+}
+
+/// The /Subject a large-print copy carries, in the file
+/// itself: what it is, in plain words.
+pub const LARGE_PRINT_SUBJECT: &str = "Large print. The same words, bigger.";
+
+/// The large-print copy (docs/planning/beyond-print.md
+/// section 4): the same words, bigger, for the readers who
+/// need them. A reader-layout PDF of single Letter-portrait
+/// pages; the imposed booklet flow is untouched.
+pub fn export_large_print_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
+    export_large_print_pdf_report(doc, purpose).0
+}
+
+/// Large-print copy with its export report.
+pub fn export_large_print_pdf_report(
+    doc: &Document,
+    purpose: ExportPurpose,
+) -> (Vec<u8>, ExportReport) {
+    let library = library_font_bytes();
+    let lp = large_print_document_with_library(doc, &library);
+    let sides = ob_impose::impose_single(&lp);
+    let (bytes, mut report) =
+        build_pdf_full(&lp, &sides, purpose, &library, Some(LARGE_PRINT_SUBJECT));
+    // The transform already worked from the publication
+    // copy, so the build saw nothing spoken-only to leave
+    // out; the report names the source document's count.
+    report.spoken_only_left_out = doc.spoken_only_count();
+    (bytes, report)
+}
+
+/// The large-print transformation of a document, with the
+/// machine's real Font Library: styles scaled so the body
+/// style reaches at least 17pt, content reflowed onto
+/// Letter-portrait pages in reading order (see
+/// [`large_print_document_with_library`]).
+pub fn large_print_document(doc: &Document) -> Document {
+    large_print_document_with_library(doc, &library_font_bytes())
+}
+
+/// The transformation itself. The factor is whatever brings
+/// the body style (the style named "body", else the
+/// smallest style in the document) to 17pt, never below
+/// 1.0; every style's size and space-after scale by it, so
+/// line heights follow the existing style math. Each source
+/// panel becomes a section of one or more Letter pages:
+/// picture and music boxes sit at the top of the section's
+/// first page at their proportions, text boxes stack down
+/// each page at the full text width with heights in their
+/// source proportions, and a story flows from page to page
+/// of its section through the ordinary threading until
+/// every word fits. Sections are added pages until the
+/// thread layout reports nothing left over.
+fn large_print_document_with_library(
+    doc: &Document,
+    library: &[(ob_fonts::FontInfo, Vec<u8>)],
+) -> Document {
+    // Fit is measured on the words that will print: the
+    // publication copy, spoken-only paragraphs already out.
+    let (base, _) = doc.without_spoken_only();
+    let page = ob_model::Size::new(612_000, 792_000); // US Letter portrait
+    let margin: ob_model::Mpt = 54_000; // 3/4 inch
+    let usable_w = page.w - 2 * margin;
+    let usable_h = page.h - 2 * margin;
+
+    let body_size = base
+        .style("body")
+        .map(|s| s.font_size)
+        .or_else(|| base.styles.iter().map(|s| s.font_size).min())
+        .unwrap_or(11_000)
+        .max(1);
+    let factor = (17_000.0 / body_size as f64).max(1.0);
+    let scale_mpt = |v: ob_model::Mpt, lo: ob_model::Mpt, hi: ob_model::Mpt| -> ob_model::Mpt {
+        ((v as f64 * factor).round() as ob_model::Mpt).clamp(lo, hi)
+    };
+
+    let mut out = base.clone();
+    for style in &mut out.styles {
+        style.font_size = scale_mpt(style.font_size, 500, 288_000);
+        style.space_after = scale_mpt(style.space_after, 0, 144_000);
+    }
+    out.sheet = ob_model::SheetSpec {
+        preset: "letter-portrait".to_string(),
+        size: page,
+    };
+
+    let mut pages_per_section = vec![1usize; base.panels.len()];
+    let mut shaper = ob_text::shaping::bundled_shaper();
+    register_library_fonts(&mut shaper, library);
+    // Sections gain pages until nothing is left over. Every
+    // added page gives each of the section's stories at
+    // least one more line of room, so this converges; the
+    // cap only guards against a pathological document.
+    for _ in 0..64 {
+        let (panels, panel_section) =
+            build_large_print_panels(&base, &pages_per_section, page, margin, usable_w, usable_h);
+        out.panels = panels;
+        let threads = ob_text::threading::layout_document_threads(&mut shaper, &out);
+        let mut grew = false;
+        for (sid, thread) in &threads {
+            if thread.leftover_lines > 0 {
+                // The section that owns the story: the
+                // section of its first frame, in document
+                // order, mapped back through the candidate
+                // panels.
+                let section = out
+                    .frames_of_story(sid)
+                    .first()
+                    .and_then(|&(pi, _)| panel_section.get(pi).copied());
+                if let Some(section) = section {
+                    if pages_per_section[section] < 200 {
+                        pages_per_section[section] += 1;
+                        grew = true;
+                    }
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    out
+}
+
+/// One pass of section building for
+/// [`large_print_document_with_library`]: `pages_per_section`
+/// Letter pages per source panel, furniture (picture and
+/// music boxes) at the top of the first page, text boxes
+/// stacked beneath and repeated on the later pages so
+/// their stories thread through.
+#[allow(clippy::too_many_arguments)]
+fn build_large_print_panels(
+    base: &Document,
+    pages_per_section: &[usize],
+    page: ob_model::Size,
+    margin: ob_model::Mpt,
+    usable_w: ob_model::Mpt,
+    usable_h: ob_model::Mpt,
+) -> (Vec<Panel>, Vec<usize>) {
+    let mut panels = Vec::new();
+    let mut panel_section = Vec::new();
+    for (si, src) in base.panels.iter().enumerate() {
+        let is_text =
+            |f: &ob_model::Frame| f.story_id.is_some() && f.picture.is_none() && f.music.is_none();
+        let furniture: Vec<&ob_model::Frame> = src.frames.iter().filter(|f| !is_text(f)).collect();
+        let text_frames: Vec<&ob_model::Frame> = src.frames.iter().filter(|f| is_text(f)).collect();
+
+        // Furniture keeps its proportions, scaled to the
+        // text width, and the stack never takes more than
+        // two fifths of the first page.
+        let width_ratio = if src.size.w > 0 {
+            usable_w as f64 / src.size.w as f64
+        } else {
+            1.0
+        };
+        let mut furniture_sizes: Vec<(ob_model::Mpt, ob_model::Mpt)> = furniture
+            .iter()
+            .map(|f| {
+                let w = ((f.rect.w as f64 * width_ratio).round() as ob_model::Mpt).min(usable_w);
+                let h = if f.rect.w > 0 {
+                    (f.rect.h as f64 * w as f64 / f.rect.w as f64).round() as ob_model::Mpt
+                } else {
+                    f.rect.h
+                };
+                (w, h)
+            })
+            .collect();
+        let gap: ob_model::Mpt = 12_000;
+        let stack_h: ob_model::Mpt = furniture_sizes
+            .iter()
+            .map(|&(_, h)| h)
+            .sum::<ob_model::Mpt>()
+            + gap * furniture_sizes.len().saturating_sub(1) as ob_model::Mpt;
+        let cap = usable_h * 2 / 5;
+        if stack_h > cap && stack_h > 0 {
+            let shrink = cap as f64 / stack_h as f64;
+            for (w, h) in &mut furniture_sizes {
+                *w = (*w as f64 * shrink).round() as ob_model::Mpt;
+                *h = (*h as f64 * shrink).round() as ob_model::Mpt;
+            }
+        }
+        let furniture_h: ob_model::Mpt = furniture_sizes
+            .iter()
+            .map(|&(_, h)| h)
+            .sum::<ob_model::Mpt>()
+            + gap * furniture_sizes.len().saturating_sub(1) as ob_model::Mpt;
+
+        let pages = pages_per_section.get(si).copied().unwrap_or(1).max(1);
+        for p in 0..pages {
+            let mut frames: Vec<ob_model::Frame> = Vec::new();
+            let mut text_top = margin;
+            if p == 0 {
+                let mut y = margin;
+                for (f, &(w, h)) in furniture.iter().zip(furniture_sizes.iter()) {
+                    let mut nf = (*f).clone();
+                    nf.id = format!("{}-lp", f.id);
+                    nf.rect = Rect::new(margin + (usable_w - w) / 2, y, w, h);
+                    frames.push(nf);
+                    y += h + gap;
+                }
+                if !furniture.is_empty() {
+                    text_top = margin + furniture_h + gap;
+                }
+            }
+            // Text boxes stack down the page at the full
+            // text width, heights in their source
+            // proportions, each at least a line tall.
+            let text_area_h = (margin + usable_h - text_top).max(1);
+            let total_src_h: ob_model::Mpt = text_frames.iter().map(|f| f.rect.h).sum();
+            let n = text_frames.len() as ob_model::Mpt;
+            let mut y = text_top;
+            for (i, f) in text_frames.iter().enumerate() {
+                let share = if total_src_h > 0 && n > 0 {
+                    (text_area_h as f64 * f.rect.h as f64 / total_src_h as f64).round()
+                        as ob_model::Mpt
+                } else if n > 0 {
+                    text_area_h / n
+                } else {
+                    0
+                };
+                let h = if i + 1 == text_frames.len() {
+                    margin + usable_h - y // the last box takes the rest
+                } else {
+                    share.max(18_000)
+                };
+                let mut nf = (*f).clone();
+                nf.id = format!("{}-lp{}", f.id, p);
+                nf.rect = Rect::new(margin, y, usable_w, h.max(1));
+                frames.push(nf);
+                y += h;
+            }
+            panels.push(Panel {
+                id: format!("lp-{si}-{p}"),
+                name: if p == 0 {
+                    src.name.clone()
+                } else {
+                    format!("{} (continued)", src.name)
+                },
+                size: page,
+                frames,
+                background_image: None,
+                guides: Vec::new(),
+            });
+            panel_section.push(si);
+        }
+    }
+    (panels, panel_section)
 }
 
 #[cfg(test)]
@@ -2059,6 +2332,131 @@ mod tests {
             extracted_text(&bytes).contains("Grace Lutheran Church"),
             "cover text missing"
         );
+    }
+
+    /// A bifold sample whose announcements fill the notes
+    /// box at body size: the large-print copy needs a second
+    /// page for them, the reader copy does not.
+    fn full_notes_doc() -> Document {
+        let mut doc = sample_doc();
+        let notes = &mut doc.stories[2];
+        for i in 0..22 {
+            notes.paragraphs.push(ob_model::Paragraph::new(
+                "body",
+                &format!("Announcement {i} about the picnic quilts"),
+            ));
+        }
+        doc
+    }
+
+    fn page_count(pdf: &[u8]) -> usize {
+        let text = String::from_utf8_lossy(pdf);
+        let at = text.find("/Count ").expect("page tree count");
+        text[at + 7..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .expect("page count number")
+    }
+
+    fn word_set(pdf: &[u8]) -> std::collections::BTreeSet<String> {
+        extracted_text(pdf)
+            .split_whitespace()
+            // Dot leaders are spacing, not words: their run
+            // length follows the box width, which differs
+            // between the two copies on purpose.
+            .filter(|w| !w.chars().all(|c| c == '.'))
+            .map(|w| w.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn large_print_scales_the_body_and_keeps_every_word() {
+        let doc = full_notes_doc();
+        // The source body is 11pt (the default styles).
+        assert_eq!(doc.style("body").expect("body style").font_size, 11_000);
+        let lp = large_print_document(&doc);
+        let body = lp.style("body").expect("body style");
+        assert!(
+            body.font_size >= 17_000,
+            "large-print body must reach 17pt, got {}",
+            body.font_size
+        );
+        for panel in &lp.panels {
+            assert_eq!(
+                panel.size,
+                ob_model::Size::new(612_000, 792_000),
+                "large print lives on Letter portrait pages"
+            );
+        }
+
+        let (bytes, report) = export_large_print_pdf_report(&doc, ExportPurpose::ForPrinting);
+        assert!(bytes.starts_with(b"%PDF-1.4"));
+        // The file names itself in its own metadata.
+        let raw = String::from_utf8_lossy(&bytes);
+        assert!(
+            raw.contains("Large print. The same words, bigger."),
+            "the /Subject says what the copy is"
+        );
+        assert_eq!(report.spoken_only_left_out, 0);
+
+        let reader = export_reader_pdf(&doc, ExportPurpose::ForEmailOrWeb);
+        assert_eq!(
+            word_set(&bytes),
+            word_set(&reader),
+            "large print carries exactly the reader copy's words"
+        );
+        assert!(
+            page_count(&bytes) > page_count(&reader),
+            "bigger words need more pages: large print {}, reader {}",
+            page_count(&bytes),
+            page_count(&reader)
+        );
+    }
+
+    #[test]
+    fn spoken_only_words_never_reach_a_pdf() {
+        let mut doc = sample_doc();
+        let mut spoken = ob_model::Paragraph::new("body", "For Wilhelmina Quietname");
+        spoken.spoken_only = true;
+        doc.stories[2].paragraphs.push(spoken);
+        doc.stories[2]
+            .paragraphs
+            .push(ob_model::Paragraph::new("body", "For the food bank crew"));
+
+        let copies: Vec<(&str, Vec<u8>, ExportReport)> = [
+            ("reader", ExportPurpose::ForEmailOrWeb),
+            ("imposed", ExportPurpose::ForPrinting),
+            ("large print", ExportPurpose::ForPrinting),
+        ]
+        .iter()
+        .map(|(name, purpose)| {
+            let (b, r) = match *name {
+                "reader" => export_reader_pdf_report(&doc, *purpose),
+                "imposed" => export_imposed_pdf_report(&doc, *purpose),
+                _ => export_large_print_pdf_report(&doc, *purpose),
+            };
+            (*name, b, r)
+        })
+        .collect();
+        for (name, bytes, report) in &copies {
+            let text = extracted_text(bytes);
+            assert!(
+                !text.contains("Wilhelmina"),
+                "{name} copy leaked a spoken-only name: {text:.400}"
+            );
+            assert!(
+                text.contains("food bank crew"),
+                "{name} copy lost the printable neighbor: {text:.400}"
+            );
+            assert_eq!(
+                report.spoken_only_left_out, 1,
+                "{name} copy counts the name it left out"
+            );
+        }
+        // The working document still holds the paragraph.
+        assert_eq!(doc.spoken_only_count(), 1);
     }
 
     #[test]
@@ -2449,7 +2847,7 @@ mod tests {
         doc.story_mut(&sid).expect("story").paragraphs =
             vec![ob_model::Paragraph::new("body", "Peace \u{271D}")];
         let sides = ob_impose::impose_single(&doc);
-        let (pdf, _) = build_pdf_with_library(&doc, &sides, ExportPurpose::ForPrinting, &library);
+        let (pdf, _) = build_pdf_full(&doc, &sides, ExportPurpose::ForPrinting, &library, None);
         let text = extracted_text(&pdf);
         assert!(
             text.contains('\u{271D}'),

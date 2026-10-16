@@ -250,6 +250,7 @@ pub fn build_music_draft(
         occasion_time: None,
         wanted_fonts: Vec::new(),
         participants: Default::default(),
+        inserts: Default::default(),
     };
     // The music file itself rides in the document, so the
     // bulletin travels complete and the music can be

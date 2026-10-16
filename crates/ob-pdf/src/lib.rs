@@ -1696,6 +1696,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
         occasion_time: None,
         wanted_fonts: Vec::new(),
         participants: Default::default(),
+        inserts: Default::default(),
     };
     // The sheet exists to be printed, so it takes the print purpose.
     export_reader_pdf(&doc, ExportPurpose::ForPrinting)
@@ -2092,6 +2093,7 @@ mod tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: Default::default(),
+            inserts: Default::default(),
         }
     }
 
@@ -2499,6 +2501,77 @@ mod tests {
         }
         // The working document still holds the paragraph.
         assert_eq!(doc.spoken_only_count(), 1);
+    }
+
+    #[test]
+    fn a_loose_sheet_prints_with_the_hosts_fields_and_keeps_its_secrets() {
+        // R-3: an insert exports through the same funnel
+        // as the bulletin, synthesized by as_document: its
+        // field tokens resolve against the host, and a
+        // spoken-only paragraph inside it is filtered by
+        // the funnel like any other.
+        let host = sample_doc();
+        let mut spoken = ob_model::Paragraph::new("body", "For Wilhelmina Quietname");
+        spoken.spoken_only = true;
+        let ins = ob_model::Insert {
+            id: "sheet-1".into(),
+            name: "Prayer list".into(),
+            life: ob_model::InsertLife::ThisWeekOnly,
+            keep_through: None,
+            panels: vec![ob_model::Panel {
+                id: "sheet-1-p1".into(),
+                name: "Prayer list".into(),
+                size: ob_model::Size::new(396_000, 612_000),
+                frames: vec![ob_model::Frame {
+                    id: "sheet-1-f1".into(),
+                    name: "Words".into(),
+                    kind: ob_model::FrameKind::Text,
+                    rect: ob_model::Rect::new(36_000, 36_000, 324_000, 540_000),
+                    story_id: Some("sheet-1-s1".into()),
+                    role: ob_model::ContentRole::Standing,
+                    picture: None,
+                    music: None,
+                }],
+                guides: vec![],
+                background_image: None,
+            }],
+            stories: vec![ob_model::Story {
+                id: "sheet-1-s1".into(),
+                paragraphs: vec![
+                    ob_model::Paragraph::new("body", "Prayers for {Sunday.date} at {Church.name}"),
+                    spoken,
+                    ob_model::Paragraph::new("body", "For the food bank crew"),
+                ],
+                keep_through: None,
+            }],
+            styles: ob_model::default_styles(),
+            sheet: ob_model::InsertSheet {
+                preset: "half-letter".into(),
+                copies: 60,
+                paper_note: "blue paper".into(),
+            },
+        };
+        let doc = ins.as_document(&host);
+        let (bytes, report) = export_reader_pdf_report(&doc, ExportPurpose::ForPrinting);
+        assert!(bytes.starts_with(b"%PDF-1.4"));
+        let text = extracted_text(&bytes);
+        assert!(
+            text.contains("October 18, 2026"),
+            "the host's date resolved in the sheet: {text:.400}"
+        );
+        assert!(
+            text.contains("Grace Lutheran Church"),
+            "the host's church name resolved in the sheet: {text:.400}"
+        );
+        assert!(
+            !text.contains("Wilhelmina"),
+            "a spoken-only name inside a sheet never prints: {text:.400}"
+        );
+        assert!(
+            text.contains("food bank crew"),
+            "the printable words print: {text:.400}"
+        );
+        assert_eq!(report.spoken_only_left_out, 1);
     }
 
     #[test]
@@ -3042,6 +3115,7 @@ mod tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: Default::default(),
+            inserts: Default::default(),
         }
     }
 

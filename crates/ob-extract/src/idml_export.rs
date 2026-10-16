@@ -586,6 +586,7 @@ mod tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: Default::default(),
+            inserts: Default::default(),
         }
     }
 
@@ -758,6 +759,7 @@ mod tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: Default::default(),
+            inserts: Default::default(),
         }
     }
 

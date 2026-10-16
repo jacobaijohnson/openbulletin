@@ -964,6 +964,19 @@ impl App {
     /// name (audit blocker 5). Within one file's editing
     /// session, Undo and Redo pass clear_history = false.
     fn adopt_document(&mut self, doc: Document, clear_history: bool) {
+        // A whole new document (Open, an import, a fresh
+        // start) retires the loose-sheet canvas state with
+        // the old document (R-3): the sheet being edited
+        // was part of that document's arrangement, and it
+        // goes with it, as the open guard already armed
+        // for. Within one document (Undo, Redo) the state
+        // stays: those snapshots share the arrangement.
+        if clear_history {
+            self.insert_edit = None;
+            self.insert_sel = None;
+            self.insert_sel_loaded = None;
+            self.insert_arm_remove = None;
+        }
         // Any swap retires a pick the open guard was holding.
         self.pending_path = None;
         // A contribution review and the save guard's state
@@ -1063,6 +1076,10 @@ struct CheckNote {
     /// The fix lives in the Fonts window (a wanted font
     /// still missing): the button opens it.
     fonts: bool,
+    /// The fix lives in the Loose sheets window (a loose
+    /// sheet with no words, a dated sheet past its date):
+    /// the button opens it.
+    inserts: bool,
 }
 
 impl CheckNote {
@@ -1072,6 +1089,7 @@ impl CheckNote {
             target: None,
             step: None,
             fonts: false,
+            inserts: false,
         }
     }
 
@@ -1081,6 +1099,7 @@ impl CheckNote {
             target: Some((panel, frame)),
             step: None,
             fonts: false,
+            inserts: false,
         }
     }
 
@@ -1090,6 +1109,7 @@ impl CheckNote {
             target: None,
             step: Some(step),
             fonts: false,
+            inserts: false,
         }
     }
 
@@ -1099,6 +1119,17 @@ impl CheckNote {
             target: None,
             step: None,
             fonts: true,
+            inserts: false,
+        }
+    }
+
+    fn to_inserts(text: String) -> Self {
+        CheckNote {
+            text,
+            target: None,
+            step: None,
+            fonts: false,
+            inserts: true,
         }
     }
 }
@@ -2110,6 +2141,35 @@ struct App {
     /// The "put a picture in the box" picker (a file door
     /// plus the document's loose pictures).
     show_pic_picker: bool,
+    /// The Loose sheets window and its state (R-3).
+    show_inserts: bool,
+    /// The loose sheet on the canvas right now, by id.
+    /// While this is set, the document's panels, stories,
+    /// and styles ARE the sheet's (swapped in by
+    /// `swap_insert_parts`), and the sheet's own entry in
+    /// `doc.inserts` holds the bulletin's: one source of
+    /// truth, arranged inside out for the length of the
+    /// edit. Every whole-document action (save, print,
+    /// check, Next Sunday, a step change) swaps back
+    /// first through `leave_insert_editing`, and the
+    /// autosave journal writes the swapped-back clone, so
+    /// no file on disk ever holds the inside-out shape.
+    insert_edit: Option<String>,
+    /// The sheet the Loose sheets window's settings are
+    /// showing, and the id those buffers were loaded for.
+    insert_sel: Option<String>,
+    insert_sel_loaded: Option<String>,
+    insert_name_buf: String,
+    insert_date_buf: String,
+    insert_copies_buf: String,
+    insert_paper_buf: String,
+    insert_add_name: String,
+    /// The sheet whose removal is armed (two-click).
+    insert_arm_remove: Option<String>,
+    /// The sheet library's .obdi files, as (name, path),
+    /// rescanned when the window asks.
+    insert_lib: Vec<(String, std::path::PathBuf)>,
+    insert_lib_dirty: bool,
     show_fonts: bool,
     show_comfort: bool,
     show_keys: bool,
@@ -2772,6 +2832,18 @@ impl Default for App {
             clip_query: String::new(),
             clip_status: None,
             show_pic_picker: false,
+            show_inserts: false,
+            insert_edit: None,
+            insert_sel: None,
+            insert_sel_loaded: None,
+            insert_name_buf: String::new(),
+            insert_date_buf: String::new(),
+            insert_copies_buf: String::new(),
+            insert_paper_buf: String::new(),
+            insert_add_name: String::new(),
+            insert_arm_remove: None,
+            insert_lib: Vec::new(),
+            insert_lib_dirty: true,
             show_fonts: false,
             show_comfort: false,
             show_keys: false,
@@ -3540,6 +3612,183 @@ fn filed_dir() -> std::path::PathBuf {
     inbox_dir().join("filed")
 }
 
+/// Where the loose sheet library lives: an "inserts"
+/// folder beside the Font Library folder (the clips and
+/// inbox discipline), holding one .obdi file per sheet.
+fn insert_library_dir() -> std::path::PathBuf {
+    let fonts = ob_fonts::default_library_dir();
+    match fonts.parent() {
+        Some(base) => base.join("inserts"),
+        None => std::path::PathBuf::from("inserts"),
+    }
+}
+
+/// Exchange a document's panels, stories, and styles
+/// with one of its loose sheets' (R-3): the canvas swap.
+/// The swap is its own inverse, so entering and leaving
+/// a sheet's edit are the same act. Nothing is copied
+/// and nothing is duplicated: the parts live in exactly
+/// one of the two places at any moment. False when the
+/// document holds no sheet under that id.
+fn swap_insert_parts(doc: &mut Document, id: &str) -> bool {
+    let Some(pos) = doc.inserts.iter().position(|i| i.id == id) else {
+        return false;
+    };
+    std::mem::swap(&mut doc.panels, &mut doc.inserts[pos].panels);
+    std::mem::swap(&mut doc.stories, &mut doc.inserts[pos].stories);
+    std::mem::swap(&mut doc.styles, &mut doc.inserts[pos].styles);
+    true
+}
+
+/// An id no sheet in this document already uses.
+fn fresh_insert_id(doc: &Document) -> String {
+    let mut n = doc.inserts.len() + 1;
+    loop {
+        let id = format!("sheet-{n}");
+        if !doc.inserts.iter().any(|i| i.id == id) {
+            return id;
+        }
+        n += 1;
+    }
+}
+
+/// A new loose sheet: one panel of the half-letter
+/// shape, one text box, one empty story, this week only
+/// until the office says otherwise (R-3).
+fn new_insert(id: &str, name: &str) -> ob_model::Insert {
+    let size = ob_model::insert_sheet_size("half-letter").expect("half-letter is a sheet shape");
+    let m = 36_000; // a half-inch margin, in milli-points
+    ob_model::Insert {
+        id: id.to_string(),
+        name: name.to_string(),
+        life: ob_model::InsertLife::ThisWeekOnly,
+        keep_through: None,
+        panels: vec![ob_model::Panel {
+            id: format!("{id}-p1"),
+            name: name.to_string(),
+            size,
+            frames: vec![ob_model::Frame {
+                id: format!("{id}-f1"),
+                name: "Words".into(),
+                kind: ob_model::FrameKind::Text,
+                rect: ob_model::Rect::new(m, m, size.w - 2 * m, size.h - 2 * m),
+                story_id: Some(format!("{id}-s1")),
+                role: ob_model::ContentRole::Standing,
+                picture: None,
+                music: None,
+            }],
+            guides: vec![],
+            background_image: None,
+        }],
+        stories: vec![ob_model::Story {
+            id: format!("{id}-s1"),
+            paragraphs: vec![ob_model::Paragraph::new("body", "")],
+            keep_through: None,
+        }],
+        styles: ob_model::default_styles(),
+        sheet: ob_model::InsertSheet::default(),
+    }
+}
+
+/// A sheet's name as a file name's middle: letters,
+/// numbers, spaces, and dashes stay; anything a file
+/// system would trip on becomes a dash.
+fn insert_file_stem(name: &str) -> String {
+    let stem: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let stem = stem.trim();
+    if stem.is_empty() {
+        "Loose sheet".to_string()
+    } else {
+        stem.to_string()
+    }
+}
+
+/// A sheet's life in the words the office hears.
+fn insert_life_words(ins: &ob_model::Insert) -> String {
+    match ins.life {
+        ob_model::InsertLife::Standing => "Standing: rides every week".to_string(),
+        ob_model::InsertLife::ThisWeekOnly => "This week only".to_string(),
+        ob_model::InsertLife::Dated => match ins.keep_through {
+            Some(d) => format!("Until {}", ob_layout::long_date(naive_of(d))),
+            None => "Until a date (no date set yet)".to_string(),
+        },
+    }
+}
+
+/// A sheet's size in words: "Half letter".
+fn insert_size_words(sheet: &ob_model::InsertSheet) -> String {
+    for (key, words) in ob_model::INSERT_SHEET_SHAPES {
+        if key == sheet.preset {
+            return words.split(" (").next().unwrap_or(words).to_string();
+        }
+    }
+    sheet.preset.clone()
+}
+
+/// How many copies, in words: zero is the usual case
+/// and means the sheet prints with the bulletin run.
+fn insert_copies_words(sheet: &ob_model::InsertSheet) -> String {
+    match sheet.copies {
+        0 => "as many as the bulletin".to_string(),
+        1 => "1 copy".to_string(),
+        n => format!("{n} copies"),
+    }
+}
+
+/// The paper, in words: no note means plain paper.
+fn insert_paper_words(sheet: &ob_model::InsertSheet) -> String {
+    let note = sheet.paper_note.trim();
+    if note.is_empty() {
+        "plain paper".to_string()
+    } else {
+        note.to_string()
+    }
+}
+
+/// The Check findings only loose sheets can have (R-3):
+/// a sheet with no words would print as a blank sheet of
+/// colored paper, and a dated sheet whose date has
+/// passed is still riding until Next Sunday takes it
+/// out, so Check names it before it prints stale. Both
+/// aim at the Loose sheets window, where the fix lives.
+fn insert_findings(doc: &Document) -> Vec<CheckNote> {
+    let mut out = Vec::new();
+    let doc_date = doc
+        .fields
+        .get("occasion_date")
+        .and_then(|iso| chrono::NaiveDate::parse_from_str(iso.trim(), "%Y-%m-%d").ok())
+        .map(simple_of);
+    for ins in &doc.inserts {
+        if !ins.has_words() {
+            out.push(CheckNote::to_inserts(format!(
+                "Check: the loose sheet '{}' has no words yet.",
+                ins.name
+            )));
+        }
+        if ins.life == ob_model::InsertLife::Dated {
+            if let (Some(until), Some(date)) = (ins.keep_through, doc_date) {
+                if until.is_valid() && until < date {
+                    out.push(CheckNote::to_inserts(format!(
+                        "Check: the loose sheet '{}' was kept through {}, which has passed.",
+                        ins.name,
+                        ob_layout::long_date(naive_of(until))
+                    )));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A short content fingerprint: the first eight letters
 /// of the content hash. Two versions of a part with the
 /// same fingerprint are the same words.
@@ -3986,6 +4235,12 @@ impl App {
     /// Announcements writes the box; arriving at Check runs it.
     /// The step list itself is clickable now (finding F1).
     fn goto_step(&mut self, i: usize) {
+        // The steps work on the bulletin whole: a loose
+        // sheet on the canvas goes back before any step
+        // change (R-3).
+        if i != self.step {
+            self.leave_insert_editing();
+        }
         if self.step == 1 && i != 1 {
             self.apply_edited_date();
         }
@@ -4077,6 +4332,14 @@ impl App {
         // gate was once lost in a file splice; the test named
         // announcements_buffer_only_writes_when_dirty guards it.
         if !self.announcements_dirty {
+            return;
+        }
+        // While a loose sheet is on the canvas, the
+        // document's stories are the sheet's: the
+        // announcements buffer belongs to the bulletin
+        // and waits until the sheet goes back (R-3). The
+        // dirty flag stays set, so nothing is lost.
+        if self.insert_edit.is_some() {
             return;
         }
         let Some(sid) = weekly_story_id(&self.doc) else {
@@ -4529,6 +4792,10 @@ impl App {
         // against each other and against the church's own
         // remembered pairs.
         notes.extend(hymn_findings(&self.doc, &self.hymn_memory));
+        // The loose sheets (R-3): a sheet with no words,
+        // and a dated sheet whose date has passed, named
+        // before either prints wrong.
+        notes.extend(insert_findings(&self.doc));
         // The children's-names rule (R-2b): repeated here
         // as a reminder when the church chose one, honest
         // that the app cannot tell which names are
@@ -4556,6 +4823,11 @@ impl App {
     }
 
     fn next_sunday(&mut self) {
+        // Next Sunday transforms the bulletin whole: a
+        // loose sheet on the canvas goes back first, so
+        // its life is judged on the sheet as it stands
+        // in the bulletin (R-3).
+        self.leave_insert_editing();
         if self.editing.is_some() {
             self.commit_edit();
         }
@@ -4625,6 +4897,16 @@ impl App {
                     msg.push_str(&format!(
                         " Hymn numbers cleared for: {}.",
                         report.cleared_hymns.join(", ")
+                    ));
+                }
+                // The loose sheets that ended get named
+                // the same way (R-3): a sheet taken out
+                // silently is a sheet nobody misses until
+                // print morning.
+                if !report.ended_inserts.is_empty() {
+                    msg.push_str(&format!(
+                        " Loose sheets ended: {}.",
+                        report.ended_inserts.join(", ")
                     ));
                 }
                 // An accidental click lands here too; say
@@ -4793,7 +5075,14 @@ impl App {
             }
             JournalAction::Write => {
                 let (obd, meta) = journal_paths();
-                if write_journal_to(&obd, &meta, &self.doc, &self.path).is_ok() {
+                // The journal is a file like any other: it
+                // holds the bulletin whole, never the
+                // inside-out shape of a sheet on the canvas
+                // (R-3). The snapshot comparisons above stay
+                // in the live shape; only the bytes written
+                // are swapped back.
+                let doc = self.canonical_document();
+                if write_journal_to(&obd, &meta, &doc, &self.path).is_ok() {
                     self.journal_snapshot = snap;
                 }
             }
@@ -7146,6 +7435,627 @@ impl App {
         }
     }
 
+    /// Put one loose sheet on the canvas (R-3): its
+    /// panels, stories, and styles swap with the
+    /// bulletin's, and the office works on it with every
+    /// canvas habit they already have. One sheet at a
+    /// time: a sheet already on the canvas goes back
+    /// first, and any typing session is finished before
+    /// the swap.
+    fn edit_insert_on_pages(&mut self, id: &str) {
+        if self.insert_edit.as_deref() == Some(id) {
+            self.show_pages = true;
+            return;
+        }
+        self.leave_insert_editing();
+        self.commit_if_editing();
+        if swap_insert_parts(&mut self.doc, id) {
+            self.insert_edit = Some(id.to_string());
+            // Undo history does not cross the swap: a
+            // snapshot spans one document shape, and an
+            // undo restored mid-swap would put the other
+            // shape's panels under this one's name.
+            self.undo_stack.clear();
+            self.redo_stack.clear();
+            self.reset_interaction_state();
+            self.show_pages = true;
+            let name = self
+                .doc
+                .inserts
+                .iter()
+                .find(|i| i.id == id)
+                .map(|i| i.name.clone())
+                .unwrap_or_default();
+            self.note(format!(
+                "Working on the loose sheet '{name}'. It prints on its own sheet."
+            ));
+        }
+    }
+
+    /// Take the loose sheet off the canvas (R-3): the
+    /// swap runs back, history clears (same reason as
+    /// going in), and the buffers that mirror the
+    /// bulletin re-read the restored document.
+    fn leave_insert_editing(&mut self) {
+        let Some(id) = self.insert_edit.take() else {
+            return;
+        };
+        self.commit_if_editing();
+        swap_insert_parts(&mut self.doc, &id);
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.reset_interaction_state();
+        self.sync_buffers();
+    }
+
+    /// The document as every file on disk must see it:
+    /// with the sheet's parts back in their places, even
+    /// while a sheet is on the canvas.
+    fn canonical_document(&self) -> Document {
+        let mut doc = self.doc.clone();
+        if let Some(id) = &self.insert_edit {
+            swap_insert_parts(&mut doc, id);
+        }
+        doc
+    }
+
+    /// Print one loose sheet on its own (R-3): the sheet
+    /// synthesized as a document, through the reader path
+    /// at the print purpose, to a file of its own whose
+    /// name says which bulletin, which sheet, and which
+    /// Sunday, so a folder of print copies reads like a
+    /// sentence.
+    fn print_insert_sheet(&mut self, insert: &ob_model::Insert) {
+        self.commit_if_editing();
+        let mut doc = insert.as_document(&self.doc);
+        if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+            ob_fonts::pin_document_fonts(&mut doc, &lib);
+        }
+        let stem = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Bulletin".to_string());
+        let date = self
+            .doc
+            .fields
+            .get("occasion_date")
+            .cloned()
+            .unwrap_or_default();
+        let suggested = format!("{stem} - {} - {date}.pdf", insert_file_stem(&insert.name));
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name(suggested)
+            .add_filter("PDF", &["pdf"])
+            .save_file()
+        {
+            let (bytes, report) =
+                ob_pdf::export_reader_pdf_report(&doc, ob_pdf::ExportPurpose::ForPrinting);
+            match std::fs::write(&path, &bytes) {
+                Ok(()) => {
+                    self.note(format!(
+                        "Loose sheet written: {}, {}.{}{}",
+                        file_name_of(&path),
+                        human_file_size(bytes.len()),
+                        missing_pictures_sentence(&report),
+                        spoken_only_sentence(&report)
+                    ));
+                }
+                Err(e) => self.fail(format!("Could not save the loose sheet: {e}")),
+            }
+        }
+    }
+
+    /// Rescan the sheet library folder: the .obdi files,
+    /// named by their file names.
+    fn refresh_insert_library(&mut self) {
+        let mut out: Vec<(String, std::path::PathBuf)> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(insert_library_dir()) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let is_obdi = p
+                    .extension()
+                    .map(|x| x.eq_ignore_ascii_case("obdi"))
+                    .unwrap_or(false);
+                if is_obdi && p.is_file() {
+                    let name = p
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    out.push((name, p));
+                }
+            }
+        }
+        out.sort_by_key(|(name, _)| name.to_lowercase());
+        self.insert_lib = out;
+        self.insert_lib_dirty = false;
+    }
+
+    /// Save one of this bulletin's sheets to the library,
+    /// so any bulletin after this one can bring it in.
+    fn save_insert_to_library(&mut self, id: &str) {
+        // The canonical document: the sheet's own parts
+        // in their places, even when this sheet is the
+        // one on the canvas right now.
+        let doc = self.canonical_document();
+        let Some(ins) = doc.inserts.iter().find(|i| i.id == id).cloned() else {
+            return;
+        };
+        let dir = insert_library_dir();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.fail(format!("The sheet library folder could not be made: {e}"));
+            return;
+        }
+        let file = dir.join(format!("{}.obdi", insert_file_stem(&ins.name)));
+        match ob_format::save_insert(&ins, &doc, &file) {
+            Ok(()) => {
+                self.insert_lib_dirty = true;
+                self.note(format!("Saved '{}' to the sheet library.", ins.name));
+            }
+            Err(e) => self.fail(format!("Could not save the sheet to the library: {e}")),
+        }
+    }
+
+    /// Add a library sheet to this bulletin: the sheet is
+    /// copied in under a fresh id and its pictures join
+    /// the bulletin's store, so from here the bulletin
+    /// travels complete whatever happens to the library.
+    fn add_insert_from_library(&mut self, path: &std::path::Path) {
+        let (mut ins, assets, bytes) = match ob_format::load_insert(path) {
+            Ok(v) => v,
+            Err(e) => {
+                self.fail(format!("That sheet could not be read: {e}"));
+                return;
+            }
+        };
+        self.leave_insert_editing();
+        self.push_undo_now();
+        ins.id = fresh_insert_id(&self.doc);
+        for rec in assets {
+            if !self.doc.assets.iter().any(|a| a.sha256 == rec.sha256) {
+                self.doc.assets.push(rec);
+            }
+        }
+        for (hash, data) in bytes {
+            self.doc.asset_bytes.insert(hash, data);
+        }
+        let name = ins.name.clone();
+        let new_id = ins.id.clone();
+        self.doc.inserts.push(ins);
+        self.insert_sel = Some(new_id);
+        self.insert_sel_loaded = None;
+        self.note(format!("Added the loose sheet '{name}' to this bulletin."));
+    }
+
+    /// Add a fresh loose sheet to this bulletin: one
+    /// half-letter panel, one empty text box, this week
+    /// only until the office says otherwise.
+    fn add_insert(&mut self) {
+        let typed = self.insert_add_name.trim().to_string();
+        let name = if typed.is_empty() {
+            "Loose sheet".to_string()
+        } else {
+            typed
+        };
+        self.leave_insert_editing();
+        self.push_undo_now();
+        let id = fresh_insert_id(&self.doc);
+        self.doc.inserts.push(new_insert(&id, &name));
+        self.insert_add_name.clear();
+        self.insert_sel = Some(id);
+        self.insert_sel_loaded = None;
+        self.note(format!(
+            "Added the loose sheet '{name}'. Work on this sheet to give it words."
+        ));
+    }
+
+    /// Take a sheet out of this bulletin. It survives in
+    /// last week's file, and in the library if it was
+    /// saved there; the note says so.
+    fn remove_insert(&mut self, id: &str) {
+        if self.insert_edit.as_deref() == Some(id) {
+            self.leave_insert_editing();
+        }
+        let Some(name) = self
+            .doc
+            .inserts
+            .iter()
+            .find(|i| i.id == id)
+            .map(|i| i.name.clone())
+        else {
+            return;
+        };
+        self.push_undo_now();
+        self.doc.inserts.retain(|i| i.id != id);
+        if self.insert_sel.as_deref() == Some(id) {
+            self.insert_sel = None;
+            self.insert_sel_loaded = None;
+        }
+        self.insert_arm_remove = None;
+        self.note(format!(
+            "Took the loose sheet '{name}' out of this bulletin. It is still in \
+             last week's file, and in the sheet library if you saved it there."
+        ));
+    }
+
+    /// Load the settings buffers from the sheet the Loose
+    /// sheets window is now showing.
+    fn load_insert_buffers(&mut self, id: &str) {
+        let Some(ins) = self.doc.inserts.iter().find(|i| i.id == id) else {
+            return;
+        };
+        self.insert_name_buf = ins.name.clone();
+        self.insert_date_buf = ins
+            .keep_through
+            .map(|d| format!("{:04}-{:02}-{:02}", d.year, d.month, d.day))
+            .unwrap_or_default();
+        self.insert_copies_buf = if ins.sheet.copies == 0 {
+            String::new()
+        } else {
+            ins.sheet.copies.to_string()
+        };
+        self.insert_paper_buf = ins.sheet.paper_note.clone();
+        self.insert_sel_loaded = Some(id.to_string());
+    }
+
+    /// The selected sheet, mutably, when the window's
+    /// settings belong to one.
+    fn selected_insert_mut(&mut self) -> Option<&mut ob_model::Insert> {
+        let id = self.insert_sel.clone()?;
+        self.doc.inserts.iter_mut().find(|i| i.id == id)
+    }
+
+    fn apply_insert_name(&mut self) {
+        let name = self.insert_name_buf.trim().to_string();
+        if name.is_empty() {
+            self.fail("A loose sheet needs a name: the Print step and Next Sunday name it when they speak of it.".into());
+            if let Some(id) = self.insert_sel.clone() {
+                self.load_insert_buffers(&id);
+            }
+            return;
+        }
+        let changed = self
+            .selected_insert_mut()
+            .map(|ins| ins.name != name)
+            .unwrap_or(false);
+        if changed {
+            self.push_undo_now();
+            if let Some(ins) = self.selected_insert_mut() {
+                ins.name = name.clone();
+                // The first panel wears the sheet's name,
+                // the way a bulletin's pages wear theirs.
+                if let Some(panel) = ins.panels.first_mut() {
+                    panel.name = name.clone();
+                }
+            }
+            self.note(format!("The sheet is called '{name}' now."));
+        }
+    }
+
+    fn apply_insert_date(&mut self) {
+        let text = self.insert_date_buf.trim().to_string();
+        if text.is_empty() {
+            self.fail(
+                "A sheet that rides until a date needs the date. Write it like \
+                 2026-11-08, or pick Standing or This week only."
+                    .into(),
+            );
+            if let Some(id) = self.insert_sel.clone() {
+                self.load_insert_buffers(&id);
+            }
+            return;
+        }
+        match ob_model::parse_flexible_date(&text, today_simple()) {
+            Some(d) => {
+                let changed = self
+                    .selected_insert_mut()
+                    .map(|ins| ins.keep_through != Some(d))
+                    .unwrap_or(false);
+                if changed {
+                    self.push_undo_now();
+                    if let Some(ins) = self.selected_insert_mut() {
+                        ins.keep_through = Some(d);
+                    }
+                    self.note(format!(
+                        "The sheet rides until {}.",
+                        ob_layout::long_date(naive_of(d))
+                    ));
+                }
+            }
+            None => {
+                self.fail(
+                    "That date does not read. Try year-month-day, like 2026-11-08, \
+                     or write it out, like November 8, 2026."
+                        .into(),
+                );
+                if let Some(id) = self.insert_sel.clone() {
+                    self.load_insert_buffers(&id);
+                }
+            }
+        }
+    }
+
+    fn apply_insert_copies(&mut self) {
+        let text = self.insert_copies_buf.trim().to_string();
+        let value: Option<usize> = if text.is_empty() {
+            Some(0)
+        } else {
+            text.parse().ok()
+        };
+        let Some(value) = value else {
+            self.fail("Copies is a number, or blank for as many as the bulletin.".into());
+            if let Some(id) = self.insert_sel.clone() {
+                self.load_insert_buffers(&id);
+            }
+            return;
+        };
+        let changed = self
+            .selected_insert_mut()
+            .map(|ins| ins.sheet.copies != value)
+            .unwrap_or(false);
+        if changed {
+            self.push_undo_now();
+            if let Some(ins) = self.selected_insert_mut() {
+                ins.sheet.copies = value;
+            }
+        }
+    }
+
+    fn apply_insert_paper(&mut self) {
+        let note = self.insert_paper_buf.trim().to_string();
+        let changed = self
+            .selected_insert_mut()
+            .map(|ins| ins.sheet.paper_note != note)
+            .unwrap_or(false);
+        if changed {
+            self.push_undo_now();
+            if let Some(ins) = self.selected_insert_mut() {
+                ins.sheet.paper_note = note;
+            }
+        }
+    }
+
+    fn set_insert_life(&mut self, id: &str, life: ob_model::InsertLife) {
+        self.push_undo_now();
+        if let Some(ins) = self.doc.inserts.iter_mut().find(|i| i.id == id) {
+            ins.life = life;
+        }
+        // The date buffer belongs to the new life now.
+        self.insert_sel_loaded = None;
+    }
+
+    /// A sheet's shape pick: its panels take the shape's
+    /// size (the boxes keep their places; a smaller sheet
+    /// may leave a box hanging past the edge, and the
+    /// canvas shows that plainly), and its sheet record
+    /// takes the shape's key.
+    fn set_insert_preset(&mut self, id: &str, preset: &str) {
+        let Some(size) = ob_model::insert_sheet_size(preset) else {
+            return;
+        };
+        self.push_undo_now();
+        if let Some(ins) = self.doc.inserts.iter_mut().find(|i| i.id == id) {
+            ins.sheet.preset = preset.to_string();
+            for panel in &mut ins.panels {
+                panel.size = size;
+            }
+        }
+    }
+
+    /// The Loose sheets window (R-3): this bulletin's
+    /// sheets with their lives and papers, the settings
+    /// for one chosen sheet, and the library the sheets
+    /// outlive the week in. Modeless, like the clip
+    /// library: it sits beside the five steps and changes
+    /// nothing until a named button is clicked.
+    fn inserts_window(&mut self, ctx: &egui::Context) {
+        if !self.show_inserts {
+            return;
+        }
+        if self.insert_lib_dirty {
+            self.refresh_insert_library();
+        }
+        let mut open = self.show_inserts;
+        egui::Window::new("Loose sheets")
+            .open(&mut open)
+            .resizable(true)
+            .default_size([640.0, 580.0])
+            .show(ctx, |ui| {
+                if let Some(id) = self.insert_edit.clone() {
+                    let name = self
+                        .doc
+                        .inserts
+                        .iter()
+                        .find(|i| i.id == id)
+                        .map(|i| i.name.clone())
+                        .unwrap_or_default();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "You are editing the loose sheet '{name}'. It prints on its own sheet."
+                        ))
+                        .strong(),
+                    );
+                    if ui.button("Back to the bulletin").clicked() {
+                        self.leave_insert_editing();
+                    }
+                    ui.separator();
+                }
+                ui.label(egui::RichText::new("In this bulletin").strong());
+                ui.label("Loose sheets ride inside the bulletin but are not its pages. Each one prints on its own paper, in its own count.");
+                if self.doc.inserts.is_empty() {
+                    ui.label("No loose sheets in this bulletin yet. Add one below, or bring one in from the library.");
+                }
+                let rows: Vec<(String, String, String)> = self
+                    .doc
+                    .inserts
+                    .iter()
+                    .map(|i| {
+                        (
+                            i.id.clone(),
+                            i.name.clone(),
+                            format!(
+                                "{} · {} · {} · {}",
+                                insert_life_words(i),
+                                insert_size_words(&i.sheet),
+                                insert_copies_words(&i.sheet),
+                                insert_paper_words(&i.sheet)
+                            ),
+                        )
+                    })
+                    .collect();
+                for (id, name, words) in rows {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&name).strong());
+                        if self.insert_edit.as_deref() == Some(id.as_str()) {
+                            if ui.button("Back to the bulletin").clicked() {
+                                self.leave_insert_editing();
+                            }
+                        } else if ui.button("Work on this sheet").clicked() {
+                            self.edit_insert_on_pages(&id);
+                        }
+                        if ui.button("Choose").clicked() {
+                            self.insert_sel = Some(id.clone());
+                        }
+                    });
+                    ui.small(words);
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Name for a new sheet:");
+                    ui.text_edit_singleline(&mut self.insert_add_name);
+                    if ui.button("Add a loose sheet").clicked() {
+                        self.add_insert();
+                    }
+                });
+                ui.separator();
+                if let Some(sel) = self.insert_sel.clone() {
+                    if self.insert_sel_loaded.as_deref() != Some(sel.as_str()) {
+                        self.load_insert_buffers(&sel);
+                    }
+                    let chosen = self.doc.inserts.iter().find(|i| i.id == sel).cloned();
+                    if let Some(ins) = chosen {
+                        ui.label(egui::RichText::new(format!("About '{}'", ins.name)).strong());
+                        ui.horizontal(|ui| {
+                            ui.label("Name:");
+                            let r = ui.text_edit_singleline(&mut self.insert_name_buf);
+                            if r.lost_focus() {
+                                self.apply_insert_name();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("How long it rides:");
+                            for (life, words) in [
+                                (ob_model::InsertLife::Standing, "Standing"),
+                                (ob_model::InsertLife::Dated, "Until a date"),
+                                (ob_model::InsertLife::ThisWeekOnly, "This week only"),
+                            ] {
+                                if ui.selectable_label(ins.life == life, words).clicked()
+                                    && ins.life != life
+                                {
+                                    self.set_insert_life(&sel, life);
+                                }
+                            }
+                        });
+                        if ins.life == ob_model::InsertLife::Dated {
+                            ui.horizontal(|ui| {
+                                ui.label("Last day it rides:");
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(&mut self.insert_date_buf)
+                                        .hint_text("like 2026-11-08"),
+                                );
+                                if r.lost_focus() {
+                                    self.apply_insert_date();
+                                }
+                            });
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label("Sheet shape:");
+                            egui::ComboBox::from_id_salt("insert-shape")
+                                .selected_text(
+                                    ob_model::INSERT_SHEET_SHAPES
+                                        .iter()
+                                        .find(|(k, _)| *k == ins.sheet.preset)
+                                        .map(|(_, w)| *w)
+                                        .unwrap_or(ins.sheet.preset.as_str()),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for (key, words) in ob_model::INSERT_SHEET_SHAPES {
+                                        if ui
+                                            .selectable_label(ins.sheet.preset == key, words)
+                                            .clicked()
+                                        {
+                                            self.set_insert_preset(&sel, key);
+                                        }
+                                    }
+                                });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Copies:");
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut self.insert_copies_buf)
+                                    .desired_width(56.0),
+                            );
+                            if r.lost_focus() {
+                                self.apply_insert_copies();
+                            }
+                            ui.label("(blank means as many as the bulletin)");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Paper:");
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut self.insert_paper_buf)
+                                    .hint_text("like blue paper, or card stock"),
+                            );
+                            if r.lost_focus() {
+                                self.apply_insert_paper();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(format!("Save '{}' to the library", ins.name))
+                                .clicked()
+                            {
+                                self.save_insert_to_library(&sel);
+                            }
+                            let remove_label = if self.insert_arm_remove.as_deref()
+                                == Some(sel.as_str())
+                            {
+                                "Click again to take it out"
+                            } else {
+                                "Take it out of this bulletin"
+                            };
+                            if ui.button(remove_label).clicked() {
+                                if self.insert_arm_remove.as_deref() == Some(sel.as_str()) {
+                                    self.remove_insert(&sel);
+                                } else {
+                                    self.insert_arm_remove = Some(sel.clone());
+                                }
+                            }
+                        });
+                    } else {
+                        ui.label("That sheet is not in this bulletin anymore.");
+                    }
+                } else if !self.doc.inserts.is_empty() {
+                    ui.label("Choose a sheet above to change its name, its date, and its paper.");
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("From the library").strong());
+                ui.label("A sheet saved to the library is here for every bulletin after. Adding one copies it in: the bulletin keeps its own copy from then on.");
+                if self.insert_lib.is_empty() {
+                    ui.label("The sheet library is empty.");
+                }
+                for (name, path) in self.insert_lib.clone() {
+                    ui.horizontal(|ui| {
+                        ui.label(&name);
+                        if ui.button("Add to this bulletin").clicked() {
+                            self.add_insert_from_library(&path);
+                        }
+                    });
+                }
+            });
+        self.show_inserts = open;
+    }
+
     fn pages_window(&mut self, ctx: &egui::Context) {
         if !self.show_pages {
             return;
@@ -7163,6 +8073,30 @@ impl App {
             .default_size([900.0, 700.0])
             .min_size([520.0, 420.0])
             .show(ctx, |ui| {
+                // While a loose sheet is on the canvas, the
+                // banner says what state the work is in and
+                // carries the way back (R-3).
+                if let Some(id) = self.insert_edit.clone() {
+                    let name = self
+                        .doc
+                        .inserts
+                        .iter()
+                        .find(|i| i.id == id)
+                        .map(|i| i.name.clone())
+                        .unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "You are editing the loose sheet '{name}'. It prints on its own sheet."
+                            ))
+                            .strong(),
+                        );
+                        if ui.button("Back to the bulletin").clicked() {
+                            self.leave_insert_editing();
+                        }
+                    });
+                    ui.separator();
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Previous page").clicked() {
                         self.page_by(-1);
@@ -7206,6 +8140,10 @@ impl App {
                     if ui.button("Clip art...").clicked() {
                         self.ensure_starter_clips();
                         self.show_clips = true;
+                    }
+                    if ui.button("Loose sheets...").clicked() {
+                        self.insert_lib_dirty = true;
+                        self.show_inserts = true;
                     }
                     if self.doc.panels[idx].background_image.is_some() {
                         ui.separator();
@@ -10876,6 +11814,10 @@ impl App {
     /// the contribution seam files a part only after the
     /// bulletin carrying it is safely on disk.
     fn save_flow(&mut self) -> bool {
+        // A save writes the bulletin whole: a loose sheet
+        // on the canvas goes back first, so no file ever
+        // holds the inside-out shape (R-3).
+        self.leave_insert_editing();
         self.commit_if_editing();
         self.save_announcements();
         self.pin_fonts();
@@ -11666,6 +12608,14 @@ impl eframe::App for App {
         // global undo, since editing was never over).
         if !self.show_pages && self.editing.is_some() {
             self.commit_edit();
+        }
+        // Closing the Pages window while a loose sheet is
+        // on the canvas puts the sheet back (R-3): the
+        // canvas is where a sheet is worked on, and a sheet
+        // left swapped in with no canvas open would strand
+        // the bulletin inside out.
+        if !self.show_pages && self.insert_edit.is_some() {
+            self.leave_insert_editing();
         }
         // While the recovery offer waits for its answer, it
         // gates the whole app (J9): draw the journal tick and
@@ -12607,6 +13557,9 @@ impl eframe::App for App {
                             if n.fonts && ui.button("Fix this").clicked() {
                                 self.show_fonts = true;
                             }
+                            if n.inserts && ui.button("Fix this").clicked() {
+                                self.show_inserts = true;
+                            }
                         }
                         let findings = self.char_findings.clone();
                         for f in &findings {
@@ -12642,6 +13595,29 @@ impl eframe::App for App {
                         ui.label(egui::RichText::new("In the print window, use these settings").strong());
                         for line in self.print_checklist() {
                             ui.label(format!("- {line}"));
+                        }
+                        // The loose sheets print too (R-3),
+                        // each on its own paper in its own
+                        // count: one row per sheet, with the
+                        // button that makes its own file.
+                        if !self.doc.inserts.is_empty() {
+                            ui.separator();
+                            ui.label(egui::RichText::new("Also print").strong());
+                            let sheets = self.doc.inserts.clone();
+                            for ins in &sheets {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!(
+                                        "{} — {}, {}",
+                                        ins.name,
+                                        insert_copies_words(&ins.sheet),
+                                        insert_paper_words(&ins.sheet)
+                                    ));
+                                    if ui.button("Print this sheet").clicked() {
+                                        self.print_insert_sheet(ins);
+                                    }
+                                });
+                            }
+                            ui.small("The app prints the loose sheets; it cannot tuck them into the bulletins.");
                         }
                         for f in char_findings(&self.doc) {
                             ui.label(
@@ -12982,11 +13958,16 @@ impl eframe::App for App {
         self.pages_window(ctx);
         self.picture_picker_window(ctx);
         self.clips_window(ctx);
+        self.inserts_window(ctx);
         if pages_were_open && !self.show_pages && self.step == 3 {
             // A fix made on the canvas can clear a finding:
             // never leave the Check step showing a solved
             // problem as if it were still true (UI audit
-            // round 2).
+            // round 2). A sheet on the canvas goes back
+            // first: Check reads the bulletin whole (R-3).
+            if self.insert_edit.is_some() {
+                self.leave_insert_editing();
+            }
             self.run_checks();
         }
         self.fonts_window(ctx);
@@ -14109,6 +15090,139 @@ fn open_with_os(path: &std::path::Path) -> Result<(), String> {
 mod settings_tests {
     use super::*;
 
+    fn doc_with_sheet() -> Document {
+        let mut doc = Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "T".into(),
+            profile: ChurchProfile::default(),
+            fields: Default::default(),
+            styles: ob_model::default_styles(),
+            stories: vec![ob_model::Story {
+                id: "host-story".into(),
+                paragraphs: vec![ob_model::Paragraph::new("body", "The bulletin's own words")],
+                keep_through: None,
+            }],
+            panels: vec![ob_model::Panel {
+                background_image: None,
+                id: "host-panel".into(),
+                name: "Cover".into(),
+                size: ob_model::Size::new(396_000, 612_000),
+                frames: vec![],
+                guides: vec![],
+            }],
+            sheet: ob_model::SheetSpec {
+                preset: "letter-bifold".into(),
+                size: ob_model::Size::new(792_000, 612_000),
+            },
+            no_announcements: false,
+            assets: vec![],
+            asset_bytes: Default::default(),
+            occasion_time: None,
+            wanted_fonts: vec![],
+            participants: Default::default(),
+            inserts: vec![new_insert("sheet-1", "Prayer list")],
+        };
+        doc.fields
+            .insert("occasion_date".into(), "2026-10-18".into());
+        doc
+    }
+
+    #[test]
+    fn the_canvas_swap_round_trips_and_keeps_ids() {
+        // R-3: swapping a sheet onto the canvas and back
+        // restores the document exactly: the same parts in
+        // the same places, the sheet's id unchanged, and
+        // nothing duplicated in either direction.
+        let mut doc = doc_with_sheet();
+        let before = doc.clone();
+        assert!(swap_insert_parts(&mut doc, "sheet-1"));
+        // On the canvas: the document's parts ARE the
+        // sheet's, and the sheet's entry holds the
+        // bulletin's.
+        assert_eq!(doc.panels[0].id, "sheet-1-p1");
+        assert_eq!(doc.stories[0].id, "sheet-1-s1");
+        assert_eq!(doc.inserts[0].panels[0].id, "host-panel");
+        assert_eq!(doc.inserts[0].stories[0].id, "host-story");
+        assert_eq!(doc.inserts[0].id, "sheet-1");
+        // An edit made on the canvas lands in the sheet.
+        doc.stories[0].paragraphs[0].set_text("Pray for the choir");
+        assert!(swap_insert_parts(&mut doc, "sheet-1"));
+        assert_eq!(
+            doc.inserts[0].stories[0].paragraphs[0].text(),
+            "Pray for the choir"
+        );
+        // And the bulletin is otherwise exactly itself.
+        let mut restored = doc.clone();
+        restored.inserts[0].stories[0].paragraphs[0].set_text("");
+        assert_eq!(restored.panels, before.panels);
+        assert_eq!(restored.stories, before.stories);
+        assert_eq!(restored.inserts[0].panels, before.inserts[0].panels);
+        // A sheet that is not there does not swap.
+        assert!(!swap_insert_parts(&mut doc, "no-such-sheet"));
+    }
+
+    #[test]
+    fn insert_findings_name_empty_and_out_of_date_sheets() {
+        let mut doc = doc_with_sheet();
+        // The fresh sheet has one empty paragraph: no words.
+        let notes = insert_findings(&doc);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].text,
+            "Check: the loose sheet 'Prayer list' has no words yet."
+        );
+        assert!(notes[0].inserts, "the fix opens the Loose sheets window");
+        // Words written, and a keep-through date still to
+        // come: silence.
+        doc.inserts[0].stories[0].paragraphs[0].set_text("Pray for us");
+        doc.inserts[0].life = ob_model::InsertLife::Dated;
+        doc.inserts[0].keep_through = Some(ob_model::SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 8,
+        });
+        assert!(insert_findings(&doc).is_empty());
+        // The date passes (the bulletin is for 2026-10-18):
+        // the finding names the sheet and the date.
+        doc.inserts[0].keep_through = Some(ob_model::SimpleDate {
+            year: 2026,
+            month: 10,
+            day: 11,
+        });
+        let notes = insert_findings(&doc);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].text,
+            "Check: the loose sheet 'Prayer list' was kept through October 11, 2026, which has passed."
+        );
+    }
+
+    #[test]
+    fn insert_words_say_the_plain_things() {
+        let mut sheet = ob_model::InsertSheet::default();
+        assert_eq!(insert_copies_words(&sheet), "as many as the bulletin");
+        assert_eq!(insert_paper_words(&sheet), "plain paper");
+        assert_eq!(insert_size_words(&sheet), "Half letter");
+        sheet.copies = 1;
+        assert_eq!(insert_copies_words(&sheet), "1 copy");
+        sheet.copies = 60;
+        assert_eq!(insert_copies_words(&sheet), "60 copies");
+        sheet.paper_note = "  blue paper ".into();
+        assert_eq!(insert_paper_words(&sheet), "blue paper");
+        let mut ins = new_insert("sheet-9", "Card");
+        assert_eq!(insert_life_words(&ins), "This week only");
+        ins.life = ob_model::InsertLife::Standing;
+        assert_eq!(insert_life_words(&ins), "Standing: rides every week");
+        ins.life = ob_model::InsertLife::Dated;
+        assert_eq!(insert_life_words(&ins), "Until a date (no date set yet)");
+        ins.keep_through = Some(ob_model::SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 8,
+        });
+        assert_eq!(insert_life_words(&ins), "Until November 8, 2026");
+    }
+
     #[test]
     fn a_wanted_font_warns_on_check_until_the_font_arrives() {
         // The install-later promise, at the Check step
@@ -14138,6 +15252,7 @@ mod settings_tests {
                 substituted_by: "Cabin".into(),
             }],
             participants: Default::default(),
+            inserts: Default::default(),
         };
         // Nothing in the library: today's stand-in is the
         // house default, and the words say so (the record
@@ -15951,6 +17066,7 @@ mod settings_tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: Default::default(),
+            inserts: Default::default(),
         };
         let mut shaper = ob_text::shaping::bundled_shaper();
         let threads = ob_text::threading::layout_document_threads(&mut shaper, &doc);
@@ -16138,6 +17254,7 @@ mod settings_tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: Default::default(),
+            inserts: Default::default(),
         };
         let placed = doc.add_asset(
             &[1, 2, 3],

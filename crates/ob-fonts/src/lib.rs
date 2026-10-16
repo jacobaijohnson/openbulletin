@@ -1000,6 +1000,7 @@ mod tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: Default::default(),
+            inserts: Default::default(),
         };
         pin_document_fonts(&mut doc, &lib);
         assert_eq!(

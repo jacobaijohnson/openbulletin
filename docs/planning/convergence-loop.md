@@ -61,6 +61,14 @@ printed in the same job on its own paper, counted for the
 print run, and reusable from a library week to week. The
 roles-inserts lane designs the details against real practice.
 
+I1 shipped (Roles R-3, 2026-10-16): the model, the three
+lives in Next Sunday with ended sheets named, the Print
+step's Also print block with one file per sheet, the two
+insert-only Check findings, the Loose sheets window with
+the canvas swap, and the .obdi library. I2 remains:
+two-up printing, per-sheet large print, file-carrying
+sheets, rescue-to-insert, pre-filled starters.
+
 ## Build-out backlog (from recorded debts + ideas)
 
 Buildable now, no input needed: the print-time overflow

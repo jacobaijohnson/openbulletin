@@ -292,6 +292,7 @@ pub fn build_template(
         occasion_time: None,
         wanted_fonts: Vec::new(),
         participants: BTreeMap::new(),
+        inserts: Vec::new(),
     }
 }
 
@@ -339,6 +340,15 @@ pub struct NextSundayReport {
     /// forward (round 2, R2-11). None for a regular week,
     /// whose advance changes nothing but the date.
     pub occasion_note: Option<String>,
+    /// The loose sheets Next Sunday took out (roles build
+    /// R-3): this-week-only sheets, and dated sheets whose
+    /// keep-through date had passed by the new Sunday, by
+    /// name, in document order. Removal, not clearing: an
+    /// expired flyer has no next version inside this
+    /// document. It survives in last week's file and, if
+    /// saved, in the sheet library. Standing sheets and
+    /// dated sheets still in their date ride silently.
+    pub ended_inserts: Vec<String>,
 }
 
 /// The name every fresh bulletin starts with: the church's
@@ -392,6 +402,11 @@ fn is_one_time_occasion(name: &str) -> bool {
 /// - Hymn lines keep their labels and lose their values
 ///   (R-2a): the new week sings different hymns, and the
 ///   report names the lines that had a value.
+/// - Loose sheets follow their lives (R-3): standing
+///   sheets ride untouched, a dated sheet rides while its
+///   keep-through date is on or after the new Sunday and
+///   is taken out and named once it has passed, and a
+///   this-week-only sheet is taken out and named.
 ///
 /// Returns an error string if the stored date cannot be parsed.
 pub fn next_sunday(doc: &Document) -> Result<Document, String> {
@@ -522,6 +537,31 @@ pub fn next_sunday_report_as_of(
         occasion_note,
         ..NextSundayReport::default()
     };
+    // Loose sheets follow their lives (R-3): standing
+    // sheets ride, dated sheets ride while their
+    // keep-through date covers the new Sunday, and the
+    // rest are taken out and named in the report.
+    let next_simple = SimpleDate {
+        year: next.year(),
+        month: next.month(),
+        day: next.day(),
+    };
+    out.inserts.retain(|ins| {
+        let rides = match ins.life {
+            InsertLife::Standing => true,
+            InsertLife::ThisWeekOnly => false,
+            InsertLife::Dated => match ins.keep_through {
+                Some(d) if d.is_valid() => d >= next_simple,
+                // A dated sheet with no readable date has
+                // no date covering the new week.
+                _ => false,
+            },
+        };
+        if !rides {
+            report.ended_inserts.push(ins.name.clone());
+        }
+        rides
+    });
     // Participants are weekly people: the new week starts
     // with empty rows, and the report names the lines that
     // held names (J10's carried-list shape).
@@ -786,6 +826,73 @@ mod tests {
             .paragraphs
             .iter()
             .any(|p| p.text().contains("Hymn of Praise")));
+    }
+
+    fn sheet(name: &str, life: InsertLife, keep_through: Option<SimpleDate>) -> Insert {
+        Insert {
+            id: format!("sheet-{name}"),
+            name: name.into(),
+            life,
+            keep_through,
+            panels: Vec::new(),
+            stories: Vec::new(),
+            styles: Vec::new(),
+            sheet: InsertSheet::default(),
+        }
+    }
+
+    #[test]
+    fn next_sunday_follows_the_loose_sheets_lives() {
+        // R-3: the life-cycle matrix. The bulletin is for
+        // Sunday 2026-10-18, so the new week is 2026-10-25.
+        let mut d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "Sunday",
+        );
+        let sd = |y, m, dd| SimpleDate {
+            year: y,
+            month: m,
+            day: dd,
+        };
+        d.inserts = vec![
+            sheet("Connection card", InsertLife::Standing, None),
+            sheet("Lily order form", InsertLife::Dated, Some(sd(2026, 11, 8))),
+            // Kept through the new Sunday itself: still in.
+            sheet(
+                "Food drive flyer",
+                InsertLife::Dated,
+                Some(sd(2026, 10, 25)),
+            ),
+            sheet(
+                "Harvest supper flyer",
+                InsertLife::Dated,
+                Some(sd(2026, 10, 18)),
+            ),
+            sheet("Choir party note", InsertLife::ThisWeekOnly, None),
+            // A dated sheet with no date has nothing
+            // covering the new week.
+            sheet("Undated flyer", InsertLife::Dated, None),
+        ];
+        let (n, report) = next_sunday_report(&d).unwrap();
+        let names: Vec<&str> = n.inserts.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Connection card", "Lily order form", "Food drive flyer"],
+            "standing and in-date sheets ride"
+        );
+        assert_eq!(
+            report.ended_inserts,
+            ["Harvest supper flyer", "Choir party note", "Undated flyer"],
+            "the rest are taken out and named, in order"
+        );
+        // And the week after, the flyer kept through
+        // 2026-10-25 ends too.
+        let (n2, report2) = next_sunday_report(&n).unwrap();
+        let names2: Vec<&str> = n2.inserts.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names2, ["Connection card", "Lily order form"]);
+        assert_eq!(report2.ended_inserts, ["Food drive flyer"]);
     }
 
     #[test]

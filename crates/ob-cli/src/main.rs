@@ -742,6 +742,7 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
         occasion_time: None,
         wanted_fonts: Vec::new(),
         participants: Default::default(),
+        inserts: Default::default(),
     };
     let out_file = out.join(format!("{stem}-traced.obd"));
     ob_format::save(&doc, &out_file)?;

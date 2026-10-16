@@ -99,6 +99,35 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
   the notes are not drawn yet. It prints the counted
   placeholder like any missing picture, never a silence.
 
+## Loose sheets on the canvas (built 2026-10-16, R-3)
+
+- A loose sheet is edited on the same canvas, with the
+  same boxes and the same habits: from the Pages window's
+  "Loose sheets..." button, the Loose sheets window lists
+  the bulletin's sheets, and "Work on this sheet" swaps
+  the canvas to that sheet's panels. The bulletin's own
+  panels wait inside the sheet's record; nothing is
+  copied, and nothing exists twice.
+- While a sheet is on the canvas, a banner at the top of
+  the Pages window (and of the Loose sheets window) says
+  so in plain words: "You are editing the loose sheet
+  'Prayer list'. It prints on its own sheet." Its
+  "Back to the bulletin" button swaps back.
+- Undo history does not cross the swap in either
+  direction: a snapshot spans one document shape, so
+  entering and leaving a sheet's edit both start a fresh
+  history. Anything whole-document (Save, a step change,
+  Next Sunday, the Check step, closing the Pages window)
+  puts the sheet back first, and the autosave journal
+  only ever writes the bulletin whole, so no file on
+  disk can hold the swapped shape.
+- The Loose sheets window is also where a sheet's life
+  is set (Standing, Until a date, This week only), its
+  shape, copies, and paper note are changed, a new sheet
+  is added, a sheet is taken out (two clicks), and the
+  sheet library lives: "Save to the library" writes an
+  .obdi file; "Add to this bulletin" copies one in.
+
 ## Threading: one story, many boxes (built 2026-10-16, T1)
 
 A story can run through more than one box: the words fill

@@ -322,6 +322,7 @@ pub fn document_from_markdown(text: &str, profile: ChurchProfile, source_name: &
         occasion_time: None,
         wanted_fonts: Vec::new(),
         participants: Default::default(),
+        inserts: Default::default(),
     }
 }
 
@@ -433,6 +434,7 @@ fn web_hidden_paragraphs_stay_in_markdown() {
         occasion_time: None,
         wanted_fonts: Vec::new(),
         participants: Default::default(),
+        inserts: Default::default(),
     };
     let text = to_markdown(&doc);
     assert!(
@@ -483,6 +485,7 @@ fn spoken_only_paragraphs_stay_out_of_markdown() {
         occasion_time: None,
         wanted_fonts: Vec::new(),
         participants: Default::default(),
+        inserts: Default::default(),
     };
     let (md, left_out) = to_markdown_report(&doc);
     assert_eq!(left_out, 1);

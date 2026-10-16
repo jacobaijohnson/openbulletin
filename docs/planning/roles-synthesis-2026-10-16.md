@@ -151,6 +151,30 @@ and the two new lines in the starter template's
 Serving section. FORMAT.md carries the data rules;
 EDITOR.md and beyond-print.md the surface.
 
+Item (5), inserts I1, SHIPPED as Roles R-3: the
+`Insert` model on the document (own panels, stories,
+styles; the host's asset store; field tokens resolved
+against the host at print through the synthesized
+document and the one export funnel), the three lives
+with Next Sunday's `ended_inserts` named in its
+report and in the app's status line, the Print step's
+"Also print" block (one row per sheet with its own
+"Print this sheet" file in the dated style), the two
+insert-only Check findings (no words yet; a date that
+has passed) aimed at the Loose sheets window, the
+window itself with the canvas swap under its banner,
+and the .obdi library in its sibling folder with
+attach-is-copying. Two reconciliations with the lane
+sketch, recorded: the sheet's paper facts live in
+their own `InsertSheet` record (shape key, copies,
+paper note), not the bulletin's `SheetSpec`, because
+sheet shapes are not bulletin folds; and a sheet's
+copies are a plain count where 0 means "as many as
+the bulletin", the same fact the lane's `Option`
+carried. I2 remains: two-up printing, per-sheet large
+print, file-carrying sheets, rescue-to-insert, the
+pre-filled starters.
+
 ## Open questions (Jacob / Pastor Mark only)
 
 From the lanes, deduplicated: which channel senders

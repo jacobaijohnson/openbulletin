@@ -130,6 +130,56 @@ on purpose (the real font arrived, and the document now
 uses it with no edit). Files written before the field
 existed load with an empty list; `format_version` stays 1.
 
+A document may carry `inserts` (roles build R-3): the
+loose sheets that ride inside the bulletin without being
+pages of it. Each insert is its own small document:
+`{ id, name, life, keep_through, panels, stories,
+styles, sheet }`, where `sheet` is `{ preset, copies,
+paper_note }` (the shape key names sheet shapes:
+"half-letter", "letter", "card"; `copies` 0 means "as
+many as the bulletin"; `paper_note` is plain words like
+"blue paper", empty meaning plain paper). An insert's
+picture frames name assets in the HOST document's store
+by SHA-256, so a photo used by both is stored once. Its
+words resolve their field tokens against the host at
+print time: at export the insert is synthesized into a
+document (its parts on the host's profile, fields, and
+asset store) and printed through the same funnel as the
+bulletin, spoken-only filtering included. Inserts never
+enter the bulletin's imposition; each prints as its own
+file. Files written before the field existed load with
+no sheets; `format_version` stays 1. (The known cost of
+staying at 1: a build from before loose sheets opens
+such a file, shows no sheets, and drops them on save.
+That exposure was accepted, the same one the
+spoken-only flags already carry.)
+
+An insert's `life` is `standing`, `dated`, or
+`this_week_only` (the default). Next Sunday follows it:
+standing sheets ride untouched and unmentioned; a dated
+sheet rides while its `keep_through` date (a
+`{ year, month, day }`, with a story keep-through's
+meaning) is on or after the new Sunday, and is removed
+and named in the report's `ended_inserts` once it has
+passed (a dated sheet with no readable date is removed
+too); a this-week-only sheet is removed and named.
+
+### The .obdi sheet file
+
+A loose sheet saved to the library is one file,
+extension `.obdi`: the same v1 zip discipline under
+another root. It holds `insert.json` (the insert, plus
+the asset records of the pictures it uses) and one
+`assets/<sha256>` entry per picture the sheet's frames
+use, fingerprint-verified on load with the same caps
+and the same refusal words as a bulletin. Library files
+live in an `inserts` folder beside the Font Library
+folder. Attaching a library sheet copies it into the
+document under a fresh id and merges its pictures into
+the document's store; from then on the bulletin travels
+complete, and editing the attached copy never writes
+back to the library.
+
 ### Loading rules
 
 - Readers reject newer-than-known versions with a clear

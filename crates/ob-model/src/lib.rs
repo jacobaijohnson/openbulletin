@@ -1035,6 +1035,15 @@ pub struct Document {
     /// `fields` until the fold.
     #[serde(default)]
     pub participants: BTreeMap<String, String>,
+    /// The loose sheets riding inside this bulletin
+    /// (roles build R-3): each is its own small document
+    /// with its own panels, paper, and life, printed on
+    /// its own sheets and never imposed into the
+    /// bulletin's fold. Serde-defaulted: every file
+    /// written before loose sheets existed loads with
+    /// none, and `format_version` stays 1.
+    #[serde(default)]
+    pub inserts: Vec<Insert>,
 }
 
 /// One font an imported document names that the library did
@@ -1053,6 +1062,201 @@ pub struct WantedFont {
     /// The free family standing in for it at import time,
     /// e.g. "Cabin" (a lookalike) or "Liberation Sans".
     pub substituted_by: String,
+}
+
+/// How long a loose sheet rides in the bulletin (roles
+/// build R-3). The office picks one per sheet; Next
+/// Sunday acts on it and says what it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InsertLife {
+    /// Rides every week until someone takes it out: the
+    /// connection card, the giving card.
+    Standing,
+    /// Rides until its keep-through date passes, then
+    /// Next Sunday takes it out and names it, the way an
+    /// announcement ends.
+    Dated,
+    /// This week only: Next Sunday takes it out and
+    /// names it. The default for a new sheet.
+    #[default]
+    ThisWeekOnly,
+}
+
+/// A loose sheet's own paper facts: its shape, how many
+/// copies the office means to print, and the paper in
+/// plain words. This is its own small record rather than
+/// the bulletin's `SheetSpec`, because a sheet's shape
+/// key names sheet shapes ("half-letter", "letter",
+/// "card"), not bulletin folds, and because the copies
+/// and paper are print-morning memory the bulletin
+/// itself does not carry: the app remembers the
+/// intention and says it on the Print step; it does not
+/// dial the copier.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InsertSheet {
+    /// Sheet shape key: "half-letter", "letter", or
+    /// "card" (see [`insert_sheet_size`]).
+    pub preset: String,
+    /// Copies to print. Zero means "as many as the
+    /// bulletin".
+    #[serde(default)]
+    pub copies: usize,
+    /// The paper in plain words ("blue paper", "card
+    /// stock"). Empty means plain paper.
+    #[serde(default)]
+    pub paper_note: String,
+}
+
+impl Default for InsertSheet {
+    fn default() -> Self {
+        InsertSheet {
+            preset: "half-letter".to_string(),
+            copies: 0,
+            paper_note: String::new(),
+        }
+    }
+}
+
+/// The size a sheet shape key names, in milli-points:
+/// half letter is the folded bulletin's own size, letter
+/// is a full sheet, card is quarter letter (the pew
+/// card). None for a key nobody knows; callers fall back
+/// to the sheet's first panel.
+pub fn insert_sheet_size(preset: &str) -> Option<Size> {
+    // Milli-points: 72,000 to the inch.
+    Some(match preset {
+        "half-letter" => Size::new(396_000, 612_000), // 5.5 x 8.5
+        "letter" => Size::new(612_000, 792_000),      // 8.5 x 11
+        "card" => Size::new(306_000, 396_000),        // 4.25 x 5.5
+        _ => return None,
+    })
+}
+
+/// The sheet shapes the office can pick, as (key, words)
+/// in the order the Loose sheets window lists them.
+pub const INSERT_SHEET_SHAPES: [(&str, &str); 3] = [
+    ("half-letter", "Half letter (5.5 x 8.5)"),
+    ("letter", "Letter (8.5 x 11)"),
+    ("card", "Card (4.25 x 5.5)"),
+];
+
+/// A loose sheet that travels inside a bulletin but is
+/// not one of its pages (roles build R-3): its own
+/// panels, its own words and styles, its own paper, its
+/// own life. It prints on its own sheets, in the same
+/// print job, never imposed into the bulletin's fold.
+///
+/// Its pictures are the host's: a picture frame in one
+/// of its panels names an asset in the HOST document's
+/// store by SHA-256, so a photo used by both the
+/// bulletin and a sheet is stored once, under the one
+/// rights record. Its words resolve their field tokens
+/// against the host at print time (see `as_document`):
+/// `{Sunday.date}` on an invitation card is the host's
+/// occasion date, so a standing sheet never carries a
+/// stale date, only the token.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Insert {
+    pub id: String,
+    /// The name the office calls it: "Prayer list".
+    pub name: String,
+    #[serde(default)]
+    pub life: InsertLife,
+    /// For `InsertLife::Dated`: the last day this sheet
+    /// rides, with the same meaning as a story's
+    /// keep-through date. None on a dated sheet means
+    /// its date is not set, and Next Sunday treats it
+    /// as passed.
+    #[serde(default)]
+    pub keep_through: Option<SimpleDate>,
+    #[serde(default)]
+    pub panels: Vec<Panel>,
+    #[serde(default)]
+    pub stories: Vec<Story>,
+    #[serde(default)]
+    pub styles: Vec<ParagraphStyle>,
+    #[serde(default)]
+    pub sheet: InsertSheet,
+}
+
+impl Insert {
+    /// This sheet as a document an exporter can print:
+    /// the sheet's own panels, stories, and styles on
+    /// the host's resolution context (its church
+    /// profile, occasion fields, serving names, wanted
+    /// fonts, and asset store ride along by the clone),
+    /// so field tokens in the sheet's words print the
+    /// host's values and its pictures find their bytes.
+    /// The synthesized document carries no loose sheets
+    /// of its own. Spoken-only words inside the sheet
+    /// are dropped by the export funnel itself, exactly
+    /// as the bulletin's are: one rule, no door can
+    /// forget it.
+    pub fn as_document(&self, host: &Document) -> Document {
+        let mut doc = host.clone();
+        doc.panels = self.panels.clone();
+        doc.stories = self.stories.clone();
+        doc.styles = self.styles.clone();
+        doc.sheet = SheetSpec {
+            preset: self.sheet.preset.clone(),
+            size: insert_sheet_size(&self.sheet.preset)
+                .or_else(|| self.panels.first().map(|p| p.size))
+                .unwrap_or_else(|| Size::new(612_000, 792_000)),
+        };
+        doc.inserts = Vec::new();
+        doc.no_announcements = false;
+        doc
+    }
+
+    /// Whether the sheet's stories carry any words at
+    /// all. An empty sheet is the Check step's business:
+    /// it would print as a blank sheet of colored paper.
+    pub fn has_words(&self) -> bool {
+        self.stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter())
+            .any(|p| !p.text().trim().is_empty())
+    }
+
+    /// Clamp this sheet's numbers to the same sane
+    /// bounds [`Document::sanitized`] promises: an .obdi
+    /// file is a file like any other, and its geometry
+    /// reaches the same writer.
+    pub fn sanitized(mut self) -> Self {
+        sanitize_styles(&mut self.styles);
+        sanitize_panels(&mut self.panels);
+        self
+    }
+
+    /// The asset hashes this sheet's frames use, in
+    /// panel order, each once: picture placements, the
+    /// music files its music boxes were engraved from,
+    /// and panel tracing pictures that name a stored
+    /// asset. The .obdi writer packs exactly these; the
+    /// library attach merges exactly these.
+    pub fn referenced_assets(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |hash: &str| {
+            if !hash.is_empty() && !out.iter().any(|h| h == hash) {
+                out.push(hash.to_string());
+            }
+        };
+        for panel in &self.panels {
+            if let Some(bg) = &panel.background_image {
+                push(bg);
+            }
+            for frame in &panel.frames {
+                if let Some(pic) = &frame.picture {
+                    push(&pic.asset);
+                }
+                if let Some(music) = &frame.music {
+                    push(&music.source);
+                }
+            }
+        }
+        out
+    }
 }
 
 impl Document {
@@ -1362,41 +1566,61 @@ pub fn default_serving_lines() -> Vec<String> {
         .collect()
 }
 
+/// Clamp one style table's numbers to the sane bounds
+/// [`Document::sanitized`] promises.
+fn sanitize_styles(styles: &mut [ParagraphStyle]) {
+    for style in styles {
+        style.font_size = style.font_size.clamp(500, 288_000);
+        style.space_after = style.space_after.clamp(0, 144_000);
+    }
+}
+
+/// Clamp one panel list's geometry to the sane bounds
+/// [`Document::sanitized`] promises.
+fn sanitize_panels(panels: &mut [Panel]) {
+    for panel in panels {
+        panel.size.w = panel.size.w.clamp(0, 10_000_000);
+        panel.size.h = panel.size.h.clamp(0, 10_000_000);
+        for frame in &mut panel.frames {
+            frame.rect.x = frame.rect.x.clamp(-10_000_000, 10_000_000);
+            frame.rect.y = frame.rect.y.clamp(-10_000_000, 10_000_000);
+            frame.rect.w = frame.rect.w.clamp(0, 10_000_000);
+            frame.rect.h = frame.rect.h.clamp(0, 10_000_000);
+            if let Some(pic) = &mut frame.picture {
+                if !pic.crop_x.is_finite() {
+                    pic.crop_x = 0.5;
+                }
+                if !pic.crop_y.is_finite() {
+                    pic.crop_y = 0.5;
+                }
+                pic.crop_x = pic.crop_x.clamp(0.0, 1.0);
+                pic.crop_y = pic.crop_y.clamp(0.0, 1.0);
+            }
+            if let Some(music) = &mut frame.music {
+                if !music.staff_mm.is_finite() || music.staff_mm <= 0.0 {
+                    music.staff_mm = 6.5;
+                }
+                music.staff_mm = music.staff_mm.clamp(1.0, 50.0);
+            }
+        }
+    }
+}
+
 impl Document {
     /// Clamp the numbers a hostile or hand-edited file could set
     /// to extremes (a font size of i64::MAX used to overflow the
     /// PDF writer's arithmetic and panic — closing audit). The
     /// bounds are far outside anything a real bulletin uses.
     pub fn sanitized(mut self) -> Self {
-        for style in &mut self.styles {
-            style.font_size = style.font_size.clamp(500, 288_000);
-            style.space_after = style.space_after.clamp(0, 144_000);
-        }
-        for panel in &mut self.panels {
-            panel.size.w = panel.size.w.clamp(0, 10_000_000);
-            panel.size.h = panel.size.h.clamp(0, 10_000_000);
-            for frame in &mut panel.frames {
-                frame.rect.x = frame.rect.x.clamp(-10_000_000, 10_000_000);
-                frame.rect.y = frame.rect.y.clamp(-10_000_000, 10_000_000);
-                frame.rect.w = frame.rect.w.clamp(0, 10_000_000);
-                frame.rect.h = frame.rect.h.clamp(0, 10_000_000);
-                if let Some(pic) = &mut frame.picture {
-                    if !pic.crop_x.is_finite() {
-                        pic.crop_x = 0.5;
-                    }
-                    if !pic.crop_y.is_finite() {
-                        pic.crop_y = 0.5;
-                    }
-                    pic.crop_x = pic.crop_x.clamp(0.0, 1.0);
-                    pic.crop_y = pic.crop_y.clamp(0.0, 1.0);
-                }
-                if let Some(music) = &mut frame.music {
-                    if !music.staff_mm.is_finite() || music.staff_mm <= 0.0 {
-                        music.staff_mm = 6.5;
-                    }
-                    music.staff_mm = music.staff_mm.clamp(1.0, 50.0);
-                }
-            }
+        sanitize_styles(&mut self.styles);
+        sanitize_panels(&mut self.panels);
+        // A loose sheet's geometry gets the same clamp
+        // (roles build R-3): its numbers come from the
+        // same kind of file, and its panels print through
+        // the same writer.
+        for insert in &mut self.inserts {
+            sanitize_styles(&mut insert.styles);
+            sanitize_panels(&mut insert.panels);
         }
         self
     }
@@ -1894,6 +2118,7 @@ mod tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
+            inserts: Vec::new(),
         };
         assert_eq!(
             resolve_fields("{Church.name} - {Sunday.name}, {Sunday.date}", &doc),
@@ -1920,6 +2145,7 @@ mod tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
+            inserts: Vec::new(),
         }
     }
 
@@ -2165,6 +2391,7 @@ mod tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
+            inserts: Vec::new(),
         }
     }
 
@@ -2345,6 +2572,7 @@ mod occasion_tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
+            inserts: Vec::new(),
         }
     }
 
@@ -2663,6 +2891,7 @@ mod picture_tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
+            inserts: Vec::new(),
         }
     }
 
@@ -2749,6 +2978,118 @@ mod picture_tests {
         assert_eq!(head.len(), 1);
         assert_eq!(head[0].text(), "One");
         assert_eq!(tail[0].text(), "Two");
+    }
+
+    fn sample_insert() -> Insert {
+        Insert {
+            id: "sheet-1".into(),
+            name: "Prayer list".into(),
+            life: InsertLife::Dated,
+            keep_through: Some(SimpleDate {
+                year: 2026,
+                month: 11,
+                day: 8,
+            }),
+            panels: vec![Panel {
+                id: "sheet-1-p1".into(),
+                name: "Prayer list".into(),
+                size: insert_sheet_size("half-letter").expect("shape"),
+                frames: vec![Frame {
+                    id: "sheet-1-f1".into(),
+                    name: "Words".into(),
+                    kind: FrameKind::Text,
+                    rect: Rect::new(1000, 1000, 300_000, 500_000),
+                    story_id: Some("sheet-1-s1".into()),
+                    role: ContentRole::Standing,
+                    picture: None,
+                    music: None,
+                }],
+                guides: vec![],
+                background_image: None,
+            }],
+            stories: vec![Story {
+                id: "sheet-1-s1".into(),
+                paragraphs: vec![Paragraph::new(
+                    "body",
+                    "Prayers for {Sunday.date} at {Church.name}",
+                )],
+                keep_through: None,
+            }],
+            styles: default_styles(),
+            sheet: InsertSheet {
+                preset: "half-letter".into(),
+                copies: 60,
+                paper_note: "blue paper".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn inserts_round_trip_through_json() {
+        let mut doc = doc_with_panels(Vec::new());
+        doc.inserts = vec![sample_insert()];
+        let json = serde_json::to_string(&doc).expect("json");
+        let back: Document = serde_json::from_str(&json).expect("back");
+        assert_eq!(back.inserts.len(), 1);
+        let ins = &back.inserts[0];
+        assert_eq!(ins.name, "Prayer list");
+        assert_eq!(ins.life, InsertLife::Dated);
+        assert_eq!(
+            ins.keep_through,
+            Some(SimpleDate {
+                year: 2026,
+                month: 11,
+                day: 8
+            })
+        );
+        assert_eq!(ins.sheet.copies, 60);
+        assert_eq!(ins.sheet.paper_note, "blue paper");
+        assert!(ins.has_words());
+    }
+
+    #[test]
+    fn a_document_written_before_loose_sheets_loads_with_none() {
+        let doc = doc_with_panels(Vec::new());
+        let mut value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&doc).expect("json")).expect("value");
+        value.as_object_mut().expect("object").remove("inserts");
+        let back: Document = serde_json::from_value(value).expect("loads");
+        assert!(back.inserts.is_empty());
+    }
+
+    #[test]
+    fn an_insert_prints_as_a_document_on_the_hosts_fields() {
+        let mut host = doc_with_panels(Vec::new());
+        host.profile.name = "Grace Lutheran Church".into();
+        host.fields.insert(
+            "occasion_date_long".into(),
+            "Sunday, October 18, 2026".into(),
+        );
+        let ins = sample_insert();
+        let doc = ins.as_document(&host);
+        // The sheet's own parts, the host's context.
+        assert_eq!(doc.panels.len(), 1);
+        assert_eq!(doc.stories.len(), 1);
+        assert!(doc.inserts.is_empty(), "a sheet has no sheets of its own");
+        assert_eq!(doc.sheet.preset, "half-letter");
+        assert_eq!(doc.sheet.size, Size::new(396_000, 612_000));
+        // Its words resolve against the host: the date and
+        // the church name are the host's, not copies.
+        let story = &doc.stories[0];
+        assert_eq!(
+            resolve_fields(&story.paragraphs[0].text(), &doc),
+            "Prayers for Sunday, October 18, 2026 at Grace Lutheran Church"
+        );
+    }
+
+    #[test]
+    fn an_insert_with_no_words_says_so() {
+        let mut ins = sample_insert();
+        assert!(ins.has_words());
+        ins.stories[0].paragraphs[0].set_text("   ");
+        assert!(!ins.has_words());
+        ins.stories.clear();
+        assert!(!ins.has_words());
     }
 
     #[test]

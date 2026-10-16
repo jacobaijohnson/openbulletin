@@ -14,7 +14,9 @@
 //!
 //! Saves are atomic (temp file + rename) in both versions.
 
-use ob_model::{AssetKind, Document, RightsRecord};
+use ob_model::{Asset, AssetKind, Document, Insert, RightsRecord};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -184,6 +186,148 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     Ok(doc)
 }
 
+/// The root of an .obdi file: the sheet itself, plus the
+/// asset records of the pictures it uses (their bytes
+/// ride as `assets/<sha256>` entries, exactly as in a
+/// bulletin file). The records travel so a sheet that
+/// arrives from another church keeps the credit lines
+/// its pictures are owed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct InsertPackage {
+    insert: Insert,
+    #[serde(default)]
+    assets: Vec<Asset>,
+}
+
+/// Save one loose sheet as an .obdi file: the v1
+/// container discipline under another name (roles build
+/// R-3). Exactly the assets the sheet's frames use are
+/// packed, from the host document's store; a referenced
+/// picture whose bytes the host does not hold is left
+/// out, and the sheet keeps saying that picture is
+/// missing, as it did in the bulletin. The write is
+/// atomic, like a bulletin's.
+pub fn save_insert(insert: &Insert, host: &Document, path: &Path) -> Result<(), String> {
+    let referenced = insert.referenced_assets();
+    let package = InsertPackage {
+        insert: insert.clone(),
+        assets: host
+            .assets
+            .iter()
+            .filter(|a| referenced.contains(&a.sha256))
+            .cloned()
+            .collect(),
+    };
+    let json = serde_json::to_string_pretty(&package).map_err(|e| e.to_string())?;
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("insert.json", options)
+            .map_err(|e| e.to_string())?;
+        zip.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+        for hash in &referenced {
+            let Some(bytes) = host.asset_data(hash) else {
+                continue;
+            };
+            zip.start_file(format!("assets/{hash}"), options)
+                .map_err(|e| e.to_string())?;
+            zip.write_all(bytes).map_err(|e| e.to_string())?;
+        }
+        zip.finish().map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("obdi.tmp");
+    std::fs::write(&tmp, buf).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Load an .obdi file: the sheet, the asset records it
+/// carried, and the picture bytes it packed, by hash.
+/// The .obd discipline throughout: the total is capped
+/// from the directory before anything is decompressed,
+/// and every asset entry's bytes are checked against
+/// the fingerprint in its name before anything is
+/// trusted; a mismatch refuses in plain words.
+/// What a sheet file carries out: the sheet itself,
+/// the records of the pictures it uses, and their
+/// bytes keyed by fingerprint.
+pub type LoadedInsert = (Insert, Vec<Asset>, BTreeMap<String, Vec<u8>>);
+
+pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
+    let head = read_head(path)?;
+    if head != ZIP_MAGIC {
+        return Err("that file is not a loose sheet file (.obdi)".to_string());
+    }
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut zip =
+        zip::ZipArchive::new(file).map_err(|e| format!("that file's container is damaged: {e}"))?;
+    let mut total: u64 = 0;
+    for i in 0..zip.len() {
+        let entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        total = total.saturating_add(entry.size());
+        if total > MAX_TOTAL_UNCOMPRESSED {
+            return Err(
+                "what is inside that file adds up to far more than a loose sheet \
+                 ever holds; it was not opened."
+                    .to_string(),
+            );
+        }
+    }
+    let mut package: InsertPackage = {
+        let mut entry = zip
+            .by_name("insert.json")
+            .map_err(|_| "that file has no loose sheet inside it (no insert.json)".to_string())?;
+        if entry.size() > MAX_JSON_BYTES {
+            return Err("that file is far larger than a loose sheet ever is".to_string());
+        }
+        let mut text = String::new();
+        entry.read_to_string(&mut text).map_err(|e| e.to_string())?;
+        serde_json::from_str(&text).map_err(|e| e.to_string())?
+    };
+    let mut bytes_by_hash: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        let name = entry.name().to_string();
+        let Some(hash) = name.strip_prefix("assets/") else {
+            continue;
+        };
+        let hash = hash.to_string();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        if ob_model::sha256_hex(&bytes) != hash {
+            let short: String = hash.chars().take(12).collect();
+            return Err(format!(
+                "a picture inside that file does not match its fingerprint ({short}) \
+                 so the file was not opened; it may be damaged."
+            ));
+        }
+        bytes_by_hash.insert(hash, bytes);
+    }
+    // Bytes whose record did not travel still belong to
+    // the sheet; give them an honest record rather than
+    // dropping them, the same rule as a bulletin file.
+    for hash in bytes_by_hash.keys() {
+        if !package.assets.iter().any(|a| &a.sha256 == hash) {
+            package.assets.push(Asset {
+                sha256: hash.clone(),
+                kind: AssetKind::Other,
+                media_type: "application/octet-stream".to_string(),
+                rights: RightsRecord {
+                    source: "inside the sheet file".to_string(),
+                    ..Default::default()
+                },
+            });
+        }
+    }
+    // Geometry from a file gets the same clamping the
+    // bulletin loader promises: a hostile .obdi must not
+    // plant numbers the writer cannot print.
+    Ok((package.insert.sanitized(), package.assets, bytes_by_hash))
+}
+
 /// One sidecar picture's size cap. A tracing picture is a
 /// page render; tens of megabytes is generous, and a
 /// "picture" bigger than this is not one (audit Batch 1).
@@ -324,6 +468,7 @@ mod tests {
             occasion_time: None,
             wanted_fonts: Vec::new(),
             participants: Default::default(),
+            inserts: Default::default(),
         }
     }
 
@@ -669,6 +814,140 @@ mod tests {
         }
         let err = load(&bad).expect_err("tampered bytes refuse");
         assert!(err.contains("does not match its fingerprint"), "err: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn sheet_with_picture(host: &mut Document) -> (Insert, String) {
+        let hash = host.add_asset(
+            b"sheet-picture-bytes",
+            AssetKind::Picture,
+            "image/png",
+            RightsRecord {
+                source: "the church camera".into(),
+                license: LicenseKind::ChurchOwned,
+                ..Default::default()
+            },
+        );
+        let ins = Insert {
+            id: "sheet-1".into(),
+            name: "Prayer list".into(),
+            life: ob_model::InsertLife::ThisWeekOnly,
+            keep_through: None,
+            panels: vec![Panel {
+                background_image: None,
+                id: "sheet-1-p1".into(),
+                name: "Prayer list".into(),
+                size: Size::new(396_000, 612_000),
+                frames: vec![Frame {
+                    id: "sheet-1-f1".into(),
+                    name: "Photo".into(),
+                    kind: FrameKind::Picture,
+                    rect: Rect::new(0, 0, 100_000, 100_000),
+                    story_id: None,
+                    role: ContentRole::Standing,
+                    picture: Some(PicturePlacement::new(hash.clone())),
+                    music: None,
+                }],
+                guides: vec![],
+            }],
+            stories: vec![Story {
+                id: "sheet-1-s1".into(),
+                paragraphs: vec![Paragraph::new("body", "Pray for us")],
+                keep_through: None,
+            }],
+            styles: default_styles(),
+            sheet: ob_model::InsertSheet {
+                preset: "half-letter".into(),
+                copies: 60,
+                paper_note: "blue paper".into(),
+            },
+        };
+        (ins, hash)
+    }
+
+    #[test]
+    fn an_obdi_sheet_round_trips_with_its_picture() {
+        let dir = scratch("obdi");
+        let mut host = test_doc();
+        let (ins, hash) = sheet_with_picture(&mut host);
+        // A picture the sheet does not use must not travel.
+        host.add_asset(
+            b"unrelated-bytes",
+            AssetKind::Picture,
+            "image/png",
+            RightsRecord::default(),
+        );
+        let path = dir.join("Prayer list.obdi");
+        save_insert(&ins, &host, &path).unwrap();
+        let head = std::fs::read(&path).unwrap();
+        assert_eq!(&head[..4], b"PK\x03\x04", "an .obdi is the v1 container");
+        let (back, assets, bytes) = load_insert(&path).unwrap();
+        assert_eq!(back, ins);
+        assert_eq!(
+            bytes.get(&hash).map(|b| b.as_slice()),
+            Some(b"sheet-picture-bytes".as_slice())
+        );
+        assert_eq!(bytes.len(), 1, "only the used picture travels");
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].sha256, hash);
+        assert_eq!(assets[0].rights.source, "the church camera");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_obdi_with_swapped_picture_bytes_is_refused() {
+        let dir = scratch("obdi-tamper");
+        let mut host = test_doc();
+        let (ins, hash) = sheet_with_picture(&mut host);
+        let path = dir.join("sheet.obdi");
+        save_insert(&ins, &host, &path).unwrap();
+        // Rewrite the zip with the asset entry's bytes
+        // swapped: the entry still answers to the old hash.
+        let file = std::fs::File::open(&path).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let mut insert_json = String::new();
+        zip.by_name("insert.json")
+            .unwrap()
+            .read_to_string(&mut insert_json)
+            .unwrap();
+        drop(zip);
+        let bad = dir.join("bad.obdi");
+        {
+            let cursor = std::io::Cursor::new(Vec::new());
+            let mut zw = zip::ZipWriter::new(cursor);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("insert.json", opts).unwrap();
+            zw.write_all(insert_json.as_bytes()).unwrap();
+            zw.start_file(format!("assets/{hash}"), opts).unwrap();
+            zw.write_all(b"swapped-bytes").unwrap();
+            let cursor = zw.finish().unwrap();
+            std::fs::write(&bad, cursor.into_inner()).unwrap();
+        }
+        let err = load_insert(&bad).expect_err("tampered bytes refuse");
+        assert!(err.contains("does not match its fingerprint"), "err: {err}");
+        // And a file that is not a container at all is
+        // refused in plain words, not misparsed.
+        let not_zip = dir.join("plain.obdi");
+        std::fs::write(&not_zip, b"just some text").unwrap();
+        let err = load_insert(&not_zip).expect_err("not a sheet file");
+        assert!(err.contains("not a loose sheet"), "err: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bulletin_written_before_loose_sheets_loads_with_none() {
+        // The inserts key is simply absent from an old
+        // file; loading must come back with no sheets.
+        let mut doc = test_doc();
+        doc.inserts = vec![];
+        let mut json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&doc).expect("json")).expect("value");
+        json.as_object_mut().expect("object").remove("inserts");
+        let dir = scratch("noinserts");
+        let path = dir.join("old.obd");
+        std::fs::write(&path, json.to_string()).expect("write");
+        let loaded = load(&path).expect("loads");
+        assert!(loaded.inserts.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

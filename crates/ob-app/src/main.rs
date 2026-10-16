@@ -12,6 +12,17 @@ use ob_model::{ChurchProfile, ContentRole, Document};
 
 const STEPS: [&str; 5] = ["Start", "This Sunday", "Announcements", "Check", "Print"];
 
+/// The app's small, named palette (UI audit round 2, batch 3).
+/// One red means "a problem", one amber "look at this", one
+/// green "all good", one muted blue "for information", and one
+/// blue does every canvas job (guides, selection, drag
+/// readouts). No other literal colors for these meanings.
+const PROBLEM: egui::Color32 = egui::Color32::from_rgb(170, 40, 30);
+const WARN: egui::Color32 = egui::Color32::from_rgb(160, 100, 10);
+const GOOD: egui::Color32 = egui::Color32::from_rgb(40, 110, 60);
+const INFO: egui::Color32 = egui::Color32::from_rgb(90, 90, 160);
+const CANVAS_ACCENT: egui::Color32 = egui::Color32::from_rgb(0, 120, 195);
+
 const GUIDANCE: [&str; 5] = [
     "Pick the bulletin shape and confirm your church name. Everything else starts from last week's file.",
     "Confirm the date and the name of the Sunday. These fill the cover automatically.",
@@ -678,6 +689,16 @@ fn snapshot(doc: &Document) -> String {
     serde_json::to_string(doc).unwrap_or_default()
 }
 
+/// Just the file's name for status messages (UI audit round
+/// 2, batch 3): "Saved print copy as bulletin-print.pdf"
+/// reads better in a narrow sidebar than a full path, and
+/// the person just chose the folder in the save dialog.
+fn file_name_of(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 /// One Check-step note. A note that knows which panel and
 /// frame it is about carries them as a target: the Check
 /// step puts a "Fix this" button under it that opens the
@@ -901,6 +922,7 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
 /// One row of the Fonts panel: a library font with everything the
 /// admin needs (its own face for the preview, its name, and what its
 /// license allows in plain words).
+#[derive(Clone)]
 struct FontRow {
     key: String,
     family: String,
@@ -1081,6 +1103,52 @@ struct PreviewLine {
     y: f32,
     w: f32,
     align: ob_model::Align,
+    /// The face this line prints in, carried so the previews
+    /// can draw it in that face too (UI audit round 2,
+    /// batch 3): the style's font family name plus its
+    /// bold and italic switches.
+    font_family: String,
+    bold: bool,
+    italic: bool,
+}
+
+/// The egui family key for the library face a preview line
+/// prints in. Every library file registers as its own egui
+/// family (keyed by its hash), so the face is chosen among
+/// the rows of the line's family by the face's full name:
+/// the exact face when the library holds it (Bold, Italic,
+/// Bold Italic), else the family's regular face. None when
+/// the family is not in the library at all; the caller then
+/// falls back to the interface font.
+fn preview_face_key(rows: &[FontRow], family: &str, bold: bool, italic: bool) -> Option<String> {
+    let mut regular: Option<&FontRow> = None;
+    let mut any: Option<&FontRow> = None;
+    for row in rows {
+        if !row.family.eq_ignore_ascii_case(family) {
+            continue;
+        }
+        any = any.or(Some(row));
+        let name = row.full_name.to_lowercase();
+        let has_bold = name.contains("bold");
+        let has_italic = name.contains("italic") || name.contains("oblique");
+        if has_bold == bold && has_italic == italic {
+            return Some(row.key.clone());
+        }
+        if !has_bold && !has_italic {
+            regular = regular.or(Some(row));
+        }
+    }
+    regular.or(any).map(|row| row.key.clone())
+}
+
+/// The font a preview line is drawn with: its own library
+/// face when the library holds it, the interface font when
+/// it does not.
+fn line_font_id(rows: &[FontRow], line: &PreviewLine, size: f32) -> egui::FontId {
+    match preview_face_key(rows, &line.font_family, line.bold, line.italic) {
+        Some(key) => egui::FontId::new(size, egui::FontFamily::Name(key.into())),
+        None => egui::FontId::proportional(size),
+    }
 }
 
 /// A message back from a catalog worker thread (search or install).
@@ -1513,7 +1581,7 @@ impl App {
                 let over_lines = ((needed - rect.h) / 14_000).max(1);
                 fit_notes.push(CheckNote::aimed(
                     format!(
-                        "Check: the words in \"{}\" ({}) do not all fit. About {} line{} too many. Shorten the words, or we can shrink them in a later version.",
+                        "Check: the words in \"{}\" ({}) do not all fit. About {} line{} too many. Shorten the words, or make the box bigger in the Pages window.",
                         first.chars().take(38).collect::<String>(),
                         panel_name,
                         over_lines,
@@ -1854,16 +1922,23 @@ impl App {
                 self.catalog_busy = false;
             }
             Ok(CatalogMsg::Installed(names)) => {
-                self.status = format!("Font installed: {}", names.join(", "));
+                self.note(format!("Font installed: {}", names.join(", ")));
                 self.catalog_rx = None;
                 self.catalog_busy = false;
                 self.refresh_fonts(ctx);
             }
             Ok(CatalogMsg::PackDone { installed, failed }) => {
-                self.status = if failed.is_empty() {
-                    format!("Church Starter Pack installed: {} fonts", installed.len())
+                // Font results go through note()/fail() like
+                // every other outcome, so a failure gets the
+                // banner instead of whispering (UI audit
+                // round 2, batch 3).
+                if failed.is_empty() {
+                    self.note(format!(
+                        "Church Starter Pack installed: {} fonts",
+                        installed.len()
+                    ));
                 } else {
-                    format!(
+                    self.fail(format!(
                         "Starter Pack mostly installed: {} fonts in; could not get {}",
                         installed.len(),
                         failed
@@ -1871,14 +1946,14 @@ impl App {
                             .map(|(id, _)| id.as_str())
                             .collect::<Vec<_>>()
                             .join(", ")
-                    )
-                };
+                    ));
+                }
                 self.catalog_rx = None;
                 self.catalog_busy = false;
                 self.refresh_fonts(ctx);
             }
             Ok(CatalogMsg::Failed(e)) => {
-                self.status = format!("Font catalog: {e}");
+                self.fail(format!("Font catalog: {e}"));
                 self.catalog_rx = None;
                 self.catalog_busy = false;
             }
@@ -1982,12 +2057,19 @@ impl App {
     fn sheet_preview_ui(&mut self, ui: &mut egui::Ui) {
         // Build first (borrows self), then draw from the cache.
         let count = self.preview_sheets().len();
+        // The caption says only what the picture can back up
+        // (UI audit round 2, batch 3): the words are drawn in
+        // the bulletin's own faces and the breaks are the
+        // printed breaks; the gray names and outlines are
+        // guides, and guides never print.
         ui.label(format!(
-            "This is exactly what comes out of the printer: {count} sheet side{}.
-             Lines break where they will print.",
+            "The printed sheets, one side at a time: {count} sheet side{}. \
+             Lines break where they will print, in your fonts. \
+             The gray panel names and outlines are guides; they do not print.",
             if count == 1 { "" } else { "s" }
         ));
         let sheets = self.preview_sheets().clone();
+        let rows = self.font_rows.clone();
         // The preview is a picture, not the point of the
         // step: cap the room it takes (its own little scroll
         // box) so the copy buttons stay within reach on
@@ -2001,7 +2083,7 @@ impl App {
                     let pair = i / 2 + 1;
                     let face = if i % 2 == 0 { "front" } else { "back" };
                     ui.label(egui::RichText::new(format!("Sheet {pair}, {face}")).strong());
-                    draw_sheet(ui, sheet);
+                    draw_sheet(ui, sheet, &rows);
                 }
             });
     }
@@ -2265,7 +2347,7 @@ impl App {
             .min_size([520.0, 420.0])
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("<").clicked() {
+                    if ui.button("Previous page").clicked() {
                         self.page_by(-1);
                     }
                     let panel = &self.doc.panels[self.canvas_panel];
@@ -2275,7 +2357,7 @@ impl App {
                         self.canvas_panel + 1,
                         self.doc.panels.len()
                     )).strong());
-                    if ui.button(">").clicked() {
+                    if ui.button("Next page").clicked() {
                         self.page_by(1);
                     }
                     ui.separator();
@@ -2469,7 +2551,7 @@ impl App {
                     egui::Align2::LEFT_TOP,
                     "The old page picture for this panel could not be found.\nIt lives beside the bulletin file.",
                     egui::FontId::proportional(12.0),
-                    egui::Color32::from_rgb(150, 60, 50),
+                    PROBLEM,
                 );
             }
             if let Some(tex) = &self.bg_tex {
@@ -2500,7 +2582,7 @@ impl App {
                     to_px(r.x as f32 / 1000.0, r.y as f32 / 1000.0),
                     to_px((r.x + r.w) as f32 / 1000.0, (r.y + r.h) as f32 / 1000.0),
                 );
-                let blue = egui::Color32::from_rgb(0, 110, 190);
+                let blue = CANVAS_ACCENT;
                 painter.rect_stroke(frect, 0.0, egui::Stroke::new(1.75_f32, blue));
                 let handle = egui::Rect::from_min_size(
                     egui::pos2(frect.max.x - 9.0, frect.max.y - 9.0),
@@ -2558,7 +2640,7 @@ impl App {
                     to_px(lx, line.y),
                     anchor,
                     &line.text,
-                    egui::FontId::proportional((line.size * scale).max(4.0)),
+                    line_font_id(&self.font_rows, line, (line.size * scale).max(4.0)),
                     egui::Color32::BLACK,
                 );
             }
@@ -2838,7 +2920,7 @@ impl App {
                 }
             }
         }
-        let guide_color = egui::Color32::from_rgb(0, 150, 200);
+        let guide_color = CANVAS_ACCENT;
         let locked_color = egui::Color32::from_rgb(120, 120, 120);
         for (gi, g) in self.doc.panels[idx].guides.iter().enumerate() {
             let dragging = self.drag_guide == Some(gi);
@@ -3470,13 +3552,13 @@ impl App {
                         for item in &review.items {
                             let (tag, color) = match item.badge {
                                 ob_extract::draft::Badge::Matched => {
-                                    ("Good", egui::Color32::from_rgb(40, 110, 60))
+                                    ("Good", GOOD)
                                 }
                                 ob_extract::draft::Badge::CheckThis => {
-                                    ("Check this", egui::Color32::from_rgb(170, 110, 20))
+                                    ("Check this", WARN)
                                 }
                                 ob_extract::draft::Badge::PictureOnly => {
-                                    ("Picture only", egui::Color32::from_rgb(90, 90, 160))
+                                    ("Picture only", INFO)
                                 }
                             };
                             ui.horizontal(|ui| {
@@ -3720,7 +3802,7 @@ impl App {
                 if let Some(note) = &review.note {
                     ui.label(
                         egui::RichText::new(note)
-                            .color(egui::Color32::from_rgb(0xB0, 0x30, 0x30)),
+                            .color(PROBLEM),
                     );
                 }
                 ui.separator();
@@ -3729,9 +3811,9 @@ impl App {
                     .show(ui, |ui| {
                         for item in &review.items {
                             let (tag, color) = if item.standing {
-                                ("Stays", egui::Color32::from_rgb(40, 110, 60))
+                                ("Stays", GOOD)
                             } else {
-                                ("Changes weekly", egui::Color32::from_rgb(170, 110, 20))
+                                ("Changes weekly", WARN)
                             };
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(tag).color(color).strong());
@@ -3862,7 +3944,7 @@ impl App {
                 Ok((bytes, report)) => match std::fs::write(path, &bytes) {
                     Ok(()) => {
                         let mut msg =
-                            format!("Saved a copy for InDesign to {}.", path.display());
+                            format!("Saved a copy for InDesign as {}.", file_name_of(path));
                         if report.notes.is_empty() {
                             msg.push_str(" Everything in the bulletin came over.");
                         } else {
@@ -3882,7 +3964,7 @@ impl App {
                 Ok((bytes, report)) => match std::fs::write(path, &bytes) {
                     Ok(()) => {
                         let mut msg =
-                            format!("Saved a copy for Scribus to {}.", path.display());
+                            format!("Saved a copy for Scribus as {}.", file_name_of(path));
                         if report.notes.is_empty() {
                             msg.push_str(" Everything in the bulletin came over.");
                         } else {
@@ -3919,7 +4001,7 @@ impl App {
         if let Some(path) = target {
             match ob_format::save(&self.doc, &path) {
                 Ok(()) => {
-                    self.note(format!("Saved to {}", path.display()));
+                    self.note(format!("Saved as {}", file_name_of(&path)));
                     // An import's page pictures move beside the
                     // file on first Save.
                     if let Some(base) = self.asset_base.take() {
@@ -4243,22 +4325,22 @@ impl App {
                                         }
                                     }
                                 }
-                                self.status = if added.is_empty() {
-                                    format!(
+                                if added.is_empty() {
+                                    self.fail(format!(
                                         "No fonts added. {}",
                                         problems.into_iter().next().unwrap_or_default()
-                                    )
+                                    ));
                                 } else {
-                                    format!(
+                                    self.note(format!(
                                         "Fonts added: {}{}",
                                         added.join(", "),
                                         caution
-                                    )
-                                };
+                                    ));
+                                }
                                 self.refresh_fonts(ctx);
                             }
                             Err(e) => {
-                                self.status = format!("Could not open the font library: {e}")
+                                self.fail(format!("Could not open the font library: {e}"))
                             }
                         }
                     }
@@ -4427,22 +4509,22 @@ impl App {
                         .and_then(|lib| lib.add_path(&path))
                     {
                         Ok(info) => {
-                            self.status = if info.rights.may_package() {
-                                format!("Font copied in: {}", info.full_name)
+                            if info.rights.may_package() {
+                                self.note(format!("Font copied in: {}", info.full_name));
                             } else {
-                                format!(
+                                self.note(format!(
                                     "Font copied in: {}. Note: it did not come from \
                                      the free catalog; only share bulletins using \
                                      it if you have the right to share that font.",
                                     info.full_name
-                                )
-                            };
+                                ));
+                            }
                             self.system_rows
                                 .retain(|f| f.info.sha256 != info.sha256);
                             self.refresh_fonts(ctx);
                         }
                         Err(e) => {
-                            self.status = format!("Could not add that font: {e}")
+                            self.fail(format!("Could not add that font: {e}"))
                         }
                     }
                 }
@@ -4456,6 +4538,13 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.startup_done {
             self.startup();
+        }
+        // Register the library faces once, up front: the
+        // previews draw in them (UI audit round 2, batch 3),
+        // and they must not wait for a first visit to the
+        // Fonts window.
+        if !self.fonts_loaded {
+            self.refresh_fonts(ctx);
         }
         self.poll_import(ctx);
         self.import_review_window(ctx);
@@ -4533,6 +4622,14 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("OpenBulletin");
+                // The version, small and quiet, so "which
+                // version are you running?" has an answer on
+                // screen during phone help (UI audit round 2).
+                ui.label(
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .small()
+                        .color(egui::Color32::from_gray(110)),
+                );
                 // The bar is grouped the way an office worker's
                 // hands expect (UI audit round 2): the file
                 // family together, then undo and redo, then the
@@ -4605,7 +4702,9 @@ impl eframe::App for App {
                     }
                 });
             });
-            ui.label(GUIDANCE[self.step]);
+            // The one sentence that orients the whole step
+            // gets emphasis (UI audit round 2, batch 3).
+            ui.label(egui::RichText::new(GUIDANCE[self.step]).strong());
         });
 
         egui::SidePanel::left("steps")
@@ -4984,7 +5083,7 @@ impl eframe::App for App {
                             if n.text.starts_with("Check:") {
                                 ui.label(
                                     egui::RichText::new(&n.text)
-                                        .color(egui::Color32::from_rgb(170, 40, 30)),
+                                        .color(PROBLEM),
                                 );
                             } else {
                                 ui.label(&n.text);
@@ -4999,7 +5098,7 @@ impl eframe::App for App {
                         for f in &findings {
                             ui.label(
                                 egui::RichText::new(char_note(f))
-                                    .color(egui::Color32::from_rgb(170, 40, 30)),
+                                    .color(PROBLEM),
                             );
                             if weekly_story_id(&self.doc).as_deref()
                                 == Some(f.story_id.as_str())
@@ -5034,7 +5133,7 @@ impl eframe::App for App {
                             ui.label(
                                 egui::RichText::new(char_note(&f))
                                     .strong()
-                                    .color(egui::Color32::from_rgb(170, 40, 30)),
+                                    .color(PROBLEM),
                             );
                         }
                         if print_copy_stale(
@@ -5044,7 +5143,7 @@ impl eframe::App for App {
                             ui.label(
                                 egui::RichText::new("This bulletin changed since the print copy was made. Make a fresh print copy before printing.")
                                     .strong()
-                                    .color(egui::Color32::from_rgb(170, 40, 30)),
+                                    .color(PROBLEM),
                             );
                         }
                         ui.small("Open makes a one-time copy to print right now. The buttons under \"Keep a copy as a file\" keep files you can reuse.");
@@ -5083,7 +5182,7 @@ impl eframe::App for App {
                                 match std::fs::write(&path, &bytes) {
                                     Ok(()) => {
                                         self.print_fingerprint = Some(snapshot(&self.doc));
-                                        self.status = format!("Saved print copy to {}", path.display());
+                                        self.status = format!("Saved print copy as {}", file_name_of(&path));
                                     }
                                     Err(e) => self.status = format!("Could not save the print copy: {e}"),
                                 }
@@ -5108,7 +5207,7 @@ impl eframe::App for App {
                                         // freshness warning must
                                         // never claim one exists
                                         // (UI audit round 2).
-                                        self.status = format!("Saved reading copy to {}", path.display());
+                                        self.status = format!("Saved reading copy as {}", file_name_of(&path));
                                     }
                                     Err(e) => self.status = format!("Could not save the reading copy: {e}"),
                                 }
@@ -5199,11 +5298,15 @@ impl eframe::App for App {
                 if self.status_error {
                     ui.label(
                         egui::RichText::new(format!("Something needs attention: {}", self.status))
-                            .color(egui::Color32::from_rgb(170, 40, 30))
+                            .color(PROBLEM)
                             .strong(),
                     );
                 } else {
-                    ui.small(&self.status);
+                    // Body size, not small: this line is the
+                    // app's confirmation for saves and copies,
+                    // and it should be readable (UI audit
+                    // round 2, batch 3).
+                    ui.label(&self.status);
                 }
             });
 
@@ -5219,7 +5322,7 @@ impl eframe::App for App {
         self.fonts_window(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label(egui::RichText::new("Preview: what the congregation will hold").strong());
-            ui.small("Laid out with your real fonts, the same lines the printer gets. The Pages window is where you move boxes.");
+            ui.small("In your fonts, with lines breaking where they will print. The light outlines are guides; they do not print. The Pages window is where you move boxes.");
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let count = self.doc.panels.len();
                 for idx in 0..count {
@@ -5277,7 +5380,7 @@ impl eframe::App for App {
                             rect.min + egui::vec2(lx * scale, line.y * scale),
                             anchor,
                             &line.text,
-                            egui::FontId::proportional((line.size * scale).max(4.0)),
+                            line_font_id(&self.font_rows, line, (line.size * scale).max(4.0)),
                             egui::Color32::BLACK,
                         );
                     }
@@ -5302,17 +5405,62 @@ impl StrongIf for egui::RichText {
     }
 }
 
+/// The app's text sizes, set once (UI audit round 2, batch 3).
+/// The stock egui scale reads small for this audience (office
+/// administrators, some covering on unfamiliar machines), so
+/// body and button text run a step larger. Per-widget sizes in
+/// the canvas and previews are content, not chrome, and are
+/// not touched here.
+fn app_style() -> egui::Style {
+    let mut style = egui::Style::default();
+    style
+        .text_styles
+        .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Body, egui::FontId::proportional(15.5));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Button, egui::FontId::proportional(15.5));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Small, egui::FontId::proportional(12.5));
+    style
+}
+
+/// The window icon: the same folded-bulletin glyph the bundle
+/// ships as icon.png, decoded with the image crate the app
+/// already depends on. A decode failure must never stop the
+/// app, so it falls back to no icon.
+fn app_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../assets/icon.png");
+    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
+}
+
 fn main() -> eframe::Result<()> {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1180.0, 820.0])
+        .with_min_inner_size([940.0, 620.0]);
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 820.0])
-            .with_min_inner_size([940.0, 620.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
         "OpenBulletin",
         options,
-        Box::new(|_cc| Ok(Box::new(App::default()))),
+        Box::new(|cc| {
+            cc.egui_ctx.set_style(app_style());
+            Ok(Box::new(App::default()))
+        }),
     )
 }
 
@@ -5389,6 +5537,9 @@ fn panel_lines(
                     y: y as f32 / 1000.0,
                     w: tw as f32 / 1000.0,
                     align: style.align,
+                    font_family: style.font_family.clone(),
+                    bold: style.bold,
+                    italic: style.italic,
                 });
             }
             y += style.space_after;
@@ -5682,8 +5833,10 @@ fn build_preview(doc_in: &Document) -> Vec<PreviewSheet> {
 }
 
 /// Draw one sheet side with the egui painter: white sheet, fold
-/// lines, panel outlines, panel names, and the shaped lines.
-fn draw_sheet(ui: &mut egui::Ui, sheet: &PreviewSheet) {
+/// lines, panel outlines, panel names, and the shaped lines in
+/// their own faces. The outlines and names are guides (the
+/// caption above the preview says they do not print).
+fn draw_sheet(ui: &mut egui::Ui, sheet: &PreviewSheet, rows: &[FontRow]) {
     let avail = ui.available_width().min(560.0);
     let scale = avail / sheet.w;
     let height = sheet.h * scale;
@@ -5730,7 +5883,7 @@ fn draw_sheet(ui: &mut egui::Ui, sheet: &PreviewSheet) {
                 to_px(lx, line.y),
                 anchor,
                 &line.text,
-                egui::FontId::proportional((line.size * scale).max(4.0)),
+                line_font_id(rows, line, (line.size * scale).max(4.0)),
                 egui::Color32::BLACK,
             );
         }
@@ -5844,6 +5997,51 @@ mod settings_tests {
         }
         assert!(parse_binding("Ctrl+Bogus").is_none());
         assert!(parse_binding("Hyper+Z").is_none());
+    }
+
+    #[test]
+    fn preview_face_key_picks_the_face_a_line_prints_in() {
+        let row = |key: &str, family: &str, full_name: &str| FontRow {
+            key: key.into(),
+            family: family.into(),
+            full_name: full_name.into(),
+            rights_words: String::new(),
+        };
+        let rows = vec![
+            row("lib-reg", "Liberation Sans", "Liberation Sans"),
+            row("lib-bold", "Liberation Sans", "Liberation Sans Bold"),
+            row("lib-italic", "Liberation Sans", "Liberation Sans Italic"),
+            row("lib-bi", "Liberation Sans", "Liberation Sans Bold Italic"),
+            row("lib-serif", "Liberation Serif", "Liberation Serif"),
+        ];
+        assert_eq!(
+            preview_face_key(&rows, "Liberation Sans", false, false).as_deref(),
+            Some("lib-reg")
+        );
+        assert_eq!(
+            preview_face_key(&rows, "Liberation Sans", true, false).as_deref(),
+            Some("lib-bold")
+        );
+        assert_eq!(
+            preview_face_key(&rows, "Liberation Sans", false, true).as_deref(),
+            Some("lib-italic")
+        );
+        assert_eq!(
+            preview_face_key(&rows, "Liberation Sans", true, true).as_deref(),
+            Some("lib-bi")
+        );
+        // A family that ships only a regular face still draws
+        // in that family, not in the interface font.
+        assert_eq!(
+            preview_face_key(&rows, "Liberation Serif", true, false).as_deref(),
+            Some("lib-serif")
+        );
+        // A family the library does not hold: no key, and the
+        // caller falls back to the interface font.
+        assert_eq!(
+            preview_face_key(&rows, "No Such Family", false, false),
+            None
+        );
     }
 
     #[test]

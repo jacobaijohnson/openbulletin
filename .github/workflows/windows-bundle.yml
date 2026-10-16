@@ -30,6 +30,7 @@ jobs:
           New-Item -ItemType Directory -Force bundle | Out-Null
           Copy-Item target/release/openbulletin.exe bundle/
           Copy-Item target/release/ob-pdfium-helper.exe bundle/
+          Copy-Item crates/ob-app/assets/icon.png bundle/
           Copy-Item bin/pdfium.dll bundle/
           Copy-Item LICENSE bundle/PDFium-LICENSE.txt
           @"
@@ -38,7 +39,9 @@ jobs:
           Unzip this folder anywhere (your Desktop is fine) and
           double-click openbulletin.exe. There is nothing to
           install. The two other programs in the folder are the
-          PDF reader; keep them beside openbulletin.exe.
+          PDF reader; keep them beside openbulletin.exe. The
+          icon.png file is the program's picture, the same one
+          the window wears; it does not need to stay.
 
           Your bulletins and fonts stay on this computer. The app
           does not send them anywhere.

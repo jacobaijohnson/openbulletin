@@ -7,14 +7,20 @@ the person at the keyboard must see the same menus.
 
 What ships instead:
 
-- **One canonical UI.** Simple workspace by default (template gallery,
-  properties, fields); a Full workspace adds docked panels for pages,
-  styles, and preflight.
+- **One canonical UI.** Five guided steps (Start, This Sunday,
+  Announcements, Check, Print) carry the weekly work, and three
+  windows (Pages, Fonts, Shortcuts) hold the tools. There is no
+  Simple/Full workspace switch: the surface stays simple by
+  construction, and the power lives one click away in the windows.
 - **Keymap presets:** OpenBulletin (default), Publisher, InDesign.
-  Customizable per command.
-- **Vocabulary aliases in search and tooltips only.** "Text Box"
-  (Publisher) and "Text Frame" (InDesign) both find the same command;
-  menus always use the canonical name.
+  Customizable per command (see below).
+
+Ideas evaluated and NOT built, recorded so nobody goes looking
+for them: a Simple/Full workspace split (the one UI above made it
+unnecessary), and vocabulary aliases ("Text Box" / "Text Frame")
+in search and tooltips (there is no search and no tooltip system;
+every command uses one canonical name everywhere it appears).
+Either could return if a real need shows up; neither exists today.
 
 Invariants, never negotiable: the file format and its contents, the menu
 tree and labels, command behavior and undo semantics, rendering, and

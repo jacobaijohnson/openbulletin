@@ -60,6 +60,46 @@ riding the G1 format migration so the model changes once:
 
 ## 2. HTML export: the web bulletin
 
+**SHIPPED 2026-10-16 (H1).** What shipped, against the
+verdict below: the exporter lives in
+`ob_extract::html_export` and rides the one export door
+as "Web page (the words, to read and search on a
+screen)" (the file takes the house name, the picked name
+with "-web" on it) and the CLI as `export-html` (default
+name likewise, beside the bulletin). One self-contained
+page: semantic HTML in reading order (heading styles to
+h1-h3 by name, then by size; runs to strong/em; tabbed
+lines as paired what/who spans; field words resolved as
+the reading copy resolves them), embedded style only,
+no scripts, no external requests, readable with the
+style ignored. Pictures are carried inside the file:
+rasters transcoded at the web purpose's sizing (150 PPI
+at the shown size, never upscaled; JPEG when opaque,
+PNG when the picture has real transparency), SVG clips
+and music systems inlined as vector with spoken names
+(a music system is "Music: " + its hymn title), with
+scripts and event handlers stripped on the way in. A
+picture that cannot be carried leaves the plain note "A
+picture belongs here; it is missing from the bulletin
+file." in its place and is counted in the save line.
+Credits are composed from the placed pictures' rights
+records (the clipart landscape's section 5 rules): a
+recorded credit line rides verbatim with its license
+address appended as visible text when it carries none;
+without one, a line is composed from title, creator,
+copyright line, and license, the address again visible
+text; a credit the bulletin already carries as words is
+never printed twice; a picture that owes a credit
+nobody recorded enough of to compose yields the honest
+line "A picture in this bulletin is missing its
+credit." Panel tracing pictures never appear (they are
+scaffolding, not content). Two as-built notes: a placed
+picture shows WHOLE on the web page (the Fill crop is a
+paper decision about one printed size; the store keeps
+the original either way), and the page names itself a
+reading edition in its first line under the header, in
+the words the verdict below asked for.
+
 Verdict: yes, and it matters more than import. Churches
 post bulletins on their websites; a PDF is a poor web
 citizen (fixed pages, weak search, poor screen readers).

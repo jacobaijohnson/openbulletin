@@ -920,6 +920,22 @@ fn file_name_of(path: &std::path::Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// The web page's house name: the name picked in the save
+/// dialog with "-web" on its stem, beside the pick, so a
+/// bulletin and its reading edition sort together and the
+/// page never overwrites the file it came from. A pick
+/// already carrying the suffix is honored as it stands.
+fn web_page_path(picked: &std::path::Path) -> std::path::PathBuf {
+    let stem = picked
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "bulletin".to_string());
+    if stem.ends_with("-web") {
+        return picked.to_path_buf();
+    }
+    picked.with_file_name(format!("{stem}-web.html"))
+}
+
 /// A file size in plain words for status lines: bytes under a
 /// kilobyte by count, then KB, then MB with one decimal.
 fn human_file_size(bytes: usize) -> String {
@@ -8155,8 +8171,43 @@ impl App {
                     Err(e) => self.fail(format!("Could not save that copy: {e}")),
                 }
             }
+            "html" | "htm" => {
+                // The web bulletin (H1): one self-contained
+                // page, the words in reading order, the
+                // pictures carried inside it, the credits it
+                // owes at the end. It takes the house name:
+                // the picked name with "-web" on it.
+                match ob_extract::html_export::export_html(&self.doc) {
+                    Ok((bytes, report)) => {
+                        let target = web_page_path(path);
+                        match std::fs::write(&target, &bytes) {
+                            Ok(()) => {
+                                let mut msg = format!(
+                                    "Saved the web page as {}, {}.",
+                                    file_name_of(&target),
+                                    human_file_size(bytes.len())
+                                );
+                                if report.missing_pictures == 1 {
+                                    msg.push_str(
+                                        " 1 picture box had no picture to carry; the page says so where it belongs.",
+                                    );
+                                } else if report.missing_pictures > 1 {
+                                    msg.push_str(&format!(
+                                        " {} picture boxes had no picture to carry; the page says so where they belong.",
+                                        report.missing_pictures
+                                    ));
+                                }
+                                self.export_note = Some(msg.clone());
+                                self.note(msg);
+                            }
+                            Err(e) => self.fail(format!("Could not save that copy: {e}")),
+                        }
+                    }
+                    Err(e) => self.fail(format!("Could not make that copy: {e}")),
+                }
+            }
             _ => self.fail(
-                "That kind of copy is not one we can make yet. The save dialog offers InDesign (IDML), Scribus, PDF, and Markdown."
+                "That kind of copy is not one we can make yet. The save dialog offers InDesign (IDML), Scribus, PDF, Markdown, and a Web page."
                     .into(),
             ),
         }
@@ -9704,6 +9755,10 @@ impl eframe::App for App {
                                 .add_filter(
                                     "Markdown (the words, for a website or newsletter)",
                                     &["md"],
+                                )
+                                .add_filter(
+                                    "Web page (the words, to read and search on a screen)",
+                                    &["html"],
                                 )
                                 .save_file()
                             {

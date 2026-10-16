@@ -1,6 +1,6 @@
 //! OpenBulletin CLI: the headless engine operations (new, export,
-//! export-idml, export-sla, export-md, next-sunday, info, fonts,
-//! trace). The import doors live in the app.
+//! export-idml, export-sla, export-md, export-html, next-sunday,
+//! info, fonts, trace). The import doors live in the app.
 //! If it cannot be done here, the GUI is hiding engine problems.
 
 use clap::{Parser, Subcommand};
@@ -73,6 +73,19 @@ enum Cmd {
         input: PathBuf,
         #[arg(long)]
         out: PathBuf,
+    },
+    /// Save the bulletin as one self-contained web page:
+    /// the words in reading order, the pictures carried
+    /// inside the file, the credits it owes at the end.
+    /// A reading edition, made to be read and searched
+    /// on a screen.
+    ExportHtml {
+        input: PathBuf,
+        /// Where to write the page. Defaults to the
+        /// bulletin's own name with "-web.html" on it,
+        /// beside the bulletin.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Clone a document for next Sunday (date +7, weekly content cleared).
     NextSunday {
@@ -255,6 +268,36 @@ fn run(cli: Cli) -> Result<(), String> {
                 out.display(),
                 text.len()
             );
+            Ok(())
+        }
+        Cmd::ExportHtml { input, out } => {
+            let doc = ob_format::load(&input)?;
+            let (bytes, report) = ob_extract::html_export::export_html(&doc)?;
+            let out = out.unwrap_or_else(|| {
+                let stem = input
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "bulletin".to_string());
+                input.with_file_name(format!("{stem}-web.html"))
+            });
+            std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
+            println!(
+                "wrote {} ({} bytes, web page: the reading edition, {} pictures carried, {} credit lines)",
+                out.display(),
+                bytes.len(),
+                report.pictures,
+                report.credits
+            );
+            if report.missing_pictures == 1 {
+                println!(
+                    "note: 1 picture box had no picture to carry; the page says so where it belongs"
+                );
+            } else if report.missing_pictures > 1 {
+                println!(
+                    "note: {} picture boxes had no picture to carry; the page says so where they belong",
+                    report.missing_pictures
+                );
+            }
             Ok(())
         }
         Cmd::NextSunday { input, out } => {

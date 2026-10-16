@@ -88,5 +88,6 @@ the .obd are read in and become assets, and a missing
 sidecar file leaves the panel's missing-picture note
 exactly as v0 behaved), and the next save writes v1.
 
-Migration fixtures for every released version live in CI
-from the first release.
+Migration is covered today by tests that carry their
+example documents inline in the test code. Fixture files
+for every released version join CI at the first release.

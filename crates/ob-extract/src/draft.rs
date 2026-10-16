@@ -39,6 +39,46 @@ fn pt(v: f32) -> Mpt {
     (v * 1000.0).round() as Mpt
 }
 
+/// A page dimension from a dump that a document can hold:
+/// finite, positive, and no larger than 10,000 points to a
+/// side (about three and a half metres; no real page).
+/// Anything else falls back to US Letter, so a broken dump
+/// cannot put an impossible page into the document.
+fn sane_page_dim(v: f32, fallback: f32) -> f32 {
+    if v.is_finite() && v > 0.0 && v <= 10_000.0 {
+        v
+    } else {
+        fallback
+    }
+}
+
+/// Whether a span's stated geometry can live in a document
+/// (audit Batch 3): every coordinate it states is finite and
+/// within ten page lengths of the page, its size no bigger
+/// than ten pages, its type size a size type can be. Dumps
+/// are data read out of other programs' files; an infinite
+/// or absurd coordinate used to flow straight through the
+/// pt() cast into a frame (infinity saturates to the
+/// largest size the model can state).
+fn span_geometry_sane(sp: &crate::Span, pw: f32, ph: f32) -> bool {
+    let coord = |v: Option<f32>, bound: f32| match v {
+        None => true,
+        Some(n) => n.is_finite() && n.abs() <= bound,
+    };
+    let extent = |v: Option<f32>, bound: f32| match v {
+        None => true,
+        Some(n) => n.is_finite() && n >= 0.0 && n <= bound,
+    };
+    coord(sp.x, 10.0 * pw)
+        && coord(sp.y, 10.0 * ph)
+        && extent(sp.w, 10.0 * pw)
+        && extent(sp.h, 10.0 * ph)
+        && match sp.font_size {
+            None => true,
+            Some(n) => n.is_finite() && n > 0.0 && n <= 1_000.0,
+        }
+}
+
 /// The free font a source font name maps to, when one is known:
 /// the font itself when it is a free family we ship or stock,
 /// else its metric twin (same letter widths, docs/FONTS.md).
@@ -456,7 +496,12 @@ fn build_draft(
     // one page per sheet, which always prints safely.
     let first = dump.pages.first();
     let (w_pt, h_pt) = first
-        .map(|p| (p.width_pt, p.height_pt))
+        .map(|p| {
+            (
+                sane_page_dim(p.width_pt, 612.0),
+                sane_page_dim(p.height_pt, 792.0),
+            )
+        })
         .unwrap_or((612.0, 792.0));
     let all_same = dump
         .pages
@@ -483,10 +528,39 @@ fn build_draft(
                     && matches!(s.trust, SpanTrust::RawText | SpanTrust::NeedsReview)
             })
             .collect();
+        // Geometry guard (audit Batch 3): words whose stated
+        // place no page can hold are left out here, at the
+        // one door into the document, and counted in the
+        // review like every other loss — never carried into
+        // a frame as an infinite or absurd position.
+        let pw = sane_page_dim(page.width_pt, 612.0);
+        let ph = sane_page_dim(page.height_pt, 792.0);
+        let mut kept: Vec<&crate::Span> = Vec::with_capacity(spans.len());
+        let mut dropped = 0usize;
+        for sp in spans {
+            if span_geometry_sane(sp, pw, ph) {
+                kept.push(sp);
+            } else {
+                dropped += 1;
+            }
+        }
+        let spans = kept;
+        if dropped > 0 {
+            items.push(ImportItem {
+                panel: pi,
+                label: format!("Words left out on page {}", page.index + 1),
+                badge: Badge::CheckThis,
+                detail: format!(
+                    "{dropped} piece{} of words on page {} sat at a place no page can hold in the old file, so they were left out of this draft. The old page sits underneath as a picture to check against.",
+                    if dropped == 1 { "" } else { "s" },
+                    page.index + 1
+                ),
+            });
+        }
         let mut panel = Panel {
             id: format!("page-{}", page.index + 1),
             name: format!("Page {}", page.index + 1),
-            size: Size::new(pt(page.width_pt), pt(page.height_pt)),
+            size: Size::new(pt(pw), pt(ph)),
             frames: Vec::new(),
             background_image: None,
             guides: Vec::new(),
@@ -829,6 +903,116 @@ mod tests {
         assert_eq!(
             first.style, second.style,
             "both paragraphs share the block's one style"
+        );
+    }
+
+    #[test]
+    fn impossible_geometry_is_left_out_and_counted() {
+        // Audit Batch 3: a dump is data read out of another
+        // program's file. Spans at an infinite, NaN, or absurd
+        // position used to flow into frames; now they are
+        // left out at the draft door and counted in the
+        // review, and no impossible number reaches the
+        // document.
+        let mut inf_span = span(0, "Words at infinity", 60.0, 200.0, 11.0, "Calibri", false);
+        inf_span.x = Some(f32::INFINITY);
+        let mut absurd_span = span(
+            0,
+            "Words beyond the page",
+            60.0,
+            300.0,
+            11.0,
+            "Calibri",
+            false,
+        );
+        absurd_span.x = Some(1.0e9);
+        let mut nan_span = span(
+            0,
+            "Words with no place",
+            60.0,
+            400.0,
+            11.0,
+            "Calibri",
+            false,
+        );
+        nan_span.y = Some(f32::NAN);
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pdf,
+            source_name: "old.pdf".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![
+                span(0, "Welcome to worship", 60.0, 90.0, 11.0, "Calibri", false),
+                inf_span,
+                absurd_span,
+                nan_span,
+            ],
+            images: Vec::new(),
+        };
+        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        // The good words arrived; the impossible ones did not.
+        let all_text: String = out
+            .doc
+            .stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter().map(|p| p.text()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            all_text.contains("Welcome to worship"),
+            "good words kept: {all_text}"
+        );
+        assert!(
+            !all_text.contains("infinity"),
+            "inf words left out: {all_text}"
+        );
+        assert!(
+            !all_text.contains("beyond the page"),
+            "absurd words left out: {all_text}"
+        );
+        assert!(
+            !all_text.contains("no place"),
+            "NaN words left out: {all_text}"
+        );
+        // No frame carries an impossible number (ten page
+        // lengths is the guard's own bound, in mpt).
+        let bound = 10 * 792_000;
+        for panel in &out.doc.panels {
+            assert!(panel.size.w.abs() <= bound && panel.size.h.abs() <= bound);
+            for frame in &panel.frames {
+                assert!(
+                    frame.rect.x.abs() <= bound,
+                    "frame x sane: {}",
+                    frame.rect.x
+                );
+                assert!(
+                    frame.rect.y.abs() <= bound,
+                    "frame y sane: {}",
+                    frame.rect.y
+                );
+                assert!(frame.rect.w >= 0 && frame.rect.w <= bound);
+                assert!(frame.rect.h >= 0 && frame.rect.h <= bound);
+            }
+        }
+        // The loss is counted in the review, in plain words.
+        let left_out: Vec<_> = out
+            .items
+            .iter()
+            .filter(|i| i.label == "Words left out on page 1")
+            .collect();
+        assert_eq!(left_out.len(), 1, "one counted loss item: {:?}", out.items);
+        assert_eq!(left_out[0].badge, Badge::CheckThis);
+        assert!(
+            left_out[0].detail.contains("3 pieces"),
+            "the count is stated: {}",
+            left_out[0].detail
         );
     }
 

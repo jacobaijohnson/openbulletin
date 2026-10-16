@@ -14,8 +14,8 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
         with:
           components: rustfmt, clippy
       - name: Linux GUI dependencies
@@ -30,4 +30,8 @@ jobs:
       - name: Clippy (engine)
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Build desktop app
-        run: cargo build --release -p openbulletin -p openbulletin-cli
+        # The two helper binaries ship beside the app in the
+        # Windows bundle; build them in release here too, so a
+        # helper that stops compiling is caught on main, not at
+        # bundle time (audit Batch 3, red-team M11).
+        run: cargo build --release -p openbulletin -p openbulletin-cli -p ob-pdfium-helper -p ob-verovio-helper

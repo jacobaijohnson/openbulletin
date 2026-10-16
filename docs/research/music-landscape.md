@@ -295,7 +295,8 @@ Synthesis for our pages, labeled as our judgment on those
 sources: hymnody is vocal/choral music, so its band is
 **5 to 7 mm**. Therefore:
 
-- **Hard floor: 5.0 mm staff height.** Below every cited
+- **Hard floor: 5.0 mm staff height** (the measurement
+  allows 0.02 mm of slack). Below every cited
   vocal and choral norm. If a hymn cannot fit the panel at
   5.0 mm, the answer is more panels or fewer systems per
   panel, never a smaller staff. The app refuses and says why
@@ -379,7 +380,8 @@ actually landed, where it differs from the sketch above:
   clip.
 - The floor is enforced BY MEASUREMENT on every render:
   the staff height is read out of the drawing, and a
-  render measuring under 5.0 mm is refused whole, naming
+  render measuring under the floor (5.0 mm, with 0.02 mm
+  of measurement slack) is refused whole, naming
   the measured size (a request for 3.0 mm came back
   measuring 3.7 mm and was refused; a narrow 60 mm panel
   at the 6.5 mm target simply wrapped into more systems,

@@ -86,7 +86,8 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
   one sentence: "This is music: its size keeps the notes
   readable, so the box can be moved but not resized."
   Resizing would break the legibility floor the import
-  measured (staff 6.5 mm by target, never under 5.0 mm);
+  measured (staff 6.5 mm by target; the floor is 5.0 mm,
+  and the measurement allows 0.02 mm of slack);
   the size is the contract, not a preference.
 - A music box takes no photograph and no clip art: the
   picture picker refuses it in plain words, and its menu

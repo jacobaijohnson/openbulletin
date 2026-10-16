@@ -646,6 +646,29 @@ fn clear_journal_from(obd: &std::path::Path, meta: &std::path::Path) {
     let _ = std::fs::remove_file(meta);
 }
 
+/// A journal that exists but cannot be read (audit Batch 3):
+/// move what is there out of the journal's place, under a
+/// name that says what happened, so the next autosave starts
+/// clean and the damaged copy is still on disk for anyone who
+/// goes looking. Returns true when anything was set aside.
+/// Renames replace an older set-aside: one damaged copy kept
+/// is enough.
+fn set_aside_unreadable_journal(obd: &std::path::Path, meta: &std::path::Path) -> bool {
+    let mut moved = false;
+    for (from, name) in [
+        (obd, "autosave-unreadable.obd"),
+        (meta, "autosave-unreadable.txt"),
+    ] {
+        if from.exists() {
+            let to = from.with_file_name(name);
+            if std::fs::rename(from, &to).is_ok() {
+                moved = true;
+            }
+        }
+    }
+    moved
+}
+
 /// A stable snapshot string for one document state.
 impl App {
     /// Start watching for a change worth one Undo step (a drag, a
@@ -2729,7 +2752,17 @@ impl App {
                     if probe.format == ob_image::PictureFormat::Svg {
                         continue; // vector art has no dots to count
                     }
-                    let dpi = picture_effective_dpi(frame, placement, probe);
+                    let Some(dpi) = picture_effective_dpi(frame, placement, probe) else {
+                        notes.push(CheckNote::aimed(
+                            format!(
+                                "Check: the picture box on \"{}\" has no width or height, so its picture cannot print. Make the box bigger in the Pages window, or delete the box.",
+                                panel.name
+                            ),
+                            pi,
+                            Some(fi),
+                        ));
+                        continue;
+                    };
                     if dpi < 120.0 {
                         notes.push(CheckNote::aimed(
                             format!(
@@ -3066,6 +3099,20 @@ impl App {
                 }
             } else if !self.peer_alive {
                 clear_journal_from(&obd, &meta);
+            }
+        } else if !self.peer_alive && (obd.exists() || meta.exists()) {
+            // A journal is on disk but did not read: the crash
+            // copy was damaged. Say so once, in plain words,
+            // and set the remains aside instead of the old
+            // silent skip (audit Batch 3). Never block on it:
+            // the app opens normally either way.
+            if set_aside_unreadable_journal(&obd, &meta) {
+                self.fail(
+                    "The safety copy from last time could not be read, so it was set \
+                     aside (autosave-unreadable) instead of offered back. Your saved \
+                     bulletin files were not touched."
+                        .into(),
+                );
             }
         }
     }
@@ -10813,12 +10860,16 @@ fn spoken_only_sentence(report: &ob_pdf::ExportReport) -> String {
 /// in print, at the size it SHOWS (a Fill picture is trimmed
 /// to its shown size, so its dots spread over the shown
 /// picture, not the box). The lower of the two axes: the
-/// worse direction is how blurry it can look.
+/// worse direction is how blurry it can look. None when the
+/// picture shows at no size at all (a box with zero width or
+/// height): dividing by that zero used to yield an infinite
+/// DPI that the Check step read as perfectly sharp (audit
+/// Batch 3).
 fn picture_effective_dpi(
     frame: &ob_model::Frame,
     placement: &ob_model::PicturePlacement,
     probe: &ob_image::Probe,
-) -> f64 {
+) -> Option<f64> {
     let (_, _, shown_w, shown_h) = ob_model::picture_shown_rect(
         placement.fit,
         probe.width as f64,
@@ -10828,9 +10879,12 @@ fn picture_effective_dpi(
         placement.crop_x,
         placement.crop_y,
     );
+    if shown_w <= 0.0 || shown_h <= 0.0 {
+        return None;
+    }
     let dpi_x = probe.width as f64 / (shown_w / 72_000.0);
     let dpi_y = probe.height as f64 / (shown_h / 72_000.0);
-    dpi_x.min(dpi_y)
+    Some(dpi_x.min(dpi_y))
 }
 
 /// The pictures a document carries that no box and no panel
@@ -12307,6 +12361,28 @@ mod settings_tests {
     }
 
     #[test]
+    fn unreadable_journal_is_set_aside_not_swallowed() {
+        // Audit Batch 3: a journal damaged on disk used to be
+        // skipped in silence. The startup path now sets it
+        // aside under a name that says what happened.
+        let dir = std::env::temp_dir().join(format!("ob-app-journal-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let obd = dir.join("autosave.obd");
+        let meta = dir.join("autosave.txt");
+        std::fs::write(&obd, b"this is not a bulletin file").expect("write damaged journal");
+        std::fs::write(&meta, "1729000000\n\n").expect("write journal note");
+        assert!(read_journal_from(&obd, &meta).is_none());
+        assert!(set_aside_unreadable_journal(&obd, &meta));
+        assert!(!obd.exists() && !meta.exists());
+        assert!(dir.join("autosave-unreadable.obd").exists());
+        assert!(dir.join("autosave-unreadable.txt").exists());
+        // Nothing left in the journal's place: a second call
+        // has nothing to set aside.
+        assert!(!set_aside_unreadable_journal(&obd, &meta));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn char_findings_flag_only_what_print_cannot_show() {
         // Workflow review, adopted item 1: a Latin cross and an
         // emoji must be named (the bundled Liberation faces have
@@ -12984,11 +13060,17 @@ mod settings_tests {
             width: 600,
             height: 400,
         };
-        assert!((picture_effective_dpi(&frame, &placement, &probe) - 200.0).abs() < 0.5);
+        assert!(
+            (picture_effective_dpi(&frame, &placement, &probe).expect("sized box") - 200.0).abs()
+                < 0.5
+        );
         // The same picture in a 6x4 inch box: 100 dpi, the
         // blur finding's territory.
         let (frame, placement) = picture_frame(432_000, 288_000, ob_model::PictureFit::ShowWhole);
-        assert!((picture_effective_dpi(&frame, &placement, &probe) - 100.0).abs() < 0.5);
+        assert!(
+            (picture_effective_dpi(&frame, &placement, &probe).expect("sized box") - 100.0).abs()
+                < 0.5
+        );
         // Fill: a 800x400 picture filling a 2x2 inch box
         // shows at 4x2 inches (sides trimmed): 200 dpi, not
         // the box's naive 400.
@@ -12998,7 +13080,17 @@ mod settings_tests {
             width: 800,
             height: 400,
         };
-        assert!((picture_effective_dpi(&frame, &placement, &probe) - 200.0).abs() < 0.5);
+        assert!(
+            (picture_effective_dpi(&frame, &placement, &probe).expect("sized box") - 200.0).abs()
+                < 0.5
+        );
+        // A box with no width shows the picture at no size:
+        // no DPI at all, never an infinite one read as sharp
+        // (audit Batch 3). Same for no height.
+        let (frame, placement) = picture_frame(0, 144_000, ob_model::PictureFit::ShowWhole);
+        assert_eq!(picture_effective_dpi(&frame, &placement, &probe), None);
+        let (frame, placement) = picture_frame(216_000, 0, ob_model::PictureFit::Fill);
+        assert_eq!(picture_effective_dpi(&frame, &placement, &probe), None);
     }
 
     #[test]

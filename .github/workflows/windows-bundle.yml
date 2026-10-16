@@ -9,44 +9,96 @@ name: Windows bundle
 # binary (its Windows form is a Python wheel), so music files
 # open with their notes standing undrawn and the app says so
 # plainly; see docs/LEGAL.md.
+#
+# Audit Batch 3 hardening (docs/planning/
+# audit-wave3-synthesis-2026-10-16.md, red-team M11): the gate
+# job must pass before anything is built or published; the
+# PDFium download is checked against its recorded SHA-256;
+# staging runs with stop-on-error and a named-file assertion
+# afterwards, so a green run can no longer ship a zip that is
+# quietly missing the PDF library or its license; third-party
+# actions are pinned to full commit SHAs; the write permission
+# lives only on the job that creates the release.
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  bundle:
-    runs-on: windows-latest
+  gate:
+    name: Gate (format, tests, clippy)
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          components: rustfmt, clippy
+      - name: Linux GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Workspace tests
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  bundle:
+    needs: gate
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build the app and the PDF reader
         run: cargo build --release -p openbulletin -p ob-pdfium-helper -p ob-verovio-helper
-      - name: Fetch the PDFium library (pinned, chromium 8100)
+      - name: Fetch the PDFium library (pinned, chromium 8100) and check its hash
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           Invoke-WebRequest -Uri "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8100/pdfium-win-x64.tgz" -OutFile pdfium.tgz
+          # SHA-256 of pdfium-win-x64.tgz from the chromium/8100
+          # release, as published in the GitHub release API's
+          # asset digest and confirmed against a local download
+          # on 2026-10-16. If the asset is ever re-issued, this
+          # check fails loudly instead of shipping unknown bytes.
+          $expected = '51621bcc1d9be9ea448f4b84b0516862b928e3968d3fca899af1a6d6e2848d6d'
+          $actual = (Get-FileHash pdfium.tgz -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) {
+            throw "PDFium download does not match its recorded hash. Got $actual, expected $expected."
+          }
           tar -xzf pdfium.tgz
           Get-ChildItem -Recurse | Select-Object FullName
       - name: Stage the bundle
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force bundle | Out-Null
           Copy-Item target/release/openbulletin.exe bundle/
           Copy-Item target/release/ob-pdfium-helper.exe bundle/
           Copy-Item target/release/ob-verovio-helper.exe bundle/
           Copy-Item crates/ob-app/assets/icon.png bundle/
           Copy-Item bin/pdfium.dll bundle/
+          # The PDFium license ships inside the PDFium tarball
+          # itself, as the LICENSE file at its root (extracted
+          # above into the working folder). It is not a file in
+          # this repository; naming it here, and the assertion
+          # step below, keeps that from ever passing silently.
           Copy-Item LICENSE bundle/PDFium-LICENSE.txt
           @"
           OpenBulletin for Windows
           ========================
           Unzip this folder anywhere (your Desktop is fine) and
           double-click openbulletin.exe. There is nothing to
-          install. The two other programs in the folder are the
-          PDF reader; keep them beside openbulletin.exe. The
+          install. The three other programs in the folder work
+          for openbulletin.exe: ob-pdfium-helper.exe reads PDF
+          files with the pdfium.dll library, and
+          ob-verovio-helper.exe is the door to the music
+          engraver. Keep them beside openbulletin.exe. The
           icon.png file is the program's picture, the same one
           the window wears; it does not need to stay.
 
@@ -57,17 +109,40 @@ jobs:
           credit arrive, and the app tells you plainly that the
           notes cannot be drawn on this computer yet.
 
-          Your bulletins and fonts stay on this computer. The app
-          does not send them anywhere.
+          Your bulletins stay on this computer; the app does not
+          send them anywhere. The one time the app uses the
+          network is when you ask it for more fonts: it fetches
+          the list of free fonts and the fonts you pick, and
+          nothing else.
           "@ | Out-File -Encoding utf8 bundle/README.txt
           Compress-Archive -Path bundle/* -DestinationPath openbulletin-windows.zip
+      - name: Check the staged bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @(
+            'openbulletin.exe',
+            'ob-pdfium-helper.exe',
+            'ob-verovio-helper.exe',
+            'pdfium.dll',
+            'PDFium-LICENSE.txt',
+            'README.txt',
+            'icon.png'
+          )
+          foreach ($name in $required) {
+            $file = Get-Item "bundle/$name"
+            if ($file.Length -eq 0) {
+              throw "bundle/$name is empty; the bundle must not ship like this."
+            }
+          }
+          Get-ChildItem bundle | Select-Object Name, Length
       - name: Upload the bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: openbulletin-windows
           path: openbulletin-windows.zip
       - name: Attach to a release when tagged
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: openbulletin-windows.zip

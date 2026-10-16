@@ -391,6 +391,18 @@ pub fn next_sunday_report_as_of(
     let mut out = doc.clone();
     let date = doc_occasion_date(doc)?;
     let (next, weeks_advanced) = advance_target(date, today);
+    // The supported calendar ends with the year 9999: a date
+    // in its last week has no next week to move to, and the
+    // advance used to roll into the year 10000 without a word
+    // (audit Batch 3). Refuse in plain words instead.
+    if next.year() > 9999 {
+        return Err(
+            "That service date is in the last week of the year 9999, so there is no \
+             next week to move to. Set a date in an ordinary year on the This Sunday \
+             step first."
+                .into(),
+        );
+    }
     out.fields.insert(
         "occasion_date".to_string(),
         next.format("%Y-%m-%d").to_string(),
@@ -591,6 +603,31 @@ mod tests {
             .paragraphs
             .iter()
             .any(|p| p.text().contains("Hymn of Praise")));
+    }
+
+    #[test]
+    fn next_sunday_refuses_to_leave_the_year_9999() {
+        // Audit Batch 3: the last week of the supported
+        // calendar has no next week; the advance used to
+        // produce the year 10000 without a word.
+        let d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(9999, 12, 25).unwrap(),
+            "X",
+        );
+        let err = next_sunday(&d).expect_err("year 10000 must be refused");
+        assert!(err.contains("9999"), "plain-words refusal: {err}");
+        // One week earlier still advances, landing on the
+        // last supported day of the year.
+        let d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(9999, 12, 18).unwrap(),
+            "X",
+        );
+        let n = next_sunday(&d).unwrap();
+        assert_eq!(n.fields["occasion_date"], "9999-12-25");
     }
 
     #[test]

@@ -64,10 +64,12 @@ This is early software (version 0.1). Here is the honest list.
   If it closes suddenly, your work is offered back when it opens.
 - **Two-sided printing help** described above.
 - **Save a copy for another program.** On the Print step, one button
-  saves a copy in another program's format (today: InDesign's IDML),
-  and tells you in plain words anything the copy could not carry.
+  saves a copy in another program's format (InDesign's IDML, a Scribus
+  file, Markdown, or a web page), and tells you in plain words anything
+  the copy could not carry.
 - **A command line tool** for people who like typing commands: `new`,
-  `export`, `export-idml`, `next-sunday`, `info`, `fonts`, `trace`.
+  `export`, `export-idml`, `export-sla`, `export-md`, `export-html`,
+  `next-sunday`, `info`, `fonts`, `trace`.
   The engine underneath the app is real and tested.
 
 ### Fonts today
@@ -89,8 +91,8 @@ This is early software (version 0.1). Here is the honest list.
 - **PDFs include the real fonts.** Print and reading PDFs embed the
   same font files the layout measured with (when the font's license
   lets it travel), so what the Check step measured is what prints.
-  One limit: letters outside the western European set (like a cross
-  symbol typed as a character) print as spaces for now.
+  A letter prints whenever the font chosen for it carries that
+  letter; the Check step warns, naming the letter, when it does not.
 
 ### Not built yet
 
@@ -105,7 +107,8 @@ Plans and order of work: [ROADMAP.md](ROADMAP.md).
 ## Run it
 
 On Windows there is a ready bundle: one zip holding the app, its PDF
-reader, and the PDF library in a single folder. Unzip it anywhere and
+reader program, its music program, and the PDF library in a single
+folder. Unzip it anywhere and
 run `openbulletin.exe`; there is nothing to install. (Bundles are
 attached to releases and to the "Windows bundle" workflow runs.)
 Building from source needs Rust 1.80+ (install via rustup), then:
@@ -137,9 +140,15 @@ desktop app, CLI, or (someday) web.
 | `ob-impose` | Turns reader pages into printer sheets: bi-fold, tri-fold, saddle-stitch. |
 | `ob-text` | Measures and wraps text using real font shapes (parley), and builds dot-leader lines. Uses fonts given to it, never fonts found on your computer. |
 | `ob-pdf` | Makes the PDFs: reading copies and print sheets, with the real fonts embedded. |
-| `ob-extract` | Imports and exports: reads old bulletins (PDFs through the helper, Publisher files with our own reader or the LibreOffice bridge, InDesign IDML, Scribus) into one shared dump the Template Analyzer learns from, and writes documents back out as IDML for InDesign or as a Scribus file. |
-| `ob-format` | Reads and writes `.obd` files. Today's format is version 0, stored as JSON. A zip version is planned. |
-| `openbulletin-cli` | The same engine with no window: create, export (PDF, IDML, and Scribus), next-sunday, info, fonts, trace. |
+| `ob-image` | Opens the picture files (PNG, JPEG, WebP, GIF, BMP, TIFF, SVG, JPEG XL) at the size each place needs. AVIF and HEIC are recognized and honestly refused as convert-first. |
+| `ob-extract` | Imports and exports: reads old bulletins (PDFs through the helper, Publisher files with our own reader or the LibreOffice bridge, InDesign IDML, Scribus, Markdown, web pages, MusicXML) into one shared dump the Template Analyzer learns from, and writes documents back out as IDML for InDesign, as a Scribus file, as Markdown, or as a web page. |
+| `ob-format` | Reads and writes `.obd` files. The format is version 1: a zip holding the document as JSON plus each picture and font file under its own fingerprint, checked on open. Older files migrate on open and save as version 1. |
+| `ob-fonts` | The Font Library: one folder of fonts the app owns, each font's sharing rights read from the file itself, and the catalog of free fonts it can fetch when asked. |
+| `ob-clips` | The clip art library: collections the church adds, copied into one managed folder, with thumbnails and the hand-checked starter set. |
+| `ob-music` | Reads MusicXML scores: the notes, measures, words, and credits the music door counts before anything is drawn. |
+| `ob-pdfium-helper` | A small separate program that reads PDFs with the PDFium library and hands the words and pictures back as data. |
+| `ob-verovio-helper` | A small separate program that talks to the Verovio music engraver, draws the music at a measured staff size, and refuses anything drawn too small to sing from. |
+| `openbulletin-cli` | The same engine with no window: create, export (PDF, IDML, Scribus, Markdown, web page), next-sunday, info, fonts, trace. |
 | `openbulletin` | The egui desktop app. A thin shell over the crates above, on purpose. |
 
 ## Imports and conversions
@@ -149,7 +158,9 @@ Honest labels, in plain words:
 - **OpenBulletin `.obd` files open today**, fully.
 - **Old bulletins open today through one door**: on the Start step,
   "Open an old bulletin..." takes a PDF, a Publisher file, an
-  InDesign (IDML) file, or a Scribus file and works out which it
+  InDesign (IDML) file, a Scribus file, a Markdown notes file, a
+  web page (HTML, like a newsletter export), or a music file
+  (MusicXML) and works out which it
   is. A helper program reads PDFs and rebuilds the words as boxes
   you can edit, with each old page kept underneath as a picture to
   check against. Pieces are labeled Good, Check this, or Picture
@@ -181,9 +192,11 @@ Honest labels, in plain words:
   before it starts, and says exactly what to add when a pick
   falls short.
 - **Copies go back out, too.** On the Print step, "Save a copy
-  for another program..." writes an InDesign (IDML) file or a
-  Scribus (`.sla`) file with the words, their boxes, and their
-  fonts, and lists in plain words anything the copy could not
+  for another program..." writes an InDesign (IDML) file, a
+  Scribus (`.sla`) file, Markdown (the words, for a website or
+  newsletter), or a web page (the words as one file, made to be
+  read and searched on a screen), and lists in plain words
+  anything the copy could not
   carry. (Writing `.pub` or
   `.indd` files stays out of scope: those formats are theirs
   to write, not ours.)
@@ -205,9 +218,9 @@ underneath. Full text in [docs/PRINCIPLES.md](docs/PRINCIPLES.md).
 
 ## What we will not build
 
-Email merge, web/HTML export, e-book (EPUB) export, pattern-based style
+Email merge, e-book (EPUB) export, pattern-based style
 rules (GREP styles), footnotes and indexes, real-time collaboration,
-stock-art libraries, AI generation in the app, `.pub` export, `.indd`
+AI generation in the app, `.pub` export, `.indd`
 reading, full PDF editing. The reasoning is public in
 [docs/NEVER.md](docs/NEVER.md).
 

@@ -155,7 +155,8 @@ with notices and a source offer.
 
 1. The helper drives Verovio by target staff size using the measured
    formula (72 x width_mm / staff_mm page units), defaults to 6.5 mm
-   on the half-letter panel, and refuses below 5.0 mm in plain words.
+   on the half-letter panel, and refuses below the 5.0 mm floor
+   (0.02 mm of measurement slack) in plain words.
 2. Every music import runs the structural count comparison (notes by
    value class, syllables per verse, measures, fermatas) and the
    review labels show the result. A mismatch is a "Check this" label,

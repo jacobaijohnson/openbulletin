@@ -644,9 +644,11 @@ pub fn parse_flexible_date(text: &str, today: SimpleDate) -> Option<SimpleDate> 
             None => {
                 // The coming occurrence: this year when the
                 // day is still ahead (or today), else the
-                // next year it falls (Feb 29 may skip).
+                // next year it falls (Feb 29 may skip). The
+                // search stops at the year 9999, the top of
+                // the supported calendar (audit Batch 3).
                 let mut found = None;
-                for y in today.year..=today.year + 4 {
+                for y in today.year..=(today.year + 4).min(9999) {
                     let d = SimpleDate {
                         year: y,
                         month,

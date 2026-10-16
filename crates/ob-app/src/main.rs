@@ -26,6 +26,127 @@ const GOOD: egui::Color32 = egui::Color32::from_rgb(40, 110, 60);
 const INFO: egui::Color32 = egui::Color32::from_rgb(90, 90, 160);
 const CANVAS_ACCENT: egui::Color32 = egui::Color32::from_rgb(0, 120, 195);
 
+/// How large the app's own words and controls are (A1,
+/// docs/planning/beyond-print.md section 5): the app
+/// conforms to the administrator's eyes. Three steps, in
+/// the words the comfort window offers. The document is
+/// never touched by this: a bulletin's words keep the
+/// sizes in the document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum UiScale {
+    #[default]
+    Standard,
+    Large,
+    ExtraLarge,
+}
+
+impl UiScale {
+    /// The words the comfort window shows for this step.
+    pub fn label(self) -> &'static str {
+        match self {
+            UiScale::Standard => "Standard",
+            UiScale::Large => "Large",
+            UiScale::ExtraLarge => "Extra large",
+        }
+    }
+
+    /// Every text style grows by this much.
+    pub fn text_factor(self) -> f32 {
+        match self {
+            UiScale::Standard => 1.0,
+            UiScale::Large => 1.2,
+            UiScale::ExtraLarge => 1.4,
+        }
+    }
+
+    /// Padding and spacing grow a step behind the words.
+    pub fn spacing_factor(self) -> f32 {
+        match self {
+            UiScale::Standard => 1.0,
+            UiScale::Large => 1.15,
+            UiScale::ExtraLarge => 1.3,
+        }
+    }
+}
+
+/// The palette in force (A1): the standard constants
+/// above, or the high-contrast variants when the
+/// administrator asks for true black on white. Painters
+/// read colors from the App's theme, never from the
+/// constants directly, so one switch repaints the app.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Theme {
+    pub problem: egui::Color32,
+    pub warn: egui::Color32,
+    pub good: egui::Color32,
+    pub info: egui::Color32,
+    pub accent: egui::Color32,
+    /// Ordinary words, and the ground they sit on: the
+    /// pair the contrast promise is made about.
+    pub text: egui::Color32,
+    pub ground: egui::Color32,
+}
+
+impl Theme {
+    pub fn standard() -> Theme {
+        Theme {
+            problem: PROBLEM,
+            warn: WARN,
+            good: GOOD,
+            info: INFO,
+            accent: CANVAS_ACCENT,
+            // egui's light chrome, as shipped today.
+            text: egui::Color32::from_gray(80),
+            ground: egui::Color32::from_gray(248),
+        }
+    }
+
+    /// True black words on a white ground. Every accent is
+    /// darkened until it holds up as words on white (the
+    /// ratios are asserted in the tests at the bottom of
+    /// this file), and the standard mid-tones stay
+    /// untouched for the standard theme.
+    pub fn high_contrast() -> Theme {
+        Theme {
+            problem: egui::Color32::from_rgb(160, 0, 0),
+            warn: egui::Color32::from_rgb(122, 66, 0),
+            good: egui::Color32::from_rgb(0, 100, 0),
+            info: egui::Color32::from_rgb(0, 0, 200),
+            accent: egui::Color32::from_rgb(0, 90, 170),
+            text: egui::Color32::BLACK,
+            ground: egui::Color32::WHITE,
+        }
+    }
+
+    pub fn for_settings(settings: &Settings) -> Theme {
+        if settings.high_contrast {
+            Theme::high_contrast()
+        } else {
+            Theme::standard()
+        }
+    }
+}
+
+/// WCAG relative luminance of an opaque color.
+pub fn relative_luminance(c: egui::Color32) -> f32 {
+    fn lin(v: u8) -> f32 {
+        let v = v as f32 / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// The contrast ratio between two opaque colors, 1 to 21.
+pub fn contrast_ratio(a: egui::Color32, b: egui::Color32) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
 const GUIDANCE: [&str; 5] = [
     "Pick the bulletin shape and confirm your church name. Everything else starts from last week's file.",
     "Confirm the date and the name of the Sunday. These fill the cover automatically.",
@@ -89,6 +210,15 @@ pub struct Settings {
     /// default, For printing (O1).
     #[serde(default)]
     pub pdf_purpose: String,
+    /// How large the app's own words and controls are
+    /// (A1). Missing from an older settings file means
+    /// Standard.
+    #[serde(default)]
+    pub ui_scale: UiScale,
+    /// True when the app paints true black on white with
+    /// darkened accents (A1). Missing means off.
+    #[serde(default)]
+    pub high_contrast: bool,
 }
 
 impl Settings {
@@ -1285,6 +1415,9 @@ struct App {
     checked_fingerprint: Option<String>,
     path: Option<std::path::PathBuf>,
     settings: Settings,
+    /// The palette in force, computed from the settings at
+    /// load and whenever the comfort settings change (A1).
+    theme: Theme,
     printer_name: String,
     show_pages: bool,
     canvas_panel: usize,
@@ -1302,6 +1435,7 @@ struct App {
     bg_tex_key: String,
     bg_tex: Option<egui::TextureHandle>,
     show_fonts: bool,
+    show_comfort: bool,
     show_keys: bool,
     /// The action whose key is being captured, if any.
     key_capture: Option<String>,
@@ -1712,6 +1846,7 @@ impl Default for App {
         // Reopen on the step the user left (J6), clamped to
         // the steps that exist.
         let step = settings.last_step.min(STEPS.len() - 1);
+        let theme = Theme::for_settings(&settings);
         Self {
             doc,
             preset,
@@ -1737,6 +1872,7 @@ impl Default for App {
             checked_fingerprint: None,
             path: None,
             settings,
+            theme,
             printer_name: String::new(),
             show_pages: false,
             canvas_panel: 0,
@@ -1754,6 +1890,7 @@ impl Default for App {
             bg_tex_key: String::new(),
             bg_tex: None,
             show_fonts: false,
+            show_comfort: false,
             show_keys: false,
             key_capture: None,
             fonts_loaded: false,
@@ -4427,7 +4564,7 @@ impl App {
                     egui::Align2::LEFT_TOP,
                     "The old page picture for this panel could not be found.\nIt lives beside the bulletin file.",
                     egui::FontId::proportional(12.0),
-                    PROBLEM,
+                    self.theme.problem,
                 );
             }
             if let Some(tex) = &self.bg_tex {
@@ -4458,7 +4595,7 @@ impl App {
                     to_px(r.x as f32 / 1000.0, r.y as f32 / 1000.0),
                     to_px((r.x + r.w) as f32 / 1000.0, (r.y + r.h) as f32 / 1000.0),
                 );
-                let blue = CANVAS_ACCENT;
+                let blue = self.theme.accent;
                 painter.rect_stroke(frect, 0.0, egui::Stroke::new(1.75_f32, blue));
                 let handle = egui::Rect::from_min_size(
                     egui::pos2(frect.max.x - 9.0, frect.max.y - 9.0),
@@ -4547,7 +4684,10 @@ impl App {
             }
             best.map(|(gi, _)| gi)
         };
-        let near_guide = |pos: egui::Pos2| near_guide_tol(pos, 5.0);
+        // At the larger text sizes the guides get a wider
+        // grab, like the corner square below (A1).
+        let guide_tol = 5.0 * self.settings.ui_scale.text_factor();
+        let near_guide = |pos: egui::Pos2| near_guide_tol(pos, guide_tol);
         let to_mpt = |pos: egui::Pos2| -> (ob_model::Mpt, ob_model::Mpt) {
             (
                 (((pos.x - origin.x) / scale) * 1000.0) as ob_model::Mpt,
@@ -4611,9 +4751,14 @@ impl App {
                     match frame_hit(pm) {
                         Some(fi) => {
                             let f = &self.doc.panels[idx].frames[fi];
+                            // The corner square's grab zone
+                            // grows with the text size (A1);
+                            // the square drawn stays 9 px.
+                            let grip =
+                                (14_000.0 * self.settings.ui_scale.text_factor()) as ob_model::Mpt;
                             let handle = self.selected_frame == Some(fi)
-                                && pm.0 >= f.rect.x + f.rect.w - 14_000
-                                && pm.1 >= f.rect.y + f.rect.h - 14_000;
+                                && pm.0 >= f.rect.x + f.rect.w - grip
+                                && pm.1 >= f.rect.y + f.rect.h - grip;
                             self.selected_frame = Some(fi);
                             self.drag_frame = Some(fi);
                             self.drag_resize = handle;
@@ -4785,7 +4930,7 @@ impl App {
                 }
             }
         }
-        let guide_color = CANVAS_ACCENT;
+        let guide_color = self.theme.accent;
         let locked_color = egui::Color32::from_rgb(120, 120, 120);
         for (gi, g) in self.doc.panels[idx].guides.iter().enumerate() {
             let dragging = self.drag_guide == Some(gi);
@@ -4983,7 +5128,7 @@ impl App {
                                         clip.rect_stroke(
                                             r,
                                             2.0,
-                                            egui::Stroke::new(1.5_f32, PROBLEM),
+                                            egui::Stroke::new(1.5_f32, self.theme.problem),
                                         );
                                     }
                                 }
@@ -5756,13 +5901,13 @@ impl App {
                         for item in &review.items {
                             let (tag, color) = match item.badge {
                                 ob_extract::draft::Badge::Matched => {
-                                    ("Good", GOOD)
+                                    ("Good", self.theme.good)
                                 }
                                 ob_extract::draft::Badge::CheckThis => {
-                                    ("Check this", WARN)
+                                    ("Check this", self.theme.warn)
                                 }
                                 ob_extract::draft::Badge::PictureOnly => {
-                                    ("Picture only", INFO)
+                                    ("Picture only", self.theme.info)
                                 }
                             };
                             ui.horizontal(|ui| {
@@ -6008,7 +6153,7 @@ impl App {
                 if let Some(note) = &review.note {
                     ui.label(
                         egui::RichText::new(note)
-                            .color(PROBLEM),
+                            .color(self.theme.problem),
                     );
                 }
                 ui.separator();
@@ -6017,9 +6162,9 @@ impl App {
                     .show(ui, |ui| {
                         for item in &review.items {
                             let (tag, color) = if item.standing {
-                                ("Stays", GOOD)
+                                ("Stays", self.theme.good)
                             } else {
-                                ("Changes weekly", WARN)
+                                ("Changes weekly", self.theme.warn)
                             };
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(tag).color(color).strong());
@@ -6480,6 +6625,67 @@ impl App {
                 }
             });
         self.show_keys = open;
+    }
+
+    /// Comfort settings changed (A1): repaint the whole
+    /// app in the new size and palette at once, and
+    /// remember the choice like every other setting.
+    fn apply_comfort(&mut self, ctx: &egui::Context) {
+        self.theme = Theme::for_settings(&self.settings);
+        ctx.set_style(app_style(&self.settings));
+        if let Err(e) = save_settings(&self.settings) {
+            self.fail(format!("Settings could not be saved. ({e})"));
+        }
+        ctx.request_repaint();
+    }
+
+    /// The "Text size and contrast" window (A1): three
+    /// sizes in plain words, one contrast switch, a live
+    /// sample line so the size can be judged before the
+    /// window is closed, and the one line of truth about
+    /// what these settings do not touch.
+    fn comfort_window(&mut self, ctx: &egui::Context) {
+        if !self.show_comfort {
+            return;
+        }
+        let mut open = self.show_comfort;
+        egui::Window::new("Text size and contrast")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.label("How big the words in this app are, and how hard they stand out.");
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Text size").strong());
+                for scale in [UiScale::Standard, UiScale::Large, UiScale::ExtraLarge] {
+                    if ui
+                        .radio_value(&mut self.settings.ui_scale, scale, scale.label())
+                        .changed()
+                    {
+                        self.apply_comfort(ctx);
+                    }
+                }
+                ui.add_space(4.0);
+                ui.label("Welcome to worship. The Lord be with you.");
+                ui.add_space(6.0);
+                ui.separator();
+                let mut hc = self.settings.high_contrast;
+                if ui
+                    .checkbox(&mut hc, "High contrast (black text on white)")
+                    .changed()
+                {
+                    self.settings.high_contrast = hc;
+                    self.apply_comfort(ctx);
+                }
+                ui.add_space(6.0);
+                ui.separator();
+                ui.label(
+                    "These settings change this app only. The bulletin's own \
+                     words keep the sizes in the document.",
+                );
+            });
+        self.show_comfort = open;
     }
 
     fn fonts_window(&mut self, ctx: &egui::Context) {
@@ -7006,6 +7212,9 @@ impl eframe::App for App {
                 if ui.button("Shortcuts").clicked() {
                     self.show_keys = true;
                 }
+                if ui.button("Text size").clicked() {
+                    self.show_comfort = true;
+                }
                 ui.separator();
                 ui.label(format!("Step {} of 5: {}", self.step + 1, STEPS[self.step]));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -7354,7 +7563,7 @@ impl eframe::App for App {
                             self.doc.fields.get("occasion_date").map(String::as_str),
                             chrono::Local::now().date_naive(),
                         ) {
-                            ui.label(egui::RichText::new(words).color(PROBLEM));
+                            ui.label(egui::RichText::new(words).color(self.theme.problem));
                         }
                         ui.label("Name of the service");
                         let mut sn = self.doc.fields.get("occasion_name").cloned().unwrap_or_default();
@@ -7501,7 +7710,7 @@ impl eframe::App for App {
                             if n.text.starts_with("Check:") {
                                 ui.label(
                                     egui::RichText::new(&n.text)
-                                        .color(PROBLEM),
+                                        .color(self.theme.problem),
                                 );
                             } else {
                                 ui.label(&n.text);
@@ -7521,7 +7730,7 @@ impl eframe::App for App {
                         for f in &findings {
                             ui.label(
                                 egui::RichText::new(char_note(f))
-                                    .color(PROBLEM),
+                                    .color(self.theme.problem),
                             );
                             if weekly_story_id(&self.doc).as_deref()
                                 == Some(f.story_id.as_str())
@@ -7556,7 +7765,7 @@ impl eframe::App for App {
                             ui.label(
                                 egui::RichText::new(char_note(&f))
                                     .strong()
-                                    .color(PROBLEM),
+                                    .color(self.theme.problem),
                             );
                         }
                         if print_copy_stale(
@@ -7566,7 +7775,7 @@ impl eframe::App for App {
                             ui.label(
                                 egui::RichText::new("This bulletin changed since the print copy was made. Make a fresh print copy before printing.")
                                     .strong()
-                                    .color(PROBLEM),
+                                    .color(self.theme.problem),
                             );
                         }
                         ui.small("Open makes a one-time copy to print right now. The buttons under \"Keep a copy as a file\" keep files you can reuse.");
@@ -7799,7 +8008,7 @@ impl eframe::App for App {
                 if self.status_error {
                     ui.label(
                         egui::RichText::new(format!("Something needs attention: {}", self.status))
-                            .color(PROBLEM)
+                            .color(self.theme.problem)
                             .strong(),
                     );
                 } else {
@@ -7821,6 +8030,7 @@ impl eframe::App for App {
             self.run_checks();
         }
         self.fonts_window(ctx);
+        self.comfort_window(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label(egui::RichText::new("Preview: what the congregation will hold").strong());
             ui.small("In your fonts, with lines breaking where they will print. The light outlines are guides; they do not print. The Pages window is where you move boxes.");
@@ -7892,26 +8102,88 @@ impl StrongIf for egui::RichText {
     }
 }
 
-/// The app's text sizes, set once (UI audit round 2, batch 3).
-/// The stock egui scale reads small for this audience (office
-/// administrators, some covering on unfamiliar machines), so
-/// body and button text run a step larger. Per-widget sizes in
-/// the canvas and previews are content, not chrome, and are
-/// not touched here.
-fn app_style() -> egui::Style {
+/// The app's style: set at launch and again whenever the
+/// comfort settings change (A1). The stock egui scale reads
+/// small for this audience (office administrators, some
+/// covering on unfamiliar machines), so body and button
+/// text run a step larger even at Standard, and the
+/// text-size steps (UiScale) grow every text style from
+/// there, with padding and spacing a step behind.
+/// Per-widget sizes in the canvas and previews are document
+/// content, not chrome, and are not touched here.
+fn app_style(settings: &Settings) -> egui::Style {
+    let tf = settings.ui_scale.text_factor();
+    let sf = settings.ui_scale.spacing_factor();
     let mut style = egui::Style::default();
+    style.text_styles.insert(
+        egui::TextStyle::Heading,
+        egui::FontId::proportional(20.0 * tf),
+    );
     style
         .text_styles
-        .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Body, egui::FontId::proportional(15.5));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Button, egui::FontId::proportional(15.5));
-    style
-        .text_styles
-        .insert(egui::TextStyle::Small, egui::FontId::proportional(12.5));
+        .insert(egui::TextStyle::Body, egui::FontId::proportional(15.5 * tf));
+    style.text_styles.insert(
+        egui::TextStyle::Button,
+        egui::FontId::proportional(15.5 * tf),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Small,
+        egui::FontId::proportional(12.5 * tf),
+    );
+    if let Some(mono) = style.text_styles.get_mut(&egui::TextStyle::Monospace) {
+        mono.size *= tf;
+    }
+    style.spacing.button_padding = egui::vec2(
+        style.spacing.button_padding.x * sf,
+        style.spacing.button_padding.y * sf,
+    );
+    style.spacing.item_spacing = egui::vec2(
+        style.spacing.item_spacing.x * sf,
+        style.spacing.item_spacing.y * sf,
+    );
+    if settings.high_contrast {
+        // True black words on white (A1). egui paints a
+        // keyboard-focused widget with its "active"
+        // visuals, so the focus ring lives there: wide and
+        // black. Selection gets the same treatment.
+        let mut v = egui::Visuals::light();
+        v.override_text_color = Some(egui::Color32::BLACK);
+        v.panel_fill = egui::Color32::WHITE;
+        v.window_fill = egui::Color32::WHITE;
+        v.extreme_bg_color = egui::Color32::WHITE;
+        v.faint_bg_color = egui::Color32::from_gray(235);
+        v.hyperlink_color = egui::Color32::from_rgb(0, 0, 200);
+        v.warn_fg_color = egui::Color32::from_rgb(122, 66, 0);
+        v.error_fg_color = egui::Color32::from_rgb(160, 0, 0);
+        for w in [
+            &mut v.widgets.noninteractive,
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+            &mut v.widgets.open,
+        ] {
+            w.fg_stroke = egui::Stroke::new(1.0_f32, egui::Color32::BLACK);
+        }
+        v.widgets.inactive.bg_stroke = egui::Stroke::new(1.5_f32, egui::Color32::BLACK);
+        v.widgets.hovered.bg_stroke = egui::Stroke::new(2.0_f32, egui::Color32::BLACK);
+        v.widgets.active.bg_stroke = egui::Stroke::new(2.5_f32, egui::Color32::BLACK);
+        v.selection.bg_fill = egui::Color32::from_rgb(255, 238, 150);
+        v.selection.stroke = egui::Stroke::new(2.0_f32, egui::Color32::BLACK);
+        style.visuals = v;
+    } else {
+        // Standard theme: the stock chrome, except that a
+        // keyboard-focused widget must be findable. egui
+        // paints focus with the "active" visuals, whose
+        // outline is a hairline out of the box, so widen
+        // and darken it (A1, item 4).
+        let edge = if style.visuals.dark_mode {
+            egui::Color32::from_gray(230)
+        } else {
+            egui::Color32::from_gray(40)
+        };
+        style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.75_f32, edge);
+        style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.25_f32, edge);
+    }
     style
 }
 
@@ -7945,7 +8217,10 @@ fn main() -> eframe::Result<()> {
         "OpenBulletin",
         options,
         Box::new(|cc| {
-            cc.egui_ctx.set_style(app_style());
+            // The saved comfort settings (A1) shape the
+            // very first frame, not just later ones.
+            let settings = load_settings();
+            cc.egui_ctx.set_style(app_style(&settings));
             Ok(Box::new(App::default()))
         }),
     )
@@ -9949,5 +10224,76 @@ mod settings_tests {
         for w in segs.windows(2) {
             assert!(w[1].dx >= w[0].dx, "segments advance");
         }
+    }
+
+    #[test]
+    fn comfort_settings_default_and_round_trip() {
+        // A settings file from before A1 has neither comfort
+        // field: Standard size, contrast off.
+        let st: Settings = serde_json::from_str("{}").expect("old settings load");
+        assert_eq!(st.ui_scale, UiScale::Standard);
+        assert!(!st.high_contrast);
+        // Chosen comforts come back as themselves through
+        // the settings file, and the theme follows them.
+        let st = Settings {
+            ui_scale: UiScale::ExtraLarge,
+            high_contrast: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&st).expect("settings save");
+        let back: Settings = serde_json::from_str(&json).expect("settings reload");
+        assert_eq!(back.ui_scale, UiScale::ExtraLarge);
+        assert!(back.high_contrast);
+        assert_eq!(Theme::for_settings(&back), Theme::high_contrast());
+        let plain: Settings = serde_json::from_str("{}").expect("old settings load");
+        assert_eq!(Theme::for_settings(&plain), Theme::standard());
+    }
+
+    #[test]
+    fn text_size_steps_scale_the_style() {
+        let body = |s: &Settings| {
+            app_style(s)
+                .text_styles
+                .get(&egui::TextStyle::Body)
+                .map(|f| f.size)
+                .unwrap_or(0.0)
+        };
+        let standard = Settings::default();
+        let large = Settings {
+            ui_scale: UiScale::Large,
+            ..Default::default()
+        };
+        let extra = Settings {
+            ui_scale: UiScale::ExtraLarge,
+            ..Default::default()
+        };
+        assert!((body(&standard) - 15.5).abs() < 0.01);
+        assert!((body(&large) - 15.5 * 1.2).abs() < 0.01);
+        assert!((body(&extra) - 15.5 * 1.4).abs() < 0.01);
+        // Padding grows too, a step behind the words.
+        let pad = |s: &Settings| app_style(s).spacing.button_padding.y;
+        assert!(pad(&extra) > pad(&large) && pad(&large) > pad(&standard));
+        // The labels are the words the window shows.
+        assert_eq!(UiScale::Standard.label(), "Standard");
+        assert_eq!(UiScale::Large.label(), "Large");
+        assert_eq!(UiScale::ExtraLarge.label(), "Extra large");
+    }
+
+    #[test]
+    fn high_contrast_pairs_meet_their_ratios() {
+        let t = Theme::high_contrast();
+        // Words on their ground: the text pairs hold 7:1.
+        assert!(contrast_ratio(t.text, t.ground) >= 7.0);
+        assert!(contrast_ratio(t.problem, t.ground) >= 7.0);
+        assert!(contrast_ratio(t.warn, t.ground) >= 7.0);
+        assert!(contrast_ratio(t.good, t.ground) >= 7.0);
+        assert!(contrast_ratio(t.info, t.ground) >= 7.0);
+        // The canvas accent is a working color, held to 4.5:1.
+        assert!(contrast_ratio(t.accent, t.ground) >= 4.5);
+        // The measuring stick itself: black on white is 21.
+        assert!((contrast_ratio(egui::Color32::BLACK, egui::Color32::WHITE) - 21.0).abs() < 0.1);
+        // The standard warn tone is why the variant exists:
+        // as words on white it does not meet the 7:1 bar.
+        assert!(contrast_ratio(WARN, egui::Color32::WHITE) < 7.0);
     }
 }

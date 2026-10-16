@@ -102,8 +102,37 @@ Adopted into the plan:
 
 ## 5. The administrator's eyes (Jacob, 2026-10-15)
 
-The large-print edition serves the congregation. The same
-fact applies at the desk: church administrators skew
+**SHIPPED 2026-10-16 (A1).** What shipped, against the
+plan below: a "Text size" button in the top bar opens a
+"Text size and contrast" window with the three steps in
+plain words (Standard / Large / Extra large), a live
+sample line, and the high-contrast switch, labeled "High
+contrast (black text on white)". The steps scale every
+chrome text style (x1.0 / x1.2 / x1.4) with padding and
+spacing a step behind; the canvas and previews are
+document space and keep the document's own sizes, which
+the window says in one line. High contrast is a full
+palette variant reached through a Theme value on the
+App: true black on white, every accent darkened until
+the WCAG pairs asserted in the app tests hold (text
+pairs at 7:1 or better, the canvas accent at 4.5:1 or
+better), focus and selection strokes widened and
+blackened; the standard theme's focus stroke is widened
+too, since egui paints keyboard focus with its "active"
+visuals. On the canvas, the corner square's grab zone
+and the guides' grab tolerance grow with the text step
+(the drawn square stays 9 px). Fixed-height audit: the
+step sidebar and every long list already live in scroll
+areas, and the Print preview's 300 px cap stays, because
+it caps a picture inside its own scroll box while the
+step around it scrolls. The honest residue: no human
+has yet run the largest size through a full week of
+work; that stays the standing human gate, exactly as
+the plan below says.
+
+Original plan text: The large-print edition serves the
+congregation. The same fact applies at the desk: church
+administrators skew
 older, and the application itself must conform to their
 eyes (Principle 9 applied to the user, not only to the
 reader). This is an objective, not a polish item:

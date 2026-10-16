@@ -465,17 +465,32 @@ fn svg_written_name(name: &str) -> &str {
 /// reference in url(...) dress? The only url(...) an
 /// inlined picture may carry (a paint server or clip
 /// defined in the same picture). Anything else wearing
-/// url( is refused with the attribute.
+/// url( is refused with the attribute: the value must
+/// OPEN with a fragment url(, and EVERY url( in it
+/// must aim at a fragment (round 2, RT-6 — checking
+/// only the first let a second, hostile one ride
+/// behind it: `url(#a) url(https://…)`).
 fn url_value_is_local(value: &str) -> bool {
-    let v = value.trim();
-    let Some(rest) = v
-        .get(..4)
-        .filter(|head| head.eq_ignore_ascii_case("url("))
-        .map(|_| &v[4..])
-    else {
-        return false;
-    };
-    let rest = rest.trim_start();
+    let v = value.trim().to_ascii_lowercase();
+    let mut any = false;
+    for (at, _) in v.match_indices("url(") {
+        if !any && at != 0 {
+            // The first url( does not open the value.
+            return false;
+        }
+        any = true;
+        if !url_target_is_local(&v[at + 4..]) {
+            return false;
+        }
+    }
+    any
+}
+
+/// The target of one url( — the text just past its
+/// opening — is a same-picture fragment: optional
+/// whitespace and one quote, then '#'.
+fn url_target_is_local(after_open: &str) -> bool {
+    let rest = after_open.trim_start();
     let rest = match rest.strip_prefix('"').or_else(|| rest.strip_prefix('\'')) {
         Some(r) => r,
         None => rest,
@@ -1441,6 +1456,39 @@ mod tests {
             assert!(!html.contains(banned), "{banned} reached the page");
         }
         assert!(html.contains("fill=\"red\""), "the art itself stays");
+    }
+
+    #[test]
+    fn a_second_url_in_a_value_does_not_ride_behind_the_first() {
+        // Round 2, RT-6: the url( check read only the
+        // first url( in a value, so a second one pointing
+        // off the picture (or wearing a script scheme)
+        // rode through into the exported page. Both of
+        // the lane's payloads must lose the whole
+        // attribute now; two fragment references in one
+        // value are still the picture talking about
+        // itself, and stay.
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+<rect width="4" height="4" fill="url(#a) url(https://evil.example/steal)"/>
+<rect width="4" height="4" clip-path="url(#c) url(javascript:alert(1))"/>
+<rect width="4" height="4" fill="url(#a) url(#b)"/>
+</svg>"##;
+        let out = sanitize_svg(svg);
+        assert!(!out.contains("evil.example"), "{out}");
+        assert!(!out.contains("javascript:"), "{out}");
+        assert!(
+            !out.contains("clip-path"),
+            "the whole attribute goes with its bad url(: {out}"
+        );
+        assert!(
+            out.contains("fill=\"url(#a) url(#b)\""),
+            "two same-picture references in one value stay: {out}"
+        );
+        // The round-1 single-url( rulings are unchanged.
+        assert!(url_value_is_local("url(#shade)"));
+        assert!(url_value_is_local("url('#shade')"));
+        assert!(!url_value_is_local("url(https://example.invalid/p)"));
+        assert!(!url_value_is_local("red"));
     }
 
     #[test]

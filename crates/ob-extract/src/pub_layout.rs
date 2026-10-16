@@ -2005,6 +2005,7 @@ fn compose(
         pages,
         spans,
         images: Vec::new(),
+        loss_notes: Vec::new(),
     }
 }
 

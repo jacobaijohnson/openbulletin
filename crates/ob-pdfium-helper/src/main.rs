@@ -90,6 +90,7 @@ fn main() {
         pages: Vec::new(),
         spans: Vec::new(),
         images: Vec::new(),
+        loss_notes: Vec::new(),
     };
     if let Some(dir) = &images_dir {
         std::fs::create_dir_all(dir).unwrap_or_else(|e| {

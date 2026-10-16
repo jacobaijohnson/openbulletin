@@ -102,6 +102,7 @@ fn page_height_units(page_width_units: u32) -> u32 {
 enum CaptureFault {
     Start(String),
     TimedOut,
+    TooMuchOutput,
 }
 
 /// Run a backend program to completion or to the
@@ -129,6 +130,7 @@ fn run_capture_with_timeout(
         Err(ob_extract::runner::RunFault::Spawn(e)) => Err(CaptureFault::Start(e.to_string())),
         Err(ob_extract::runner::RunFault::Wait(e)) => Err(CaptureFault::Start(e.to_string())),
         Err(ob_extract::runner::RunFault::TimedOut) => Err(CaptureFault::TimedOut),
+        Err(ob_extract::runner::RunFault::TooMuchOutput) => Err(CaptureFault::TooMuchOutput),
     }
 }
 
@@ -142,6 +144,10 @@ fn start_failure(fault: CaptureFault) -> EngineResponse {
         CaptureFault::TimedOut => EngineResponse::fail(
             "failed",
             "the engraver did not finish in two minutes, so the music was not drawn",
+        ),
+        CaptureFault::TooMuchOutput => EngineResponse::fail(
+            "failed",
+            "the engraver answered with more than we can hold, so the music was not drawn",
         ),
     }
 }

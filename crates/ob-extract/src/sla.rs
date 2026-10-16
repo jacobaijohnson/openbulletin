@@ -564,6 +564,7 @@ pub fn import_sla(
         pages: page_infos,
         spans,
         images: Vec::new(),
+        loss_notes: Vec::new(),
     };
     Ok((dump, notes))
 }

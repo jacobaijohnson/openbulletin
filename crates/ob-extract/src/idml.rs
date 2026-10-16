@@ -343,10 +343,61 @@ fn story_paragraphs(story_xml: &str) -> Result<Vec<ParaText>, String> {
     Ok(out)
 }
 
+/// Close off a part that was cut at the per-part cap,
+/// so the parser can read everything in it that was
+/// complete before the cut (round 2, RT-5): drop the
+/// partial tail past the last whole tag, then close
+/// every element still open, innermost first. Without
+/// this, a cut story's still-open ancestors never
+/// land in the parsed tree and even its finished
+/// paragraphs read as nothing. The importer's loss
+/// note already says the words past the point are
+/// gone; this is how the words before it survive.
+fn close_off_cut(text: &str) -> String {
+    let Some(at) = text.rfind('>') else {
+        return String::new();
+    };
+    let mut out = text[..=at].to_string();
+    let mut reader = Reader::from_str(&out);
+    let mut buf = Vec::new();
+    let mut open: Vec<String> = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                open.push(String::from_utf8_lossy(e.name().as_ref()).into_owned());
+            }
+            Ok(Event::End(_)) => {
+                open.pop();
+            }
+            Ok(Event::Eof) => break,
+            // Damage before the cut is the parser's to
+            // judge; the repair just stops tracking.
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    for name in open.iter().rev() {
+        out.push_str("</");
+        out.push_str(name);
+        out.push('>');
+    }
+    out
+}
+
 // ---------- the importer ----------
 
 const MAX_ENTRIES: usize = 512;
 const MAX_ENTRY: u64 = 32 * 1024 * 1024;
+
+/// The most of an IDML package we will hold at once,
+/// across all its parts together (round 2, RT-4): the
+/// per-part cap alone let 512 parts of 32 MB add up
+/// toward 16 GB, refused in the end only by the
+/// machine running out of memory. 512 MB is the
+/// project's standing total cap, enforced while
+/// reading; a real package is a few megabytes.
+const MAX_TOTAL: u64 = 512 * 1024 * 1024;
 
 pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, String> {
     let cursor = std::io::Cursor::new(bytes);
@@ -356,18 +407,51 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
         return Err("that IDML package has too many parts".into());
     }
     let mut files: HashMap<String, String> = HashMap::new();
+    let mut loss_notes: Vec<String> = Vec::new();
+    let mut total_read: u64 = 0;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().to_string();
         if !name.ends_with(".xml") {
             continue;
         }
-        let mut text = String::new();
+        // Read one byte past the per-part cap, so a part
+        // that runs over it is KNOWN to run over it
+        // (round 2, RT-5): the words past the cap used
+        // to vanish in silence when the cut text was
+        // read as if it were whole. What survives the
+        // cut is still rescued; the loss is counted in
+        // the dump's loss notes and surfaces in the
+        // draft's review.
+        let mut raw = Vec::new();
         entry
             .by_ref()
-            .take(MAX_ENTRY)
-            .read_to_string(&mut text)
+            .take(MAX_ENTRY + 1)
+            .read_to_end(&mut raw)
             .map_err(|e| format!("cannot read a part of that IDML package: {e}"))?;
+        total_read += raw.len() as u64;
+        if total_read > MAX_TOTAL {
+            return Err("that IDML file's insides are too large to read safely".into());
+        }
+        let text = if raw.len() as u64 > MAX_ENTRY {
+            loss_notes.push(format!(
+                "One part of that IDML file ({name}) was too large to read whole, \
+                 so its words past a point were left out of this draft."
+            ));
+            raw.truncate(MAX_ENTRY as usize);
+            // The cut can land inside a character; the
+            // tail is already counted as lost, so a
+            // lossy read of what is left is honest. The
+            // prefix is then closed off (close_off_cut),
+            // so everything complete before the cut is
+            // still rescued instead of the whole part
+            // reading as one unclosed, empty subtree.
+            close_off_cut(&String::from_utf8_lossy(&raw))
+        } else {
+            String::from_utf8(raw).map_err(|_| {
+                "cannot read a part of that IDML package: it is not text we can read".to_string()
+            })?
+        };
         files.insert(name, text);
     }
     let designmap = files
@@ -534,6 +618,7 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
         pages,
         spans,
         images: Vec::new(),
+        loss_notes,
     })
 }
 
@@ -713,6 +798,173 @@ mod tests {
         assert_eq!(dump.spans[0].align, Some(ob_model::Align::Center));
         assert!(dump.spans[0].italic);
         assert_eq!(dump.spans[0].font.as_deref(), Some("Calibri"));
+    }
+
+    fn idml_from_parts(parts: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, body) in parts {
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(body).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn idml_parts_past_the_total_cap_refuse_in_plain_words() {
+        // Round 2, RT-4: many parts, each under the
+        // per-part cap, whose decompressed sum passes
+        // the 512 MB total cap (the lane's shape: a
+        // 6.5 MB package inflating toward 6.4 GB was
+        // refused only by the allocator). The parts are
+        // one repeated byte, so the package stays tiny
+        // on disk while its insides are huge; the
+        // refusal must come from the budget, in plain
+        // words, while reading.
+        let filler = vec![b'a'; 31 * 1024 * 1024];
+        let names: Vec<String> = (0..17).map(|k| format!("Stories/Filler_{k}.xml")).collect();
+        let mut parts: Vec<(&str, Vec<u8>)> = vec![
+            (
+                "designmap.xml",
+                br#"<?xml version="1.0"?><Document><Spread src="Spreads/Spread_u1.xml"/></Document>"#
+                    .to_vec(),
+            ),
+            (
+                "Spreads/Spread_u1.xml",
+                br#"<?xml version="1.0"?><Spread><Page Self="u2" GeometricBounds="0 0 612 396" ItemTransform="1 0 0 1 0 0"/></Spread>"#
+                    .to_vec(),
+            ),
+        ];
+        // 17 parts of 31 MB: 527 MB of insides.
+        for name in &names {
+            parts.push((name.as_str(), filler.clone()));
+        }
+        let bytes = idml_from_parts(&parts);
+        assert!(
+            bytes.len() < 32 * 1024 * 1024,
+            "the package itself stays small: {}",
+            bytes.len()
+        );
+        let err = dump_from_idml(&bytes, "bomb.idml").expect_err("refused by the total cap");
+        assert!(
+            err.contains("insides are too large to read safely"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn idml_a_part_past_its_cap_is_counted_not_silent() {
+        // Round 2, RT-5: a story that runs past the
+        // 32 MB per-part cap used to be cut mid-stream
+        // and read as if whole; the words past the cap
+        // vanished with no count. Now the words before
+        // the cap are still rescued, the loss is counted
+        // in the dump's loss notes, and the draft's
+        // review carries it where the admin can see it.
+        // (The padding is many complete ranges, so where
+        // the cut lands only whole ranges are lost.)
+        let para = |words: &str| {
+            format!(
+                "<ParagraphStyleRange AppliedParagraphStyle=\"ParagraphStyle/Body\">\
+                 <CharacterStyleRange FontStyle=\"Regular\"><Content>{words}</Content>\
+                 </CharacterStyleRange></ParagraphStyleRange>"
+            )
+        };
+        let filler_para = format!(
+            "<ParagraphStyleRange AppliedParagraphStyle=\"ParagraphStyle/Body\">\
+             <CharacterStyleRange FontStyle=\"Regular\"><Content>{}</Content>\
+             </CharacterStyleRange></ParagraphStyleRange>",
+            "x".repeat(4_000)
+        );
+        let mut story = String::from("<?xml version=\"1.0\"?><Story>");
+        story.push_str(&para("Words before the flood"));
+        for _ in 0..8_500 {
+            story.push_str(&filler_para);
+        }
+        story.push_str(&para("ZZZAFTERCAP words"));
+        story.push_str("</Story>");
+        assert!(story.len() > 33 * 1024 * 1024, "the story passes the cap");
+        let dump = dump_from_idml(&idml_with_story(&story), "long.idml").expect("dump");
+        assert!(
+            dump.spans
+                .iter()
+                .any(|s| s.text.contains("Words before the flood")),
+            "the words before the cap are rescued"
+        );
+        assert!(
+            !dump.spans.iter().any(|s| s.text.contains("ZZZAFTERCAP")),
+            "the words past the cap did not come over"
+        );
+        assert_eq!(
+            dump.loss_notes.len(),
+            1,
+            "the loss is counted: {:?}",
+            dump.loss_notes
+        );
+        assert!(
+            dump.loss_notes[0].contains("Story_u9"),
+            "the note names the part: {}",
+            dump.loss_notes[0]
+        );
+        let out =
+            crate::draft::document_from_dump(&dump, ob_model::ChurchProfile::default(), false);
+        assert!(
+            out.items.iter().any(|i| {
+                i.badge == crate::draft::Badge::CheckThis
+                    && i.label == "Part of the old file was left out"
+                    && i.detail.contains("Story_u9")
+            }),
+            "the review carries the counted loss: {:?}",
+            out.items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn idml_a_story_cut_inside_a_comment_is_counted_too() {
+        // The lane's exact shape: the story passes the
+        // cap inside one long comment, the real
+        // paragraph after it never read. The paragraph
+        // closed before the comment is still rescued
+        // (the cut is closed off), the loss is counted,
+        // and the words past the cap stay out.
+        let mut story = String::from("<?xml version=\"1.0\"?><Story>");
+        story.push_str(
+            "<ParagraphStyleRange AppliedParagraphStyle=\"ParagraphStyle/Body\">\
+             <CharacterStyleRange FontStyle=\"Regular\"><Content>Words before the flood</Content>\
+             </CharacterStyleRange></ParagraphStyleRange>",
+        );
+        story.push_str("<!--");
+        story.push_str(&"x".repeat(33 * 1024 * 1024));
+        story.push_str("-->");
+        story.push_str(
+            "<ParagraphStyleRange AppliedParagraphStyle=\"ParagraphStyle/Body\">\
+             <CharacterStyleRange FontStyle=\"Regular\"><Content>ZZZAFTERCAP words</Content>\
+             </CharacterStyleRange></ParagraphStyleRange>",
+        );
+        story.push_str("</Story>");
+        let dump = dump_from_idml(&idml_with_story(&story), "comment.idml").expect("dump");
+        assert!(
+            dump.spans
+                .iter()
+                .any(|s| s.text.contains("Words before the flood")),
+            "the paragraph closed before the comment is rescued"
+        );
+        assert!(
+            !dump.spans.iter().any(|s| s.text.contains("ZZZAFTERCAP")),
+            "the words past the cap did not come over"
+        );
+        assert_eq!(
+            dump.loss_notes.len(),
+            1,
+            "the loss is counted: {:?}",
+            dump.loss_notes
+        );
     }
 
     #[test]

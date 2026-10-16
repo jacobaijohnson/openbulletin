@@ -165,6 +165,14 @@ pub struct ExtractionDump {
     /// (schema v2). Absent in v1 dumps.
     #[serde(default)]
     pub images: Vec<DumpImage>,
+    /// Losses the extractor counted while reading the
+    /// source, each one sentence in plain words, for
+    /// the draft builder to surface in its review
+    /// (audit round 2, RT-5: words that vanish must be
+    /// counted where the user can see them). Absent in
+    /// dumps from before the field existed.
+    #[serde(default)]
+    pub loss_notes: Vec<String>,
 }
 
 impl ExtractionDump {
@@ -269,6 +277,7 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
         pages,
         spans,
         images: Vec::new(),
+        loss_notes: Vec::new(),
     })
 }
 
@@ -500,6 +509,7 @@ mod tests {
             }],
             spans,
             images: Vec::new(),
+            loss_notes: Vec::new(),
         }
     }
 

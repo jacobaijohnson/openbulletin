@@ -23,6 +23,11 @@
 //!   one review item; links keep their words and lose their
 //!   addresses, counted; pictures that live on the web are
 //!   counted and NOT fetched.
+//! - The page is measured before it is parsed (round 2,
+//!   RT-3): a byte-level scan refuses pages built too
+//!   deeply or of too many pieces in linear time, because
+//!   the parser's own cost grows with depth. The parsed
+//!   tree is then measured again, as before.
 //! - Import makes NO network calls, ever. A picture is
 //!   brought in only when its bytes are inside the page
 //!   itself (a data: URI); those decode into the document's
@@ -987,6 +992,288 @@ fn tree_depth(root: &Handle) -> usize {
     deepest
 }
 
+/// The pre-parse budgets (round 2, RT-3). The tree
+/// check above measures the parsed tree honestly, but
+/// html5ever's cost grows quadratically with nesting
+/// depth, so a page nested tens of thousands deep was
+/// refused only after half a minute of parsing — on
+/// the import thread, the same lost work as the abort
+/// it replaced, at a slower clock. The scan below runs
+/// FIRST, on the raw bytes, in linear time: a tolerant
+/// tokenizer that counts tags and tracks naive nesting
+/// depth. It is conservative by design (real pages
+/// nest perhaps fifty levels, and the optional-close
+/// rules below keep ordinary sloppy HTML from piling
+/// into false depth), and the tree check still
+/// governs afterwards: tree construction can deepen a
+/// page past its source's apparent nesting, and that
+/// deepening is caught there, as before.
+const MAX_NAIVE_DEPTH: usize = 512;
+const MAX_TAG_COUNT: usize = 500_000;
+
+/// The refusal both pre-parse budgets speak.
+const TOO_BIG_PAGE: &str = "This page is built too deeply (or has too many pieces) \
+    to read safely, so it was not brought in.";
+
+/// Elements that never hold anything: counted as tags
+/// but never pushed onto the nesting stack.
+const VOID_ELEMENTS: &[&str] = &[
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
+];
+
+/// Elements whose contents are not markup: everything
+/// up to the matching close tag is text, skipped whole
+/// (a script full of tag-shaped strings must not pile
+/// into the counts).
+const RAW_TEXT_ELEMENTS: &[&str] = &["script", "style", "textarea", "title"];
+
+/// A block-level open that closes an open paragraph
+/// (the HTML rule). Without it, a page of ordinary
+/// unclosed paragraphs would stack into false depth.
+fn is_block_open(name: &str) -> bool {
+    matches!(
+        name,
+        "address"
+            | "article"
+            | "aside"
+            | "blockquote"
+            | "details"
+            | "div"
+            | "dl"
+            | "dd"
+            | "dt"
+            | "fieldset"
+            | "figcaption"
+            | "figure"
+            | "footer"
+            | "form"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "header"
+            | "hgroup"
+            | "hr"
+            | "li"
+            | "main"
+            | "menu"
+            | "nav"
+            | "ol"
+            | "p"
+            | "pre"
+            | "section"
+            | "table"
+            | "ul"
+    )
+}
+
+/// Does opening `new` implicitly close an open `top`?
+/// The optional-close rules of ordinary HTML, so a
+/// sloppy-but-shallow page (unclosed paragraphs and
+/// list items are normal out there) does not
+/// accumulate depth it does not have.
+fn implied_close(top: &str, new: &str) -> bool {
+    match top {
+        "p" => is_block_open(new),
+        "li" => new == "li",
+        "dt" | "dd" => matches!(new, "dt" | "dd"),
+        "td" | "th" => matches!(new, "td" | "th" | "tr" | "thead" | "tbody" | "tfoot"),
+        "tr" => matches!(new, "tr" | "thead" | "tbody" | "tfoot"),
+        "thead" | "tbody" | "tfoot" => matches!(new, "thead" | "tbody" | "tfoot"),
+        "option" => matches!(new, "option" | "optgroup"),
+        "optgroup" => new == "optgroup",
+        "head" => new == "body",
+        _ => false,
+    }
+}
+
+/// The tag name at `from` (letters, digits, and the
+/// punctuation tag names wear), lowercased, with the
+/// offset just past it.
+fn scan_tag_name(bytes: &[u8], from: usize) -> (String, usize) {
+    let mut j = from;
+    while j < bytes.len()
+        && (bytes[j].is_ascii_alphanumeric() || matches!(bytes[j], b'-' | b':' | b'_'))
+    {
+        j += 1;
+    }
+    (
+        String::from_utf8_lossy(&bytes[from..j]).to_ascii_lowercase(),
+        j,
+    )
+}
+
+/// The offset just past a tag's closing '>', honoring
+/// quoted attribute values (a '>' inside quotes ends
+/// nothing). None when the tag never ends.
+fn scan_tag_end(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut quote: Option<u8> = None;
+    let mut j = from;
+    while j < bytes.len() {
+        let b = bytes[j];
+        match quote {
+            Some(q) => {
+                if b == q {
+                    quote = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => quote = Some(b),
+                b'>' => return Some(j + 1),
+                _ => {}
+            },
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Does the tag ending at `end` (just past its '>')
+/// close itself: a '/' as its last meaningful byte
+/// before the '>'?
+fn tag_is_self_closing(bytes: &[u8], end: usize) -> bool {
+    let mut j = end - 1; // the '>' itself
+    while j > 0 {
+        j -= 1;
+        match bytes[j] {
+            b' ' | b'\t' | b'\r' | b'\n' => continue,
+            b => return b == b'/',
+        }
+    }
+    false
+}
+
+/// The offset of the close tag for a raw-text element
+/// (`</script` and kin, any case, followed by a tag
+/// delimiter), at or after `from`.
+fn find_close_tag(bytes: &[u8], from: usize, name: &str) -> Option<usize> {
+    let name = name.as_bytes();
+    let mut i = from;
+    while i + 2 + name.len() <= bytes.len() {
+        let off = bytes[i..].iter().position(|&b| b == b'<')?;
+        let p = i + off;
+        if p + 2 + name.len() > bytes.len() {
+            return None;
+        }
+        if bytes[p + 1] == b'/'
+            && bytes[p + 2..p + 2 + name.len()]
+                .iter()
+                .zip(name.iter())
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        {
+            match bytes.get(p + 2 + name.len()) {
+                None => return Some(p),
+                Some(b) if b.is_ascii_whitespace() || *b == b'>' || *b == b'/' => {
+                    return Some(p);
+                }
+                _ => {}
+            }
+        }
+        i = p + 1;
+    }
+    None
+}
+
+/// Measure a page before the parser sees it: refuse
+/// when naive nesting runs past MAX_NAIVE_DEPTH or
+/// the tag count past MAX_TAG_COUNT. Anything the
+/// scan cannot make sense of is simply not counted;
+/// the parser and the tree check judge the page
+/// itself, as they always have.
+fn pre_parse_budget(bytes: &[u8]) -> Result<(), String> {
+    let mut stack: Vec<String> = Vec::new();
+    let mut tags = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let Some(off) = bytes[i..].iter().position(|&b| b == b'<') else {
+            break;
+        };
+        let p = i + off;
+        let rest = &bytes[p..];
+        if rest.starts_with(b"<!--") {
+            // A comment: skip to its end; a comment that
+            // never ends makes the rest of the page one.
+            match find_subslice(&bytes[p + 4..], b"-->") {
+                Some(end) => i = p + 4 + end + 3,
+                None => break,
+            }
+            continue;
+        }
+        if rest.starts_with(b"<!") || rest.starts_with(b"<?") {
+            // Doctype, declaration, processing
+            // instruction: skip the tag whole.
+            match scan_tag_end(bytes, p + 2) {
+                Some(end) => i = end,
+                None => break,
+            }
+            continue;
+        }
+        if rest.starts_with(b"</") {
+            // A close tag: pop through its element when
+            // it is open (misnesting pops what sits above
+            // it too, the tolerant reading); a close for
+            // something never opened is ignored.
+            let (name, after_name) = scan_tag_name(bytes, p + 2);
+            tags += 1;
+            if tags > MAX_TAG_COUNT {
+                return Err(TOO_BIG_PAGE.to_string());
+            }
+            if let Some(pos) = stack.iter().rposition(|t| t == &name) {
+                stack.truncate(pos);
+            }
+            match scan_tag_end(bytes, after_name) {
+                Some(end) => i = end,
+                None => break,
+            }
+            continue;
+        }
+        if rest.get(1).is_some_and(|b| b.is_ascii_alphabetic()) {
+            let (name, after_name) = scan_tag_name(bytes, p + 1);
+            tags += 1;
+            if tags > MAX_TAG_COUNT {
+                return Err(TOO_BIG_PAGE.to_string());
+            }
+            let Some(end) = scan_tag_end(bytes, after_name) else {
+                break;
+            };
+            let self_closing = tag_is_self_closing(bytes, end);
+            i = end;
+            if VOID_ELEMENTS.contains(&name.as_str()) || self_closing {
+                continue;
+            }
+            while let Some(top) = stack.last() {
+                if implied_close(top, &name) {
+                    stack.pop();
+                } else {
+                    break;
+                }
+            }
+            let is_raw_text = RAW_TEXT_ELEMENTS.contains(&name.as_str());
+            stack.push(name);
+            if stack.len() > MAX_NAIVE_DEPTH {
+                return Err(TOO_BIG_PAGE.to_string());
+            }
+            if is_raw_text {
+                // The contents are not markup: jump to
+                // the matching close tag and let the
+                // loop count it and pop like any close.
+                match find_close_tag(bytes, i, stack.last().expect("just pushed")) {
+                    Some(pos) => i = pos,
+                    None => break,
+                }
+            }
+            continue;
+        }
+        // A '<' that opens nothing (words like "a < b"):
+        // text; step past it.
+        i = p + 1;
+    }
+    Ok(())
+}
+
 /// Build the draft bulletin from a web page's bytes.
 /// Errors only when the page holds no words we can read.
 pub fn document_from_html(
@@ -994,6 +1281,10 @@ pub fn document_from_html(
     source_name: &str,
     profile: ChurchProfile,
 ) -> Result<DraftOutcome, String> {
+    // Round 2, RT-3: measure before parsing (see
+    // pre_parse_budget); the tree check below still
+    // runs on what the parser built.
+    pre_parse_budget(bytes)?;
     let dom = html5ever::parse_document(markup5ever_rcdom::RcDom::default(), Default::default())
         .from_utf8()
         .read_from(&mut &bytes[..])
@@ -1519,6 +1810,9 @@ mod tests {
         // and kill the whole app, unsaved work with it. The
         // hostile shapes are built from string pieces here;
         // the import must refuse them whole, in plain words.
+        // Since round 2 (RT-3) the refusal comes from the
+        // pre-parse scan, in its words, before the parser
+        // spends quadratic time getting to the tree check.
         let mut divs = String::from("<html><body>");
         for _ in 0..10_000 {
             divs.push_str("<div>");
@@ -1532,7 +1826,7 @@ mod tests {
             Ok(_) => panic!("the deep page must be refused"),
             Err(e) => e,
         };
-        assert!(err.contains("nested too deeply"), "{err}");
+        assert!(err.contains("built too deeply"), "{err}");
 
         // The same attack wearing inline tags instead.
         let mut spans = String::from("<html><body><p>");
@@ -1549,7 +1843,7 @@ mod tests {
             Ok(_) => panic!("the deep page must be refused"),
             Err(e) => e,
         };
-        assert!(err.contains("nested too deeply"), "{err}");
+        assert!(err.contains("built too deeply"), "{err}");
 
         // Nesting a real page would plausibly use (a
         // hundred levels of layout boxes) still comes over.
@@ -1567,6 +1861,92 @@ mod tests {
         assert!(all_paragraphs(&out.doc)
             .iter()
             .any(|p| p.text().contains("Words from a deep page")));
+    }
+
+    #[test]
+    fn very_deep_pages_refuse_before_the_parser_starts() {
+        // Round 2, RT-3: at 25,000 nested divs the old
+        // order (parse, then measure the tree) produced
+        // no verdict within a minute, the parse being
+        // quadratic in depth. The pre-parse scan is
+        // linear, so this test finishing quickly IS the
+        // evidence; the refusal speaks the scan's words.
+        let mut divs = String::from("<html><body>");
+        for _ in 0..25_000 {
+            divs.push_str("<div>");
+        }
+        divs.push_str("words at the bottom");
+        for _ in 0..25_000 {
+            divs.push_str("</div>");
+        }
+        divs.push_str("</body></html>");
+        let err = match document_from_html(divs.as_bytes(), "deep.html", ChurchProfile::default()) {
+            Ok(_) => panic!("the deep page must be refused"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            err,
+            "This page is built too deeply (or has too many pieces) to read \
+             safely, so it was not brought in."
+        );
+    }
+
+    #[test]
+    fn a_page_of_too_many_pieces_refuses_before_the_parser_starts() {
+        // The other pre-parse budget: half a million
+        // tags, none of them deep. Void elements keep
+        // the nesting at zero, so only the count can
+        // refuse this page.
+        let mut page = String::from("<html><body><p>Words first.</p>");
+        for _ in 0..500_001 {
+            page.push_str("<br>");
+        }
+        page.push_str("</body></html>");
+        let err = match document_from_html(page.as_bytes(), "many.html", ChurchProfile::default()) {
+            Ok(_) => panic!("the many-pieced page must be refused"),
+            Err(e) => e,
+        };
+        assert!(err.contains("too many pieces"), "{err}");
+    }
+
+    #[test]
+    fn sloppy_but_shallow_pages_import_like_tidy_ones() {
+        // The pre-parse scan's conservative half (round
+        // 2, RT-3): unclosed <p> and <li> are normal
+        // HTML. They must neither pile into false depth
+        // (600 unclosed paragraphs would pass a naive
+        // 512 budget if each stacked on the last) nor
+        // change what comes over: the sloppy page and
+        // its tidy twin import the same words.
+        let tidy = "<html><body>\
+            <p>First words here</p>\
+            <p>Second words here</p>\
+            <ul><li>Alpha item</li><li>Beta item</li><li>Gamma item</li></ul>\
+            <p>Last words here</p></body></html>";
+        let sloppy = "<html><body>\
+            <p>First words here\
+            <p>Second words here\
+            <ul><li>Alpha item<li>Beta item<li>Gamma item</ul>\
+            <p>Last words here</body></html>";
+        let texts = |html: &str| -> Vec<String> {
+            let out = document_from_html(html.as_bytes(), "page.html", ChurchProfile::default())
+                .expect("the page imports");
+            all_paragraphs(&out.doc).iter().map(|p| p.text()).collect()
+        };
+        assert_eq!(texts(sloppy), texts(tidy));
+
+        let mut pile = String::from("<html><body>");
+        for n in 0..600 {
+            pile.push_str(&format!("<p>Paragraph number {n}"));
+        }
+        pile.push_str("<ul>");
+        for n in 0..600 {
+            pile.push_str(&format!("<li>Item number {n}"));
+        }
+        pile.push_str("</ul></body></html>");
+        let out = document_from_html(pile.as_bytes(), "pile.html", ChurchProfile::default())
+            .expect("unclosed paragraphs and items are a page, not a trap");
+        assert!(all_paragraphs(&out.doc).len() > 600);
     }
 
     #[test]

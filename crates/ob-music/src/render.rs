@@ -201,6 +201,13 @@ fn render_with_candidates(
                         ob_extract::runner::describe_timeout(timeout)
                     )));
                 }
+                Err(ob_extract::runner::RunFault::TooMuchOutput) => {
+                    return Err(RenderError::Failed(
+                        "the music engraver helper answered with more than we can hold, \
+                         so the music was not drawn"
+                            .to_string(),
+                    ));
+                }
                 Err(ob_extract::runner::RunFault::Wait(e)) => {
                     return Err(RenderError::Failed(format!(
                         "the music engraver helper stopped unexpectedly ({e})"

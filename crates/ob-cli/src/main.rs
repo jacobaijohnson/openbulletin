@@ -511,6 +511,12 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
                         .to_string(),
                 );
             }
+            Err(ob_extract::runner::RunFault::TooMuchOutput) => {
+                return Err(
+                    "the PDF helper answered with more than we can hold, so the trace was stopped"
+                        .to_string(),
+                );
+            }
             Err(ob_extract::runner::RunFault::Wait(e)) => {
                 return Err(format!(
                     "something went wrong while the PDF helper was working: {e}"

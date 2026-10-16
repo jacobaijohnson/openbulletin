@@ -388,6 +388,7 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> (ExtractionDump,
         pages,
         spans,
         images: Vec::new(),
+        loss_notes: Vec::new(),
     };
     (dump, spoken_left_out)
 }
@@ -693,6 +694,7 @@ mod tests {
                 }],
                 spans: vec![mk(standing, 40.0), mk(weekly, 120.0)],
                 images: Vec::new(),
+                loss_notes: Vec::new(),
             }
         }
         let dumps = vec![

@@ -441,9 +441,75 @@ fn svg_options() -> resvg::usvg::Options<'static> {
     opt
 }
 
+/// The deepest SVG nesting, and the most elements,
+/// we will hand to the tree builder. usvg builds its
+/// tree recursively, and a clip nested a couple of
+/// thousand groups deep overflowed the stack and
+/// aborted the whole app before any other guard
+/// could speak (round 2, RT-2) — on every graphics
+/// path, since they all come through parse_svg. Real
+/// art is nowhere near either number: a full engraved
+/// page of Bach (the music spike's renders) measures
+/// 2,199 elements and a handful of levels deep, so
+/// the element cap stands more than a hundred times
+/// above it. The scan below is iterative and cheap;
+/// it runs before every parse.
+const MAX_SVG_DEPTH: usize = 256;
+const MAX_SVG_ELEMENTS: usize = 250_000;
+
+/// Count an SVG's nesting and elements with a
+/// streaming scan (no tree is built). Refuses past
+/// the caps above, in the same words as the other
+/// oversize refusals. The scan is a budget, not a
+/// validator: a file the scanner itself cannot walk
+/// is left for usvg to refuse with its own words.
+fn check_svg_budget(text: &str) -> Result<(), ImageError> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut buf = Vec::new();
+    let mut depth = 0usize;
+    let mut elements = 0usize;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(_)) => {
+                depth += 1;
+                elements += 1;
+                if depth > MAX_SVG_DEPTH {
+                    return Err(ImageError::Unreadable(format!(
+                        "that picture's drawing is nested more than {MAX_SVG_DEPTH} \
+                         levels deep, deeper than we can safely open"
+                    )));
+                }
+                if elements > MAX_SVG_ELEMENTS {
+                    return Err(ImageError::Unreadable(format!(
+                        "that picture's drawing has more than {MAX_SVG_ELEMENTS} \
+                         pieces, more than we can safely open"
+                    )));
+                }
+            }
+            Ok(Event::Empty(_)) => {
+                elements += 1;
+                if elements > MAX_SVG_ELEMENTS {
+                    return Err(ImageError::Unreadable(format!(
+                        "that picture's drawing has more than {MAX_SVG_ELEMENTS} \
+                         pieces, more than we can safely open"
+                    )));
+                }
+            }
+            Ok(Event::End(_)) => depth = depth.saturating_sub(1),
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+        buf.clear();
+    }
+    Ok(())
+}
+
 fn parse_svg(bytes: &[u8]) -> Result<resvg::usvg::Tree, ImageError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| ImageError::Unreadable("the SVG is not text we can read".into()))?;
+    check_svg_budget(text)?;
     resvg::usvg::Tree::from_str(text, &svg_options())
         .map_err(|e| ImageError::Unreadable(format!("SVG: {e}")))
 }
@@ -649,6 +715,82 @@ mod tests {
         assert_eq!(&d.rgba[mid..mid + 3], &[0x20, 0x40, 0x60]);
         let fitted = decode_fitted(SQUARE_SVG, 50, 50).expect("fitted svg");
         assert_eq!((fitted.width, fitted.height), (50, 25));
+    }
+
+    #[test]
+    fn a_deeply_nested_svg_is_refused_before_the_tree_build() {
+        // Round 2, RT-2: 5,000 nested groups used to
+        // overflow usvg's recursive tree build and abort
+        // the whole app. The hostile shape is built from
+        // string pieces here (never a checked-in hostile
+        // file); probe, decode, and render must all
+        // refuse it in plain words, and the test
+        // finishing at all is the no-abort evidence.
+        let mut svg =
+            String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\">");
+        for _ in 0..5_000 {
+            svg.push_str("<g>");
+        }
+        svg.push_str("<rect width=\"10\" height=\"10\"/>");
+        for _ in 0..5_000 {
+            svg.push_str("</g>");
+        }
+        svg.push_str("</svg>");
+        let bytes = svg.as_bytes();
+        for err in [
+            probe(bytes).expect_err("probe refuses"),
+            decode(bytes).expect_err("decode refuses"),
+            render_svg(bytes, 10, 10).expect_err("render refuses"),
+        ] {
+            assert!(err.to_string().contains("nested more than"), "{err}");
+        }
+    }
+
+    #[test]
+    fn an_svg_with_too_many_pieces_is_refused() {
+        // The element cap, exercised flat (no depth):
+        // 250,001 empty groups in one picture.
+        let mut svg =
+            String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\">");
+        for _ in 0..250_001 {
+            svg.push_str("<g/>");
+        }
+        svg.push_str("</svg>");
+        let err = probe(svg.as_bytes()).expect_err("probe refuses");
+        assert!(err.to_string().contains("pieces"), "{err}");
+    }
+
+    #[test]
+    fn a_verovio_shaped_svg_still_opens() {
+        // The shape the music engraver hands us: defs of
+        // glyph outlines, nested page/system/measure
+        // groups, words as text. The budget gate must not
+        // eat a real picture.
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="200" viewBox="0 0 8000 2000"><defs><g id="glyph-1"><path d="M100 200 L300 200 L300 400 L100 400 Z"/></g></defs><g class="page"><g class="system"><g class="measure"><use href="#glyph-1" x="10" y="20"/><use href="#glyph-1" x="60" y="20"/></g><text x="100" y="900" font-size="320"><tspan>Ein feste Burg</tspan></text></g></g></svg>"##;
+        let p = probe(svg).expect("probe verovio-shaped svg");
+        assert_eq!(p.format, PictureFormat::Svg);
+        let d = decode(svg).expect("decode verovio-shaped svg");
+        assert_eq!((d.width, d.height), (800, 200));
+    }
+
+    #[test]
+    fn the_spike_engraver_render_still_opens_when_present() {
+        // The real thing, when the fixtures folder is on
+        // this machine (it lives outside the repo and
+        // never ships): one full engraved page of the
+        // Bach chorale from the music spike, 2,199
+        // elements by the coordinator's count. Absent
+        // fixtures skip quietly, like the DejaVu tests.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../openbulletin-fixtures/music-spike/renders/fidelity-6.5-p1.svg"
+        );
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+        let p = probe(&bytes).expect("the spike render probes");
+        assert_eq!(p.format, PictureFormat::Svg);
+        assert!(decode(&bytes).is_ok(), "the spike render decodes");
     }
 
     #[test]

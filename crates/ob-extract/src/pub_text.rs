@@ -1335,6 +1335,7 @@ pub(crate) fn reading_column_dump(
         pages,
         spans,
         images: Vec::new(),
+        loss_notes: Vec::new(),
     };
     (dump, loss)
 }

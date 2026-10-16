@@ -15,26 +15,67 @@
 //! The shape matters as much as the deadline: the
 //! request is written to the child's stdin on its own
 //! thread and the handle dropped (stdin closed),
-//! while stdout and stderr drain on their own threads.
-//! A helper that answers a lot before reading its
-//! request can therefore never deadlock against a
-//! full pipe, and a silent one cannot hang the
-//! caller: past the deadline the child is killed and
-//! the caller hears about it in time to say so in
-//! plain words. On Unix the child runs in its own
-//! process group and the whole group is stopped, so
-//! a helper that is itself a wrapper script cannot
-//! leave its own children holding the pipes (and the
-//! caller) open after it is gone.
+//! while stdout and stderr drain on their own threads
+//! into a channel the caller collects from. A helper
+//! that answers a lot before reading its request can
+//! therefore never deadlock against a full pipe, and
+//! a silent one cannot hang the caller: past the
+//! deadline the child is killed and the caller hears
+//! about it in time to say so in plain words. On Unix
+//! the child runs in its own process group and the
+//! whole group is stopped, so a wrapper script's own
+//! children are stopped with it.
+//!
+//! The reader threads are never joined (round 2,
+//! RT-1). A pipe reaches EOF only when EVERY process
+//! holding it lets go, and a helper that forks can
+//! leave a grandchild holding stdout open long after
+//! the helper itself has finished; joining the
+//! readers made the caller wait for that grandchild's
+//! whole life, deadline or no deadline. So the
+//! readers are detached: they send what they read
+//! over the channel and end at EOF, when the caller
+//! has stopped listening, or when the process exits.
+//! The caller waits for the pipes only until the
+//! deadline plus a short grace; past that it reports
+//! the run as timed out and walks away, and the
+//! detached readers end whenever their pipes finally
+//! close.
+//!
+//! Collected output has a ceiling too (round 2,
+//! RT-8): MAX_OUTPUT_BYTES across both pipes
+//! together. A helper flooding its pipes could
+//! otherwise fill the machine's memory well inside
+//! the deadline; past the ceiling the helper is
+//! stopped and the run refused in plain words.
 
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// How long any helper may take before it is stopped:
 /// two minutes, the same patience the Publisher
 /// bridge gives LibreOffice.
 pub const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How much longer than the deadline the caller waits
+/// for a finished (or stopped) helper's pipes to close
+/// before it stops waiting and reports the run as
+/// timed out (round 2, RT-1). Five seconds is a
+/// moment for an honest pipe to drain; a pipe still
+/// open after that is being held by something the
+/// helper left behind, and its lifetime is not ours
+/// to wait out.
+const PIPE_GRACE: Duration = Duration::from_secs(5);
+
+/// The most helper output one run will hold: 512 MB
+/// across stdout and stderr together, the project's
+/// standing total-cap discipline (round 2, RT-8).
+/// Real answers are single-digit megabytes (a PDF
+/// reading, an engraved page); past the cap the run
+/// is refused, not stored.
+pub const MAX_OUTPUT_BYTES: usize = 512 * 1024 * 1024;
 
 /// A helper run that finished, whatever its exit
 /// status was. Reading the status is the caller's
@@ -55,7 +96,14 @@ pub enum RunFault {
     /// Waiting on the program failed.
     Wait(std::io::Error),
     /// The deadline passed; the child was killed.
+    /// Also the answer when the child finished but
+    /// its pipes stayed open past the grace: something
+    /// it started is still holding them, and the run
+    /// is over either way.
     TimedOut,
+    /// The helper answered with more than we can
+    /// hold (past MAX_OUTPUT_BYTES); it was stopped.
+    TooMuchOutput,
 }
 
 /// Run `cmd` to completion or to the deadline. The
@@ -83,72 +131,140 @@ pub fn run_with_timeout(
         cmd.process_group(0);
     }
     let mut child = cmd.spawn().map_err(RunFault::Spawn)?;
-    let stdin = child.stdin.take();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let (status, stdout, stderr) = std::thread::scope(|scope| {
-        let writer = scope.spawn(move || {
-            if let (Some(mut sin), Some(bytes)) = (stdin, stdin_bytes) {
-                // A helper that stopped early closes its
-                // end; a failed write is its answer, and
-                // the readers below carry what it said.
-                let _ = sin.write_all(bytes);
-                // The handle drops here: stdin closed.
-            }
+    // The request goes in on its own thread, which
+    // drops the handle when it is done (stdin closed).
+    // The thread is detached: a helper that never reads
+    // cannot wedge the caller on a full stdin pipe, and
+    // a failed write (the helper stopped early, closing
+    // its end) is the helper's answer, carried by what
+    // the readers below collect.
+    if let (Some(mut sin), Some(bytes)) = (child.stdin.take(), stdin_bytes) {
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || {
+            let _ = sin.write_all(&bytes);
         });
-        let out_reader = scope.spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut so) = stdout {
-                let _ = so.read_to_end(&mut buf);
-            }
-            buf
-        });
-        let err_reader = scope.spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut se) = stderr {
-                let _ = se.read_to_end(&mut buf);
-            }
-            buf
-        });
-        let deadline = Instant::now() + timeout;
-        let status = loop {
+    }
+    let (tx, rx) = mpsc::channel::<PipeChunk>();
+    if let Some(so) = child.stdout.take() {
+        spawn_pipe_reader(so, tx.clone(), PipeChunk::Out);
+    }
+    if let Some(se) = child.stderr.take() {
+        spawn_pipe_reader(se, tx.clone(), PipeChunk::Err);
+    }
+    // The caller's own sender goes away here: the
+    // channel disconnects when both readers end, and
+    // that disconnection is how the caller learns the
+    // pipes reached EOF.
+    drop(tx);
+    let started = Instant::now();
+    let child_deadline = started + timeout;
+    let collect_deadline = child_deadline + PIPE_GRACE;
+    let mut status: Option<ExitStatus> = None;
+    let mut timed_out = false;
+    let mut pipes_done = false;
+    let mut stdout: Vec<u8> = Vec::new();
+    let mut stderr: Vec<u8> = Vec::new();
+    loop {
+        if status.is_none() && !timed_out {
             match child.try_wait() {
-                Ok(Some(s)) => break Ok(s),
+                Ok(Some(s)) => status = Some(s),
                 Ok(None) => {
-                    if Instant::now() >= deadline {
+                    if Instant::now() >= child_deadline {
                         stop_child(&mut child);
-                        break Err(RunFault::TimedOut);
+                        timed_out = true;
                     }
-                    std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(e) => {
                     stop_child(&mut child);
-                    break Err(RunFault::Wait(e));
+                    return Err(RunFault::Wait(e));
                 }
             }
-        };
-        // Once the child is done or killed its pipes are
-        // closed, so the three threads all finish.
-        let _ = writer.join();
-        let stdout = out_reader.join().unwrap_or_default();
-        let stderr = err_reader.join().unwrap_or_default();
-        (status, stdout, stderr)
-    });
-    match status {
-        Ok(status) => Ok(RunOutput {
-            status,
-            stdout,
-            stderr,
-        }),
-        Err(fault) => Err(fault),
+        }
+        if pipes_done {
+            if let Some(s) = status {
+                return Ok(RunOutput {
+                    status: s,
+                    stdout,
+                    stderr,
+                });
+            }
+            if timed_out {
+                return Err(RunFault::TimedOut);
+            }
+        }
+        if Instant::now() >= collect_deadline {
+            // The child missed its deadline, or it
+            // finished but something it started is
+            // still holding its pipes open past the
+            // grace. Either way this run is a timeout,
+            // returned WITHOUT waiting for the pipes:
+            // the detached readers end when their pipes
+            // finally close or the process exits.
+            if status.is_none() && !timed_out {
+                stop_child(&mut child);
+            }
+            return Err(RunFault::TimedOut);
+        }
+        match rx.recv_timeout(Duration::from_millis(10)) {
+            Ok(chunk) => {
+                match chunk {
+                    PipeChunk::Out(data) => stdout.extend_from_slice(&data),
+                    PipeChunk::Err(data) => stderr.extend_from_slice(&data),
+                }
+                if stdout.len() + stderr.len() > MAX_OUTPUT_BYTES {
+                    stop_child(&mut child);
+                    return Err(RunFault::TooMuchOutput);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                pipes_done = true;
+                // Nothing more can arrive; nap instead
+                // of spinning while the child finishes.
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
 }
 
+/// Which pipe a chunk of helper output came down.
+enum PipeChunk {
+    Out(Vec<u8>),
+    Err(Vec<u8>),
+}
+
+/// Drain one pipe on its own thread, sending what it
+/// reads to the caller in chunks. The thread is
+/// detached and never joined (see the module docs):
+/// it ends at pipe EOF, when the caller has stopped
+/// listening (the send fails), or when the process
+/// exits.
+fn spawn_pipe_reader<R: std::io::Read + Send + 'static>(
+    mut pipe: R,
+    tx: mpsc::Sender<PipeChunk>,
+    tag: fn(Vec<u8>) -> PipeChunk,
+) {
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx.send(tag(buf[..n].to_vec())).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
 /// Stop a child and, on Unix, its whole process
-/// group: a wrapper script's children inherit the
-/// pipes, and a pipe held open by a survivor would
-/// keep the drain threads (and so the caller) waiting
-/// long after the deadline. On Windows the child
+/// group: a wrapper script's children are stopped
+/// with it, so nothing the helper started keeps
+/// working (or holding its pipes) in the background
+/// after the run is over. On Windows the child
 /// alone is stopped; the helpers there are single
 /// programs, not wrappers.
 fn stop_child(child: &mut std::process::Child) {
@@ -261,6 +377,65 @@ mod tests {
         assert_eq!(out.stdout.len(), 200_003);
         assert!(out.stdout.starts_with(b"yyy"));
         assert!(out.stdout.ends_with(b"ok\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_holding_grandchild_cannot_hold_the_caller() {
+        // Round 2, RT-1: the helper exits at once, but a
+        // process it started keeps stdout open for 7 s.
+        // Pipe EOF waits for every holder, so the old
+        // joining runner answered only when the holder
+        // died. The caller must now hear the timeout at
+        // the deadline (0.5 s) plus the grace (5 s),
+        // while the holder is still alive. Both shapes:
+        // a same-group grandchild, and one detached into
+        // its own session with setsid (outside the reach
+        // of the group kill).
+        for script in ["sleep 7 & exec true", "setsid sleep 7 & exec true"] {
+            let start = Instant::now();
+            let fault = run_with_timeout(
+                Command::new("sh").arg("-c").arg(script),
+                None,
+                Duration::from_millis(500),
+            )
+            .expect_err("a held pipe past the grace is a timeout");
+            assert!(matches!(fault, RunFault::TimedOut), "{script}: {fault:?}");
+            let elapsed = start.elapsed();
+            assert!(
+                elapsed >= Duration::from_secs(5),
+                "{script}: the grace was waited out: {elapsed:?}"
+            );
+            assert!(
+                elapsed < Duration::from_secs(7),
+                "{script}: the caller did not wait for the holder's life: {elapsed:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_flooding_helper_is_refused_at_the_byte_ceiling() {
+        // Round 2, RT-8: `yes` fills any pipe as fast as
+        // the machine allows (the lane measured 577 MB
+        // inside a 1 s deadline). The deadline here is a
+        // full minute, so only the 512 MB ceiling can
+        // stop the run; the refusal itself, arriving
+        // long before the deadline, is the evidence the
+        // collection stayed bounded.
+        let start = Instant::now();
+        let fault = run_with_timeout(
+            Command::new("yes").arg("ABCDEFGH"),
+            None,
+            Duration::from_secs(60),
+        )
+        .expect_err("a flood cannot finish");
+        assert!(matches!(fault, RunFault::TooMuchOutput), "{fault:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "the ceiling, not the deadline, stopped it: {:?}",
+            start.elapsed()
+        );
     }
 
     #[cfg(unix)]

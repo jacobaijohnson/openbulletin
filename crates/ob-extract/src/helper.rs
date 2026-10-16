@@ -62,6 +62,12 @@ fn run_helper_with_timeout(
                 crate::runner::describe_timeout(timeout)
             ));
         }
+        Err(crate::runner::RunFault::TooMuchOutput) => {
+            return Err(
+                "the PDF reader answered with more than we can hold, so that file was not read"
+                    .to_string(),
+            );
+        }
         Err(crate::runner::RunFault::Wait(e)) => {
             return Err(format!(
                 "something went wrong while the PDF reader was working: {e}"

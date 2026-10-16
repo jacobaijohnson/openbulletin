@@ -482,6 +482,19 @@ fn build_draft(
     image_bytes: &HashMap<String, Vec<u8>>,
 ) -> DraftOutcome {
     let mut items: Vec<ImportItem> = Vec::new();
+    // Losses the extractor itself counted while reading
+    // (round 2, RT-5: a part too large to read whole, and
+    // its kin) belong to no page, so they ride at the head
+    // of the list on the first panel, in the extractor's
+    // own words.
+    for note in &dump.loss_notes {
+        items.push(ImportItem {
+            panel: 0,
+            label: "Part of the old file was left out".to_string(),
+            badge: Badge::CheckThis,
+            detail: note.clone(),
+        });
+    }
     let mut styles: Vec<ParagraphStyle> = default_styles();
     let mut style_ids: BTreeMap<String, String> = BTreeMap::new();
     let mut stories: Vec<Story> = Vec::new();
@@ -880,6 +893,7 @@ mod tests {
                 italic_span,
             ],
             images: Vec::new(),
+            loss_notes: Vec::new(),
         };
         let out = document_from_dump(&dump, ChurchProfile::default(), false);
         let story = &out.doc.stories[0];
@@ -955,6 +969,7 @@ mod tests {
                 nan_span,
             ],
             images: Vec::new(),
+            loss_notes: Vec::new(),
         };
         let out = document_from_dump(&dump, ChurchProfile::default(), false);
         // The good words arrived; the impossible ones did not.
@@ -1066,6 +1081,7 @@ mod tests {
                 span(1, "Mystery words", 60.0, 40.0, 11.0, "GillSansMT", false),
             ],
             images: Vec::new(),
+            loss_notes: Vec::new(),
         };
         let out = document_from_dump(&dump, ChurchProfile::default(), true);
         assert_eq!(out.doc.sheet.preset, "saddle-booklet");
@@ -1115,6 +1131,7 @@ mod tests {
             }],
             spans: vec![s],
             images: Vec::new(),
+            loss_notes: Vec::new(),
         };
         let out = document_from_dump(&dump, ChurchProfile::default(), false);
         assert_eq!(out.items.len(), 1);
@@ -1157,6 +1174,7 @@ mod tests {
             }],
             spans: vec![s1, s2],
             images: Vec::new(),
+            loss_notes: Vec::new(),
         };
         let out = document_from_dump(&dump, ChurchProfile::default(), false);
         let story = &out.doc.stories[0];
@@ -1200,6 +1218,7 @@ mod tests {
                 h: 150.0,
                 file: "p1-img1.png".into(),
             }],
+            loss_notes: Vec::new(),
         };
         let out = document_from_dump_with_assets(&dump, ChurchProfile::default(), false, &bytes);
         assert_eq!(out.doc.assets.len(), 1);
@@ -1257,6 +1276,7 @@ mod tests {
             }],
             spans: vec![first, second, lone],
             images: Vec::new(),
+            loss_notes: Vec::new(),
         };
         let out = document_from_dump(&dump, ChurchProfile::default(), false);
         let doc = &out.doc;

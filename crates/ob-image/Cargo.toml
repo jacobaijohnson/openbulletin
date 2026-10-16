@@ -8,5 +8,6 @@ description = "OpenBulletin picture decoding: the recognition door (PNG/JPEG/Web
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
+quick-xml = "0.36"
 resvg = "0.45"
 jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }

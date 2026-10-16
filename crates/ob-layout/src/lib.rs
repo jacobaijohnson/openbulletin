@@ -625,6 +625,7 @@ mod tests {
             website: "grace.example.org".into(),
             giving_url: "grace.example.org/give".into(),
             pastor: "Pastor Lee".into(),
+            expected_parts: Vec::new(),
         }
     }
 

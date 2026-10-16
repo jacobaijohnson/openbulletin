@@ -777,6 +777,14 @@ pub struct ChurchProfile {
     pub website: String,
     pub giving_url: String,
     pub pastor: String,
+    /// The parts this church usually gets for the bulletin
+    /// ("Pastor", "Music director", "Sunday school"), set
+    /// once in the Church Profile area. Start's "still
+    /// waiting" list is these names with no arrived
+    /// contribution yet (roles build R-1). Serde-defaulted:
+    /// profiles written before the field expect nothing.
+    #[serde(default)]
+    pub expected_parts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

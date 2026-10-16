@@ -14,6 +14,7 @@
 
 pub mod analyzer;
 pub mod cfb;
+pub mod contribution;
 pub mod draft;
 pub mod helper;
 pub mod idml;

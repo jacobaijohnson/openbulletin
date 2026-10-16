@@ -243,6 +243,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 website,
                 giving_url: String::new(),
                 pastor,
+                expected_parts: Vec::new(),
             };
             let doc = ob_layout::build_template(preset, profile, date, &sunday_name);
             ob_format::save(&doc, &out)?;

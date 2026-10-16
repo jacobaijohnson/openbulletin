@@ -1099,6 +1099,7 @@ mod tests {
                 service_times: "Sundays 9:00 AM".into(),
                 website: "gracelutheran.example".into(),
                 giving_url: String::new(),
+                expected_parts: Vec::new(),
             },
             start,
             "Twentieth Sunday after Pentecost",

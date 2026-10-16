@@ -843,6 +843,7 @@ impl App {
         self.profile_service_times = self.doc.profile.service_times.clone();
         self.profile_website = self.doc.profile.website.clone();
         self.profile_pastor = self.doc.profile.pastor.clone();
+        self.profile_expected_parts = self.doc.profile.expected_parts.join(", ");
         self.date_input = self
             .doc
             .fields
@@ -959,6 +960,15 @@ impl App {
     fn adopt_document(&mut self, doc: Document, clear_history: bool) {
         // Any swap retires a pick the open guard was holding.
         self.pending_path = None;
+        // A contribution review and the save guard's state
+        // belong to the old document too (R-1).
+        self.contribution_review = None;
+        self.save_conflict = None;
+        self.replace_armed = false;
+        self.replace_ok = None;
+        // The disk stamp deliberately survives a swap: it
+        // describes the file at its path, not the screen,
+        // and it only ever speaks for that one path.
         // Thrown-away typing belonged to the old document (J3).
         self.discarded_edit = None;
         // A start-fresh arm belongs to the old bulletin.
@@ -1700,6 +1710,10 @@ struct App {
     profile_service_times: String,
     profile_website: String,
     profile_pastor: String,
+    /// The Church Profile area's "Parts we usually get"
+    /// field, as typed (comma or newline separated). The
+    /// document's profile holds the parsed list (R-1).
+    profile_expected_parts: String,
     date_input: String,
     /// The This Sunday step's service-line value fields (J2),
     /// parallel to `service_lines(&doc)`, plus the sermon
@@ -1873,6 +1887,25 @@ struct App {
     analyzer_armed: bool,
     import_review: Option<ImportReview>,
     import_armed: bool,
+    /// A contribution (from the inbox or the paste box)
+    /// waiting for its Accept/Edit/Cancel answer (R-1).
+    contribution_review: Option<ContributionReview>,
+    /// The paste box: words someone sent, pasted in.
+    show_paste: bool,
+    paste_text: String,
+    /// The Start step's inbox scan, refreshed when Start
+    /// is entered and after a part is filed: reading the
+    /// folder every repaint would hit the disk constantly.
+    inbox_items: Vec<InboxItem>,
+    inbox_filed: Vec<InboxItem>,
+    inbox_dirty: bool,
+    /// The disk stamp of the bulletin file as this app
+    /// last saw it (opened it, or saved it), and the save
+    /// guard's state when a save was stopped (R-1).
+    disk_stamp: Option<(std::path::PathBuf, FileStamp)>,
+    save_conflict: Option<std::path::PathBuf>,
+    replace_armed: bool,
+    replace_ok: Option<std::path::PathBuf>,
     /// Where an unsaved import's page pictures live until the
     /// first Save moves them beside the bulletin file.
     asset_base: Option<std::path::PathBuf>,
@@ -2352,6 +2385,7 @@ impl Default for App {
             profile_service_times: String::new(),
             profile_website: String::new(),
             profile_pastor: String::new(),
+            profile_expected_parts: String::new(),
             date_input,
             service_inputs,
             sermon_input,
@@ -2437,6 +2471,16 @@ impl Default for App {
             analyzer_armed: false,
             import_review: None,
             import_armed: false,
+            contribution_review: None,
+            show_paste: false,
+            paste_text: String::new(),
+            inbox_items: Vec::new(),
+            inbox_filed: Vec::new(),
+            inbox_dirty: true,
+            disk_stamp: None,
+            save_conflict: None,
+            replace_armed: false,
+            replace_ok: None,
             asset_base: None,
             pages_zoom: 1.0,
             frame_clipboard: None,
@@ -2463,6 +2507,625 @@ impl Default for App {
             recovery: None,
         }
     }
+}
+
+/// Where one part of a contribution will go, decided
+/// before Accept so the review can say it in words.
+#[derive(Debug, Clone, PartialEq)]
+enum SlotTarget {
+    /// Append the part's paragraphs to this story.
+    Story(String),
+    /// Append to the announcements story under a heading
+    /// paragraph with these words (a Sunday school or youth
+    /// part with no box of its own in this bulletin).
+    AnnouncementsUnderHeading(&'static str),
+    /// A loose sheet: not applied. It is filed with the
+    /// contribution and kept safe (inserts get their own
+    /// build later; the words are never dropped and never
+    /// fake-applied).
+    LooseSheet,
+}
+
+/// One part's slot, with the sentence the review shows.
+#[derive(Debug, Clone, PartialEq)]
+struct PartPlan {
+    target: SlotTarget,
+    line: String,
+}
+
+/// A story named for a set of words ("sunday school",
+/// "youth"): the story's own id, or the name of a box
+/// that shows it, compared without case and with dashes
+/// and underscores read as spaces.
+fn named_story_id(doc: &Document, words: &str) -> Option<String> {
+    let norm = |s: &str| {
+        s.chars()
+            .map(|c| match c {
+                '-' | '_' => ' ',
+                c => c,
+            })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase()
+    };
+    let want = norm(words);
+    if let Some(s) = doc.stories.iter().find(|s| norm(&s.id) == want) {
+        return Some(s.id.clone());
+    }
+    doc.panels
+        .iter()
+        .flat_map(|p| p.frames.iter())
+        .find(|f| norm(&f.name) == want)
+        .and_then(|f| f.story_id.clone())
+}
+
+/// Decide every part's slot against this document.
+fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec<PartPlan> {
+    use ob_extract::contribution::PartKind;
+    let service = service_story_id(doc);
+    let weekly = weekly_story_id(doc);
+    c.parts
+        .iter()
+        .map(|part| match part.kind {
+            PartKind::Service => match &service {
+                Some(sid) => PartPlan {
+                    target: SlotTarget::Story(sid.clone()),
+                    line: "Goes into the service lines, added at the end.".to_string(),
+                },
+                None => PartPlan {
+                    target: SlotTarget::AnnouncementsUnderHeading("For the service"),
+                    line: "This bulletin has no service box, so these words go into \
+                           the announcements, under a \u{201c}For the service\u{201d} heading."
+                        .to_string(),
+                },
+            },
+            PartKind::Announcement => {
+                let mut line = "Goes into the announcements.".to_string();
+                if let Some(kt) = c.keep_through {
+                    line.push_str(&format!(
+                        " Stays in through {}.",
+                        ob_extract::contribution::format_date_long(kt)
+                    ));
+                }
+                PartPlan {
+                    target: SlotTarget::Story(weekly.clone().unwrap_or_default()),
+                    line,
+                }
+            }
+            PartKind::SundaySchool | PartKind::Youth => {
+                let words = if part.kind == PartKind::SundaySchool {
+                    "sunday school"
+                } else {
+                    "youth"
+                };
+                match named_story_id(doc, words) {
+                    Some(sid) => PartPlan {
+                        target: SlotTarget::Story(sid),
+                        line: format!("Goes into the {words} box."),
+                    },
+                    None => PartPlan {
+                        target: SlotTarget::AnnouncementsUnderHeading(part.kind.heading()),
+                        line: format!(
+                            "Goes into the announcements, under a \u{201c}{}\u{201d} heading.",
+                            part.kind.heading()
+                        ),
+                    },
+                }
+            }
+            PartKind::Insert => PartPlan {
+                target: SlotTarget::LooseSheet,
+                line: "A loose sheet. It is filed with this part and kept safe; \
+                       it does not go into the bulletin pages."
+                    .to_string(),
+            },
+        })
+        .collect()
+}
+
+/// A heading paragraph in the document's own styles: the
+/// subheading style when the document has one, else body
+/// words made bold (the markdown parser's own fallback).
+fn heading_paragraph(doc: &Document, text: &str) -> ob_model::Paragraph {
+    if let Some(s) = doc
+        .styles
+        .iter()
+        .find(|s| s.id == "subheading" || s.name.eq_ignore_ascii_case("subheading"))
+    {
+        return ob_model::Paragraph::plain(&s.id, text);
+    }
+    let mut p = ob_model::Paragraph::plain("body", text);
+    for r in &mut p.runs {
+        if r.bold.is_none() {
+            r.bold = Some(true);
+        }
+    }
+    p
+}
+
+/// Put a reviewed contribution's parts into the document,
+/// per the plan the review showed. Returns the summary
+/// lines Accept reports: counts per part, and the loose
+/// sheet's fate said out loud.
+fn apply_contribution(
+    doc: &mut Document,
+    c: &ob_extract::contribution::Contribution,
+) -> Vec<String> {
+    use ob_extract::contribution::PartKind;
+    let plans = plan_parts(doc, c);
+    let mut service_lines = 0usize;
+    let mut announcements = 0usize;
+    let mut named = 0usize;
+    let mut under_headings = 0usize;
+    let mut loose = 0usize;
+    let mut unplaced = 0usize;
+    for (part, plan) in c.parts.iter().zip(plans.iter()) {
+        match &plan.target {
+            SlotTarget::Story(sid) => {
+                let placed = match doc.story_mut(sid) {
+                    Some(story) => {
+                        story.paragraphs.extend(part.paragraphs.iter().cloned());
+                        true
+                    }
+                    None => false,
+                };
+                if placed {
+                    match part.kind {
+                        PartKind::Service => service_lines += part.paragraphs.len(),
+                        PartKind::Announcement => announcements += part.paragraphs.len(),
+                        _ => named += part.paragraphs.len(),
+                    }
+                    if part.kind == PartKind::Announcement {
+                        if let Some(kt) = c.keep_through {
+                            if let Some(story) = doc.story_mut(sid) {
+                                story.keep_through =
+                                    Some(format!("{:04}-{:02}-{:02}", kt.year, kt.month, kt.day));
+                            }
+                        }
+                    }
+                } else {
+                    unplaced += part.paragraphs.len();
+                }
+            }
+            SlotTarget::AnnouncementsUnderHeading(heading) => {
+                let head = heading_paragraph(doc, heading);
+                let placed = match weekly_story_id(doc).and_then(|wid| doc.story_mut(&wid)) {
+                    Some(story) => {
+                        story.paragraphs.push(head);
+                        story.paragraphs.extend(part.paragraphs.iter().cloned());
+                        true
+                    }
+                    None => false,
+                };
+                if placed {
+                    under_headings += part.paragraphs.len();
+                } else {
+                    unplaced += part.paragraphs.len();
+                }
+            }
+            SlotTarget::LooseSheet => loose += 1,
+        }
+    }
+    if announcements + under_headings > 0 {
+        // Words arrived: the office is no longer saying
+        // there are no announcements this week.
+        doc.no_announcements = false;
+    }
+    let mut out: Vec<String> = Vec::new();
+    if service_lines > 0 {
+        out.push(format!(
+            "Added {service_lines} line{} to the service.",
+            if service_lines == 1 { "" } else { "s" }
+        ));
+    }
+    if announcements > 0 {
+        out.push(format!(
+            "Added {announcements} announcement line{}.",
+            if announcements == 1 { "" } else { "s" }
+        ));
+    }
+    if named > 0 {
+        out.push(format!(
+            "Added {named} line{} to their boxes.",
+            if named == 1 { "" } else { "s" }
+        ));
+    }
+    if under_headings > 0 {
+        out.push(format!(
+            "Added {under_headings} line{} to the announcements, under their headings.",
+            if under_headings == 1 { "" } else { "s" }
+        ));
+    }
+    if loose > 0 {
+        out.push("The loose sheet is filed with this part and kept safe.".to_string());
+    }
+    if unplaced > 0 {
+        out.push(format!(
+            "{unplaced} line{} had no box to go into; they are filed with this part.",
+            if unplaced == 1 { "" } else { "s" }
+        ));
+    }
+    out
+}
+
+/// One file-name piece made safe for any folder: letters,
+/// digits, spaces, and dashes stay; everything else
+/// becomes a dash.
+fn sanitize_file_part(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('-').trim().to_string();
+    if cleaned.is_empty() {
+        "no name".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// The name a contribution is filed under: sender, Sunday,
+/// and content fingerprint, so which words were used stays
+/// answerable later.
+fn filed_file_name(
+    from: Option<&str>,
+    for_date: Option<ob_model::SimpleDate>,
+    fingerprint: &str,
+) -> String {
+    let sender = sanitize_file_part(from.unwrap_or(""));
+    let sunday = for_date
+        .map(|d| format!("{:04}-{:02}-{:02}", d.year, d.month, d.day))
+        .unwrap_or_else(|| "no Sunday named".to_string());
+    format!("{sender} - {sunday} - {fingerprint}.md")
+}
+
+/// Rebuild a contribution's text from its pieces (the
+/// review's Edit mode): the header lines as written, then
+/// each part under its heading. The rebuilt text is what
+/// gets re-parsed, and what gets filed after an edit.
+fn rebuild_contribution_text(
+    from: &str,
+    for_sunday: &str,
+    keep_through: &str,
+    parts: &[(ob_extract::contribution::PartKind, String)],
+) -> String {
+    let mut out = String::new();
+    if !from.trim().is_empty() {
+        out.push_str(&format!("From: {}\n", from.trim()));
+    }
+    if !for_sunday.trim().is_empty() {
+        out.push_str(&format!("For Sunday: {}\n", for_sunday.trim()));
+    }
+    if !keep_through.trim().is_empty() {
+        out.push_str(&format!("Keep-through: {}\n", keep_through.trim()));
+    }
+    for (kind, body) in parts {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("## {}\n\n{}\n", kind.heading(), body.trim()));
+    }
+    out
+}
+
+/// The sender's card as markdown: one page that teaches
+/// the whole contribution shape, example included. It is
+/// the entire training program, so the words are written
+/// for the sender, not about them.
+fn sender_card_markdown(church_name: &str) -> String {
+    let church = if church_name.trim().is_empty() {
+        "your church office".to_string()
+    } else {
+        church_name.trim().to_string()
+    };
+    format!(
+        "# Sending words for the bulletin\n\
+         \n\
+         From {church}\n\
+         \n\
+         Anyone can send words for the bulletin: the pastor, the music director, \
+         Sunday school, the youth group, or you. You do not need any program. \
+         Type your words in an email or a notes app, in the shape below, and send \
+         them to the church office.\n\
+         \n\
+         ## The shape\n\
+         \n\
+         Start with two short lines:\n\
+         \n\
+         From: your name or your job (Pastor, Music director)\n\
+         \n\
+         For Sunday: the date, written any way you like (October 25, 2026)\n\
+         \n\
+         Then give each part its own heading, spelled like one of these:\n\
+         \n\
+         ## For the service\n\
+         \n\
+         ## Announcement\n\
+         \n\
+         ## Insert\n\
+         \n\
+         ## Sunday school\n\
+         \n\
+         ## Youth\n\
+         \n\
+         Under each heading, type the words just as they should print. \
+         **Bold** and *italic* work the way you would expect.\n\
+         \n\
+         An announcement can stay in for a few weeks. Add a third line at the \
+         top: Keep-through: the last Sunday it should print.\n\
+         \n\
+         ## An example\n\
+         \n\
+         From: Pastor Lee\n\
+         \n\
+         For Sunday: October 25, 2026\n\
+         \n\
+         ## For the service\n\
+         \n\
+         Sermon: **The Good Shepherd**\n\
+         \n\
+         ## Announcement\n\
+         \n\
+         Harvest supper is Saturday at 5 PM. Bring a dish to share.\n\
+         \n\
+         Please send your words by ______________ (the office fills this in).\n"
+    )
+}
+
+/// A bulletin file's state on disk, remembered when the
+/// app opens or saves it (roles build R-1, the changed-on-
+/// disk guard): when it last changed, how long it is, and
+/// a hash of its content. The hash is the verdict's real
+/// evidence; the time and length ride along because a
+/// changed time with the same content (a sync tool touched
+/// the file) is not a conflict.
+#[derive(Debug, Clone, PartialEq)]
+struct FileStamp {
+    modified_secs: u64,
+    len: u64,
+    hash: String,
+}
+
+/// The stamp of the file at `path` right now, or None
+/// when there is no readable file there.
+fn stamp_of(path: &std::path::Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    let bytes = std::fs::read(path).ok()?;
+    let modified_secs = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some(FileStamp {
+        modified_secs,
+        len: bytes.len() as u64,
+        hash: ob_model::sha256_hex(&bytes),
+    })
+}
+
+/// What the disk says now, against what the app
+/// remembered: the save guard's whole decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StampVerdict {
+    /// Same content: saving over it replaces only our own
+    /// last save.
+    Unchanged,
+    /// Different content: someone or something else
+    /// changed the file since we opened it.
+    Changed,
+    /// Gone: not a conflict; a normal save recreates it.
+    Deleted,
+}
+
+fn stamp_verdict(remembered: &FileStamp, now: Option<&FileStamp>) -> StampVerdict {
+    match now {
+        None => StampVerdict::Deleted,
+        Some(now) => {
+            if now.len == remembered.len && now.hash == remembered.hash {
+                StampVerdict::Unchanged
+            } else {
+                StampVerdict::Changed
+            }
+        }
+    }
+}
+
+/// Where contributions wait: an "inbox" folder beside the
+/// Font Library folder (the clips discipline), with a
+/// "filed" subfolder for parts already used.
+fn inbox_dir() -> std::path::PathBuf {
+    let fonts = ob_fonts::default_library_dir();
+    match fonts.parent() {
+        Some(base) => base.join("inbox"),
+        None => std::path::PathBuf::from("inbox"),
+    }
+}
+
+fn filed_dir() -> std::path::PathBuf {
+    inbox_dir().join("filed")
+}
+
+/// A short content fingerprint: the first eight letters
+/// of the content hash. Two versions of a part with the
+/// same fingerprint are the same words.
+fn content_fingerprint(bytes: &[u8]) -> String {
+    ob_model::sha256_hex(bytes).chars().take(8).collect()
+}
+
+/// One markdown file found in the inbox, read and parsed.
+/// A file that does not parse stays on the list as
+/// unreadable, with the reason: it is never hidden.
+struct InboxItem {
+    path: std::path::PathBuf,
+    file_name: String,
+    /// Seconds since the epoch, for newest-first order.
+    modified_secs: u64,
+    fingerprint: String,
+    text: String,
+    parsed: Result<ob_extract::contribution::Contribution, String>,
+}
+
+/// Read every `.md` file in a folder (the inbox, or the
+/// filed folder when arrivals are counted) and parse each
+/// as a contribution. Reading never moves a file.
+fn scan_contribution_folder(dir: &std::path::Path, today: ob_model::SimpleDate) -> Vec<InboxItem> {
+    let mut items: Vec<InboxItem> = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return items;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        let is_md = path
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("md"))
+            .unwrap_or(false);
+        if !is_md || !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        let modified_secs = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let (fingerprint, text, parsed) = match std::fs::read(&path) {
+            Ok(bytes) => {
+                let fp = content_fingerprint(&bytes);
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                let parsed = ob_extract::contribution::parse_contribution(&text, today);
+                (fp, text, parsed)
+            }
+            Err(e) => (
+                String::new(),
+                String::new(),
+                Err(format!("This file could not be read. ({e})")),
+            ),
+        };
+        items.push(InboxItem {
+            path,
+            file_name,
+            modified_secs,
+            fingerprint,
+            text,
+            parsed,
+        });
+    }
+    items.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    items
+}
+
+/// One sender-and-Sunday family of inbox items: versions
+/// of (probably) the same part, newest on top.
+struct InboxGroup {
+    /// The sender as written, or "" when the words name
+    /// nobody.
+    from: String,
+    for_date: Option<ob_model::SimpleDate>,
+    /// Indexes into the scanned items, newest first.
+    items: Vec<usize>,
+}
+
+/// Group parsed inbox items by (sender, Sunday). The
+/// grouping is a plain name match, nothing smarter: the
+/// sender words as written, compared without case.
+fn group_inbox(items: &[InboxItem]) -> Vec<InboxGroup> {
+    let mut groups: Vec<InboxGroup> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let Ok(c) = &item.parsed else { continue };
+        let from = c.from.clone().unwrap_or_default();
+        let key = from.trim().to_ascii_lowercase();
+        let at = groups.iter().position(|g: &InboxGroup| {
+            g.from.trim().to_ascii_lowercase() == key && g.for_date == c.for_date
+        });
+        match at {
+            Some(at) => groups[at].items.push(i),
+            None => groups.push(InboxGroup {
+                from,
+                for_date: c.for_date,
+                items: vec![i],
+            }),
+        }
+    }
+    for g in &mut groups {
+        g.items
+            .sort_by_key(|&i| std::cmp::Reverse(items[i].modified_secs));
+    }
+    groups
+}
+
+/// The expected parts with no arrived contribution yet:
+/// the Start step's "still waiting for" list. A
+/// contribution counts as arrived when its From holds the
+/// expected words (a name match, case-insensitive,
+/// nothing smarter) and it is either undated or dated for
+/// the open bulletin's Sunday. One dated for a different
+/// Sunday does not count.
+fn still_waiting(
+    expected: &[String],
+    arrived: &[ob_extract::contribution::Contribution],
+    bulletin: Option<ob_model::SimpleDate>,
+) -> Vec<String> {
+    expected
+        .iter()
+        .filter(|want| {
+            let w = want.trim().to_ascii_lowercase();
+            !arrived.iter().any(|c| {
+                let from = c.from.clone().unwrap_or_default().to_ascii_lowercase();
+                let named = !w.is_empty() && from.contains(&w);
+                let dated = match (c.for_date, bulletin) {
+                    (Some(d), Some(b)) => d == b,
+                    _ => true,
+                };
+                named && dated
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+/// The "Parts we usually get" field as a list: split on
+/// commas and new lines, trimmed, empties dropped, and a
+/// name kept once (compared without case).
+fn parse_expected_parts(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for piece in text.split([',', '\n']) {
+        let p = piece.trim();
+        if !p.is_empty() && !out.iter().any(|e| e.eq_ignore_ascii_case(p)) {
+            out.push(p.to_string());
+        }
+    }
+    out
+}
+
+/// The reminder sentences for the missing parts, one per
+/// part, ready to paste into the admin's own email or
+/// message thread. The app sends nothing itself and never
+/// claims to.
+fn reminder_text(missing: &[String], bulletin: Option<ob_model::SimpleDate>) -> String {
+    let date = bulletin
+        .map(ob_extract::contribution::format_date_short)
+        .unwrap_or_else(|| "this week".to_string());
+    missing
+        .iter()
+        .map(|part| {
+            format!(
+                "A friendly reminder: the bulletin for Sunday, {date} is still \
+                 waiting for {part}. Whenever it is ready, send it over and it \
+                 will be added."
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The editable text of the weekly story (announcements body paragraphs).
@@ -2701,6 +3364,10 @@ impl App {
         }
         self.step = i;
         self.remember_step();
+        if i == 0 {
+            // Arriving at Start re-reads the inbox (R-1).
+            self.inbox_dirty = true;
+        }
         if i == 3 {
             self.run_checks();
         }
@@ -2728,6 +3395,7 @@ impl App {
                 website: self.profile_website.clone(),
                 giving_url: self.doc.profile.giving_url.clone(),
                 pastor: self.profile_pastor.clone(),
+                expected_parts: self.doc.profile.expected_parts.clone(),
             },
             chrono::Local::now().date_naive(),
             "Sunday",
@@ -3605,6 +4273,10 @@ impl App {
                 }
                 self.path = source;
                 self.seed_doc_state();
+                // The file on disk still holds its older
+                // saved state: the save guard's stamp is of
+                // the disk, not of the screen (R-1).
+                self.note_disk_stamp();
                 // The journal's content is now the screen's content:
                 // the saved state stays the older file (or nothing).
                 self.journal_snapshot = snapshot(&self.doc);
@@ -7992,6 +8664,7 @@ impl App {
                 self.path = Some(path);
                 self.seed_doc_state();
                 self.mark_clean();
+                self.note_disk_stamp();
                 self.next_sunday();
             }
             Err(e) => self.fail(format!("Could not open that file. ({e})")),
@@ -8036,6 +8709,7 @@ impl App {
                     self.step = 1;
                     self.note("Bulletin opened.".into());
                     self.mark_clean();
+                    self.note_disk_stamp();
                 }
                 Err(e) => self.fail(format!("Could not open that file. ({e})")),
             },
@@ -8267,6 +8941,437 @@ impl App {
                  through the steps. Save it under a new name when ready."
                     .into(),
             );
+        }
+    }
+
+    /// Refresh the Start step's inbox scan (the inbox,
+    /// and the filed folder, which the still-waiting count
+    /// reads: an accepted part has arrived, even though it
+    /// left the inbox). Reading never moves a file.
+    fn refresh_inbox(&mut self) {
+        let today = today_simple();
+        self.inbox_items = scan_contribution_folder(&inbox_dir(), today);
+        self.inbox_filed = scan_contribution_folder(&filed_dir(), today);
+        self.inbox_dirty = false;
+    }
+
+    /// Open words someone sent into the contribution
+    /// review: the parsed words, where they came from (an
+    /// inbox file, or None for pasted words), and the text
+    /// as it stands.
+    fn open_contribution_review(
+        &mut self,
+        contribution: ob_extract::contribution::Contribution,
+        source: Option<std::path::PathBuf>,
+        text: String,
+    ) {
+        self.contribution_review = Some(ContributionReview {
+            contribution,
+            source,
+            text,
+            armed: false,
+            editing: false,
+            edit_from: String::new(),
+            edit_for: String::new(),
+            edit_keep: String::new(),
+            edit_parts: Vec::new(),
+            edit_kinds: Vec::new(),
+            edit_error: None,
+        });
+    }
+
+    /// Begin the review's Edit mode: the sender and date
+    /// fields as written, and one raw markdown box per
+    /// part, from the words as they stand.
+    fn begin_contribution_edit(&mut self) {
+        let Some(review) = &mut self.contribution_review else {
+            return;
+        };
+        let raw = ob_extract::contribution::split_contribution(&review.text);
+        review.edit_from = raw.from.clone().unwrap_or_default();
+        review.edit_for = raw.for_sunday.clone().unwrap_or_default();
+        review.edit_keep = raw.keep_through.clone().unwrap_or_default();
+        let mut kinds = Vec::new();
+        let mut bodies = Vec::new();
+        for (kind, body) in raw.parts {
+            if body.trim().is_empty() {
+                continue;
+            }
+            kinds.push(kind);
+            bodies.push(body);
+        }
+        review.edit_kinds = kinds;
+        review.edit_parts = bodies;
+        review.edit_error = None;
+        review.editing = true;
+    }
+
+    /// Rebuild the contribution from the Edit fields and
+    /// re-parse it: the one parser judges the edited words
+    /// exactly as it judged the arrived ones.
+    fn apply_contribution_edit(&mut self) {
+        let Some(review) = &mut self.contribution_review else {
+            return;
+        };
+        let parts: Vec<(ob_extract::contribution::PartKind, String)> = review
+            .edit_kinds
+            .iter()
+            .cloned()
+            .zip(review.edit_parts.iter().cloned())
+            .collect();
+        let from = review.edit_from.clone();
+        let for_sunday = review.edit_for.clone();
+        let keep = review.edit_keep.clone();
+        let text = rebuild_contribution_text(&from, &for_sunday, &keep, &parts);
+        match ob_extract::contribution::parse_contribution(&text, today_simple()) {
+            Ok(c) => {
+                review.contribution = c;
+                review.text = text;
+                review.editing = false;
+                review.armed = false;
+                review.edit_error = None;
+            }
+            Err(e) => {
+                review.edit_error = Some(e);
+            }
+        }
+    }
+
+    /// Accept a reviewed contribution: its parts go into
+    /// the bulletin, the bulletin is saved, and only then
+    /// is the part filed. If the save does not happen, the
+    /// file stays in the inbox and the status says so.
+    fn accept_contribution(&mut self) {
+        let Some(review) = self.contribution_review.take() else {
+            return;
+        };
+        let before = snapshot(&self.doc);
+        let summary = apply_contribution(&mut self.doc, &review.contribution);
+        if before != snapshot(&self.doc) {
+            self.record_undo(before);
+        }
+        self.sync_buffers();
+        let saved = self.save_flow();
+        if !saved {
+            if self.save_conflict.is_none() {
+                self.fail(
+                    "The words are in the bulletin on screen, but it was not \
+                     saved, so this part stays in the inbox. Save the bulletin, \
+                     then open the part again."
+                        .into(),
+                );
+            }
+            // With a save conflict, the guard's own words
+            // and its two buttons are already on screen;
+            // the part likewise stays in the inbox.
+            return;
+        }
+        let filed = self.file_contribution(&review);
+        let mut msg = summary.join(" ");
+        if !msg.is_empty() {
+            msg.push(' ');
+        }
+        msg.push_str(&filed);
+        self.note(msg);
+        self.inbox_dirty = true;
+    }
+
+    /// Move (or, for pasted words, write) an accepted
+    /// contribution into the filed folder, under the name
+    /// that keeps its sender, its Sunday, and its content
+    /// fingerprint. Nothing is ever deleted: the filed copy
+    /// is how "which words did we print" stays answerable.
+    fn file_contribution(&mut self, review: &ContributionReview) -> String {
+        let dir = filed_dir();
+        if std::fs::create_dir_all(&dir).is_err() {
+            return "The part could not be filed; it is still in the inbox.".to_string();
+        }
+        let fingerprint = content_fingerprint(review.text.as_bytes());
+        let name = filed_file_name(
+            review.contribution.from.as_deref(),
+            review.contribution.for_date,
+            &fingerprint,
+        );
+        let target = dir.join(&name);
+        match &review.source {
+            Some(path) => {
+                let moved = std::fs::rename(path, &target).or_else(|_| {
+                    std::fs::copy(path, &target).and_then(|_| std::fs::remove_file(path))
+                });
+                match moved {
+                    Ok(()) => format!("Filed as {name}."),
+                    Err(_) => "The words are saved in the bulletin, but the part \
+                               file could not be moved to the filed folder; it \
+                               is still in the inbox."
+                        .to_string(),
+                }
+            }
+            None => match std::fs::write(&target, &review.text) {
+                Ok(()) => format!("Filed as {name}."),
+                Err(_) => "The words are saved in the bulletin, but the pasted words \
+                     could not be filed."
+                    .to_string(),
+            },
+        }
+    }
+
+    /// The contribution review window (R-1): the same
+    /// Accept/Edit/Cancel shape as every other review in
+    /// the app. The first line always says which Sunday
+    /// the words name; when that is not the open
+    /// bulletin's Sunday, Accept arms instead of landing
+    /// the words in the wrong week silently.
+    fn contribution_review_window(&mut self, ctx: &egui::Context) {
+        if self.contribution_review.is_none() {
+            return;
+        }
+        use ob_extract::contribution::{format_date_long, week_verdict, WeekVerdict};
+        let bulletin_date = self
+            .doc
+            .fields
+            .get("occasion_date")
+            .and_then(|iso| ob_model::parse_flexible_date(iso, today_simple()));
+        let mut review = self.contribution_review.take().expect("checked");
+        let mut accept = false;
+        let mut cancel = false;
+        let mut start_edit = false;
+        let mut apply_edit = false;
+        let mut back = false;
+        egui::Window::new("Words for the bulletin")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([560.0, 520.0])
+            .show(ctx, |ui| {
+                if review.editing {
+                    ui.label("Change the words here. They are read again when you use them, the same as when they arrived.");
+                    ui.label("From");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut review.edit_from)
+                            .hint_text("A name or a job, like Pastor Lee"),
+                    );
+                    ui.label("For Sunday");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut review.edit_for)
+                            .hint_text("October 25, 2026"),
+                    );
+                    ui.label("Keep-through (announcements only; blank means one Sunday)");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut review.edit_keep)
+                            .hint_text("November 8, 2026"),
+                    );
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            for i in 0..review.edit_parts.len() {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "## {}",
+                                        review.edit_kinds[i].heading()
+                                    ))
+                                    .strong(),
+                                );
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut review.edit_parts[i])
+                                        .desired_rows(4)
+                                        .desired_width(f32::INFINITY),
+                                );
+                            }
+                        });
+                    if let Some(e) = &review.edit_error {
+                        ui.label(egui::RichText::new(e.clone()).color(self.theme.problem));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Use the edited words").clicked() {
+                            apply_edit = true;
+                        }
+                        if ui.button("Back").clicked() {
+                            back = true;
+                        }
+                    });
+                    return;
+                }
+                let verdict = week_verdict(&review.contribution, bulletin_date);
+                match verdict {
+                    WeekVerdict::DifferentSunday(said) => {
+                        let open = bulletin_date.expect("verdict names both");
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "These words say they are for {}. The bulletin open is for {}.",
+                                format_date_long(said),
+                                format_date_long(open)
+                            ))
+                            .color(self.theme.warn)
+                            .strong(),
+                        );
+                    }
+                    WeekVerdict::SameSunday => {
+                        let d = review.contribution.for_date.expect("verdict");
+                        ui.label(format!(
+                            "These words say they are for {}.",
+                            format_date_long(d)
+                        ));
+                    }
+                    WeekVerdict::NoSundayNamed => {
+                        if let Some(d) = review.contribution.for_date {
+                            ui.label(format!(
+                                "These words say they are for {}.",
+                                format_date_long(d)
+                            ));
+                        } else {
+                            ui.label("These words do not say which Sunday they are for.");
+                        }
+                    }
+                }
+                let sender = match (&review.contribution.from, &review.source) {
+                    (Some(f), _) => format!("From: {f}"),
+                    (None, Some(path)) => {
+                        format!("No name given (the file is {}).", file_name_of(path))
+                    }
+                    (None, None) => "Pasted words; no name given.".to_string(),
+                };
+                ui.label(sender);
+                ui.separator();
+                let plans = plan_parts(&self.doc, &review.contribution);
+                egui::ScrollArea::vertical()
+                    .max_height(280.0)
+                    .show(ui, |ui| {
+                        for (part, plan) in review.contribution.parts.iter().zip(plans.iter()) {
+                            ui.label(egui::RichText::new(&plan.line).strong());
+                            for p in &part.paragraphs {
+                                ui.small(p.text());
+                            }
+                            ui.add_space(6.0);
+                        }
+                    });
+                ui.separator();
+                let different = matches!(verdict, WeekVerdict::DifferentSunday(_));
+                if different && review.armed {
+                    ui.label("One more click, and the words go into this Sunday's bulletin, not the Sunday they name.");
+                }
+                ui.horizontal(|ui| {
+                    let accept_label = if different && !review.armed {
+                        "Use it for this Sunday anyway"
+                    } else if different {
+                        "Click again to use it for this Sunday"
+                    } else {
+                        "Use these words"
+                    };
+                    if ui.button(accept_label).clicked() {
+                        if different && !review.armed {
+                            review.armed = true;
+                        } else {
+                            accept = true;
+                        }
+                    }
+                    if ui.button("Edit").clicked() {
+                        start_edit = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if cancel {
+            self.note("Nothing was added.".into());
+            return;
+        }
+        if accept {
+            self.contribution_review = Some(review);
+            self.accept_contribution();
+            return;
+        }
+        if back {
+            review.editing = false;
+            review.edit_error = None;
+        }
+        self.contribution_review = Some(review);
+        if start_edit {
+            self.begin_contribution_edit();
+        }
+        if apply_edit {
+            self.apply_contribution_edit();
+        }
+    }
+
+    /// The paste box (R-1): words someone sent, pasted in
+    /// as they came, read by the same parser and reviewed
+    /// in the same window as an inbox file.
+    fn paste_window(&mut self, ctx: &egui::Context) {
+        if !self.show_paste {
+            return;
+        }
+        let mut read = false;
+        let mut close = false;
+        egui::Window::new("Paste words someone sent")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([520.0, 420.0])
+            .show(ctx, |ui| {
+                ui.label("Paste the words here, just as they came: an email, a message, a note typed on a phone. Words in the sender's card shape slot into their places; plain words come in as an announcement.");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.paste_text)
+                        .desired_rows(12)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Read these words").clicked() {
+                        read = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            self.show_paste = false;
+        }
+        if read {
+            if self.contribution_review.is_some() {
+                self.note("Finish the part you are reviewing first; these words stay here.".into());
+                return;
+            }
+            match ob_extract::contribution::parse_contribution(&self.paste_text, today_simple()) {
+                Ok(c) => {
+                    let text = self.paste_text.clone();
+                    self.paste_text.clear();
+                    self.show_paste = false;
+                    self.open_contribution_review(c, None, text);
+                }
+                Err(_) => {
+                    self.fail(
+                        "Those words have no readable words in them. Paste the \
+                         whole message and try again."
+                            .into(),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Print the sender's card: one page that teaches the
+    /// whole contribution shape, written as a PDF where
+    /// the office picks. The card is the training program.
+    fn print_sender_card(&mut self) {
+        let md = sender_card_markdown(&self.doc.profile.name);
+        let doc = ob_model::markdown::document_from_markdown(
+            &md,
+            self.doc.profile.clone(),
+            "Sender's card",
+        );
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("Sender's card.pdf")
+            .add_filter("PDF", &["pdf"])
+            .save_file()
+        {
+            let bytes = ob_pdf::export_reader_pdf(&doc, ob_pdf::ExportPurpose::ForPrinting);
+            match std::fs::write(&path, &bytes) {
+                Ok(()) => self.note(format!(
+                    "Sender's card written: {}. Print it and hand it to anyone who sends words.",
+                    file_name_of(&path)
+                )),
+                Err(e) => self.fail(format!("Could not write the sender's card: {e}")),
+            }
         }
     }
 
@@ -8937,10 +10042,16 @@ impl App {
     }
 
     /// The Save button's work, shared with its key.
-    fn save_flow(&mut self) {
+    /// Answers whether the bulletin was actually saved:
+    /// the contribution seam files a part only after the
+    /// bulletin carrying it is safely on disk.
+    fn save_flow(&mut self) -> bool {
         self.commit_if_editing();
         self.save_announcements();
         self.pin_fonts();
+        // A "replace it anyway" answer arms exactly one
+        // save attempt, whichever file it lands on.
+        let replace_ok = self.replace_ok.take();
         let target = self.path.clone().or_else(|| {
             rfd::FileDialog::new()
                 .set_file_name(suggested_save_name(&self.doc))
@@ -8948,6 +10059,32 @@ impl App {
                 .save_file()
         });
         if let Some(path) = target {
+            // The changed-on-disk guard (R-1): if the file
+            // at the save target is not the file we opened
+            // or last saved (another program, a sync tool, a
+            // second copy of this app changed it), stop and
+            // say so, with the two ways out under the status
+            // line. A deleted file is not a conflict.
+            let stamped = self
+                .disk_stamp
+                .as_ref()
+                .filter(|(p, _)| p == &path)
+                .map(|(_, s)| s.clone());
+            if let Some(remembered) = stamped {
+                if replace_ok.as_deref() != Some(path.as_path()) {
+                    let now = stamp_of(&path);
+                    if stamp_verdict(&remembered, now.as_ref()) == StampVerdict::Changed {
+                        self.save_conflict = Some(path);
+                        self.replace_armed = false;
+                        self.fail(
+                            "This file changed on disk since you opened it. \
+                             Saving would replace those changes."
+                                .into(),
+                        );
+                        return false;
+                    }
+                }
+            }
             // v1 packaging: tracing pictures still named by
             // a file path move INTO the document before the
             // save, so the .obd carries them (docs/FORMAT.md).
@@ -8977,11 +10114,44 @@ impl App {
                     // its (possibly new) name (J6).
                     self.store_doc_state();
                     self.mark_clean();
+                    // The disk now holds what we wrote: the
+                    // save guard's stamp follows (R-1).
+                    self.note_disk_stamp();
+                    return true;
                 }
                 Err(e) => self.fail(format!(
                     "Could not save the file. Try your Documents folder. ({e})"
                 )),
             }
+        }
+        false
+    }
+
+    /// Remember the on-disk state of the file now open, as
+    /// this app last saw it (opened it, or saved it): the
+    /// save guard compares against this stamp. With no file
+    /// open, there is nothing to remember.
+    fn note_disk_stamp(&mut self) {
+        self.disk_stamp = self
+            .path
+            .as_ref()
+            .and_then(|p| stamp_of(p).map(|s| (p.clone(), s)));
+        self.save_conflict = None;
+    }
+
+    /// The save guard's "save as a new file instead" way
+    /// out: the same save flow, but the dated-name dialog
+    /// chooses the target, so the changed file on disk is
+    /// left exactly as it is.
+    fn save_as_new_file(&mut self) {
+        self.save_conflict = None;
+        self.replace_armed = false;
+        let shelved = self.path.take();
+        let saved = self.save_flow();
+        if !saved && self.path.is_none() {
+            // The dialog was cancelled or the save failed:
+            // the bulletin still belongs to its old file.
+            self.path = shelved;
         }
     }
 
@@ -9612,6 +10782,8 @@ impl eframe::App for App {
         }
         self.poll_import(ctx);
         self.import_review_window(ctx);
+        self.contribution_review_window(ctx);
+        self.paste_window(ctx);
         self.poll_analyzer(ctx);
         self.analyzer_review_window(ctx);
         self.capture_key(ctx);
@@ -9942,6 +11114,142 @@ impl eframe::App for App {
                             }
                         }
                         ui.separator();
+                        // New parts from the church's people
+                        // (R-1): what has arrived in the
+                        // inbox, what is still waited for, the
+                        // paste door, and the sender's card.
+                        if self.inbox_dirty {
+                            self.refresh_inbox();
+                        }
+                        let bulletin_date = self
+                            .doc
+                            .fields
+                            .get("occasion_date")
+                            .and_then(|iso| {
+                                ob_model::parse_flexible_date(iso, today_simple())
+                            });
+                        let parts_heading = match self.doc.fields.get("occasion_date_long") {
+                            Some(long) if !long.trim().is_empty() => {
+                                format!("New parts for {long}")
+                            }
+                            _ => "New parts for this Sunday".to_string(),
+                        };
+                        ui.heading(parts_heading);
+                        let review_open = self.contribution_review.is_some();
+                        let groups = group_inbox(&self.inbox_items);
+                        let mut grouped: std::collections::HashSet<usize> =
+                            std::collections::HashSet::new();
+                        for g in &groups {
+                            grouped.extend(g.items.iter().copied());
+                        }
+                        let mut open_idx: Option<usize> = None;
+                        if self.inbox_items.is_empty() {
+                            ui.label("Nothing new has arrived.");
+                        }
+                        for g in &groups {
+                            let from_label = if g.from.trim().is_empty() {
+                                "No name given".to_string()
+                            } else {
+                                g.from.clone()
+                            };
+                            let date_label = g
+                                .for_date
+                                .map(ob_extract::contribution::format_date_long)
+                                .unwrap_or_else(|| "no Sunday named".to_string());
+                            if g.items.len() > 1 {
+                                ui.label(format!(
+                                    "{from_label}, for {date_label}: {} versions; the newest is on top.",
+                                    g.items.len()
+                                ));
+                            } else {
+                                ui.label(format!("{from_label}, for {date_label}:"));
+                            }
+                            for &i in &g.items {
+                                let item = &self.inbox_items[i];
+                                ui.horizontal(|ui| {
+                                    ui.label(format!(
+                                        "{} ({})",
+                                        item.file_name, item.fingerprint
+                                    ));
+                                    if ui
+                                        .add_enabled(
+                                            !review_open,
+                                            egui::Button::new("Open"),
+                                        )
+                                        .clicked()
+                                    {
+                                        open_idx = Some(i);
+                                    }
+                                });
+                            }
+                        }
+                        for (i, item) in self.inbox_items.iter().enumerate() {
+                            if grouped.contains(&i) {
+                                continue;
+                            }
+                            if let Err(reason) = &item.parsed {
+                                ui.label(format!(
+                                    "{} could not be read: {}",
+                                    item.file_name, reason
+                                ));
+                            }
+                        }
+                        if let Some(i) = open_idx {
+                            let item = &self.inbox_items[i];
+                            if let Ok(c) = item.parsed.clone() {
+                                let source = item.path.clone();
+                                let text = item.text.clone();
+                                self.open_contribution_review(c, Some(source), text);
+                            }
+                        }
+                        if !self.doc.profile.expected_parts.is_empty() {
+                            let arrived: Vec<ob_extract::contribution::Contribution> =
+                                self.inbox_items
+                                    .iter()
+                                    .chain(self.inbox_filed.iter())
+                                    .filter_map(|i| i.parsed.clone().ok())
+                                    .collect();
+                            let waiting = still_waiting(
+                                &self.doc.profile.expected_parts,
+                                &arrived,
+                                bulletin_date,
+                            );
+                            if waiting.is_empty() {
+                                ui.label("Everything expected has arrived.");
+                            } else {
+                                ui.label(format!(
+                                    "Still waiting for: {}",
+                                    waiting.join(", ")
+                                ));
+                                if ui.button("Copy a reminder").clicked() {
+                                    ui.ctx()
+                                        .copy_text(reminder_text(&waiting, bulletin_date));
+                                    self.note(
+                                        "Copied. Paste it into your email or message to send it."
+                                            .into(),
+                                    );
+                                }
+                            }
+                        }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !review_open,
+                                    egui::Button::new("Paste words someone sent..."),
+                                )
+                                .clicked()
+                            {
+                                self.show_paste = true;
+                            }
+                            if ui.button("Print a sender's card").clicked() {
+                                self.print_sender_card();
+                            }
+                        });
+                        ui.small(format!(
+                            "Senders do not need this program: the card teaches the shape, and the same words work pasted from an email. Parts arrive as small files in the inbox folder: {}",
+                            inbox_dir().display()
+                        ));
+                        ui.separator();
                         ui.heading("Learn from your old bulletins");
                         ui.label("Or give us old bulletins in any mix (PDFs, Publisher files, InDesign (IDML) files, Scribus files, or OpenBulletin files) and we will learn what stays the same every week and what changes, and suggest a template from them. Learning needs at least three bulletins that count: the other kinds count one-for-one, and PDFs count only in a group of three or more, because one or two PDFs alone cannot show what repeats.");
                         if self.analyzer_rx.is_some() {
@@ -10071,6 +11379,20 @@ impl eframe::App for App {
                                 let before = snapshot(&self.doc);
                                 self.doc.profile.pastor = self.profile_pastor.clone();
                                 self.record_undo(before);
+                        }
+                        ui.label("Parts we usually get (for the still-waiting list on this page)");
+                        let resp_expected = ui.add(
+                            egui::TextEdit::multiline(&mut self.profile_expected_parts)
+                                .hint_text("One per line, or separated by commas: Pastor, Music director, Sunday school")
+                                .desired_rows(2),
+                        );
+                        if resp_expected.lost_focus() {
+                            let parsed = parse_expected_parts(&self.profile_expected_parts);
+                            if parsed != self.doc.profile.expected_parts {
+                                let before = snapshot(&self.doc);
+                                self.doc.profile.expected_parts = parsed;
+                                self.record_undo(before);
+                            }
                         }
                         ui.small("These print on the cover and carry into every week. They fill in the {Church.*} spots in your templates.");
                     }
@@ -10613,6 +11935,30 @@ impl eframe::App for App {
                 {
                     self.restore_discarded_edit();
                 }
+                // The save guard stopped a save (R-1): its
+                // two ways out live right under the status
+                // line that explains the stop.
+                if self.save_conflict.is_some() {
+                    ui.horizontal(|ui| {
+                        if ui.button("Save as a new file instead").clicked() {
+                            self.save_as_new_file();
+                        }
+                        let replace_label = if self.replace_armed {
+                            "Click again to replace it anyway"
+                        } else {
+                            "Replace it anyway"
+                        };
+                        if ui.button(replace_label).clicked() {
+                            if self.replace_armed {
+                                self.replace_ok = self.save_conflict.take();
+                                self.replace_armed = false;
+                                self.save_flow();
+                            } else {
+                                self.replace_armed = true;
+                            }
+                        }
+                    });
+                }
                 if self.status_error {
                     ui.label(
                         egui::RichText::new(format!("Something needs attention: {}", self.status))
@@ -11114,6 +12460,33 @@ fn native_pub_review(
 /// A finished PDF rescue waiting for the admin's verdict:
 /// the draft, its review list, and the folder holding the
 /// rendered page pictures.
+/// A contribution awaiting its Accept/Edit/Cancel answer
+/// (roles build R-1). The parsed words are what Accept
+/// applies; the text they arrived as is what gets filed,
+/// so nothing is ever lost.
+struct ContributionReview {
+    contribution: ob_extract::contribution::Contribution,
+    /// The inbox file the words came from; None for pasted
+    /// words (Accept files the pasted text itself).
+    source: Option<std::path::PathBuf>,
+    /// The words as they stand for filing: the text that
+    /// arrived, replaced by the rebuilt text when Edit
+    /// changes it.
+    text: String,
+    /// Wrong-week guard: the first click on Accept only
+    /// arms when the words name a different Sunday.
+    armed: bool,
+    editing: bool,
+    edit_from: String,
+    edit_for: String,
+    edit_keep: String,
+    /// One raw markdown body per part, parallel to
+    /// `contribution.parts` until Apply re-parses.
+    edit_parts: Vec<String>,
+    edit_kinds: Vec<ob_extract::contribution::PartKind>,
+    edit_error: Option<String>,
+}
+
 struct ImportReview {
     doc: Document,
     items: Vec<ob_extract::draft::ImportItem>,
@@ -13821,5 +15194,346 @@ mod settings_tests {
         assert!(s.contains("1 picture file could not be read"), "{s}");
         let none = collection_result_sentence("Empty", &ob_clips::AddReport::default());
         assert!(none.starts_with("No clips were added"), "{none}");
+    }
+
+    // ---- Roles build R-1: the contribution seam ----
+
+    fn r1_today() -> ob_model::SimpleDate {
+        ob_model::SimpleDate {
+            year: 2026,
+            month: 10,
+            day: 16,
+        }
+    }
+
+    fn r1_template() -> Document {
+        ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        )
+    }
+
+    #[test]
+    fn stamp_verdicts_unchanged_changed_deleted() {
+        let a = FileStamp {
+            modified_secs: 100,
+            len: 5,
+            hash: "abc".to_string(),
+        };
+        // Same content, later touch: not a conflict.
+        let touched = FileStamp {
+            modified_secs: 200,
+            len: 5,
+            hash: "abc".to_string(),
+        };
+        assert_eq!(stamp_verdict(&a, Some(&touched)), StampVerdict::Unchanged);
+        let changed = FileStamp {
+            modified_secs: 200,
+            len: 6,
+            hash: "abd".to_string(),
+        };
+        assert_eq!(stamp_verdict(&a, Some(&changed)), StampVerdict::Changed);
+        assert_eq!(stamp_verdict(&a, None), StampVerdict::Deleted);
+
+        // Against a real file: stamp, save over it
+        // ourselves (re-arm), edit it as a stranger would,
+        // delete it.
+        let dir =
+            std::env::temp_dir().join(format!("openbulletin-r1-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("bulletin.obd");
+        std::fs::write(&path, b"first").expect("write");
+        let s1 = stamp_of(&path).expect("stamp");
+        assert_eq!(
+            stamp_verdict(&s1, stamp_of(&path).as_ref()),
+            StampVerdict::Unchanged
+        );
+        // Our own save re-arms the stamp.
+        std::fs::write(&path, b"second").expect("write");
+        let s2 = stamp_of(&path).expect("stamp");
+        assert_eq!(
+            stamp_verdict(&s2, stamp_of(&path).as_ref()),
+            StampVerdict::Unchanged
+        );
+        // A stranger's edit against the remembered stamp stops.
+        assert_eq!(
+            stamp_verdict(&s1, stamp_of(&path).as_ref()),
+            StampVerdict::Changed
+        );
+        std::fs::remove_file(&path).expect("remove");
+        assert_eq!(
+            stamp_verdict(&s2, stamp_of(&path).as_ref()),
+            StampVerdict::Deleted
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inbox_grouping_versions_newest_on_top() {
+        let mk = |name: &str, text: &str, mtime: u64| InboxItem {
+            path: std::path::PathBuf::from(name),
+            file_name: name.to_string(),
+            modified_secs: mtime,
+            fingerprint: content_fingerprint(text.as_bytes()),
+            text: text.to_string(),
+            parsed: ob_extract::contribution::parse_contribution(text, r1_today()),
+        };
+        let sue1 = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nOne.\n";
+        let sue2 = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nTwo.\n";
+        let sue3 = "From: Sue\nFor Sunday: November 1, 2026\n\n## Announcement\n\nThree.\n";
+        let items = vec![
+            mk("a.md", sue1, 100),
+            mk("b.md", sue2, 300),
+            mk("c.md", sue3, 200),
+            mk("d.md", "## Announcement\n", 400),
+        ];
+        // The unreadable file (headings, no words) is not
+        // grouped and not hidden: the scan keeps it, Err
+        // and all.
+        assert!(items[3].parsed.is_err());
+        let groups = group_inbox(&items);
+        assert_eq!(groups.len(), 2);
+        let g = groups
+            .iter()
+            .find(|g| {
+                g.for_date
+                    == Some(ob_model::SimpleDate {
+                        year: 2026,
+                        month: 10,
+                        day: 25,
+                    })
+            })
+            .expect("the Oct 25 group");
+        assert_eq!(g.items.len(), 2);
+        assert_eq!(items[g.items[0]].file_name, "b.md", "newest on top");
+        // Same words, same fingerprint; changed words, a
+        // different one.
+        assert_eq!(
+            content_fingerprint(b"same words"),
+            content_fingerprint(b"same words")
+        );
+        assert_ne!(
+            content_fingerprint(b"same words"),
+            content_fingerprint(b"other words")
+        );
+        assert_eq!(content_fingerprint(b"x").len(), 8);
+    }
+
+    #[test]
+    fn inbox_scan_reads_files_and_moves_nothing() {
+        let dir =
+            std::env::temp_dir().join(format!("openbulletin-r1-inbox-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join("sue.md"),
+            "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n",
+        )
+        .expect("write");
+        std::fs::write(dir.join("empty.md"), "## Youth\n").expect("write");
+        std::fs::write(dir.join("notes.txt"), "not a part").expect("write");
+        let items = scan_contribution_folder(&dir, r1_today());
+        assert_eq!(items.len(), 2, "only the .md files are parts");
+        assert_eq!(
+            items.iter().filter(|i| i.parsed.is_ok()).count(),
+            1,
+            "the wordless file stays listed as unreadable"
+        );
+        assert!(dir.join("sue.md").exists(), "reading never moves a file");
+        assert!(dir.join("empty.md").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn still_waiting_counts_only_this_sundays_arrivals() {
+        let parse =
+            |t: &str| ob_extract::contribution::parse_contribution(t, r1_today()).expect("parses");
+        let arrived = vec![
+            parse("From: Pastor Lee\nFor Sunday: October 18, 2026\n\n## For the service\n\nSermon: **X**\n"),
+            parse("From: Music director\nFor Sunday: October 25, 2026\n\n## Announcement\n\nLater.\n"),
+            parse("From: Sunday school\n\n## Sunday school\n\nClasses at 9.\n"),
+        ];
+        let bulletin = Some(ob_model::SimpleDate {
+            year: 2026,
+            month: 10,
+            day: 18,
+        });
+        let expected = vec![
+            "Pastor".to_string(),
+            "Music director".to_string(),
+            "Sunday school".to_string(),
+        ];
+        // The pastor's part names this Sunday: arrived. The
+        // music part names a different Sunday: does not
+        // count. The undated Sunday school part counts.
+        assert_eq!(
+            still_waiting(&expected, &arrived, bulletin),
+            vec!["Music director".to_string()]
+        );
+        let text = reminder_text(&still_waiting(&expected, &arrived, bulletin), bulletin);
+        assert!(
+            text.contains(
+                "the bulletin for Sunday, October 18, 2026 is still waiting for Music director."
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("Whenever it is ready, send it over"),
+            "{text}"
+        );
+        // Nothing expected, nothing waited for.
+        assert!(still_waiting(&[], &arrived, bulletin).is_empty());
+    }
+
+    #[test]
+    fn contribution_slots_are_decided_and_said() {
+        let mut doc = r1_template();
+        let text = "\
+From: Sue
+For Sunday: October 18, 2026
+Keep-through: November 8, 2026
+
+## For the service
+Hymn of Praise\t433
+
+## Announcement
+Harvest supper is Saturday.
+
+## Sunday school
+Classes meet at 9 AM.
+
+## Insert
+The prayer list.
+";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let plans = plan_parts(&doc, &c);
+        assert_eq!(plans.len(), 4);
+        let service_sid = service_story_id(&doc).expect("service story");
+        assert_eq!(plans[0].target, SlotTarget::Story(service_sid.clone()));
+        assert!(
+            plans[1].line.contains("Stays in through"),
+            "{}",
+            plans[1].line
+        );
+        // No Sunday school box in the template: the words
+        // ride in the announcements under their heading,
+        // and the plan says so.
+        assert_eq!(
+            plans[2].target,
+            SlotTarget::AnnouncementsUnderHeading("Sunday school")
+        );
+        assert_eq!(plans[3].target, SlotTarget::LooseSheet);
+
+        let service_before = doc.story(&service_sid).expect("story").paragraphs.len();
+        let summary = apply_contribution(&mut doc, &c);
+        let service_after = doc.story(&service_sid).expect("story");
+        assert_eq!(service_after.paragraphs.len(), service_before + 1);
+        assert_eq!(
+            service_after.paragraphs.last().expect("line").text(),
+            "Hymn of Praise\t433"
+        );
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        let weekly = doc.story(&wid).expect("story");
+        assert_eq!(weekly.keep_through.as_deref(), Some("2026-11-08"));
+        let texts: Vec<String> = weekly.paragraphs.iter().map(|p| p.text()).collect();
+        assert!(texts.iter().any(|t| t == "Sunday school"), "{texts:?}");
+        assert!(
+            texts.iter().any(|t| t == "Classes meet at 9 AM."),
+            "{texts:?}"
+        );
+        assert!(!doc.no_announcements);
+        let joined = summary.join(" ");
+        assert!(joined.contains("Added 1 line to the service."), "{joined}");
+        assert!(
+            joined.contains("The loose sheet is filed with this part and kept safe."),
+            "{joined}"
+        );
+        // No part was an Insert-shaped paragraph in any
+        // story: the loose sheet's words were not placed.
+        assert!(
+            !texts.iter().any(|t| t == "The prayer list."),
+            "loose sheet words never land in the pages"
+        );
+    }
+
+    #[test]
+    fn a_named_box_takes_its_own_part() {
+        let mut doc = r1_template();
+        doc.stories.push(ob_model::Story {
+            id: "youth".to_string(),
+            paragraphs: vec![ob_model::Paragraph::plain("body", "Standing line.")],
+            keep_through: None,
+        });
+        let c = ob_extract::contribution::parse_contribution(
+            "## Youth\n\nPizza night is Friday.\n",
+            r1_today(),
+        )
+        .expect("parses");
+        let plans = plan_parts(&doc, &c);
+        assert_eq!(plans[0].target, SlotTarget::Story("youth".to_string()));
+        assert_eq!(plans[0].line, "Goes into the youth box.");
+        let summary = apply_contribution(&mut doc, &c);
+        let youth = doc.story("youth").expect("story");
+        assert_eq!(youth.paragraphs.len(), 2);
+        assert!(summary.join(" ").contains("to their boxes."));
+    }
+
+    #[test]
+    fn filed_names_keep_sender_sunday_and_fingerprint() {
+        let name = filed_file_name(
+            Some("Pastor Lee"),
+            Some(ob_model::SimpleDate {
+                year: 2026,
+                month: 10,
+                day: 25,
+            }),
+            "abcd1234",
+        );
+        assert_eq!(name, "Pastor Lee - 2026-10-25 - abcd1234.md");
+        let anon = filed_file_name(None, None, "abcd1234");
+        assert_eq!(anon, "no name - no Sunday named - abcd1234.md");
+        assert_eq!(sanitize_file_part("A/B: C*"), "A-B- C");
+    }
+
+    #[test]
+    fn sender_card_teaches_the_whole_shape() {
+        let card = sender_card_markdown("Grace Lutheran");
+        for needle in [
+            "Grace Lutheran",
+            "From:",
+            "For Sunday:",
+            "Keep-through:",
+            "## For the service",
+            "## Announcement",
+            "## Insert",
+            "## Sunday school",
+            "## Youth",
+            "Sermon: **The Good Shepherd**",
+            "the office fills this in",
+        ] {
+            assert!(card.contains(needle), "the card is missing {needle}");
+        }
+        // The card's own example parses as a contribution.
+        let example_at = card.find("From: Pastor Lee").expect("example");
+        let c = ob_extract::contribution::parse_contribution(&card[example_at..], r1_today())
+            .expect("the example on the card parses");
+        assert_eq!(c.from.as_deref(), Some("Pastor Lee"));
+        assert!(c.for_date.is_some());
+    }
+
+    #[test]
+    fn expected_parts_parse_commas_lines_and_duplicates() {
+        assert_eq!(
+            parse_expected_parts("Pastor, Music director\nSunday school\npastor,"),
+            vec![
+                "Pastor".to_string(),
+                "Music director".to_string(),
+                "Sunday school".to_string()
+            ]
+        );
+        assert!(parse_expected_parts("  \n, ").is_empty());
     }
 }

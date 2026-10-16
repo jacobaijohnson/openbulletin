@@ -96,6 +96,35 @@ reader). This is an objective, not a polish item:
   rules above, and the first older-administrator user is
   the real test, the same gate the GUI itself passed.
 
+## 6. Image formats: wide door, conservative exports
+
+(Jacob, 2026-10-15, extended the same night to JPEG XL.)
+
+The recognition door takes every format a church office
+can plausibly be handed: PNG, JPEG, WebP, GIF, SVG, and
+JPEG XL. Facts checked 2026-10-15: JPEG XL just crossed
+into the mainstream (Chrome 155 enables it by default this
+month via a pure-Rust decoder; Firefox 158 follows;
+Safari has carried it since 2023; iPhone ProRAW uses it),
+it beats JPEG by roughly a third on photos, and it can
+shrink an existing JPEG about 20% losslessly and
+reversibly. The Rust decoding path is pure-Rust (the
+image crate's decoder), so support costs no native
+dependencies.
+
+The asymmetry from the optimization ruling holds: the
+asset store keeps originals untouched whatever their
+format; exports transcode to what the destination
+actually speaks. PDF cannot carry WebP or JPEG XL as
+native image data today, so print and reading PDFs get
+JPEG/Flate at the purpose preset, exactly as ruled. The
+HTML export may serve WebP/JPEG XL with a JPEG fallback
+now that browsers decode them. Encoding JPEG XL
+ourselves is deferred: no destination needs it yet.
+HEIC (the iPhone default) is the adjacent hard case:
+patent-encumbered and library-poor in Rust; it stays an
+honest "convert first" label until a clean path exists.
+
 Recorded, not scheduled:
 - **Announcement intake**: a simple submission path
   (form or email-in) landing in the Announcements step.

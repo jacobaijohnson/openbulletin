@@ -300,6 +300,10 @@ pub struct NextSundayReport {
     /// Weekly stories whose keep-through date still covers the
     /// new Sunday, so their words carried over.
     pub kept_announcements: usize,
+    /// How many weeks the date moved: 1 in the normal week, more
+    /// when a stale file had to snap forward to the coming
+    /// Sunday (see [`next_sunday_report_as_of`]).
+    pub weeks_advanced: u32,
 }
 
 /// The signature command: clone the document for next Sunday.
@@ -319,17 +323,55 @@ pub fn next_sunday(doc: &Document) -> Result<Document, String> {
     Ok(next_sunday_report(doc)?.0)
 }
 
-/// [`next_sunday`] with the announcement bookkeeping attached.
-pub fn next_sunday_report(doc: &Document) -> Result<(Document, NextSundayReport), String> {
-    let mut out = doc.clone();
-    let iso = out
+/// The bulletin's own Sunday date, parsed.
+fn doc_sunday_date(doc: &Document) -> Result<NaiveDate, String> {
+    let iso = doc
         .fields
         .get("sunday_date")
-        .ok_or("document has no sunday_date field")?
-        .clone();
-    let date = NaiveDate::parse_from_str(&iso, "%Y-%m-%d")
-        .map_err(|e| format!("bad sunday_date {iso}: {e}"))?;
-    let next = date + Duration::days(7);
+        .ok_or("document has no sunday_date field")?;
+    NaiveDate::parse_from_str(iso, "%Y-%m-%d").map_err(|e| format!("bad sunday_date {iso}: {e}"))
+}
+
+/// Where Next Sunday lands: one week on from the file's date,
+/// then forward by whole weeks until the result is strictly
+/// after `today`. A current file moves exactly one week; a
+/// file left for three weeks cannot advance into a Sunday
+/// that has already gone by. Returns the date and how many
+/// weeks it moved.
+fn advance_target(date: NaiveDate, today: NaiveDate) -> (NaiveDate, u32) {
+    let mut next = date + Duration::days(7);
+    let mut weeks = 1u32;
+    while next <= today {
+        next += Duration::days(7);
+        weeks += 1;
+    }
+    (next, weeks)
+}
+
+/// [`next_sunday`] with the announcement bookkeeping attached.
+/// File-date semantics, as this function has always had: the
+/// target is measured against the bulletin's own date, so the
+/// result is exactly one week on. Callers who know the real
+/// today (the app) use [`next_sunday_report_as_of`] instead,
+/// so a stale file snaps forward to the coming Sunday.
+pub fn next_sunday_report(doc: &Document) -> Result<(Document, NextSundayReport), String> {
+    let date = doc_sunday_date(doc)?;
+    next_sunday_report_as_of(doc, date)
+}
+
+/// [`next_sunday_report`], measured against a real today: when
+/// one week on from the file's date would land on or before
+/// today, the date snaps forward by whole weeks to the first
+/// Sunday strictly after today (the coming Sunday, since the
+/// file's date is a Sunday). The report's `weeks_advanced`
+/// says how far it moved, so the caller can say it out loud.
+pub fn next_sunday_report_as_of(
+    doc: &Document,
+    today: NaiveDate,
+) -> Result<(Document, NextSundayReport), String> {
+    let mut out = doc.clone();
+    let date = doc_sunday_date(doc)?;
+    let (next, weeks_advanced) = advance_target(date, today);
     out.fields.insert(
         "sunday_date".to_string(),
         next.format("%Y-%m-%d").to_string(),
@@ -351,7 +393,10 @@ pub fn next_sunday_report(doc: &Document) -> Result<(Document, NextSundayReport)
             }
         }
     }
-    let mut report = NextSundayReport::default();
+    let mut report = NextSundayReport {
+        weeks_advanced,
+        ..NextSundayReport::default()
+    };
     for sid in weekly {
         if let Some(story) = out.story_mut(&sid) {
             let keep = story
@@ -551,6 +596,44 @@ mod tests {
         let (n, report) = next_sunday_report(&d).unwrap();
         assert_eq!(report.ended_announcements, 0);
         assert!(body_text(&n).trim().is_empty());
+    }
+
+    #[test]
+    fn next_sunday_as_of_snaps_a_stale_file_to_the_coming_sunday() {
+        // J1: a file left alone for weeks must not advance into
+        // a Sunday that has already gone by.
+        let d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(),
+            "X",
+        );
+        // Today is Thursday 2026-10-15: +7 lands on 10-11, in
+        // the past, so the target snaps to the coming Sunday.
+        let (n, report) =
+            next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 10, 15).unwrap()).unwrap();
+        assert_eq!(n.fields["sunday_date"], "2026-10-18");
+        assert_eq!(n.fields["sunday_date_long"], "October 18, 2026");
+        assert_eq!(report.weeks_advanced, 2);
+
+        // Today IS the +7 Sunday: strictly after today means
+        // one more week.
+        let (n, report) =
+            next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 10, 11).unwrap()).unwrap();
+        assert_eq!(n.fields["sunday_date"], "2026-10-18");
+        assert_eq!(report.weeks_advanced, 2);
+
+        // A current file moves exactly one week, as always.
+        let (n, report) =
+            next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 10, 4).unwrap()).unwrap();
+        assert_eq!(n.fields["sunday_date"], "2026-10-11");
+        assert_eq!(report.weeks_advanced, 1);
+
+        // The plain wrapper keeps file-date semantics: one
+        // week on, whatever the calendar says.
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert_eq!(n.fields["sunday_date"], "2026-10-11");
+        assert_eq!(report.weeks_advanced, 1);
     }
 
     #[test]

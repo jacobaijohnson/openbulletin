@@ -41,6 +41,20 @@ pub struct PrinterSetup {
     pub instruction: String,
 }
 
+/// What the app remembers about one bulletin file's state
+/// (J6): which document snapshot its print copy was made from,
+/// and which snapshot last passed Check with nothing red.
+/// Keyed by file path in Settings, so the Start step can say
+/// "print copy is current" or "not checked since the last
+/// change" across restarts, not just within one sitting.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DocState {
+    #[serde(default)]
+    pub print_fingerprint: Option<String>,
+    #[serde(default)]
+    pub checked_fingerprint: Option<String>,
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -58,6 +72,35 @@ pub struct Settings {
     /// through the file dialog (UI audit round 2).
     #[serde(default)]
     pub last_bulletin: Option<String>,
+    /// Per-file document state (J6), most recent last,
+    /// capped at 20 files: enough for an office's rotation,
+    /// small enough to stay a memory, not an archive.
+    #[serde(default)]
+    pub doc_states: Vec<(String, DocState)>,
+    /// The step the user left the app on, restored at launch
+    /// (J6), clamped to the step list.
+    #[serde(default)]
+    pub last_step: usize,
+}
+
+impl Settings {
+    /// The remembered state of one bulletin file, if any.
+    pub fn doc_state(&self, path: &str) -> Option<&DocState> {
+        self.doc_states
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, s)| s)
+    }
+
+    /// Remember one file's state, most recent last; beyond
+    /// 20 files the oldest memory is dropped.
+    pub fn set_doc_state(&mut self, path: String, state: DocState) {
+        self.doc_states.retain(|(p, _)| p != &path);
+        self.doc_states.push((path, state));
+        while self.doc_states.len() > 20 {
+            self.doc_states.remove(0);
+        }
+    }
 }
 
 /// The keys the app answers to, as (action, plain label).
@@ -574,6 +617,11 @@ impl App {
             .get("sunday_date")
             .cloned()
             .unwrap_or_default();
+        self.service_inputs = service_lines(&self.doc)
+            .into_iter()
+            .map(|l| l.value)
+            .collect();
+        self.sermon_input = sermon_title(&self.doc);
     }
 
     /// Set the bulletin's date from the Step 2 field, in the
@@ -709,17 +757,34 @@ struct CheckNote {
     text: String,
     /// (panel index, frame index) the note points at.
     target: Option<(usize, Option<usize>)>,
+    /// A step the fix button jumps to instead of the Pages
+    /// window, when the fix lives on a step (the date
+    /// finding's fix lives on This Sunday, J1).
+    step: Option<usize>,
 }
 
 impl CheckNote {
     fn plain(text: String) -> Self {
-        CheckNote { text, target: None }
+        CheckNote {
+            text,
+            target: None,
+            step: None,
+        }
     }
 
     fn aimed(text: String, panel: usize, frame: Option<usize>) -> Self {
         CheckNote {
             text,
             target: Some((panel, frame)),
+            step: None,
+        }
+    }
+
+    fn to_step(text: String, step: usize) -> Self {
+        CheckNote {
+            text,
+            target: None,
+            step: Some(step),
         }
     }
 }
@@ -839,11 +904,73 @@ fn date_differs(input: &str, stored: Option<&str>) -> bool {
     !input.is_empty() && input != stored.unwrap_or("")
 }
 
+/// "Sunday, October 18, 2026": the long form with the
+/// weekday, the way dates are spoken on the steps.
+fn long_form(d: chrono::NaiveDate) -> String {
+    format!("{}, {}", d.format("%A"), ob_layout::long_date(d))
+}
+
+/// The Check step's date finding (J1): a bulletin whose date
+/// is not the coming Sunday, in plain words naming both
+/// dates. The coming Sunday is today when today is a Sunday.
+/// A date that does not read gets no verdict here; the
+/// missing-date note covers that case.
+fn date_verdict(doc_iso: &str, today: chrono::NaiveDate) -> Option<String> {
+    let date = chrono::NaiveDate::parse_from_str(doc_iso.trim(), "%Y-%m-%d").ok()?;
+    let coming = sunday_on_or_after(today);
+    if date == coming {
+        return None;
+    }
+    Some(format!(
+        "Check: this bulletin says {}, but this coming Sunday is {}.",
+        long_form(date),
+        long_form(coming)
+    ))
+}
+
+/// The stale-date sentence (J1), shared by the Start status
+/// and the This Sunday step: the bulletin's date is behind
+/// today, so the bulletin on screen is for a Sunday that has
+/// already happened.
+fn date_passed_sentence(doc_iso: Option<&str>, today: chrono::NaiveDate) -> Option<String> {
+    let date = chrono::NaiveDate::parse_from_str(doc_iso?.trim(), "%Y-%m-%d").ok()?;
+    (date < today).then(|| {
+        "That date has passed. Set the date for this Sunday on the This Sunday step.".to_string()
+    })
+}
+
+/// The Start step's words for a remembered file state (J6):
+/// the strongest true statement about the print copy and the
+/// last clean check, compared against the document as it
+/// stands now. A stale print copy alone says nothing here;
+/// the Print step carries that warning.
+fn state_sentence(state: Option<&DocState>, current: &str) -> Option<String> {
+    let state = state?;
+    if state.print_fingerprint.as_deref() == Some(current) {
+        return Some("Print copy is current.".to_string());
+    }
+    if state.checked_fingerprint.as_deref() == Some(current) {
+        return Some("Checked, and nothing has changed since.".to_string());
+    }
+    if state.checked_fingerprint.is_some() {
+        return Some("Not checked since the last change.".to_string());
+    }
+    None
+}
+
 /// The Start step's opening lines (adopted item 3): which
 /// Sunday this is, and the next thing needed, worked out from
 /// the document itself in step order. Nothing here is kept by
-/// hand, so it cannot go stale.
-fn start_status(doc: &Document, announcements_empty: bool) -> (String, String) {
+/// hand, so it cannot go stale. A date that has passed outranks
+/// every other need (J1): the bulletin on screen is for the
+/// wrong week until it is fixed. The current file's remembered
+/// state (J6) appends its sentence when it has one.
+fn start_status(
+    doc: &Document,
+    announcements_empty: bool,
+    today: chrono::NaiveDate,
+    state: Option<&DocState>,
+) -> (String, String) {
     let long = doc
         .fields
         .get("sunday_date_long")
@@ -859,17 +986,32 @@ fn start_status(doc: &Document, announcements_empty: bool) -> (String, String) {
             .get("sunday_date")
             .map(|s| s.trim().is_empty())
             .unwrap_or(true);
-    let next = if doc.profile.name.trim().is_empty() {
-        "Next: add your church name on this step."
+    let passed = date_passed_sentence(doc.fields.get("sunday_date").map(String::as_str), today);
+    let mut next = if let Some(sentence) = passed {
+        sentence
+    } else if doc.profile.name.trim().is_empty() {
+        "Next: add your church name on this step.".to_string()
     } else if date_missing {
-        "Next: set the date on the This Sunday step."
+        "Next: set the date on the This Sunday step.".to_string()
     } else if announcements_empty && !doc.no_announcements {
         "Next: add this week's announcements on the Announcements step, \
          or mark there that there are none this week."
+            .to_string()
     } else {
-        "Ready to print."
+        "Ready to print.".to_string()
     };
-    (headline, next.to_string())
+    if let Some(words) = state_sentence(state, &snapshot(doc)) {
+        next = format!("{next} {words}");
+    }
+    (headline, next)
+}
+
+/// True while the bulletin on screen is the starter sample
+/// (J7): no file behind it, and no church named yet. Start
+/// says so out loud, so a sample is never mistaken for the
+/// church's own bulletin.
+fn is_starter_sample(has_file: bool, church_name: &str) -> bool {
+    !has_file && church_name.trim().is_empty()
 }
 
 /// True when a print copy exists but the bulletin has changed
@@ -945,6 +1087,11 @@ struct App {
     profile_website: String,
     profile_pastor: String,
     date_input: String,
+    /// The This Sunday step's service-line value fields (J2),
+    /// parallel to `service_lines(&doc)`, plus the sermon
+    /// title field. Synced from the document on every swap.
+    service_inputs: Vec<String>,
+    sermon_input: String,
     announcements_dirty: bool,
     step: usize,
     announcements: String,
@@ -962,8 +1109,14 @@ struct App {
     ann_keep_through: String,
     /// The document snapshot a print copy was made from, so
     /// the Print step can say when the bulletin has changed
-    /// since. Memory only: forgotten when the app closes.
+    /// since. Seeded from Settings per file (J6), so the
+    /// memory now survives a restart.
     print_fingerprint: Option<String>,
+    /// The document snapshot that last passed Check with
+    /// nothing red (J6), seeded and stored beside
+    /// print_fingerprint. Any edit changes the snapshot, so
+    /// staleness needs no bookkeeping of its own.
+    checked_fingerprint: Option<String>,
     path: Option<std::path::PathBuf>,
     settings: Settings,
     printer_name: String,
@@ -1172,11 +1325,20 @@ impl Default for App {
         let doc = build_template(
             preset,
             ChurchProfile::default(),
-            chrono::Local::now().date_naive(),
+            // A fresh bulletin is for the coming Sunday, never
+            // for whatever weekday today happens to be (J7).
+            sunday_on_or_after(chrono::Local::now().date_naive()),
             "Sunday",
         );
         let announcements = weekly_body_text(&doc);
         let date_input = doc.fields.get("sunday_date").cloned().unwrap_or_default();
+        let service_inputs: Vec<String> =
+            service_lines(&doc).into_iter().map(|l| l.value).collect();
+        let sermon_input = sermon_title(&doc);
+        let settings = load_settings();
+        // Reopen on the step the user left (J6), clamped to
+        // the steps that exist.
+        let step = settings.last_step.min(STEPS.len() - 1);
         Self {
             doc,
             preset,
@@ -1188,8 +1350,10 @@ impl Default for App {
             profile_website: String::new(),
             profile_pastor: String::new(),
             date_input,
+            service_inputs,
+            sermon_input,
             announcements_dirty: false,
-            step: 0,
+            step,
             announcements,
             notes: Vec::new(),
             status: "Welcome to OpenBulletin.".into(),
@@ -1197,8 +1361,9 @@ impl Default for App {
             char_findings: Vec::new(),
             ann_keep_through: String::new(),
             print_fingerprint: None,
+            checked_fingerprint: None,
             path: None,
-            settings: load_settings(),
+            settings,
             printer_name: "Church office printer".into(),
             show_pages: false,
             canvas_panel: 0,
@@ -1293,6 +1458,177 @@ fn weekly_body_text(doc: &Document) -> String {
         .join("\n")
 }
 
+/// One tabbed line of the order of service (J2): a label
+/// ("Hymn of Praise") and this week's value ("432"), edited
+/// as a labeled field on the This Sunday step.
+#[derive(Debug, Clone, PartialEq)]
+struct ServiceLine {
+    /// Index of the paragraph within the service story.
+    para_index: usize,
+    label: String,
+    value: String,
+}
+
+/// The story the service lines live in (J2): the one holding
+/// the tabbed order lines. Tabbed lines with a "Sermon:" line
+/// alongside confirm it (the fallback for imported bulletins,
+/// whose frames carry no roles worth trusting); otherwise a
+/// story a Standing frame holds; otherwise the first story
+/// with tabbed lines at all.
+fn service_story_id(doc: &Document) -> Option<String> {
+    let has_tabs = |s: &ob_model::Story| s.paragraphs.iter().any(|p| p.text.contains('\t'));
+    let has_sermon = |s: &ob_model::Story| {
+        s.paragraphs
+            .iter()
+            .any(|p| p.text.trim_start().starts_with("Sermon:"))
+    };
+    if let Some(s) = doc.stories.iter().find(|s| has_tabs(s) && has_sermon(s)) {
+        return Some(s.id.clone());
+    }
+    let standing: Vec<&str> = doc
+        .panels
+        .iter()
+        .flat_map(|p| p.frames.iter())
+        .filter(|f| f.role == ContentRole::Standing)
+        .filter_map(|f| f.story_id.as_deref())
+        .collect();
+    if let Some(s) = doc
+        .stories
+        .iter()
+        .find(|s| standing.contains(&s.id.as_str()) && has_tabs(s))
+    {
+        return Some(s.id.clone());
+    }
+    doc.stories
+        .iter()
+        .find(|s| has_tabs(s))
+        .map(|s| s.id.clone())
+}
+
+/// The tabbed lines of the order of service (J2), in page
+/// order: the label is the text before the first tab, the
+/// value the text after the last tab (dot leaders live
+/// between the two in the printed line).
+fn service_lines(doc: &Document) -> Vec<ServiceLine> {
+    let Some(sid) = service_story_id(doc) else {
+        return Vec::new();
+    };
+    let Some(story) = doc.story(&sid) else {
+        return Vec::new();
+    };
+    story
+        .paragraphs
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.text.contains('\t'))
+        .map(|(i, p)| ServiceLine {
+            para_index: i,
+            label: p.text.split('\t').next().unwrap_or("").trim().to_string(),
+            value: p.text.rsplit('\t').next().unwrap_or("").trim().to_string(),
+        })
+        .collect()
+}
+
+/// Rewrite one service line's value (J2), keeping the label
+/// exactly as it stands, first tab included.
+fn set_service_line(doc: &mut Document, para_index: usize, new_value: &str) {
+    let Some(sid) = service_story_id(doc) else {
+        return;
+    };
+    let Some(story) = doc.story_mut(&sid) else {
+        return;
+    };
+    let Some(para) = story.paragraphs.get_mut(para_index) else {
+        return;
+    };
+    if let Some(tab) = para.text.find('\t') {
+        let prefix = para.text[..=tab].to_string();
+        para.text = format!("{prefix}{new_value}");
+    }
+}
+
+/// The "Sermon:" paragraph, as (story id, paragraph index):
+/// in the service story when it is there, else the first
+/// story that has one.
+fn sermon_para(doc: &Document) -> Option<(String, usize)> {
+    let find_in = |story: &ob_model::Story| {
+        story
+            .paragraphs
+            .iter()
+            .position(|p| p.text.trim_start().starts_with("Sermon:"))
+    };
+    if let Some(sid) = service_story_id(doc) {
+        if let Some(story) = doc.story(&sid) {
+            if let Some(i) = find_in(story) {
+                return Some((sid, i));
+            }
+        }
+    }
+    doc.stories
+        .iter()
+        .find_map(|s| find_in(s).map(|i| (s.id.clone(), i)))
+}
+
+/// Take the `{...}` field tokens out of a line, so the words
+/// a person typed can be told from the words the app fills
+/// in by itself.
+fn strip_field_tokens(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_token = false;
+    for c in text.chars() {
+        match c {
+            '{' => in_token = true,
+            '}' => in_token = false,
+            _ if !in_token => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// This week's sermon title (J2): what the "Sermon:" line
+/// says once the field tokens are taken out. Empty when the
+/// line carries only the pastor token, and when the bulletin
+/// has no sermon line at all.
+fn sermon_title(doc: &Document) -> String {
+    let Some((sid, i)) = sermon_para(doc) else {
+        return String::new();
+    };
+    let Some(story) = doc.story(&sid) else {
+        return String::new();
+    };
+    let after = story.paragraphs[i]
+        .text
+        .trim_start()
+        .strip_prefix("Sermon:")
+        .unwrap_or("");
+    strip_field_tokens(after).trim().to_string()
+}
+
+/// Set the sermon title (J2). The {Church.pastor} token,
+/// when the line has it, is preserved and stays after the
+/// title: it prints the pastor's name there, as it always
+/// has. An empty title restores the bare line.
+fn set_sermon_title(doc: &mut Document, title: &str) {
+    let Some((sid, i)) = sermon_para(doc) else {
+        return;
+    };
+    let title = title.trim();
+    let Some(story) = doc.story_mut(&sid) else {
+        return;
+    };
+    let Some(para) = story.paragraphs.get_mut(i) else {
+        return;
+    };
+    let had_token = para.text.contains("{Church.pastor}");
+    para.text = match (title.is_empty(), had_token) {
+        (true, true) => "Sermon: {Church.pastor}".to_string(),
+        (true, false) => "Sermon:".to_string(),
+        (false, true) => format!("Sermon: {title} {{Church.pastor}}"),
+        (false, false) => format!("Sermon: {title}"),
+    };
+}
+
 impl App {
     /// Move to a step the way the Next button does: leaving
     /// Announcements writes the box; arriving at Check runs it.
@@ -1313,6 +1649,7 @@ impl App {
             }
         }
         self.step = i;
+        self.remember_step();
         if i == 3 {
             self.run_checks();
         }
@@ -1357,6 +1694,8 @@ impl App {
         // A fresh template is not the old file: Save must ask
         // for a name rather than overwrite it (closing audit).
         self.path = None;
+        self.print_fingerprint = None;
+        self.checked_fingerprint = None;
         if before != snapshot(&self.doc) {
             self.record_undo(before);
         }
@@ -1494,13 +1833,25 @@ impl App {
         } else {
             notes.push(CheckNote::plain("OK: church name is set.".to_string()));
         }
-        match self.doc.fields.get("sunday_date_long") {
-            Some(d) if !d.is_empty() => {
-                notes.push(CheckNote::plain(format!("OK: bulletin date is {d}.")))
-            }
-            _ => notes.push(CheckNote::plain(
-                "Check: no Sunday date is set (Step 2).".to_string(),
-            )),
+        // The date must be the coming Sunday, not just a date
+        // (J1): a stale file passes every other check while
+        // printing last month's Sunday. The finding's fix
+        // button jumps to the This Sunday step.
+        let verdict = self
+            .doc
+            .fields
+            .get("sunday_date")
+            .and_then(|iso| date_verdict(iso, chrono::Local::now().date_naive()));
+        match verdict {
+            Some(words) => notes.push(CheckNote::to_step(words, 1)),
+            None => match self.doc.fields.get("sunday_date_long") {
+                Some(d) if !d.is_empty() => {
+                    notes.push(CheckNote::plain(format!("OK: bulletin date is {d}.")))
+                }
+                _ => notes.push(CheckNote::plain(
+                    "Check: no Sunday date is set (Step 2).".to_string(),
+                )),
+            },
         }
         notes.push(CheckNote::plain(announcements_check(
             self.announcements.trim().is_empty(),
@@ -1705,6 +2056,18 @@ impl App {
         // a fix button under each one.
         self.char_findings = char_findings(&self.doc);
         self.notes = notes;
+        // A check with nothing red is a state worth keeping
+        // (J6): remember which snapshot passed, under this
+        // file, so the Start step can say "checked, and
+        // nothing has changed since" even next week. Any
+        // later edit changes the snapshot, so staleness is
+        // automatic.
+        let nothing_red = self.notes.iter().all(|n| !n.text.starts_with("Check:"))
+            && self.char_findings.is_empty();
+        if nothing_red {
+            self.checked_fingerprint = Some(snapshot(&self.doc));
+            self.store_doc_state();
+        }
     }
 
     fn next_sunday(&mut self) {
@@ -1713,7 +2076,7 @@ impl App {
         }
         self.save_announcements();
         let before = snapshot(&self.doc);
-        match ob_layout::next_sunday_report(&self.doc) {
+        match ob_layout::next_sunday_report_as_of(&self.doc, chrono::Local::now().date_naive()) {
             Ok((next, report)) => {
                 self.adopt_document(next, false);
                 if before != snapshot(&self.doc) {
@@ -1723,11 +2086,22 @@ impl App {
                 // Save overwrite last week's bulletin, and never
                 // call this unsaved document saved (finding F13).
                 self.path = None;
+                // A new week's bulletin has no print copy and
+                // no clean check yet (J6).
+                self.print_fingerprint = None;
+                self.checked_fingerprint = None;
                 self.step = 1;
+                self.remember_step();
                 let mut msg = format!(
                     "Started the {} bulletin. Weekly announcements were cleared; standing items carried over. Save it under its own name.",
                     self.doc.fields.get("sunday_date_long").cloned().unwrap_or_default()
                 );
+                if report.weeks_advanced > 1 {
+                    msg.push_str(&format!(
+                        " The old date had passed, so this jumps ahead {} weeks to the coming Sunday.",
+                        report.weeks_advanced
+                    ));
+                }
                 if report.ended_announcements == 1 {
                     msg.push_str(" 1 announcement ended and was cleared.");
                 } else if report.ended_announcements > 1 {
@@ -1804,6 +2178,45 @@ impl App {
         let s = path.to_string_lossy().into_owned();
         if self.settings.last_bulletin.as_deref() != Some(s.as_str()) {
             self.settings.last_bulletin = Some(s);
+            let _ = save_settings(&self.settings);
+        }
+    }
+
+    /// Load the remembered state of the file now open (J6):
+    /// its print and checked fingerprints become this
+    /// session's, so freshness speaks across restarts.
+    fn seed_doc_state(&mut self) {
+        let state = self
+            .path
+            .as_ref()
+            .and_then(|p| self.settings.doc_state(&p.to_string_lossy()))
+            .cloned()
+            .unwrap_or_default();
+        self.print_fingerprint = state.print_fingerprint;
+        self.checked_fingerprint = state.checked_fingerprint;
+    }
+
+    /// Write this session's print and checked fingerprints
+    /// back under the current file's path (J6). No file open,
+    /// nothing to remember under. Best effort, like every
+    /// settings write: a settings file that will not write
+    /// never blocks the work itself.
+    fn store_doc_state(&mut self) {
+        let Some(path) = &self.path else { return };
+        let key = path.to_string_lossy().into_owned();
+        let state = DocState {
+            print_fingerprint: self.print_fingerprint.clone(),
+            checked_fingerprint: self.checked_fingerprint.clone(),
+        };
+        self.settings.set_doc_state(key, state);
+        let _ = save_settings(&self.settings);
+    }
+
+    /// Remember which step the user is on (J6), so the app
+    /// reopens where they left it.
+    fn remember_step(&mut self) {
+        if self.settings.last_step != self.step {
+            self.settings.last_step = self.step;
             let _ = save_settings(&self.settings);
         }
     }
@@ -2022,6 +2435,7 @@ impl App {
                     self.remember_bulletin(src);
                 }
                 self.path = source;
+                self.seed_doc_state();
                 // The journal's content is now the screen's content:
                 // the saved state stays the older file (or nothing).
                 self.journal_snapshot = snapshot(&self.doc);
@@ -3437,6 +3851,7 @@ impl App {
                     self.adopt_document(doc, true);
                     self.remember_bulletin(&path);
                     self.path = Some(path);
+                    self.seed_doc_state();
                     self.step = 1;
                     self.note("Bulletin opened.".into());
                     self.mark_clean();
@@ -3504,6 +3919,9 @@ impl App {
         self.asset_base = review.workdir.clone();
         self.adopt_document(review.doc, true);
         self.path = None;
+        // A fresh draft has no print copy and no clean check.
+        self.print_fingerprint = None;
+        self.checked_fingerprint = None;
         if edit {
             self.show_pages = true;
             self.note("Here is your old bulletin as a draft. Check it page by page.".into());
@@ -3762,6 +4180,8 @@ impl App {
         self.asset_base = Some(review.workdir.clone());
         self.adopt_document(review.doc, true);
         self.path = None;
+        self.print_fingerprint = None;
+        self.checked_fingerprint = None;
         if edit {
             self.show_pages = true;
             self.note(
@@ -4020,6 +4440,9 @@ impl App {
                     }
                     self.remember_bulletin(&path);
                     self.path = Some(path);
+                    // The state memory follows the document to
+                    // its (possibly new) name (J6).
+                    self.store_doc_state();
                     self.mark_clean();
                 }
                 Err(e) => self.fail(format!(
@@ -4747,10 +5170,26 @@ impl eframe::App for App {
                         // answered (UI audit round 2).
                         let doors_enabled =
                             self.import_review.is_none() && self.analyzer_review.is_none();
-                        let (headline, next_line) =
-                            start_status(&self.doc, self.announcements.trim().is_empty());
+                        let doc_state = self
+                            .path
+                            .as_ref()
+                            .and_then(|p| self.settings.doc_state(&p.to_string_lossy()))
+                            .cloned();
+                        let (headline, next_line) = start_status(
+                            &self.doc,
+                            self.announcements.trim().is_empty(),
+                            chrono::Local::now().date_naive(),
+                            doc_state.as_ref(),
+                        );
                         ui.label(egui::RichText::new(headline).strong());
                         ui.label(next_line);
+                        if is_starter_sample(self.path.is_some(), &self.doc.profile.name) {
+                            ui.label(
+                                "This is a starter sample, not your church's bulletin yet. \
+                                 Open an old bulletin, or fill in your church below to \
+                                 make it yours.",
+                            );
+                        }
                         ui.separator();
                         // The first door: the bulletin this
                         // office worked on last, offered back
@@ -5010,6 +5449,12 @@ impl eframe::App for App {
                             }
                         });
                         ui.small("Year-month-day, like 2026-10-18. This is the date printed on the bulletin.");
+                        if let Some(words) = date_passed_sentence(
+                            self.doc.fields.get("sunday_date").map(String::as_str),
+                            chrono::Local::now().date_naive(),
+                        ) {
+                            ui.label(egui::RichText::new(words).color(PROBLEM));
+                        }
                         ui.label("Name of the Sunday");
                         let mut sn = self.doc.fields.get("sunday_name").cloned().unwrap_or_default();
                         let resp_sn = ui.text_edit_singleline(&mut sn);
@@ -5031,6 +5476,58 @@ impl eframe::App for App {
                                 self.record_undo(before);
                         }
                         ui.small("The cover and the order of service fill themselves from these.");
+                        // The service itself (J2): the order of
+                        // service's tabbed lines (hymn numbers
+                        // and friends) and the sermon title,
+                        // edited here as labeled fields instead
+                        // of hunted for on the page.
+                        let lines = service_lines(&self.doc);
+                        let has_sermon = sermon_para(&self.doc).is_some();
+                        ui.separator();
+                        if lines.is_empty() && !has_sermon {
+                            ui.label("This bulletin has no service lines to fill in yet. They appear when the order of service has hymn lines.");
+                        } else {
+                            ui.label(egui::RichText::new("The service this week").strong());
+                            if self.service_inputs.len() != lines.len() {
+                                self.service_inputs =
+                                    lines.iter().map(|l| l.value.clone()).collect();
+                            }
+                            for (row, line) in lines.iter().enumerate() {
+                                ui.label(&line.label);
+                                let resp =
+                                    ui.text_edit_singleline(&mut self.service_inputs[row]);
+                                if resp.lost_focus()
+                                    && self.service_inputs[row].trim() != line.value
+                                {
+                                    let before = snapshot(&self.doc);
+                                    let value =
+                                        self.service_inputs[row].trim().to_string();
+                                    set_service_line(&mut self.doc, line.para_index, &value);
+                                    if before != snapshot(&self.doc) {
+                                        self.record_undo(before);
+                                    }
+                                    self.service_inputs[row] = value;
+                                }
+                            }
+                            if has_sermon {
+                                ui.label("Sermon title");
+                                let resp_sermon = ui.add(
+                                    egui::TextEdit::singleline(&mut self.sermon_input)
+                                        .hint_text("(the pastor's name fills in after it)"),
+                                );
+                                if resp_sermon.lost_focus()
+                                    && self.sermon_input.trim() != sermon_title(&self.doc)
+                                {
+                                    let before = snapshot(&self.doc);
+                                    let title = self.sermon_input.clone();
+                                    set_sermon_title(&mut self.doc, &title);
+                                    if before != snapshot(&self.doc) {
+                                        self.record_undo(before);
+                                    }
+                                    self.sermon_input = sermon_title(&self.doc);
+                                }
+                            }
+                        }
                         ui.separator();
                         if ui.button("Start next Sunday").clicked() {
                             self.next_sunday();
@@ -5087,6 +5584,11 @@ impl eframe::App for App {
                                 );
                             } else {
                                 ui.label(&n.text);
+                            }
+                            if let Some(step) = n.step {
+                                if ui.button("Fix this").clicked() {
+                                    self.goto_step(step);
+                                }
                             }
                             if let Some((pi, fi)) = n.target {
                                 if ui.button("Fix this").clicked() {
@@ -5161,6 +5663,7 @@ impl eframe::App for App {
                             match std::fs::write(&path, &bytes).map_err(|e| e.to_string()).and_then(|_| open_with_os(&path)) {
                                 Ok(()) => {
                                     self.print_fingerprint = Some(snapshot(&self.doc));
+                                    self.store_doc_state();
                                     self.status = "Print copy opened in your PDF viewer. Use the settings listed above.".into();
                                 }
                                 Err(e) => self.status = e,
@@ -5182,6 +5685,7 @@ impl eframe::App for App {
                                 match std::fs::write(&path, &bytes) {
                                     Ok(()) => {
                                         self.print_fingerprint = Some(snapshot(&self.doc));
+                                        self.store_doc_state();
                                         self.status = format!("Saved print copy as {}", file_name_of(&path));
                                     }
                                     Err(e) => self.status = format!("Could not save the print copy: {e}"),
@@ -6536,6 +7040,9 @@ mod settings_tests {
     #[test]
     fn start_status_names_the_next_thing_needed() {
         // Adopted item 3, derived from the document each time.
+        // Today is the Thursday before the bulletin's Sunday,
+        // so the date itself raises no flag (J1).
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).expect("date");
         let mut doc = ob_layout::build_template(
             ob_layout::Preset::LetterBifold,
             ob_model::ChurchProfile::default(),
@@ -6544,27 +7051,282 @@ mod settings_tests {
         );
         // No church name yet: that is the first thing needed.
         doc.profile.name = String::new();
-        let (headline, next) = start_status(&doc, true);
+        let (headline, next) = start_status(&doc, true, today, None);
         assert!(headline.starts_with("Working on: Sunday,"));
         assert!(next.contains("church name"), "next: {next}");
         // Name set, date set, announcements empty and unmarked.
         doc.profile.name = "Grace Lutheran Church".into();
-        let (_, next) = start_status(&doc, true);
+        let (_, next) = start_status(&doc, true, today, None);
         assert!(next.contains("Announcements step"), "next: {next}");
         // Announcements present: nothing left but printing.
-        let (_, next) = start_status(&doc, false);
+        let (_, next) = start_status(&doc, false, today, None);
         assert_eq!(next, "Ready to print.");
         // Or marked as none this week: also ready.
         doc.no_announcements = true;
-        let (_, next) = start_status(&doc, true);
+        let (_, next) = start_status(&doc, true, today, None);
         assert_eq!(next, "Ready to print.");
         // No date at all: the This Sunday step is next, and the
         // headline cannot name a Sunday.
         doc.fields.remove("sunday_date");
         doc.fields.remove("sunday_date_long");
-        let (headline, next) = start_status(&doc, false);
+        let (headline, next) = start_status(&doc, false, today, None);
         assert_eq!(headline, "Working on: a new bulletin");
         assert!(next.contains("This Sunday step"), "next: {next}");
+    }
+
+    #[test]
+    fn date_verdict_flags_anything_but_the_coming_sunday() {
+        // J1: past, future-but-not-next, and unparseable dates.
+        let thursday = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).expect("date");
+        // The coming Sunday itself: no finding.
+        assert_eq!(date_verdict("2026-10-18", thursday), None);
+        // Last Sunday: named, with the coming Sunday beside it.
+        let v = date_verdict("2026-10-11", thursday).expect("a past date is a finding");
+        assert!(v.contains("Sunday, October 11, 2026"), "verdict: {v}");
+        assert!(v.contains("October 18, 2026"), "verdict: {v}");
+        // A Sunday, but not the coming one.
+        let v = date_verdict("2026-10-25", thursday).expect("a later Sunday is a finding");
+        assert!(v.contains("October 25, 2026"), "verdict: {v}");
+        // When today IS Sunday, the coming Sunday is today.
+        let sunday = chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date");
+        assert_eq!(date_verdict("2026-10-18", sunday), None);
+        assert!(date_verdict("2026-10-11", sunday).is_some());
+        // A date that does not read gets no verdict.
+        assert_eq!(date_verdict("next Friday", thursday), None);
+        assert_eq!(date_verdict("", thursday), None);
+    }
+
+    #[test]
+    fn start_status_puts_a_passed_date_first() {
+        // J1: a bulletin for a Sunday already gone outranks
+        // every other need, church name included.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).expect("date");
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 11).expect("date"),
+            "Sunday",
+        );
+        doc.profile.name = String::new();
+        let (_, next) = start_status(&doc, true, today, None);
+        assert!(next.starts_with("That date has passed."), "next: {next}");
+        assert_eq!(
+            date_passed_sentence(Some("2026-10-11"), today).as_deref(),
+            Some("That date has passed. Set the date for this Sunday on the This Sunday step.")
+        );
+        assert_eq!(date_passed_sentence(Some("2026-10-18"), today), None);
+        assert_eq!(date_passed_sentence(None, today), None);
+    }
+
+    #[test]
+    fn start_status_speaks_the_remembered_state() {
+        // J6: the state sentence is the strongest true one,
+        // appended to whatever the next step is.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).expect("date");
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        doc.profile.name = "Grace Lutheran Church".into();
+        let fp = snapshot(&doc);
+        // Print copy made from exactly this document.
+        let mut state = DocState {
+            print_fingerprint: Some(fp.clone()),
+            checked_fingerprint: None,
+        };
+        let (_, next) = start_status(&doc, false, today, Some(&state));
+        assert_eq!(next, "Ready to print. Print copy is current.");
+        // Checked clean, and untouched since.
+        state.print_fingerprint = None;
+        state.checked_fingerprint = Some(fp.clone());
+        let (_, next) = start_status(&doc, false, today, Some(&state));
+        assert_eq!(
+            next,
+            "Ready to print. Checked, and nothing has changed since."
+        );
+        // Checked once, then changed.
+        state.checked_fingerprint = Some("an older snapshot".into());
+        let (_, next) = start_status(&doc, false, today, Some(&state));
+        assert_eq!(next, "Ready to print. Not checked since the last change.");
+        // Only a stale print copy: Start stays silent about
+        // state; the Print step carries that warning.
+        state.checked_fingerprint = None;
+        state.print_fingerprint = Some("an older snapshot".into());
+        let (_, next) = start_status(&doc, false, today, Some(&state));
+        assert_eq!(next, "Ready to print.");
+        // No state at all: nothing appended.
+        let (_, next) = start_status(&doc, false, today, None);
+        assert_eq!(next, "Ready to print.");
+    }
+
+    #[test]
+    fn doc_states_are_capped_and_settings_round_trip() {
+        // J6: 20 files remembered, oldest dropped; the new
+        // fields survive a settings save/load round trip, and
+        // old settings files (without them) still load.
+        let mut st = Settings::default();
+        for i in 0..21 {
+            st.set_doc_state(format!("bulletin-{i}.obd"), DocState::default());
+        }
+        assert_eq!(st.doc_states.len(), 20);
+        assert!(st.doc_state("bulletin-0.obd").is_none(), "oldest dropped");
+        assert!(st.doc_state("bulletin-20.obd").is_some());
+        // Re-remembering a file refreshes it in place.
+        st.set_doc_state(
+            "bulletin-20.obd".into(),
+            DocState {
+                print_fingerprint: Some("fp".into()),
+                checked_fingerprint: None,
+            },
+        );
+        assert_eq!(st.doc_states.len(), 20);
+        assert_eq!(
+            st.doc_state("bulletin-20.obd")
+                .and_then(|s| s.print_fingerprint.as_deref()),
+            Some("fp")
+        );
+        st.last_step = 3;
+        let text = serde_json::to_string(&st).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.last_step, 3);
+        assert_eq!(back.doc_states.len(), 20);
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.doc_states.is_empty());
+        assert_eq!(old.last_step, 0);
+    }
+
+    #[test]
+    fn service_lines_read_and_rewrite_the_order_of_service() {
+        // J2: the template's order story carries tabbed lines;
+        // the hymn numbers are their values.
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        let lines = service_lines(&doc);
+        let praise = lines
+            .iter()
+            .find(|l| l.label == "Hymn of Praise")
+            .expect("the praise hymn line");
+        assert_eq!(praise.value, "432");
+        let response = lines
+            .iter()
+            .find(|l| l.label == "Hymn of Response")
+            .expect("the response hymn line");
+        assert_eq!(response.value, "365");
+        // A line with nothing after the tab has an empty value.
+        let prelude = lines
+            .iter()
+            .find(|l| l.label == "Prelude")
+            .expect("the prelude line");
+        assert_eq!(prelude.value, "");
+
+        // Rewriting a value keeps the label exactly as found.
+        set_service_line(&mut doc, praise.para_index, "433");
+        let lines = service_lines(&doc);
+        let praise = lines
+            .iter()
+            .find(|l| l.label == "Hymn of Praise")
+            .expect("still there");
+        assert_eq!(praise.value, "433");
+        let sid = service_story_id(&doc).expect("a service story");
+        let story = doc.story(&sid).expect("the story");
+        assert_eq!(
+            story.paragraphs[praise.para_index].text,
+            "Hymn of Praise\t433"
+        );
+
+        // The value is what follows the LAST tab (leaders
+        // between label and value do not confuse the read),
+        // and a rewrite puts the value after the first tab.
+        let idx = story.paragraphs.len();
+        let mut doc2 = doc.clone();
+        doc2.story_mut(&sid)
+            .expect("story")
+            .paragraphs
+            .push(ob_model::Paragraph::new(
+                "order-line",
+                "Hymn of the Day\t\t77",
+            ));
+        let lines = service_lines(&doc2);
+        let day = lines
+            .iter()
+            .find(|l| l.label == "Hymn of the Day")
+            .expect("the pushed line");
+        assert_eq!(day.para_index, idx);
+        assert_eq!(day.value, "77");
+        set_service_line(&mut doc2, idx, "78");
+        let story = doc2.story(&sid).expect("the story");
+        assert_eq!(story.paragraphs[idx].text, "Hymn of the Day\t78");
+    }
+
+    #[test]
+    fn sermon_title_round_trips_around_the_pastor_token() {
+        // J2: the template's sermon line carries only the
+        // {Church.pastor} token, so it has no title yet.
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        assert_eq!(sermon_title(&doc), "");
+        let sermon_text = |doc: &Document| {
+            let (sid, i) = sermon_para(doc).expect("a sermon line");
+            doc.story(&sid).expect("story").paragraphs[i].text.clone()
+        };
+        // Setting a title keeps the token after it.
+        set_sermon_title(&mut doc, "Grace and Truth");
+        assert_eq!(sermon_text(&doc), "Sermon: Grace and Truth {Church.pastor}");
+        assert_eq!(sermon_title(&doc), "Grace and Truth");
+        // Clearing it restores the bare token line exactly.
+        set_sermon_title(&mut doc, "");
+        assert_eq!(sermon_text(&doc), "Sermon: {Church.pastor}");
+        assert_eq!(sermon_title(&doc), "");
+
+        // A line with no token: the title is the whole rest,
+        // and clearing leaves a bare "Sermon:".
+        let (sid, i) = sermon_para(&doc).expect("a sermon line");
+        doc.story_mut(&sid).expect("story").paragraphs[i].text = "Sermon: Old Title".into();
+        assert_eq!(sermon_title(&doc), "Old Title");
+        set_sermon_title(&mut doc, "New Title");
+        assert_eq!(sermon_text(&doc), "Sermon: New Title");
+        set_sermon_title(&mut doc, "");
+        assert_eq!(sermon_text(&doc), "Sermon:");
+    }
+
+    #[test]
+    fn a_bulletin_without_a_service_has_no_service_lines() {
+        // J2's honest empty state rests on these returning
+        // nothing, not on near-misses.
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        let sid = service_story_id(&doc).expect("a service story");
+        doc.story_mut(&sid)
+            .expect("story")
+            .paragraphs
+            .retain(|p| !p.text.contains('\t') && !p.text.starts_with("Sermon:"));
+        assert!(service_lines(&doc).is_empty());
+        assert_eq!(sermon_title(&doc), "");
+        assert!(sermon_para(&doc).is_none());
+    }
+
+    #[test]
+    fn starter_sample_needs_no_file_and_no_church() {
+        // J7: the sample is a sample only while nothing has
+        // made it the church's own.
+        assert!(is_starter_sample(false, ""));
+        assert!(is_starter_sample(false, "  "));
+        assert!(!is_starter_sample(true, ""));
+        assert!(!is_starter_sample(false, "Grace Lutheran Church"));
     }
 
     #[test]
@@ -6615,8 +7377,16 @@ mod settings_tests {
         assert!(app.church_name.is_empty());
         assert!(app.profile_address.is_empty());
         assert!(app.profile_service_times.is_empty());
-        let (_, next) = start_status(&app.doc, true);
+        let (_, next) = start_status(&app.doc, true, chrono::Local::now().date_naive(), None);
         assert!(next.contains("church name"), "next: {next}");
+        // And the fresh date is the coming Sunday, never a
+        // weekday the app happened to launch on (J7).
+        let fresh = chrono::NaiveDate::parse_from_str(
+            app.doc.fields.get("sunday_date").expect("a date"),
+            "%Y-%m-%d",
+        )
+        .expect("the fresh date reads");
+        assert_eq!(fresh, sunday_on_or_after(chrono::Local::now().date_naive()));
     }
 
     #[test]

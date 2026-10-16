@@ -32,6 +32,7 @@ pub enum SourceKind {
     Pub,
     Idml,
     Obd,
+    Sla,
 }
 
 /// How a span was recovered. The analyzer trusts these differently.
@@ -229,3 +230,6 @@ mod tests {
         assert!(extract_pdf(b"this is not a pdf", "x.pdf").is_err());
     }
 }
+
+pub mod idml_export;
+pub mod sla;

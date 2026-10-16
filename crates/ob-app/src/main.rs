@@ -42,6 +42,11 @@ pub struct Settings {
     /// Per-action key overrides on top of the preset.
     #[serde(default)]
     pub keymap: std::collections::BTreeMap<String, String>,
+    /// The bulletin file this office last opened or saved,
+    /// so the Start step can offer it back without a hunt
+    /// through the file dialog (UI audit round 2).
+    #[serde(default)]
+    pub last_bulletin: Option<String>,
 }
 
 /// The keys the app answers to, as (action, plain label).
@@ -657,6 +662,8 @@ impl App {
     fn adopt_document(&mut self, doc: Document, clear_history: bool) {
         // Any swap retires a pick the open guard was holding.
         self.pending_path = None;
+        // A start-fresh arm belongs to the old bulletin.
+        self.shape_arm = None;
         if clear_history {
             self.undo_stack.clear();
             self.redo_stack.clear();
@@ -671,6 +678,31 @@ fn snapshot(doc: &Document) -> String {
     serde_json::to_string(doc).unwrap_or_default()
 }
 
+/// One Check-step note. A note that knows which panel and
+/// frame it is about carries them as a target: the Check
+/// step puts a "Fix this" button under it that opens the
+/// Pages window on that panel with that frame selected
+/// (UI audit round 2).
+#[derive(Debug, Clone, PartialEq)]
+struct CheckNote {
+    text: String,
+    /// (panel index, frame index) the note points at.
+    target: Option<(usize, Option<usize>)>,
+}
+
+impl CheckNote {
+    fn plain(text: String) -> Self {
+        CheckNote { text, target: None }
+    }
+
+    fn aimed(text: String, panel: usize, frame: Option<usize>) -> Self {
+        CheckNote {
+            text,
+            target: Some((panel, frame)),
+        }
+    }
+}
+
 /// One story whose words use a character the print file cannot
 /// show (GPT workflow review, adopted item 1). The character
 /// test itself is ob-pdf's own, so this warning and the printed
@@ -682,6 +714,10 @@ struct CharFinding {
     label: String,
     /// The unprintable characters, in the order they appear.
     chars: Vec<char>,
+    /// The first frame holding this story, when it sits in
+    /// one: the Check step's fix button opens the Pages
+    /// window there.
+    target: Option<(usize, Option<usize>)>,
 }
 
 /// Every story in the document that would lose characters to
@@ -709,13 +745,30 @@ fn char_findings(doc: &Document) -> Vec<CharFinding> {
             .find(|t| !t.is_empty())
             .map(|t| t.chars().take(38).collect::<String>())
             .unwrap_or_else(|| "A text block".to_string());
+        let target = frame_target_for_story(doc, &story.id);
         out.push(CharFinding {
             story_id: story.id.clone(),
             label,
             chars,
+            target,
         });
     }
     out
+}
+
+/// The first frame holding a story, as (panel, frame)
+/// indices, when the story sits in a frame at all. Shared
+/// by the character findings and the font findings so a
+/// Check note can point at the box it means.
+fn frame_target_for_story(doc: &Document, story_id: &str) -> Option<(usize, Option<usize>)> {
+    for (pi, panel) in doc.panels.iter().enumerate() {
+        for (fi, frame) in panel.frames.iter().enumerate() {
+            if frame.story_id.as_deref() == Some(story_id) {
+                return Some((pi, Some(fi)));
+            }
+        }
+    }
+    None
 }
 
 /// The Check-step words for one unprintable-character finding.
@@ -805,6 +858,30 @@ fn print_copy_stale(fingerprint: Option<&str>, current: &str) -> bool {
     fingerprint.map(|fp| fp != current).unwrap_or(false)
 }
 
+/// The Start step's first door: the bulletin this office
+/// worked on last, offered back when Settings remember one
+/// and the file is still where it was. A gone file shows
+/// nothing: no dead button, no error (UI audit round 2).
+/// Returns the path and the file's own name.
+pub fn last_bulletin_door(
+    remembered: Option<&str>,
+    file_still_there: bool,
+) -> Option<(std::path::PathBuf, String)> {
+    if !file_still_there {
+        return None;
+    }
+    let raw = remembered?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let path = std::path::PathBuf::from(raw);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())?;
+    Some((path, name))
+}
+
 pub fn load_settings() -> Settings {
     std::fs::read_to_string(settings_path())
         .ok()
@@ -834,6 +911,11 @@ struct FontRow {
 struct App {
     doc: Document,
     preset: Preset,
+    /// The bulletin shape whose start-fresh click is armed:
+    /// picking a shape replaces the whole bulletin, so it
+    /// takes the app's usual two clicks, like every other
+    /// destructive path (UI audit round 2).
+    shape_arm: Option<Preset>,
     church_name: String,
     profile_address: String,
     profile_giving_url: String,
@@ -844,7 +926,7 @@ struct App {
     announcements_dirty: bool,
     step: usize,
     announcements: String,
-    notes: Vec<String>,
+    notes: Vec<CheckNote>,
     status: String,
     /// The last "Save a copy for another program..." result,
     /// shown under that button on the Print step: what was
@@ -1030,6 +1112,7 @@ impl Default for App {
         Self {
             doc,
             preset,
+            shape_arm: None,
             church_name: String::new(),
             profile_address: String::new(),
             profile_giving_url: String::new(),
@@ -1151,7 +1234,15 @@ impl App {
             self.apply_edited_date();
         }
         if self.step == 2 && i != 2 {
+            // Leaving the step writes the announcements on
+            // its own; the old Save button is gone, and the
+            // status says what actually happened instead of
+            // promising a file save (UI audit round 2).
+            let was_dirty = self.announcements_dirty;
             self.save_announcements();
+            if was_dirty {
+                self.note("Announcements are on the page.".into());
+            }
         }
         self.step = i;
         if i == 3 {
@@ -1327,20 +1418,26 @@ impl App {
     }
 
     fn run_checks(&mut self) {
-        let mut notes = Vec::new();
+        let mut notes: Vec<CheckNote> = Vec::new();
         if self.doc.profile.name.trim().is_empty() {
-            notes.push("Check: the church name is blank (Step 1).".to_string());
+            notes.push(CheckNote::plain(
+                "Check: the church name is blank (Step 1).".to_string(),
+            ));
         } else {
-            notes.push("OK: church name is set.".to_string());
+            notes.push(CheckNote::plain("OK: church name is set.".to_string()));
         }
         match self.doc.fields.get("sunday_date_long") {
-            Some(d) if !d.is_empty() => notes.push(format!("OK: bulletin date is {d}.")),
-            _ => notes.push("Check: no Sunday date is set (Step 2).".to_string()),
+            Some(d) if !d.is_empty() => {
+                notes.push(CheckNote::plain(format!("OK: bulletin date is {d}.")))
+            }
+            _ => notes.push(CheckNote::plain(
+                "Check: no Sunday date is set (Step 2).".to_string(),
+            )),
         }
-        notes.push(announcements_check(
+        notes.push(CheckNote::plain(announcements_check(
             self.announcements.trim().is_empty(),
             self.doc.no_announcements,
-        ));
+        )));
         // Real fit check: shape every story into its frame and complain
         // in plain words about any that do not fit. Two passes: first
         // collect the words (borrowing the document), then shape them
@@ -1348,6 +1445,8 @@ impl App {
         // font engine, with a full library scan, per paragraph
         // (closing audit: 1.25 s on the booklet, worse with more fonts).
         type FitWork = (
+            usize,
+            usize,
             String,
             ob_model::Rect,
             String,
@@ -1359,8 +1458,8 @@ impl App {
             )>,
         );
         let mut work: Vec<FitWork> = Vec::new();
-        for panel in &self.doc.panels {
-            for frame in &panel.frames {
+        for (pi, panel) in self.doc.panels.iter().enumerate() {
+            for (fi, frame) in panel.frames.iter().enumerate() {
                 let Some(sid) = &frame.story_id else { continue };
                 let Some(story) = self.doc.story(sid) else {
                     continue;
@@ -1394,11 +1493,11 @@ impl App {
                     .first()
                     .map(|p| p.text.clone())
                     .unwrap_or_else(|| "A text block".into());
-                work.push((panel.name.clone(), frame.rect, first, paras));
+                work.push((pi, fi, panel.name.clone(), frame.rect, first, paras));
             }
         }
-        let mut fit_notes = Vec::new();
-        for (panel_name, rect, first, paras) in &work {
+        let mut fit_notes: Vec<CheckNote> = Vec::new();
+        for (pi, fi, panel_name, rect, first, paras) in &work {
             let mut needed: ob_model::Mpt = 0;
             for (text, spec, font_size, space_after) in paras {
                 let lines = if text.contains('\t') {
@@ -1412,17 +1511,23 @@ impl App {
             }
             if needed > rect.h {
                 let over_lines = ((needed - rect.h) / 14_000).max(1);
-                fit_notes.push(format!(
-                    "Check: the words in \"{}\" ({}) do not all fit. About {} line{} too many. Shorten the words, or we can shrink them in a later version.",
-                    first.chars().take(38).collect::<String>(),
-                    panel_name,
-                    over_lines,
-                    if over_lines == 1 { "" } else { "s" }
+                fit_notes.push(CheckNote::aimed(
+                    format!(
+                        "Check: the words in \"{}\" ({}) do not all fit. About {} line{} too many. Shorten the words, or we can shrink them in a later version.",
+                        first.chars().take(38).collect::<String>(),
+                        panel_name,
+                        over_lines,
+                        if over_lines == 1 { "" } else { "s" }
+                    ),
+                    *pi,
+                    Some(*fi),
                 ));
             }
         }
         if fit_notes.is_empty() {
-            notes.push("OK: everything fits on the page.".to_string());
+            notes.push(CheckNote::plain(
+                "OK: everything fits on the page.".to_string(),
+            ));
         } else {
             notes.extend(fit_notes);
         }
@@ -1451,11 +1556,29 @@ impl App {
                 }
             }
             for fam in missing {
-                notes.push(format!(
+                let text = format!(
                     "Check: this bulletin uses the font \"{fam}\", which is not in \
                      your Font Library, so it will print in a stand-in font. Add \
                      it in the Fonts panel, or pick another font for those styles."
-                ));
+                );
+                // Point at the first box whose words use the
+                // missing font, when one can be named.
+                let target = self
+                    .doc
+                    .styles
+                    .iter()
+                    .filter(|st| st.font_family.trim() == fam)
+                    .find_map(|st| {
+                        self.doc
+                            .stories
+                            .iter()
+                            .filter(|s| s.paragraphs.iter().any(|p| p.style == st.id))
+                            .find_map(|s| frame_target_for_story(&self.doc, &s.id))
+                    });
+                notes.push(match target {
+                    Some((pi, fi)) => CheckNote::aimed(text, pi, fi),
+                    None => CheckNote::plain(text),
+                });
             }
             // Words near a page edge or fold: printers cannot
             // print to the very edge, and folds eat words.
@@ -1469,8 +1592,8 @@ impl App {
             );
             if fold_preset {
                 let edge: ob_model::Mpt = 9_000; // 1/8 inch
-                for panel in &self.doc.panels {
-                    for frame in &panel.frames {
+                for (pi, panel) in self.doc.panels.iter().enumerate() {
+                    for (fi, frame) in panel.frames.iter().enumerate() {
                         if frame.story_id.is_none() {
                             continue;
                         }
@@ -1479,11 +1602,15 @@ impl App {
                         let near_top = frame.rect.y < edge;
                         let near_bottom = panel.size.h - (frame.rect.y + frame.rect.h) < edge;
                         if near_left || near_right || near_top || near_bottom {
-                            notes.push(format!(
-                                "Check: a box on \"{}\" runs close to the page edge \
-                                 or the fold. Printers cannot print right at the \
-                                 edge; give the words a little more room.",
-                                panel.name
+                            notes.push(CheckNote::aimed(
+                                format!(
+                                    "Check: a box on \"{}\" runs close to the page edge \
+                                     or the fold. Printers cannot print right at the \
+                                     edge; give the words a little more room.",
+                                    panel.name
+                                ),
+                                pi,
+                                Some(fi),
                             ));
                             break;
                         }
@@ -1497,11 +1624,13 @@ impl App {
                 .any(|p| p.text.contains("Order of Service"))
         });
         if has_order {
-            notes.push(
+            notes.push(CheckNote::plain(
                 "OK: order of service is present and carries over from last week.".to_string(),
-            );
+            ));
         } else {
-            notes.push("Check: no order of service found.".to_string());
+            notes.push(CheckNote::plain(
+                "Check: no order of service found.".to_string(),
+            ));
         }
         // Characters the print copy cannot show get their own
         // findings (not plain notes) so the Check step can put
@@ -1539,6 +1668,9 @@ impl App {
                         report.ended_announcements
                     ));
                 }
+                // An accidental click lands here too; say
+                // the way back out loud (UI audit round 2).
+                msg.push_str(" Undo brings this week back.");
                 self.note(msg);
             }
             Err(e) => self.fail(format!(
@@ -1594,6 +1726,18 @@ impl App {
         self.journal_snapshot = self.saved_snapshot.clone();
         let (obd, meta) = journal_paths();
         clear_journal_from(&obd, &meta);
+    }
+
+    /// Remember the bulletin file this office just opened or
+    /// saved, so the Start step can offer it back next time
+    /// (UI audit round 2). Best effort: a settings file that
+    /// will not write never blocks the work itself.
+    fn remember_bulletin(&mut self, path: &std::path::Path) {
+        let s = path.to_string_lossy().into_owned();
+        if self.settings.last_bulletin.as_deref() != Some(s.as_str()) {
+            self.settings.last_bulletin = Some(s);
+            let _ = save_settings(&self.settings);
+        }
     }
 
     /// Once per launch: adopt the current document as the saved
@@ -1799,6 +1943,9 @@ impl App {
         if bring_back {
             if let Some((doc, source, _)) = self.recovery.take() {
                 self.adopt_document(doc, true);
+                if let Some(src) = &source {
+                    self.remember_bulletin(src);
+                }
                 self.path = source;
                 // The journal's content is now the screen's content:
                 // the saved state stays the older file (or nothing).
@@ -3127,12 +3274,12 @@ impl App {
                     if let Ok(review) = native_pub_review(&path, &name, profile.clone()) {
                         return Ok(review);
                     }
-                    return Err("Publisher files ride through LibreOffice, a free program, \
-                         and it is not installed on this computer. Two ways forward: \
-                         install LibreOffice from libreoffice.org and try again, or \
-                         open the file in Publisher, choose File, then Save As, and \
-                         save it as a PDF; then open that PDF here with \"Open an old bulletin...\" \
-                         with that PDF."
+                    return Err("That Publisher file could not be read here. Publisher \
+                         files ride through LibreOffice, a free program, and it is not \
+                         installed on this computer. Two ways forward: install \
+                         LibreOffice from libreoffice.org and try again, or open the \
+                         file in Publisher, choose File, then Save As, and save it as \
+                         a PDF; then open that PDF here with \"Open an old bulletin...\"."
                         .into());
                 };
                 let workdir = std::env::temp_dir()
@@ -3206,6 +3353,7 @@ impl App {
             "obd" => match ob_format::load(&path) {
                 Ok(doc) => {
                     self.adopt_document(doc, true);
+                    self.remember_bulletin(&path);
                     self.path = Some(path);
                     self.step = 1;
                     self.note("Bulletin opened.".into());
@@ -3361,7 +3509,12 @@ impl App {
                             choice = Some(false);
                         }
                     }
-                    if ui.button("Use it and arrange the pages").clicked() {
+                    let arrange_label = if dirty && self.import_armed {
+                        "Yes, leave it and arrange the pages"
+                    } else {
+                        "Use it and arrange the pages"
+                    };
+                    if ui.button(arrange_label).clicked() {
                         if dirty && !self.import_armed {
                             self.import_armed = true;
                         } else {
@@ -3608,7 +3761,12 @@ impl App {
                             choice = Some(false);
                         }
                     }
-                    if ui.button("Use it and arrange the pages").clicked() {
+                    let arrange_label = if dirty && self.analyzer_armed {
+                        "Yes, leave it and arrange the pages"
+                    } else {
+                        "Use it and arrange the pages"
+                    };
+                    if ui.button(arrange_label).clicked() {
                         if dirty && !self.analyzer_armed {
                             self.analyzer_armed = true;
                         } else {
@@ -3629,6 +3787,24 @@ impl App {
             self.analyzer_armed = false;
             self.note("Template cancelled; nothing changed.".into());
         }
+    }
+
+    /// Open the Pages window on a named panel with a named
+    /// frame selected: where the Check step's "Fix this"
+    /// buttons land the user (UI audit round 2). Indices
+    /// are clamped to the document as it stands now.
+    fn open_pages_at(&mut self, panel: usize, frame: Option<usize>) {
+        self.commit_if_editing();
+        if self.doc.panels.is_empty() {
+            self.show_pages = true;
+            return;
+        }
+        self.canvas_panel = panel.min(self.doc.panels.len() - 1);
+        self.selected_frame =
+            frame.filter(|fi| *fi < self.doc.panels[self.canvas_panel].frames.len());
+        self.guide_menu_for = None;
+        self.frame_menu_for = None;
+        self.show_pages = true;
     }
 
     /// Move the Pages window by delta pages, with the same
@@ -3760,6 +3936,7 @@ impl App {
                             }
                         }
                     }
+                    self.remember_bulletin(&path);
                     self.path = Some(path);
                     self.mark_clean();
                 }
@@ -3843,7 +4020,7 @@ impl App {
         let mut open = self.show_keys;
         let eff = effective_keymap(&self.settings);
         let status = keymap_status(&self.settings);
-        egui::Window::new("Keys")
+        egui::Window::new("Keyboard shortcuts")
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -3923,9 +4100,14 @@ impl App {
         let mut open = self.show_fonts;
         egui::Window::new("Fonts")
             .open(&mut open)
+            .collapsible(false)
             .resizable(true)
             .default_width(520.0)
             .show(ctx, |ui| {
+              egui::ScrollArea::vertical()
+                .id_salt("fonts-scroll")
+                .max_height(600.0)
+                .show(ui, |ui| {
                 ui.label("These are the fonts this app may use.");
                 ui.label("Bulletins are laid out only with fonts from this library, so they look the same on every computer.");
                 ui.add_space(6.0);
@@ -3955,7 +4137,7 @@ impl App {
                     });
                 ui.add_space(4.0);
                 ui.separator();
-                ui.label(egui::RichText::new("Put a font to work").strong());
+                ui.label(egui::RichText::new("Which font each kind of text uses").strong());
                 ui.label("Installing a font only makes it available. Pick one here to use it in this bulletin:");
                 {
                     let mut families: Vec<String> = vec![
@@ -4264,6 +4446,7 @@ impl App {
                         }
                     }
                 }
+                });
             });
         self.show_fonts = open;
     }
@@ -4350,6 +4533,10 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("OpenBulletin");
+                // The bar is grouped the way an office worker's
+                // hands expect (UI audit round 2): the file
+                // family together, then undo and redo, then the
+                // windows. Same buttons, same words.
                 if ui.button("New bulletin").clicked() {
                     self.goto_step(0);
                     self.note(
@@ -4358,14 +4545,16 @@ impl eframe::App for App {
                             .into(),
                     );
                 }
-                if ui.button("Pages").clicked() {
-                    self.show_pages = true;
+                let open_label = if self.pending_open == Some(PendingOpen::Plain) {
+                    "Leave unsaved work and open?"
+                } else {
+                    "Open bulletin..."
+                };
+                if ui.button(open_label).clicked() {
+                    self.open_flow();
                 }
-                if ui.button("Fonts").clicked() {
-                    self.show_fonts = true;
-                }
-                if ui.button("Keys").clicked() {
-                    self.show_keys = true;
+                if ui.button("Save bulletin").clicked() {
+                    self.save_flow();
                 }
                 ui.separator();
                 if ui
@@ -4386,16 +4575,15 @@ impl eframe::App for App {
                 {
                     self.redo();
                 }
-                let open_label = if self.pending_open == Some(PendingOpen::Plain) {
-                    "Leave unsaved work and open?"
-                } else {
-                    "Open bulletin..."
-                };
-                if ui.button(open_label).clicked() {
-                    self.open_flow();
+                ui.separator();
+                if ui.button("Pages").clicked() {
+                    self.show_pages = true;
                 }
-                if ui.button("Save bulletin").clicked() {
-                    self.save_flow();
+                if ui.button("Fonts").clicked() {
+                    self.show_fonts = true;
+                }
+                if ui.button("Shortcuts").clicked() {
+                    self.show_keys = true;
                 }
                 ui.separator();
                 ui.label(format!("Step {} of 5: {}", self.step + 1, STEPS[self.step]));
@@ -4425,13 +4613,12 @@ impl eframe::App for App {
             .default_width(if self.step == 4 { 560.0 } else { 300.0 })
             .show(ctx, |ui| {
                 for (i, name) in STEPS.iter().enumerate() {
-                    let marker = if i == self.step {
-                        ">"
-                    } else if i < self.step {
-                        "done -"
-                    } else {
-                        ""
-                    };
+                    // Only the current step is marked. Steps
+                    // above it used to claim "done" for work
+                    // that was only walked past; the claim is
+                    // gone until a marker can be earned from
+                    // the document itself (UI audit round 2).
+                    let marker = if i == self.step { ">" } else { "" };
                     if ui
                         .selectable_label(
                             i == self.step,
@@ -4455,11 +4642,51 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         match self.step {
                     0 => {
+                        // While a review window waits for its
+                        // answer, the doors stay shut: a second
+                        // pick would replace the review nobody
+                        // answered (UI audit round 2).
+                        let doors_enabled =
+                            self.import_review.is_none() && self.analyzer_review.is_none();
                         let (headline, next_line) =
                             start_status(&self.doc, self.announcements.trim().is_empty());
                         ui.label(egui::RichText::new(headline).strong());
                         ui.label(next_line);
                         ui.separator();
+                        // The first door: the bulletin this
+                        // office worked on last, offered back
+                        // when it is still on disk. It opens
+                        // through the same guard as every
+                        // other door (UI audit round 2).
+                        let remembered = self.settings.last_bulletin.clone();
+                        let still_there = remembered
+                            .as_deref()
+                            .map(|s| std::path::Path::new(s).exists())
+                            .unwrap_or(false);
+                        if let Some((last_path, last_name)) =
+                            last_bulletin_door(remembered.as_deref(), still_there)
+                        {
+                            ui.heading("Pick up where you left off");
+                            ui.label(format!(
+                                "The bulletin this office worked on last: {last_name}."
+                            ));
+                            let last_label = if self.pending_path.is_some() {
+                                "Leave unsaved work and open it?"
+                            } else {
+                                "Open it"
+                            };
+                            if ui
+                                .add_enabled(doors_enabled, egui::Button::new(last_label))
+                                .clicked()
+                            {
+                                if let Some(path) = self.pending_path.take() {
+                                    self.open_old_bulletin(path);
+                                } else {
+                                    self.open_old_bulletin(last_path);
+                                }
+                            }
+                            ui.separator();
+                        }
                         ui.heading("Start from last week");
                         ui.label("The usual week: open last Sunday's bulletin and we move it to this Sunday. Last week's announcements clear; everything standing stays.");
                         let last_week_label =
@@ -4468,7 +4695,9 @@ impl eframe::App for App {
                             } else {
                                 "Use last week's bulletin..."
                             };
-                        if ui.button(last_week_label).clicked()
+                        if ui
+                            .add_enabled(doors_enabled, egui::Button::new(last_week_label))
+                            .clicked()
                             && self.open_guard(PendingOpen::LastWeek)
                         {
                             if let Some(path) = rfd::FileDialog::new()
@@ -4478,6 +4707,7 @@ impl eframe::App for App {
                                 match ob_format::load(&path) {
                                     Ok(doc) => {
                                         self.adopt_document(doc, true);
+                                        self.remember_bulletin(&path);
                                         self.path = Some(path);
                                         self.mark_clean();
                                         self.next_sunday();
@@ -4492,14 +4722,20 @@ impl eframe::App for App {
                         ui.heading("Bring in an old bulletin");
                         ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, an InDesign file (IDML), or a Scribus file. One button for all of them; the app works out which kind it is, and the words come over as a draft you can edit. Publisher files ride in through LibreOffice (a free program) when it is installed, and through OpenBulletin's own reader when it is not; for InDesign, export the file there as IDML first.");
                         if self.import_rx.is_some() {
-                            ui.label("Reading your old bulletin...");
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Reading your old bulletin. Big files can take a minute. Your work on screen is safe while you wait.");
+                            });
                         } else {
                             let door_label = if self.pending_path.is_some() {
                                 "Leave unsaved work and open?"
                             } else {
                                 "Open an old bulletin..."
                             };
-                            if ui.button(door_label).clicked() {
+                            if ui
+                                .add_enabled(doors_enabled, egui::Button::new(door_label))
+                                .clicked()
+                            {
                                 if let Some(path) = self.pending_path.take() {
                                     self.open_old_bulletin(path);
                                 } else if let Some(path) = rfd::FileDialog::new()
@@ -4519,7 +4755,13 @@ impl eframe::App for App {
                         ui.label("Or give us old bulletins in any mix (PDFs, Publisher files, InDesign (IDML) files, Scribus files, or OpenBulletin files) and we will learn what stays the same every week and what changes, and suggest a template from them. Learning needs at least three bulletins that count: the other kinds count one-for-one, and PDFs count only in a group of three or more, because one or two PDFs alone cannot show what repeats.");
                         if self.analyzer_rx.is_some() {
                             ui.label("Studying your old bulletins...");
-                        } else if ui.button("Pick old bulletins (3 or more)...").clicked() {
+                        } else if ui
+                            .add_enabled(
+                                doors_enabled,
+                                egui::Button::new("Pick old bulletins (3 or more)..."),
+                            )
+                            .clicked()
+                        {
                             if let Some(files) = rfd::FileDialog::new()
                                 .add_filter(
                                     "Old bulletins",
@@ -4542,14 +4784,34 @@ impl eframe::App for App {
                             }
                         }
                         ui.separator();
-                        ui.heading("Or start fresh: bulletin shape");
+                        ui.heading("Start a new bulletin");
+                        ui.label("Pick a shape and the bulletin starts over with it. Picking takes two clicks, because it replaces the bulletin on screen (which stays undoable).");
                         for p in Preset::all() {
-                            if ui.selectable_label(self.preset == p, p.label()).clicked() {
-                                self.preset = p;
-                                self.rebuild();
+                            let armed = self.shape_arm == Some(p);
+                            let label = if armed {
+                                "Click again to start fresh with this shape".to_string()
+                            } else if self.preset == p {
+                                format!("{} (the shape you have)", p.label())
+                            } else {
+                                p.label().to_string()
+                            };
+                            if ui.button(label).clicked() {
+                                if armed {
+                                    self.shape_arm = None;
+                                    self.preset = p;
+                                    self.rebuild();
+                                } else {
+                                    self.shape_arm = Some(p);
+                                    self.note(
+                                        "Click again to start fresh with this shape. \
+                                         What you have open stays undoable."
+                                            .into(),
+                                    );
+                                }
                             }
                         }
                         ui.separator();
+                        ui.heading("Your church (prints on the cover)");
                         ui.label("Church name");
                         let resp_church_name = ui.add(
                             egui::TextEdit::singleline(&mut self.church_name)
@@ -4636,12 +4898,12 @@ impl eframe::App for App {
                             if ui.button("Set date").clicked() {
                                 self.apply_date();
                             }
-                            if ui.button("This Sunday").clicked() {
+                            if ui.button("Use this Sunday's date").clicked() {
                                 let d = sunday_on_or_after(chrono::Local::now().date_naive());
                                 self.date_input = d.format("%Y-%m-%d").to_string();
                                 self.apply_date();
                             }
-                            if ui.button("Next Sunday").clicked() {
+                            if ui.button("Use next Sunday's date").clicked() {
                                 let d = sunday_on_or_after(chrono::Local::now().date_naive())
                                     + chrono::Duration::days(7);
                                 self.date_input = d.format("%Y-%m-%d").to_string();
@@ -4671,7 +4933,7 @@ impl eframe::App for App {
                         }
                         ui.small("The cover and the order of service fill themselves from these.");
                         ui.separator();
-                        if ui.button("Make next week's bulletin from this one").clicked() {
+                        if ui.button("Start next Sunday").clicked() {
                             self.next_sunday();
                         }
                     }
@@ -4688,10 +4950,6 @@ impl eframe::App for App {
                         );
                         if ann_resp.changed() {
                             self.announcements_dirty = true;
-                        }
-                        if ui.button("Save announcements").clicked() {
-                            self.save_announcements();
-                            self.status = "Announcements saved.".into();
                         }
                         ui.separator();
                         let mut none_marked = self.doc.no_announcements;
@@ -4715,9 +4973,27 @@ impl eframe::App for App {
                         ui.small("Leave the date blank for this Sunday only. With a date (year-month-day, like 2026-11-08), these announcements stay in the bulletin through that Sunday when you start next week's.");
                     }
                     3 => {
-                        ui.heading("Before you print");
-                        for n in &self.notes {
-                            ui.label(n);
+                        ui.heading("Check");
+                        // Problems read as problems: "Check:"
+                        // lines in the problem red, "OK:" lines
+                        // plain, and a note that knows its box
+                        // gets a button that lands on it
+                        // (UI audit round 2).
+                        let notes = self.notes.clone();
+                        for n in &notes {
+                            if n.text.starts_with("Check:") {
+                                ui.label(
+                                    egui::RichText::new(&n.text)
+                                        .color(egui::Color32::from_rgb(170, 40, 30)),
+                                );
+                            } else {
+                                ui.label(&n.text);
+                            }
+                            if let Some((pi, fi)) = n.target {
+                                if ui.button("Fix this").clicked() {
+                                    self.open_pages_at(pi, fi);
+                                }
+                            }
                         }
                         let findings = self.char_findings.clone();
                         for f in &findings {
@@ -4731,6 +5007,10 @@ impl eframe::App for App {
                                 if ui.button("Fix the announcements").clicked() {
                                     self.goto_step(2);
                                 }
+                            } else if let Some((pi, fi)) = f.target {
+                                if ui.button("Fix this in the Pages window").clicked() {
+                                    self.open_pages_at(pi, fi);
+                                }
                             } else if ui.button("Fix it in the Pages window").clicked() {
                                 self.show_pages = true;
                             }
@@ -4739,18 +5019,7 @@ impl eframe::App for App {
                             self.save_announcements();
                             self.run_checks();
                         }
-                        ui.horizontal(|ui| {
-                            if ui.button("Fix the date or readings").clicked() {
-                                self.goto_step(1);
-                            }
-                            if ui.button("Fix the words").clicked() {
-                                self.goto_step(2);
-                            }
-                            if ui.button("Open the Pages window").clicked() {
-                                self.show_pages = true;
-                            }
-                        });
-                        ui.small("Too much text in a box? Open the Pages window and make the box bigger, or shorten the words.");
+                        ui.small("Too much text in a box? Use a finding's Fix this button to land on the box, then make the box bigger or shorten the words.");
                     }
                     _ => {
                         ui.heading("Print");
@@ -4778,8 +5047,11 @@ impl eframe::App for App {
                                     .color(egui::Color32::from_rgb(170, 40, 30)),
                             );
                         }
-                        ui.small("Open makes a one-time copy to print right now. The Save buttons below keep files you can reuse.");
-                        if ui.button("Open the print copy").clicked() {
+                        ui.small("Open makes a one-time copy to print right now. The buttons under \"Keep a copy as a file\" keep files you can reuse.");
+                        // Bold means the step's one primary action
+                        // (UI audit round 2): here, that is opening
+                        // the print copy. Everything else is plain.
+                        if ui.button(egui::RichText::new("Open the print copy").strong()).clicked() {
                             self.commit_if_editing();
                             self.pin_fonts();
                             let bytes = ob_pdf::export_imposed_pdf(&self.doc);
@@ -4796,8 +5068,9 @@ impl eframe::App for App {
                             }
                         }
                         ui.separator();
+                        ui.label(egui::RichText::new("Keep a copy as a file").strong());
                         ui.label("Print copy: folded sheets, in the right order, ready for the copier.");
-                        if ui.button(egui::RichText::new("Save print copy (PDF)").strong()).clicked() {
+                        if ui.button("Save print copy (PDF)").clicked() {
                             self.commit_if_editing();
                             self.save_announcements();
                             if let Some(path) = rfd::FileDialog::new()
@@ -4912,7 +5185,11 @@ impl eframe::App for App {
                             }
                         });
                         ui.separator();
-                        if ui.button(egui::RichText::new("Start next Sunday").strong()).clicked() {
+                        // Plain, not strong: this step's one
+                        // primary is the print copy above, and the
+                        // top bar already carries the Next
+                        // affordance (UI audit round 2).
+                        if ui.button("Start next Sunday").clicked() {
                             self.next_sunday();
                         }
                     }
@@ -4930,7 +5207,15 @@ impl eframe::App for App {
                 }
             });
 
+        let pages_were_open = self.show_pages;
         self.pages_window(ctx);
+        if pages_were_open && !self.show_pages && self.step == 3 {
+            // A fix made on the canvas can clear a finding:
+            // never leave the Check step showing a solved
+            // problem as if it were still true (UI audit
+            // round 2).
+            self.run_checks();
+        }
         self.fonts_window(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label(egui::RichText::new("Preview: what the congregation will hold").strong());
@@ -5567,7 +5852,9 @@ mod settings_tests {
         app.doc.styles[0].font_family = "NoSuchFont Display".into();
         app.run_checks();
         assert!(
-            app.notes.iter().any(|n| n.contains("NoSuchFont Display")),
+            app.notes
+                .iter()
+                .any(|n| n.text.contains("NoSuchFont Display")),
             "missing font is named: {:?}",
             app.notes
         );
@@ -5578,7 +5865,7 @@ mod settings_tests {
         assert!(
             app2.notes
                 .iter()
-                .any(|n| n.contains("close to the page edge")),
+                .any(|n| n.text.contains("close to the page edge")),
             "edge box is named: {:?}",
             app2.notes
         );
@@ -5588,11 +5875,68 @@ mod settings_tests {
         assert!(!app3
             .notes
             .iter()
-            .any(|n| n.contains("close to the page edge")));
+            .any(|n| n.text.contains("close to the page edge")));
         assert!(!app3
             .notes
             .iter()
-            .any(|n| n.contains("not in") && n.contains("font")));
+            .any(|n| n.text.contains("not in") && n.text.contains("font")));
+    }
+
+    #[test]
+    fn last_bulletin_door_needs_a_remembered_file_that_is_still_there() {
+        // Nothing remembered: no door.
+        assert!(last_bulletin_door(None, true).is_none());
+        assert!(last_bulletin_door(Some("  "), true).is_none());
+        // Remembered but gone from disk: no door, no error.
+        assert!(last_bulletin_door(Some("/office/week.obd"), false).is_none());
+        // Remembered and still there: the door, named by the
+        // file's own name.
+        let (path, name) =
+            last_bulletin_door(Some("/office/bulletins/week.obd"), true).expect("door");
+        assert_eq!(path, std::path::PathBuf::from("/office/bulletins/week.obd"));
+        assert_eq!(name, "week.obd");
+    }
+
+    #[test]
+    fn settings_carry_the_last_bulletin_and_old_files_load_without_it() {
+        // Settings written before the field existed load
+        // with no remembered bulletin.
+        let old: Settings = serde_json::from_str("{}").expect("old settings load");
+        assert_eq!(old.last_bulletin, None);
+        // And the field round-trips.
+        let st = Settings {
+            last_bulletin: Some("/office/week.obd".into()),
+            ..Settings::default()
+        };
+        let text = serde_json::to_string(&st).expect("serialize");
+        let back: Settings = serde_json::from_str(&text).expect("reload");
+        assert_eq!(back.last_bulletin.as_deref(), Some("/office/week.obd"));
+    }
+
+    #[test]
+    fn check_notes_point_at_the_box_they_mean() {
+        // The frame lookup finds a story's first frame.
+        let app = App::default();
+        let story_id = app.doc.panels[0].frames[0]
+            .story_id
+            .clone()
+            .expect("template frame has a story");
+        assert_eq!(
+            frame_target_for_story(&app.doc, &story_id),
+            Some((0, Some(0)))
+        );
+        assert_eq!(frame_target_for_story(&app.doc, "no-such-story"), None);
+        // An edge finding carries its box as a target, so
+        // its Fix this button can land there.
+        let mut app2 = App::default();
+        app2.doc.panels[0].frames[0].rect.x = 0;
+        app2.run_checks();
+        let edge = app2
+            .notes
+            .iter()
+            .find(|n| n.text.contains("close to the page edge"))
+            .expect("edge note");
+        assert_eq!(edge.target, Some((0, Some(0))));
     }
 
     #[test]

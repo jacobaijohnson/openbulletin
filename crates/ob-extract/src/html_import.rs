@@ -1119,10 +1119,19 @@ fn scan_tag_name(bytes: &[u8], from: usize) -> (String, usize) {
 /// followed: the page's nesting went unmeasured, the
 /// budget passed it, and the parser took minutes
 /// over what the budget exists to refuse in a blink.
-/// Fail-safe: a quoted value still open at the next
-/// '>' closes there for counting purposes, so the
-/// tag is treated as ending and the page past it is
-/// still measured.
+/// A quote that legitimately opens a value is then
+/// honored until its matching quote (round 4,
+/// R4-10): a '>' inside the value is value text, as
+/// the parser also reads it, so tag-shaped strings
+/// inside an attribute stay attribute text instead
+/// of counting as nesting. An earlier fail-safe
+/// closed the value at the first '>' inside it, and
+/// the budget refused one honest page shape for it.
+/// A value that never closes consumes the rest of
+/// the page, which is what the parser makes of it
+/// too: the scan returns None, the caller stops
+/// measuring there, and the post-parse tree check
+/// stands behind the count either way.
 fn scan_tag_end(bytes: &[u8], from: usize) -> Option<usize> {
     #[derive(Clone, Copy, PartialEq)]
     enum Scan {
@@ -1146,8 +1155,6 @@ fn scan_tag_end(bytes: &[u8], from: usize) -> Option<usize> {
             Scan::Quoted(q) => {
                 if b == q {
                     state = Scan::Tag;
-                } else if b == b'>' {
-                    return Some(j + 1);
                 }
             }
             Scan::Tag => match b {
@@ -2006,6 +2013,53 @@ mod tests {
         assert!(all_paragraphs(&out.doc)
             .iter()
             .any(|p| p.text().contains("Words beside a stray quote")));
+    }
+
+    #[test]
+    fn tag_shaped_text_inside_a_quoted_value_is_attribute_text() {
+        // Round 4, R4-10 / RT-3: six hundred tag-shaped
+        // strings inside ONE quoted attribute value.
+        // The parser reads them as attribute text, one
+        // shallow div; the scan's old fail-safe closed
+        // the value at the first '>' inside it, counted
+        // the strings as nesting, and the budget refused
+        // an honest page. The quote is honored to its
+        // match now, so the page imports and its words
+        // land.
+        let mut page = String::from("<html><body><div data-note='");
+        for _ in 0..600 {
+            page.push_str("<div>");
+        }
+        page.push_str("'>Real words here for the bulletin.</div></body></html>");
+        pre_parse_budget(page.as_bytes()).expect("attribute text passes the budget");
+        let out = document_from_html(page.as_bytes(), "attr.html", ChurchProfile::default())
+            .expect("the page imports");
+        assert!(all_paragraphs(&out.doc)
+            .iter()
+            .any(|p| p.text().contains("Real words here for the bulletin.")));
+    }
+
+    #[test]
+    fn a_quoted_value_that_never_closes_consumes_the_rest() {
+        // Round 4, R4-10: a quote that legitimately
+        // opens a value and never closes makes the rest
+        // of the page that value, for the scan and for
+        // the parser alike. The budget has nothing more
+        // to measure and passes the page; the parser
+        // drops the unfinished tag, so the words before
+        // it are what import and the words inside the
+        // value stay out.
+        let page = "<html><body><p>Words before the tag.</p>\
+            <div title=\"this value never closes <div><div><div>lost words";
+        pre_parse_budget(page.as_bytes()).expect("the budget measures what it can");
+        let out = document_from_html(page.as_bytes(), "open.html", ChurchProfile::default())
+            .expect("the page still imports");
+        assert!(all_paragraphs(&out.doc)
+            .iter()
+            .any(|p| p.text().contains("Words before the tag.")));
+        assert!(!all_paragraphs(&out.doc)
+            .iter()
+            .any(|p| p.text().contains("lost words")));
     }
 
     #[test]

@@ -343,26 +343,40 @@ fn story_paragraphs(story_xml: &str) -> Result<Vec<ParaText>, String> {
     Ok(out)
 }
 
-/// Back a cut text off to just before a CDATA section
-/// it ends inside (round 3, RT3-C). Inside CDATA
-/// nothing is markup, so the closing tags the cut
-/// rescue appends would be swallowed as section text:
-/// the story then parses to nothing at all and even
-/// paragraphs finished long before the section are
-/// lost. Closed sections earlier in the text are left
-/// alone; only a section the text ends inside costs
-/// its opening, and everything before it stands.
+/// Back a cut text off to just before a construct it
+/// ends inside (round 3, RT3-C; round 4, R4-11).
+/// Two constructs can swallow the closing tags the
+/// cut rescue appends as their own text: a CDATA
+/// section and an XML comment. Inside either, nothing
+/// is markup, so a story ending inside one parses to
+/// nothing at all and even paragraphs finished long
+/// before it are lost. Whichever construct opens
+/// first owns the text until it closes: a "<![CDATA["
+/// sitting inside a comment is comment text, not a
+/// section opener (a story that mentioned one in a
+/// comment used to lose everything from the comment
+/// onward), and a "-->" inside a section is section
+/// text, not a comment's end. Closed constructs
+/// earlier in the text are left alone; only one the
+/// text ends inside costs its opening, and everything
+/// before it stands.
 fn cdata_backoff(text: &str) -> &str {
     let mut from = 0;
     loop {
-        let Some(open) = text[from..].find("<![CDATA[").map(|o| from + o) else {
-            return text;
+        let comment = text[from..].find("<!--").map(|o| from + o);
+        let section = text[from..].find("<![CDATA[").map(|o| from + o);
+        let (open, opener, closer) = match (comment, section) {
+            (None, None) => return text,
+            (Some(c), None) => (c, "<!--", "-->"),
+            (None, Some(s)) => (s, "<![CDATA[", "]]>"),
+            (Some(c), Some(s)) if c < s => (c, "<!--", "-->"),
+            (Some(_), Some(s)) => (s, "<![CDATA[", "]]>"),
         };
-        let body = open + "<![CDATA[".len();
-        let Some(close) = text[body..].find("]]>").map(|c| body + c) else {
+        let body = open + opener.len();
+        let Some(close) = text[body..].find(closer).map(|c| body + c) else {
             return &text[..open];
         };
-        from = close + "]]>".len();
+        from = close + closer.len();
     }
 }
 
@@ -377,9 +391,9 @@ fn cdata_backoff(text: &str) -> &str {
 /// note already says the words past the point are
 /// gone; this is how the words before it survive.
 /// The cut is first backed out of any CDATA section
-/// it landed inside (cdata_backoff): the closing tags
-/// appended here would otherwise land inside the
-/// section and count for nothing.
+/// or comment it landed inside (cdata_backoff): the
+/// closing tags appended here would otherwise land
+/// inside the construct and count for nothing.
 fn close_off_cut(text: &str) -> String {
     let text = cdata_backoff(text);
     let Some(at) = text.rfind('>') else {
@@ -1025,6 +1039,97 @@ mod tests {
             1,
             "the loss is counted: {:?}",
             dump.loss_notes
+        );
+    }
+
+    #[test]
+    fn cdata_backoff_tracks_comments_and_sections_by_who_opened_first() {
+        // Round 4, R4-11, at the scan itself: an opener
+        // inside the other construct is that construct's
+        // text, never an opener of its own.
+        // A section opener mentioned inside a closed
+        // comment: the text stands whole.
+        let t = "<Story><!-- mentions <![CDATA[ here --><P>words</P></Story>";
+        assert_eq!(cdata_backoff(t), t);
+        // A comment opener and a comment's end inside a
+        // closed section: section text; the text stands
+        // whole.
+        let t = "<Story><![CDATA[ <!-- not a comment --> ]]><P>words</P></Story>";
+        assert_eq!(cdata_backoff(t), t);
+        // A real section the text ends inside still
+        // backs off to its opener, comment before it or
+        // not.
+        let t = "<Story><!-- ok --><P>words</P><![CDATA[ never closed";
+        assert_eq!(cdata_backoff(t), "<Story><!-- ok --><P>words</P>");
+        // A comment the text ends inside backs off the
+        // same way, so the rescue's closing tags are not
+        // swallowed as comment text.
+        let t = "<Story><P>words</P><!-- never closed > more";
+        assert_eq!(cdata_backoff(t), "<Story><P>words</P>");
+        // A section opener inside an UNCLOSED comment
+        // is still comment text: the back-off lands at
+        // the comment, not at the marker inside it.
+        let t = "<Story><P>words</P><!-- mentions <![CDATA[ and never ends";
+        assert_eq!(cdata_backoff(t), "<Story><P>words</P>");
+    }
+
+    #[test]
+    fn idml_a_cdata_opener_inside_a_comment_costs_nothing() {
+        // Round 4, R4-11 / RT-4: the red team's shape.
+        // A comment before the cut mentions a CDATA
+        // opener as text and closes without any "]]>"
+        // anywhere after it. The old backoff took the
+        // mention for a real section that never closes
+        // and dropped everything from the comment
+        // onward, while the note still called it a tail
+        // trim. The scan tracks comments now: the
+        // comment owns its text, the paragraphs after
+        // it are rescued, and the note keeps the
+        // tail-trim words they earn.
+        let range = |inner: &str| {
+            format!(
+                "<ParagraphStyleRange AppliedParagraphStyle=\"ParagraphStyle/Body\">\
+                 <CharacterStyleRange FontStyle=\"Regular\">{inner}\
+                 </CharacterStyleRange></ParagraphStyleRange>"
+            )
+        };
+        let mut story = String::from("<?xml version=\"1.0\"?><Story>");
+        story.push_str(&range("<Content>Words before the comment</Content>"));
+        story.push_str("<!-- printer note: the <![CDATA[ marker stays text -->");
+        story.push_str(&range("<Content>Words after the comment</Content>"));
+        // One long trailing paragraph pushes the story
+        // past the cap, so the cut lands well after the
+        // comment.
+        let mut filler = String::from("<Content>");
+        filler.push_str(&"x".repeat(33 * 1024 * 1024));
+        filler.push_str("</Content>");
+        story.push_str(&range(&filler));
+        story.push_str("</Story>");
+        assert!(story.len() > 33 * 1024 * 1024, "the story passes the cap");
+        let dump = dump_from_idml(&idml_with_story(&story), "trap.idml").expect("dump");
+        assert!(
+            dump.spans
+                .iter()
+                .any(|s| s.text.contains("Words before the comment")),
+            "the paragraph before the comment is rescued"
+        );
+        assert!(
+            dump.spans
+                .iter()
+                .any(|s| s.text.contains("Words after the comment")),
+            "the paragraph after the comment is rescued"
+        );
+        assert_eq!(
+            dump.loss_notes.len(),
+            1,
+            "the loss is counted once: {:?}",
+            dump.loss_notes
+        );
+        assert!(
+            dump.loss_notes[0].contains("Story_u9")
+                && dump.loss_notes[0].contains("words past a point"),
+            "a rescued part keeps the tail-trim words: {}",
+            dump.loss_notes[0]
         );
     }
 

@@ -16,7 +16,7 @@
 
 use ob_model::{Asset, AssetKind, Document, Insert, RightsRecord};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -34,6 +34,20 @@ const ZIP_MAGIC: [u8; 4] = [b'P', b'K', 0x03, 0x04];
 /// The words for a container whose actual insides pass
 /// the total cap, whichever container it is.
 const TOTAL_TOO_LARGE: &str = "That file's insides are too large to read safely.";
+
+/// The most entries one container may hold (round 4,
+/// RT-2). The byte caps count what the entries weigh;
+/// this counts how many of them there are. A file of
+/// 100,001 tiny assets sat under every byte cap and
+/// still took minutes to open. A real bulletin or
+/// sheet holds a handful of parts; 8,192 is far past
+/// generous, and the count is read from the archive's
+/// entry list before any payload is read.
+const MAX_ENTRIES: usize = 8_192;
+
+/// The words for a container holding more parts than
+/// the entry cap.
+const TOO_MANY_PARTS: &str = "That file has too many parts inside to read safely.";
 
 /// Read one zip entry's bytes through a cap, counting
 /// ACTUAL bytes as they arrive (round 3, RT3-B). The
@@ -169,6 +183,11 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip =
         zip::ZipArchive::new(file).map_err(|e| format!("that file's container is damaged: {e}"))?;
+    // The entry cap counts the archive's parts before
+    // any payload is read (round 4, RT-2).
+    if zip.len() > MAX_ENTRIES {
+        return Err(TOO_MANY_PARTS.to_string());
+    }
     // The total cap counts actual bytes as each entry is
     // read (round 3, RT3-B): the directory's declared
     // sizes are never summed, because a directory can
@@ -188,6 +207,11 @@ fn load_v1(path: &Path) -> Result<Document, String> {
         serde_json::from_str(&text).map_err(|e| e.to_string())?
     };
     check_version(&doc)?;
+    // The hashes the document already holds a record
+    // for, kept as a set (round 4, RT-2): asking the
+    // growing list once per asset made opening cost
+    // rise with the square of the asset count.
+    let mut recorded: HashSet<String> = doc.assets.iter().map(|a| a.sha256.clone()).collect();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().to_string();
@@ -204,7 +228,7 @@ fn load_v1(path: &Path) -> Result<Document, String> {
                  so the file was not opened; it may be damaged."
             ));
         }
-        if !doc.assets.iter().any(|a| a.sha256 == hash) {
+        if recorded.insert(hash.clone()) {
             // Bytes whose metadata row is missing still
             // belong to the bulletin; give them an honest
             // record rather than dropping them.
@@ -303,6 +327,11 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip =
         zip::ZipArchive::new(file).map_err(|e| format!("that file's container is damaged: {e}"))?;
+    // The entry cap counts the archive's parts before
+    // any payload is read (round 4, RT-2).
+    if zip.len() > MAX_ENTRIES {
+        return Err(TOO_MANY_PARTS.to_string());
+    }
     // Actual bytes, counted as they are read — the same
     // discipline as the bulletin loader (round 3, RT3-B).
     let mut total: u64 = 0;
@@ -340,8 +369,13 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     // Bytes whose record did not travel still belong to
     // the sheet; give them an honest record rather than
     // dropping them, the same rule as a bulletin file.
+    // The membership question is asked of a set, not by
+    // scanning the records once per picture (round 4,
+    // RT-2: the same squared cost the bulletin loader
+    // had).
+    let mut recorded: HashSet<String> = package.assets.iter().map(|a| a.sha256.clone()).collect();
     for hash in bytes_by_hash.keys() {
-        if !package.assets.iter().any(|a| &a.sha256 == hash) {
+        if recorded.insert(hash.clone()) {
             package.assets.push(Asset {
                 sha256: hash.clone(),
                 kind: AssetKind::Other,
@@ -1168,6 +1202,172 @@ mod tests {
         std::fs::write(&lying_path, &bytes).expect("write lying copy");
         let err = load_insert(&lying_path).expect_err("the lie no longer opens it");
         assert_eq!(err, TOTAL_TOO_LARGE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A zip holding one JSON entry under `json_name`
+    /// plus `fillers` one-byte stored entries behind
+    /// it: the shape the entry cap counts (round 4,
+    /// RT-2). Nothing in it is large; only numerous.
+    fn zip_with_fillers(json_name: &str, json: &str, fillers: usize) -> Vec<u8> {
+        let stored = || {
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+        };
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            zip.start_file(json_name, stored()).expect("json entry");
+            zip.write_all(json.as_bytes()).expect("json bytes");
+            for i in 0..fillers {
+                zip.start_file(format!("filler/{i}"), stored())
+                    .expect("filler entry");
+                zip.write_all(b"x").expect("filler bytes");
+            }
+            zip.finish().expect("finish");
+        }
+        buf
+    }
+
+    #[test]
+    fn a_bulletin_with_too_many_parts_is_refused_before_any_is_read() {
+        // Round 4, RT-2: a file of 100,001 tiny assets
+        // sat under every byte cap and still took
+        // minutes to open, because nothing counted its
+        // parts. The count now comes from the archive's
+        // entry list, before any payload is read: one
+        // part past the cap refuses the whole file, and
+        // a file AT the cap still opens.
+        let json = serde_json::to_string(&test_doc()).expect("json");
+        let dir = scratch("many-parts-obd");
+        let over = dir.join("over.obd");
+        std::fs::write(&over, zip_with_fillers("document.json", &json, MAX_ENTRIES))
+            .expect("write over");
+        let err = load(&over).expect_err("one part past the cap refuses");
+        assert_eq!(err, TOO_MANY_PARTS);
+        let at = dir.join("at.obd");
+        std::fs::write(
+            &at,
+            zip_with_fillers("document.json", &json, MAX_ENTRIES - 1),
+        )
+        .expect("write at");
+        load(&at).expect("a file at the cap still opens");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loose_sheet_with_too_many_parts_is_refused_before_any_is_read() {
+        // The same count at the sheet door (round 4,
+        // RT-2).
+        let package = InsertPackage {
+            insert: Insert {
+                id: "sheet-many".into(),
+                name: "Many parts".into(),
+                life: ob_model::InsertLife::ThisWeekOnly,
+                keep_through: None,
+                panels: vec![],
+                stories: vec![],
+                styles: default_styles(),
+                sheet: ob_model::InsertSheet {
+                    preset: "half-letter".into(),
+                    copies: 1,
+                    paper_note: String::new(),
+                },
+            },
+            assets: vec![],
+        };
+        let json = serde_json::to_string(&package).expect("json");
+        let dir = scratch("many-parts-obdi");
+        let over = dir.join("over.obdi");
+        std::fs::write(&over, zip_with_fillers("insert.json", &json, MAX_ENTRIES))
+            .expect("write over");
+        let err = load_insert(&over).expect_err("one part past the cap refuses");
+        assert_eq!(err, TOO_MANY_PARTS);
+        let at = dir.join("at.obdi");
+        std::fs::write(&at, zip_with_fillers("insert.json", &json, MAX_ENTRIES - 1))
+            .expect("write at");
+        load_insert(&at).expect("a file at the cap still opens");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rename one entry everywhere its name is
+    /// written (the local header and the central
+    /// directory), the two names the same length: the
+    /// writer refuses a duplicate name outright, so a
+    /// file that carries a repeated entry is assembled
+    /// by patch, like the lying-size files above.
+    fn patch_entry_name(zip_bytes: &mut [u8], from_name: &str, to_name: &str) {
+        assert_eq!(from_name.len(), to_name.len(), "the patch keeps lengths");
+        let name = from_name.as_bytes();
+        let mut patched = 0;
+        let mut from = 0;
+        while let Some(found) = find_bytes(&zip_bytes[from..], name) {
+            let at = from + found;
+            let guarded = (at >= 30 && &zip_bytes[at - 30..at - 26] == b"PK\x03\x04")
+                || (at >= 46 && &zip_bytes[at - 46..at - 42] == b"PK\x01\x02");
+            if guarded {
+                zip_bytes[at..at + name.len()].copy_from_slice(to_name.as_bytes());
+                patched += 1;
+            }
+            from = at + 1;
+        }
+        assert_eq!(patched, 2, "both records for {from_name} were patched");
+    }
+
+    #[test]
+    fn many_assets_load_with_one_record_each_even_when_entries_repeat() {
+        // Round 4, RT-2's other half: the dedupe
+        // question is asked of a set now, not of the
+        // growing record list. This hand-built file
+        // carries 300 pictures and NO records for them
+        // in its document.json, and every picture's
+        // entry rides twice (the repeats patched under
+        // their real names, per the helper above): the
+        // loader writes the record for the first entry
+        // it meets, the repeat adds nothing, and the
+        // bytes land once.
+        let mut doc = test_doc();
+        doc.assets.clear();
+        let mut buf = Vec::new();
+        let mut renames: Vec<(String, String)> = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("document.json", options)
+                .expect("json entry");
+            zip.write_all(serde_json::to_string(&doc).expect("json").as_bytes())
+                .expect("json bytes");
+            for i in 0..300 {
+                let bytes = format!("picture number {i}").into_bytes();
+                let hash = ob_model::sha256_hex(&bytes);
+                let name = format!("assets/{hash}");
+                zip.start_file(&name, options).expect("asset entry");
+                zip.write_all(&bytes).expect("asset bytes");
+                let stand_in = format!("zzzz{i:067}");
+                assert_eq!(stand_in.len(), name.len());
+                zip.start_file(&stand_in, options).expect("repeat entry");
+                zip.write_all(&bytes).expect("repeat bytes");
+                renames.push((stand_in, name));
+            }
+            zip.finish().expect("finish");
+        }
+        for (from_name, to_name) in &renames {
+            patch_entry_name(&mut buf, from_name, to_name);
+        }
+        let dir = scratch("many-assets");
+        let path = dir.join("many.obd");
+        std::fs::write(&path, &buf).expect("write");
+        let loaded = load(&path).expect("loads");
+        assert_eq!(loaded.assets.len(), 300, "one record per picture");
+        assert_eq!(
+            loaded.asset_bytes.len(),
+            300,
+            "one set of bytes per picture"
+        );
+        let bytes = "picture number 7".as_bytes().to_vec();
+        let hash = ob_model::sha256_hex(&bytes);
+        assert_eq!(loaded.asset_bytes.get(&hash), Some(&bytes));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -202,3 +202,67 @@ Then round 5.
   run hit the known helper ETXTBSY flake
   (`a_helper_from_the_future_is_refused_in_words`); it
   passed solo and the clean re-run is the 486 above.
+
+## Shipped addendum, R4-B: hostile input II (2026-10-16)
+
+- **Entry-count cap (RT-2).** Both zip loaders (the
+  .obd `load_v1`, the .obdi `load_insert`) refuse an
+  archive with more than 8,192 entries, the count taken
+  from the archive's entry list before any payload is
+  read: "That file has too many parts inside to read
+  safely." Tests pin one part past the cap refusing at
+  both doors and a file at the cap still opening.
+- **Set-based dedupe (RT-2).** The .obd loader asked
+  its per-asset dedupe question by scanning the
+  accumulated record list; it asks a HashSet of the
+  hashes already recorded now, filled as it goes, so
+  the squared term is gone at any count under the cap.
+  The .obdi audit found the same pattern in its
+  record-merge pass (its byte loop was already a
+  BTreeMap insert) and that pass asks a set now too.
+  Test: a hand-built file carrying 300 pictures with
+  no records in its document.json, every picture's
+  entry riding twice (the repeats patched under their
+  real names, since the zip writer refuses a duplicate
+  name outright), loads with one record and one set of
+  bytes per picture.
+- **Honest quotes honored (R4-10 / RT-3).**
+  `scan_tag_end`'s quoted state no longer treats a
+  `>` inside the value as the tag's end: a quote that
+  legitimately opens a value (first character after
+  `=`, whitespace allowed) is honored until its
+  matching quote, which is how the parser reads the
+  value too. The RT3-A rule is untouched (a quote
+  anywhere else is data; a value that starts unquoted
+  ends at whitespace or `>`), and the post-parse
+  tree-depth backstop stands. The red team's attr-deep
+  page, 600 tag-shaped strings inside one quoted
+  attribute, now imports with its words landing; the
+  round-3 stray-quote refusal and the sloppy-vs-tidy
+  equivalence stay green. Pinned behavior: a
+  legitimately opened quote that never closes
+  consumes the rest of the page as the value (the scan
+  finds no tag end, the budget stops measuring there,
+  and the parser drops the unfinished tag), so the
+  words before the tag import and the value's text
+  stays out.
+- **Comment-aware CDATA backoff (R4-11 / RT-4).**
+  `cdata_backoff` runs as one scan tracking both
+  constructs: whichever of `<!--` and `<![CDATA[`
+  opens first owns the text until its own closer
+  (`-->` / `]]>`). A CDATA opener inside a comment no
+  longer truncates the rescue at the comment: the red
+  team's trap shape (a fake opener inside a comment
+  before the cap, real paragraphs after it) rescues
+  the paragraphs and keeps the normal tail-trim note,
+  and a `-->` inside a real section ends nothing. A
+  text ending inside an unclosed comment now backs
+  off to the comment's opening as well, the same rule
+  as an unclosed section, so the closing tags the
+  rescue appends are not swallowed as comment text.
+  The shipped RT3-C CDATA tests and the comment-cut
+  test are unchanged and green.
+- Suite: 493 passed / 0 failed (486 + 7 new), clippy
+  `-D warnings` clean, both from unpiped runs reading
+  cargo's own exit code. The known helper flake did
+  not fire. No pre-existing test was changed.

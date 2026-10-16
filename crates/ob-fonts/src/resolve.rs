@@ -227,10 +227,7 @@ pub fn base_name(source_name: &str) -> String {
     // One name can carry two face words ("Bold Italic");
     // strip while a separator precedes a face word and a
     // real head remains.
-    loop {
-        let Some(idx) = name.rfind(['-', ',', ' ']) else {
-            break;
-        };
+    while let Some(idx) = name.rfind(['-', ',', ' ']) {
         if !is_face_tail(&name[idx + 1..]) {
             break;
         }

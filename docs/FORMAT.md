@@ -55,11 +55,67 @@ written before it existed, so no version change was
 needed. The .obd keeps spoken-only paragraphs; every
 export leaves them out and counts them.
 
-The weekly participant fields are ordinary document
-fields (`readers`, `ushers`, `greeters`,
-`communion_assistants`), printed by the tokens
-`{Sunday.readers}`, `{Sunday.ushers}`, `{Sunday.greeters}`,
-and `{Sunday.communion_assistants}`.
+A paragraph may carry `web_hidden: true` (R-2b,
+2026-10-16): it prints in the bulletin but stays off
+the web page. A printed bulletin is a room; the web
+page is the world, and some words (children's names
+above all) are for the room only. The discipline is
+spoken-only's: the field is absent (read as false)
+before it existed, and only the HTML export leaves
+these paragraphs out, counting them ("N paragraphs
+were left out of the web page; they are for the room,
+not the web"). Print, IDML, Scribus, and markdown all
+keep them. A paragraph carrying both marks counts
+once at the web door, as spoken only. The template
+learner never learns either kind: a learned template
+could not carry the marks, so the words stay out.
+
+An asset's rights record may carry `children_present`
+(R-2b): `true`, `false`, or absent (nobody has said
+yet). Check asks about each placed picture with no
+answer. On the web page, a picture noted as having
+children in it rides only when a permission is noted
+on the record (a credit line written down, or a
+license needing no one's permission: the church's own
+work, public domain, CC0); otherwise the page leaves
+a note where it belongs, and the door counts it.
+Print never drops a picture over this. The record is
+the office's own note, not a proof.
+
+The serving lines live in two places (R-2b). The
+church profile carries `serving_lines`: the display
+names the church prints each week for the people
+serving ("Readers", "Acolytes", and the church's
+own), in shown order. A profile without the field
+serves the six built-ins (Readers, Ushers, Greeters,
+Communion assistants, Children's message, Acolytes).
+The document carries `participants`: this week's
+names, keyed by serving-line slug. A value is stored
+under the slug of the line's name AS SHOWN (lowercase,
+non-alphanumerics become underscores, trimmed). A
+template prints a line's names with the token
+`{Sunday.<slug>}`, and resolution honors BOTH the
+slug of the current name and the built-in slug from
+the alias table in `ob_model::PARTICIPANT_FIELDS`
+(display names matched case-insensitively), so
+`{Sunday.childrens_message}` and `{Sunday.acolytes}`
+keep resolving after the church renames a line.
+Before the map existed, the four original lines kept
+their names in ordinary document fields under their
+slugs (`readers`, `ushers`, `greeters`,
+`communion_assistants`); loading folds those into the
+map while the map is empty, and resolution still
+reads a leftover field as a last resort. Next Sunday
+clears every value in the map and names the lines
+that had names by their profile display names.
+
+The church profile may carry `children_names` (R-2b):
+`FullNames` (the default), `FirstNamesOnly`, or
+`NoNames`, the church's rule for naming children in
+the bulletin, chosen once. The app does not enforce
+it: it cannot tell which names are children's. It
+shows the rule beside the Announcements box and
+repeats it at Check as a reminder to look.
 
 A document may carry `wanted_fonts` (2026-10-16): one
 entry per font the document was made in that the Font

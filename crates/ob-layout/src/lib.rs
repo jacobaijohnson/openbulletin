@@ -199,6 +199,9 @@ pub fn build_template(
                     para("body", "Sermon: {Church.pastor}"),
                     para("order-line", "Hymn of Response\t365"),
                     para("order-line", "Benediction\t"),
+                    para("subheading", "Serving This Week"),
+                    para("body", "Children's message: {Sunday.childrens_message}"),
+                    para("body", "Acolytes: {Sunday.acolytes}"),
                 ],
                 ContentRole::Standing,
             )
@@ -288,6 +291,7 @@ pub fn build_template(
         asset_bytes: Default::default(),
         occasion_time: None,
         wanted_fonts: Vec::new(),
+        participants: BTreeMap::new(),
     }
 }
 
@@ -314,11 +318,11 @@ pub struct NextSundayReport {
     /// when a stale file had to snap forward to the coming
     /// Sunday (see [`next_sunday_report_as_of`]).
     pub weeks_advanced: u32,
-    /// The participant fields that held names and were
+    /// The serving lines that held names and were
     /// cleared for the new week (Readers, Ushers, and
-    /// friends), by their This Sunday labels, in field
-    /// order, so the app can name what it cleared the same
-    /// way it names ended announcements (J10).
+    /// friends), by their display names as the profile
+    /// shows them, so the app can name what it cleared
+    /// the same way it names ended announcements (J10).
     pub cleared_participants: Vec<String>,
     /// The hymn lines whose values were cleared for the
     /// new week (R-2a), by their labels, in document
@@ -382,10 +386,9 @@ fn is_one_time_occasion(name: &str) -> bool {
 ///   date counts as none ("this Sunday only").
 /// - The no-announcements mark is reset: each week answers
 ///   for itself.
-/// - Participant fields (readers, ushers, greeters,
-///   communion assistants) are cleared: the new week has
-///   new people, and the report names the fields that
-///   held names.
+/// - Serving lines are cleared: the new week has new
+///   people, and the report names the lines that held
+///   names, in the profile's shown order.
 /// - Hymn lines keep their labels and lose their values
 ///   (R-2a): the new week sings different hymns, and the
 ///   report names the lines that had a value.
@@ -520,15 +523,9 @@ pub fn next_sunday_report_as_of(
         ..NextSundayReport::default()
     };
     // Participants are weekly people: the new week starts
-    // with empty rows, and the report names the fields that
-    // held names, in field order (J10's carried-list shape).
-    for (key, label, _token) in ob_model::PARTICIPANT_FIELDS {
-        if let Some(v) = out.fields.remove(key) {
-            if !v.trim().is_empty() {
-                report.cleared_participants.push(label.to_string());
-            }
-        }
-    }
+    // with empty rows, and the report names the lines that
+    // held names (J10's carried-list shape).
+    report.cleared_participants = clear_participants(&mut out);
     // Hymn values are weekly too (R-2a): the number (and
     // title, when it was written in) belongs to the week
     // that sang it, and a standing template that kept last
@@ -616,6 +613,73 @@ fn announcement_first_line(story: &Story) -> String {
         .collect()
 }
 
+/// Clear the week's serving names (roles build R-2b)
+/// and name the lines that held names, in the order the
+/// report speaks them: the profile's lines first, in
+/// their shown order, under their shown names; then any
+/// stored value whose line the profile no longer shows
+/// (a renamed or removed line), named by its built-in
+/// name when it has one, else by its slug in words; then
+/// the legacy weekly fields of a document that never
+/// went through the load migration. Whitespace-only
+/// values held no name and are cleared silently, as
+/// they always were.
+fn clear_participants(doc: &mut Document) -> Vec<String> {
+    let mut named: Vec<String> = Vec::new();
+    let push_name = |named: &mut Vec<String>, name: String| {
+        if !named.contains(&name) {
+            named.push(name);
+        }
+    };
+    // The profile's lines, in shown order. A value can
+    // sit under the slug of the name as shown or, for a
+    // built-in line, under its permanent slug: clear
+    // both keys, name the line once.
+    for name in doc.profile.serving_lines.clone() {
+        let mut keys = vec![ob_model::serving_slug(&name)];
+        if let Some(bslug) = ob_model::builtin_serving_slug(&name) {
+            if !keys.contains(&bslug.to_string()) {
+                keys.push(bslug.to_string());
+            }
+        }
+        let mut held = false;
+        for key in keys {
+            if let Some(v) = doc.participants.remove(&key) {
+                if !v.trim().is_empty() {
+                    held = true;
+                }
+            }
+        }
+        if held {
+            push_name(&mut named, name);
+        }
+    }
+    // Whatever is left in the map belongs to a line the
+    // profile no longer shows.
+    let leftover: Vec<(String, String)> =
+        std::mem::take(&mut doc.participants).into_iter().collect();
+    for (key, v) in leftover {
+        if v.trim().is_empty() {
+            continue;
+        }
+        let name = ob_model::builtin_serving_name(&key)
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| key.replace('_', " "));
+        push_name(&mut named, name);
+    }
+    // The legacy weekly fields (readers and friends in
+    // `fields`), for an in-memory document that never
+    // went through the load migration.
+    for (slug, name) in ob_model::PARTICIPANT_FIELDS {
+        if let Some(v) = doc.fields.remove(slug) {
+            if !v.trim().is_empty() {
+                push_name(&mut named, name.to_string());
+            }
+        }
+    }
+    named
+}
+
 /// Empty a story's Body paragraphs, keeping headings and
 /// standing structure untouched (the long-standing weekly
 /// clearing rule).
@@ -661,6 +725,8 @@ mod tests {
             giving_url: "grace.example.org/give".into(),
             pastor: "Pastor Lee".into(),
             expected_parts: Vec::new(),
+            children_names: Default::default(),
+            serving_lines: ob_model::default_serving_lines(),
         }
     }
 
@@ -910,12 +976,73 @@ mod tests {
             report.cleared_participants,
             vec!["Readers".to_string(), "Ushers".to_string()]
         );
-        for (key, _label, _token) in ob_model::PARTICIPANT_FIELDS {
+        for (key, _label) in ob_model::PARTICIPANT_FIELDS {
             assert!(
                 !n.fields.contains_key(key),
                 "{key} starts the new week empty"
             );
         }
+    }
+
+    #[test]
+    fn next_sunday_clears_the_participants_map_and_names_profile_lines() {
+        // R-2b: names live in the participants map now.
+        // The report names the lines that held names by
+        // their profile display names, in profile order,
+        // including a line the church named itself.
+        let mut prof = profile();
+        prof.serving_lines = vec![
+            "Readers".to_string(),
+            "Candle lighters".to_string(),
+            "Acolytes".to_string(),
+        ];
+        let mut d = build_template(
+            Preset::LetterBifold,
+            prof,
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "Sunday",
+        );
+        d.set_participant_value("Acolytes", "Sam, Jo");
+        d.set_participant_value("Candle lighters", "Rae");
+        d.set_participant_value("Readers", "   ");
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert!(n.participants.is_empty(), "the new week starts empty");
+        // Profile order; the whitespace-only Readers line
+        // held no name and is not named.
+        assert_eq!(
+            report.cleared_participants,
+            vec!["Candle lighters".to_string(), "Acolytes".to_string()]
+        );
+        assert_eq!(
+            resolve_fields("Acolytes: {Sunday.acolytes}", &n),
+            "Acolytes: "
+        );
+    }
+
+    #[test]
+    fn starter_template_carries_the_new_serving_lines() {
+        // R-2b item 5: a fresh church sees the two new
+        // built-in serving lines in the template's
+        // Serving section, tokens and all.
+        let d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "Sunday",
+        );
+        let order = &d.stories[1];
+        assert!(order
+            .paragraphs
+            .iter()
+            .any(|p| p.text() == "Serving This Week"));
+        assert!(order
+            .paragraphs
+            .iter()
+            .any(|p| p.text() == "Children's message: {Sunday.childrens_message}"));
+        assert!(order
+            .paragraphs
+            .iter()
+            .any(|p| p.text() == "Acolytes: {Sunday.acolytes}"));
     }
 
     #[test]

@@ -844,6 +844,7 @@ impl App {
         self.profile_website = self.doc.profile.website.clone();
         self.profile_pastor = self.doc.profile.pastor.clone();
         self.profile_expected_parts = self.doc.profile.expected_parts.join(", ");
+        self.profile_serving_lines = self.doc.profile.serving_lines.join(", ");
         self.date_input = self
             .doc
             .fields
@@ -860,6 +861,7 @@ impl App {
             .collect();
         self.sermon_input = sermon_title(&self.doc);
         self.participant_inputs = participant_values(&self.doc);
+        self.participant_line_names = self.doc.profile.serving_lines.clone();
     }
 
     /// Set the bulletin's date from the Step 2 field, in the
@@ -1152,6 +1154,43 @@ fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<CheckNote> {
         }
     }
     out
+}
+
+/// Does this placed picture still need its children
+/// note (R-2b)? True when the box holds a picture that
+/// is in the bulletin and its rights record carries no
+/// answer yet: Check asks, because the web page's rule
+/// can only take the care the note describes. A box
+/// whose picture is missing in fact is another
+/// finding's business. Pure over (document, frame).
+fn picture_children_unnoted(doc: &Document, frame: &ob_model::Frame) -> bool {
+    let Some(placement) = &frame.picture else {
+        return false;
+    };
+    if doc.asset_data(&placement.asset).is_none() {
+        return false;
+    }
+    doc.assets
+        .iter()
+        .find(|a| a.sha256 == placement.asset)
+        .and_then(|a| a.rights.children_present)
+        .is_none()
+}
+
+/// Check's children's-names reminder (R-2b): when the
+/// church's rule is not full names, one plain note
+/// repeating the rule, honest about its limit. The app
+/// cannot tell which names are children's; it can only
+/// remind a person to look. Pure over the profile.
+fn children_names_note(profile: &ob_model::ChurchProfile) -> Option<CheckNote> {
+    match profile.children_names {
+        ob_model::ChildrenNames::FullNames => None,
+        rule => Some(CheckNote::plain(format!(
+            "Your church's rule: {}. This is a reminder to look over the names; \
+             the app cannot tell which names are children's.",
+            rule.rule_words()
+        ))),
+    }
 }
 
 /// Check's hymn pass (R-2a): each hymn line in the order
@@ -1974,6 +2013,10 @@ struct App {
     /// field, as typed (comma or newline separated). The
     /// document's profile holds the parsed list (R-1).
     profile_expected_parts: String,
+    /// The Church Profile area's "Serving lines" field,
+    /// as typed (comma or newline separated). The
+    /// document's profile holds the parsed list (R-2b).
+    profile_serving_lines: String,
     date_input: String,
     /// The This Sunday step's service-line value fields (J2),
     /// parallel to `service_lines(&doc)`, plus the sermon
@@ -1991,11 +2034,16 @@ struct App {
     /// kept in a file beside the settings. Check holds
     /// this week's hymn lines up against it.
     hymn_memory: ob_model::hymns::HymnMemory,
-    /// The This Sunday step's participant fields (readers,
-    /// ushers, greeters, communion assistants), parallel to
-    /// `ob_model::PARTICIPANT_FIELDS`, synced from the
-    /// document's weekly fields on every swap.
+    /// The This Sunday step's serving-line fields, parallel
+    /// to `participant_line_names`: one row per line the
+    /// church's profile shows, synced from the document's
+    /// participants map on every swap and whenever the
+    /// profile's lines change (R-2b).
     participant_inputs: Vec<String>,
+    /// The serving-line names `participant_inputs` is
+    /// parallel to, so a rename in the Church Profile
+    /// re-syncs the rows instead of leaving them stale.
+    participant_line_names: Vec<String>,
     announcements_dirty: bool,
     step: usize,
     announcements: String,
@@ -2119,6 +2167,13 @@ struct App {
     /// spoken-only paragraph is read aloud in the service
     /// and never printed (prayer-list privacy).
     edit_spoken: Vec<bool>,
+    /// The session's not-for-web flags, one per paragraph
+    /// of `edit_text`, kept in step by
+    /// `sync_edit_web_hidden` on exactly the spoken-only
+    /// discipline, and written back at commit: a
+    /// not-for-web paragraph prints in the bulletin but
+    /// stays off the web page (children's privacy, R-2b).
+    edit_web_hidden: Vec<bool>,
     /// Story id of the current edit session, salting the text
     /// editor's identity so its private state (cursor, its own
     /// undo) never leaks from one box's session into another's
@@ -2301,6 +2356,12 @@ struct PreviewLine {
     /// the canvas paints the tag, never the print previews:
     /// spoken-only words are not in any printed copy.
     spoken_tag: bool,
+    /// This line starts a not-for-web paragraph (R-2b):
+    /// the Pages canvas tags it "NOT FOR WEB" above the
+    /// line, on the same terms as the spoken tag. The
+    /// words DO print; only the web page leaves them out,
+    /// and no printed copy carries the tag.
+    web_tag: bool,
 }
 
 /// One same-face piece of a preview line (G1b).
@@ -2558,6 +2619,7 @@ fn paint_line_segments(
             italic: seg.italic,
             segs: Vec::new(),
             spoken_tag: false,
+            web_tag: false,
         };
         painter.text(
             place(line.x + seg.dx),
@@ -2631,6 +2693,7 @@ impl Default for App {
             .collect();
         let sermon_input = sermon_title(&doc);
         let participant_inputs = participant_values(&doc);
+        let participant_line_names = doc.profile.serving_lines.clone();
         let (settings, settings_read) = load_settings();
         // Reopen on the step the user left (J6), clamped to
         // the steps that exist.
@@ -2661,12 +2724,14 @@ impl Default for App {
             profile_website: String::new(),
             profile_pastor: String::new(),
             profile_expected_parts: String::new(),
+            profile_serving_lines: String::new(),
             date_input,
             service_inputs,
             hymn_inputs,
             hymn_memory: load_hymn_memory(),
             sermon_input,
             participant_inputs,
+            participant_line_names,
             announcements_dirty: false,
             step,
             announcements,
@@ -2733,6 +2798,7 @@ impl Default for App {
             edit_runs: Vec::new(),
             edit_runs_detached: false,
             edit_spoken: Vec::new(),
+            edit_web_hidden: Vec::new(),
             edit_salt: String::new(),
             edit_cursor_para: 0,
             frame_snapshot: String::new(),
@@ -3863,14 +3929,15 @@ fn strip_field_tokens(text: &str) -> String {
 /// says once the field tokens are taken out. Empty when the
 /// line carries only the pastor token, and when the bulletin
 /// has no sermon line at all.
-/// The participant values (readers, ushers, greeters,
-/// communion assistants) from the document's weekly
-/// fields, in `ob_model::PARTICIPANT_FIELDS` order: the
-/// This Sunday rows' starting text.
+/// The participant values (this week's serving names)
+/// from the document, one per serving line the church's
+/// profile shows, in shown order: the This Sunday rows'
+/// starting text (R-2b).
 fn participant_values(doc: &Document) -> Vec<String> {
-    ob_model::PARTICIPANT_FIELDS
+    doc.profile
+        .serving_lines
         .iter()
-        .map(|(key, _label, _token)| doc.fields.get(*key).cloned().unwrap_or_default())
+        .map(|name| doc.participant_value_for_name(name))
         .collect()
 }
 
@@ -3967,6 +4034,8 @@ impl App {
                 giving_url: self.doc.profile.giving_url.clone(),
                 pastor: self.profile_pastor.clone(),
                 expected_parts: self.doc.profile.expected_parts.clone(),
+                children_names: self.doc.profile.children_names,
+                serving_lines: self.doc.profile.serving_lines.clone(),
             },
             chrono::Local::now().date_naive(),
             "Sunday",
@@ -4032,9 +4101,10 @@ impl App {
             lines.pop();
         }
         if let Some(story) = self.doc.story_mut(&sid) {
-            // Spoken-only flags and run formatting ride
-            // with their LINE, by position among the story's
-            // body paragraphs (audit Batch 1). They used to
+            // Spoken-only and not-for-web flags and run
+            // formatting ride with their LINE, by position
+            // among the story's body paragraphs (audit
+            // Batch 1). They used to
             // ride by exact-text match, and the match failed
             // three ways: editing a prayer line's words
             // dropped its privacy without a word said, two
@@ -4070,6 +4140,7 @@ impl App {
                             }],
                         );
                         p.spoken_only = old.spoken_only;
+                        p.web_hidden = old.web_hidden;
                         p
                     }
                     None => ob_model::Paragraph::new("body", l),
@@ -4278,6 +4349,20 @@ impl App {
                         ));
                         continue;
                     };
+                    // The children note (R-2b): while the
+                    // office has not said whether this
+                    // picture has children in it, Check
+                    // asks, aimed at the box.
+                    if picture_children_unnoted(&self.doc, frame) {
+                        notes.push(CheckNote::aimed(
+                            format!(
+                                "Check: there is no note yet on whether there are children in this picture. Right-click the picture on \"{}\" and say.",
+                                panel.name
+                            ),
+                            pi,
+                            Some(fi),
+                        ));
+                    }
                     let probe = probes
                         .entry(placement.asset.clone())
                         .or_insert_with(|| ob_image::probe(bytes).ok());
@@ -4444,6 +4529,13 @@ impl App {
         // against each other and against the church's own
         // remembered pairs.
         notes.extend(hymn_findings(&self.doc, &self.hymn_memory));
+        // The children's-names rule (R-2b): repeated here
+        // as a reminder when the church chose one, honest
+        // that the app cannot tell which names are
+        // children's.
+        if let Some(note) = children_names_note(&self.doc.profile) {
+            notes.push(note);
+        }
         // Characters the print copy cannot show get their own
         // findings (not plain notes) so the Check step can put
         // a fix button under each one.
@@ -5013,6 +5105,31 @@ impl App {
         }
     }
 
+    /// Keep `edit_web_hidden` the same length as the edit
+    /// buffer's paragraph list, with the same cursor-side
+    /// growth and shrink as [`App::sync_edit_spoken`]: a
+    /// paragraph split in two keeps the flag on both
+    /// halves (a split line of children's names stays off
+    /// the web page), a deleted paragraph takes its flag
+    /// with it.
+    fn sync_edit_web_hidden(&mut self) {
+        let count = self.edit_text.split('\n').count();
+        let cur = self
+            .edit_cursor_para
+            .min(self.edit_web_hidden.len().saturating_sub(1));
+        if self.edit_web_hidden.len() < count {
+            let inherit = self.edit_web_hidden.get(cur).copied().unwrap_or(false);
+            while self.edit_web_hidden.len() < count {
+                let at = (cur + 1).min(self.edit_web_hidden.len());
+                self.edit_web_hidden.insert(at, inherit);
+            }
+        } else if self.edit_web_hidden.len() > count {
+            let excess = self.edit_web_hidden.len() - count;
+            let start = (cur + 1).min(self.edit_web_hidden.len() - excess);
+            self.edit_web_hidden.drain(start..start + excess);
+        }
+    }
+
     /// Enter inline editing for one frame's story. Any session
     /// already open commits first: starting a new one must never
     /// silently drop the words in the old one (blocker 6).
@@ -5319,6 +5436,7 @@ impl App {
         self.edit_runs.clear();
         self.edit_runs_detached = false;
         self.edit_spoken.clear();
+        self.edit_web_hidden.clear();
         self.edit_done = false;
         self.reset_editor_transient();
         self.status = "Typing thrown away. The page keeps the words it had.".into();
@@ -5417,6 +5535,7 @@ impl App {
         self.edit_runs = story.paragraphs.iter().map(|p| p.runs.clone()).collect();
         self.edit_runs_detached = false;
         self.edit_spoken = story.paragraphs.iter().map(|p| p.spoken_only).collect();
+        self.edit_web_hidden = story.paragraphs.iter().map(|p| p.web_hidden).collect();
         self.editing = Some((pi, fi));
         self.selected_frame = Some(fi);
         self.edit_done = false;
@@ -5439,6 +5558,7 @@ impl App {
         self.edit_start_text.clear();
         self.sync_edit_styles();
         self.sync_edit_spoken();
+        self.sync_edit_web_hidden();
         let Some(frame) = self.doc.panels[pi].frames.get(fi) else {
             self.edit_start = None;
             return;
@@ -5480,12 +5600,15 @@ impl App {
                 // paragraph, like its style (both
                 // constructors start it printable).
                 para.spoken_only = self.edit_spoken.get(i).copied().unwrap_or(false);
+                // The not-for-web flag rides the same way.
+                para.web_hidden = self.edit_web_hidden.get(i).copied().unwrap_or(false);
                 para
             })
             .collect();
         self.edit_runs.clear();
         self.edit_runs_detached = false;
         self.edit_spoken.clear();
+        self.edit_web_hidden.clear();
         if let Some(story) = self.doc.stories.iter_mut().find(|st| st.id == sid) {
             story.paragraphs = paragraphs;
         }
@@ -5846,6 +5969,7 @@ impl App {
         }
         self.sync_edit_styles();
         self.sync_edit_spoken();
+        self.sync_edit_web_hidden();
     }
 
     /// Type or paste text at the selection, replacing it.
@@ -7187,6 +7311,7 @@ impl App {
                         .unwrap_or_default();
                     self.sync_edit_styles();
                     self.sync_edit_spoken();
+        self.sync_edit_web_hidden();
                     // The caret's paragraph comes from the
                     // shaped editor's own position (E1).
                     self.refresh_editor_layout();
@@ -7262,6 +7387,27 @@ impl App {
                             && para < self.edit_spoken.len()
                         {
                             self.edit_spoken[para] = !spoken_on;
+                        }
+                        // Not for the web: this paragraph
+                        // prints in the bulletin but stays off
+                        // the web page (R-2b). Words meant for
+                        // the room, like children's names,
+                        // belong here. A paragraph flag, like
+                        // spoken only, so it works even when
+                        // the runs are detached.
+                        let web_off =
+                            self.edit_web_hidden.get(para).copied().unwrap_or(false);
+                        if ui
+                            .add(egui::SelectableLabel::new(web_off, "Not for the web"))
+                            .on_hover_text(
+                                "Not for the web: this paragraph prints in the \
+                                 bulletin but stays off the web page. The \
+                                 bulletin is a room; the web page is the world.",
+                            )
+                            .clicked()
+                            && para < self.edit_web_hidden.len()
+                        {
+                            self.edit_web_hidden[para] = !web_off;
                         }
                         if ui.button("Done typing").clicked() {
                             self.edit_done = true;
@@ -7595,16 +7741,24 @@ impl App {
                     scale,
                     |lx| to_px(lx, line.y),
                 );
-                // The spoken-only tag (prayer-list privacy):
-                // small caps above the paragraph's first line,
-                // in the info color, so the state is seen on
-                // the page and never hidden. Canvas only; no
-                // printed copy ever carries these words.
-                if line.spoken_tag {
+                // The privacy tags (spoken only, not for
+                // the web): small caps above the paragraph's
+                // first line, in the info color, so the state
+                // is seen on the page and never hidden.
+                // Canvas only; no printed copy ever carries
+                // these words. A paragraph with both marks
+                // wears both words on the one tag line.
+                let tag = match (line.spoken_tag, line.web_tag) {
+                    (true, true) => Some("SPOKEN ONLY + NOT FOR WEB"),
+                    (true, false) => Some("SPOKEN ONLY"),
+                    (false, true) => Some("NOT FOR WEB"),
+                    (false, false) => None,
+                };
+                if let Some(tag) = tag {
                     clip.text(
                         to_px(line.x, line.y - line.size * 1.45),
                         egui::Align2::LEFT_BOTTOM,
-                        "SPOKEN ONLY",
+                        tag,
                         egui::FontId::proportional((7.5 * scale).clamp(6.0, 11.0)),
                         self.theme.info,
                     );
@@ -8175,6 +8329,7 @@ impl App {
             let (_, efi) = self.editing.expect("editing checked");
             self.sync_edit_styles();
             self.sync_edit_spoken();
+            self.sync_edit_web_hidden();
             let f = panel.frames[efi].clone();
             let fx = f.rect.x as f32 / 1000.0;
             let frect = egui::Rect::from_min_max(
@@ -8374,6 +8529,7 @@ impl App {
                                     italic: seg.italic,
                                     segs: Vec::new(),
                                     spoken_tag: false,
+                                    web_tag: false,
                                 };
                                 let fid = line_font_id(
                                     &self.font_rows,
@@ -8435,6 +8591,7 @@ impl App {
                                     italic: para.italic,
                                     segs: Vec::new(),
                                     spoken_tag: false,
+                                    web_tag: false,
                                 };
                                 let fid = line_font_id(
                                     &self.font_rows,
@@ -8624,6 +8781,39 @@ impl App {
                                 }
                                 if ui.button("Take the picture out").clicked() {
                                     self.set_frame_picture(idx, fi, None);
+                                    ui.close_menu();
+                                }
+                                // Children in the picture
+                                // (R-2b): the office's own
+                                // note, shown as it stands.
+                                // Check asks while it is
+                                // missing; the web page
+                                // takes extra care when the
+                                // answer is yes.
+                                ui.separator();
+                                let noted = self
+                                    .doc
+                                    .assets
+                                    .iter()
+                                    .find(|a| a.sha256 == p.asset)
+                                    .and_then(|a| a.rights.children_present);
+                                ui.label(match noted {
+                                    Some(true) => {
+                                        "Children in this picture: yes, noted."
+                                    }
+                                    Some(false) => {
+                                        "Children in this picture: no, noted."
+                                    }
+                                    None => {
+                                        "Children in this picture: not noted yet."
+                                    }
+                                });
+                                if ui.button("This picture has children in it").clicked() {
+                                    self.set_picture_children(idx, fi, true);
+                                    ui.close_menu();
+                                }
+                                if ui.button("No children in this picture").clicked() {
+                                    self.set_picture_children(idx, fi, false);
                                     ui.close_menu();
                                 }
                             }
@@ -8868,6 +9058,44 @@ impl App {
             "Picture put in the box.".into()
         } else {
             "Picture taken out. The box stays.".into()
+        });
+    }
+
+    /// Note, on a placed picture's rights record, whether
+    /// it has children in it (R-2b): the answer drives
+    /// Check's question and the web page's stricter rule.
+    /// A placement whose record is missing gets one, so
+    /// the note always has somewhere to live. One undo
+    /// step.
+    fn set_picture_children(&mut self, idx: usize, fi: usize, present: bool) {
+        let Some(asset_hash) = self.doc.panels[idx]
+            .frames
+            .get(fi)
+            .and_then(|f| f.picture.as_ref())
+            .map(|p| p.asset.clone())
+        else {
+            return;
+        };
+        self.push_undo_now();
+        if let Some(asset) = self.doc.assets.iter_mut().find(|a| a.sha256 == asset_hash) {
+            asset.rights.children_present = Some(present);
+        } else if let Some(bytes) = self.doc.asset_data(&asset_hash).map(|b| b.to_vec()) {
+            let media = match ob_image::sniff(&bytes) {
+                ob_image::PictureFormat::Jpeg => "image/jpeg",
+                ob_image::PictureFormat::Svg => "image/svg+xml",
+                _ => "image/png",
+            };
+            let rights = ob_model::RightsRecord {
+                children_present: Some(present),
+                ..Default::default()
+            };
+            self.doc
+                .add_asset(&bytes, ob_model::AssetKind::Picture, media, rights);
+        }
+        self.note(if present {
+            "Noted: this picture has children in it.".into()
+        } else {
+            "Noted: no children in this picture.".into()
         });
     }
 
@@ -10092,6 +10320,7 @@ impl App {
                     Vec::new();
                 let mut skipped: Vec<String> = Vec::new();
                 let mut spoken_left_out = 0usize;
+                let mut web_left_out = 0usize;
                 for path in &files {
                     let name = path
                         .file_name()
@@ -10134,7 +10363,8 @@ impl App {
                         Some(LearnKind::OpenBulletin) => ob_format::load(path).map(|doc| {
                             let (dump, left_out) =
                                 ob_extract::learn::dump_from_document(&doc, &name);
-                            spoken_left_out += left_out;
+                            spoken_left_out += left_out.spoken_only;
+                            web_left_out += left_out.web_hidden;
                             (dump, None)
                         }),
                         None => Err("not a kind of file we can learn from".into()),
@@ -10169,6 +10399,10 @@ impl App {
                     mix_line.push_str(&ob_extract::learn::spoken_only_left_out_line(
                         spoken_left_out,
                     ));
+                }
+                if web_left_out > 0 {
+                    mix_line.push(' ');
+                    mix_line.push_str(&ob_extract::learn::web_hidden_left_out_line(web_left_out));
                 }
                 // The review's note line carries the family's
                 // own news first (too few alike to learn what
@@ -10552,6 +10786,12 @@ impl App {
                                 }
                                 msg.push_str(&ob_model::spoken_only_left_out_sentence(
                                     report.spoken_only_left_out,
+                                ));
+                                msg.push_str(&ob_model::web_hidden_left_out_sentence(
+                                    report.web_hidden_left_out,
+                                ));
+                                msg.push_str(&ob_extract::html_export::children_left_out_sentence(
+                                    report.children_left_out,
                                 ));
                                 self.export_note = Some(msg.clone());
                                 self.note(msg);
@@ -12008,6 +12248,43 @@ impl eframe::App for App {
                                 self.record_undo(before);
                             }
                         }
+                        ui.label("Children's names in the bulletin");
+                        ui.horizontal(|ui| {
+                            for (rule, words) in [
+                                (ob_model::ChildrenNames::FullNames, "Full names"),
+                                (ob_model::ChildrenNames::FirstNamesOnly, "First names only"),
+                                (ob_model::ChildrenNames::NoNames, "No names"),
+                            ] {
+                                if ui
+                                    .selectable_label(
+                                        self.doc.profile.children_names == rule,
+                                        words,
+                                    )
+                                    .clicked()
+                                    && self.doc.profile.children_names != rule
+                                {
+                                    let before = snapshot(&self.doc);
+                                    self.doc.profile.children_names = rule;
+                                    self.record_undo(before);
+                                }
+                            }
+                        });
+                        ui.small("Your church's rule for naming children in print. The app repeats it at Check; it cannot tell which names are children's, so it only reminds.");
+                        ui.label("Serving lines (the names your bulletin prints each week for the people serving)");
+                        let resp_serving = ui.add(
+                            egui::TextEdit::multiline(&mut self.profile_serving_lines)
+                                .hint_text("One per line, or separated by commas: Readers, Ushers, Greeters, Communion assistants, Children's message, Acolytes")
+                                .desired_rows(2),
+                        );
+                        if resp_serving.lost_focus() {
+                            let parsed = parse_expected_parts(&self.profile_serving_lines);
+                            if parsed != self.doc.profile.serving_lines {
+                                let before = snapshot(&self.doc);
+                                self.doc.profile.serving_lines = parsed;
+                                self.record_undo(before);
+                            }
+                        }
+                        ui.small("Serving lines are the names your bulletin prints each week for the people serving. Add your own, in the words you use. Each line gets its own row on This Sunday.");
                         ui.small("These print on the cover and carry into every week. They fill in the {Church.*} spots in your templates.");
                     }
                     1 => {
@@ -12212,30 +12489,32 @@ impl eframe::App for App {
                                 }
                             }
                         }
-                        // Who serves this week (the participant
-                        // fields): a template prints the names
-                        // where it carries the field words
+                        // Who serves this week (the serving
+                        // lines): the rows are the church's
+                        // own list from the Church Profile. A
+                        // template prints the names where it
+                        // carries the field words
                         // ({Sunday.readers} and friends). Next
                         // Sunday clears them: the new week has
                         // new people.
                         ui.separator();
                         ui.label(egui::RichText::new("Serving this week").strong());
-                        if self.participant_inputs.len() != ob_model::PARTICIPANT_FIELDS.len() {
-                            self.participant_inputs = participant_values(&self.doc);
-                        }
-                        for (row, (key, label, _token)) in
-                            ob_model::PARTICIPANT_FIELDS.iter().enumerate()
+                        let line_names = self.doc.profile.serving_lines.clone();
+                        if self.participant_line_names != line_names
+                            || self.participant_inputs.len() != line_names.len()
                         {
-                            ui.label(*label);
+                            self.participant_inputs = participant_values(&self.doc);
+                            self.participant_line_names = line_names.clone();
+                        }
+                        for (row, name) in line_names.iter().enumerate() {
+                            ui.label(name.as_str());
                             let resp =
                                 ui.text_edit_singleline(&mut self.participant_inputs[row]);
                             if resp.lost_focus() {
                                 let value = self.participant_inputs[row].trim().to_string();
-                                let current =
-                                    self.doc.fields.get(*key).cloned().unwrap_or_default();
-                                if value != current {
+                                if value != self.doc.participant_value_for_name(name) {
                                     let before = snapshot(&self.doc);
-                                    self.doc.fields.insert(key.to_string(), value.clone());
+                                    self.doc.set_participant_value(name, &value);
                                     if before != snapshot(&self.doc) {
                                         self.record_undo(before);
                                     }
@@ -12255,6 +12534,16 @@ impl eframe::App for App {
                             self.show_pages = true;
                         }
                         ui.label("One announcement per line. Paste from email works; formatting is cleaned up for you.");
+                        // The children's-names rule, repeated
+                        // where names get typed (R-2b).
+                        if self.doc.profile.children_names
+                            != ob_model::ChildrenNames::FullNames
+                        {
+                            ui.small(format!(
+                                "Your church's rule: {}.",
+                                self.doc.profile.children_names.rule_words()
+                            ));
+                        }
                         let ann_resp = ui.add(
                             egui::TextEdit::multiline(&mut self.announcements)
                                 .desired_rows(12)
@@ -13015,6 +13304,11 @@ fn panel_lines_from_threads(
                 .and_then(|s| s.paragraphs.get(piece.para))
                 .map(|p| p.spoken_only)
                 .unwrap_or(false);
+            let para_web_hidden = doc
+                .story(sid)
+                .and_then(|s| s.paragraphs.get(piece.para))
+                .map(|p| p.web_hidden)
+                .unwrap_or(false);
             for (li, line) in piece.layout.lines().iter().enumerate() {
                 lines.push(PreviewLine {
                     text: piece.layout.text()[line.range.clone()].to_string(),
@@ -13028,6 +13322,7 @@ fn panel_lines_from_threads(
                     italic: style.italic,
                     segs: line_segments(line, piece.layout.text()),
                     spoken_tag: para_spoken && li == 0 && piece.text_range.start == 0,
+                    web_tag: para_web_hidden && li == 0 && piece.text_range.start == 0,
                 });
             }
         }
@@ -13842,6 +14137,7 @@ mod settings_tests {
                 name: "Gill Sans MT".into(),
                 substituted_by: "Cabin".into(),
             }],
+            participants: Default::default(),
         };
         // Nothing in the library: today's stand-in is the
         // house default, and the words say so (the record
@@ -14133,6 +14429,7 @@ mod settings_tests {
             italic: false,
             segs: Vec::new(),
             spoken_tag: false,
+            web_tag: false,
         };
         let unbound = bound_name_families(&egui::FontDefinitions::default());
         assert!(unbound.is_empty(), "egui defaults bind no lib families");
@@ -15653,6 +15950,7 @@ mod settings_tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: Default::default(),
         };
         let mut shaper = ob_text::shaping::bundled_shaper();
         let threads = ob_text::threading::layout_document_threads(&mut shaper, &doc);
@@ -15839,6 +16137,7 @@ mod settings_tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: Default::default(),
         };
         let placed = doc.add_asset(
             &[1, 2, 3],
@@ -16581,5 +16880,95 @@ Prelude is at 9:25 this week.
             ]
         );
         assert!(parse_expected_parts("  \n, ").is_empty());
+    }
+
+    #[test]
+    fn children_names_note_repeats_the_rule_and_owns_its_limit() {
+        // R-2b: full names is the quiet default; any other
+        // rule earns exactly one reminder, worded as a
+        // reminder, honest that the app cannot tell which
+        // names are children's.
+        let mut profile = ob_model::ChurchProfile::default();
+        assert!(children_names_note(&profile).is_none());
+        profile.children_names = ob_model::ChildrenNames::FirstNamesOnly;
+        let note = children_names_note(&profile).expect("a reminder");
+        assert_eq!(
+            note.text,
+            "Your church's rule: children's first names only. This is a reminder \
+             to look over the names; the app cannot tell which names are children's."
+        );
+        profile.children_names = ob_model::ChildrenNames::NoNames;
+        let note = children_names_note(&profile).expect("a reminder");
+        assert!(note
+            .text
+            .starts_with("Your church's rule: no children's names."));
+    }
+
+    #[test]
+    fn picture_children_unnoted_asks_only_for_placed_unnamed_pictures() {
+        // R-2b: Check asks about a placed picture whose
+        // record has no children answer yet, and only
+        // that picture.
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        let png: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let hash = doc.add_asset(
+            png,
+            ob_model::AssetKind::Picture,
+            "image/png",
+            ob_model::RightsRecord::default(),
+        );
+        let mut frame = ob_model::Frame {
+            id: "pic".into(),
+            name: "Picnic".into(),
+            kind: ob_model::FrameKind::Picture,
+            rect: ob_model::Rect::new(0, 0, 100_000, 100_000),
+            story_id: None,
+            role: ob_model::ContentRole::Standing,
+            picture: Some(ob_model::PicturePlacement::new(hash.clone())),
+            music: None,
+        };
+        assert!(picture_children_unnoted(&doc, &frame), "no answer yet: ask");
+        doc.assets
+            .iter_mut()
+            .find(|a| a.sha256 == hash)
+            .expect("asset")
+            .rights
+            .children_present = Some(false);
+        assert!(!picture_children_unnoted(&doc, &frame), "answered: quiet");
+        // An empty box and a missing picture are other
+        // findings' business.
+        frame.picture = None;
+        assert!(!picture_children_unnoted(&doc, &frame));
+        frame.picture = Some(ob_model::PicturePlacement::new("0".repeat(64)));
+        assert!(!picture_children_unnoted(&doc, &frame));
+    }
+
+    #[test]
+    fn serving_rows_follow_the_profiles_own_lines() {
+        // R-2b: This Sunday's rows are the profile's
+        // lines, in order, including the church's own;
+        // values store under the name as shown.
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        assert_eq!(participant_values(&doc).len(), 6);
+        doc.set_participant_value("Children's message", "Ms. Dee");
+        doc.set_participant_value("Acolytes", "Sam, Jo");
+        let values = participant_values(&doc);
+        assert_eq!(values[4], "Ms. Dee");
+        assert_eq!(values[5], "Sam, Jo");
+        // A renamed list re-rows: same count check the UI
+        // leans on (its names snapshot drives the resync).
+        doc.profile.serving_lines = vec!["Candle lighters".to_string()];
+        doc.set_participant_value("Candle lighters", "Rae");
+        assert_eq!(participant_values(&doc), vec!["Rae".to_string()]);
     }
 }

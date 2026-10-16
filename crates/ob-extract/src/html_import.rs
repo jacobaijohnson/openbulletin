@@ -1326,6 +1326,7 @@ pub fn document_from_html(
         asset_bytes: Default::default(),
         occasion_time: None,
         wanted_fonts: Vec::new(),
+        participants: Default::default(),
     };
 
     // Lay the blocks down the pages: word runs become story

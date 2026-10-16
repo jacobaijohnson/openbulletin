@@ -999,6 +999,7 @@ mod tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: Default::default(),
         };
         pin_document_fonts(&mut doc, &lib);
         assert_eq!(

@@ -301,6 +301,37 @@ pub fn spoken_only_left_out_line(n: usize) -> String {
     }
 }
 
+/// The mix line's companion sentence for not-for-web
+/// paragraphs left out of learning (R-2b): the words are
+/// not private from print, they are private from the
+/// web, and a learned template cannot carry the mark,
+/// so learning the words would put them on future web
+/// pages with no mark at all. Said out loud, like the
+/// spoken-only leaving-out.
+pub fn web_hidden_left_out_line(n: usize) -> String {
+    if n == 1 {
+        "1 paragraph marked not for the web was left out; a learned template cannot \
+         carry the mark, so those words stay out of learning."
+            .to_string()
+    } else {
+        format!(
+            "{n} paragraphs marked not for the web were left out; a learned template \
+             cannot carry the mark, so those words stay out of learning."
+        )
+    }
+}
+
+/// What learning left out of one document, by mark:
+/// spoken-only paragraphs (audit Batch 1) and
+/// not-for-web paragraphs (R-2b). Both counts ride back
+/// with the dump so the mix line can say they were left
+/// out.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LeftOut {
+    pub spoken_only: usize,
+    pub web_hidden: usize,
+}
+
 /// A saved bulletin (.obd) as an extraction dump, so a
 /// church's own OpenBulletin files can teach the analyzer
 /// alongside everyone else's. Spans carry the frames' real
@@ -314,11 +345,16 @@ pub fn spoken_only_left_out_line(n: usize) -> String {
 /// week) was learned as standing content and would print
 /// every week. They are excluded here, and the count of
 /// them rides back with the dump so the mix line can say
-/// they were left out.
-pub fn dump_from_document(doc: &Document, source_name: &str) -> (ExtractionDump, usize) {
+/// they were left out. Not-for-web paragraphs are
+/// excluded on the same shape (R-2b): their words may
+/// print, but a learned template cannot carry the mark,
+/// so learned words would reach future web pages
+/// unmarked. A paragraph carrying both marks counts
+/// once, as spoken only.
+pub fn dump_from_document(doc: &Document, source_name: &str) -> (ExtractionDump, LeftOut) {
     let mut pages: Vec<PageInfo> = Vec::new();
     let mut spans: Vec<Span> = Vec::new();
-    let mut spoken_left_out = 0usize;
+    let mut left_out = LeftOut::default();
     // A threaded story is emitted ONCE, from its first
     // frame (round 2, R2-7): later frames hold the same
     // words on other panels, and emitting them again
@@ -344,7 +380,13 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> (ExtractionDump,
             for para in &story.paragraphs {
                 if para.spoken_only {
                     if !para.text().trim().is_empty() {
-                        spoken_left_out += 1;
+                        left_out.spoken_only += 1;
+                    }
+                    continue;
+                }
+                if para.web_hidden {
+                    if !para.text().trim().is_empty() {
+                        left_out.web_hidden += 1;
                     }
                     continue;
                 }
@@ -400,7 +442,7 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> (ExtractionDump,
         images: Vec::new(),
         loss_notes: Vec::new(),
     };
-    (dump, spoken_left_out)
+    (dump, left_out)
 }
 
 #[cfg(test)]
@@ -592,13 +634,18 @@ mod tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: Default::default(),
         }
     }
 
     #[test]
     fn document_becomes_a_dump_with_real_geometry() {
-        let (dump, spoken_left_out) = dump_from_document(&small_doc(), "week.obd");
-        assert_eq!(spoken_left_out, 0, "nothing private in this document");
+        let (dump, left_out) = dump_from_document(&small_doc(), "week.obd");
+        assert_eq!(
+            left_out,
+            LeftOut::default(),
+            "nothing private in this document"
+        );
         assert_eq!(dump.source_kind, SourceKind::Obd);
         assert_eq!(dump.pages.len(), 1);
         assert!((dump.pages[0].width_pt - 612.0).abs() < 0.01);
@@ -636,9 +683,9 @@ mod tests {
             panel.frames[0].id = format!("frame-{n}");
             doc.panels.push(panel);
         }
-        let (dump, spoken_left_out) = dump_from_document(&doc, "week.obd");
+        let (dump, left_out) = dump_from_document(&doc, "week.obd");
         assert_eq!(
-            spoken_left_out, 1,
+            left_out.spoken_only, 1,
             "the spoken-only paragraph counts once, not once per frame"
         );
         assert_eq!(
@@ -670,7 +717,7 @@ mod tests {
             prayer.spoken_only = true;
             doc.stories[0].paragraphs.push(prayer);
             let (dump, left_out) = dump_from_document(&doc, name);
-            total_left_out += left_out;
+            total_left_out += left_out.spoken_only;
             dumps.push(dump);
         }
         assert_eq!(total_left_out, 3, "one prayer per bulletin, all left out");
@@ -702,6 +749,34 @@ mod tests {
              and never become part of a template."
         );
         assert!(spoken_only_left_out_line(1).starts_with("1 spoken-only paragraph was"));
+    }
+
+    #[test]
+    fn web_hidden_paragraphs_never_enter_learning() {
+        // R-2b: not-for-web words may print, but a learned
+        // template cannot carry their mark, so learning
+        // them would put room words on future web pages
+        // unmarked. They stay out, counted separately
+        // from the spoken-only count; a paragraph with
+        // both marks counts once, as spoken only.
+        let mut doc = small_doc();
+        let mut kids = Paragraph::new("body", "Timmy and June, front row");
+        kids.web_hidden = true;
+        doc.stories[0].paragraphs.push(kids);
+        let mut both = Paragraph::new("body", "For Wilhelmina Quietname");
+        both.spoken_only = true;
+        both.web_hidden = true;
+        doc.stories[0].paragraphs.push(both);
+        let (dump, left_out) = dump_from_document(&doc, "week.obd");
+        assert_eq!(left_out.web_hidden, 1);
+        assert_eq!(
+            left_out.spoken_only, 1,
+            "the both-marks paragraph counts once"
+        );
+        assert!(dump.spans.iter().all(|s| !s.text.contains("Timmy")));
+        assert!(dump.spans.iter().all(|s| !s.text.contains("Wilhelmina")));
+        assert!(web_hidden_left_out_line(1)
+            .starts_with("1 paragraph marked not for the web was left out"));
     }
 
     #[test]

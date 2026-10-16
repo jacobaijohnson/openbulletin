@@ -1695,6 +1695,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
         asset_bytes: Default::default(),
         occasion_time: None,
         wanted_fonts: Vec::new(),
+        participants: Default::default(),
     };
     // The sheet exists to be printed, so it takes the print purpose.
     export_reader_pdf(&doc, ExportPurpose::ForPrinting)
@@ -2090,6 +2091,7 @@ mod tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: Default::default(),
         }
     }
 
@@ -2497,6 +2499,24 @@ mod tests {
         }
         // The working document still holds the paragraph.
         assert_eq!(doc.spoken_only_count(), 1);
+    }
+
+    #[test]
+    fn web_hidden_words_stay_in_the_printed_copies() {
+        // R-2b: not-for-web is a web-page rule only. The
+        // reader copy (and with it every print copy, which
+        // shares the funnel) keeps the paragraph whole.
+        let mut doc = sample_doc();
+        let mut hidden = ob_model::Paragraph::new("body", "Timmy and June, front row");
+        hidden.web_hidden = true;
+        doc.stories[2].paragraphs.push(hidden);
+        let bytes = export_reader_pdf(&doc, ExportPurpose::ForPrinting);
+        let text = extracted_text(&bytes);
+        assert!(
+            text.contains("Timmy and June"),
+            "the printed copy keeps not-for-web words: {text:.400}"
+        );
+        assert_eq!(doc.web_hidden_count(), 1);
     }
 
     #[test]
@@ -3021,6 +3041,7 @@ mod tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: Default::default(),
         }
     }
 

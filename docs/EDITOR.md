@@ -243,6 +243,27 @@ so no two views can disagree.
   The .obd keeps the paragraph; every export leaves it
   out and counts it, and Check leaves it alone, because
   words that never print cannot go wrong in print.
+- **Not for the web** (R-2b, 2026-10-16). The "Not for
+  the web" button beside "Spoken only" marks the caret's
+  whole paragraph the other way round: it DOES print in
+  the bulletin, and the web page leaves it out and
+  counts it. The bulletin is a room; the web page is
+  the world. Children's names are the standing case.
+  The idle page tags it NOT FOR WEB above its first
+  line (a paragraph with both marks wears both words),
+  and no printed copy ever carries the tag. Splitting
+  the paragraph keeps the mark on both halves, exactly
+  as spoken only does.
+- **Children in a picture** (R-2b, 2026-10-16). A
+  placed picture's right-click menu ends with the
+  office's own note: "This picture has children in
+  it" or "No children in this picture", and the menu
+  says which answer stands ("not noted yet" until
+  someone answers). Check asks about every placed
+  picture with no answer yet, aimed at its box. On
+  the web page a picture noted as having children
+  rides only when a permission is noted on its rights
+  record; print keeps every picture regardless.
   Pasting text that carries markdown
   marks (**bold**, *italic*) lands the marks as faces;
   plain paste is unchanged. If a session ever falls back to

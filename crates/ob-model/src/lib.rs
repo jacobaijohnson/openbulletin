@@ -169,6 +169,19 @@ pub struct Paragraph {
     /// paragraphs serialize exactly as they always have.
     #[serde(default, skip_serializing_if = "is_false")]
     pub spoken_only: bool,
+    /// Not for the web: this paragraph prints in the
+    /// bulletin but stays off the web page (roles build
+    /// R-2b). A printed bulletin is a room; the web page
+    /// is the world, and some words (children's names
+    /// above all) are for the room only. The HTML export
+    /// is the one door that leaves these paragraphs out,
+    /// and counts them; print, IDML, Scribus, and
+    /// markdown all keep them. The canvas shows them,
+    /// tagged, so the state is never hidden.
+    /// Serde-defaulted and not written when false, on
+    /// exactly the spoken-only discipline.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub web_hidden: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -193,6 +206,8 @@ impl<'de> Deserialize<'de> for Paragraph {
             runs: Option<Vec<Run>>,
             #[serde(default)]
             spoken_only: bool,
+            #[serde(default)]
+            web_hidden: bool,
         }
         let sh = Shadow::deserialize(deserializer)?;
         let runs = match (sh.runs, sh.text) {
@@ -204,6 +219,7 @@ impl<'de> Deserialize<'de> for Paragraph {
             style: sh.style,
             runs,
             spoken_only: sh.spoken_only,
+            web_hidden: sh.web_hidden,
         })
     }
 }
@@ -216,6 +232,7 @@ impl Paragraph {
             style: style.to_string(),
             runs: vec![Run::plain(text)],
             spoken_only: false,
+            web_hidden: false,
         }
     }
 
@@ -231,6 +248,7 @@ impl Paragraph {
             style: style.to_string(),
             runs: normalize_runs(runs),
             spoken_only: false,
+            web_hidden: false,
         }
     }
 
@@ -770,7 +788,35 @@ pub struct Panel {
     pub background_image: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+/// How this church prints children's names in the
+/// bulletin, chosen once in the Church Profile (roles
+/// build R-2b). The app does not enforce it: it cannot
+/// tell which names are children's. It repeats the rule
+/// where the words are typed and again at Check, as a
+/// reminder to look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ChildrenNames {
+    /// Full names, as the church has always printed them.
+    #[default]
+    FullNames,
+    /// First names only.
+    FirstNamesOnly,
+    /// No children's names in the bulletin.
+    NoNames,
+}
+
+impl ChildrenNames {
+    /// The rule in the words the Check reminder speaks.
+    pub fn rule_words(&self) -> &'static str {
+        match self {
+            ChildrenNames::FullNames => "children's full names",
+            ChildrenNames::FirstNamesOnly => "children's first names only",
+            ChildrenNames::NoNames => "no children's names",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChurchProfile {
     pub name: String,
     pub address: String,
@@ -786,6 +832,36 @@ pub struct ChurchProfile {
     /// profiles written before the field expect nothing.
     #[serde(default)]
     pub expected_parts: Vec<String>,
+    /// How this church prints children's names (roles
+    /// build R-2b). Serde-defaulted: profiles written
+    /// before the choice print full names, as they did.
+    #[serde(default)]
+    pub children_names: ChildrenNames,
+    /// The serving lines this church prints each week
+    /// ("Readers", "Acolytes", and the church's own), in
+    /// the order This Sunday shows them (roles build
+    /// R-2b). The starting set is the six built-in lines;
+    /// the church renames, adds, and removes its own.
+    /// Serde-defaulted to that starting set: a profile
+    /// written before the list existed serves the six.
+    #[serde(default = "default_serving_lines")]
+    pub serving_lines: Vec<String>,
+}
+
+impl Default for ChurchProfile {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            address: String::new(),
+            service_times: String::new(),
+            website: String::new(),
+            giving_url: String::new(),
+            pastor: String::new(),
+            expected_parts: Vec::new(),
+            children_names: ChildrenNames::FullNames,
+            serving_lines: default_serving_lines(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -876,6 +952,16 @@ pub struct RightsRecord {
     /// When they asserted it (ISO date).
     #[serde(default)]
     pub asserted_at: String,
+    /// Are there children in this picture, as far as the
+    /// office knows (roles build R-2b)? None means nobody
+    /// has said yet, and Check asks. Some(true) puts the
+    /// picture under the web page's stricter rule: it
+    /// rides the web page only when a permission is
+    /// noted on this record. Print never drops a picture
+    /// over this. Like the whole record, it is the
+    /// office's own note, not a proof.
+    #[serde(default)]
+    pub children_present: Option<bool>,
 }
 
 /// One asset in the document's store. Its bytes live in
@@ -935,6 +1021,20 @@ pub struct Document {
     /// real font later upgrades the document by itself.
     #[serde(default)]
     pub wanted_fonts: Vec<WantedFont>,
+    /// This week's serving names, by serving-line slug
+    /// (roles build R-2b): who reads, who ushers, who
+    /// gives the children's message. Values are stored
+    /// under the slug of the line's name AS SHOWN on
+    /// This Sunday; token resolution also honors the
+    /// built-in slugs, so a template's `{Sunday.acolytes}`
+    /// keeps printing after the church renames the line.
+    /// Before this map, the first four lines lived in
+    /// `fields` under their slugs; loading folds those
+    /// in (see `migrate_participants`). Serde-defaulted:
+    /// files written before the map hold their names in
+    /// `fields` until the fold.
+    #[serde(default)]
+    pub participants: BTreeMap<String, String>,
 }
 
 /// One font an imported document names that the library did
@@ -1005,6 +1105,91 @@ impl Document {
         }
     }
 
+    /// Fold the legacy participant fields into the
+    /// participants map (roles build R-2b): before the
+    /// map, the four original serving lines kept their
+    /// names in `fields` under their slugs (readers,
+    /// ushers, greeters, communion_assistants). The fold
+    /// runs only while the map is empty, the same shape
+    /// as the occasion-key migration above: a document
+    /// that already speaks in the map is left exactly as
+    /// it is, and its leftover field keys (if any) stay
+    /// readable through `participant_value`'s fallback.
+    pub fn migrate_participants(&mut self) {
+        if !self.participants.is_empty() {
+            return;
+        }
+        for (slug, _name) in PARTICIPANT_FIELDS.iter().take(4) {
+            if let Some(v) = self.fields.remove(*slug) {
+                self.participants.insert(slug.to_string(), v);
+            }
+        }
+    }
+
+    /// The names stored for one serving-line slug, as a
+    /// token like `{Sunday.acolytes}` resolves them.
+    /// Resolution order, so no honest storage goes
+    /// unread:
+    /// 1. the exact slug in the participants map (the
+    ///    slug of the name as shown, and every built-in
+    ///    slug, are both stored this way at times);
+    /// 2. the built-in alias: for a built-in slug, the
+    ///    slug its display name derives (and the other
+    ///    way round), because the two differ for
+    ///    "Children's message" and because a renamed
+    ///    line's stored key follows its current name;
+    /// 3. the legacy weekly fields, for a document that
+    ///    has not been through the load migration
+    ///    (importers and tests build documents in
+    ///    memory).
+    ///
+    /// Empty when the line holds no names this week.
+    pub fn participant_value(&self, slug: &str) -> String {
+        if let Some(v) = self.participants.get(slug) {
+            return v.clone();
+        }
+        for (bslug, bname) in PARTICIPANT_FIELDS {
+            let derived = serving_slug(bname);
+            if bslug == slug {
+                if let Some(v) = self.participants.get(&derived) {
+                    return v.clone();
+                }
+            }
+            if derived == slug {
+                if let Some(v) = self.participants.get(bslug) {
+                    return v.clone();
+                }
+            }
+        }
+        self.fields.get(slug).cloned().unwrap_or_default()
+    }
+
+    /// The names shown on one This Sunday row: the value
+    /// stored for the line whose display name this is.
+    pub fn participant_value_for_name(&self, display_name: &str) -> String {
+        self.participant_value(&serving_slug(display_name))
+    }
+
+    /// Store one This Sunday row's names under the slug
+    /// of the name as shown. A built-in line's permanent
+    /// slug key is cleared too, so an older stored value
+    /// cannot shadow the fresh one through the alias;
+    /// an empty value clears the line outright.
+    pub fn set_participant_value(&mut self, display_name: &str, value: &str) {
+        let slug = serving_slug(display_name);
+        if let Some(bslug) = builtin_serving_slug(display_name) {
+            if bslug != slug {
+                self.participants.remove(bslug);
+            }
+        }
+        let value = value.trim();
+        if value.is_empty() {
+            self.participants.remove(&slug);
+        } else {
+            self.participants.insert(slug, value.to_string());
+        }
+    }
+
     /// How many paragraphs in the document are spoken only
     /// (read aloud in the service, never published).
     pub fn spoken_only_count(&self) -> usize {
@@ -1035,6 +1220,37 @@ impl Document {
         }
         (out, removed)
     }
+
+    /// How many paragraphs in the document are marked
+    /// not for the web (they print; they stay off the
+    /// web page).
+    pub fn web_hidden_count(&self) -> usize {
+        self.stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter())
+            .filter(|p| p.web_hidden)
+            .count()
+    }
+
+    /// The web page's copy of this document: a clone with
+    /// every not-for-web paragraph removed, plus how many
+    /// were removed. ONLY the HTML export follows this
+    /// rule (roles build R-2b): print, IDML, Scribus, and
+    /// markdown keep these paragraphs, because the
+    /// bulletin in the room is not the web page. The web
+    /// export composes this AFTER `without_spoken_only`,
+    /// so a paragraph carrying both marks is counted
+    /// once, as spoken only.
+    pub fn without_web_hidden(&self) -> (Document, usize) {
+        let mut out = self.clone();
+        let mut removed = 0usize;
+        for story in &mut out.stories {
+            let before = story.paragraphs.len();
+            story.paragraphs.retain(|p| !p.web_hidden);
+            removed += before - story.paragraphs.len();
+        }
+        (out, removed)
+    }
 }
 
 /// The sentence an export door adds when spoken-only
@@ -1050,22 +1266,101 @@ pub fn spoken_only_left_out_sentence(count: usize) -> String {
     }
 }
 
-/// The participant fields (docs/planning/beyond-print.md
-/// section 4): who is serving this week, beside the sermon
-/// title on the This Sunday step (the J2 pattern). Each is
-/// (field key in `Document::fields`, the step's label, the
-/// token a template prints it with). Weekly by nature:
-/// Next Sunday clears them and names what it cleared.
-pub const PARTICIPANT_FIELDS: [(&str, &str, &str); 4] = [
-    ("readers", "Readers", "{Sunday.readers}"),
-    ("ushers", "Ushers", "{Sunday.ushers}"),
-    ("greeters", "Greeters", "{Sunday.greeters}"),
-    (
-        "communion_assistants",
-        "Communion assistants",
-        "{Sunday.communion_assistants}",
-    ),
+/// The sentence the web-page door adds when not-for-web
+/// paragraphs were left out of the page, in the words
+/// the office hears everywhere. Empty when nothing was
+/// left out.
+pub fn web_hidden_left_out_sentence(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => " 1 paragraph was left out of the web page; it is for the room, not the web."
+            .to_string(),
+        n => format!(
+            " {n} paragraphs were left out of the web page; they are for the room, not the web."
+        ),
+    }
+}
+
+/// The built-in serving lines (docs/planning/
+/// beyond-print.md section 4, grown by roles build
+/// R-2b): who is serving this week, beside the sermon
+/// title on the This Sunday step (the J2 pattern). Each
+/// is (the line's permanent slug, its built-in display
+/// name). A template prints a line's names with the
+/// token `{Sunday.<slug>}`. Weekly by nature: Next
+/// Sunday clears them and names what it cleared.
+///
+/// The slug is the line's identity; the display name is
+/// the church's words and can change. This table is the
+/// fixed alias between the two for the built-ins: token
+/// resolution tries the slug of the name as shown AND
+/// this table, so a line's token keeps working after
+/// the church renames the line (see
+/// [`Document::participant_value`]).
+pub const PARTICIPANT_FIELDS: [(&str, &str); 6] = [
+    ("readers", "Readers"),
+    ("ushers", "Ushers"),
+    ("greeters", "Greeters"),
+    ("communion_assistants", "Communion assistants"),
+    ("childrens_message", "Children's message"),
+    ("acolytes", "Acolytes"),
 ];
+
+/// The token a template prints one serving line's names
+/// with: `{Sunday.<slug>}`.
+pub fn participant_token(slug: &str) -> String {
+    format!("{{Sunday.{slug}}}")
+}
+
+/// The slug a serving line's display name derives:
+/// lowercase, every run of non-alphanumeric characters
+/// becomes one underscore, no underscore at either end
+/// ("Children's message" derives "children_s_message";
+/// its permanent slug is "childrens_message", which is
+/// why the built-in alias table exists).
+pub fn serving_slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut pending_underscore = false;
+    for c in name.chars() {
+        if c.is_alphanumeric() {
+            if pending_underscore && !out.is_empty() {
+                out.push('_');
+            }
+            pending_underscore = false;
+            out.extend(c.to_lowercase());
+        } else {
+            pending_underscore = true;
+        }
+    }
+    out
+}
+
+/// The built-in slug for a built-in display name, matched
+/// case-insensitively ("acolytes" for "Acolytes"), or
+/// None when the name is the church's own line.
+pub fn builtin_serving_slug(name: &str) -> Option<&'static str> {
+    PARTICIPANT_FIELDS
+        .iter()
+        .find(|(_, n)| n.eq_ignore_ascii_case(name.trim()))
+        .map(|(slug, _)| *slug)
+}
+
+/// The built-in display name for a built-in slug.
+pub fn builtin_serving_name(slug: &str) -> Option<&'static str> {
+    PARTICIPANT_FIELDS
+        .iter()
+        .find(|(s, _)| *s == slug)
+        .map(|(_, name)| *name)
+}
+
+/// The serving lines a church starts with: the six
+/// built-in display names, in their built-in order.
+pub fn default_serving_lines() -> Vec<String> {
+    PARTICIPANT_FIELDS
+        .iter()
+        .map(|(_, name)| name.to_string())
+        .collect()
+}
 
 impl Document {
     /// Clamp the numbers a hostile or hand-edited file could set
@@ -1161,10 +1456,10 @@ pub struct ResolvedText {
 /// The field tokens and where their values come from, in one
 /// table so the plain resolver and the mapped resolver can
 /// never disagree about the set.
-fn field_tokens(doc: &Document) -> Vec<(&'static str, String)> {
+fn field_tokens(doc: &Document) -> Vec<(String, String)> {
     let p = &doc.profile;
     let get = |k: &str| doc.fields.get(k).cloned().unwrap_or_default();
-    vec![
+    let mut out: Vec<(String, String)> = [
         ("{Church.name}", p.name.clone()),
         ("{Church.address}", p.address.clone()),
         ("{Church.times}", p.service_times.clone()),
@@ -1174,15 +1469,49 @@ fn field_tokens(doc: &Document) -> Vec<(&'static str, String)> {
         ("{Sunday.date}", get("occasion_date_long")),
         ("{Sunday.name}", get("occasion_name")),
         ("{Sunday.reading}", get("reading")),
-        ("{Sunday.readers}", get("readers")),
-        ("{Sunday.ushers}", get("ushers")),
-        ("{Sunday.greeters}", get("greeters")),
-        ("{Sunday.communion_assistants}", get("communion_assistants")),
         (
             "{Service.time}",
             doc.occasion_time.clone().unwrap_or_default(),
         ),
     ]
+    .into_iter()
+    .map(|(tok, val)| (tok.to_string(), val))
+    .collect();
+    // The serving lines (roles build R-2b): one token per
+    // line, minted from the slug. The set is the union of
+    // the built-in slugs, the slugs of the profile's
+    // current line names, and every slug holding a stored
+    // value, so a token resolves the same week it is
+    // typed, the week after a rename, and for a line the
+    // profile no longer shows but the week still holds.
+    // Values resolve through `participant_value`, whose
+    // alias rules these tokens inherit. A serving slug
+    // that collided with a fixed token above loses: the
+    // fixed words were there first.
+    let mut slugs: Vec<String> = Vec::new();
+    let mut add_slug = |slug: String| {
+        if !slug.is_empty() && !slugs.contains(&slug) {
+            slugs.push(slug);
+        }
+    };
+    for (slug, _name) in PARTICIPANT_FIELDS {
+        add_slug(slug.to_string());
+    }
+    for name in &p.serving_lines {
+        add_slug(serving_slug(name));
+    }
+    for key in doc.participants.keys() {
+        add_slug(key.clone());
+    }
+    for slug in slugs {
+        let tok = participant_token(&slug);
+        if out.iter().any(|(t, _)| *t == tok) {
+            continue;
+        }
+        let val = doc.participant_value(&slug);
+        out.push((tok, val));
+    }
+    out
 }
 
 /// Resolve `{...}` field tokens in text against the profile and
@@ -1203,8 +1532,8 @@ pub fn resolve_fields_mapped(text: &str, doc: &Document) -> ResolvedText {
         let rest = &text[i..];
         let hit = tokens
             .iter()
-            .find(|(tok, _)| rest.starts_with(tok))
-            .map(|(tok, val)| (*tok, val));
+            .find(|(tok, _)| rest.starts_with(tok.as_str()))
+            .map(|(tok, val)| (tok.as_str(), val));
         match hit {
             Some((tok, val)) => {
                 let raw = i..i + tok.len();
@@ -1368,15 +1697,19 @@ pub fn split_story_paragraphs(
     let mut tail: Vec<Paragraph> = Vec::new();
     // The two pieces of the cut paragraph keep its
     // spoken-only flag: splitting a prayer name in two
-    // must never make either half printable.
+    // must never make either half printable. The
+    // not-for-web flag rides the same way, for the
+    // same reason.
     if byte > 0 || para == 0 {
         let mut p = Paragraph::from_runs(&target.style, head_runs);
         p.spoken_only = target.spoken_only;
+        p.web_hidden = target.web_hidden;
         head.push(p);
     }
     if byte < target.text().len() || para == paras.len() - 1 {
         let mut p = Paragraph::from_runs(&target.style, tail_runs);
         p.spoken_only = target.spoken_only;
+        p.web_hidden = target.web_hidden;
         tail.push(p);
     }
     tail.extend_from_slice(&paras[para + 1..]);
@@ -1560,6 +1893,7 @@ mod tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: BTreeMap::new(),
         };
         assert_eq!(
             resolve_fields("{Church.name} - {Sunday.name}, {Sunday.date}", &doc),
@@ -1585,6 +1919,7 @@ mod tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: BTreeMap::new(),
         }
     }
 
@@ -1615,14 +1950,139 @@ mod tests {
             "Readers: Ana Ruiz|Ushers: Tom and Bea|Greeters: Sam|Communion: Pat, Jo"
         );
         // The spec table's tokens and the resolver's agree.
-        for (key, _label, token) in PARTICIPANT_FIELDS {
+        for (key, _label) in PARTICIPANT_FIELDS.iter().take(4) {
+            let key = *key;
+            let token = participant_token(key);
             assert!(doc.fields.contains_key(key), "test setup covers {key}");
             assert_eq!(
-                resolve_fields(token, &doc),
+                resolve_fields(&token, &doc),
                 doc.fields[key],
                 "{token} resolves from {key}"
             );
         }
+        // The two lines R-2b added resolve from the map.
+        doc.set_participant_value("Children's message", "Ms. Dee");
+        doc.set_participant_value("Acolytes", "Sam, Jo");
+        assert_eq!(
+            resolve_fields("{Sunday.childrens_message}", &doc),
+            "Ms. Dee"
+        );
+        assert_eq!(resolve_fields("{Sunday.acolytes}", &doc), "Sam, Jo");
+    }
+
+    #[test]
+    fn legacy_participant_fields_fold_into_the_map_on_load() {
+        // A file written before the participants map: the
+        // four names live in `fields` under their slugs.
+        let mut doc = bare_doc();
+        doc.fields
+            .insert("readers".to_string(), "Ana Ruiz".to_string());
+        doc.fields
+            .insert("ushers".to_string(), "Tom and Bea".to_string());
+        doc.migrate_participants();
+        assert!(!doc.fields.contains_key("readers"));
+        assert_eq!(doc.participant_value("readers"), "Ana Ruiz");
+        assert_eq!(
+            resolve_fields("Readers: {Sunday.readers}", &doc),
+            "Readers: Ana Ruiz"
+        );
+        // The fold is a fold, not a copy: running it again
+        // changes nothing, and a document already speaking
+        // in the map keeps its fields untouched.
+        doc.fields
+            .insert("greeters".to_string(), "Late".to_string());
+        doc.migrate_participants();
+        assert_eq!(doc.fields.get("greeters").map(String::as_str), Some("Late"));
+        // ...and the leftover still resolves, through the
+        // fallback, so no honest storage goes unread.
+        assert_eq!(resolve_fields("{Sunday.greeters}", &doc), "Late");
+    }
+
+    #[test]
+    fn a_renamed_serving_line_keeps_its_token() {
+        // R-2b: the church renames "Acolytes" to "Candle
+        // lighters". Names stored while the line showed
+        // its built-in name sit under the built-in slug,
+        // and the template's token must keep resolving.
+        let mut doc = bare_doc();
+        doc.set_participant_value("Acolytes", "Sam, Jo");
+        doc.profile.serving_lines = vec!["Candle lighters".to_string()];
+        assert_eq!(resolve_fields("{Sunday.acolytes}", &doc), "Sam, Jo");
+        // Names stored under the new name as shown resolve
+        // under the new name's own token too.
+        doc.set_participant_value("Candle lighters", "Rae");
+        assert_eq!(doc.participant_value_for_name("Candle lighters"), "Rae");
+        assert_eq!(resolve_fields("{Sunday.candle_lighters}", &doc), "Rae");
+    }
+
+    #[test]
+    fn childrens_message_stores_under_its_shown_slug_and_resolves_by_its_token() {
+        // The shown name derives "children_s_message"; the
+        // permanent token is {Sunday.childrens_message}.
+        // The alias table bridges them.
+        let mut doc = bare_doc();
+        doc.set_participant_value("Children's message", "Ms. Dee");
+        assert_eq!(
+            doc.participants
+                .get("children_s_message")
+                .map(String::as_str),
+            Some("Ms. Dee")
+        );
+        assert_eq!(
+            resolve_fields("{Sunday.childrens_message}", &doc),
+            "Ms. Dee"
+        );
+        assert_eq!(
+            doc.participant_value_for_name("Children's message"),
+            "Ms. Dee"
+        );
+    }
+
+    #[test]
+    fn web_hidden_paragraphs_leave_only_the_web_copy() {
+        let mut doc = bare_doc();
+        let mut hidden = Paragraph::plain("body", "Timmy and June, front row");
+        hidden.web_hidden = true;
+        doc.stories.push(Story {
+            id: "news".into(),
+            paragraphs: vec![Paragraph::plain("body", "Welcome."), hidden],
+            keep_through: None,
+        });
+        assert_eq!(doc.web_hidden_count(), 1);
+        let (web_doc, removed) = doc.without_web_hidden();
+        assert_eq!(removed, 1);
+        assert_eq!(web_doc.stories[0].paragraphs.len(), 1);
+        // The working document itself is untouched.
+        assert_eq!(doc.stories[0].paragraphs.len(), 2);
+        assert_eq!(web_hidden_left_out_sentence(0), "");
+        assert_eq!(
+            web_hidden_left_out_sentence(1),
+            " 1 paragraph was left out of the web page; it is for the room, not the web."
+        );
+        assert_eq!(
+            web_hidden_left_out_sentence(2),
+            " 2 paragraphs were left out of the web page; they are for the room, not the web."
+        );
+    }
+
+    #[test]
+    fn web_hidden_serializes_only_when_set() {
+        // Old paragraphs carry no web_hidden key and load
+        // as web-visible; a flagged one round-trips; an
+        // unflagged one writes no key, so old files keep
+        // their exact byte shape.
+        let old: Paragraph =
+            serde_json::from_str(r#"{"style":"body","text":"Hello"}"#).expect("old shape");
+        assert!(!old.web_hidden);
+        let plain_json =
+            serde_json::to_string(&Paragraph::plain("body", "Hello")).expect("serialize");
+        assert!(!plain_json.contains("web_hidden"), "{plain_json}");
+        let mut flagged = Paragraph::plain("body", "Hello");
+        flagged.web_hidden = true;
+        let json = serde_json::to_string(&flagged).expect("serialize");
+        assert!(json.contains("\"web_hidden\":true"), "{json}");
+        let back: Paragraph = serde_json::from_str(&json).expect("round trip");
+        assert!(back.web_hidden);
     }
 
     #[test]
@@ -1704,6 +2164,7 @@ mod tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: BTreeMap::new(),
         }
     }
 
@@ -1883,6 +2344,7 @@ mod occasion_tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: BTreeMap::new(),
         }
     }
 
@@ -2200,6 +2662,7 @@ mod picture_tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: BTreeMap::new(),
         }
     }
 

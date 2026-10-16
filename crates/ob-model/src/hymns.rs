@@ -450,6 +450,7 @@ mod tests {
             asset_bytes: BTreeMap::new(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: BTreeMap::new(),
         };
         let mut mem = HymnMemory::default();
         assert!(mem.learn_from_document(&doc, d(2026, 10, 18)));

@@ -65,6 +65,7 @@ pub fn rights_from_music(info: &MusicInfo, source_name: &str) -> RightsRecord {
         licensor_ref: String::new(),
         asserted_by: String::new(),
         asserted_at: String::new(),
+        children_present: None,
     }
 }
 
@@ -248,6 +249,7 @@ pub fn build_music_draft(
         asset_bytes: Default::default(),
         occasion_time: None,
         wanted_fonts: Vec::new(),
+        participants: Default::default(),
     };
     // The music file itself rides in the document, so the
     // bulletin travels complete and the music can be

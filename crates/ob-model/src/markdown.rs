@@ -321,6 +321,7 @@ pub fn document_from_markdown(text: &str, profile: ChurchProfile, source_name: &
         asset_bytes: Default::default(),
         occasion_time: None,
         wanted_fonts: Vec::new(),
+        participants: Default::default(),
     }
 }
 
@@ -388,6 +389,59 @@ fn to_markdown_filtered(doc: &Document) -> String {
 }
 
 #[test]
+fn web_hidden_paragraphs_stay_in_markdown() {
+    // R-2b: not-for-web is a web-page rule only. Markdown
+    // is a publication of the room's copy, like print: the
+    // paragraph rides along.
+    let mut hidden = Paragraph::new("body", "Timmy and June, front row");
+    hidden.web_hidden = true;
+    let doc = crate::Document {
+        format_version: crate::FORMAT_VERSION,
+        title: "Test".to_string(),
+        profile: crate::ChurchProfile::default(),
+        fields: Default::default(),
+        styles: crate::default_styles(),
+        stories: vec![crate::Story {
+            id: "notes".to_string(),
+            keep_through: None,
+            paragraphs: vec![Paragraph::new("body", "For the food bank crew"), hidden],
+        }],
+        panels: vec![crate::Panel {
+            id: "p1".to_string(),
+            name: "Panel".to_string(),
+            size: crate::Size::new(396_000, 612_000),
+            frames: vec![crate::Frame {
+                id: "f1".to_string(),
+                name: "Notes".to_string(),
+                kind: crate::FrameKind::Text,
+                rect: crate::Rect::new(0, 0, 300_000, 500_000),
+                story_id: Some("notes".to_string()),
+                role: crate::ContentRole::Weekly,
+                picture: None,
+                music: None,
+            }],
+            background_image: None,
+            guides: Vec::new(),
+        }],
+        sheet: crate::SheetSpec {
+            preset: "letter-bifold".to_string(),
+            size: crate::Size::new(792_000, 612_000),
+        },
+        no_announcements: false,
+        assets: Vec::new(),
+        asset_bytes: Default::default(),
+        occasion_time: None,
+        wanted_fonts: Vec::new(),
+        participants: Default::default(),
+    };
+    let text = to_markdown(&doc);
+    assert!(
+        text.contains("Timmy and June, front row"),
+        "markdown keeps not-for-web words: {text}"
+    );
+}
+
+#[test]
 fn spoken_only_paragraphs_stay_out_of_markdown() {
     let mut spoken = Paragraph::new("body", "For Wilhelmina Quietname");
     spoken.spoken_only = true;
@@ -428,6 +482,7 @@ fn spoken_only_paragraphs_stay_out_of_markdown() {
         asset_bytes: Default::default(),
         occasion_time: None,
         wanted_fonts: Vec::new(),
+        participants: Default::default(),
     };
     let (md, left_out) = to_markdown_report(&doc);
     assert_eq!(left_out, 1);

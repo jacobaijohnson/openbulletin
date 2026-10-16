@@ -198,6 +198,28 @@ resolution-honest printing, recorded in section 6.
   those words. They start empty, and Next Sunday clears
   them (the new week has new people) and names what it
   cleared: "Cleared for the new week: Readers, Ushers."
+  Widened by R-2b (2026-10-16): the serving lines are
+  the church's own list now (the profile names them;
+  Children's message and Acolytes joined the built-ins),
+  the names live in a participants map keyed by slug,
+  and a renamed line keeps its built-in token resolving
+  through the alias table (FORMAT.md carries the rule).
+  Start holds both new church rules: the serving lines
+  editor and "Children's names in the bulletin".
+- **Not for web, and children in pictures** (R-2b,
+  2026-10-16). The second privacy mark: a paragraph
+  marked not for the web prints in the bulletin and
+  stays off the web page (the bulletin is a room; the
+  web page is the world), tagged NOT FOR WEB on the
+  editing page and counted at the web door. Pictures
+  carry a children-present note on their rights
+  record: Check asks until someone answers, and a
+  picture noted as having children rides the web page
+  only with a permission noted. The church's rule for
+  children's names is chosen once on Start and
+  repeated as a reminder at Check and Announcements;
+  the app cannot tell which names are children's, and
+  says so.
 - **Spoken-only paragraphs.** The rule, in plain words:
   a prayer name can be marked spoken only, and then it
   is read aloud in the service and never printed. The

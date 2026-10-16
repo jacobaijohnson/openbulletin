@@ -49,6 +49,29 @@ pub struct HtmlExportReport {
     /// aloud in the service and never publish, this web
     /// page included.
     pub spoken_only_left_out: usize,
+    /// Not-for-web paragraphs left out (R-2b): they print
+    /// in the bulletin but are for the room, not the web.
+    /// A paragraph carrying both marks is counted as
+    /// spoken only, never twice.
+    pub web_hidden_left_out: usize,
+    /// Placed pictures left out because they have
+    /// children in them and no permission is noted on
+    /// their rights record (R-2b). The page carries a
+    /// note where each belongs; print keeps them all.
+    pub children_left_out: usize,
+}
+
+/// The sentence the web-page doors add when pictures of
+/// children were left out of the page, in plain words.
+/// Empty when none were.
+pub fn children_left_out_sentence(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => " 1 picture of children was left out of the web page; no parent permission is noted for it.".to_string(),
+        n => format!(
+            " {n} pictures of children were left out of the web page; no parent permission is noted for them."
+        ),
+    }
 }
 
 /// The reading-edition sentence, the page's first line
@@ -58,6 +81,13 @@ const READING_NOTE: &str = "This is the reading edition of the bulletin: all the
 /// The note a picture box leaves when its picture cannot
 /// be carried.
 const MISSING_NOTE: &str = "A picture belongs here; it is missing from the bulletin file.";
+
+/// The note a picture box leaves when its picture has
+/// children in it and no permission is noted (R-2b): the
+/// picture is in the printed bulletin, in the room; the
+/// web page is the world, and waits for the note.
+const CHILDREN_NOTE: &str =
+    "A picture with children in it belongs here; it is in the printed bulletin.";
 
 /// The note the Credits section carries when a placed
 /// picture owes a credit nobody recorded enough of to
@@ -698,6 +728,21 @@ fn inline_svg(bytes: &[u8], name: &str) -> Option<String> {
 /// and never upscaled.
 const WEB_PPI: f64 = 150.0;
 
+/// Is a permission noted on this rights record, for the
+/// web page's children rule (R-2b)? A credit line counts:
+/// a church that wrote the credit down did the noting.
+/// So does a license that needs no one's permission:
+/// the church's own work, public domain, CC0. This is
+/// the office's own note, read at face value, not a
+/// proof that a permission exists.
+fn permission_noted(rights: &ob_model::RightsRecord) -> bool {
+    !rights.credit_text.trim().is_empty()
+        || matches!(
+            rights.license,
+            LicenseKind::ChurchOwned | LicenseKind::PublicDomain | LicenseKind::Cc0
+        )
+}
+
 /// One picture box as a figure: the picture embedded, or
 /// the missing note in its place (counted either way).
 /// Returns the asset that was actually carried, so the
@@ -720,6 +765,19 @@ fn figure_html(
     let Some(bytes) = doc.asset_data(&placement.asset) else {
         return missing(report, out);
     };
+    // The children rule (R-2b): a picture the office has
+    // noted children in rides the web page only when a
+    // permission is noted on its record. Nobody having
+    // said yet (None) does not trigger the rule: Check
+    // is what asks the question. Print never drops a
+    // picture over this.
+    if let Some(asset) = asset {
+        if asset.rights.children_present == Some(true) && !permission_noted(&asset.rights) {
+            report.children_left_out += 1;
+            out.push_str(&format!("<p class=\"missing\">{CHILDREN_NOTE}</p>\n"));
+            return None;
+        }
+    }
     let name = picture_name(doc, frame, asset);
     match ob_image::sniff(bytes) {
         ob_image::PictureFormat::Svg => {
@@ -913,9 +971,15 @@ pub fn export_html(doc: &Document) -> Result<(Vec<u8>, HtmlExportReport), String
     // page below is composed from the publication copy, so
     // headings, credits dedupe, and words all agree.
     let (filtered, spoken_only_left_out) = doc.without_spoken_only();
+    // Not-for-web paragraphs print but stay off this page
+    // (R-2b): the filter composes after the spoken-only
+    // one, so a paragraph carrying both marks is already
+    // gone here and counts once, as spoken only.
+    let (filtered, web_hidden_left_out) = filtered.without_web_hidden();
     let doc = &filtered;
     let mut report = HtmlExportReport {
         spoken_only_left_out,
+        web_hidden_left_out,
         ..HtmlExportReport::default()
     };
     let headings = heading_levels(doc);
@@ -1083,6 +1147,121 @@ mod tests {
         assert_eq!(doc.spoken_only_count(), 1);
     }
 
+    #[test]
+    fn web_hidden_words_print_but_never_reach_the_web_page() {
+        // R-2b: a printed bulletin is a room; the web page
+        // is the world. Not-for-web words stay off the
+        // page and are counted; the working document
+        // keeps them (print keeps them too: see ob-pdf).
+        let mut doc = sample_doc();
+        let notes = &mut doc.stories[2];
+        let mut hidden = Paragraph::new("body", "Timmy and June, front row");
+        hidden.web_hidden = true;
+        notes.paragraphs.push(hidden);
+        let mut both = Paragraph::new("body", "For Wilhelmina Quietname");
+        both.spoken_only = true;
+        both.web_hidden = true;
+        notes.paragraphs.push(both);
+        let (bytes, report) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            !html.contains("Timmy and June"),
+            "a not-for-web name leaked onto the web page"
+        );
+        assert!(!html.contains("Wilhelmina"));
+        assert_eq!(report.web_hidden_left_out, 1);
+        // The paragraph carrying both marks counts once,
+        // as spoken only.
+        assert_eq!(report.spoken_only_left_out, 1);
+        assert_eq!(doc.web_hidden_count(), 2);
+    }
+
+    #[test]
+    fn pictures_of_children_ride_the_web_page_only_with_a_permission_noted() {
+        // R-2b: the web rule bites only on Some(true)
+        // without a noted permission.
+        let set_photo_rights = |doc: &mut Document, f: &dyn Fn(&mut RightsRecord)| {
+            let asset = doc
+                .assets
+                .iter_mut()
+                .find(|a| a.rights.title == "Church picnic")
+                .expect("the sample photo");
+            f(&mut asset.rights);
+        };
+        // Nobody has said yet (None): the picture rides;
+        // Check is what asks the question.
+        let doc = sample_doc();
+        let (bytes, report) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        assert!(html.contains("alt=\"Church picnic\""));
+        assert_eq!(report.children_left_out, 0);
+
+        // Children in it, no permission noted: the page
+        // leaves the note and counts it; the picture
+        // itself stays out.
+        let mut doc = sample_doc();
+        set_photo_rights(&mut doc, &|r| {
+            r.children_present = Some(true);
+            r.license = LicenseKind::Unknown;
+        });
+        let (bytes, report) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            !html.contains("alt=\"Church picnic\""),
+            "an unpermissioned picture of children reached the web page"
+        );
+        assert!(html.contains(
+            "A picture with children in it belongs here; it is in the printed bulletin."
+        ));
+        assert_eq!(report.children_left_out, 1);
+        assert_eq!(report.missing_pictures, 1, "only the gone box is missing");
+        // The working document keeps the picture and the
+        // note; print never drops it (see ob-pdf).
+        assert_eq!(
+            doc.assets
+                .iter()
+                .find(|a| a.rights.title == "Church picnic")
+                .map(|a| a.rights.children_present),
+            Some(Some(true))
+        );
+
+        // Children in it, permission noted as a credit
+        // line: the picture rides.
+        let mut doc = sample_doc();
+        set_photo_rights(&mut doc, &|r| {
+            r.children_present = Some(true);
+            r.license = LicenseKind::Unknown;
+            r.credit_text = "Photo by Lee, used with parent permission.".into();
+        });
+        let (bytes, report) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        assert!(html.contains("alt=\"Church picnic\""));
+        assert_eq!(report.children_left_out, 0);
+
+        // No children in it: the picture rides whatever
+        // the record otherwise says.
+        let mut doc = sample_doc();
+        set_photo_rights(&mut doc, &|r| {
+            r.children_present = Some(false);
+            r.license = LicenseKind::Unknown;
+        });
+        let (bytes, report) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        assert!(html.contains("alt=\"Church picnic\""));
+        assert_eq!(report.children_left_out, 0);
+
+        // The door sentence, in its three shapes.
+        assert_eq!(children_left_out_sentence(0), "");
+        assert_eq!(
+            children_left_out_sentence(1),
+            " 1 picture of children was left out of the web page; no parent permission is noted for it."
+        );
+        assert_eq!(
+            children_left_out_sentence(2),
+            " 2 pictures of children were left out of the web page; no parent permission is noted for them."
+        );
+    }
+
     /// The standard sample: the LetterBifold template for
     /// Grace Lutheran, dressed with a bold run, a <3, a
     /// photo, a CC BY clip, a CC BY-SA photo whose credit
@@ -1100,6 +1279,8 @@ mod tests {
                 website: "gracelutheran.example".into(),
                 giving_url: String::new(),
                 expected_parts: Vec::new(),
+                children_names: Default::default(),
+                serving_lines: ob_model::default_serving_lines(),
             },
             start,
             "Twentieth Sunday after Pentecost",

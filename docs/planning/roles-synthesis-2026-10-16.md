@@ -133,6 +133,24 @@ guard — the last is also a general data-loss fix);
 privacy trio + participant extensions; (5) inserts I1;
 (6) part proofs + licensing report; (7) inserts I2.
 
+## Shipped addendum (2026-10-16)
+
+Item (4), the children's privacy trio + participant
+extensions, SHIPPED as Roles R-2b: the not-for-web
+paragraph mark (HTML door only; the template learner
+excludes marked paragraphs too, since a learned
+template cannot carry the mark), the children-in-this-
+picture note on rights records with the Check question
+and the web door's permission rule, the children's
+names rule on Start repeated at Check and
+Announcements, the serving lines generalized
+(participants map keyed by slug, profile-named lines,
+built-in alias table keeps renamed lines' tokens
+resolving; Children's message and Acolytes joined),
+and the two new lines in the starter template's
+Serving section. FORMAT.md carries the data rules;
+EDITOR.md and beyond-print.md the surface.
+
 ## Open questions (Jacob / Pastor Mark only)
 
 From the lanes, deduplicated: which channel senders

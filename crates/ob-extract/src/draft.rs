@@ -890,6 +890,7 @@ fn build_draft(
         asset_bytes: Default::default(),
         occasion_time: None,
         wanted_fonts,
+        participants: Default::default(),
     };
     // The picture channel: bytes the caller supplied ride
     // into the asset store, one review item per page that

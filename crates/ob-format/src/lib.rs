@@ -75,6 +75,7 @@ pub fn load(path: &Path) -> Result<Document, String> {
         load_v0_json(path)?
     };
     doc.migrate_occasion_keys();
+    doc.migrate_participants();
     absorb_sidecar_pictures(&mut doc, path);
     Ok(doc.sanitized())
 }
@@ -322,6 +323,7 @@ mod tests {
             asset_bytes: Default::default(),
             occasion_time: None,
             wanted_fonts: Vec::new(),
+            participants: Default::default(),
         }
     }
 
@@ -367,6 +369,36 @@ mod tests {
         assert_eq!(&head[..4], b"PK\x03\x04", "v1 files are zips");
         let back = load(&path).unwrap();
         assert_eq!(doc, back);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_written_before_the_participants_map_loads_with_its_names() {
+        // R-2b: an old file keeps its serving names in
+        // `fields` under their slugs and has no
+        // `participants` key at all. Loading folds them
+        // into the map, and the tokens resolve.
+        let mut doc = test_doc();
+        doc.fields
+            .insert("readers".to_string(), "Ana Ruiz".to_string());
+        doc.fields
+            .insert("ushers".to_string(), "Tom and Bea".to_string());
+        let mut json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&doc).expect("json")).expect("value");
+        json.as_object_mut().expect("object").remove("participants");
+        let dir = scratch("parts");
+        let path = dir.join("old.obd");
+        std::fs::write(&path, json.to_string()).expect("write");
+        let loaded = load(&path).expect("loads");
+        assert_eq!(loaded.participant_value("readers"), "Ana Ruiz");
+        assert_eq!(
+            ob_model::resolve_fields("Readers: {Sunday.readers}", &loaded),
+            "Readers: Ana Ruiz"
+        );
+        assert!(
+            !loaded.fields.contains_key("readers"),
+            "the fold moved the name out of fields"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

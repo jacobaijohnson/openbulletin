@@ -244,6 +244,8 @@ fn run(cli: Cli) -> Result<(), String> {
                 giving_url: String::new(),
                 pastor,
                 expected_parts: Vec::new(),
+                children_names: Default::default(),
+                serving_lines: ob_model::default_serving_lines(),
             };
             let doc = ob_layout::build_template(preset, profile, date, &sunday_name);
             ob_format::save(&doc, &out)?;
@@ -384,6 +386,18 @@ fn run(cli: Cli) -> Result<(), String> {
                 println!(
                     "note:{}",
                     ob_model::spoken_only_left_out_sentence(report.spoken_only_left_out)
+                );
+            }
+            if report.web_hidden_left_out > 0 {
+                println!(
+                    "note:{}",
+                    ob_model::web_hidden_left_out_sentence(report.web_hidden_left_out)
+                );
+            }
+            if report.children_left_out > 0 {
+                println!(
+                    "note:{}",
+                    ob_extract::html_export::children_left_out_sentence(report.children_left_out)
                 );
             }
             Ok(())
@@ -727,6 +741,7 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
         asset_bytes: Default::default(),
         occasion_time: None,
         wanted_fonts: Vec::new(),
+        participants: Default::default(),
     };
     let out_file = out.join(format!("{stem}-traced.obd"));
     ob_format::save(&doc, &out_file)?;

@@ -715,6 +715,8 @@ impl App {
     fn reset_interaction_state(&mut self) {
         self.gesture_start = None;
         self.gesture_touch = None;
+        self.thread_arm = None;
+        self.thread_confirm = None;
         self.editing = None;
         self.edit_start = None;
         self.edit_done = false;
@@ -1398,6 +1400,17 @@ struct FontRow {
     rights_words: String,
 }
 
+/// The shaped-lines cache: per-panel preview lines plus
+/// the document's thread layouts (T1), all keyed by the
+/// document snapshot, so the canvas, the Check step, and
+/// the print preview all read the same layout of a story
+/// through its boxes.
+struct LinesCache {
+    key: String,
+    lines: std::collections::HashMap<usize, Vec<PreviewLine>>,
+    threads: std::collections::HashMap<String, ob_text::threading::StoryThread>,
+}
+
 struct App {
     doc: Document,
     preset: Preset,
@@ -1505,12 +1518,20 @@ struct App {
     redo_stack: Vec<String>,
     gesture_start: Option<String>,
     gesture_touch: Option<std::time::Instant>,
-    lines_cache: Option<(String, std::collections::HashMap<usize, Vec<PreviewLine>>)>,
+    lines_cache: Option<LinesCache>,
     /// The text shaper, rebuilt only when the Font Library
     /// changes (closing audit: it used to be rebuilt, with a
     /// full library scan and hash of every font, per paragraph
     /// and per panel per repaint).
     shaper_cache: Option<(u64, ob_text::shaping::Shaper)>,
+    /// Threading by hand (T1): the box whose text is waiting
+    /// for its continuation box to be clicked ("Continue
+    /// this text in another box..."), as (panel, frame).
+    thread_arm: Option<(usize, usize)>,
+    /// The continuation target clicked once already, when it
+    /// holds words of its own: the second click on the same
+    /// box replaces them. Any other click resets this.
+    thread_confirm: Option<(usize, usize)>,
     editing: Option<(usize, usize)>,
     edit_text: String,
     edit_styles: Vec<String>,
@@ -1592,6 +1613,12 @@ struct App {
     /// edit is translated through the map.
     edit_caret: usize,
     edit_anchor: usize,
+    /// Threading (T1): this session was opened on a box that
+    /// is not its thread's first, so when the layout is
+    /// ready the caret starts at the entered box's first
+    /// line (the slice the session shows) instead of the
+    /// story's start. Consumed by refresh_editor_layout.
+    edit_caret_to_slice: bool,
     /// A chip the first Backspace/Delete press selected
     /// whole; a second press deletes it whole.
     edit_chip_armed: Option<std::ops::Range<usize>>,
@@ -1750,18 +1777,25 @@ fn line_segments(line: &ob_text::text_layout::LayoutLine, text: &str) -> Vec<Pre
 }
 
 /// One paragraph of the shaped canvas editor (E1): its
-/// parley layout in DISPLAY space plus where it sits inside
-/// the frame, stacked exactly as panel_lines stacks the
-/// idle preview.
+/// parley layout in DISPLAY space plus where its slice
+/// sits inside the entered frame, stacked with the same
+/// arithmetic the thread layout stacks the idle preview.
 struct EditorPara {
     layout: ob_text::text_layout::TextLayout,
-    /// Top of the first line box, frame-local milli-points.
+    /// Top of the first DRAWN line box, frame-local
+    /// milli-points.
     top: ob_model::Mpt,
     /// Line height in milli-points (style size x 1.3).
     line_h: ob_model::Mpt,
-    /// Lines within the frame's bottom edge. Lines past this
-    /// exist for caret math but are not drawn, the same
-    /// clipping the idle canvas applies.
+    /// Lines of this paragraph that sit in EARLIER boxes of
+    /// the thread (T1): the session shows the slice starting
+    /// at the entered box, so these lines are not drawn
+    /// here. Always 0 for a story in one box.
+    skip: usize,
+    /// Lines drawn in the entered box, starting at `skip`.
+    /// Lines before and after exist for caret math but are
+    /// not drawn: the same clipping the idle canvas applies,
+    /// extended across the thread.
     drawn: usize,
     size: f32,
     font_family: String,
@@ -1776,6 +1810,10 @@ struct EditorLayout {
     key: String,
     map: editmap::BufferMap,
     paras: Vec<EditorPara>,
+    /// The display offset where the entered box's slice of
+    /// the story begins (T1): the first drawn line's start.
+    /// None when no line is drawn in the entered box.
+    slice_start: Option<usize>,
 }
 
 /// The egui family key for the library face a preview line
@@ -1940,6 +1978,8 @@ impl Default for App {
             show_pages: false,
             canvas_panel: 0,
             drag_guide: None,
+            thread_arm: None,
+            thread_confirm: None,
             selected_frame: None,
             drag_frame: None,
             drag_resize: false,
@@ -2011,6 +2051,7 @@ impl Default for App {
             discarded_edit: None,
             edit_caret: 0,
             edit_anchor: 0,
+            edit_caret_to_slice: false,
             edit_chip_armed: None,
             edit_sel_drag: false,
             edit_desired_x: None,
@@ -2464,91 +2505,45 @@ impl App {
             self.announcements.trim().is_empty(),
             self.doc.no_announcements,
         )));
-        // Real fit check: shape every story into its frame and complain
-        // in plain words about any that do not fit. Two passes: first
-        // collect the words (borrowing the document), then shape them
-        // with the one cached shaper. This used to rebuild the whole
-        // font engine, with a full library scan, per paragraph
-        // (closing audit: 1.25 s on the booklet, worse with more fonts).
-        type FitWork = (
-            usize,
-            usize,
-            String,
-            ob_model::Rect,
-            String,
-            Vec<(
-                String,
-                ob_text::shaping::FontSpec,
-                ob_model::Mpt,
-                ob_model::Mpt,
-            )>,
-        );
-        let mut work: Vec<FitWork> = Vec::new();
-        for (pi, panel) in self.doc.panels.iter().enumerate() {
-            for (fi, frame) in panel.frames.iter().enumerate() {
-                let Some(sid) = &frame.story_id else { continue };
-                let Some(story) = self.doc.story(sid) else {
-                    continue;
-                };
-                let mut paras = Vec::new();
-                for para in &story.paragraphs {
-                    let style = self.doc.style(&para.style).cloned().unwrap_or_else(|| {
-                        ob_model::ParagraphStyle {
-                            id: "body".into(),
-                            name: "Body".into(),
-                            font_size: 11_000,
-                            bold: false,
-                            italic: false,
-                            align: ob_model::Align::Left,
-                            space_after: 4_000,
-                            color: ob_model::Rgb::BLACK,
-                            font_family: "Liberation Sans".into(),
-                            font_sha256: None,
-                        }
-                    });
-                    let spec = ob_text::shaping::FontSpec {
-                        family: style.font_family.clone(),
-                        bold: style.bold,
-                        italic: style.italic,
-                    };
-                    let text = ob_model::resolve_fields(&para.text(), &self.doc);
-                    paras.push((text, spec, style.font_size, style.space_after));
-                }
-                let first = story
-                    .paragraphs
-                    .first()
-                    .map(|p| p.text())
-                    .unwrap_or_else(|| "A text block".into());
-                work.push((pi, fi, panel.name.clone(), frame.rect, first, paras));
-            }
-        }
+        // Real fit check (T1): the thread layouts say which
+        // lines of each story land in which box and how many
+        // fit nowhere. A story running through several boxes
+        // is judged on the whole thread, and the finding
+        // names its LAST box: that is where the words run
+        // out, and where a bigger box (or shorter words)
+        // helps. The layouts are the cached ones the canvas
+        // paints from, so Check and the page can never
+        // disagree about what fits.
+        let threads = self.doc_threads();
         let mut fit_notes: Vec<CheckNote> = Vec::new();
-        for (pi, fi, panel_name, rect, first, paras) in &work {
-            let mut needed: ob_model::Mpt = 0;
-            for (text, spec, font_size, space_after) in paras {
-                let lines = if text.contains('\t') {
-                    tabbed_fit_lines(self.shaper(), text, rect.w, spec, *font_size)
-                } else {
-                    self.shaper()
-                        .wrap(text, rect.w, spec, *font_size, 1.3)
-                        .len()
-                };
-                needed += lines as ob_model::Mpt * (font_size * 13 / 10) + space_after;
+        for story in &self.doc.stories {
+            let frames = self.doc.frames_of_story(&story.id);
+            let Some(&(pi, fi)) = frames.last() else {
+                continue;
+            };
+            let Some(thread) = threads.get(&story.id) else {
+                continue;
+            };
+            let over = thread.leftover_lines;
+            if over == 0 {
+                continue;
             }
-            if needed > rect.h {
-                let over_lines = ((needed - rect.h) / 14_000).max(1);
-                fit_notes.push(CheckNote::aimed(
-                    format!(
-                        "Check: the words in \"{}\" ({}) do not all fit. About {} line{} too many. Shorten the words, or make the box bigger in the Pages window.",
-                        first.chars().take(38).collect::<String>(),
-                        panel_name,
-                        over_lines,
-                        if over_lines == 1 { "" } else { "s" }
-                    ),
-                    *pi,
-                    Some(*fi),
-                ));
-            }
+            let first = story
+                .paragraphs
+                .first()
+                .map(|p| p.text())
+                .unwrap_or_else(|| "A text block".into());
+            fit_notes.push(CheckNote::aimed(
+                format!(
+                    "Check: the words in \"{}\" ({}) do not all fit. About {} line{} too many. Shorten the words, or make the box bigger in the Pages window.",
+                    first.chars().take(38).collect::<String>(),
+                    self.doc.panels[pi].name,
+                    over,
+                    if over == 1 { "" } else { "s" }
+                ),
+                pi,
+                Some(fi),
+            ));
         }
         if fit_notes.is_empty() {
             notes.push(CheckNote::plain(
@@ -3342,6 +3337,170 @@ impl App {
 
     /// Add a fresh picture box to a panel: empty, in the
     /// middle, waiting for its picture (G2).
+    /// Arm the continuation pick (T1): the next text box
+    /// clicked becomes the continuation of this box's text.
+    fn arm_thread_from(&mut self, pi: usize, fi: usize) {
+        self.thread_arm = Some((pi, fi));
+        self.thread_confirm = None;
+        self.note(
+            "Click the box this text should continue in. It can be on another page. Click an empty part of the page to stop."
+                .into(),
+        );
+    }
+
+    /// A canvas click while a continuation pick is armed
+    /// (T1). `hit` is the frame clicked, or None for empty
+    /// page (which cancels). Every refusal says so in plain
+    /// words and leaves the document untouched.
+    fn thread_pick_clicked(&mut self, pi: usize, hit: Option<usize>) {
+        let Some((spi, sfi)) = self.thread_arm else {
+            return;
+        };
+        let Some(tfi) = hit else {
+            self.thread_arm = None;
+            self.thread_confirm = None;
+            self.note("No box chosen. The text stays as it is.".into());
+            return;
+        };
+        if (pi, tfi) == (spi, sfi) {
+            self.note(
+                "That is the same box. Click a different box for the text to continue in.".into(),
+            );
+            return;
+        }
+        let target = self.doc.panels[pi].frames[tfi].clone();
+        if target.kind != ob_model::FrameKind::Text || target.story_id.is_none() {
+            self.note(
+                "That box holds no text. Click a text box for the text to continue in.".into(),
+            );
+            return;
+        }
+        let source_sid = self.doc.panels[spi].frames[sfi]
+            .story_id
+            .clone()
+            .unwrap_or_default();
+        if target.story_id.as_deref() == Some(source_sid.as_str()) {
+            self.thread_arm = None;
+            self.thread_confirm = None;
+            self.note("That box already continues this text.".into());
+            return;
+        }
+        // The continuation must come after the source box in
+        // reading order, or the words would flow backwards.
+        let source_pos = (spi, sfi);
+        if (pi, tfi) <= source_pos {
+            self.note(
+                "That box comes before this one. Text continues into a box that comes later: pick a box further down, or on a later page."
+                    .into(),
+            );
+            return;
+        }
+        // A target with words of its own loses them: its
+        // story is replaced by the continuation. That takes
+        // a second click on the same box, said out loud.
+        let target_has_words = target
+            .story_id
+            .as_ref()
+            .and_then(|sid| self.doc.story(sid))
+            .map(|s| s.paragraphs.iter().any(|p| !p.text().trim().is_empty()))
+            .unwrap_or(false);
+        if target_has_words && self.thread_confirm != Some((pi, tfi)) {
+            self.thread_confirm = Some((pi, tfi));
+            self.note(
+                "That box has its own words. Click it once more to replace them with this text's continuation; its words will be removed."
+                    .into(),
+            );
+            return;
+        }
+        self.push_undo_now();
+        // The target's old story goes away if no box uses
+        // it anymore (checked after the switch).
+        let old = target.story_id.clone().unwrap_or_default();
+        self.doc.panels[pi].frames[tfi].story_id = Some(source_sid);
+        let still_used = self
+            .doc
+            .panels
+            .iter()
+            .flat_map(|p| &p.frames)
+            .any(|fr| fr.story_id.as_deref() == Some(old.as_str()));
+        if !still_used {
+            self.doc.stories.retain(|st| st.id != old);
+        }
+        self.thread_arm = None;
+        self.thread_confirm = None;
+        self.selected_frame = Some(tfi);
+        self.note(
+            "The text now continues in that box. Each line prints once, flowing from box to box."
+                .into(),
+        );
+    }
+
+    /// "Make this box start its own text" (T1): the thread
+    /// divides at this box. This box and every box after it
+    /// in the thread get a new story holding the words from
+    /// this box's first line onward, cut at the continuation
+    /// offsets the thread layout computed.
+    fn split_thread_at(&mut self, pi: usize, fi: usize) {
+        if self.editing.is_some() {
+            self.commit_edit();
+        }
+        let Some(sid) = self.doc.panels[pi].frames[fi].story_id.clone() else {
+            return;
+        };
+        let frames = self.doc.frames_of_story(&sid);
+        let Some(pos) = frames.iter().position(|&f| f == (pi, fi)) else {
+            return;
+        };
+        if pos == 0 || frames.len() < 2 {
+            return;
+        }
+        let threads = self.doc_threads();
+        let Some(thread) = threads.get(&sid) else {
+            return;
+        };
+        let (para_idx, resolved_off) = thread.slices[pos].starts_at;
+        let Some(story) = self.doc.story(&sid).cloned() else {
+            return;
+        };
+        if para_idx >= story.paragraphs.len() {
+            self.note("This box holds the end of the text; there is nothing after it to start a new text with.".into());
+            return;
+        }
+        let raw_off = ob_model::raw_offset_for_resolved(
+            &story.paragraphs[para_idx].text(),
+            &self.doc,
+            resolved_off,
+        );
+        let (head, tail) = ob_model::split_story_paragraphs(&story.paragraphs, para_idx, raw_off);
+        self.push_undo_now();
+        // A fresh story id in the box-N family, skipping
+        // ids already taken.
+        let mut n = self.box_seq;
+        let new_id = loop {
+            n += 1;
+            let cand = format!("box-{n}");
+            if self.doc.story(&cand).is_none() {
+                break cand;
+            }
+        };
+        self.box_seq = n;
+        if let Some(s) = self.doc.story_mut(&sid) {
+            s.paragraphs = head;
+        }
+        self.doc.stories.push(ob_model::Story {
+            id: new_id.clone(),
+            paragraphs: tail,
+            keep_through: None,
+        });
+        for &(p2, f2) in &frames[pos..] {
+            self.doc.panels[p2].frames[f2].story_id = Some(new_id.clone());
+        }
+        self.note(
+            "This box now starts its own text, from the words that were in it. The boxes before it keep the rest."
+                .into(),
+        );
+    }
+
     fn add_picture_box(&mut self, idx: usize) {
         if self.editing.is_some() {
             self.commit_edit();
@@ -3404,6 +3563,7 @@ impl App {
     fn reset_editor_transient(&mut self) {
         self.edit_caret = 0;
         self.edit_anchor = 0;
+        self.edit_caret_to_slice = false;
         self.edit_chip_armed = None;
         self.edit_sel_drag = false;
         self.edit_desired_x = None;
@@ -3460,6 +3620,9 @@ impl App {
         if self.editing.is_some() {
             self.commit_edit();
         }
+        // Typing supersedes an armed continuation pick (T1).
+        self.thread_arm = None;
+        self.thread_confirm = None;
         let Some(frame) = self.doc.panels[pi].frames.get(fi) else {
             return;
         };
@@ -3489,6 +3652,10 @@ impl App {
         self.selected_frame = Some(fi);
         self.edit_done = false;
         self.reset_editor_transient();
+        // T1: entering a thread at a later box starts the
+        // caret at that box's first line, the slice the
+        // session shows (see refresh_editor_layout).
+        self.edit_caret_to_slice = self.doc.frames_of_story(&sid).first() != Some(&(pi, fi));
         self.focus_edit = true;
     }
 
@@ -3564,10 +3731,11 @@ impl App {
     /// Build (or reuse) the shaped editor geometry for the
     /// current session buffer (E1). The cache key covers the
     /// document snapshot, the buffer, the per-paragraph
-    /// styles, and the frame size, so any change rebuilds.
-    /// Paragraphs stack with the same arithmetic panel_lines
-    /// uses, so editing shows exactly what the idle canvas
-    /// and the PDF show.
+    /// styles, and the thread's frame sizes, so any change
+    /// rebuilds. Paragraphs are dealt through the story's
+    /// boxes with the thread walk's arithmetic (T1), so
+    /// editing shows the entered box's slice of exactly
+    /// what the idle canvas and the PDF show.
     fn refresh_editor_layout(&mut self) {
         let Some((pi, fi)) = self.editing else {
             return;
@@ -3580,6 +3748,31 @@ impl App {
             .map(|f| f.rect)
         else {
             return;
+        };
+        // The entered box's thread (T1): every box the
+        // edited story flows through, in order, and the
+        // entered box's place among them. A story in one
+        // box threads through that box alone.
+        let story_frames: Vec<(usize, usize)> = self
+            .doc
+            .panels
+            .get(pi)
+            .and_then(|p| p.frames.get(fi))
+            .and_then(|f| f.story_id.as_ref())
+            .map(|sid| self.doc.frames_of_story(sid))
+            .unwrap_or_default();
+        let (thread_rects, entered_pos): (Vec<ob_model::Rect>, usize) = if story_frames.is_empty() {
+            (vec![frame], 0)
+        } else {
+            let pos = story_frames
+                .iter()
+                .position(|&x| x == (pi, fi))
+                .unwrap_or(0);
+            let rects = story_frames
+                .iter()
+                .map(|&(p2, f2)| self.doc.panels[p2].frames[f2].rect)
+                .collect();
+            (rects, pos)
         };
         // The runs sign the cache key too (G1b): bolding a
         // word changes no text and no style, but the layout
@@ -3598,15 +3791,23 @@ impl App {
                 })
             })
             .collect();
+        // The thread's boxes sign the key too (T1): moving
+        // or sizing any box of the thread changes where the
+        // entered box's slice begins.
+        let rects_sig: String = thread_rects
+            .iter()
+            .map(|r| format!("{},{},{},{};", r.x, r.y, r.w, r.h))
+            .collect();
         let key = format!(
-            "{}|{}|{}|{}|{}|{}x{}",
+            "{}|{}|{}|{}|{}|{}x{}|{}",
             self.frame_snapshot,
             self.edit_salt,
             self.edit_text,
             self.edit_styles.join("\u{1}"),
             runs_sig,
             frame.w,
-            frame.h
+            frame.h,
+            rects_sig
         );
         if self
             .edit_layout
@@ -3630,7 +3831,7 @@ impl App {
                 )
             })
             .collect();
-        let (map, paras, failed) = {
+        let layout_parts = {
             let shaper = self.shaper();
             let mut flags: Vec<bool> = Vec::new();
             let map = editmap::BufferMap::build(&text, &doc, |pi, resolved| {
@@ -3649,7 +3850,20 @@ impl App {
                 }
             });
             let mut paras: Vec<EditorPara> = Vec::new();
-            let mut y = frame.y;
+            // The thread walk (T1): the story's lines are
+            // dealt through its boxes in order, every layout
+            // at the ENTERED box's width (the session's
+            // documented simplification: the idle canvas and
+            // print use each box's own width, so a thread of
+            // mixed-width boxes can differ by a line here).
+            // Each paragraph records how many of its lines
+            // sit in earlier boxes (skip), how many the
+            // entered box shows (drawn), and where the first
+            // shown line sits (top). A story in one box walks
+            // exactly as the session always stacked.
+            let mut wf = 0usize;
+            let mut wy = thread_rects[0].y;
+            let mut after_y = frame.y + frame.h;
             let mut any_text = false;
             let mut any_clusters = false;
             for i in 0..map.para_count() {
@@ -3711,19 +3925,60 @@ impl App {
                     any_clusters = true;
                 }
                 let line_h = st.font_size * 13 / 10;
-                let mut yy = y;
+                let total = layout.lines().len();
+                let mut skip = 0usize;
                 let mut drawn = 0usize;
-                for _ in 0..layout.lines().len() {
-                    if yy + line_h > frame.y + frame.h {
-                        break;
+                let mut top: Option<ob_model::Mpt> = None;
+                let mut touched_later = wf >= entered_pos;
+                let mut remaining = total;
+                while remaining > 0 && wf < thread_rects.len() {
+                    let fr = thread_rects[wf];
+                    if wf >= entered_pos {
+                        touched_later = true;
                     }
-                    yy += line_h;
-                    drawn += 1;
+                    let start_y = wy;
+                    let mut fit = 0usize;
+                    while fit < remaining && wy + line_h <= fr.y + fr.h {
+                        wy += line_h;
+                        fit += 1;
+                    }
+                    if wf < entered_pos {
+                        skip += fit;
+                    } else if wf == entered_pos {
+                        drawn = fit;
+                        if fit > 0 {
+                            top = Some(start_y);
+                        }
+                    }
+                    remaining -= fit;
+                    if remaining == 0 {
+                        wy += st.space_after;
+                    } else {
+                        wf += 1;
+                        if wf < thread_rects.len() {
+                            wy = thread_rects[wf].y;
+                        }
+                    }
                 }
+                let top = match top {
+                    Some(t) => t,
+                    None if touched_later => {
+                        // Nothing of this paragraph shows in
+                        // the entered box: it starts later in
+                        // the thread (or fits nowhere). Its
+                        // top stacks virtually below the box,
+                        // as overflow paragraphs always have.
+                        let t = after_y;
+                        after_y += total as ob_model::Mpt * line_h + st.space_after;
+                        t
+                    }
+                    None => frame.y,
+                };
                 paras.push(EditorPara {
                     layout,
-                    top: y,
+                    top,
                     line_h,
+                    skip,
                     drawn,
                     size: st.font_size as f32 / 1000.0,
                     font_family: st.font_family.clone(),
@@ -3731,12 +3986,45 @@ impl App {
                     italic: st.italic,
                     align: st.align,
                 });
-                y = yy + st.space_after;
             }
-            (map, paras, any_text && !any_clusters)
+            // Where the entered box's slice begins, in
+            // display space: the first drawn line's start.
+            let slice_start = paras
+                .iter()
+                .enumerate()
+                .find(|(_, p)| p.drawn > 0)
+                .map(|(i, p)| {
+                    map.para_display_range(i).start
+                        + p.layout
+                            .lines()
+                            .get(p.skip)
+                            .map(|l| l.range.start)
+                            .unwrap_or(0)
+                });
+            (map, paras, slice_start, any_text && !any_clusters)
         };
-        self.edit_layout = Some(EditorLayout { key, map, paras });
+        let (map, paras, slice_start, failed) = layout_parts;
+        self.edit_layout = Some(EditorLayout {
+            key,
+            map,
+            paras,
+            slice_start,
+        });
         self.edit_layout_failed = failed;
+        // T1: a session opened on a later box of a thread
+        // starts its caret at that box's first line.
+        if self.edit_caret_to_slice {
+            self.edit_caret_to_slice = false;
+            if let Some(start) = self.edit_layout.as_ref().and_then(|l| l.slice_start) {
+                self.edit_caret = start;
+                self.edit_anchor = start;
+                self.edit_cursor_para = self
+                    .edit_layout
+                    .as_ref()
+                    .map(|l| l.map.para_at_display(start))
+                    .unwrap_or(0);
+            }
+        }
     }
 
     /// The current selection in display space.
@@ -3898,10 +4186,21 @@ impl App {
         let px = (pos.x - origin.x) / scale;
         let py = (pos.y - origin.y) / scale;
         let lx = px - frame.x as f32 / 1000.0;
-        let mut chosen = layout.paras.len() - 1;
+        // Only paragraphs with lines in this box can be hit
+        // (T1): a threaded session shows a slice, and clicks
+        // land in the slice. The fallback is the last
+        // paragraph that shows lines here.
+        let mut chosen = layout
+            .paras
+            .iter()
+            .rposition(|p| p.drawn > 0)
+            .unwrap_or(layout.paras.len() - 1);
         for (i, para) in layout.paras.iter().enumerate() {
+            if para.drawn == 0 {
+                continue;
+            }
             let top = para.top as f32 / 1000.0;
-            let bottom = top + para.layout.lines().len() as f32 * para.layout.line_height();
+            let bottom = top + para.drawn as f32 * para.layout.line_height();
             if py <= bottom {
                 chosen = i;
                 break;
@@ -3909,7 +4208,11 @@ impl App {
         }
         let para = &layout.paras[chosen];
         let top = para.top as f32 / 1000.0;
-        let local = para.layout.byte_offset_at(lx, py - top);
+        // The layout's y counts all its lines; the slice
+        // starts `skip` lines in.
+        let local = para
+            .layout
+            .byte_offset_at(lx, py - top + para.skip as f32 * para.layout.line_height());
         Some(layout.map.para_display_range(chosen).start + local)
     }
 
@@ -4470,32 +4773,59 @@ impl App {
         }
     }
 
-    /// Shaped lines for one panel, cached per document state:
-    /// the canvas and the print preview can never disagree.
-    fn shaped_panel_lines(&mut self, idx: usize) -> Vec<PreviewLine> {
+    /// Refresh the lines cache when the document changed:
+    /// the thread layouts are computed once per document
+    /// state, and every panel's lines are cut from them.
+    fn refresh_lines_cache(&mut self) {
         let key = self.frame_snapshot.clone();
         let stale = self
             .lines_cache
             .as_ref()
-            .map(|(k, _)| k != &key)
+            .map(|c| c.key != key)
             .unwrap_or(true);
         if stale {
-            self.lines_cache = Some((key.clone(), std::collections::HashMap::new()));
+            // Clone on a rebuild only: the shaper borrows the
+            // app mutably while the threads are computed from
+            // the doc.
+            let doc = self.doc.clone();
+            let shaper = self.shaper();
+            let threads = ob_text::threading::layout_document_threads(shaper, &doc);
+            self.lines_cache = Some(LinesCache {
+                key,
+                lines: std::collections::HashMap::new(),
+                threads,
+            });
         }
-        if let Some((_, map)) = &self.lines_cache {
-            if let Some(lines) = map.get(&idx) {
+    }
+
+    /// The document's thread layouts (T1): which lines of
+    /// each story land in which box, and how many fit
+    /// nowhere. Cached with the shaped lines.
+    fn doc_threads(
+        &mut self,
+    ) -> std::collections::HashMap<String, ob_text::threading::StoryThread> {
+        self.refresh_lines_cache();
+        self.lines_cache
+            .as_ref()
+            .map(|c| c.threads.clone())
+            .unwrap_or_default()
+    }
+
+    /// Shaped lines for one panel, cached per document state:
+    /// the canvas and the print preview can never disagree.
+    fn shaped_panel_lines(&mut self, idx: usize) -> Vec<PreviewLine> {
+        self.refresh_lines_cache();
+        if let Some(cache) = &self.lines_cache {
+            if let Some(lines) = cache.lines.get(&idx) {
                 return lines.clone();
             }
         }
         let lines = {
-            // Clone on a cache miss only: the shaper borrows the
-            // app mutably while the lines are computed from the doc.
-            let doc = self.doc.clone();
-            let shaper = self.shaper();
-            panel_lines(&doc, &doc.panels[idx], shaper)
+            let cache = self.lines_cache.as_ref().expect("cache refreshed");
+            panel_lines_from_threads(idx, &self.doc.panels[idx], &cache.threads)
         };
-        if let Some((_, map)) = &mut self.lines_cache {
-            map.insert(idx, lines.clone());
+        if let Some(cache) = &mut self.lines_cache {
+            cache.lines.insert(idx, lines.clone());
         }
         lines
     }
@@ -4994,6 +5324,62 @@ impl App {
                 ui.label("A filled picture box that is already selected: drag inside it to move the picture within its box; double-click to center the picture again.");
                 ui.label("Right-click anything for its exact place in inches. The blue guides never print.");
                 ui.small("Keys: Tab moves to the next box, Enter types in it, arrows move a box (Shift for bigger steps), Ctrl+C and Ctrl+V copy a box, Ctrl+Z undoes.");
+                // Threading (T1): the selected text box can
+                // continue into another box, and a box in a
+                // thread can start its own text. The info line
+                // names the thread in words.
+                {
+                    let sel = self.selected_frame.and_then(|fi| {
+                        self.doc.panels[idx].frames.get(fi).map(|f| {
+                            (
+                                fi,
+                                f.name.clone(),
+                                f.kind == ob_model::FrameKind::Text,
+                                f.story_id.clone(),
+                            )
+                        })
+                    });
+                    if let Some((fi, name, is_text, Some(sid))) = sel {
+                        if is_text {
+                            let mates = self.doc.frames_of_story(&sid);
+                            ui.horizontal(|ui| {
+                                if self.thread_arm == Some((idx, fi)) {
+                                    if ui.button("Stop choosing").clicked() {
+                                        self.thread_arm = None;
+                                        self.thread_confirm = None;
+                                        self.note(
+                                            "No box chosen. The text stays as it is.".into(),
+                                        );
+                                    }
+                                } else if ui
+                                    .button("Continue this text in another box...")
+                                    .clicked()
+                                {
+                                    self.arm_thread_from(idx, fi);
+                                }
+                                if mates.len() > 1
+                                    && mates.first() != Some(&(idx, fi))
+                                    && ui.button("Make this box start its own text").clicked()
+                                {
+                                    self.split_thread_at(idx, fi);
+                                }
+                            });
+                            if mates.len() > 1 {
+                                ui.label(format!(
+                                    "Selected: {name}. This text runs through {} boxes.",
+                                    mates.len()
+                                ));
+                            } else {
+                                ui.label(format!("Selected: {name}."));
+                            }
+                            if self.thread_arm == Some((idx, fi)) {
+                                ui.label(
+                                    "Now click the box this text should continue in.",
+                                );
+                            }
+                        }
+                    }
+                }
                 if self.discarded_edit.is_some()
                     && ui.button("Bring the typed words back").clicked()
                 {
@@ -5389,6 +5775,120 @@ impl App {
             }
         }
 
+        // Threading marks (T1). The red overflow mark (a
+        // small red square with a white plus, the Publisher
+        // convention) sits at the bottom-right corner of a
+        // thread's LAST box whenever words remain that no box
+        // could hold. The continuation badges appear only
+        // while a threaded box is selected, and only on that
+        // box and its thread-mates on this page: calm, never
+        // a permanent spiderweb.
+        {
+            let threads = self.doc_threads();
+            let frame_px = |r: ob_model::Rect| {
+                egui::Rect::from_min_max(
+                    to_px(r.x as f32 / 1000.0, r.y as f32 / 1000.0),
+                    to_px((r.x + r.w) as f32 / 1000.0, (r.y + r.h) as f32 / 1000.0),
+                )
+            };
+            for thread in threads.values() {
+                if thread.leftover_lines == 0 {
+                    continue;
+                }
+                if let Some(&(lpi, lfi)) = thread.frames.last() {
+                    if lpi == idx {
+                        if let Some(f) = panel.frames.get(lfi) {
+                            let frect = frame_px(f.rect);
+                            let side = 11.0_f32;
+                            let sq = egui::Rect::from_min_size(
+                                egui::pos2(frect.max.x - side - 1.5, frect.max.y - side - 1.5),
+                                egui::vec2(side, side),
+                            );
+                            painter.rect_filled(sq, 1.0, self.theme.problem);
+                            let c = sq.center();
+                            let arm = 3.0_f32;
+                            let plus = egui::Stroke::new(1.5_f32, egui::Color32::WHITE);
+                            painter.line_segment(
+                                [egui::pos2(c.x - arm, c.y), egui::pos2(c.x + arm, c.y)],
+                                plus,
+                            );
+                            painter.line_segment(
+                                [egui::pos2(c.x, c.y - arm), egui::pos2(c.x, c.y + arm)],
+                                plus,
+                            );
+                        }
+                    }
+                }
+            }
+            if let Some(sfi) = self.selected_frame {
+                if let Some(sid) = panel.frames.get(sfi).and_then(|f| f.story_id.clone()) {
+                    if let Some(thread) = threads.get(&sid) {
+                        if thread.frames.len() > 1 {
+                            let badge = |painter: &egui::Painter,
+                                         frect: egui::Rect,
+                                         top: bool,
+                                         text: &str| {
+                                let font = egui::FontId::proportional(10.0);
+                                let galley = painter.layout_no_wrap(
+                                    text.to_string(),
+                                    font.clone(),
+                                    egui::Color32::WHITE,
+                                );
+                                let size = galley.size() + egui::vec2(9.0, 4.0);
+                                let min = if top {
+                                    egui::pos2(frect.min.x + 4.0, frect.min.y + 4.0)
+                                } else {
+                                    egui::pos2(frect.min.x + 4.0, frect.max.y - 4.0 - size.y)
+                                };
+                                let rect = egui::Rect::from_min_size(min, size);
+                                painter.rect_filled(rect, 3.0, self.theme.accent);
+                                painter.text(
+                                    rect.min + egui::vec2(4.5, 2.0),
+                                    egui::Align2::LEFT_TOP,
+                                    text,
+                                    font,
+                                    egui::Color32::WHITE,
+                                );
+                            };
+                            for (pos, &(mpi, mfi)) in thread.frames.iter().enumerate() {
+                                if mpi != idx {
+                                    continue;
+                                }
+                                let Some(f) = panel.frames.get(mfi) else {
+                                    continue;
+                                };
+                                let frect = frame_px(f.rect);
+                                if pos > 0 {
+                                    let prev_panel = thread.frames[pos - 1].0;
+                                    let text = if prev_panel == idx {
+                                        "Continued from another box on this page".to_string()
+                                    } else {
+                                        format!(
+                                            "Continued from the box on {}",
+                                            self.doc.panels[prev_panel].name
+                                        )
+                                    };
+                                    badge(&painter, frect, true, &text);
+                                }
+                                if pos + 1 < thread.frames.len() {
+                                    let next_panel = thread.frames[pos + 1].0;
+                                    let text = if next_panel == idx {
+                                        "Continues in another box on this page".to_string()
+                                    } else {
+                                        format!(
+                                            "Continues in the box on {}",
+                                            self.doc.panels[next_panel].name
+                                        )
+                                    };
+                                    badge(&painter, frect, false, &text);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Guides, hit-testing, dragging.
         let response = ui.interact(
             panel_rect,
@@ -5676,7 +6176,14 @@ impl App {
             if let Some(pos) = pointer {
                 if near_guide(pos).is_none() {
                     let pm = to_mpt(pos);
-                    self.selected_frame = frame_hit(pm);
+                    if self.thread_arm.is_some() {
+                        // A continuation pick is armed (T1):
+                        // this click chooses the box, it does
+                        // not just select.
+                        self.thread_pick_clicked(idx, frame_hit(pm));
+                    } else {
+                        self.selected_frame = frame_hit(pm);
+                    }
                 }
             }
         }
@@ -5928,6 +6435,20 @@ impl App {
                     for (pno, para) in layout.paras.iter().enumerate() {
                         let prange = layout.map.para_display_range(pno);
                         let ptop = para.top as f32 / 1000.0;
+                        // The slice's line window (T1): rects
+                        // on lines outside [skip, skip+drawn)
+                        // belong to other boxes and are not
+                        // painted here; rects inside shift up
+                        // by the skipped lines.
+                        let skip_h = para.skip as f32 * para.layout.line_height();
+                        let visible = |ry: f32| {
+                            let lh = para.layout.line_height();
+                            if lh <= 0.0 {
+                                return true;
+                            }
+                            let li = (ry / lh).round() as usize;
+                            (para.skip..para.skip + para.drawn).contains(&li)
+                        };
                         let lo = sel.start.max(prange.start);
                         let hi = sel.end.min(prange.end);
                         if sel.start != sel.end && lo < hi {
@@ -5935,8 +6456,11 @@ impl App {
                                 .layout
                                 .selection_rects(lo - prange.start..hi - prange.start);
                             for (rx, ry, rw, rh) in rects {
+                                if !visible(ry) {
+                                    continue;
+                                }
                                 let r = egui::Rect::from_min_size(
-                                    to_px(fx + rx, ptop + ry),
+                                    to_px(fx + rx, ptop + ry - skip_h),
                                     egui::vec2(rw * scale, rh * scale),
                                 );
                                 clip.rect_filled(r, 2.0, ctx.style().visuals.selection.bg_fill);
@@ -5951,8 +6475,11 @@ impl App {
                                         ..chip.display.end - prange.start,
                                 );
                                 for (rx, ry, rw, rh) in rects {
+                                    if !visible(ry) {
+                                        continue;
+                                    }
                                     let r = egui::Rect::from_min_size(
-                                        to_px(fx + rx, ptop + ry),
+                                        to_px(fx + rx, ptop + ry - skip_h),
                                         egui::vec2(rw * scale, rh * scale),
                                     );
                                     clip.rect_filled(
@@ -5972,12 +6499,20 @@ impl App {
                         }
                     }
                     for para in &layout.paras {
-                        for (li, line) in para.layout.lines().iter().enumerate().take(para.drawn) {
+                        for (li, line) in para
+                            .layout
+                            .lines()
+                            .iter()
+                            .enumerate()
+                            .skip(para.skip)
+                            .take(para.drawn)
+                        {
                             let line_text = &para.layout.text()[line.range.clone()];
                             if line_text.is_empty() {
                                 continue;
                             }
-                            let bottom = (para.top + (li as ob_model::Mpt + 1) * para.line_h)
+                            let bottom = (para.top
+                                + ((li - para.skip + 1) as ob_model::Mpt) * para.line_h)
                                 as f32
                                 / 1000.0;
                             // Same-face segments (G1b): a bold
@@ -6020,10 +6555,15 @@ impl App {
                         } else {
                             0
                         };
-                        if line_idx < para.drawn {
+                        // The caret shows only when it sits
+                        // on a line this box draws (T1): a
+                        // caret in an earlier or later box's
+                        // slice is real, but it is not on this
+                        // box's page.
+                        if (para.skip..para.skip + para.drawn).contains(&line_idx) {
                             let ptop = para.top as f32 / 1000.0;
                             let caret_rect = egui::Rect::from_min_size(
-                                to_px(fx + cx, ptop + cy),
+                                to_px(fx + cx, ptop + cy - para.skip as f32 * line_h),
                                 egui::vec2(1.5, ch * scale),
                             );
                             let t = ctx.input(|i| i.time);
@@ -6057,7 +6597,7 @@ impl App {
                                 );
                                 let galley =
                                     clip.layout_no_wrap(pre.clone(), fid, egui::Color32::BLACK);
-                                let pos = to_px(fx + cx, ptop + cy);
+                                let pos = to_px(fx + cx, ptop + cy - para.skip as f32 * line_h);
                                 let gw = galley.size().x;
                                 let gh = galley.size().y;
                                 clip.galley(pos, galley, egui::Color32::BLACK);
@@ -6203,6 +6743,26 @@ impl App {
                                     ui.close_menu();
                                 }
                             }
+                        }
+                    }
+                    if f.kind == ob_model::FrameKind::Text && f.story_id.is_some() {
+                        // Threading by hand (T1): the same two
+                        // actions the Pages toolbar offers, in
+                        // the same words.
+                        ui.separator();
+                        if ui.button("Continue this text in another box...").clicked() {
+                            self.arm_thread_from(idx, fi);
+                            ui.close_menu();
+                        }
+                        let mates = self
+                            .doc
+                            .frames_of_story(f.story_id.as_deref().unwrap_or_default());
+                        if mates.len() > 1
+                            && mates.first() != Some(&(idx, fi))
+                            && ui.button("Make this box start its own text").clicked()
+                        {
+                            self.split_thread_at(idx, fi);
+                            ui.close_menu();
                         }
                     }
                     ui.separator();
@@ -9376,78 +9936,44 @@ fn word_stop(text: &str, pos: usize, forward: bool) -> usize {
     }
 }
 
-fn panel_lines(
-    doc: &Document,
+/// One panel's shaped lines, cut from the document's
+/// thread layouts (T1): each frame draws its slice of its
+/// story, so the canvas shows a threaded story's words
+/// exactly once, flowing box to box, the same lines the
+/// PDF writer prints.
+fn panel_lines_from_threads(
+    panel_idx: usize,
     panel: &ob_model::Panel,
-    shaper: &mut ob_text::shaping::Shaper,
+    threads: &std::collections::HashMap<String, ob_text::threading::StoryThread>,
 ) -> Vec<PreviewLine> {
     let mut lines: Vec<PreviewLine> = Vec::new();
-    for frame in &panel.frames {
+    for (fi, frame) in panel.frames.iter().enumerate() {
         if frame.kind == ob_model::FrameKind::Shape {
             continue;
         }
         let Some(sid) = &frame.story_id else { continue };
-        let Some(story) = doc.story(sid) else {
+        let Some(thread) = threads.get(sid.as_str()) else {
             continue;
         };
-        let mut y = frame.rect.y;
-        for para in &story.paragraphs {
-            let style = style_or_body(doc, &para.style);
-            // Runs resolve with the fields (G1b); the layout
-            // path is the editor's and the PDF's, so the
-            // preview breaks and faces are theirs.
-            let resolved_runs = ob_model::resolve_runs(&para.runs, doc);
-            let resolved: String = resolved_runs.iter().map(|r| r.text.as_str()).collect();
-            let spans = effective_spans(&resolved_runs, &style);
-            let spec = ob_text::shaping::FontSpec {
-                family: style.font_family.clone(),
-                bold: style.bold,
-                italic: style.italic,
-            };
-            let line_h = style.font_size * 13 / 10;
-            let layout = if resolved.contains('\t') {
-                let expanded =
-                    shaper.expand_order_line(&resolved, frame.rect.w, &spec, style.font_size);
-                let disp = ob_text::text_layout::leader_run_spans(&resolved, &spans, &expanded);
-                shaper.layout_display_line_runs(
-                    &expanded,
-                    &disp,
-                    &spec,
-                    style.font_size,
-                    1.3,
-                    frame.rect.w,
-                    style.align,
-                )
-            } else {
-                shaper.layout_paragraph_runs(
-                    &resolved,
-                    &spans,
-                    &spec,
-                    style.font_size,
-                    1.3,
-                    frame.rect.w,
-                    style.align,
-                )
-            };
-            for line in layout.lines() {
-                if y + line_h > frame.rect.y + frame.rect.h {
-                    break;
-                }
-                y += line_h;
+        let Some(slice) = thread.slice_for(panel_idx, fi) else {
+            continue;
+        };
+        for piece in &slice.paras {
+            let style = &piece.style;
+            for (li, line) in piece.layout.lines().iter().enumerate() {
                 lines.push(PreviewLine {
-                    text: layout.text()[line.range.clone()].to_string(),
+                    text: piece.layout.text()[line.range.clone()].to_string(),
                     size: style.font_size as f32 / 1000.0,
                     x: frame.rect.x as f32 / 1000.0,
-                    y: y as f32 / 1000.0,
+                    y: (piece.top + (li as ob_model::Mpt + 1) * piece.line_h) as f32 / 1000.0,
                     w: line.width,
                     align: style.align,
                     font_family: style.font_family.clone(),
                     bold: style.bold,
                     italic: style.italic,
-                    segs: line_segments(line, layout.text()),
+                    segs: line_segments(line, piece.layout.text()),
                 });
             }
-            y += style.space_after;
         }
     }
     lines
@@ -9894,6 +10420,10 @@ fn build_preview(doc_in: &Document) -> Vec<PreviewSheet> {
             }
         }
     }
+    // Thread layouts for the padded document (T1): the
+    // preview cuts each panel's lines from the same slices
+    // the canvas and the PDF writer use.
+    let threads = ob_text::threading::layout_document_threads(&mut shaper, doc);
     let sides = ob_impose::impose(doc);
     let mut out = Vec::new();
     for side in &sides {
@@ -9915,7 +10445,7 @@ fn build_preview(doc_in: &Document) -> Vec<PreviewSheet> {
                 lines: Vec::new(),
                 pictures: panel_pictures(panel, doc, pl.x as f32 / 1000.0, pl.y as f32 / 1000.0),
             };
-            pp.lines = panel_lines(doc, panel, &mut shaper)
+            pp.lines = panel_lines_from_threads(pl.panel, panel, &threads)
                 .into_iter()
                 .map(|mut l| {
                     l.x += pp.x;
@@ -10085,30 +10615,6 @@ fn paper_name(w: ob_model::Mpt, h: ob_model::Mpt) -> String {
         ),
     };
     format!("{name}, {orientation}")
-}
-
-/// How many lines a tabbed (dot-leader) paragraph counts as
-/// in the fit check (J14). The canvas draws such a line as
-/// ONE leader line, but when the words on the two sides of
-/// the tab are together wider than the box, that line
-/// measures wider than the box and the words spill. Count
-/// it as two lines then, so the fit note can fire, instead
-/// of the old blind "a tab means one line". Measured with
-/// the same shaping the canvas uses: expand to a leader
-/// line at the box's width, then measure the line.
-fn tabbed_fit_lines(
-    shaper: &mut ob_text::shaping::Shaper,
-    text: &str,
-    width: ob_model::Mpt,
-    spec: &ob_text::shaping::FontSpec,
-    size: ob_model::Mpt,
-) -> usize {
-    let line = shaper.expand_order_line(text, width, spec, size);
-    if shaper.measure(&line, spec, size) > width {
-        2
-    } else {
-        1
-    }
 }
 
 /// What to choose in the PDF viewer's print window (J5).
@@ -10909,29 +11415,11 @@ mod settings_tests {
         assert_eq!(suggested_save_name(&bad_date), "bulletin.obd");
     }
 
-    #[test]
-    fn tabbed_fit_lines_measures_the_leader_line() {
-        // J14: a tabbed line used to count as one line sight
-        // unseen, so a hymn line wider than its box passed
-        // Check. Now the leader line is measured: too wide
-        // counts as two lines; an ordinary one still counts
-        // as one.
-        let mut shaper = ob_text::shaping::bundled_shaper();
-        let spec = ob_text::shaping::FontSpec {
-            family: "Liberation Sans".into(),
-            bold: false,
-            italic: false,
-        };
-        let wide = "Hymn of Praise and Thanksgiving for All the Saints\t1234";
-        assert_eq!(
-            tabbed_fit_lines(&mut shaper, wide, 72_000, &spec, 11_000),
-            2
-        );
-        assert_eq!(
-            tabbed_fit_lines(&mut shaper, "Hymn of Praise\t432", 400_000, &spec, 11_000),
-            1
-        );
-    }
+    // J14's leader-line measurement moved into the shared
+    // thread layout (ob-text threading::tab_line_cost) with
+    // T1: a too-wide hymn line is charged two line heights
+    // by the one walk the canvas, Check, and the PDF all
+    // read. Its test lives there now.
 
     #[test]
     fn carried_lines_names_what_is_kept_and_through_when() {
@@ -11578,7 +12066,8 @@ mod settings_tests {
             occasion_time: None,
         };
         let mut shaper = ob_text::shaping::bundled_shaper();
-        let lines = panel_lines(&doc, &doc.panels[0], &mut shaper);
+        let threads = ob_text::threading::layout_document_threads(&mut shaper, &doc);
+        let lines = panel_lines_from_threads(0, &doc.panels[0], &threads);
         assert_eq!(lines.len(), 1, "one short paragraph, one line");
         let segs = &lines[0].segs;
         let texts: Vec<(&str, bool)> = segs.iter().map(|s| (s.text.as_str(), s.bold)).collect();

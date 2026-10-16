@@ -38,6 +38,16 @@ loads (the words become one plain run), and saving always
 writes the runs shape. The container version did not need
 to change for this: the paragraph reader accepts both.
 
+A story's words are stored once, however many frames name
+the story. Since T1 (2026-10-16) several frames may
+reference the same story id: the story is threaded through
+those boxes in document order (panel order, then frame
+order within the panel), and each box draws the part of
+the story that flows into it. Frames always named their
+story by id, so threading needed no format change:
+`format_version` stays 1, and a file written before T1
+reads exactly as it did.
+
 ### Loading rules
 
 - Readers reject newer-than-known versions with a clear

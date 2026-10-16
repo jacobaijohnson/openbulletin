@@ -73,6 +73,73 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
   dots per inch at its shown size each get a finding
   with a working Fix-this target.
 
+## Threading: one story, many boxes (built 2026-10-16, T1)
+
+A story can run through more than one box: the words fill
+the first box, then continue in the next, like the columns
+of a newsletter article. The order is the document's order:
+page by page, and on a page, the order the boxes were made.
+Every line appears exactly once, on the canvas, in the
+previews, and in print. One layout walk in ob-text decides
+which lines land in which box; the canvas, the print
+previews, the PDF writer, and the Check step all read it,
+so no two views can disagree.
+
+- **Making a thread by hand.** With a text box selected,
+  "Continue this text in another box..." (the Pages toolbar
+  button and the box's right-click menu, the same words)
+  arms a pick: the next text box clicked becomes the
+  continuation. It can be on another page. Clicking an
+  empty part of the page stops, changing nothing. A box
+  that comes before the first box cannot be a continuation,
+  and the status line says so rather than letting the words
+  flow backwards.
+- **A box with words of its own** is never overwritten on
+  the first click. The status line says "That box has its
+  own words. Click it once more to replace them with this
+  text's continuation; its words will be removed." Only
+  the second click on that same box makes the change, and
+  Undo brings the words back.
+- **Splitting a thread.** On any box of a thread except
+  the first, "Make this box start its own text" (same two
+  places, same words) divides the thread there: that box
+  and every box after it get a new story holding the words
+  from that box's first line onward; the boxes before keep
+  the rest.
+- **On the canvas.** While a threaded box is selected, it
+  and its thread-mates on the page wear small badges at
+  their top and bottom edges: "Continued from the box on
+  Page 2" at the top, "Continues in the box on Page 3" at
+  the bottom (or "...another box on this page" when the
+  other box is on the same page). Badges show only for the
+  selected box's thread, never as a permanent spiderweb.
+  The Pages selection line says "This text runs through 3
+  boxes."
+- **Overflow.** When words remain after the thread's last
+  box, that box shows the red overflow mark: a small red
+  square with a white plus at its bottom-right corner, the
+  Publisher convention. The leftover words print nowhere;
+  Check's fit finding names the thread's LAST box as the
+  place to fix it.
+- **From an old file.** A rescued .pub whose boxes were
+  linked arrives threaded: one story, named by all its
+  boxes. (PDF and IDML rescues still give each box its own
+  story, as they always have.)
+- **Typing in a thread.** Double-clicking any box of a
+  thread edits the one story. The session shows the slice
+  starting at the entered box's first line, and the caret
+  starts there; caret and selection offsets are the whole
+  story's, and saving reflows every box. Two honest
+  limits, by design in this version: the session lays the
+  whole slice out at the entered box's width, while the
+  resting page and print use each box's own width, so a
+  thread of mixed-width boxes can differ by a line inside
+  the session; and words in earlier boxes, and words past
+  the last box, are not shown in the session (Check reports
+  the overflow). A too-wide hymn line with a dot leader is
+  charged two line heights by the walk, so it cannot pass
+  a fit check sight unseen (J14, kept).
+
 ## Typing on the page, and Undo (built 2026-10-15)
 
 - The canvas draws every frame's text, shaped by the same code
@@ -181,11 +248,12 @@ worker's hands already know, filtered by PRINCIPLES.md:
   the obvious thing (click selects the box, drag moves it,
   double-click types in it), and the right-click menu carries
   everything else, in inches.
-- **Threading is made visible when the editor grows it.** A
-  story flowing from one box into another shows its link on
-  the canvas, and overflow is a mark on the box itself, never
-  a surprise at the printer. The .pub reader already honors
-  threading on import; the editor owes the same honesty.
+- **Threading is made visible.** A story flowing from one
+  box into another shows its link on the canvas (badges on
+  the selected box and its thread-mates), and overflow is
+  a mark on the last box itself, never a surprise at the
+  printer. Shipped as T1; see "Threading: one story, many
+  boxes" above.
 - **Smart guides grow from what shipped.** Boxes already snap
   to guides, edges, and centers; frame-to-frame snapping joins
   in the editor's next phase, with the same live inch readout.

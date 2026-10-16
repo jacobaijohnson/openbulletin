@@ -492,6 +492,7 @@ pub fn import_sla(
                         italic,
                         color: [0, 0, 0],
                         runs: Vec::new(),
+                        thread: None,
                     });
                 }
             }

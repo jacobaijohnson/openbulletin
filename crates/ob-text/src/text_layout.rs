@@ -86,6 +86,20 @@ impl TextLayout {
         self.line_height
     }
 
+    /// A copy holding only the first `n` lines, over the
+    /// same text: the piece of a paragraph one box of a
+    /// thread draws when the story continues in the next
+    /// box (T1). Line ranges still index the whole text, so
+    /// painters read the piece exactly as they read a full
+    /// layout.
+    pub fn first_lines(&self, n: usize) -> TextLayout {
+        TextLayout {
+            text: self.text.clone(),
+            lines: self.lines.iter().take(n).cloned().collect(),
+            line_height: self.line_height,
+        }
+    }
+
     /// Total height of the paragraph's lines, in points.
     pub fn height(&self) -> f32 {
         self.lines.len() as f32 * self.line_height

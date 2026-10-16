@@ -135,3 +135,4 @@ mod tests {
 
 pub mod shaping;
 pub mod text_layout;
+pub mod threading;

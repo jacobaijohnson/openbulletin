@@ -31,7 +31,7 @@
 //! happens here and only here.
 
 use ob_impose::SheetSide;
-use ob_model::{Align, Document, Panel, Rect};
+use ob_model::{Document, Panel, Rect};
 use std::fmt::Write as _;
 
 fn pt(v: ob_model::Mpt) -> f32 {
@@ -680,16 +680,17 @@ fn draw_picture_frame(
 fn draw_panel(
     pc: &mut PageContent,
     doc: &Document,
-    shaper: &mut ob_text::shaping::Shaper,
     fonts: &FontBook,
     panel: &Panel,
+    panel_idx: usize,
+    threads: &std::collections::HashMap<String, ob_text::threading::StoryThread>,
     ox: ob_model::Mpt,
     oy: ob_model::Mpt,
     page_h: ob_model::Mpt,
     purpose: ExportPurpose,
 ) -> usize {
     let mut missing_pictures = 0usize;
-    for frame in &panel.frames {
+    for (fi, frame) in panel.frames.iter().enumerate() {
         let fr = Rect::new(
             frame.rect.x + ox,
             frame.rect.y + oy,
@@ -707,81 +708,25 @@ fn draw_panel(
         let Some(story_id) = &frame.story_id else {
             continue;
         };
-        let Some(story) = doc.story(story_id) else {
+        // Threading (T1): the story's layout through all its
+        // boxes was computed once for the document; this box
+        // draws only its slice, so a story in two boxes
+        // prints each line exactly once. Lines no box could
+        // hold are not in any slice and never print (Check
+        // carries that warning in the app).
+        let Some(thread) = threads.get(story_id.as_str()) else {
             continue;
         };
-        let mut y = fr.y;
-        for para in &story.paragraphs {
-            let style = doc
-                .style(&para.style)
-                .cloned()
-                .unwrap_or(ob_model::ParagraphStyle {
-                    id: "body".into(),
-                    name: "Body".into(),
-                    font_size: 11_000,
-                    bold: false,
-                    italic: false,
-                    align: Align::Left,
-                    space_after: 4_000,
-                    color: ob_model::Rgb::BLACK,
-                    font_family: "Liberation Sans".into(),
-                    font_sha256: None,
-                });
-            // Runs resolve with the fields (G1b): the words a
-            // token stands for wear the face of the run that
-            // held the token. Effective flags fold the style
-            // in, exactly as the canvas does.
-            let resolved_runs = ob_model::resolve_runs(&para.runs, doc);
-            let resolved: String = resolved_runs.iter().map(|r| r.text.as_str()).collect();
-            let mut spans: Vec<ob_text::shaping::RunSpan> = Vec::new();
-            let mut at = 0usize;
-            for r in &resolved_runs {
-                spans.push(ob_text::shaping::RunSpan {
-                    range: at..at + r.text.len(),
-                    bold: r.bold.unwrap_or(style.bold),
-                    italic: r.italic.unwrap_or(style.italic),
-                });
-                at += r.text.len();
-            }
-            let line_h = style.font_size * 13 / 10;
-            // The cluster layout decides line breaks and
-            // widths, and the PDF embeds the very font bytes
-            // that were shaped with, so the breaks land where
-            // print puts them. Each maximal run of same-face
-            // clusters is drawn with its own font resource.
-            let spec = ob_text::shaping::FontSpec {
-                family: style.font_family.clone(),
-                bold: style.bold,
-                italic: style.italic,
-            };
-            let layout = if resolved.contains('\t') {
-                let line = shaper.expand_order_line(&resolved, fr.w, &spec, style.font_size);
-                let disp = ob_text::text_layout::leader_run_spans(&resolved, &spans, &line);
-                shaper.layout_display_line_runs(
-                    &line,
-                    &disp,
-                    &spec,
-                    style.font_size,
-                    1.3,
-                    fr.w,
-                    style.align,
-                )
-            } else {
-                shaper.layout_paragraph_runs(
-                    &resolved,
-                    &spans,
-                    &spec,
-                    style.font_size,
-                    1.3,
-                    fr.w,
-                    style.align,
-                )
-            };
-            for line in layout.lines() {
-                if y + line_h > fr.y + fr.h {
-                    break; // v0: clip at frame bottom (overflow indicator is a GUI feature)
-                }
-                y += line_h;
+        let Some(slice) = thread.slice_for(panel_idx, fi) else {
+            continue;
+        };
+        for piece in &slice.paras {
+            let style = &piece.style;
+            let layout = &piece.layout;
+            for (li, line) in layout.lines().iter().enumerate() {
+                // The baseline sits one line height below
+                // the line's box top, in sheet coordinates.
+                let y = oy + piece.top + (li as ob_model::Mpt + 1) * piece.line_h;
                 // Group the line's clusters by face; a segment
                 // is drawn at its first cluster's position.
                 let mut segs: Vec<(usize, usize, f32, bool, bool)> = Vec::new();
@@ -810,7 +755,6 @@ fn draw_panel(
                     );
                 }
             }
-            y += style.space_after;
         }
     }
     missing_pictures
@@ -1478,6 +1422,9 @@ fn build_pdf_with_library(
     let mut fonts = FontBook::prepare(doc, face_sources(library));
     let mut shaper = ob_text::shaping::bundled_shaper();
     register_library_fonts(&mut shaper, library);
+    // Every story's thread layout, computed once (T1): the
+    // panels below draw their slices of it.
+    let threads = ob_text::threading::layout_document_threads(&mut shaper, doc);
     // Draw every side first, recording operations: subsetting
     // needs the final draw list (the resolved words, dot
     // leaders and all) before any face can be cut down to it.
@@ -1491,9 +1438,10 @@ fn build_pdf_with_library(
                 missing_pictures += draw_panel(
                     &mut pc,
                     doc,
-                    &mut shaper,
                     &fonts,
                     panel,
+                    pl.panel,
+                    &threads,
                     pl.x,
                     pl.y,
                     side.size.h,
@@ -1770,6 +1718,99 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
             "Twentieth Sunday after Pentecost",
         )
+    }
+
+    /// A document whose one story ("s1") is threaded
+    /// through two boxes on one page (T1): the first box
+    /// takes the given height, the second is tall.
+    fn threaded_doc(first_h: ob_model::Mpt, second_h: ob_model::Mpt) -> Document {
+        use ob_model::{
+            ContentRole, Frame, FrameKind, Paragraph, SheetSpec, Size, Story, FORMAT_VERSION,
+        };
+        let text = "Zephyr opens the morning with quiet words for everyone \
+            gathered here today, and Quill writes them down in the big \
+            book by the door, while Harbor bells ring over the water \
+            and Meadow flowers line the path to the Candle that burns \
+            beside the Summit cross above the Velvet curtain near the \
+            Anchor stone at the garden gate, where everyone can see it.";
+        let story = Story {
+            id: "s1".into(),
+            paragraphs: vec![Paragraph::new("body", text)],
+            keep_through: None,
+        };
+        let frame = |id: &str, y: ob_model::Mpt, h: ob_model::Mpt| Frame {
+            id: id.into(),
+            name: id.into(),
+            kind: FrameKind::Text,
+            rect: Rect::new(72_000, y, 200_000, h),
+            story_id: Some("s1".into()),
+            role: ContentRole::Weekly,
+            picture: None,
+        };
+        Document {
+            format_version: FORMAT_VERSION,
+            title: "Threaded".into(),
+            profile: ChurchProfile::default(),
+            fields: Default::default(),
+            styles: ob_model::default_styles(),
+            stories: vec![story],
+            panels: vec![Panel {
+                id: "p1".into(),
+                name: "Page 1".into(),
+                size: Size::new(612_000, 792_000),
+                frames: vec![frame("a", 72_000, first_h), frame("b", 300_000, second_h)],
+                guides: Vec::new(),
+                background_image: None,
+            }],
+            sheet: SheetSpec {
+                preset: "letter-portrait".into(),
+                size: Size::new(612_000, 792_000),
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+        }
+    }
+
+    const PROBES: [&str; 8] = [
+        "Zephyr", "Quill", "Harbor", "Meadow", "Candle", "Summit", "Velvet", "Anchor",
+    ];
+
+    #[test]
+    fn a_threaded_story_prints_each_word_exactly_once() {
+        // T1's invariant, proven on the extracted text: a
+        // story in two boxes prints each of its words once
+        // across the whole PDF, never whole in both boxes.
+        let doc = threaded_doc(45_000, 400_000);
+        let bytes = export_reader_pdf(&doc, ExportPurpose::ForPrinting);
+        let text = extracted_text(&bytes);
+        for word in PROBES {
+            assert_eq!(
+                text.matches(word).count(),
+                1,
+                "{word} prints exactly once: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn leftover_thread_lines_do_not_print() {
+        // Both boxes are short: the story's tail fits
+        // nowhere. Its words stay out of the PDF (Check
+        // carries the warning in the app); the head still
+        // prints exactly once.
+        let doc = threaded_doc(30_000, 30_000);
+        let bytes = export_reader_pdf(&doc, ExportPurpose::ForPrinting);
+        let text = extracted_text(&bytes);
+        assert_eq!(text.matches("Zephyr").count(), 1, "the head prints: {text}");
+        for word in ["Velvet", "Anchor"] {
+            assert_eq!(
+                text.matches(word).count(),
+                0,
+                "{word} is past the last box and never prints: {text}"
+            );
+        }
     }
 
     #[test]

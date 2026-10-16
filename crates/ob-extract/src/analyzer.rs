@@ -281,6 +281,7 @@ mod tests {
             italic: false,
             color: [0, 0, 0],
             runs: Vec::new(),
+            thread: None,
         });
         spans.push(Span {
             page: 0,
@@ -297,6 +298,7 @@ mod tests {
             italic: false,
             color: [0, 0, 0],
             runs: Vec::new(),
+            thread: None,
         });
         ExtractionDump {
             schema_version: 1,

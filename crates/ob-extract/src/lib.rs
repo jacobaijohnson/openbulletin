@@ -103,6 +103,13 @@ pub struct Span {
     /// for all its words (its own bold/italic fields).
     #[serde(default)]
     pub runs: Vec<SpanRun>,
+    /// Threading (T1): the .pub door stamps every span of a
+    /// box that shares its text with other boxes with the
+    /// thread's name; the draft builder then emits ONE story
+    /// for all the thread's boxes instead of a copy per box.
+    /// Absent on every other door and on older dumps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
 }
 
 /// One formatted piece of a span (G1b): text plus the face
@@ -205,6 +212,7 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
                 italic: false,
                 color: [0, 0, 0],
                 runs: Vec::new(),
+                thread: None,
             });
         } else {
             for line in text.lines() {
@@ -227,6 +235,7 @@ pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, St
                     italic: false,
                     color: [0, 0, 0],
                     runs: Vec::new(),
+                    thread: None,
                 });
             }
         }
@@ -452,6 +461,7 @@ mod tests {
             italic: false,
             color: [0, 0, 0],
             runs: Vec::new(),
+            thread: None,
         }
     }
 

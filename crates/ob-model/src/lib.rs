@@ -962,6 +962,25 @@ impl Document {
     pub fn story_mut(&mut self, id: &str) -> Option<&mut Story> {
         self.stories.iter_mut().find(|s| s.id == id)
     }
+
+    /// Every frame that draws a story, as (panel index,
+    /// frame index) pairs in document order: panel order,
+    /// then frame order within the panel. A story in more
+    /// than one frame is a thread (T1): its words flow
+    /// through the frames in exactly this order, and every
+    /// surface (canvas, PDF, Check) reads the order here so
+    /// they can never disagree about which box is next.
+    pub fn frames_of_story(&self, story_id: &str) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for (pi, panel) in self.panels.iter().enumerate() {
+            for (fi, frame) in panel.frames.iter().enumerate() {
+                if frame.story_id.as_deref() == Some(story_id) {
+                    out.push((pi, fi));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// One field token found in raw text: where it sits in the raw
@@ -1122,6 +1141,119 @@ pub fn resolve_runs(runs: &[Run], doc: &Document) -> Vec<Run> {
             .map(|(text, bold, italic)| Run { text, bold, italic })
             .collect(),
     )
+}
+
+/// Split one paragraph's runs at a byte offset in the
+/// paragraph's text: (the runs before, the runs from the
+/// offset on). The run the offset lands in divides, keeping
+/// its face switches on both sides. A side with no words
+/// is one empty plain run, the model's standing shape for
+/// an empty paragraph.
+fn split_runs_at(runs: &[Run], byte: usize) -> (Vec<Run>, Vec<Run>) {
+    let mut head: Vec<Run> = Vec::new();
+    let mut tail: Vec<Run> = Vec::new();
+    let mut at = 0usize;
+    for run in runs {
+        let end = at + run.text.len();
+        if end <= byte {
+            head.push(run.clone());
+        } else if at >= byte {
+            tail.push(run.clone());
+        } else {
+            let cut = byte - at;
+            head.push(Run {
+                text: run.text[..cut].to_string(),
+                bold: run.bold,
+                italic: run.italic,
+            });
+            tail.push(Run {
+                text: run.text[cut..].to_string(),
+                bold: run.bold,
+                italic: run.italic,
+            });
+        }
+        at = end;
+    }
+    (normalize_runs(head), normalize_runs(tail))
+}
+
+/// Cut a story's paragraphs in two at (paragraph index,
+/// byte offset in that paragraph's text): everything
+/// before the cut, then everything from the cut on. This
+/// is the surgery "Make this box start its own text" (T1)
+/// performs when a thread divides: the earlier boxes keep
+/// the head, the later boxes get the tail as a story of
+/// their own. A cut at the very start gives an empty head
+/// (one empty paragraph in the first paragraph's style);
+/// a cut at the very end gives an empty tail the same way,
+/// so both sides always hold at least one paragraph.
+pub fn split_story_paragraphs(
+    paras: &[Paragraph],
+    para: usize,
+    byte: usize,
+) -> (Vec<Paragraph>, Vec<Paragraph>) {
+    if paras.is_empty() {
+        let empty = vec![Paragraph::plain("body", "")];
+        return (empty.clone(), empty);
+    }
+    let para = para.min(paras.len() - 1);
+    let target = &paras[para];
+    let byte = byte.min(target.text().len());
+    // Never split inside a character.
+    let byte = (0..=byte)
+        .rev()
+        .find(|&b| target.text().is_char_boundary(b))
+        .unwrap_or(0);
+    let (head_runs, tail_runs) = split_runs_at(&target.runs, byte);
+    let mut head: Vec<Paragraph> = paras[..para].to_vec();
+    let mut tail: Vec<Paragraph> = Vec::new();
+    if byte > 0 || para == 0 {
+        head.push(Paragraph::from_runs(&target.style, head_runs));
+    }
+    if byte < target.text().len() || para == paras.len() - 1 {
+        tail.push(Paragraph::from_runs(&target.style, tail_runs));
+    }
+    tail.extend_from_slice(&paras[para + 1..]);
+    if head.is_empty() {
+        head.push(Paragraph::plain(&target.style, ""));
+    }
+    if tail.is_empty() {
+        tail.push(Paragraph::plain(&target.style, ""));
+    }
+    (head, tail)
+}
+
+/// The raw-text byte offset that a byte offset in the
+/// RESOLVED text (field tokens filled in) came from, for
+/// one paragraph's raw `text`. Threading computes its cut
+/// points in resolved space, because that is what prints;
+/// story surgery needs them in raw space, because that is
+/// what the file stores. A position inside a token's
+/// filled-in value maps to the token's raw START: the whole
+/// token travels with the tail. (A value long enough to
+/// wrap across a box boundary mid-value is the one corner
+/// this can repeat a few words in; losing words silently
+/// would be worse, and the corner needs a value that wraps
+/// at exactly a box edge.)
+pub fn raw_offset_for_resolved(text: &str, doc: &Document, resolved_off: usize) -> usize {
+    let mapped = resolve_fields_mapped(text, doc);
+    if resolved_off >= mapped.text.len() {
+        return text.len();
+    }
+    let mut raw = resolved_off;
+    for span in &mapped.spans {
+        if resolved_off < span.resolved.start {
+            break;
+        }
+        if resolved_off < span.resolved.end {
+            // Inside (or at the start of) this token's value.
+            return span.raw.start;
+        }
+        // The whole token sits before the position: trade
+        // its resolved length for its raw length.
+        raw = raw - (span.resolved.end - span.resolved.start) + (span.raw.end - span.raw.start);
+    }
+    raw.min(text.len())
 }
 
 /// The house style set every template starts from. Large-print leaning:
@@ -1746,5 +1878,150 @@ mod picture_tests {
         let (x, y, w, h) =
             picture_shown_rect(PictureFit::ShowWhole, 200.0, 100.0, 100.0, 100.0, 0.5, 0.5);
         assert_eq!((x, y, w, h), (0.0, 25.0, 100.0, 50.0));
+    }
+
+    // ---- Threading surgery (T1) ---------------------------
+
+    fn frame(id: &str, story: Option<&str>) -> Frame {
+        Frame {
+            id: id.into(),
+            name: id.into(),
+            kind: FrameKind::Text,
+            rect: Rect::new(0, 0, 100_000, 100_000),
+            story_id: story.map(|s| s.to_string()),
+            role: ContentRole::Weekly,
+            picture: None,
+        }
+    }
+
+    fn doc_with_panels(panels: Vec<Panel>) -> Document {
+        Document {
+            format_version: FORMAT_VERSION,
+            title: "t".into(),
+            profile: ChurchProfile::default(),
+            fields: Default::default(),
+            styles: default_styles(),
+            stories: Vec::new(),
+            panels,
+            sheet: SheetSpec {
+                preset: "letter-portrait".into(),
+                size: Size::new(612_000, 792_000),
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+        }
+    }
+
+    #[test]
+    fn frames_of_story_come_in_document_order() {
+        let panel = |id: &str, frames: Vec<Frame>| Panel {
+            id: id.into(),
+            name: id.into(),
+            size: Size::new(612_000, 792_000),
+            frames,
+            guides: Vec::new(),
+            background_image: None,
+        };
+        let doc = doc_with_panels(vec![
+            panel("p1", vec![frame("a", Some("s1")), frame("b", Some("s2"))]),
+            panel("p2", vec![frame("c", Some("s1"))]),
+        ]);
+        assert_eq!(doc.frames_of_story("s1"), vec![(0, 0), (1, 0)]);
+        assert_eq!(doc.frames_of_story("s2"), vec![(0, 1)]);
+        assert!(doc.frames_of_story("nope").is_empty());
+    }
+
+    #[test]
+    fn split_story_paragraphs_cuts_words_and_runs_cleanly() {
+        let paras = vec![
+            Paragraph::plain("body", "First para"),
+            Paragraph::from_runs(
+                "body",
+                vec![
+                    Run::plain("Sing "),
+                    Run {
+                        text: "hymn".into(),
+                        bold: Some(true),
+                        italic: None,
+                    },
+                    Run::plain(" 432 today"),
+                ],
+            ),
+            Paragraph::plain("body", "Last para"),
+        ];
+        // Cut inside the second paragraph, inside "hymn".
+        let cut = "Sing hy".len();
+        let (head, tail) = split_story_paragraphs(&paras, 1, cut);
+        let head_text: Vec<String> = head.iter().map(|p| p.text()).collect();
+        let tail_text: Vec<String> = tail.iter().map(|p| p.text()).collect();
+        assert_eq!(head_text, vec!["First para", "Sing hy"]);
+        assert_eq!(tail_text, vec!["mn 432 today", "Last para"]);
+        // The bold run divides with its face on both sides.
+        let tail_first = &tail[0];
+        assert!(
+            tail_first
+                .runs
+                .iter()
+                .any(|r| r.text == "mn" && r.bold == Some(true)),
+            "the tail keeps the cut run's face: {:?}",
+            tail_first.runs
+        );
+        // No words are lost or repeated across the cut.
+        let joined = format!("{}{}", head_text.join(""), tail_text.join(""));
+        assert_eq!(
+            joined, "First paraSing hymn 432 todayLast para",
+            "the two sides tile the story"
+        );
+    }
+
+    #[test]
+    fn split_story_paragraphs_at_the_edges_stays_valid() {
+        let paras = vec![Paragraph::plain("body", "Only words")];
+        let (head, tail) = split_story_paragraphs(&paras, 0, 0);
+        assert_eq!(head.len(), 1);
+        assert_eq!(head[0].text(), "");
+        assert_eq!(tail[0].text(), "Only words");
+        let (head, tail) = split_story_paragraphs(&paras, 0, "Only words".len());
+        assert_eq!(head[0].text(), "Only words");
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].text(), "");
+        // A paragraph boundary cut: head takes whole
+        // paragraphs, the tail starts fresh.
+        let two = vec![
+            Paragraph::plain("body", "One"),
+            Paragraph::plain("body", "Two"),
+        ];
+        let (head, tail) = split_story_paragraphs(&two, 1, 0);
+        assert_eq!(head.len(), 1);
+        assert_eq!(head[0].text(), "One");
+        assert_eq!(tail[0].text(), "Two");
+    }
+
+    #[test]
+    fn raw_offset_for_resolved_walks_past_tokens() {
+        let mut doc = doc_with_panels(Vec::new());
+        doc.profile.name = "Grace Lutheran Church".into(); // 21 chars
+        let raw = "Welcome to {Church.name} today";
+        // Resolved: "Welcome to Grace Lutheran Church today".
+        // A position in plain text before the token maps 1:1.
+        assert_eq!(raw_offset_for_resolved(raw, &doc, 5), 5);
+        // The token's raw start.
+        assert_eq!(raw_offset_for_resolved(raw, &doc, 11), 11);
+        // Inside the filled-in value: the whole token
+        // travels with the tail, so back to its raw start.
+        assert_eq!(raw_offset_for_resolved(raw, &doc, 20), 11);
+        // Just past the value: the token's raw end (24).
+        assert_eq!(raw_offset_for_resolved(raw, &doc, 32), 24);
+        // After the token, positions shift by the difference
+        // (resolved " today" starts at 32, raw at 24).
+        assert_eq!(raw_offset_for_resolved(raw, &doc, 33), 25);
+        // The end maps to the end.
+        assert_eq!(
+            raw_offset_for_resolved(raw, &doc, 999),
+            raw.len(),
+            "past the end clamps to the raw end"
+        );
     }
 }

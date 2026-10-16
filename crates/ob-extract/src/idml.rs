@@ -480,6 +480,7 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
                     italic: para.italic,
                     color: [0, 0, 0],
                     runs: para.runs.clone(),
+                    thread: None,
                 });
             }
         }

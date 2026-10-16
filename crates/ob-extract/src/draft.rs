@@ -113,6 +113,11 @@ struct Line {
     /// the words (SpanTrust::NeedsReview): the block is badged
     /// Check this no matter how well its font matched.
     review: bool,
+    /// The thread this line's words belong to, when the
+    /// source named one (T1: the .pub door stamps it). The
+    /// first fragment of the line decides; fragments the
+    /// .pub pen emits for one box all carry the same name.
+    thread: Option<String>,
 }
 
 impl Line {
@@ -318,6 +323,22 @@ fn block_color(block: &[Line]) -> [u8; 3] {
     majority(block.iter().map(|l| l.color())).unwrap_or([0, 0, 0])
 }
 
+/// The thread a whole block belongs to (T1): the name when
+/// every line carries the same one. Mixed or unnamed lines
+/// mean no thread: the block stands alone, as blocks from
+/// every other door always have.
+fn block_thread(block: &[Line]) -> Option<String> {
+    let first = block.first()?.thread.clone()?;
+    if block
+        .iter()
+        .all(|l| l.thread.as_deref() == Some(first.as_str()))
+    {
+        Some(first)
+    } else {
+        None
+    }
+}
+
 /// Group a page's spans into visual lines (top to bottom).
 fn lines_of(spans: &[&crate::Span]) -> Vec<Line> {
     let mut spans: Vec<&crate::Span> = spans
@@ -362,6 +383,7 @@ fn lines_of(spans: &[&crate::Span]) -> Vec<Line> {
                 parts: vec![part],
                 spread: 0.0,
                 review: sp.trust == SpanTrust::NeedsReview,
+                thread: sp.thread.clone(),
             });
         }
     }
@@ -424,6 +446,11 @@ fn build_draft(
     let mut style_ids: BTreeMap<String, String> = BTreeMap::new();
     let mut stories: Vec<Story> = Vec::new();
     let mut panels: Vec<Panel> = Vec::new();
+    // Threading (T1): thread name -> the story the thread's
+    // first block created, kept across pages, so every box
+    // of a thread names ONE story and the words live in the
+    // document once.
+    let mut thread_stories: HashMap<String, String> = HashMap::new();
 
     // Preset: the booklet rule the corpus taught us; otherwise
     // one page per sheet, which always prints safely.
@@ -572,7 +599,6 @@ fn build_draft(
                 });
                 id
             });
-            let sid = format!("rescue-{pi}-{bi}");
             // Relativize the runs against the block style
             // (G1b): a flag the style already carries becomes
             // None (inherit), a differing one stays explicit.
@@ -596,14 +622,34 @@ fn build_draft(
                     })
                     .collect()
             };
-            stories.push(Story {
-                keep_through: None,
-                id: sid.clone(),
-                paragraphs: paras
-                    .iter()
-                    .map(|runs| Paragraph::from_runs(style_id, relativize(runs)))
-                    .collect(),
-            });
+            let new_paras: Vec<Paragraph> = paras
+                .iter()
+                .map(|runs| Paragraph::from_runs(style_id, relativize(runs)))
+                .collect();
+            // A block in a thread joins the thread's story:
+            // the first block of the thread creates it (under
+            // its own usual id), later blocks add their words
+            // to it in reading order, and every block's frame
+            // names the same story (T1).
+            let sid = match block_thread(block) {
+                Some(name) => match thread_stories.get(&name) {
+                    Some(existing) => existing.clone(),
+                    None => {
+                        let sid = format!("rescue-{pi}-{bi}");
+                        thread_stories.insert(name, sid.clone());
+                        sid
+                    }
+                },
+                None => format!("rescue-{pi}-{bi}"),
+            };
+            match stories.iter_mut().find(|s| s.id == sid) {
+                Some(existing) => existing.paragraphs.extend(new_paras),
+                None => stories.push(Story {
+                    keep_through: None,
+                    id: sid.clone(),
+                    paragraphs: new_paras,
+                }),
+            }
             let x0 = block.iter().map(|l| l.x0()).fold(f32::MAX, f32::min);
             let y0 = block.iter().map(|l| l.y).fold(f32::MAX, f32::min);
             let x1 = block.iter().map(|l| l.x1()).fold(0.0, f32::max);
@@ -729,6 +775,7 @@ mod tests {
             italic: false,
             color: [0, 0, 0],
             runs: Vec::new(),
+            thread: None,
         }
     }
 
@@ -997,5 +1044,58 @@ mod tests {
         );
         assert_eq!(font_match("Calibri").as_deref(), Some("Carlito"));
         assert_eq!(font_match("GillSansMT"), None);
+    }
+
+    #[test]
+    fn threaded_blocks_share_one_story() {
+        // T1: two blocks whose spans carry the same thread
+        // name (the .pub door's linked boxes) become ONE
+        // story named by both blocks' frames, its words in
+        // reading order and exactly once. A third block with
+        // no thread stands alone, as blocks always have.
+        let mut first = span(0, "Alpha one", 60.0, 90.0, 11.0, "Calibri", false);
+        first.thread = Some("pub-thread-7".into());
+        let mut second = span(0, "Bravo two", 60.0, 300.0, 11.0, "Calibri", false);
+        second.thread = Some("pub-thread-7".into());
+        let lone = span(0, "Standing alone", 60.0, 500.0, 11.0, "Calibri", false);
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pub,
+            source_name: "old.pub".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![first, second, lone],
+            images: Vec::new(),
+        };
+        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        let doc = &out.doc;
+        assert_eq!(doc.stories.len(), 2, "thread story + lone story");
+        let shared = doc
+            .stories
+            .iter()
+            .find(|s| s.paragraphs.iter().any(|p| p.text().contains("Alpha")))
+            .expect("the thread's story");
+        let texts: Vec<String> = shared.paragraphs.iter().map(|p| p.text()).collect();
+        assert_eq!(
+            texts,
+            vec!["Alpha one", "Bravo two"],
+            "words once, in order"
+        );
+        let refs = doc.frames_of_story(&shared.id);
+        assert_eq!(refs.len(), 2, "both boxes name the shared story");
+        // The lone block kept its own story and frame.
+        let lone_story = doc
+            .stories
+            .iter()
+            .find(|s| s.id != shared.id)
+            .expect("the lone story");
+        assert!(lone_story.paragraphs[0].text().contains("Standing alone"));
+        assert_eq!(doc.frames_of_story(&lone_story.id).len(), 1);
     }
 }

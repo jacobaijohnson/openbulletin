@@ -986,6 +986,11 @@ struct Compose<'a> {
     /// Paragraphs of a threaded story that earlier boxes
     /// have already taken: the next box starts here.
     thread_next_para: HashMap<usize, usize>,
+    /// The thread name stamped on spans while a threaded
+    /// box's words are being placed (T1): the draft builder
+    /// groups spans by it and emits ONE story for the whole
+    /// thread. None at every other time.
+    span_thread: Option<String>,
 }
 
 /// The pen for placing one story's words inside a box:
@@ -1243,6 +1248,9 @@ impl<'a> Compose<'a> {
             italic: props.italic.unwrap_or(false),
             color: [0, 0, 0],
             runs: Vec::new(),
+            // T1: the thread stamp, set only while a
+            // threaded box's words are being placed.
+            thread: self.span_thread.clone(),
         });
         self.loss.characters_emitted += text.chars().count();
     }
@@ -1402,6 +1410,7 @@ impl<'a> Compose<'a> {
                     italic: false,
                     color: [0, 0, 0],
                     runs: Vec::new(),
+                    thread: None,
                 });
                 self.loss.wordart_emitted += 1;
                 emitted = true;
@@ -1456,13 +1465,21 @@ impl<'a> Compose<'a> {
                                 let is_last =
                                     position.map(|p| p + 1 >= boxes.len()).unwrap_or(true);
                                 let bottom = text_rect.1 + text_rect.3;
-                                match self.place_paras(
+                                // T1: every span this box
+                                // emits carries the thread's
+                                // name, so the draft builder
+                                // can give all the thread's
+                                // boxes one shared story.
+                                self.span_thread = Some(format!("pub-thread-{si}"));
+                                let placed = self.place_paras(
                                     &paras[start..],
                                     text_rect,
                                     page,
                                     review,
                                     bottom,
-                                ) {
+                                );
+                                self.span_thread = None;
+                                match placed {
                                     None => {
                                         self.placed_stories.insert(si);
                                         self.thread_next_para.remove(&si);
@@ -1531,6 +1548,7 @@ impl<'a> Compose<'a> {
                     italic: false,
                     color: [0, 0, 0],
                     runs: Vec::new(),
+                    thread: None,
                 });
                 emitted = true;
             }
@@ -1863,6 +1881,7 @@ fn compose(
         unplaced_causes: Vec::new(),
         thread_boxes,
         thread_next_para: HashMap::new(),
+        span_thread: None,
     };
     let mut pages: Vec<PageInfo> = Vec::new();
     for slot in &slots {
@@ -2576,5 +2595,66 @@ mod tests {
         for word in ["Alpha", "Bravo", "Charlie", "Delta"] {
             assert!(joined.contains(word), "{joined}");
         }
+        // T1: the dump's spans carry the thread's name, the
+        // same name on both boxes' words.
+        let threads: Vec<&str> = x
+            .dump
+            .spans
+            .iter()
+            .filter_map(|s| s.thread.as_deref())
+            .collect();
+        assert!(!threads.is_empty(), "threaded spans are stamped");
+        assert!(
+            threads.iter().all(|t| *t == threads[0]),
+            "one thread name: {threads:?}"
+        );
+        // And the draft the dump builds holds ONE story for
+        // the thread, named by both boxes' frames, its words
+        // exactly once across the document.
+        let outcome =
+            crate::draft::document_from_dump(&x.dump, ob_model::ChurchProfile::default(), false);
+        let doc = &outcome.doc;
+        let carriers: Vec<&ob_model::Story> = doc
+            .stories
+            .iter()
+            .filter(|s| s.paragraphs.iter().any(|p| p.text().contains("Alpha")))
+            .collect();
+        assert_eq!(carriers.len(), 1, "one story carries the article");
+        let story = carriers[0];
+        let all_text: String = doc
+            .stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter().map(|p| p.text()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        for word in ["Alpha", "Bravo", "Charlie", "Delta"] {
+            assert_eq!(
+                all_text.matches(word).count(),
+                1,
+                "{word} appears once in the imported document: {all_text}"
+            );
+        }
+        // Both boxes' frames name the one story. (The pen
+        // spaces the second box's paragraphs far enough
+        // apart that the draft reads them as separate
+        // blocks: four frames in all, every one threaded
+        // into the same story, none with a copy.)
+        let refs = doc.frames_of_story(&story.id);
+        assert!(
+            refs.len() >= 2,
+            "the thread's boxes share the story: {refs:?}"
+        );
+        let ys: Vec<ob_model::Mpt> = refs
+            .iter()
+            .map(|&(pi, fi)| doc.panels[pi].frames[fi].rect.y)
+            .collect();
+        assert!(
+            ys.iter().any(|&y| (y - 72_000).abs() < 5_000),
+            "a frame starts in the first box (inside its insets): {ys:?}"
+        );
+        assert!(
+            ys.iter().any(|&y| y >= 200_000),
+            "frames continue in the second box: {ys:?}"
+        );
     }
 }

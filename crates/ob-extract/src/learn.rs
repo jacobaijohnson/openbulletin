@@ -332,6 +332,7 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> ExtractionDump {
                         .map(|s| [s.color.r, s.color.g, s.color.b])
                         .unwrap_or([0, 0, 0]),
                     runs: Vec::new(),
+                    thread: None,
                 });
                 y += size_pt * 1.25 + style.map(|s| s.space_after as f32 / 1000.0).unwrap_or(0.0);
             }
@@ -588,6 +589,7 @@ mod tests {
                 italic: false,
                 color: [0, 0, 0],
                 runs: Vec::new(),
+                thread: None,
             };
             ExtractionDump {
                 schema_version: 1,

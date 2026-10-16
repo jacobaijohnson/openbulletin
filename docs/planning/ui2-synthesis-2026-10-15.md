@@ -109,3 +109,27 @@ are organization and honesty-of-state, not capability.
 - Shaped-caret in-place editing remains the known big editor
   phase, separately scheduled; nothing in this round pretends
   otherwise.
+
+## Shipped (2026-10-15 evening, Jacob's order: all of it, in order)
+
+- Batch 1 (d6c6fac, 119 tests): sidebar scroll + capped print
+  preview; date applies on focus loss and step exit; first-run
+  identity emptied with hint text; top-bar Open routes all
+  formats; armed opens keep the picked file; second instance
+  warns; fingerprint set by print copies only; failures banner.
+- Batch 2 (7ca84c7, 122 tests): top bar regrouped; "Start next
+  Sunday" everywhere; Print's one primary; Start-a-new-bulletin
+  buttons with arm; last-bulletin door; Check findings navigate
+  to the named panel/box; Fonts window reachable and renamed
+  sections; Save announcements removed; import spinner words;
+  honest native-.pub failure; review arms relabel both buttons;
+  doors disabled during an unanswered review.
+- Batch 3 (57dedf2, 123 tests): PROBLEM/WARN/GOOD/INFO palette +
+  one canvas accent; startup text styles (Body 15.5px); app
+  icon generated and wired (window + bundle); version beside
+  the app name; previews render in the real family and face
+  (PreviewLine carries family/bold/italic; limit: a family with
+  only a regular face draws styled lines in that regular face);
+  captions now state exactly that; pager words; fit note
+  actionable; status at body size with file names; MODES.md
+  synced (workspaces/search/tooltips recorded as unbuilt).

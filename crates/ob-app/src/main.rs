@@ -577,12 +577,27 @@ impl App {
                 if before != snapshot(&self.doc) {
                     self.record_undo(before);
                 }
-                self.status = format!("Date set to {}.", d.format("%A, %B %-d, %Y"));
+                self.note(format!("Date set to {}.", d.format("%A, %B %-d, %Y")));
             }
             Err(_) => {
-                self.status =
-                    "That date does not read. Use year-month-day, like 2026-10-18.".into();
+                self.fail("That date does not read. Use year-month-day, like 2026-10-18.".into());
             }
+        }
+    }
+
+    /// Apply the Step 2 date field when it holds a new
+    /// date, without being asked: every neighboring field
+    /// applies on focus loss, and the date used to be the
+    /// one field that silently did not, so a typed date
+    /// could be thrown away with no word said (UI audit
+    /// round 2, flow blocker). Called when the field loses
+    /// focus and when the step is left.
+    fn apply_edited_date(&mut self) {
+        if date_differs(
+            &self.date_input,
+            self.doc.fields.get("sunday_date").map(String::as_str),
+        ) {
+            self.apply_date();
         }
     }
 
@@ -603,8 +618,9 @@ impl App {
                 .map(|d| Some(d.format("%Y-%m-%d").to_string()))
         };
         let Some(value) = parsed else {
-            self.status =
-                "That keep-through date does not read. Use year-month-day, like 2026-11-08, or leave it blank.".into();
+            self.fail(
+                "That keep-through date does not read. Use year-month-day, like 2026-11-08, or leave it blank.".into(),
+            );
             self.ann_keep_through = self
                 .doc
                 .story(&sid)
@@ -618,7 +634,7 @@ impl App {
         }
         if before != snapshot(&self.doc) {
             self.record_undo(before);
-            self.status = match &value {
+            self.note(match &value {
                 Some(iso) => {
                     let d =
                         chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d").expect("just formatted");
@@ -628,7 +644,7 @@ impl App {
                     )
                 }
                 None => "Announcements are for this Sunday only.".into(),
-            };
+            });
         }
     }
 
@@ -639,6 +655,8 @@ impl App {
     /// name (audit blocker 5). Within one file's editing
     /// session, Undo and Redo pass clear_history = false.
     fn adopt_document(&mut self, doc: Document, clear_history: bool) {
+        // Any swap retires a pick the open guard was holding.
+        self.pending_path = None;
         if clear_history {
             self.undo_stack.clear();
             self.redo_stack.clear();
@@ -737,6 +755,14 @@ fn announcements_check(announcements_empty: bool, none_marked: bool) -> String {
          there if there are none."
             .to_string()
     }
+}
+
+/// Whether a date field holds an edit: some text, and not
+/// the bulletin's stored date. A blank field is not an
+/// edit; the bulletin always has a date.
+fn date_differs(input: &str, stored: Option<&str>) -> bool {
+    let input = input.trim();
+    !input.is_empty() && input != stored.unwrap_or("")
 }
 
 /// The Start step's opening lines (adopted item 3): which
@@ -903,6 +929,11 @@ struct App {
     /// disarmed the guard for later, different work).
     pending_open: Option<PendingOpen>,
     pending_open_snapshot: String,
+    /// A file picked at the old-bulletin door that the
+    /// unsaved-work guard held: the confirming click opens
+    /// this very file instead of asking for it again
+    /// (UI audit round 2).
+    pending_path: Option<std::path::PathBuf>,
     /// Two-click guard on throwing recovered work away (F11).
     discard_armed: bool,
     /// Another live OpenBulletin process holds the journal: this
@@ -983,29 +1014,29 @@ enum CatalogMsg {
 
 impl Default for App {
     fn default() -> Self {
-        let church_name = "Grace Lutheran Church".to_string();
         let preset = Preset::LetterBifold;
+        // A first run is a blank slate, not somebody else's
+        // church: the profile starts empty and the Start
+        // step asks for it (UI audit round 2). Nothing
+        // invented can print on a real cover.
         let doc = build_template(
             preset,
-            ChurchProfile {
-                name: church_name.clone(),
-                service_times: "Sundays 9:30 AM".into(),
-                ..Default::default()
-            },
+            ChurchProfile::default(),
             chrono::Local::now().date_naive(),
             "Sunday",
         );
         let announcements = weekly_body_text(&doc);
+        let date_input = doc.fields.get("sunday_date").cloned().unwrap_or_default();
         Self {
             doc,
             preset,
-            church_name,
-            profile_address: "123 Main Street".into(),
+            church_name: String::new(),
+            profile_address: String::new(),
             profile_giving_url: String::new(),
-            profile_service_times: "Sundays 9:30 AM".into(),
+            profile_service_times: String::new(),
             profile_website: String::new(),
             profile_pastor: String::new(),
-            date_input: String::new(),
+            date_input,
             announcements_dirty: false,
             step: 0,
             announcements,
@@ -1060,6 +1091,7 @@ impl Default for App {
             status_error: false,
             pending_open: None,
             pending_open_snapshot: String::new(),
+            pending_path: None,
             discard_armed: false,
             peer_alive: false,
             import_rx: None,
@@ -1115,6 +1147,9 @@ impl App {
     /// Announcements writes the box; arriving at Check runs it.
     /// The step list itself is clickable now (finding F1).
     fn goto_step(&mut self, i: usize) {
+        if self.step == 1 && i != 1 {
+            self.apply_edited_date();
+        }
         if self.step == 2 && i != 2 {
             self.save_announcements();
         }
@@ -1504,9 +1539,11 @@ impl App {
                         report.ended_announcements
                     ));
                 }
-                self.status = msg;
+                self.note(msg);
             }
-            Err(e) => self.status = format!("Next Sunday failed: {e}"),
+            Err(e) => self.fail(format!(
+                "Next Sunday could not be made from this bulletin. ({e})"
+            )),
         }
     }
 }
@@ -1570,6 +1607,17 @@ impl App {
         // journal entirely alone (closing audit).
         self.peer_alive = peer_instance_alive();
         write_instance_lock();
+        if self.peer_alive {
+            // The journal belongs to the other window, so
+            // this window's work is not being kept safe. Say
+            // so on the first frame instead of losing it
+            // silently (UI audit round 2).
+            self.fail(
+                "OpenBulletin is already open in another window. Work in this window \
+                 is not being kept safe; close one of them."
+                    .into(),
+            );
+        }
         let (obd, meta) = journal_paths();
         if let Some((doc, source, when)) = read_journal_from(&obd, &meta) {
             if snapshot(&doc) != self.saved_snapshot {
@@ -1793,12 +1841,22 @@ impl App {
             if count == 1 { "" } else { "s" }
         ));
         let sheets = self.preview_sheets().clone();
-        for (i, sheet) in sheets.iter().enumerate() {
-            let pair = i / 2 + 1;
-            let face = if i % 2 == 0 { "front" } else { "back" };
-            ui.label(egui::RichText::new(format!("Sheet {pair}, {face}")).strong());
-            draw_sheet(ui, sheet);
-        }
+        // The preview is a picture, not the point of the
+        // step: cap the room it takes (its own little scroll
+        // box) so the copy buttons stay within reach on
+        // smaller windows (UI audit round 2, blocker B1).
+        egui::ScrollArea::vertical()
+            .id_salt("sheet-preview")
+            .max_height(300.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (i, sheet) in sheets.iter().enumerate() {
+                    let pair = i / 2 + 1;
+                    let face = if i % 2 == 0 { "front" } else { "back" };
+                    ui.label(egui::RichText::new(format!("Sheet {pair}, {face}")).strong());
+                    draw_sheet(ui, sheet);
+                }
+            });
     }
 
     /// The settings to use in the computer's print window, in plain
@@ -3112,9 +3170,30 @@ impl App {
 
     /// One door for every old bulletin (Jacob's rule: the app
     /// conforms to the office worker, who has a file, not a
-    /// format opinion). Routes by extension, and when the name
-    /// does not say, by the file's own first bytes.
+    /// format opinion). A pick that loads at once (an
+    /// OpenBulletin file) answers to the unsaved-work guard
+    /// first; the pick is carried through the arm in
+    /// `pending_path`, so the confirming click opens the very
+    /// file chosen instead of asking for it again (UI audit
+    /// round 2). Imports answer to their review windows,
+    /// whose own confirm guards the discard.
     fn open_old_bulletin(&mut self, path: std::path::PathBuf) {
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if ext == "obd" && !self.open_guard(PendingOpen::Plain) {
+            self.pending_path = Some(path);
+            return;
+        }
+        self.route_old_bulletin(path);
+    }
+
+    /// Route a picked old bulletin to its reader, by
+    /// extension, and when the name does not say, by the
+    /// file's own first bytes. Callers have settled the
+    /// unsaved-work guard (the door above, or Open).
+    fn route_old_bulletin(&mut self, path: std::path::PathBuf) {
         let ext = path
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
@@ -3124,21 +3203,16 @@ impl App {
             "idml" => self.start_idml_import(path),
             "pub" => self.start_pub_import(path),
             "sla" => self.start_sla_import(path),
-            "obd" => {
-                if !self.open_guard(PendingOpen::Plain) {
-                    return;
+            "obd" => match ob_format::load(&path) {
+                Ok(doc) => {
+                    self.adopt_document(doc, true);
+                    self.path = Some(path);
+                    self.step = 1;
+                    self.note("Bulletin opened.".into());
+                    self.mark_clean();
                 }
-                match ob_format::load(&path) {
-                    Ok(doc) => {
-                        self.adopt_document(doc, true);
-                        self.path = Some(path);
-                        self.step = 1;
-                        self.note("Bulletin opened.".into());
-                        self.mark_clean();
-                    }
-                    Err(e) => self.fail(format!("Could not open that file. ({e})")),
-                }
-            }
+                Err(e) => self.fail(format!("Could not open that file. ({e})")),
+            },
             _ => {
                 // Sniff the first bytes: PDF says %PDF, an IDML
                 // is a zip (PK), a .pub is a compound file, a
@@ -3572,27 +3646,26 @@ impl App {
         self.frame_menu_for = None;
     }
 
-    /// The Open button's work, shared with its key.
+    /// The Open button's work, shared with its key. One
+    /// door, two entrances: Open offers every kind the
+    /// Start step's old-bulletin door opens, routed the
+    /// same way (UI audit round 2). The guard runs before
+    /// the dialog here, as it always has; a pick the door
+    /// below is holding opens straight away.
     fn open_flow(&mut self) {
+        if let Some(path) = self.pending_path.take() {
+            self.open_old_bulletin(path);
+            return;
+        }
         if !self.open_guard(PendingOpen::Plain) {
             return;
         }
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("OpenBulletin bulletin", &["obd"])
+            .add_filter("Old bulletins", &["pdf", "pub", "idml", "sla", "obd"])
+            .add_filter("All files", &[] as &[&str])
             .pick_file()
         {
-            match ob_format::load(&path) {
-                Ok(doc) => {
-                    self.adopt_document(doc, true);
-                    self.path = Some(path);
-                    self.step = 1;
-                    self.note("Bulletin opened.".into());
-                    self.mark_clean();
-                }
-                Err(e) => self.fail(format!(
-                    "Could not open that file. Pick a bulletin file ending in .obd. ({e})"
-                )),
-            }
+            self.route_old_bulletin(path);
         }
     }
 
@@ -4371,7 +4444,16 @@ impl eframe::App for App {
                     }
                 }
                 ui.separator();
-                match self.step {
+                // The step itself scrolls: the long steps
+                // (Start, Print) hold more than a small
+                // window shows, and egui panels clip what
+                // does not fit, buttons and all (UI audit
+                // round 2, blocker B1). The step list above
+                // and the status line below stay put.
+                egui::ScrollArea::vertical()
+                    .id_salt("step-scroll")
+                    .show(ui, |ui| {
+                        match self.step {
                     0 => {
                         let (headline, next_line) =
                             start_status(&self.doc, self.announcements.trim().is_empty());
@@ -4411,16 +4493,25 @@ impl eframe::App for App {
                         ui.label("Open a bulletin made somewhere else: a PDF, a Publisher file, an InDesign file (IDML), or a Scribus file. One button for all of them; the app works out which kind it is, and the words come over as a draft you can edit. Publisher files ride in through LibreOffice (a free program) when it is installed, and through OpenBulletin's own reader when it is not; for InDesign, export the file there as IDML first.");
                         if self.import_rx.is_some() {
                             ui.label("Reading your old bulletin...");
-                        } else if ui.button("Open an old bulletin...").clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter(
-                                    "Old bulletins",
-                                    &["pdf", "pub", "idml", "sla", "obd"],
-                                )
-                                .add_filter("All files", &[] as &[&str])
-                                .pick_file()
-                            {
-                                self.open_old_bulletin(path);
+                        } else {
+                            let door_label = if self.pending_path.is_some() {
+                                "Leave unsaved work and open?"
+                            } else {
+                                "Open an old bulletin..."
+                            };
+                            if ui.button(door_label).clicked() {
+                                if let Some(path) = self.pending_path.take() {
+                                    self.open_old_bulletin(path);
+                                } else if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter(
+                                        "Old bulletins",
+                                        &["pdf", "pub", "idml", "sla", "obd"],
+                                    )
+                                    .add_filter("All files", &[] as &[&str])
+                                    .pick_file()
+                                {
+                                    self.open_old_bulletin(path);
+                                }
                             }
                         }
                         ui.separator();
@@ -4460,7 +4551,11 @@ impl eframe::App for App {
                         }
                         ui.separator();
                         ui.label("Church name");
-                        if ui.text_edit_singleline(&mut self.church_name).lost_focus() {
+                        let resp_church_name = ui.add(
+                            egui::TextEdit::singleline(&mut self.church_name)
+                                .hint_text("Your church's name"),
+                        );
+                        if resp_church_name.lost_focus() {
                             let name = self.church_name.clone();
                             if self.doc.profile.name != name {
                                 let before = snapshot(&self.doc);
@@ -4469,14 +4564,20 @@ impl eframe::App for App {
                             }
                         }
                         ui.label("Address");
-                        let resp_profile_address = ui.text_edit_singleline(&mut self.profile_address);
+                        let resp_profile_address = ui.add(
+                            egui::TextEdit::singleline(&mut self.profile_address)
+                                .hint_text("Street address"),
+                        );
                         if resp_profile_address.lost_focus() && self.doc.profile.address != self.profile_address {
                                 let before = snapshot(&self.doc);
                                 self.doc.profile.address = self.profile_address.clone();
                                 self.record_undo(before);
                         }
                         ui.label("Service times");
-                        let resp_times = ui.text_edit_singleline(&mut self.profile_service_times);
+                        let resp_times = ui.add(
+                            egui::TextEdit::singleline(&mut self.profile_service_times)
+                                .hint_text("Like Sundays 9:30 AM"),
+                        );
                         if resp_times.lost_focus()
                             && self.doc.profile.service_times != self.profile_service_times
                         {
@@ -4486,7 +4587,10 @@ impl eframe::App for App {
                                 self.record_undo(before);
                         }
                         ui.label("Online giving link (shows as “Give online:” on the back page)");
-                        let resp_giving = ui.text_edit_singleline(&mut self.profile_giving_url);
+                        let resp_giving = ui.add(
+                            egui::TextEdit::singleline(&mut self.profile_giving_url)
+                                .hint_text("The web address for online giving"),
+                        );
                         if resp_giving.lost_focus()
                             && self.doc.profile.giving_url != self.profile_giving_url
                         {
@@ -4496,14 +4600,20 @@ impl eframe::App for App {
                                 self.record_undo(before);
                         }
                         ui.label("Website");
-                        let resp_profile_website = ui.text_edit_singleline(&mut self.profile_website);
+                        let resp_profile_website = ui.add(
+                            egui::TextEdit::singleline(&mut self.profile_website)
+                                .hint_text("Your church's website"),
+                        );
                         if resp_profile_website.lost_focus() && self.doc.profile.website != self.profile_website {
                                 let before = snapshot(&self.doc);
                                 self.doc.profile.website = self.profile_website.clone();
                                 self.record_undo(before);
                         }
                         ui.label("Pastor");
-                        let resp_profile_pastor = ui.text_edit_singleline(&mut self.profile_pastor);
+                        let resp_profile_pastor = ui.add(
+                            egui::TextEdit::singleline(&mut self.profile_pastor)
+                                .hint_text("Your pastor's name"),
+                        );
                         if resp_profile_pastor.lost_focus() && self.doc.profile.pastor != self.profile_pastor {
                                 let before = snapshot(&self.doc);
                                 self.doc.profile.pastor = self.profile_pastor.clone();
@@ -4520,10 +4630,8 @@ impl eframe::App for App {
                         ui.horizontal(|ui| {
                             ui.label("Change it:");
                             let date_edit = ui.text_edit_singleline(&mut self.date_input);
-                            if date_edit.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            {
-                                self.apply_date();
+                            if date_edit.lost_focus() {
+                                self.apply_edited_date();
                             }
                             if ui.button("Set date").clicked() {
                                 self.apply_date();
@@ -4721,7 +4829,12 @@ impl eframe::App for App {
                                 let bytes = ob_pdf::export_reader_pdf(&self.doc);
                                 match std::fs::write(&path, &bytes) {
                                     Ok(()) => {
-                                        self.print_fingerprint = Some(snapshot(&self.doc));
+                                        // No print fingerprint: a
+                                        // reading copy is not the
+                                        // print copy, and the
+                                        // freshness warning must
+                                        // never claim one exists
+                                        // (UI audit round 2).
                                         self.status = format!("Saved reading copy to {}", path.display());
                                     }
                                     Err(e) => self.status = format!("Could not save the reading copy: {e}"),
@@ -4803,7 +4916,8 @@ impl eframe::App for App {
                             self.next_sunday();
                         }
                     }
-                }
+                        }
+                    });
                 ui.separator();
                 if self.status_error {
                     ui.label(
@@ -5909,6 +6023,106 @@ mod settings_tests {
         let (headline, next) = start_status(&doc, false);
         assert_eq!(headline, "Working on: a new bulletin");
         assert!(next.contains("This Sunday step"), "next: {next}");
+    }
+
+    #[test]
+    fn a_held_pick_opens_on_the_confirming_click() {
+        // UI audit round 2: through the old-bulletin door,
+        // the unsaved-work guard used to fire after the file
+        // pick and eat it, so the user browsed twice. Now the
+        // pick is carried through the arm.
+        let mut picked = App::default().doc;
+        picked.profile.name = "Picked Church".into();
+        let dir = std::env::temp_dir().join(format!("ob-door-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("picked.obd");
+        ob_format::save(&picked, &path).expect("save pick");
+
+        let mut app = App {
+            frame_snapshot: "unsaved work".into(),
+            saved_snapshot: "saved".into(),
+            ..Default::default()
+        };
+        // First call: the guard arms, nothing opens, and the
+        // pick is held rather than dropped.
+        app.open_old_bulletin(path.clone());
+        assert!(
+            app.doc.profile.name != "Picked Church",
+            "the guard held the open"
+        );
+        assert_eq!(app.pending_path.as_deref(), Some(path.as_path()));
+        // The confirming click opens that very file.
+        let held = app.pending_path.take().expect("a held pick");
+        app.open_old_bulletin(held);
+        assert_eq!(app.doc.profile.name, "Picked Church");
+        assert!(app.pending_path.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fresh_app_asks_for_its_own_church() {
+        // UI audit round 2: the first screen used to present
+        // a filled-in fictional church as the user's own,
+        // address buffer and all, and Check certified it.
+        // Now the identity starts empty everywhere and the
+        // Start status asks for it.
+        let app = App::default();
+        assert!(app.doc.profile.name.is_empty());
+        assert!(app.doc.profile.address.is_empty());
+        assert!(app.doc.profile.service_times.is_empty());
+        assert!(app.church_name.is_empty());
+        assert!(app.profile_address.is_empty());
+        assert!(app.profile_service_times.is_empty());
+        let (_, next) = start_status(&app.doc, true);
+        assert!(next.contains("church name"), "next: {next}");
+    }
+
+    #[test]
+    fn an_edited_date_applies_without_being_asked() {
+        // UI audit round 2, flow blocker: a typed date used
+        // to apply only on Enter or the Set date button, and
+        // leaving the step threw it away silently. Now the
+        // field applies whenever it holds a new date.
+        assert!(date_differs("2026-10-25", Some("2026-10-18")));
+        assert!(!date_differs("2026-10-18", Some("2026-10-18")));
+        assert!(!date_differs(" 2026-10-18 ", Some("2026-10-18")));
+        assert!(!date_differs("", Some("2026-10-18")));
+        assert!(date_differs("2026-10-25", None));
+
+        let mut app = App::default();
+        let stored = app
+            .doc
+            .fields
+            .get("sunday_date")
+            .cloned()
+            .expect("the template has a date");
+        // The field starts holding the bulletin's own date,
+        // so leaving the step untouched changes nothing.
+        assert_eq!(app.date_input, stored);
+        app.apply_edited_date();
+        assert_eq!(app.doc.fields.get("sunday_date"), Some(&stored));
+        // A typed date applies through the same path focus
+        // loss and step changes use.
+        app.date_input = "2030-01-06".into();
+        app.apply_edited_date();
+        assert_eq!(
+            app.doc.fields.get("sunday_date").map(String::as_str),
+            Some("2030-01-06")
+        );
+        assert_eq!(
+            app.doc.fields.get("sunday_date_long").map(String::as_str),
+            Some("Sunday, January 6, 2030")
+        );
+        assert!(!app.status_error, "a good date is not a failure");
+        // An unreadable date refuses through the banner and
+        // the bulletin keeps its date.
+        app.date_input = "next Friday".into();
+        app.apply_edited_date();
+        assert!(app.status_error, "a bad date raises the banner");
+        assert_eq!(
+            app.doc.fields.get("sunday_date").map(String::as_str),
+            Some("2030-01-06")
+        );
     }
 
     #[test]

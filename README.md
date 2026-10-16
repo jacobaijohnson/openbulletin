@@ -137,9 +137,9 @@ desktop app, CLI, or (someday) web.
 | `ob-impose` | Turns reader pages into printer sheets: bi-fold, tri-fold, saddle-stitch. |
 | `ob-text` | Measures and wraps text using real font shapes (parley), and builds dot-leader lines. Uses fonts given to it, never fonts found on your computer. |
 | `ob-pdf` | Makes the PDFs: reading copies and print sheets, with the real fonts embedded. |
-| `ob-extract` | Imports and exports: reads old bulletins (PDFs through the helper, Publisher files with our own reader or the LibreOffice bridge, InDesign IDML, Scribus) into one shared dump the Template Analyzer learns from, and writes documents back out as IDML for InDesign. |
+| `ob-extract` | Imports and exports: reads old bulletins (PDFs through the helper, Publisher files with our own reader or the LibreOffice bridge, InDesign IDML, Scribus) into one shared dump the Template Analyzer learns from, and writes documents back out as IDML for InDesign or as a Scribus file. |
 | `ob-format` | Reads and writes `.obd` files. Today's format is version 0, stored as JSON. A zip version is planned. |
-| `openbulletin-cli` | The same engine with no window: create, export (PDF and IDML), next-sunday, info, fonts, trace. |
+| `openbulletin-cli` | The same engine with no window: create, export (PDF, IDML, and Scribus), next-sunday, info, fonts, trace. |
 | `openbulletin` | The egui desktop app. A thin shell over the crates above, on purpose. |
 
 ## Imports and conversions
@@ -181,9 +181,10 @@ Honest labels, in plain words:
   before it starts, and says exactly what to add when a pick
   falls short.
 - **Copies go back out, too.** On the Print step, "Save a copy
-  for another program..." writes an InDesign (IDML) file with
-  the words, their boxes, and their fonts, and lists in plain
-  words anything the copy could not carry. (Writing `.pub` or
+  for another program..." writes an InDesign (IDML) file or a
+  Scribus (`.sla`) file with the words, their boxes, and their
+  fonts, and lists in plain words anything the copy could not
+  carry. (Writing `.pub` or
   `.indd` files stays out of scope: those formats are theirs
   to write, not ours.)
 - **One limit that will never change:** we will never copy fonts out of

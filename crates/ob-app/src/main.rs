@@ -3629,8 +3629,28 @@ impl App {
                 },
                 Err(e) => self.fail(format!("Could not make that copy: {e}")),
             },
+            "sla" => match ob_extract::sla_export::export_sla(&self.doc) {
+                Ok((bytes, report)) => match std::fs::write(path, &bytes) {
+                    Ok(()) => {
+                        let mut msg =
+                            format!("Saved a copy for Scribus to {}.", path.display());
+                        if report.notes.is_empty() {
+                            msg.push_str(" Everything in the bulletin came over.");
+                        } else {
+                            for n in &report.notes {
+                                msg.push(' ');
+                                msg.push_str(n);
+                            }
+                        }
+                        self.export_note = Some(msg.clone());
+                        self.note(msg);
+                    }
+                    Err(e) => self.fail(format!("Could not save that copy: {e}")),
+                },
+                Err(e) => self.fail(format!("Could not make that copy: {e}")),
+            },
             _ => self.fail(
-                "That kind of copy is not one we can make yet. The save dialog                  offers InDesign (IDML)."
+                "That kind of copy is not one we can make yet. The save dialog                  offers InDesign (IDML) and Scribus."
                     .into(),
             ),
         }
@@ -4709,13 +4729,14 @@ impl eframe::App for App {
                             }
                         }
                         ui.separator();
-                        ui.label("A copy for another program: an InDesign (IDML) file carries the words, their boxes, and their fonts, so someone with InDesign can take the bulletin from here.");
+                        ui.label("A copy for another program: an InDesign (IDML) file or a Scribus file carries the words, their boxes, and their fonts, so someone with one of those programs can take the bulletin from here.");
                         if ui.button("Save a copy for another program...").clicked() {
                             self.commit_if_editing();
                             self.save_announcements();
                             if let Some(path) = rfd::FileDialog::new()
                                 .set_file_name("bulletin.idml")
                                 .add_filter("InDesign (IDML)", &["idml"])
+                                .add_filter("Scribus", &["sla"])
                                 .save_file()
                             {
                                 self.save_copy_for_program(&path);

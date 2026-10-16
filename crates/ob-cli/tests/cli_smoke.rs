@@ -58,5 +58,18 @@ fn new_export_next_sunday_round_trip() {
     );
     let zbytes = std::fs::read(&idml).expect("idml written");
     assert!(zbytes.starts_with(b"PK"), "an IDML file is a zip package");
+    let sla = dir.join("week.sla");
+    let said = run(&[
+        "export-sla",
+        obd.to_str().expect("path"),
+        "--out",
+        sla.to_str().expect("path"),
+    ]);
+    assert!(
+        said.contains("Scribus file"),
+        "export-sla reports what it made: {said}"
+    );
+    let sbytes = std::fs::read(&sla).expect("sla written");
+    assert!(sbytes.starts_with(b"<?xml"), "a Scribus file is XML");
     let _ = std::fs::remove_dir_all(&dir);
 }

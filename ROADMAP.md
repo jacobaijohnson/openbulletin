@@ -62,8 +62,13 @@ Imports are rescues with honest fidelity labels, never magic (PRINCIPLES.md):
       the same one door as everything else; words, boxes, and
       fonts as a draft to review; picture frames counted and
       named, not carried.
-- [ ] Scribus export: a bulletin saved as a .sla file, joining the
-      same export door by its save-dialog format.
+- [x] Scribus export (shipped 2026-10-15): any bulletin saves as a
+      .sla file for Scribus from the same export door ("Save a
+      copy for another program...", format chosen in the save
+      dialog) or the CLI's export-sla; the export report states
+      in plain words what was not carried. The import/export
+      matrix is now complete: in and out for .obd, PDF, IDML,
+      and Scribus, in only for Publisher.
 - [ ] PDF place as graphic + trace layer (also v0.5).
 - [x] Template Analyzer (shipped 2026-10-15): pick 3 or more old
       bulletins; corpus consensus separates standing text from

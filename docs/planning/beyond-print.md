@@ -125,6 +125,31 @@ HEIC (the iPhone default) is the adjacent hard case:
 patent-encumbered and library-poor in Rust; it stays an
 honest "convert first" label until a clean path exists.
 
+Adjudicated the same night: Jacob proposed converting
+EVERYTHING to JPEG XL as the one internal standard. The
+verdict is originals in the store, JPEG XL at the edges,
+for three reasons. (1) HEIC cannot be converted at all
+until it can be decoded, and decoding is the blocked step;
+a pixel-lossless re-encode of an HDR photo would also be
+far larger than the HEIC and would strand its HDR gain
+maps. (2) Lossy sources (WebP, most HEIC) re-encoded to
+JPEG XL either lose a generation (against the originals
+rule) or grow. JPEG is the exception: its recompression
+into JPEG XL is bit-exact reversible, so normalizing
+JPEGs would lose nothing, but the roughly 20% saving does
+not justify making the content-addressed store hold
+anything but the true original bytes; recorded as an
+option if asset sizes ever hurt. (3) Print never sees
+the store format anyway: PDF export transcodes to
+JPEG/Flate at the purpose preset regardless. Where one
+standard format does pay is delivery: the web export
+serves JPEG XL first with fallbacks. Platform check
+(2026-10-15): all three desktop OSes now read JPEG XL at
+the system level (macOS Sonoma Finder/Preview, Windows 11
+24H2 Explorer/Photos, Linux via GNOME 45+ and KDE's
+KImageFormats, GIMP 3, ImageMagick), so the format is a
+safe citizen everywhere the app runs.
+
 Recorded, not scheduled:
 - **Announcement intake**: a simple submission path
   (form or email-in) landing in the Announcements step.

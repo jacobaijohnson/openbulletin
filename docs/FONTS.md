@@ -55,12 +55,15 @@ is the concrete proof of short answer 3 for these files.
 - **Lookalikes:** Gill Sans, Bookman, Franklin Gothic, Rockwell have
   no metric twins. A lookalike shares the feel, not the letter
   widths, and is always called a lookalike, never a twin or a match.
-  The one lookalike in the table today is Gill Sans (every spelling
+  The table holds two lookalikes today. Gill Sans (every spelling
   the corpus uses, GillSansMT included) -> Cabin, an OFL family drawn
   by Pablo Impallari after the typefaces of Edward Johnston and
-  Eric Gill. A commercial font with no twin and no lookalike in the
-  table prints in the house default, Liberation Sans, until the
-  church adds the real font.
+  Eric Gill. And Bookman Old Style -> Bookman URW, a close free
+  relative: it was listed as a metric twin for a day, but nobody has
+  verified its letter widths match, so it is a lookalike until
+  someone does (round 3, R3-18). A commercial font with no twin and
+  no lookalike in the table prints in the house default, Liberation
+  Sans, until the church adds the real font.
 
 ## Wanted fonts: the real name is kept (2026-10-16)
 
@@ -93,6 +96,30 @@ editing. Built that way:
   come from the places fonts legitimately come from: the free
   catalog inside the app, the computer's own fonts copied in, or
   the church's own purchases and subscriptions, added as files.
+
+Two name rules keep those promises honest (round 3, R3-1 and R3-2):
+
+- **The record names the family, not a face.** Source files name
+  faces: "Verdana-Bold", "DejaVu Sans Bold", "GillSansMT-Bold".
+  Every recorded and wanted name is the base family ("Verdana",
+  "DejaVu Sans", "Gill Sans MT"): the family is what a person can
+  search for and install, and once it is in the library the
+  documents upgrade, whichever face's name the file happened to
+  carry. Face words are the conservative set Bold, Italic,
+  BoldItalic, Oblique, BoldOblique, Regular, and Roman (in the
+  PostScript-style names our sources write, Roman is a face word).
+- **The table answers a name only for the family itself.** A row
+  matches when the whole name is one of its families plus at most
+  a face word or a PostScript tail (the "PSMT" in
+  "TimesNewRomanPSMT"). A different design that merely begins
+  with a known name (Arial Narrow, Arial Black, Calibri Light)
+  is a different typeface: it earns no row, no twin's promise of
+  identical widths, and is wanted under its own name if the
+  library does not hold it.
+- The Check step's wanted-font finding speaks only for fonts a
+  style still names (the bulletin's own styles or a loose
+  sheet's). Restyle everything away from a wanted font and the
+  finding goes silent; the record stays on the file (R3-16).
 
 A note on Gill Sans MT specifically, because the corpus runs on it:
 it is Monotype's commercial font. Web sites offering it as a "free

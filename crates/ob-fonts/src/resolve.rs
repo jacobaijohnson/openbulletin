@@ -90,6 +90,15 @@ const fn twin(keys: &'static [&'static str], display: &'static str, to: &'static
     }
 }
 
+const fn lookalike(keys: &'static [&'static str], display: &'static str, to: &'static str) -> Row {
+    Row {
+        keys,
+        display,
+        substitute: to,
+        tier: SubstituteTier::Lookalike,
+    }
+}
+
 const ROWS: &[Row] = &[
     // Free families that are their own answer: a document
     // made in one of these wants the family itself.
@@ -123,11 +132,6 @@ const ROWS: &[Row] = &[
     twin(&["book antiqua", "bookantiqua"], "Book Antiqua", "Gelasio"),
     twin(&["garamond"], "Garamond", "EB Garamond"),
     twin(
-        &["bookman old style", "bookmanoldstyle"],
-        "Bookman Old Style",
-        "Bookman URW",
-    ),
-    twin(
         &["century schoolbook", "centuryschoolbook"],
         "Century Schoolbook",
         "Century Schoolbook URW",
@@ -137,38 +141,131 @@ const ROWS: &[Row] = &[
     // metric twin; Cabin (SIL Open Font License 1.1, by
     // Pablo Impallari, drawn after Edward Johnston's and
     // Eric Gill's own typefaces) is its free lookalike.
-    Row {
-        keys: &["gill sans mt", "gillsansmt", "gill sans", "gillsans"],
-        display: "Gill Sans MT",
-        substitute: "Cabin",
-        tier: SubstituteTier::Lookalike,
-    },
+    lookalike(
+        &["gill sans mt", "gillsansmt", "gill sans", "gillsans"],
+        "Gill Sans MT",
+        "Cabin",
+    ),
+    // Bookman URW is a close free relative of Bookman Old
+    // Style, but nobody here has verified the letter
+    // widths match, so it is a lookalike, never a twin
+    // (round 3, R3-18: an unverified metric claim is a
+    // promise the import review would repeat as fact).
+    lookalike(
+        &["bookman old style", "bookmanoldstyle"],
+        "Bookman Old Style",
+        "Bookman URW",
+    ),
 ];
 
-/// Reduce a source font name to the form the table matches
-/// against: subset prefix off (a name like "UOETYK+GillSansMT"
-/// is a sliced-out piece of GillSansMT), trimmed, lowered.
-fn cleaned(source_name: &str) -> String {
-    source_name
+/// Face words: the part of a source name that names one
+/// face of a family rather than the family itself. Source
+/// files write them glued with a dash or comma
+/// ("Verdana-Bold"), spaced ("DejaVu Sans Bold"), or
+/// both at once ("Verdana-Bold Italic"). Roman is in the
+/// list on purpose: in the PostScript-style names our
+/// sources write, Roman is a face word, so a name like
+/// "Acme Roman" bases to "Acme". That is the semantics
+/// the install-later promise needs: the family is the
+/// name a person can go and install.
+const FACE_SUFFIXES: &[&str] = &[
+    "bolditalic",
+    "boldoblique",
+    "bold italic",
+    "bold",
+    "italic",
+    "oblique",
+    "regular",
+    "roman",
+];
+
+/// PostScript name tails: markers glued onto compressed
+/// names by the tools that write them ("TimesNewRomanPSMT"
+/// is Times New Roman). They say nothing about the design,
+/// so a table row may answer past them. Design words
+/// (Narrow, Black, Light) are not tails: skipping those
+/// is what would let a different typeface claim a row
+/// (round 3, R3-2).
+const PS_TAILS: &[&str] = &["psmt", "ps", "mt"];
+
+/// Is this trailing word (spaces removed, lowered) a
+/// face word, or a face word with a PostScript tail
+/// glued on ("BoldMT", from "TimesNewRomanPS-BoldMT")?
+fn is_face_tail(tail: &str) -> bool {
+    let squashed: String = tail.to_lowercase().chars().filter(|c| *c != ' ').collect();
+    if FACE_SUFFIXES
+        .iter()
+        .any(|s| s.chars().filter(|c| *c != ' ').collect::<String>() == squashed)
+    {
+        return true;
+    }
+    FACE_SUFFIXES.iter().any(|s| {
+        let s: String = s.chars().filter(|c| *c != ' ').collect();
+        squashed
+            .strip_prefix(&s)
+            .map(|rest| PS_TAILS.contains(&rest))
+            .unwrap_or(false)
+    })
+}
+
+/// The base family a source name names: subset prefix
+/// off, then trailing face words off (see FACE_SUFFIXES).
+/// Case and spacing are preserved, so the result is a
+/// name a person would search for. This holds whether or
+/// not the family is in the table: "Verdana-Bold" and
+/// "DejaVu Sans Bold" base to "Verdana" and "DejaVu Sans"
+/// (round 3, R3-1: the long tail of names no table row
+/// knows is the common case, and its wanted-font record
+/// must name an installable family, not a face).
+pub fn base_name(source_name: &str) -> String {
+    let mut name = source_name
         .split('+')
         .next_back()
         .unwrap_or(source_name)
         .trim()
-        .to_lowercase()
+        .to_string();
+    // One name can carry two face words ("Bold Italic");
+    // strip while a separator precedes a face word and a
+    // real head remains.
+    loop {
+        let Some(idx) = name.rfind(['-', ',', ' ']) else {
+            break;
+        };
+        if !is_face_tail(&name[idx + 1..]) {
+            break;
+        }
+        let head = name[..idx].trim_end_matches(['-', ',', ' ']).trim();
+        if head.is_empty() {
+            break;
+        }
+        name = head.to_string();
+    }
+    name
 }
 
 /// The table row a source name belongs to, when one is
-/// known: the name up to its first dash or comma is its
-/// base (the rest is a face suffix like "-Bold"), and the
-/// longest key that matches the base, or begins the whole
-/// cleaned name, wins.
+/// known. A row answers when the name's base IS one of
+/// its keys, or begins with a key and continues only
+/// with a face word or a PostScript tail: the rest of
+/// the name must say "same design, another face" or
+/// nothing at all. Anything more ("Arial Narrow",
+/// "Calibri Light", "Loraine") is a different typeface
+/// and earns no row, least of all a metric twin's
+/// promise of identical letter widths (round 3, R3-2).
+/// The longest matching key wins.
 fn row_for(source_name: &str) -> Option<&'static Row> {
-    let clean = cleaned(source_name);
-    let base = clean.split(['-', ',']).next().unwrap_or("").trim();
+    let base = base_name(source_name).to_lowercase();
     let mut best: Option<(&Row, usize)> = None;
     for row in ROWS {
         for key in row.keys {
-            let hit = base == *key || clean.starts_with(key);
+            let hit = base == *key
+                || base
+                    .strip_prefix(key)
+                    .map(|rest| {
+                        let rest: String = rest.trim().chars().filter(|c| *c != ' ').collect();
+                        is_face_tail(&rest) || PS_TAILS.contains(&rest.as_str())
+                    })
+                    .unwrap_or(false);
             if hit && best.map(|(_, n)| key.len() > n).unwrap_or(true) {
                 best = Some((row, key.len()));
             }
@@ -192,17 +289,14 @@ pub fn substitution_for(source_name: &str) -> Option<Substitution> {
 
 /// The name a person would search for: the table's
 /// display form when the name is known ("Gill Sans MT"
-/// for "UOETYK+GillSansMT"), else the source name with
-/// its subset prefix off, as written.
+/// for "UOETYK+GillSansMT"), else the name's base family
+/// (see base_name): "Verdana-Bold" records "Verdana",
+/// the family a person can actually install, never a
+/// face of it (round 3, R3-1).
 pub fn display_name_for(source_name: &str) -> String {
     match row_for(source_name) {
         Some(row) => row.display.to_string(),
-        None => source_name
-            .split('+')
-            .next_back()
-            .unwrap_or(source_name)
-            .trim()
-            .to_string(),
+        None => base_name(source_name),
     }
 }
 
@@ -254,6 +348,21 @@ pub fn resolve_family(requested: &str, available: &[String]) -> Resolution {
     let raw = requested.split('+').next_back().unwrap_or(requested).trim();
     if !raw.eq_ignore_ascii_case(&display_name) {
         if let Some(family) = available_spelling(raw, available) {
+            return Resolution {
+                family,
+                tier: SubstituteTier::Exact,
+                display_name,
+            };
+        }
+    }
+    // Or under the raw name's base: the source file wrote
+    // a face ("Verdana-Bold") and the library's family is
+    // the base ("Verdana"). This attempt is what makes
+    // installing the real font upgrade a document whose
+    // recorded name still wears its face (round 3, R3-1).
+    let base = base_name(requested);
+    if !base.eq_ignore_ascii_case(&display_name) && !base.eq_ignore_ascii_case(raw) {
+        if let Some(family) = available_spelling(&base, available) {
             return Resolution {
                 family,
                 tier: SubstituteTier::Exact,
@@ -357,6 +466,95 @@ mod tests {
         let r = resolve_family("Carlito", &avail(&[]));
         assert_eq!(r.family, "Liberation Sans");
         assert_eq!(r.tier, SubstituteTier::HouseDefault);
+    }
+
+    #[test]
+    fn every_name_bases_to_its_family() {
+        // R3-1: the base extraction is not a table privilege.
+        // Glued, comma, and spaced face words all come off,
+        // for names the table has never heard of.
+        assert_eq!(base_name("Verdana-Bold"), "Verdana");
+        assert_eq!(base_name("Verdana,Bold"), "Verdana");
+        assert_eq!(base_name("Verdana-BoldItalic"), "Verdana");
+        assert_eq!(base_name("DejaVu Sans Bold"), "DejaVu Sans");
+        assert_eq!(base_name("DejaVu Sans Bold Italic"), "DejaVu Sans");
+        assert_eq!(base_name("UOETYK+Verdana-Bold"), "Verdana");
+        assert_eq!(display_name_for("Verdana-Bold"), "Verdana");
+        assert_eq!(display_name_for("DejaVu Sans Bold"), "DejaVu Sans");
+        // Roman is a face word in the names we consume:
+        // pinned knowingly, per base_name's comment.
+        assert_eq!(base_name("Acme Roman"), "Acme");
+        // Design words are not face words: they stay.
+        assert_eq!(base_name("Arial Narrow"), "Arial Narrow");
+        assert_eq!(base_name("FooBarMT"), "FooBarMT");
+    }
+
+    #[test]
+    fn installing_a_long_tail_font_upgrades_the_document() {
+        // R3-1 end to end: a bulletin made in Verdana,
+        // recorded from its bold face's name, picks the
+        // real family up when the office installs it.
+        let before = resolve_family("Verdana-Bold", &avail(&[]));
+        assert_eq!(before.tier, SubstituteTier::HouseDefault);
+        let after = resolve_family("Verdana-Bold", &avail(&["Verdana"]));
+        assert_eq!(after.family, "Verdana");
+        assert_eq!(after.tier, SubstituteTier::Exact);
+        assert_eq!(after.display_name, "Verdana");
+        // The spaced shape Scribus writes behaves the same.
+        let after = resolve_family("DejaVu Sans Bold", &avail(&["DejaVu Sans"]));
+        assert_eq!(after.family, "DejaVu Sans");
+        assert_eq!(after.tier, SubstituteTier::Exact);
+    }
+
+    #[test]
+    fn rows_answer_only_the_family_and_its_faces() {
+        // R3-2: a different typeface that merely begins
+        // with a known name earns no row at all.
+        for name in [
+            "Arial Narrow",
+            "Arial Black",
+            "Calibri Light",
+            "Loraine",
+            "Cabinet Grotesk",
+        ] {
+            assert!(substitution_for(name).is_none(), "{name} must earn no row");
+        }
+        // So it cannot claim a twin's widths: installed or
+        // house default are its only answers.
+        let r = resolve_family("Arial Narrow", &avail(&["Liberation Sans"]));
+        assert_eq!(r.tier, SubstituteTier::HouseDefault);
+        let r = resolve_family("Arial Narrow", &avail(&["Arial Narrow"]));
+        assert_eq!(r.tier, SubstituteTier::Exact);
+        // The family plus a face word still answers.
+        assert_eq!(
+            substitution_for("Arial-Bold").map(|s| s.tier),
+            Some(SubstituteTier::MetricTwin)
+        );
+        assert_eq!(
+            substitution_for("Arial Bold").map(|s| s.tier),
+            Some(SubstituteTier::MetricTwin)
+        );
+        // And the PostScript tails still answer.
+        assert_eq!(
+            substitution_for("TimesNewRomanPSMT").map(|s| s.display_name),
+            Some("Times New Roman".to_string())
+        );
+        assert_eq!(
+            substitution_for("TimesNewRomanPS-BoldMT").map(|s| s.display_name),
+            Some("Times New Roman".to_string())
+        );
+    }
+
+    #[test]
+    fn bookman_old_style_answers_with_a_lookalike() {
+        // R3-18: Bookman URW was never verified as a
+        // metric twin, so the row says lookalike.
+        let sub = substitution_for("Bookman Old Style").expect("bookman row");
+        assert_eq!(sub.substitute, "Bookman URW");
+        assert_eq!(sub.tier, SubstituteTier::Lookalike);
+        // Bookman URW itself is still its own answer.
+        let r = resolve_family("Bookman URW", &avail(&["Bookman URW"]));
+        assert_eq!(r.tier, SubstituteTier::Exact);
     }
 
     #[test]

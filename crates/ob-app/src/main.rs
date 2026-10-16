@@ -1171,11 +1171,33 @@ struct CharFinding {
 /// the import review's own words, with the stand-in the
 /// chain picks TODAY (a nearer font added since the
 /// import is named, not the stale one on the record).
-/// Pure over (document, available families) so the words
-/// are testable without a library on disk.
+/// Only families a style still names are reported
+/// (round 3, R3-16): restyle the whole bulletin away
+/// from a wanted font and the record stays on the file
+/// but the finding goes silent, because nothing prints
+/// in that font anymore. Pure over (document, available
+/// families) so the words are testable without a library
+/// on disk.
 fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<CheckNote> {
     let mut out = Vec::new();
+    let used: Vec<String> = doc
+        .styles
+        .iter()
+        .map(|s| s.font_family.clone())
+        .chain(
+            doc.inserts
+                .iter()
+                .flat_map(|ins| ins.styles.iter().map(|s| s.font_family.clone())),
+        )
+        .collect();
     for w in &doc.wanted_fonts {
+        let still_used = used.iter().any(|family| {
+            family.eq_ignore_ascii_case(&w.name)
+                || ob_fonts::resolve::display_name_for(family).eq_ignore_ascii_case(&w.name)
+        });
+        if !still_used {
+            continue;
+        }
         let r = ob_fonts::resolve::resolve_family(&w.name, available);
         if r.tier != ob_fonts::resolve::SubstituteTier::Exact {
             out.push(CheckNote::to_fonts(format!(
@@ -15231,12 +15253,28 @@ mod settings_tests {
         // TODAY; the day the real font is added to the
         // library, the finding is gone, with no edit to
         // the document.
+        // The bulletin's own style still names the font
+        // (the shape a real import leaves); the record
+        // alone does not raise the finding (R3-16, see
+        // the restyle test below).
+        let gill_style = ob_model::ParagraphStyle {
+            id: "body".into(),
+            name: "Body".into(),
+            font_size: 11_000,
+            bold: false,
+            italic: false,
+            align: ob_model::Align::Left,
+            space_after: 4_000,
+            color: ob_model::Rgb::BLACK,
+            font_family: "Gill Sans MT".into(),
+            font_sha256: None,
+        };
         let doc = Document {
             format_version: ob_model::FORMAT_VERSION,
             title: "T".into(),
             profile: ChurchProfile::default(),
             fields: Default::default(),
-            styles: vec![],
+            styles: vec![gill_style],
             stories: vec![],
             panels: vec![],
             sheet: ob_model::SheetSpec {
@@ -15281,6 +15319,60 @@ mod settings_tests {
         // The real font added: no finding at all.
         let notes = wanted_font_notes(&doc, &["Gill Sans MT".to_string()]);
         assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    #[test]
+    fn a_wanted_font_goes_silent_once_nothing_uses_it() {
+        // R3-16: the record stays on the document, but
+        // once every style has been restyled away from
+        // the wanted family, nothing prints in it and
+        // Check stops asking about it. A loose sheet's
+        // style still using it keeps the finding alive.
+        let style_in = |family: &str| ob_model::ParagraphStyle {
+            id: "body".into(),
+            name: "Body".into(),
+            font_size: 11_000,
+            bold: false,
+            italic: false,
+            align: ob_model::Align::Left,
+            space_after: 4_000,
+            color: ob_model::Rgb::BLACK,
+            font_family: family.into(),
+            font_sha256: None,
+        };
+        let base_doc = Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "T".into(),
+            profile: ChurchProfile::default(),
+            fields: Default::default(),
+            styles: vec![style_in("Liberation Sans")],
+            stories: vec![],
+            panels: vec![],
+            sheet: ob_model::SheetSpec {
+                preset: "letter-portrait".into(),
+                size: ob_model::Size::new(612_000, 792_000),
+            },
+            no_announcements: false,
+            assets: vec![],
+            asset_bytes: Default::default(),
+            occasion_time: None,
+            wanted_fonts: vec![ob_model::WantedFont {
+                name: "Gill Sans MT".into(),
+                substituted_by: "Cabin".into(),
+            }],
+            participants: Default::default(),
+            inserts: Default::default(),
+        };
+        // Restyled away in the bulletin itself: silent.
+        let notes = wanted_font_notes(&base_doc, &[]);
+        assert!(notes.is_empty(), "{notes:?}");
+        // A loose sheet still set in it: the finding stays.
+        let mut with_sheet = base_doc.clone();
+        let mut sheet = new_insert("sheet-1", "Prayer list");
+        sheet.styles = vec![style_in("Gill Sans MT")];
+        with_sheet.inserts = vec![sheet];
+        let notes = wanted_font_notes(&with_sheet, &[]);
+        assert_eq!(notes.len(), 1, "{notes:?}");
     }
 
     #[test]

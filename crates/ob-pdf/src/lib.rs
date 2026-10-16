@@ -201,46 +201,89 @@ struct FaceSource {
 fn face_sources(
     library: &[(ob_fonts::FontInfo, Vec<u8>)],
 ) -> std::collections::HashMap<FaceKey, FaceSource> {
-    let mut sources: std::collections::HashMap<FaceKey, FaceSource> =
-        std::collections::HashMap::new();
+    let mut candidates: Vec<(FaceKey, FaceSource)> = Vec::new();
     for (name, bytes) in ob_text::shaping::bundled_font_files() {
         if let Ok(info) = ob_fonts::inspect(bytes, name) {
             if info.rights.may_package() {
-                sources.insert(
+                candidates.push((
                     (info.family, info.bold, info.italic),
                     FaceSource {
                         bytes: bytes.to_vec(),
                         no_subsetting: info.no_subsetting,
                     },
-                );
+                ));
             }
         }
     }
     for (info, bytes) in library {
         if info.rights.may_package() {
-            sources.insert(
+            candidates.push((
                 (info.family.clone(), info.bold, info.italic),
                 FaceSource {
                     bytes: bytes.clone(),
                     no_subsetting: info.no_subsetting,
                 },
-            );
+            ));
+        }
+    }
+    // One face per key, picked by the shared rule
+    // (ob_fonts::pick_face, the same rule the document
+    // font pin uses, round 3 R3-13): every candidate for
+    // a key carries that key's own flags, so the rule's
+    // exact match is the LAST candidate, which keeps the
+    // long-standing order: the library wins over the
+    // bundled set.
+    let mut by_key: std::collections::HashMap<FaceKey, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (idx, (key, _)) in candidates.iter().enumerate() {
+        by_key.entry(key.clone()).or_default().push(idx);
+    }
+    let mut sources: std::collections::HashMap<FaceKey, FaceSource> =
+        std::collections::HashMap::new();
+    for (key, idxs) in by_key {
+        let flags: Vec<(bool, bool)> = idxs
+            .iter()
+            .map(|&i| ((candidates[i].0).1, (candidates[i].0).2))
+            .collect();
+        if let Some(pick) = ob_fonts::pick_face(&flags, key.1, key.2) {
+            sources.insert(key, candidates[idxs[pick]].1.clone());
         }
     }
     sources
 }
 
-/// The distinct families a face-source map holds, in the
-/// order they first appear: the availability list the
-/// resolution chain walks (docs/FONTS.md).
+/// The distinct families a face-source map holds: the
+/// availability list the resolution chain walks
+/// (docs/FONTS.md). One spelling per family, picked
+/// deterministically (round 3, R3-14: this list used to
+/// come out of HashMap iteration, so the spelling the
+/// chain answered with could differ from run to run when
+/// a library held two spellings of one family). Spellings
+/// group by cleaned lowercase name; the spelling the
+/// library uses most wins, ties go to the
+/// lexicographically smallest; the list itself comes out
+/// in cleaned-name order.
 fn source_families(sources: &std::collections::HashMap<FaceKey, FaceSource>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+    let mut groups: std::collections::BTreeMap<String, Vec<(String, usize)>> =
+        std::collections::BTreeMap::new();
     for (family, _, _) in sources.keys() {
-        if !out.contains(family) {
-            out.push(family.clone());
+        let cleaned = family.trim().to_lowercase();
+        let spellings = groups.entry(cleaned).or_default();
+        match spellings.iter_mut().find(|(s, _)| s == family) {
+            Some((_, count)) => *count += 1,
+            None => spellings.push((family.clone(), 1)),
         }
     }
-    out
+    groups
+        .into_values()
+        .map(|spellings| {
+            spellings
+                .into_iter()
+                .min_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)))
+                .map(|(spelling, _)| spelling)
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 /// A glyph-presence oracle over the bundled faces plus one Font
@@ -3583,5 +3626,62 @@ mod tests {
             text.contains("/Width 300 /Height 300"),
             "SVG renders at the copy's purpose resolution"
         );
+    }
+
+    fn fake_info(family: &str, bold: bool, italic: bool) -> ob_fonts::FontInfo {
+        ob_fonts::FontInfo {
+            family: family.into(),
+            full_name: family.into(),
+            bold,
+            italic,
+            rights: ob_fonts::EmbeddingRights::Installable,
+            no_subsetting: false,
+            file_name: "fake.ttf".into(),
+            sha256: String::new(),
+            bytes: 0,
+        }
+    }
+
+    #[test]
+    fn face_sources_keeps_the_last_face_of_a_key() {
+        // R3-13: the writer's per-key winner is the shared
+        // pick rule's answer, the last candidate, so the
+        // face embedded is the face the pin names.
+        let library = vec![
+            (fake_info("Acme Sans", false, false), b"first".to_vec()),
+            (fake_info("Acme Sans", false, false), b"second".to_vec()),
+        ];
+        let sources = face_sources(&library);
+        let got = &sources[&("Acme Sans".to_string(), false, false)];
+        assert_eq!(got.bytes, b"second".to_vec());
+    }
+
+    #[test]
+    fn source_families_picks_one_spelling_deterministically() {
+        // R3-14: two spellings of one family in the
+        // library; the answer is the same whatever order
+        // the map is walked in. Most faces wins.
+        let mut sources: std::collections::HashMap<FaceKey, FaceSource> =
+            std::collections::HashMap::new();
+        let src = FaceSource {
+            bytes: Vec::new(),
+            no_subsetting: false,
+        };
+        sources.insert(("Acme Sans".into(), false, false), src.clone());
+        sources.insert(("ACME SANS".into(), true, false), src.clone());
+        sources.insert(("ACME SANS".into(), false, true), src);
+        let families = source_families(&sources);
+        assert_eq!(families, vec!["ACME SANS".to_string()]);
+        // A tie goes to the lexicographically smallest.
+        let mut tied: std::collections::HashMap<FaceKey, FaceSource> =
+            std::collections::HashMap::new();
+        let src = FaceSource {
+            bytes: Vec::new(),
+            no_subsetting: false,
+        };
+        tied.insert(("acme sans".into(), false, false), src.clone());
+        tied.insert(("Acme Sans".into(), true, false), src);
+        let families = source_families(&tied);
+        assert_eq!(families, vec!["Acme Sans".to_string()]);
     }
 }

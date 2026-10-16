@@ -475,6 +475,18 @@ impl FontLibrary {
                 let _ = std::fs::write(self.dir.join(&file_name), &content);
             }
         }
+        if archive.len() > MAX_ENTRIES {
+            // Entries past the cap are counted and named,
+            // never silently dropped (round 3, RT3-F): the
+            // result list is what both the Fonts window and
+            // the CLI read out, so the line lands at both
+            // doors with no extra wiring.
+            results.push(Err(format!(
+                "{} more files were in the pack than can be taken at once; \
+                 add them in a second pass.",
+                archive.len() - MAX_ENTRIES
+            )));
+        }
         if results.is_empty() {
             results.push(Err(
                 "no font files (.ttf, .otf, or .ttc) inside that zip".to_string()
@@ -596,6 +608,22 @@ pub fn system_fonts() -> Vec<SystemFont> {
     out
 }
 
+/// THE face-pick rule, shared by the pin below and the
+/// PDF writer's face sources (round 3, R3-13): given one
+/// family's faces in a stable order, each as (bold,
+/// italic), pick the face for a wanted (bold, italic):
+/// an exact flag match, the LAST such face winning, else
+/// the family's plain face (the last of those), else
+/// None. One rule in one place, so the file the pin names
+/// and the face the writer embeds can never be two
+/// different faces of one family.
+pub fn pick_face(candidates: &[(bool, bool)], bold: bool, italic: bool) -> Option<usize> {
+    candidates
+        .iter()
+        .rposition(|&(b, i)| b == bold && i == italic)
+        .or_else(|| candidates.iter().rposition(|&(b, i)| !b && !i))
+}
+
 /// Record, on each of the document's styles, the SHA-256 of the
 /// exact library font file that style will be laid out with
 /// (docs/FONTS.md). Run before saving or exporting, so the file
@@ -604,7 +632,10 @@ pub fn system_fonts() -> Vec<SystemFont> {
 /// a style made in a font the library does not hold is laid out
 /// with the chain's stand-in, so the pin names the stand-in's
 /// file, the one the layout truly used. When the real font is
-/// added later, the next save re-pins to it by itself.
+/// added later, the next save re-pins to it by itself. The face
+/// within the family is picked by pick_face, the shared rule:
+/// an italic style pins the italic face, bold-italic the
+/// bold-italic face.
 pub fn pin_document_fonts(doc: &mut ob_model::Document, lib: &FontLibrary) {
     let fonts = lib.scan();
     let families: Vec<String> = {
@@ -618,13 +649,10 @@ pub fn pin_document_fonts(doc: &mut ob_model::Document, lib: &FontLibrary) {
     };
     for style in &mut doc.styles {
         let resolved = resolve::resolve_family(&style.font_family, &families).family;
-        let face = fonts
-            .iter()
-            .filter(|f| f.family == resolved)
-            .find(|f| f.bold == style.bold && !f.italic)
-            .or_else(|| fonts.iter().find(|f| f.family == resolved));
-        if let Some(face) = face {
-            style.font_sha256 = Some(face.sha256.clone());
+        let family_faces: Vec<&FontInfo> = fonts.iter().filter(|f| f.family == resolved).collect();
+        let flags: Vec<(bool, bool)> = family_faces.iter().map(|f| (f.bold, f.italic)).collect();
+        if let Some(idx) = pick_face(&flags, style.bold, style.italic) {
+            style.font_sha256 = Some(family_faces[idx].sha256.clone());
         }
     }
 }
@@ -1006,6 +1034,131 @@ mod tests {
         assert_eq!(
             doc.styles[0].font_sha256.as_deref(),
             Some(info.sha256.as_str())
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pick_face_picks_exact_then_plain_last_wins() {
+        // One family's faces in scan order: plain, bold,
+        // italic, bold-italic, then a second plain.
+        let faces = [
+            (false, false),
+            (true, false),
+            (false, true),
+            (true, true),
+            (false, false),
+        ];
+        assert_eq!(pick_face(&faces, true, true), Some(3));
+        assert_eq!(pick_face(&faces, false, true), Some(2));
+        assert_eq!(pick_face(&faces, true, false), Some(1));
+        // A plain want takes the LAST plain face, matching
+        // the PDF writer's last-one-wins sources.
+        assert_eq!(pick_face(&faces, false, false), Some(4));
+        // No exact match and no plain face: nothing.
+        assert_eq!(pick_face(&[(true, false)], false, true), None);
+        assert_eq!(pick_face(&[], false, false), None);
+    }
+
+    #[test]
+    fn pinning_records_each_faces_own_file() {
+        // R3-13: an italic style pins the italic face's
+        // file, bold-italic the bold-italic file; before
+        // the shared pick, italic styles pinned a
+        // non-italic face (or the family's first).
+        let dir = std::env::temp_dir().join(format!("ob-fonts-pin2-{}", std::process::id()));
+        let lib = FontLibrary::open(dir.clone()).expect("open library");
+        let mut shas = std::collections::HashMap::new();
+        for name in [
+            "LiberationSans-Regular.ttf",
+            "LiberationSans-Italic.ttf",
+            "LiberationSans-BoldItalic.ttf",
+        ] {
+            let info = lib.add_bytes(&bundled(name), name).expect("add font");
+            shas.insert(name, info.sha256);
+        }
+        let style = |id: &str, bold: bool, italic: bool| ob_model::ParagraphStyle {
+            id: id.into(),
+            name: id.into(),
+            font_size: 11_000,
+            bold,
+            italic,
+            align: ob_model::Align::Left,
+            space_after: 4_000,
+            color: ob_model::Rgb::BLACK,
+            font_family: "Liberation Sans".into(),
+            font_sha256: None,
+        };
+        let mut doc = ob_model::Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "Test".into(),
+            profile: Default::default(),
+            fields: Default::default(),
+            styles: vec![
+                style("plain", false, false),
+                style("italic", false, true),
+                style("bolditalic", true, true),
+            ],
+            stories: Vec::new(),
+            panels: Vec::new(),
+            sheet: ob_model::SheetSpec {
+                preset: "letter-bifold".into(),
+                size: ob_model::Size {
+                    w: 612_000,
+                    h: 792_000,
+                },
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: Default::default(),
+            occasion_time: None,
+            wanted_fonts: Vec::new(),
+            participants: Default::default(),
+            inserts: Default::default(),
+        };
+        pin_document_fonts(&mut doc, &lib);
+        assert_eq!(
+            doc.styles[0].font_sha256.as_deref(),
+            Some(shas["LiberationSans-Regular.ttf"].as_str())
+        );
+        assert_eq!(
+            doc.styles[1].font_sha256.as_deref(),
+            Some(shas["LiberationSans-Italic.ttf"].as_str())
+        );
+        assert_eq!(
+            doc.styles[2].font_sha256.as_deref(),
+            Some(shas["LiberationSans-BoldItalic.ttf"].as_str())
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn zip_entries_past_the_cap_are_counted_not_dropped() {
+        // RT3-F: a pack with more entries than the cap
+        // says how many were left out, in plain words.
+        use std::io::Write as _;
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            for i in 0..600 {
+                zw.start_file(format!("f{i}.ttf"), opts).expect("zip entry");
+                zw.write_all(b"not a font").expect("zip write");
+            }
+            zw.finish().expect("zip finish");
+        }
+        let dir = std::env::temp_dir().join(format!("ob-fonts-zipcap-{}", std::process::id()));
+        let lib = FontLibrary::open(dir.clone()).expect("open library");
+        let results = lib.add_zip_bytes(&buf);
+        let messages: Vec<&str> = results
+            .iter()
+            .filter_map(|r| r.as_ref().err().map(|e| e.as_str()))
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("88 more files were in the pack")),
+            "the skip line names the count: {messages:?}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

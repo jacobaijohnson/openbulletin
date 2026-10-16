@@ -223,3 +223,51 @@ The verify lane's UNVERIFIABLE items (fresh suite totals;
 live booklet byte sizes; the music 237/237 helper run) are
 re-run by the coordinator on the clean build after the fix
 batches, before round 4 is dispatched.
+
+## Shipped addendum, R3-A: fonts (2026-10-16)
+
+Batch R3-A shipped on the clean build (the first build
+after the disk-emergency cache clean):
+
+- R3-1: `base_name` in ob-fonts resolve strips the subset
+  prefix and trailing face words from the conservative
+  set (Bold, Italic, BoldItalic, Oblique, BoldOblique,
+  Regular, Roman) in glued and spaced forms, for every
+  source name, table row or not. `display_name_for`
+  returns the base family; `resolve_family`'s Exact tier
+  tries display/base name, raw name, then the raw name's
+  base. "Verdana-Bold" records "Verdana" and upgrades
+  when Verdana is installed. Roman as a face word is
+  pinned knowingly in the code (PostScript semantics).
+- R3-2: `row_for` answers only when the base equals a
+  key, or begins with a key and continues only with a
+  face word or a PostScript tail (psmt, ps, mt). Arial
+  Narrow, Arial Black, Calibri Light, Loraine, and
+  Cabinet Grotesk earn no row; tests pin all five.
+- R3-18: Bookman Old Style demoted from metric twin to
+  lookalike (Bookman URW); FONTS.md corrected to match,
+  including naming both lookalikes in the table.
+- R3-13: one face-pick rule, `ob_fonts::pick_face` over
+  (bold, italic) tuples: exact flag match, last wins,
+  else the plain face. Used by `pin_document_fonts`
+  (italic styles now pin the italic face) and by the PDF
+  writer's `face_sources`, so pin and writer name the
+  same face of a family.
+- R3-14: ob-pdf `source_families` groups spellings by
+  cleaned lowercase name and picks deterministically:
+  most frequent spelling wins, ties to the
+  lexicographically smallest; no HashMap order.
+- R3-16: the app's `wanted_font_notes` reports only
+  families a style still names (bulletin styles plus
+  insert styles, compared through the base-name rule).
+  One pre-existing test fixture changed: the
+  install-later Check test's document now carries a
+  style naming Gill Sans MT, the shape a real import
+  leaves; its assertions are unchanged.
+- RT3-F: `add_zip_bytes` counts entries past the
+  512-entry cap and the result list gains the line
+  "N more files were in the pack than can be taken at
+  once; add them in a second pass.", which both the
+  Fonts window and the CLI already read out.
+
+No other batch's dispositions change.

@@ -18,6 +18,13 @@ html5ever = "0.39"
 markup5ever_rcdom = "0.39"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# The shared helper runner stops a timed-out helper's
+# whole process group on Unix (runner.rs), so a helper
+# that is itself a wrapper script cannot leave its own
+# children holding the pipes open.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 ob-layout = { path = "../ob-layout" }
 ob-pdf = { path = "../ob-pdf" }

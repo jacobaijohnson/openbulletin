@@ -302,6 +302,32 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, ImageError> {
     Ok(Decoded::from_image(img))
 }
 
+/// The raster size guards, stated once: no side over
+/// 20,000 pixels, no picture over 100 megapixels. The
+/// image-crate formats meet them inside the reader
+/// (the Limits set in decode_raster); JPEG XL is
+/// checked against the same numbers by
+/// check_raster_size before any frame is decoded
+/// (audit review m1, 2026-10-16: the JXL branch used
+/// to walk around the guards entirely, and the
+/// post-decode belt in decode() runs only after the
+/// full allocation it exists to prevent).
+fn check_raster_size(w: u32, h: u32) -> Result<(), ImageError> {
+    if w > 20_000 || h > 20_000 {
+        return Err(ImageError::Unreadable(format!(
+            "that picture is {w} by {h} pixels, wider or taller than the \
+             20,000 pixels a side we can safely open"
+        )));
+    }
+    if (w as u64) * (h as u64) > 100_000_000 {
+        return Err(ImageError::Unreadable(format!(
+            "that picture is {w} by {h} pixels, over 100 megapixels, \
+             more than we can safely open"
+        )));
+    }
+    Ok(())
+}
+
 fn decode_raster(bytes: &[u8], format: PictureFormat) -> Result<image::DynamicImage, ImageError> {
     use image::ImageDecoder as _;
     let mut reader = image::ImageReader::new(Cursor::new(bytes));
@@ -315,6 +341,12 @@ fn decode_raster(bytes: &[u8], format: PictureFormat) -> Result<image::DynamicIm
     reader.limits(limits);
     if format == PictureFormat::JpegXl {
         let decoder = jxl_decoder(bytes)?;
+        // jxl-oxide reads the image header when the
+        // decoder is built, so the size is known (and
+        // the guards enforced) before a single frame
+        // is decoded.
+        let (w, h) = decoder.dimensions();
+        check_raster_size(w, h)?;
         let mut img = image::DynamicImage::from_decoder(decoder)
             .map_err(|e| ImageError::Unreadable(e.to_string()))?;
         // jxl-oxide applies the file's orientation while it
@@ -617,6 +649,25 @@ mod tests {
         assert_eq!(&d.rgba[mid..mid + 3], &[0x20, 0x40, 0x60]);
         let fitted = decode_fitted(SQUARE_SVG, 50, 50).expect("fitted svg");
         assert_eq!((fitted.width, fitted.height), (50, 25));
+    }
+
+    #[test]
+    fn raster_size_guards_refuse_at_the_caps() {
+        // Ordinary and exactly-at-the-cap sizes pass.
+        assert!(check_raster_size(1, 1).is_ok());
+        assert!(check_raster_size(20_000, 5_000).is_ok(), "exactly 100 MP");
+        assert!(check_raster_size(4_000, 3_000).is_ok());
+        // A hair over either cap refuses, in words that
+        // name the size.
+        let err = check_raster_size(20_001, 10).expect_err("side over the cap");
+        assert!(err.to_string().contains("20,000"), "{err}");
+        let err = check_raster_size(10, 20_001).expect_err("height over the cap");
+        assert!(err.to_string().contains("20,000"), "{err}");
+        let err = check_raster_size(10_000, 10_001).expect_err("pixels over the cap");
+        assert!(err.to_string().contains("100 megapixels"), "{err}");
+        // The square the side cap alone would allow is
+        // still caught by the pixel cap.
+        assert!(check_raster_size(20_000, 20_000).is_err());
     }
 
     #[test]

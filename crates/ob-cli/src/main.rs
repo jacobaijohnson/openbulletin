@@ -486,34 +486,66 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
     let assets_dir = out.join("assets");
     std::fs::create_dir_all(&assets_dir)
         .map_err(|e| format!("cannot create {}: {e}", assets_dir.display()))?;
+    // The helper runs through the shared runner: a
+    // stuck helper once hung trace forever (audit M9,
+    // 2026-10-16), and its stderr is quoted trimmed,
+    // one line, like everywhere else.
     let run = |args: &[&str]| -> Result<Vec<u8>, String> {
-        let output = std::process::Command::new(&helper)
-            .args(args)
-            .output()
-            .map_err(|e| format!("cannot run the PDF helper ({}): {e}", helper.display()))?;
+        let mut cmd = std::process::Command::new(&helper);
+        cmd.args(args);
+        let output = match ob_extract::runner::run_with_timeout(
+            &mut cmd,
+            None,
+            ob_extract::runner::HELPER_TIMEOUT,
+        ) {
+            Ok(o) => o,
+            Err(ob_extract::runner::RunFault::Spawn(e)) => {
+                return Err(format!(
+                    "cannot run the PDF helper ({}): {e}",
+                    helper.display()
+                ));
+            }
+            Err(ob_extract::runner::RunFault::TimedOut) => {
+                return Err(
+                    "the PDF helper did not answer in two minutes, so the trace was stopped"
+                        .to_string(),
+                );
+            }
+            Err(ob_extract::runner::RunFault::Wait(e)) => {
+                return Err(format!(
+                    "something went wrong while the PDF helper was working: {e}"
+                ));
+            }
+        };
         if !output.status.success() {
-            return Err(format!(
-                "the PDF helper failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+            let said = ob_extract::runner::stderr_for_user(&output.stderr);
+            return Err(if said.is_empty() {
+                "the PDF helper failed".to_string()
+            } else {
+                format!("the PDF helper failed: {said}")
+            });
         }
         Ok(output.stdout)
     };
     let input_str = input.to_string_lossy().to_string();
     run(&["render", &input_str, &assets_dir.to_string_lossy()])?;
     let dump_bytes = run(&[&input_str])?;
-    let dump: serde_json::Value = serde_json::from_slice(&dump_bytes)
-        .map_err(|e| format!("the PDF helper answered oddly: {e}"))?;
-    let pages = dump["pages"].as_array().cloned().unwrap_or_default();
-    if pages.is_empty() {
+    let dump_text =
+        String::from_utf8(dump_bytes).map_err(|e| format!("the PDF helper answered oddly: {e}"))?;
+    // The typed parse checks the dump's schema version
+    // (audit M10): a helper answering in a format from
+    // the future is refused in words, not read as data.
+    let dump = ob_extract::ExtractionDump::from_json(&dump_text)?;
+    if dump.pages.is_empty() {
         return Err("that PDF has no pages we can read".into());
     }
     let to_mpt = |v: f64| (v * 1000.0).round() as ob_model::Mpt;
-    let page_sizes: Vec<ob_model::Size> = pages
+    let page_sizes: Vec<ob_model::Size> = dump
+        .pages
         .iter()
         .map(|pg| ob_model::Size {
-            w: to_mpt(pg["width_pt"].as_f64().unwrap_or(612.0)),
-            h: to_mpt(pg["height_pt"].as_f64().unwrap_or(792.0)),
+            w: to_mpt(pg.width_pt as f64),
+            h: to_mpt(pg.height_pt as f64),
         })
         .collect();
     // Booklet when every page is the same half-letter size and the

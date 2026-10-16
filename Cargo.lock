@@ -2863,6 +2863,7 @@ dependencies = [
  "base64",
  "chrono",
  "html5ever",
+ "libc",
  "lopdf",
  "markup5ever_rcdom",
  "ob-image",

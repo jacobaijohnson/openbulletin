@@ -26,13 +26,11 @@
 use crate::render::{RenderedSystem, FLOOR_STAFF_MM, PROTOCOL};
 use crate::svg;
 use serde::{Deserialize, Serialize};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 #[derive(Debug, Deserialize)]
 pub struct EngineRequest {
-    #[allow(dead_code)]
     pub protocol: u32,
     pub command: String,
     #[serde(default)]
@@ -98,28 +96,54 @@ fn page_height_units(page_width_units: u32) -> u32 {
     page_width_units.saturating_mul(24).max(20_000)
 }
 
-fn run_capture(cmd: &mut Command, stdin: Option<&[u8]>) -> Result<(bool, String, String), String> {
-    let mut child = cmd
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    if let Some(bytes) = stdin {
-        if let Some(mut sin) = child.stdin.take() {
-            let _ = sin.write_all(bytes);
-        }
+/// Why a backend run did not finish, kept apart so
+/// the render paths can word a timeout as a timeout
+/// instead of as a program that would not start.
+enum CaptureFault {
+    Start(String),
+    TimedOut,
+}
+
+/// Run a backend program to completion or to the
+/// standard deadline, through the shared runner
+/// (audit M9, 2026-10-16): the engraver behind the
+/// helper once waited forever too, probes included.
+fn run_capture(
+    cmd: &mut Command,
+    stdin: Option<&[u8]>,
+) -> Result<(bool, String, String), CaptureFault> {
+    run_capture_with_timeout(cmd, stdin, ob_extract::runner::HELPER_TIMEOUT)
+}
+
+fn run_capture_with_timeout(
+    cmd: &mut Command,
+    stdin: Option<&[u8]>,
+    timeout: std::time::Duration,
+) -> Result<(bool, String, String), CaptureFault> {
+    match ob_extract::runner::run_with_timeout(cmd, stdin, timeout) {
+        Ok(out) => Ok((
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )),
+        Err(ob_extract::runner::RunFault::Spawn(e)) => Err(CaptureFault::Start(e.to_string())),
+        Err(ob_extract::runner::RunFault::Wait(e)) => Err(CaptureFault::Start(e.to_string())),
+        Err(ob_extract::runner::RunFault::TimedOut) => Err(CaptureFault::TimedOut),
     }
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    Ok((
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    ))
+}
+
+/// How a failed backend start reads in the refusal
+/// the helper sends back.
+fn start_failure(fault: CaptureFault) -> EngineResponse {
+    match fault {
+        CaptureFault::Start(e) => {
+            EngineResponse::fail("failed", format!("the engraver would not start ({e})"))
+        }
+        CaptureFault::TimedOut => EngineResponse::fail(
+            "failed",
+            "the engraver did not finish in two minutes, so the music was not drawn",
+        ),
+    }
 }
 
 /// Probe a Verovio CLI: it answers --version.
@@ -340,19 +364,11 @@ fn render_via_cli(
             cmd.arg("-r").arg(&data);
         }
     }
-    let (ok, _stdout, stderr) = run_capture(&mut cmd, None).map_err(|e| {
-        EngineResponse::fail("failed", format!("the engraver would not start ({e})"))
-    })?;
+    let (ok, _stdout, stderr) = run_capture(&mut cmd, None).map_err(start_failure)?;
     if !ok {
-        let tail: String = stderr
-            .lines()
-            .rev()
-            .take(2)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join(" ");
+        // One trimmed line of the engraver's own words
+        // is quoted, never the whole wall.
+        let tail = ob_extract::runner::stderr_for_user(stderr.as_bytes());
         return Err(EngineResponse::fail(
             "failed",
             format!("the engraver could not draw that file ({tail})"),
@@ -384,19 +400,9 @@ fn render_via_python(
     });
     let payload = serde_json::to_vec(&req).expect("driver request serializes");
     let (ok, stdout, stderr) =
-        run_capture(Command::new(py).arg(&driver), Some(&payload)).map_err(|e| {
-            EngineResponse::fail("failed", format!("the engraver would not start ({e})"))
-        })?;
+        run_capture(Command::new(py).arg(&driver), Some(&payload)).map_err(start_failure)?;
     if !ok {
-        let tail: String = stderr
-            .lines()
-            .rev()
-            .take(2)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let tail = ob_extract::runner::stderr_for_user(stderr.as_bytes());
         return Err(EngineResponse::fail(
             "failed",
             format!("the engraver stopped unexpectedly ({tail})"),
@@ -421,6 +427,22 @@ fn render_via_python(
 
 /// Run one engine command ("probe" or "render").
 pub fn run(req: &EngineRequest) -> EngineResponse {
+    // The protocol is compared before anything else
+    // is read (audit M10, 2026-10-16): this helper
+    // once answered requests from any version at all,
+    // including 999 and 0, exactly as if they were its
+    // own. A mismatch is a structured refusal the
+    // client can repeat in words.
+    if req.protocol != PROTOCOL {
+        return EngineResponse::fail(
+            "protocol",
+            format!(
+                "this copy of the music engraver helper speaks protocol {PROTOCOL}, \
+                 but the request used protocol {}; the two do not match",
+                req.protocol
+            ),
+        );
+    }
     match req.command.as_str() {
         "probe" => match find_backend() {
             Some((backend, version)) => EngineResponse {
@@ -525,6 +547,37 @@ fn render(req: &EngineRequest) -> EngineResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_in_another_protocol_is_refused_as_protocol() {
+        // The red team's live probe (audit M10): the
+        // helper accepted protocol 999 and 0 and
+        // answered normally. Both now stop at the gate.
+        for v in [999, 0] {
+            let resp = run(&EngineRequest {
+                protocol: v,
+                command: "probe".into(),
+                musicxml: String::new(),
+                width_mm: 0.0,
+                staff_mm: 0.0,
+            });
+            assert!(!resp.ok);
+            assert_eq!(resp.kind.as_deref(), Some("protocol"), "version {v}");
+            assert_eq!(resp.protocol, PROTOCOL, "the answer speaks our version");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_backend_that_sleeps_meets_the_deadline() {
+        let fault = run_capture_with_timeout(
+            Command::new("sleep").arg("30"),
+            None,
+            std::time::Duration::from_secs(1),
+        )
+        .expect_err("a sleeping backend cannot finish");
+        assert!(matches!(fault, CaptureFault::TimedOut));
+    }
 
     #[test]
     fn empty_score_fails_in_words() {

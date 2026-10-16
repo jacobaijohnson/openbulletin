@@ -20,6 +20,7 @@ pub mod idml;
 pub mod pub_bridge;
 pub mod pub_layout;
 pub mod pub_text;
+pub mod runner;
 
 use serde::{Deserialize, Serialize};
 
@@ -171,7 +172,26 @@ impl ExtractionDump {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
     }
     pub fn from_json(s: &str) -> Result<Self, String> {
-        serde_json::from_str(s).map_err(|e| e.to_string())
+        let dump: Self = serde_json::from_str(s)
+            .map_err(|e| format!("the reading helper answered in a way we cannot read: {e}"))?;
+        // The version is checked, not just carried
+        // (audit M10, 2026-10-16): a helper answering
+        // in a format from the future must be refused
+        // in words, never read as if it were today's.
+        // Versions 1 and 2 are understood; 1 parses
+        // with the v2 fields defaulted.
+        match dump.schema_version {
+            1..=DUMP_SCHEMA_VERSION => Ok(dump),
+            v if v > DUMP_SCHEMA_VERSION => Err(format!(
+                "the reading helper answered in a newer format (version {v}) than this \
+                 copy of OpenBulletin understands (version {DUMP_SCHEMA_VERSION} at most)"
+            )),
+            v => Err(format!(
+                "the reading helper answered in a format this copy of OpenBulletin \
+                 does not understand (version {v}); it reads versions 1 and \
+                 {DUMP_SCHEMA_VERSION}"
+            )),
+        }
     }
 }
 
@@ -531,6 +551,29 @@ mod tests {
         assert!(!dump.spans[0].italic);
         assert_eq!(dump.spans[0].color, [0, 0, 0]);
         assert!(dump.images.is_empty());
+    }
+
+    #[test]
+    fn a_dump_from_the_future_is_refused_in_words() {
+        // The red team's live repro (audit M10): a fake
+        // helper answering schema_version 999 parsed
+        // exactly like a real dump. Now the version is
+        // compared, and a newer one is refused plainly.
+        let json = r#"{
+            "schema_version": 999,
+            "source_kind": "pdf",
+            "source_name": "future.pdf",
+            "source_bytes": 10,
+            "extractor": "helper from the future",
+            "pages": [],
+            "spans": []
+        }"#;
+        let err = ExtractionDump::from_json(json).expect_err("version 999 is not readable");
+        assert!(err.contains("newer format (version 999)"), "{err}");
+        // Version 0 was never a dump format either.
+        let json0 = json.replace("999", "0");
+        let err = ExtractionDump::from_json(&json0).expect_err("version 0 is not readable");
+        assert!(err.contains("does not understand (version 0)"), "{err}");
     }
 }
 

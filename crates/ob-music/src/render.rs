@@ -11,9 +11,8 @@
 //! licensing posture).
 
 use serde::{Deserialize, Serialize};
-use std::io::Write as _;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// The protocol version both ends speak. Bump on any
 /// incompatible change to the request or response shape.
@@ -106,7 +105,6 @@ struct Request {
 
 #[derive(Deserialize)]
 struct Response {
-    #[allow(dead_code)]
     protocol: u32,
     ok: bool,
     #[serde(default)]
@@ -154,6 +152,29 @@ pub fn helper_candidates(explicit: Option<std::path::PathBuf>) -> Vec<PathBuf> {
 pub fn render_music(xml: &str, width_mm: f64, staff_mm: f64) -> Result<RenderOutcome, RenderError> {
     let explicit = std::env::var("OB_VEROVIO_HELPER").ok().map(PathBuf::from);
     let candidates = helper_candidates(explicit);
+    render_with_candidates(
+        xml,
+        width_mm,
+        staff_mm,
+        &candidates,
+        ob_extract::runner::HELPER_TIMEOUT,
+    )
+}
+
+/// The render with its candidates and deadline showing,
+/// so tests can point at fake helpers and short waits.
+/// The calls go through the shared deadline runner
+/// (audit M9, 2026-10-16): a helper that never answers
+/// once wedged the music door forever, and the request
+/// used to be written before stdout was drained, a
+/// deadlock shape the runner's threads remove.
+fn render_with_candidates(
+    xml: &str,
+    width_mm: f64,
+    staff_mm: f64,
+    candidates: &[PathBuf],
+    timeout: std::time::Duration,
+) -> Result<RenderOutcome, RenderError> {
     let req = Request {
         protocol: PROTOCOL,
         command: "render",
@@ -163,36 +184,47 @@ pub fn render_music(xml: &str, width_mm: f64, staff_mm: f64) -> Result<RenderOut
     };
     let payload = serde_json::to_string(&req).expect("request serializes");
     let mut last_spawn_err: Option<std::io::Error> = None;
-    for cand in &candidates {
-        let spawned = Command::new(cand)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn();
-        let mut child = match spawned {
-            Ok(c) => c,
-            Err(e) => {
-                last_spawn_err = Some(e);
-                continue;
-            }
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(payload.as_bytes());
-        }
-        let output = match child.wait_with_output() {
-            Ok(o) => o,
-            Err(e) => {
-                return Err(RenderError::Failed(format!(
-                    "the music engraver helper stopped unexpectedly ({e})"
-                )));
-            }
-        };
+    for cand in candidates {
+        let mut cmd = Command::new(cand);
+        let output =
+            match ob_extract::runner::run_with_timeout(&mut cmd, Some(payload.as_bytes()), timeout)
+            {
+                Ok(o) => o,
+                Err(ob_extract::runner::RunFault::Spawn(e)) => {
+                    last_spawn_err = Some(e);
+                    continue;
+                }
+                Err(ob_extract::runner::RunFault::TimedOut) => {
+                    return Err(RenderError::Failed(format!(
+                        "the music engraver helper did not answer in {}, so the music \
+                     was not drawn",
+                        ob_extract::runner::describe_timeout(timeout)
+                    )));
+                }
+                Err(ob_extract::runner::RunFault::Wait(e)) => {
+                    return Err(RenderError::Failed(format!(
+                        "the music engraver helper stopped unexpectedly ({e})"
+                    )));
+                }
+            };
         let text = String::from_utf8_lossy(&output.stdout);
         let resp: Response = serde_json::from_str(&text).map_err(|_| {
             RenderError::Failed(
                 "the music engraver helper answered in a way we cannot read".to_string(),
             )
         })?;
+        // The protocol is compared, not just carried
+        // (audit M10, 2026-10-16): a helper answering in
+        // a different version than the request spoke is
+        // refused in words, never read as a render.
+        if resp.protocol != PROTOCOL {
+            return Err(RenderError::Failed(format!(
+                "the music engraver helper answered in protocol version {}, but \
+                 this copy of OpenBulletin speaks version {}; the two do not \
+                 match, so the music was not drawn",
+                resp.protocol, PROTOCOL
+            )));
+        }
         if resp.ok {
             let systems = resp.systems;
             if systems.is_empty() {
@@ -319,6 +351,98 @@ mod tests {
             .filter(|f| f.music.is_some())
             .count();
         assert_eq!(music_boxes, out.systems.len());
+    }
+
+    /// A fake engraver helper: a small shell script in
+    /// a scratch folder, executable (the red team's
+    /// method, audit M9/M10, as regression tests).
+    #[cfg(unix)]
+    fn fake_helper(name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!(
+            "openbulletin-music-test-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("write fake helper");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+        path
+    }
+
+    #[cfg(unix)]
+    fn fake_answer(protocol: u32) -> String {
+        format!(
+            "#!/bin/sh\ncat > /dev/null\nprintf '%s' '{{\"protocol\":{protocol},\"ok\":true,\
+             \"backend\":\"Fake engraver\",\"systems\":[{{\"svg\":\"<svg/>\",\
+             \"width_units\":100.0,\"height_units\":20.0,\"staff_mm\":6.5,\
+             \"noteheads\":3,\"measures\":1,\"syllables\":2,\"fermatas\":0}}]}}'\n"
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_good_fake_helper_renders_through_the_new_runner() {
+        let helper = fake_helper("good", &fake_answer(PROTOCOL));
+        let out = render_with_candidates(
+            "<score-partwise/>",
+            120.0,
+            TARGET_STAFF_MM,
+            &[helper],
+            std::time::Duration::from_secs(10),
+        )
+        .expect("a matching answer renders");
+        assert_eq!(out.systems.len(), 1);
+        assert_eq!(out.noteheads(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_speaking_another_protocol_is_refused_in_words() {
+        // The red team's staged fake (audit M10):
+        // protocol 999, ok true, a floor-passing system.
+        // It used to be accepted as a genuine render.
+        let helper = fake_helper("future", &fake_answer(999));
+        let err = render_with_candidates(
+            "<score-partwise/>",
+            120.0,
+            TARGET_STAFF_MM,
+            &[helper],
+            std::time::Duration::from_secs(10),
+        )
+        .expect_err("protocol 999 is not a render");
+        match err {
+            RenderError::Failed(why) => {
+                assert!(why.contains("protocol version 999"), "{why}")
+            }
+            other => panic!("expected a plain refusal, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sleeping_helper_meets_the_deadline() {
+        let helper = fake_helper("sleepy", "#!/bin/sh\ncat > /dev/null\nsleep 30\n");
+        let start = std::time::Instant::now();
+        let err = render_with_candidates(
+            "<score-partwise/>",
+            120.0,
+            TARGET_STAFF_MM,
+            &[helper],
+            std::time::Duration::from_secs(1),
+        )
+        .expect_err("a sleeping helper cannot render");
+        match err {
+            RenderError::Failed(why) => {
+                assert!(why.contains("did not answer in 1 seconds"), "{why}")
+            }
+            other => panic!("expected a timeout refusal, got {other:?}"),
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(15),
+            "the deadline, not the sleep, ends the wait"
+        );
     }
 
     #[test]

@@ -104,3 +104,42 @@ WMF kill, dump threading/count fixes, README sentences,
 the startup font-panic investigation.
 Then the loop continues: wanted fonts build, roles builds,
 round 3 audit.
+
+## Shipped addendum (2026-10-16, coordinator-verified)
+
+R2-A (2af35e2, 342 tests): runner collects over channels
+with deadline + 5 s pipe grace and never joins a blocked
+reader; output capped at 512 MB with a plain-words refusal;
+ob-image gates every SVG through an iterative pre-scan
+(256 depth / 250,000 elements; real Verovio pages measure
+2,199 elements); HTML import pre-scans source depth/tags
+before html5ever (25,000 divs now refuse immediately; the
+import suite runs in 0.27 s); IDML totals capped at
+512 MB, and truncated parts are rescued to their last whole
+paragraph with only the tail counted, via the new
+ExtractionDump.loss_notes channel; the sanitizer validates
+every url( in a value.
+R2-B (214f3b4, 361 tests): analyzer family = largest
+neighborhood + average-linkage growth; families under 3
+classify nothing Standing and say why in the review;
+Next Sunday occasion guard with a spoken note (heuristic:
+a name set, not "Sunday", with no Sunday word; a regular
+weekday service so named cannot be told apart — the guard
+announces itself and the rename path, never silent);
+settings per-section salvage + set-aside + atomic save;
+keymap validated on load with capture's swap discipline;
+all CLI export doors refuse to replace their own input and
+write atomically; fonts add skips-and-names; the WMF
+converter is killed and reaped at its deadline; learning
+dumps emit threaded stories once and count unlisted-page
+spans as losses; README font sentences corrected.
+NOTE 9 resolved as a REAL BUG: reproduced byte-for-byte —
+a one-frame ordering bug painted shaped preview lines
+naming library families in the same frame the refresh
+installed them, while egui applies new font definitions
+the next frame; a fresh start with a bulletin open could
+panic. Fixed by snapshotting bound families per frame and
+falling back for exactly one frame; runtime-verified
+under Xvfb.
+Coordinator re-ran the full suite after each batch:
+342/0 and 361/0.

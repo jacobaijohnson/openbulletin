@@ -61,11 +61,16 @@ impl Node {
         self.attrs.get(name).map(|s| s.as_str())
     }
     fn find_all<'a>(&'a self, tag: &str, out: &mut Vec<&'a Node>) {
-        for c in &self.children {
-            if c.tag == tag {
-                out.push(c);
+        // Preorder, the recursive walk's exact order, on an
+        // explicit stack: a hostile file nested groups tens
+        // of thousands deep and the recursion aborted the
+        // whole app (audit Batch 1).
+        let mut stack: Vec<&Node> = self.children.iter().rev().collect();
+        while let Some(node) = stack.pop() {
+            if node.tag == tag {
+                out.push(node);
             }
-            c.find_all(tag, out);
+            stack.extend(node.children.iter().rev());
         }
     }
     fn child(&self, tag: &str) -> Option<&Node> {
@@ -84,6 +89,14 @@ fn fill_attrs(node: &mut Node, e: &quick_xml::events::BytesStart) {
     }
 }
 
+/// XML nesting deeper than this is not a document, it is
+/// a trap: the walks over the tree (and the tree's own
+/// drop) recurse with its depth, and a file nested groups
+/// hundreds of thousands deep aborted the whole app
+/// before this cap (audit Batch 1). Real Scribus files
+/// nest perhaps twenty levels; this is generous headroom.
+const MAX_XML_DEPTH: usize = 256;
+
 fn parse_xml(text: &str) -> Result<Node, String> {
     let mut reader = Reader::from_str(text);
     reader.config_mut().trim_text(false);
@@ -92,6 +105,11 @@ fn parse_xml(text: &str) -> Result<Node, String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
+                if stack.len() > MAX_XML_DEPTH {
+                    return Err(
+                        "that Scribus file's XML is nested too deeply to read safely".to_string(),
+                    );
+                }
                 let mut node = Node {
                     tag: String::from_utf8_lossy(e.name().as_ref()).into_owned(),
                     ..Default::default()
@@ -661,5 +679,30 @@ mod tests {
     fn sla_rejects_non_scribus() {
         assert!(dump_from_sla(b"<html></html>", "x.sla").is_err());
         assert!(dump_from_sla(b"not xml", "x.sla").is_err());
+    }
+
+    #[test]
+    fn sla_deeply_nested_groups_refuse_instead_of_aborting() {
+        // Audit Batch 1: PAGEOBJECT groups nested hundreds
+        // of thousands deep used to overflow the stack and
+        // kill the whole app. The hostile shape is built
+        // from string pieces here; the import must refuse
+        // it whole, in plain words.
+        let mut text = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<SCRIBUSUTF8NEW Version="1.5.6.1">
+<DOCUMENT PAGEWIDTH="612" PAGEHEIGHT="792" DFONT="Liberation Serif" DSIZE="12">
+<PAGE PAGEXPOS="0" PAGEYPOS="0" PAGEWIDTH="612" PAGEHEIGHT="792" NUM="0" MNAM="Normal"/>
+"#,
+        );
+        for _ in 0..2_000 {
+            text.push_str(r#"<PAGEOBJECT PTYPE="12">"#);
+        }
+        for _ in 0..2_000 {
+            text.push_str("</PAGEOBJECT>");
+        }
+        text.push_str("</DOCUMENT>\n</SCRIBUSUTF8NEW>\n");
+        let err = dump_from_sla(text.as_bytes(), "deep.sla").expect_err("refused");
+        assert!(err.contains("nested too deeply"), "{err}");
     }
 }

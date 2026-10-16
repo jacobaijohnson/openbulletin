@@ -2461,24 +2461,48 @@ impl App {
             lines.pop();
         }
         if let Some(story) = self.doc.story_mut(&sid) {
-            // Spoken-only flags ride with their words: the
-            // body paragraphs are rebuilt from the typed
-            // lines, so a line whose words match a body
-            // paragraph that was here keeps that paragraph's
-            // flag (a prayer name typed here must not lose
-            // its privacy because the box was saved).
-            let spoken_by_text: std::collections::HashMap<String, bool> = story
+            // Spoken-only flags and run formatting ride
+            // with their LINE, by position among the story's
+            // body paragraphs (audit Batch 1). They used to
+            // ride by exact-text match, and the match failed
+            // three ways: editing a prayer line's words
+            // dropped its privacy without a word said, two
+            // identical lines collapsed into one flag, and
+            // every line came back with plain runs, undoing
+            // bold set on the canvas. Now a line whose words
+            // are unchanged keeps its whole paragraph; an
+            // edited line keeps its flag and the face of its
+            // first run; a line past the old count starts
+            // plain and printable, like a paragraph typed
+            // anywhere else.
+            let old_body: Vec<ob_model::Paragraph> = story
                 .paragraphs
                 .iter()
                 .filter(|p| p.style == "body")
-                .map(|p| (p.text(), p.spoken_only))
+                .cloned()
                 .collect();
-            let body_para = |l: &String| {
-                let mut p = ob_model::Paragraph::new("body", l);
-                if let Some(spoken) = spoken_by_text.get(l) {
-                    p.spoken_only = *spoken;
+            let body_para = |idx: usize, l: &String| -> ob_model::Paragraph {
+                match old_body.get(idx) {
+                    Some(old) if old.text() == *l => old.clone(),
+                    Some(old) => {
+                        let (bold, italic) = old
+                            .runs
+                            .first()
+                            .map(|r| (r.bold, r.italic))
+                            .unwrap_or((None, None));
+                        let mut p = ob_model::Paragraph::from_runs(
+                            "body",
+                            vec![ob_model::Run {
+                                text: l.clone(),
+                                bold,
+                                italic,
+                            }],
+                        );
+                        p.spoken_only = old.spoken_only;
+                        p
+                    }
+                    None => ob_model::Paragraph::new("body", l),
                 }
-                p
             };
             let mut rest: Vec<ob_model::Paragraph> = story
                 .paragraphs
@@ -2492,15 +2516,15 @@ impl App {
             for p in rest.drain(..) {
                 new_paras.push(p.clone());
                 if !inserted && p.style == "subheading" && p.text() == "Announcements" {
-                    for l in &lines {
-                        new_paras.push(body_para(l));
+                    for (idx, l) in lines.iter().enumerate() {
+                        new_paras.push(body_para(idx, l));
                     }
                     inserted = true;
                 }
             }
             if !inserted {
-                for l in &lines {
-                    new_paras.push(body_para(l));
+                for (idx, l) in lines.iter().enumerate() {
+                    new_paras.push(body_para(idx, l));
                 }
             }
             story.paragraphs = new_paras;
@@ -7999,6 +8023,7 @@ impl App {
                 let mut entries: Vec<(ob_extract::ExtractionDump, Option<std::path::PathBuf>)> =
                     Vec::new();
                 let mut skipped: Vec<String> = Vec::new();
+                let mut spoken_left_out = 0usize;
                 for path in &files {
                     let name = path
                         .file_name()
@@ -8038,8 +8063,12 @@ impl App {
                             .map_err(|e| format!("cannot read that file: {e}"))
                             .and_then(|bytes| ob_extract::sla::dump_from_sla(&bytes, &name))
                             .map(|d| (d, None)),
-                        Some(LearnKind::OpenBulletin) => ob_format::load(path)
-                            .map(|doc| (ob_extract::learn::dump_from_document(&doc, &name), None)),
+                        Some(LearnKind::OpenBulletin) => ob_format::load(path).map(|doc| {
+                            let (dump, left_out) =
+                                ob_extract::learn::dump_from_document(&doc, &name);
+                            spoken_left_out += left_out;
+                            (dump, None)
+                        }),
                         None => Err("not a kind of file we can learn from".into()),
                     };
                     match read {
@@ -8062,12 +8091,22 @@ impl App {
                 {
                     let _ = ob_extract::helper::render_pdf(&helper, pdf, &workdir.join("assets"));
                 }
+                // Spoken-only words left out of learning are
+                // said on the mix line, not left silent
+                // (audit Batch 1).
+                let mut mix_line = ob_extract::learn::mix_summary(&counts);
+                if spoken_left_out > 0 {
+                    mix_line.push(' ');
+                    mix_line.push_str(&ob_extract::learn::spoken_only_left_out_line(
+                        spoken_left_out,
+                    ));
+                }
                 Ok(AnalyzerReview {
                     doc: out.doc,
                     items: out.items,
                     family: out.family,
                     corpus: out.corpus,
-                    mix: ob_extract::learn::mix_summary(&counts),
+                    mix: mix_line,
                     workdir,
                     note: if skipped.is_empty() {
                         None
@@ -11826,6 +11865,163 @@ mod settings_tests {
             joined.contains("First item||Second item"),
             "the blank line must survive as a paragraph break: {joined}"
         );
+    }
+
+    /// Replace the weekly story's paragraphs with a known
+    /// set and return the story's id (audit Batch 1 test
+    /// scaffolding for the announcements-save tests below).
+    fn set_weekly_paragraphs(app: &mut App, paras: Vec<ob_model::Paragraph>) -> String {
+        let sid = weekly_story_id(&app.doc).expect("template has an announcements story");
+        app.doc.story_mut(&sid).expect("story").paragraphs = paras;
+        sid
+    }
+
+    fn weekly_body_paras(app: &App, sid: &str) -> Vec<ob_model::Paragraph> {
+        app.doc
+            .story(sid)
+            .expect("story")
+            .paragraphs
+            .iter()
+            .filter(|p| p.style == "body")
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn announcements_edited_line_keeps_its_spoken_only_flag() {
+        // Audit Batch 1: flags used to ride by exact-text
+        // match, so adding words to a prayer line silently
+        // made it printable. The flag now follows the line.
+        let mut app = App::default();
+        let mut prayer = ob_model::Paragraph::new("body", "For Wilhelmina Quietname");
+        prayer.spoken_only = true;
+        let sid = set_weekly_paragraphs(
+            &mut app,
+            vec![
+                ob_model::Paragraph::new("subheading", "Announcements"),
+                ob_model::Paragraph::new("body", "Food bank collection this week"),
+                prayer,
+                ob_model::Paragraph::new("body", "Choir rehearsal Thursday"),
+            ],
+        );
+        app.announcements = "Food bank collection this week\n\
+                             For Wilhelmina Quietname and her family\n\
+                             Choir rehearsal Thursday"
+            .to_string();
+        app.announcements_dirty = true;
+        app.save_announcements();
+        let body = weekly_body_paras(&app, &sid);
+        assert_eq!(body.len(), 3);
+        assert!(!body[0].spoken_only);
+        assert_eq!(body[1].text(), "For Wilhelmina Quietname and her family");
+        assert!(
+            body[1].spoken_only,
+            "an edited prayer line keeps its privacy"
+        );
+        assert!(!body[2].spoken_only);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn announcements_identical_lines_keep_their_own_flags() {
+        // Audit Batch 1: two identical lines, one private,
+        // used to collapse into a single text-matched flag.
+        let mut app = App::default();
+        let mut spoken = ob_model::Paragraph::new("body", "For our shut-ins");
+        spoken.spoken_only = true;
+        let sid = set_weekly_paragraphs(
+            &mut app,
+            vec![
+                ob_model::Paragraph::new("subheading", "Announcements"),
+                spoken,
+                ob_model::Paragraph::new("body", "For our shut-ins"),
+            ],
+        );
+        app.announcements = "For our shut-ins\nFor our shut-ins".to_string();
+        app.announcements_dirty = true;
+        app.save_announcements();
+        let body = weekly_body_paras(&app, &sid);
+        assert_eq!(body.len(), 2);
+        assert!(body[0].spoken_only, "the spoken-only line keeps its flag");
+        assert!(!body[1].spoken_only, "its identical twin was never private");
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn announcements_save_keeps_canvas_bold_on_unchanged_lines() {
+        // Audit Batch 1: the rebuild used to hand every
+        // line plain runs, undoing bold set on the canvas.
+        let mut app = App::default();
+        let para = ob_model::Paragraph::from_runs(
+            "body",
+            vec![
+                ob_model::Run::plain("Choir "),
+                ob_model::Run {
+                    text: "rehearsal".into(),
+                    bold: Some(true),
+                    italic: None,
+                },
+            ],
+        );
+        let sid = set_weekly_paragraphs(
+            &mut app,
+            vec![
+                ob_model::Paragraph::new("subheading", "Announcements"),
+                para,
+            ],
+        );
+        app.announcements = "Choir rehearsal".to_string();
+        app.announcements_dirty = true;
+        app.save_announcements();
+        let body = weekly_body_paras(&app, &sid);
+        assert_eq!(body.len(), 1);
+        assert!(
+            body[0]
+                .runs
+                .iter()
+                .any(|r| r.text == "rehearsal" && r.bold == Some(true)),
+            "the bold word is still bold: {:?}",
+            body[0].runs
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn announcements_edited_line_keeps_its_first_runs_face() {
+        // Audit Batch 1: an edited line takes the face of
+        // the old paragraph's first run, as one run, and
+        // keeps its flag.
+        let mut app = App::default();
+        let mut para = ob_model::Paragraph::from_runs(
+            "body",
+            vec![ob_model::Run {
+                text: "Choir rehearsal".into(),
+                bold: Some(true),
+                italic: None,
+            }],
+        );
+        para.spoken_only = true;
+        let sid = set_weekly_paragraphs(
+            &mut app,
+            vec![
+                ob_model::Paragraph::new("subheading", "Announcements"),
+                para,
+            ],
+        );
+        app.announcements = "Choir rehearsal moves to Friday".to_string();
+        app.announcements_dirty = true;
+        app.save_announcements();
+        let body = weekly_body_paras(&app, &sid);
+        assert_eq!(body.len(), 1);
+        assert_eq!(
+            body[0].runs.len(),
+            1,
+            "the edited line is one run wearing the old face"
+        );
+        assert_eq!(body[0].runs[0].text, "Choir rehearsal moves to Friday");
+        assert_eq!(body[0].runs[0].bold, Some(true));
+        assert!(body[0].spoken_only);
     }
 
     #[test]

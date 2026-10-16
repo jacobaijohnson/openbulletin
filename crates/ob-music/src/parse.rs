@@ -162,6 +162,32 @@ pub fn load_music(bytes: &[u8]) -> Result<(String, MusicInfo), String> {
     Ok((xml, info))
 }
 
+/// One zip entry's decompressed cap, the same 32 MB the
+/// IDML door puts on its parts. A score is text; a .mxl
+/// whose entry inflates past this is a bomb, not a hymn
+/// (audit Batch 1: the score and the container were read
+/// with no cap at all, and a 4 MB file reached 4 GB in
+/// memory).
+const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Read one zip entry's text under the cap. One byte past
+/// it is read, so an entry exactly at the cap still counts
+/// as inside; anything larger refuses in plain words.
+fn read_entry_text(entry: &mut zip::read::ZipFile, what: &str) -> Result<String, String> {
+    let mut buf = Vec::new();
+    entry
+        .by_ref()
+        .take(MAX_ENTRY_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("{what} cannot be read ({e})"))?;
+    if buf.len() as u64 > MAX_ENTRY_BYTES {
+        return Err(format!(
+            "{what} is too large to read (past 32 MB of music text)"
+        ));
+    }
+    String::from_utf8(buf).map_err(|_| format!("{what} is not text we can read"))
+}
+
 /// The score's XML out of a .mxl zip: the container's
 /// rootfile when META-INF/container.xml names one, else
 /// the first .musicxml/.xml entry that is one.
@@ -173,8 +199,11 @@ fn zip_score_text(bytes: &[u8]) -> Result<String, String> {
         .collect();
     let mut main: Option<String> = None;
     if let Ok(mut container) = zip.by_name("META-INF/container.xml") {
-        let mut text = String::new();
-        if container.read_to_string(&mut text).is_ok() {
+        // A container that cannot be read (or is past the
+        // cap) simply does not name the score; the entry
+        // scan below decides, and the score's own read is
+        // capped all the same.
+        if let Ok(text) = read_entry_text(&mut container, "the list inside that zip") {
             main = rootfile_path(&text).filter(|p| names.iter().any(|n| n == p));
         }
     }
@@ -197,10 +226,7 @@ fn zip_score_text(bytes: &[u8]) -> Result<String, String> {
     let mut entry = zip
         .by_name(&name)
         .map_err(|e| format!("the score inside that zip cannot be read ({e})"))?;
-    let mut text = String::new();
-    entry
-        .read_to_string(&mut text)
-        .map_err(|e| format!("the score inside that zip cannot be read ({e})"))?;
+    let text = read_entry_text(&mut entry, "the score inside that zip")?;
     if !looks_like_score(text.as_bytes()) {
         return Err("the file inside that zip is not a score we can read".to_string());
     }
@@ -604,6 +630,37 @@ mod tests {
         assert!(sniff_music(&buf));
         assert!(sniff_music(TINY_SCORE.as_bytes()));
         assert!(!sniff_music(b"<SCRIBUSUTF8NEW/>"));
+    }
+
+    #[test]
+    fn mxl_score_entry_past_the_cap_refuses_in_plain_words() {
+        // Audit Batch 1: the score entry was read with no
+        // cap, so a small .mxl could inflate to gigabytes
+        // in memory. This entry is a hair past 32 MB of
+        // almost-nothing, deflated to very little on disk.
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            zw.start_file("score.musicxml", opts).unwrap();
+            use std::io::Write as _;
+            let filler = "a".repeat(33 * 1024 * 1024);
+            zw.write_all(format!("<score-partwise>{filler}</score-partwise>").as_bytes())
+                .unwrap();
+            zw.finish().unwrap();
+        }
+        assert!(
+            buf.len() < 1024 * 1024,
+            "the bomb is small on disk: {} bytes",
+            buf.len()
+        );
+        let err = load_music(&buf).expect_err("refused");
+        assert!(err.contains("too large"), "{err}");
+        assert!(
+            !sniff_music(&buf),
+            "the sniff refuses it too, without reading it whole"
+        );
     }
 
     /// The Bach fixture from the M0 spike: the real corpus.

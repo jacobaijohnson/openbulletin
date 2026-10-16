@@ -963,6 +963,30 @@ fn join_phrases(phrases: &[String]) -> String {
     }
 }
 
+/// The deepest tree the walk below will enter. The walk
+/// recurses with the tree, and a page nested thousands of
+/// levels deep (boxes in boxes in boxes) overflowed the
+/// stack and aborted the whole app (audit Batch 1, the
+/// audit's one BLOCKER). Real newsletter exports nest
+/// perhaps fifty levels; this is generous headroom.
+/// (Dropping a refused tree is safe at any depth: rcdom's
+/// own Drop drains children iteratively.)
+const MAX_TREE_DEPTH: usize = 256;
+
+/// A tree's depth, measured iteratively: the document
+/// node is 0, its children 1, and so on down.
+fn tree_depth(root: &Handle) -> usize {
+    let mut deepest = 0usize;
+    let mut stack: Vec<(Handle, usize)> = vec![(root.clone(), 0)];
+    while let Some((node, depth)) = stack.pop() {
+        deepest = deepest.max(depth);
+        for child in node.children.borrow().iter() {
+            stack.push((child.clone(), depth + 1));
+        }
+    }
+    deepest
+}
+
 /// Build the draft bulletin from a web page's bytes.
 /// Errors only when the page holds no words we can read.
 pub fn document_from_html(
@@ -974,6 +998,15 @@ pub fn document_from_html(
         .from_utf8()
         .read_from(&mut &bytes[..])
         .unwrap_or_default();
+    // Audit Batch 1: measure before walking, and refuse a
+    // too-deep page whole, in plain words. Nothing partial
+    // becomes a draft.
+    if tree_depth(&dom.document) > MAX_TREE_DEPTH {
+        return Err(
+            "This page has boxes nested too deeply to read safely, so it was not brought in."
+                .to_string(),
+        );
+    }
     let mut walker = Walker::new();
     // Walk the body when the page has one; otherwise the
     // whole tree (the head is skipped by the walk itself).
@@ -1477,6 +1510,63 @@ mod tests {
             .iter()
             .flat_map(|p| p.frames.iter())
             .any(|f| f.picture.is_some()));
+    }
+
+    #[test]
+    fn deeply_nested_pages_refuse_instead_of_aborting() {
+        // Audit Batch 1 (the audit's BLOCKER): pages nested
+        // thousands of divs deep used to overflow the stack
+        // and kill the whole app, unsaved work with it. The
+        // hostile shapes are built from string pieces here;
+        // the import must refuse them whole, in plain words.
+        let mut divs = String::from("<html><body>");
+        for _ in 0..10_000 {
+            divs.push_str("<div>");
+        }
+        divs.push_str("words at the bottom");
+        for _ in 0..10_000 {
+            divs.push_str("</div>");
+        }
+        divs.push_str("</body></html>");
+        let err = match document_from_html(divs.as_bytes(), "deep.html", ChurchProfile::default()) {
+            Ok(_) => panic!("the deep page must be refused"),
+            Err(e) => e,
+        };
+        assert!(err.contains("nested too deeply"), "{err}");
+
+        // The same attack wearing inline tags instead.
+        let mut spans = String::from("<html><body><p>");
+        for _ in 0..10_000 {
+            spans.push_str("<span>");
+        }
+        spans.push_str("words at the bottom");
+        for _ in 0..10_000 {
+            spans.push_str("</span>");
+        }
+        spans.push_str("</p></body></html>");
+        let err = match document_from_html(spans.as_bytes(), "deep2.html", ChurchProfile::default())
+        {
+            Ok(_) => panic!("the deep page must be refused"),
+            Err(e) => e,
+        };
+        assert!(err.contains("nested too deeply"), "{err}");
+
+        // Nesting a real page would plausibly use (a
+        // hundred levels of layout boxes) still comes over.
+        let mut ok = String::from("<html><body>");
+        for _ in 0..100 {
+            ok.push_str("<div>");
+        }
+        ok.push_str("<p>Words from a deep page</p>");
+        for _ in 0..100 {
+            ok.push_str("</div>");
+        }
+        ok.push_str("</body></html>");
+        let out = document_from_html(ok.as_bytes(), "ok.html", ChurchProfile::default())
+            .expect("a hundred levels is a page, not a trap");
+        assert!(all_paragraphs(&out.doc)
+            .iter()
+            .any(|p| p.text().contains("Words from a deep page")));
     }
 
     #[test]

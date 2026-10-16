@@ -283,14 +283,42 @@ pub fn mix_summary(counts: &KindCounts) -> String {
     )
 }
 
+/// The mix line's second sentence, for when spoken-only
+/// paragraphs were left out of learning (audit Batch 1):
+/// they are private by the church's own marking, never
+/// template content, and the leaving-out is said out loud
+/// rather than done silently.
+pub fn spoken_only_left_out_line(n: usize) -> String {
+    if n == 1 {
+        "1 spoken-only paragraph was left out; spoken-only words are private and never \
+         become part of a template."
+            .to_string()
+    } else {
+        format!(
+            "{n} spoken-only paragraphs were left out; spoken-only words are private \
+             and never become part of a template."
+        )
+    }
+}
+
 /// A saved bulletin (.obd) as an extraction dump, so a
 /// church's own OpenBulletin files can teach the analyzer
 /// alongside everyone else's. Spans carry the frames' real
 /// places; the paragraphs of one story stack down its frame
 /// at their own sizes, the way the words sit in the box.
-pub fn dump_from_document(doc: &Document, source_name: &str) -> ExtractionDump {
+///
+/// Spoken-only paragraphs never become spans at all
+/// (audit Batch 1): the dump has no field to carry their
+/// flag, so before this rule a spoken-only prayer list
+/// (the realistic case: the same shut-ins, week after
+/// week) was learned as standing content and would print
+/// every week. They are excluded here, and the count of
+/// them rides back with the dump so the mix line can say
+/// they were left out.
+pub fn dump_from_document(doc: &Document, source_name: &str) -> (ExtractionDump, usize) {
     let mut pages: Vec<PageInfo> = Vec::new();
     let mut spans: Vec<Span> = Vec::new();
+    let mut spoken_left_out = 0usize;
     for (pi, panel) in doc.panels.iter().enumerate() {
         let mut panel_spans: Vec<Span> = Vec::new();
         for frame in &panel.frames {
@@ -304,6 +332,12 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> ExtractionDump {
             let fw = frame.rect.w as f32 / 1000.0;
             let mut y = frame.rect.y as f32 / 1000.0;
             for para in &story.paragraphs {
+                if para.spoken_only {
+                    if !para.text().trim().is_empty() {
+                        spoken_left_out += 1;
+                    }
+                    continue;
+                }
                 if para.text().trim().is_empty() {
                     continue;
                 }
@@ -345,7 +379,7 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> ExtractionDump {
         });
         spans.extend(panel_spans);
     }
-    ExtractionDump {
+    let dump = ExtractionDump {
         schema_version: DUMP_SCHEMA_VERSION,
         source_kind: SourceKind::Obd,
         source_name: source_name.to_string(),
@@ -354,7 +388,8 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> ExtractionDump {
         pages,
         spans,
         images: Vec::new(),
-    }
+    };
+    (dump, spoken_left_out)
 }
 
 #[cfg(test)]
@@ -550,7 +585,8 @@ mod tests {
 
     #[test]
     fn document_becomes_a_dump_with_real_geometry() {
-        let dump = dump_from_document(&small_doc(), "week.obd");
+        let (dump, spoken_left_out) = dump_from_document(&small_doc(), "week.obd");
+        assert_eq!(spoken_left_out, 0, "nothing private in this document");
         assert_eq!(dump.source_kind, SourceKind::Obd);
         assert_eq!(dump.pages.len(), 1);
         assert!((dump.pages[0].width_pt - 612.0).abs() < 0.01);
@@ -567,6 +603,57 @@ mod tests {
         // The shared JSON contract still holds.
         let back = ExtractionDump::from_json(&dump.to_json().expect("json")).expect("parse");
         assert_eq!(back.spans.len(), 2);
+    }
+
+    #[test]
+    fn spoken_only_paragraphs_never_enter_learning() {
+        use crate::analyzer::analyze;
+        // Three saved bulletins, each carrying the same
+        // standing words and the same spoken-only prayer
+        // (the shut-ins list: the realistic spoken-only
+        // content, repeated week after week). Before the
+        // fix, the prayer was learned as standing content
+        // and would have printed every week (audit Batch 1).
+        let mut total_left_out = 0usize;
+        let mut dumps = Vec::new();
+        for name in ["a.obd", "b.obd", "c.obd"] {
+            let mut doc = small_doc();
+            let mut prayer = Paragraph::new("body", "For Wilhelmina Quietname, spoken at the rail");
+            prayer.spoken_only = true;
+            doc.stories[0].paragraphs.push(prayer);
+            let (dump, left_out) = dump_from_document(&doc, name);
+            total_left_out += left_out;
+            dumps.push(dump);
+        }
+        assert_eq!(total_left_out, 3, "one prayer per bulletin, all left out");
+        // No dump carries the words at all.
+        assert!(dumps
+            .iter()
+            .all(|d| d.spans.iter().all(|s| !s.text.contains("Wilhelmina"))));
+        let out = analyze(&dumps, ChurchProfile::default()).expect("analyze");
+        let template_text: Vec<String> = out
+            .doc
+            .stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter().map(|p| p.text()))
+            .collect();
+        let template_text = template_text.join(" ");
+        assert!(
+            !template_text.contains("Wilhelmina"),
+            "the learned template holds no spoken-only words: {template_text}"
+        );
+        assert!(
+            template_text.contains("shepherd"),
+            "the standing words still learned: {template_text}"
+        );
+        // And the sentence that reports the leaving-out is
+        // the plain-words one the mix line carries.
+        assert_eq!(
+            spoken_only_left_out_line(3),
+            "3 spoken-only paragraphs were left out; spoken-only words are private \
+             and never become part of a template."
+        );
+        assert!(spoken_only_left_out_line(1).starts_with("1 spoken-only paragraph was"));
     }
 
     #[test]

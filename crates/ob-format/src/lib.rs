@@ -183,6 +183,29 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     Ok(doc)
 }
 
+/// One sidecar picture's size cap. A tracing picture is a
+/// page render; tens of megabytes is generous, and a
+/// "picture" bigger than this is not one (audit Batch 1).
+const MAX_SIDECAR_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The media type a picture's own first bytes state, or
+/// None when the bytes are none of the four: a text file
+/// renamed .png is not a picture and is never gathered
+/// in (audit Batch 1).
+fn picture_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF8") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 /// Gather a panel's tracing picture into the asset store
 /// when its reference is a sidecar path that resolves beside
 /// the bulletin file (a v0 file, or a v1 file written by an
@@ -190,8 +213,20 @@ fn load_v1(path: &Path) -> Result<Document, String> {
 /// stored asset stays as it is; a path that does not resolve
 /// stays a path too, so the app keeps saying the picture is
 /// missing, exactly as it always has.
+///
+/// The gathering is fenced (audit Batch 1): the sidecar
+/// must resolve INSIDE the bulletin's own folder tree,
+/// must be no larger than a page picture ever is, and its
+/// bytes must actually be a picture. Before the fence, a
+/// file that named "../secret.png" (or an absolute path to
+/// anything at all) had that file read into the asset
+/// store on load, silently, ready to travel with the next
+/// save to every recipient.
 fn absorb_sidecar_pictures(doc: &mut Document, obd_path: &Path) {
     let base = obd_path.parent().unwrap_or_else(|| Path::new("."));
+    let Ok(base) = std::fs::canonicalize(base) else {
+        return;
+    };
     // First pass (read-only): which panels carry a resolvable
     // sidecar, and what its bytes and type are.
     let mut pending: Vec<(usize, Vec<u8>, &'static str, String)> = Vec::new();
@@ -202,25 +237,29 @@ fn absorb_sidecar_pictures(doc: &mut Document, obd_path: &Path) {
         if doc.asset_bytes.contains_key(reference) {
             continue;
         }
-        let candidate = base.join(reference);
+        // Canonicalizing settles "..", "." and symlinks in
+        // one step: what remains must sit inside the
+        // bulletin's own folder tree.
+        let Ok(candidate) = std::fs::canonicalize(base.join(reference)) else {
+            continue;
+        };
+        if !candidate.starts_with(&base) {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&candidate) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > MAX_SIDECAR_BYTES {
+            continue;
+        }
         let Ok(bytes) = std::fs::read(&candidate) else {
             continue;
         };
-        if bytes.is_empty() {
+        if bytes.is_empty() || bytes.len() as u64 > MAX_SIDECAR_BYTES {
             continue;
         }
-        let media_type = match candidate
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "png" => "image/png",
-            "jpg" | "jpeg" => "image/jpeg",
-            "gif" => "image/gif",
-            "webp" => "image/webp",
-            _ => "application/octet-stream",
+        let Some(media_type) = picture_media_type(&bytes) else {
+            continue;
         };
         pending.push((i, bytes, media_type, reference.clone()));
     }
@@ -442,20 +481,21 @@ mod tests {
         doc.format_version = 0;
         doc.panels[0].background_image = Some("assets/page-01.png".into());
         std::fs::create_dir_all(dir.join("assets")).unwrap();
-        std::fs::write(dir.join("assets/page-01.png"), b"page-one-render").unwrap();
+        // A real PNG's first bytes (audit Batch 1 requires
+        // them: text bytes wearing a .png name no longer
+        // count as a picture).
+        const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\npage-one-render";
+        std::fs::write(dir.join("assets/page-01.png"), PNG_BYTES).unwrap();
         let path = dir.join("old.obd");
         ob_format_save_helper(&path, &doc);
         let loaded = load(&path).expect("v0 loads");
-        let hash = ob_model::sha256_hex(b"page-one-render");
+        let hash = ob_model::sha256_hex(PNG_BYTES);
         assert_eq!(
             loaded.panels[0].background_image.as_deref(),
             Some(hash.as_str()),
             "the panel now names the asset, not the path"
         );
-        assert_eq!(
-            loaded.asset_data(&hash),
-            Some(b"page-one-render".as_slice())
-        );
+        assert_eq!(loaded.asset_data(&hash), Some(PNG_BYTES));
         assert_eq!(loaded.assets[0].kind, AssetKind::TracingPicture);
         // Re-saved (always v1) and moved ALONE to a new home:
         // the picture is still attached, no sidecar needed.
@@ -467,9 +507,76 @@ mod tests {
             back.panels[0].background_image.as_deref(),
             Some(hash.as_str())
         );
-        assert_eq!(back.asset_data(&hash), Some(b"page-one-render".as_slice()));
+        assert_eq!(back.asset_data(&hash), Some(PNG_BYTES));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&moved_dir);
+    }
+
+    #[test]
+    fn sidecars_outside_the_folder_or_not_pictures_are_never_gathered() {
+        // Audit Batch 1: a hostile "old bulletin" must not
+        // be able to pull files off the computer into
+        // itself. Three shapes: a ".." walk to a canary
+        // outside the folder, an absolute path to the same
+        // canary, and text bytes wearing a picture's name
+        // inside the folder. None may be gathered.
+        const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\ncanary";
+        let root = scratch("fence");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("secret.png"), PNG_BYTES).unwrap();
+        std::fs::write(sub.join("fake.png"), b"donor list, page one").unwrap();
+
+        let write_doc = |reference: String| -> std::path::PathBuf {
+            let mut doc = test_doc();
+            doc.format_version = 0;
+            doc.panels[0].background_image = Some(reference);
+            let path = sub.join("old.obd");
+            ob_format_save_helper(&path, &doc);
+            path
+        };
+
+        // The ".." walk out of the folder.
+        let path = write_doc("../secret.png".to_string());
+        let loaded = load(&path).expect("loads");
+        assert_eq!(
+            loaded.panels[0].background_image.as_deref(),
+            Some("../secret.png"),
+            "the reference stays a path; nothing was gathered"
+        );
+        assert!(loaded.asset_bytes.is_empty());
+
+        // The absolute path to the same canary.
+        let absolute = root.join("secret.png").to_string_lossy().into_owned();
+        let path = write_doc(absolute.clone());
+        let loaded = load(&path).expect("loads");
+        assert_eq!(
+            loaded.panels[0].background_image.as_deref(),
+            Some(absolute.as_str())
+        );
+        assert!(loaded.asset_bytes.is_empty());
+
+        // Text bytes with a picture's name, inside the folder.
+        let path = write_doc("fake.png".to_string());
+        let loaded = load(&path).expect("loads");
+        assert_eq!(
+            loaded.panels[0].background_image.as_deref(),
+            Some("fake.png")
+        );
+        assert!(loaded.asset_bytes.is_empty());
+
+        // And the honest case still gathers: a real picture
+        // sitting beside the bulletin under a plain name.
+        std::fs::write(sub.join("page.png"), PNG_BYTES).unwrap();
+        let path = write_doc("page.png".to_string());
+        let loaded = load(&path).expect("loads");
+        let hash = ob_model::sha256_hex(PNG_BYTES);
+        assert_eq!(
+            loaded.panels[0].background_image.as_deref(),
+            Some(hash.as_str())
+        );
+        assert_eq!(loaded.asset_data(&hash), Some(PNG_BYTES));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

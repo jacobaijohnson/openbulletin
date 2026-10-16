@@ -309,126 +309,325 @@ fn nonempty(s: &str) -> Option<String> {
     }
 }
 
-/// Take the active content out of an SVG we are about to
-/// inline: script elements, event-handler attributes,
-/// and javascript: links. The art itself is untouched;
-/// this is a safety net for files the office was handed,
-/// not a judgment on them.
-fn sanitize_svg(s: &str) -> String {
-    let mut s = s.to_string();
-    // Script elements, paired or self-closing.
-    loop {
-        let lower = s.to_ascii_lowercase();
-        let Some(start) = lower.find("<script") else {
-            break;
-        };
-        let after = &lower[start..];
-        let Some(gt) = after.find('>') else {
-            // An unterminated tag: drop it and everything
-            // after it; nothing past it can be trusted.
-            s.truncate(start);
-            break;
-        };
-        let end = if after[..=gt].ends_with("/>") {
-            // Self-closing: the tag is the whole element.
-            start + gt + 1
-        } else if let Some(close) = after.find("</script>") {
-            start + close + "</script>".len()
-        } else {
-            // An opener with no closer: drop the tag.
-            start + gt + 1
-        };
-        s.replace_range(start..end, "");
-    }
-    strip_handler_attributes(&s)
+/// Elements an inlined picture may keep: the drawing
+/// vocabulary of clips and engraved music, nothing that
+/// can act. Anything else is either dropped with its
+/// whole subtree (DROP_WHOLE_ELEMENTS) or unwrapped, so
+/// its children are judged on their own merits.
+const ALLOWED_ELEMENTS: &[&str] = &[
+    "svg",
+    "g",
+    "defs",
+    "title",
+    "desc",
+    "path",
+    "circle",
+    "ellipse",
+    "rect",
+    "line",
+    "polyline",
+    "polygon",
+    "text",
+    "tspan",
+    "symbol",
+    "use",
+    "clippath",
+    "lineargradient",
+    "radialgradient",
+    "stop",
+];
+
+/// Elements dropped with everything inside them: script
+/// and style (their contents are the payload), the
+/// animation elements that can rewrite a link, embedded
+/// foreign content, and pictures inside the picture (an
+/// external picture has no place inside a clip).
+const DROP_WHOLE_ELEMENTS: &[&str] = &[
+    "script",
+    "style",
+    "foreignobject",
+    "image",
+    "set",
+    "animate",
+    "animatetransform",
+    "animatemotion",
+    "animatecolor",
+    "iframe",
+    "form",
+    "input",
+    "button",
+    "select",
+    "textarea",
+    "object",
+    "embed",
+    "link",
+    "meta",
+    "base",
+    "audio",
+    "video",
+    "handler",
+];
+
+/// Attributes an inlined picture may keep: geometry,
+/// paint, transform, and font basics, plus id and the
+/// namespace declarations. Matched on the lowercased
+/// name; the file's own spelling is what is written back
+/// (viewBox keeps its capital B). href and xlink:href are
+/// judged separately (fragment references only), and
+/// class and style never survive: a class would only
+/// answer to a stylesheet, and the picture brings none.
+const ALLOWED_ATTRIBUTES: &[&str] = &[
+    "x",
+    "y",
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+    "cx",
+    "cy",
+    "r",
+    "rx",
+    "ry",
+    "d",
+    "points",
+    "width",
+    "height",
+    "viewbox",
+    "preserveaspectratio",
+    "transform",
+    "dx",
+    "dy",
+    "rotate",
+    "text-anchor",
+    "textlength",
+    "lengthadjust",
+    "fill",
+    "fill-opacity",
+    "fill-rule",
+    "stroke",
+    "stroke-width",
+    "stroke-opacity",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-dasharray",
+    "stroke-dashoffset",
+    "stroke-miterlimit",
+    "opacity",
+    "color",
+    "stop-color",
+    "stop-opacity",
+    "clip-path",
+    "clip-rule",
+    "gradientunits",
+    "gradienttransform",
+    "spreadmethod",
+    "offset",
+    "fx",
+    "fy",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "font-variant",
+    "letter-spacing",
+    "word-spacing",
+    "text-decoration",
+    "id",
+    "xml:lang",
+    "xmlns",
+    "xmlns:xlink",
+    "version",
+    "overflow",
+    "display",
+    "visibility",
+];
+
+/// An element name as the allowlists know it: namespace
+/// prefix off, lowercased.
+fn svg_name(raw: &[u8]) -> String {
+    let s = String::from_utf8_lossy(raw);
+    s.rsplit(':').next().unwrap_or("").to_ascii_lowercase()
 }
 
-/// Walk the markup tag by tag, dropping attributes whose
-/// name starts with "on" and javascript: href values.
-/// Text between tags passes through untouched.
-fn strip_handler_attributes(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == b'<' {
-            // Copy the tag, filtering its attributes.
-            let mut j = i + 1;
-            let mut quote: Option<u8> = None;
-            while j < bytes.len() {
-                match quote {
-                    Some(q) if bytes[j] == q => quote = None,
-                    Some(_) => {}
-                    None if bytes[j] == b'"' || bytes[j] == b'\'' => quote = Some(bytes[j]),
-                    None if bytes[j] == b'>' => break,
-                    None => {}
-                }
-                j += 1;
-            }
-            let tag = &s[i..(j + 1).min(s.len())];
-            out.push_str(&clean_tag(tag));
-            i = (j + 1).min(s.len());
+/// The name an allowed element is written back with: the
+/// three camelCase names SVG spells with capitals, the
+/// rest as listed.
+fn svg_written_name(name: &str) -> &str {
+    match name {
+        "clippath" => "clipPath",
+        "lineargradient" => "linearGradient",
+        "radialgradient" => "radialGradient",
+        _ => name,
+    }
+}
+
+/// Is this attribute value a same-picture fragment
+/// reference in url(...) dress? The only url(...) an
+/// inlined picture may carry (a paint server or clip
+/// defined in the same picture). Anything else wearing
+/// url( is refused with the attribute.
+fn url_value_is_local(value: &str) -> bool {
+    let v = value.trim();
+    let Some(rest) = v
+        .get(..4)
+        .filter(|head| head.eq_ignore_ascii_case("url("))
+        .map(|_| &v[4..])
+    else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let rest = match rest.strip_prefix('"').or_else(|| rest.strip_prefix('\'')) {
+        Some(r) => r,
+        None => rest,
+    };
+    rest.starts_with('#')
+}
+
+/// One start tag, rebuilt from the allowlists: `<name
+/// attr="value">`, or the self-closing form. Every value
+/// arrives entity-decoded from the parser and leaves
+/// escaped by us, so an encoded scheme has nowhere to
+/// hide and cannot break out of its quotes.
+fn render_svg_start(name: &str, e: &quick_xml::events::BytesStart, empty: bool) -> String {
+    let mut out = String::new();
+    out.push('<');
+    out.push_str(svg_written_name(name));
+    for attr in e.attributes().flatten() {
+        let raw_name = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+        let lname = raw_name.to_ascii_lowercase();
+        let value = attr
+            .unescape_value()
+            .map(|v| v.into_owned())
+            .unwrap_or_else(|_| String::from_utf8_lossy(&attr.value).into_owned());
+        let trimmed = value.trim();
+        // Links are written back in their canonical
+        // spelling; every other kept attribute keeps the
+        // file's own (viewBox keeps its capital B).
+        let (keep, written) = if lname == "href" || lname == "xlink:href" {
+            // A link inside the picture may only point at
+            // the picture itself.
+            (trimmed.starts_with('#'), lname.as_str())
+        } else if !ALLOWED_ATTRIBUTES.contains(&lname.as_str())
+            || trimmed.to_ascii_lowercase().starts_with("javascript:")
+        {
+            (false, "")
+        } else if value.to_ascii_lowercase().contains("url(") {
+            (url_value_is_local(&value), raw_name.as_str())
         } else {
-            let next = s[i..].find('<').map(|p| i + p).unwrap_or(s.len());
-            out.push_str(&s[i..next]);
-            i = next;
+            (true, raw_name.as_str())
+        };
+        if keep {
+            out.push(' ');
+            out.push_str(written);
+            out.push_str("=\"");
+            out.push_str(&esc(&value));
+            out.push('"');
         }
+    }
+    if empty {
+        out.push_str("/>");
+    } else {
+        out.push('>');
     }
     out
 }
 
-/// One tag with its handler attributes removed and any
-/// javascript: href pointed nowhere.
-fn clean_tag(tag: &str) -> String {
-    // Split the tag into whitespace-separated pieces,
-    // keeping quoted values whole.
-    let mut pieces: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut quote: Option<char> = None;
-    for c in tag.chars() {
-        match quote {
-            Some(q) => {
-                cur.push(c);
-                if c == q {
-                    quote = None;
+/// Take the active content out of an SVG we are about to
+/// inline, by rebuilding it from allowlists (audit
+/// Batch 1). The strip-by-pattern cleaner this replaces
+/// was bypassed by every spelling it did not literally
+/// contain (`href = "javascript:..."` with spaces,
+/// entity-encoded schemes, <foreignObject>, <set>,
+/// in-SVG <style>, external <use> and <image>): pattern
+/// matching can only ever catch the attacks it has seen.
+/// A rebuild keeps only what it knows: drawing elements
+/// and inert attributes, links that point at the picture
+/// itself, and words. This is a safety net for files the
+/// office was handed, not a judgment on them.
+fn sanitize_svg(s: &str) -> String {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
+    let mut reader = Reader::from_str(s);
+    reader.config_mut().trim_text(false);
+    let mut out = String::with_capacity(s.len());
+    let mut buf = Vec::new();
+    // What each open element became: the written name of
+    // an element we emitted (to close later), or None for
+    // a wrapper we unwrapped.
+    let mut stack: Vec<Option<String>> = Vec::new();
+    // Depth inside a subtree dropped whole.
+    let mut drop_depth = 0usize;
+    let mut rooted = false;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = svg_name(e.name().as_ref());
+                if !rooted {
+                    if name != "svg" {
+                        buf.clear();
+                        continue;
+                    }
+                    rooted = true;
+                }
+                if drop_depth > 0 {
+                    drop_depth += 1;
+                } else if DROP_WHOLE_ELEMENTS.contains(&name.as_str()) {
+                    drop_depth = 1;
+                } else if ALLOWED_ELEMENTS.contains(&name.as_str()) {
+                    out.push_str(&render_svg_start(&name, &e, false));
+                    stack.push(Some(name));
+                } else {
+                    stack.push(None);
                 }
             }
-            None if c == '"' || c == '\'' => {
-                quote = Some(c);
-                cur.push(c);
-            }
-            None if c.is_whitespace() => {
-                if !cur.is_empty() {
-                    pieces.push(std::mem::take(&mut cur));
+            Ok(Event::Empty(e)) => {
+                let name = svg_name(e.name().as_ref());
+                if !rooted && name == "svg" {
+                    // A self-closing root: the whole picture.
+                    out.push_str(&render_svg_start(&name, &e, true));
+                    break;
+                }
+                if rooted
+                    && drop_depth == 0
+                    && ALLOWED_ELEMENTS.contains(&name.as_str())
+                    && !DROP_WHOLE_ELEMENTS.contains(&name.as_str())
+                {
+                    out.push_str(&render_svg_start(&name, &e, true));
                 }
             }
-            None => cur.push(c),
+            Ok(Event::End(_)) => {
+                if drop_depth > 0 {
+                    drop_depth -= 1;
+                } else if let Some(Some(name)) = stack.pop() {
+                    out.push_str("</");
+                    out.push_str(svg_written_name(&name));
+                    out.push('>');
+                    if stack.is_empty() {
+                        // The root closed; anything
+                        // after it is not the picture.
+                        break;
+                    }
+                }
+            }
+            Ok(Event::Text(e)) => {
+                if rooted && drop_depth == 0 && !stack.is_empty() {
+                    if let Ok(text) = e.unescape() {
+                        out.push_str(&esc(&text));
+                    }
+                }
+            }
+            Ok(Event::CData(e)) => {
+                if rooted && drop_depth == 0 && !stack.is_empty() {
+                    out.push_str(&esc(&String::from_utf8_lossy(&e)));
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
         }
+        buf.clear();
     }
-    if !cur.is_empty() {
-        pieces.push(cur);
-    }
-    let kept: Vec<String> = pieces
-        .into_iter()
-        .filter(|p| {
-            let name = p.split('=').next().unwrap_or("").to_ascii_lowercase();
-            !(name.starts_with("on")
-                && name.len() > 2
-                && name[2..].chars().all(|c| c.is_ascii_alphanumeric()))
-        })
-        .map(|p| {
-            let lower = p.to_ascii_lowercase();
-            if (lower.starts_with("href=") || lower.starts_with("xlink:href="))
-                && lower.contains("javascript:")
-            {
-                let attr = p.split('=').next().unwrap_or("href");
-                format!("{attr}=\"#\"")
-            } else {
-                p
-            }
-        })
-        .collect();
-    kept.join(" ")
+    out
 }
 
 /// Inline an SVG asset as markup: prolog and doctype
@@ -1158,6 +1357,136 @@ mod tests {
         assert!(!html.contains("onload"));
         assert!(!html.contains("onclick"));
         assert!(!html.contains("evil"));
+    }
+
+    /// The red team's survivor family (audit Batch 1),
+    /// rebuilt from their shapes: every spelling the old
+    /// string-strip cleaner missed, in one picture.
+    const HOSTILE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10">
+<a href = "javascript:alert(1)"><rect width="5" height="5" fill="red"/></a>
+<a href="&#x6a;avascript:alert(2)"><rect width="4" height="4"/></a>
+<a href="java&#x09;script:alert(3)"><rect width="3" height="3"/></a>
+<foreignObject width="10" height="10"><body xmlns="http://www.w3.org/1999/xhtml"><form action="https://example.invalid/x"><input type="submit"/></form></body></foreignObject>
+<set attributeName="href" to="javascript:alert(4)"/>
+<style>@import url(https://example.invalid/x.css); rect { fill: url(https://example.invalid/p) }</style>
+<use href="https://example.invalid/sprite.svg#x"/>
+<image href="file:///etc/passwd" width="10" height="10"/>
+<rect width="2" height="2" fill="url(https://example.invalid/p)"/>
+<defs><g id="glyph1"><path d="M0 0h10v10z"/></g></defs>
+<use xlink:href="#glyph1"/>
+<title>Cross</title>
+</svg>"##;
+
+    #[test]
+    fn svg_sanitizer_survivor_shapes_do_not_survive() {
+        let out = sanitize_svg(HOSTILE_SVG);
+        for banned in [
+            "javascript",
+            "alert",
+            "foreignObject",
+            "iframe",
+            "<form",
+            "<input",
+            "<set",
+            "<style",
+            "@import",
+            "example.invalid",
+            "etc/passwd",
+        ] {
+            assert!(!out.contains(banned), "{banned} survived: {out}");
+        }
+        // And nothing external is fetched: the only url(
+        // left would be a same-picture fragment, and this
+        // picture's one url( pointed off the page.
+        assert!(!out.contains("url("), "an external paint survived: {out}");
+        // The art itself is untouched: the linked rect
+        // keeps its paint once the link is unwrapped away,
+        // the glyph definition and its fragment use stay,
+        // and the picture's own name stays.
+        assert!(
+            out.contains("<rect width=\"5\" height=\"5\" fill=\"red\"/>"),
+            "{out}"
+        );
+        assert!(out.contains("<path d=\"M0 0h10v10z\"/>"), "{out}");
+        assert!(out.contains("<use xlink:href=\"#glyph1\"/>"), "{out}");
+        assert!(out.contains("<title>Cross</title>"), "{out}");
+    }
+
+    #[test]
+    fn hostile_svg_stays_harmless_in_the_exported_page() {
+        let mut doc = sample_doc();
+        let hash = doc.add_asset(
+            HOSTILE_SVG.as_bytes(),
+            AssetKind::Picture,
+            "image/svg+xml",
+            RightsRecord {
+                title: "Seal".into(),
+                license: LicenseKind::PublicDomain,
+                ..Default::default()
+            },
+        );
+        doc.panels[3]
+            .frames
+            .push(picture_frame("seal", &hash, None));
+        let (bytes, _) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        for banned in [
+            "javascript:",
+            "alert",
+            "foreignObject",
+            "@import",
+            "example.invalid",
+            "etc/passwd",
+        ] {
+            assert!(!html.contains(banned), "{banned} reached the page");
+        }
+        assert!(html.contains("fill=\"red\""), "the art itself stays");
+    }
+
+    #[test]
+    fn verovio_music_survives_the_sanitizer() {
+        // The shape the music helper hands us (M1): glyph
+        // definitions in defs, <use> instances pointing at
+        // them by fragment, words wearing font basics.
+        let svg = r##"<svg width="1547px" height="2391px" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 15470 23910">
+<desc>Engraved by Verovio</desc>
+<defs><g id="E050-x"><path transform="scale(1,-1)" d="M441 -245c-23 -4 -48 -6 -76 -6z"/></g></defs>
+<g class="system"><g class="measure"><use xlink:href="#E050-x" transform="translate(117, 3413) scale(0.72, 0.72)"/><rect width="40" height="30" fill="url(#shade)"/><text x="1784" y="4634" font-size="405px"><tspan id="t1" class="text">Ein feste Burg</tspan></text></g></g>
+</svg>"##;
+        let out = sanitize_svg(svg);
+        assert!(
+            out.contains("<use xlink:href=\"#E050-x\""),
+            "the fragment use survives: {out}"
+        );
+        assert!(out.contains("<desc>Engraved by Verovio</desc>"), "{out}");
+        assert!(
+            out.contains("Ein feste Burg"),
+            "the lyric words survive: {out}"
+        );
+        assert!(out.contains("font-size=\"405px\""), "{out}");
+        assert!(
+            out.contains("fill=\"url(#shade)\""),
+            "a same-picture paint reference survives: {out}"
+        );
+
+        // The real thing, when the spike fixtures are on
+        // this machine (they never enter the repo): every
+        // glyph path of a Bach system must come through.
+        let path = concat!(
+            env!("HOME"),
+            "/workspace/openbulletin-fixtures/music-spike/renders/fidelity-6.5-p1.svg"
+        );
+        if let Ok(real) = std::fs::read_to_string(path) {
+            let out = sanitize_svg(&real);
+            assert!(out.contains("<use"), "the glyphs are instanced");
+            assert!(out.contains("xlink:href=\"#"), "by fragment reference");
+            assert!(!out.contains("<style"), "the style block does not ride");
+            assert_eq!(
+                real.matches("<path").count(),
+                out.matches("<path").count(),
+                "every glyph path survives"
+            );
+        }
     }
 
     #[test]

@@ -29,25 +29,68 @@ fn opener_ok(chars: &[char], at: usize, marker_len: usize) -> bool {
     before_ok && matches!(after, Some(c) if !c.is_whitespace())
 }
 
-/// Find the closer for a span opened at `from`: the next
-/// marker whose preceding character is not whitespace and
-/// which ends at a word edge. The content between must be
-/// non-empty.
-fn find_closer(chars: &[char], from: usize, marker: char, marker_len: usize) -> Option<usize> {
-    let mut j = from;
-    while j + marker_len <= chars.len() {
-        let is_marker = (0..marker_len).all(|k| chars[j + k] == marker);
-        if is_marker && j > from {
-            let before_ok = !chars[j - 1].is_whitespace();
-            let after_at = j + marker_len;
-            let after_ok = after_at >= chars.len() || !chars[after_at].is_alphanumeric();
-            if before_ok && after_ok {
-                return Some(j);
-            }
-        }
-        j += 1;
+/// Every position in the line where this marker could
+/// close a span: the marker stands there, the character
+/// before it is not whitespace, and it ends at a word
+/// edge. Computed once per line (audit Batch 1): the
+/// search used to rescan from every opener to the end of
+/// the line, so a line of unmatched openers (`**a `
+/// repeated, an ordinary broken-export shape) took time
+/// squared in its length and effectively never finished.
+fn closer_positions(chars: &[char], marker: char, marker_len: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    if chars.len() < marker_len {
+        return out;
     }
-    None
+    for j in 1..=chars.len() - marker_len {
+        let is_marker = (0..marker_len).all(|k| chars[j + k] == marker);
+        if !is_marker {
+            continue;
+        }
+        let before_ok = !chars[j - 1].is_whitespace();
+        let after_at = j + marker_len;
+        let after_ok = after_at >= chars.len() || !chars[after_at].is_alphanumeric();
+        if before_ok && after_ok {
+            out.push(j);
+        }
+    }
+    out
+}
+
+/// One line's closer lists, one per marker shape, so an
+/// opener's search is a binary search, not a rescan. The
+/// validity rule is exactly the one the rescan applied;
+/// only the cost changed.
+struct Closers {
+    star_bold: Vec<usize>,
+    star_italic: Vec<usize>,
+    under_bold: Vec<usize>,
+    under_italic: Vec<usize>,
+}
+
+impl Closers {
+    fn new(chars: &[char]) -> Closers {
+        Closers {
+            star_bold: closer_positions(chars, '*', 2),
+            star_italic: closer_positions(chars, '*', 1),
+            under_bold: closer_positions(chars, '_', 2),
+            under_italic: closer_positions(chars, '_', 1),
+        }
+    }
+
+    /// The closer for a span whose content starts at
+    /// `from`: the first valid closer strictly past it
+    /// (the content between must be non-empty).
+    fn find(&self, from: usize, marker: char, marker_len: usize) -> Option<usize> {
+        let list = match (marker, marker_len) {
+            ('*', 2) => &self.star_bold,
+            ('*', _) => &self.star_italic,
+            (_, 2) => &self.under_bold,
+            _ => &self.under_italic,
+        };
+        let at = list.partition_point(|&j| j <= from);
+        list.get(at).copied()
+    }
 }
 
 /// Move the accumulated plain text into the run list.
@@ -63,6 +106,7 @@ fn push_plain(out: &mut Vec<Run>, plain: &mut String) {
 /// content re-parses for italic; italic content does not
 /// nest further).
 fn parse_inline(chars: &[char], bold: bool, italic: bool) -> Vec<Run> {
+    let closers = Closers::new(chars);
     let mut out: Vec<Run> = Vec::new();
     let mut plain = String::new();
     let mut i = 0usize;
@@ -83,7 +127,7 @@ fn parse_inline(chars: &[char], bold: bool, italic: bool) -> Vec<Run> {
                 continue;
             }
             let content_start = i + len;
-            let Some(close) = find_closer(chars, content_start, marker, len) else {
+            let Some(close) = closers.find(content_start, marker, len) else {
                 continue;
             };
             push_plain(&mut out, &mut plain);
@@ -447,6 +491,22 @@ mod tests {
             inline_runs("a * lone star"),
             vec![Run::plain("a * lone star")]
         );
+    }
+
+    #[test]
+    fn unmatched_openers_by_the_thousand_still_finish() {
+        // Audit Batch 1: `**a ` repeated never finished
+        // (each opener rescanned the rest of the line).
+        // 50,000 repeats is the scale that made the old
+        // code effectively hang; it must now parse at once.
+        // No closer ever qualifies (every later marker
+        // follows a space), so the words come back plain.
+        let line = "**a ".repeat(50_000);
+        let runs = inline_runs(&line);
+        assert_eq!(runs, vec![Run::plain(&line)]);
+        let paras = markdown_to_paragraphs(&line, &default_styles());
+        assert_eq!(paras.len(), 1);
+        assert_eq!(paras[0].text(), line.trim());
     }
 
     #[test]

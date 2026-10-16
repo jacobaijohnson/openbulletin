@@ -26,11 +26,16 @@ impl Node {
         self.attrs.get(name).map(|s| s.as_str())
     }
     fn find_all<'a>(&'a self, tag: &str, out: &mut Vec<&'a Node>) {
-        for c in &self.children {
-            if c.tag == tag {
-                out.push(c);
+        // Preorder, the recursive walk's exact order, on an
+        // explicit stack: a hostile file nested ranges tens
+        // of thousands deep and the recursion aborted the
+        // whole app (audit Batch 1).
+        let mut stack: Vec<&Node> = self.children.iter().rev().collect();
+        while let Some(node) = stack.pop() {
+            if node.tag == tag {
+                out.push(node);
             }
-            c.find_all(tag, out);
+            stack.extend(node.children.iter().rev());
         }
     }
     fn find_path<'a>(&'a self, path: &[&str]) -> Option<&'a Node> {
@@ -42,6 +47,21 @@ impl Node {
     }
 }
 
+/// XML nesting deeper than this is not a document, it is
+/// a trap: the walks over the tree (and the tree's own
+/// drop) recurse with its depth, and a file nested tens of
+/// thousands of levels deep aborted the whole app before
+/// this cap (audit Batch 1). Real IDML nests perhaps
+/// twenty levels; this is generous headroom, and the cap
+/// also bounds every per-range rescan by depth x nodes.
+const MAX_XML_DEPTH: usize = 256;
+
+/// The words marking the depth refusal, so story reading
+/// can pass it up whole instead of treating the file as
+/// damaged and quietly empty (audit Batch 1): a refused
+/// story must refuse the import, never vanish from it.
+const TOO_DEEP: &str = "nested too deeply to read safely";
+
 fn parse_xml(text: &str) -> Result<Node, String> {
     let mut reader = Reader::from_str(text);
     reader.config_mut().trim_text(false);
@@ -50,6 +70,9 @@ fn parse_xml(text: &str) -> Result<Node, String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
+                if stack.len() > MAX_XML_DEPTH {
+                    return Err(format!("that IDML file's XML is {TOO_DEEP}"));
+                }
                 let mut node = Node {
                     tag: String::from_utf8_lossy(e.name().as_ref()).into_owned(),
                     ..Default::default()
@@ -226,10 +249,17 @@ fn finish_paragraph(
     });
 }
 
-fn story_paragraphs(story_xml: &str) -> Vec<ParaText> {
+fn story_paragraphs(story_xml: &str) -> Result<Vec<ParaText>, String> {
     let mut out = Vec::new();
-    let Ok(root) = parse_xml(story_xml) else {
-        return out;
+    let root = match parse_xml(story_xml) {
+        Ok(root) => root,
+        // A story nested too deeply refuses the whole
+        // import (audit Batch 1): quietly returning no
+        // words would hand the office an empty draft and
+        // call it a rescue. Any other damage keeps the
+        // long-standing behavior: that story reads empty.
+        Err(e) if e.contains(TOO_DEEP) => return Err(e),
+        Err(_) => return Ok(out),
     };
     let mut ranges = Vec::new();
     root.find_all("ParagraphStyleRange", &mut ranges);
@@ -261,22 +291,22 @@ fn story_paragraphs(story_xml: &str) -> Vec<ParaText> {
             let italic = font_style.to_lowercase().contains("italic")
                 || font_style.to_lowercase().contains("oblique");
             // Text: Content runs joined; a Br ends the paragraph.
+            // Preorder on an explicit stack (audit Batch 1),
+            // the recursive walk's exact order.
             let mut segments: Vec<String> = vec![String::new()];
-            fn walk(node: &Node, segments: &mut Vec<String>) {
-                for c in &node.children {
-                    match c.tag.as_str() {
-                        "Content" => {
-                            segments
-                                .last_mut()
-                                .expect("segment")
-                                .push_str(c.text.trim());
-                        }
-                        "Br" => segments.push(String::new()),
-                        _ => walk(c, segments),
+            let mut walk_stack: Vec<&Node> = cr.children.iter().rev().collect();
+            while let Some(node) = walk_stack.pop() {
+                match node.tag.as_str() {
+                    "Content" => {
+                        segments
+                            .last_mut()
+                            .expect("segment")
+                            .push_str(node.text.trim());
                     }
+                    "Br" => segments.push(String::new()),
+                    _ => walk_stack.extend(node.children.iter().rev()),
                 }
             }
-            walk(cr, &mut segments);
             for (si, seg) in segments.iter().enumerate() {
                 if si > 0 {
                     finish_paragraph(
@@ -310,7 +340,7 @@ fn story_paragraphs(story_xml: &str) -> Vec<ParaText> {
         }
         finish_paragraph(&mut out, cur, cur_font, cur_size, &style_ref, range_align);
     }
-    out
+    Ok(out)
 }
 
 // ---------- the importer ----------
@@ -439,7 +469,7 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
             let Some(story_xml) = files.get(&format!("Stories/Story_{story_id}.xml")) else {
                 continue;
             };
-            let paras = story_paragraphs(story_xml);
+            let paras = story_paragraphs(story_xml)?;
             if paras.is_empty() {
                 continue;
             }
@@ -683,5 +713,27 @@ mod tests {
         assert_eq!(dump.spans[0].align, Some(ob_model::Align::Center));
         assert!(dump.spans[0].italic);
         assert_eq!(dump.spans[0].font.as_deref(), Some("Calibri"));
+    }
+
+    #[test]
+    fn idml_deeply_nested_ranges_refuse_instead_of_aborting() {
+        // Audit Batch 1: character ranges nested thousands
+        // deep used to overflow the stack and kill the whole
+        // app. The hostile shape is built from string pieces
+        // here (never a checked-in hostile file); the import
+        // must refuse it whole, in plain words.
+        let mut story = String::from(
+            r#"<?xml version="1.0"?><Story><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Body">"#,
+        );
+        for _ in 0..2_000 {
+            story.push_str("<CharacterStyleRange>");
+        }
+        story.push_str("<Content>deep words</Content>");
+        for _ in 0..2_000 {
+            story.push_str("</CharacterStyleRange>");
+        }
+        story.push_str("</ParagraphStyleRange></Story>");
+        let err = dump_from_idml(&idml_with_story(&story), "deep.idml").expect_err("refused");
+        assert!(err.contains("nested too deeply"), "{err}");
     }
 }

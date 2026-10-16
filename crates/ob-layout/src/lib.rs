@@ -320,6 +320,13 @@ pub struct NextSundayReport {
     /// order, so the app can name what it cleared the same
     /// way it names ended announcements (J10).
     pub cleared_participants: Vec<String>,
+    /// The hymn lines whose values were cleared for the
+    /// new week (R-2a), by their labels, in document
+    /// order: this week's numbers and titles are last
+    /// week's news, and the report names the lines so the
+    /// office hears which ones to fill in again. A hymn
+    /// line that was already empty is not named.
+    pub cleared_hymns: Vec<String>,
     /// Set when the document was a one-time occasion (a
     /// Wedding, an Ash Wednesday) rather than the regular
     /// weekly service: the sentence, in plain words, saying
@@ -379,6 +386,9 @@ fn is_one_time_occasion(name: &str) -> bool {
 ///   communion assistants) are cleared: the new week has
 ///   new people, and the report names the fields that
 ///   held names.
+/// - Hymn lines keep their labels and lose their values
+///   (R-2a): the new week sings different hymns, and the
+///   report names the lines that had a value.
 ///
 /// Returns an error string if the stored date cannot be parsed.
 pub fn next_sunday(doc: &Document) -> Result<Document, String> {
@@ -517,6 +527,31 @@ pub fn next_sunday_report_as_of(
             if !v.trim().is_empty() {
                 report.cleared_participants.push(label.to_string());
             }
+        }
+    }
+    // Hymn values are weekly too (R-2a): the number (and
+    // title, when it was written in) belongs to the week
+    // that sang it, and a standing template that kept last
+    // week's number would print it as this week's. The
+    // label stays; the value goes; the report names the
+    // lines that had one. Any tabbed line whose label
+    // names a hymn is a hymn line, wherever it sits.
+    for story in out.stories.iter_mut() {
+        for para in story.paragraphs.iter_mut() {
+            let text = para.text();
+            let Some(tab) = text.find('\t') else {
+                continue;
+            };
+            let label = text[..tab].trim().to_string();
+            if !ob_model::hymns::is_hymn_label(&label) {
+                continue;
+            }
+            let value = text.rsplit('\t').next().unwrap_or("").trim();
+            if value.is_empty() {
+                continue;
+            }
+            para.set_text(&text[..=tab]);
+            report.cleared_hymns.push(label);
         }
     }
     for sid in weekly {
@@ -685,6 +720,40 @@ mod tests {
             .paragraphs
             .iter()
             .any(|p| p.text().contains("Hymn of Praise")));
+    }
+
+    #[test]
+    fn next_sunday_clears_hymn_values_and_names_the_lines() {
+        // R-2a: hymn numbers belong to the week that sang
+        // them. The labels stay; the values go; the report
+        // names the lines that had one.
+        let mut d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "Sunday",
+        );
+        let order = &mut d.stories[1];
+        // One hymn line starts empty, and a non-hymn line
+        // carries a value of its own.
+        for p in order.paragraphs.iter_mut() {
+            if p.text().starts_with("Hymn of Response") {
+                p.set_text("Hymn of Response\t");
+            }
+            if p.text().starts_with("Prelude") {
+                p.set_text("Prelude\tOrgan voluntary");
+            }
+        }
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert_eq!(report.cleared_hymns, vec!["Hymn of Praise".to_string()]);
+        let texts: Vec<String> = n.stories[1].paragraphs.iter().map(|p| p.text()).collect();
+        assert!(texts.iter().any(|t| t == "Hymn of Praise\t"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "Hymn of Response\t"), "{texts:?}");
+        // A non-hymn line keeps its value: only hymn lines clear.
+        assert!(
+            texts.iter().any(|t| t == "Prelude\tOrgan voluntary"),
+            "{texts:?}"
+        );
     }
 
     #[test]

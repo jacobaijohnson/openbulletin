@@ -854,6 +854,10 @@ impl App {
             .into_iter()
             .map(|l| l.value)
             .collect();
+        self.hymn_inputs = service_lines(&self.doc)
+            .iter()
+            .map(|l| hymn_field_values(&l.value))
+            .collect();
         self.sermon_input = sermon_title(&self.doc);
         self.participant_inputs = participant_values(&self.doc);
     }
@@ -1148,6 +1152,262 @@ fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<CheckNote> {
         }
     }
     out
+}
+
+/// Check's hymn pass (R-2a): each hymn line in the order
+/// of service, held up against itself and against the
+/// church's hymn memory. A number with no title and a
+/// title with no number are both easy to mistype and hard
+/// to spot; a pair the church has printed differently
+/// before names both versions. When the memory holds no
+/// pair, it says nothing: nothing is invented. Pure over
+/// (document, memory); every finding points at the This
+/// Sunday step, where the hymn fields live.
+fn hymn_findings(doc: &Document, memory: &ob_model::hymns::HymnMemory) -> Vec<CheckNote> {
+    use ob_model::hymns::{compose_hymn_value, is_hymn_label, parse_hymn_value};
+    let mut out = Vec::new();
+    let mut by_number: Vec<(String, String, String)> = Vec::new(); // (key, shown, label)
+    for line in service_lines(doc) {
+        if !is_hymn_label(&line.label) {
+            continue;
+        }
+        if line.value.trim().is_empty() {
+            continue;
+        }
+        let entry = parse_hymn_value(&line.value);
+        match (&entry.number, &entry.title) {
+            (Some(number), None) => out.push(CheckNote::to_step(
+                format!(
+                    "Check: the {} line gives hymn {number} but no title. \
+                     A number alone is easy to mistype; add the title so it can be checked.",
+                    line.label
+                ),
+                1,
+            )),
+            (None, Some(title)) => out.push(CheckNote::to_step(
+                format!(
+                    "Check: the {} line gives the title \u{201c}{title}\u{201d} but no hymn number. \
+                     A title alone is easy to mistype; add the number so it can be checked.",
+                    line.label
+                ),
+                1,
+            )),
+            (Some(number), Some(title)) => {
+                if let Some(pair) = memory.lookup(entry.hymnal.as_deref(), number) {
+                    let remembered = pair.title.trim();
+                    if !remembered.eq_ignore_ascii_case(title.trim()) {
+                        let hymn_words = match &entry.hymnal {
+                            Some(h) => format!("{h} {number}"),
+                            None => number.clone(),
+                        };
+                        out.push(CheckNote::to_step(
+                            format!(
+                                "Check: hymn {hymn_words} was \u{2018}{remembered}\u{2019} last time ({}). \
+                                 This says \u{2018}{title}\u{2019}. One of them may be wrong.",
+                                ob_layout::long_date(naive_of(pair.last_seen))
+                            ),
+                            1,
+                        ));
+                    }
+                }
+            }
+            (None, None) => {}
+        }
+        if let Some(number) = &entry.number {
+            by_number.push((
+                ob_model::hymns::hymn_key(entry.hymnal.as_deref(), number),
+                compose_hymn_value(&entry),
+                line.label.clone(),
+            ));
+        }
+    }
+    // The same number on two hymn lines: named once,
+    // however many lines share it.
+    let mut named: Vec<String> = Vec::new();
+    for (i, (key, shown, label)) in by_number.iter().enumerate() {
+        if named.contains(key) {
+            continue;
+        }
+        if let Some((_, _, other)) = by_number.iter().skip(i + 1).find(|(k, _, _)| k == key) {
+            named.push(key.clone());
+            out.push(CheckNote::to_step(
+                format!(
+                    "Check: hymn {shown} is named by two hymn lines, {label} and {other}. \
+                     Only one of them can be right."
+                ),
+                1,
+            ));
+        }
+    }
+    out
+}
+
+/// What a music proof carries, counted for its status
+/// line (R-2a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MusicProofCounts {
+    hymns: usize,
+    music_pages: usize,
+}
+
+/// Compose the music proof document (R-2a): a heading,
+/// the hymn lines as words, then one page per engraved
+/// music system at its bulletin size, then the anthem
+/// and special music lines. Composed from the
+/// publication copy, so spoken-only words never reach
+/// it. The music director checks this sheet, or carries
+/// it to the piano; the organist's copy is the same
+/// sheet. Pure: the same document in, the same proof out.
+fn music_proof_document(doc: &Document) -> (Document, MusicProofCounts) {
+    use ob_model::hymns::{compose_hymn_value, is_hymn_label, parse_hymn_value};
+    let (base, _) = doc.without_spoken_only();
+    let page = ob_model::Size::new(612_000, 792_000); // US Letter portrait
+    let margin: ob_model::Mpt = 54_000; // 3/4 inch
+    let usable_w = page.w - 2 * margin;
+    let usable_h = page.h - 2 * margin;
+    let heading_style = if base.style("heading").is_some() {
+        "heading"
+    } else {
+        "body"
+    };
+    let church = base.profile.name.trim();
+    let date_long = base
+        .fields
+        .get("occasion_date_long")
+        .map(|s| s.trim())
+        .unwrap_or("");
+    let heading = match (church.is_empty(), date_long.is_empty()) {
+        (false, false) => format!("{church}: music for {date_long}"),
+        (false, true) => format!("{church}: music"),
+        (true, false) => format!("Music for {date_long}"),
+        (true, true) => "Music".to_string(),
+    };
+    let mut word_paras = vec![ob_model::Paragraph::plain(heading_style, &heading)];
+    let mut anthem_paras: Vec<ob_model::Paragraph> = Vec::new();
+    let mut hymns = 0usize;
+    for line in service_lines(&base) {
+        let value = line.value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        if is_hymn_label(&line.label) {
+            let composed = compose_hymn_value(&parse_hymn_value(value));
+            if composed.is_empty() {
+                continue;
+            }
+            word_paras.push(ob_model::Paragraph::plain(
+                "body",
+                &format!("{}: {}", line.label, composed),
+            ));
+            hymns += 1;
+        } else {
+            let l = line.label.to_lowercase();
+            if l.contains("anthem")
+                || l.contains("special music")
+                || l.contains("solo")
+                || l.contains("choir")
+            {
+                anthem_paras.push(ob_model::Paragraph::plain(
+                    "body",
+                    &format!("{}: {}", line.label, value),
+                ));
+            }
+        }
+    }
+    let text_frame = |id: &str, name: &str, story: &str| ob_model::Frame {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: ob_model::FrameKind::Text,
+        rect: ob_model::Rect::new(margin, margin, usable_w, usable_h),
+        story_id: Some(story.to_string()),
+        role: ob_model::ContentRole::Standing,
+        picture: None,
+        music: None,
+    };
+    let mut stories = vec![ob_model::Story {
+        id: "proof-words".to_string(),
+        paragraphs: word_paras,
+        keep_through: None,
+    }];
+    let mut panels = vec![ob_model::Panel {
+        id: "proof-page-1".to_string(),
+        name: "Music proof".to_string(),
+        size: page,
+        frames: vec![text_frame(
+            "proof-words-frame",
+            "Music proof",
+            "proof-words",
+        )],
+        guides: Vec::new(),
+        background_image: None,
+    }];
+    // One page per music system, at its bulletin size
+    // (shrunk only when the bulletin box is bigger than
+    // this page), the whole system shown: notation is
+    // never trimmed.
+    let mut music_pages = 0usize;
+    for panel in &base.panels {
+        for frame in &panel.frames {
+            if frame.music.is_none() {
+                continue;
+            }
+            let Some(picture) = &frame.picture else {
+                continue;
+            };
+            music_pages += 1;
+            let (mut w, mut h) = (frame.rect.w.max(1), frame.rect.h.max(1));
+            if w > usable_w || h > usable_h {
+                let scale = (usable_w as f64 / w as f64).min(usable_h as f64 / h as f64);
+                w = (w as f64 * scale).round() as ob_model::Mpt;
+                h = (h as f64 * scale).round() as ob_model::Mpt;
+            }
+            let mut nf = frame.clone();
+            nf.id = format!("proof-music-{music_pages}");
+            nf.name = "Printed music".to_string();
+            nf.rect = ob_model::Rect::new(margin, margin, w, h);
+            nf.story_id = None;
+            nf.picture = Some(ob_model::PicturePlacement {
+                fit: ob_model::PictureFit::ShowWhole,
+                ..picture.clone()
+            });
+            panels.push(ob_model::Panel {
+                id: format!("proof-music-page-{music_pages}"),
+                name: "Printed music".to_string(),
+                size: page,
+                frames: vec![nf],
+                guides: Vec::new(),
+                background_image: None,
+            });
+        }
+    }
+    if !anthem_paras.is_empty() {
+        stories.push(ob_model::Story {
+            id: "proof-anthems".to_string(),
+            paragraphs: anthem_paras,
+            keep_through: None,
+        });
+        panels.push(ob_model::Panel {
+            id: "proof-anthem-page".to_string(),
+            name: "Anthems and special music".to_string(),
+            size: page,
+            frames: vec![text_frame(
+                "proof-anthems-frame",
+                "Anthems and special music",
+                "proof-anthems",
+            )],
+            guides: Vec::new(),
+            background_image: None,
+        });
+    }
+    let mut out = base;
+    out.title = "Music proof".to_string();
+    out.stories = stories;
+    out.panels = panels;
+    out.sheet = ob_model::SheetSpec {
+        preset: "letter-portrait".to_string(),
+        size: page,
+    };
+    (out, MusicProofCounts { hymns, music_pages })
 }
 
 fn char_findings(doc: &Document) -> Vec<CharFinding> {
@@ -1719,7 +1979,18 @@ struct App {
     /// parallel to `service_lines(&doc)`, plus the sermon
     /// title field. Synced from the document on every swap.
     service_inputs: Vec<String>,
+    /// The This Sunday step's hymn fields (R-2a): for each
+    /// service line, its value in three parts (hymnal,
+    /// number, title), parallel to `service_lines(&doc)`.
+    /// Only hymn-labeled rows show them; the parts compose
+    /// back into the line's value when one is edited.
+    hymn_inputs: Vec<[String; 3]>,
     sermon_input: String,
+    /// The church's hymn memory (R-2a): number and title
+    /// pairs learned from this church's saved bulletins,
+    /// kept in a file beside the settings. Check holds
+    /// this week's hymn lines up against it.
+    hymn_memory: ob_model::hymns::HymnMemory,
     /// The This Sunday step's participant fields (readers,
     /// ushers, greeters, communion assistants), parallel to
     /// `ob_model::PARTICIPANT_FIELDS`, synced from the
@@ -2354,6 +2625,10 @@ impl Default for App {
         let date_input = doc.fields.get("occasion_date").cloned().unwrap_or_default();
         let service_inputs: Vec<String> =
             service_lines(&doc).into_iter().map(|l| l.value).collect();
+        let hymn_inputs: Vec<[String; 3]> = service_lines(&doc)
+            .iter()
+            .map(|l| hymn_field_values(&l.value))
+            .collect();
         let sermon_input = sermon_title(&doc);
         let participant_inputs = participant_values(&doc);
         let (settings, settings_read) = load_settings();
@@ -2388,6 +2663,8 @@ impl Default for App {
             profile_expected_parts: String::new(),
             date_input,
             service_inputs,
+            hymn_inputs,
+            hymn_memory: load_hymn_memory(),
             sermon_input,
             participant_inputs,
             announcements_dirty: false,
@@ -2561,6 +2838,212 @@ fn named_story_id(doc: &Document, words: &str) -> Option<String> {
         .and_then(|f| f.story_id.clone())
 }
 
+/// Where one line of a service part lands (R-2a, the
+/// music slip): hymn lines slot into the bulletin's hymn
+/// lines instead of piling up at the end of the service.
+#[derive(Debug, Clone, PartialEq)]
+enum HymnSlot {
+    /// Set the existing service line at this paragraph
+    /// index to the composed value: a named line replaced,
+    /// or an empty line filled.
+    Replace {
+        para_index: usize,
+        label: String,
+        was_empty: bool,
+        value: String,
+    },
+    /// A new service line at the end, labelled "Hymn".
+    AppendHymn { value: String },
+    /// The paragraph goes in as written, at the end.
+    Plain,
+}
+
+/// A contribution line's own label and value, the way
+/// senders write them: "Hymn of Praise\t433" (the tab
+/// mirrors the bulletin's own lines) or "Opening hymn:
+/// ELW 432". Anything else is all value, no label.
+fn part_line_label(text: &str) -> (Option<String>, String) {
+    let t = text.trim();
+    if let Some(tab) = t.find('\t') {
+        let label = t[..tab].trim();
+        let value = t.rsplit('\t').next().unwrap_or("").trim();
+        return (
+            if label.is_empty() {
+                None
+            } else {
+                Some(label.to_string())
+            },
+            value.to_string(),
+        );
+    }
+    if let Some((head, tail)) = t.split_once(':') {
+        let head = head.trim();
+        if !head.is_empty()
+            && head.split_whitespace().count() <= 6
+            && !head.chars().any(|c| c.is_ascii_digit())
+        {
+            return (Some(head.to_string()), tail.trim().to_string());
+        }
+    }
+    (None, t.to_string())
+}
+
+/// Decide where every line of a service part lands
+/// against this document's service lines. A line is a
+/// hymn entry when its value reads as one (a number, or a
+/// title under a hymn label). Named entries replace the
+/// hymn line they name; the rest fill empty hymn lines in
+/// order; what is left becomes a new line at the end.
+/// Pure, so the review's plan and the apply step can both
+/// run it and always agree.
+fn hymn_slots(doc: &Document, part: &ob_extract::contribution::Part) -> Vec<HymnSlot> {
+    use ob_model::hymns::{compose_hymn_value, is_hymn_label, parse_hymn_value};
+    let lines = service_lines(doc);
+    let mut used: Vec<usize> = Vec::new();
+    let mut parsed: Vec<(Option<String>, ob_model::hymns::HymnEntry, bool)> = Vec::new();
+    for p in &part.paragraphs {
+        let text = p.text();
+        let (label, value) = part_line_label(&text);
+        let entry = parse_hymn_value(&value);
+        let valued = !text.trim().is_empty()
+            && (entry.number.is_some()
+                || (label.as_deref().map(is_hymn_label).unwrap_or(false) && entry.title.is_some()));
+        parsed.push((label, entry, valued));
+    }
+    let mut slots: Vec<Option<HymnSlot>> = Vec::new();
+    slots.resize_with(part.paragraphs.len(), || None);
+    // Named first: a label that names an existing hymn
+    // line replaces that line's value.
+    for (i, (label, entry, valued)) in parsed.iter().enumerate() {
+        if !valued {
+            continue;
+        }
+        let Some(label) = label else { continue };
+        let Some(line) = lines.iter().find(|l| {
+            is_hymn_label(&l.label)
+                && l.label.eq_ignore_ascii_case(label)
+                && !used.contains(&l.para_index)
+        }) else {
+            continue;
+        };
+        used.push(line.para_index);
+        slots[i] = Some(HymnSlot::Replace {
+            para_index: line.para_index,
+            label: line.label.clone(),
+            was_empty: line.value.trim().is_empty(),
+            value: compose_hymn_value(entry),
+        });
+    }
+    // Then in order: what is left fills the empty hymn
+    // lines.
+    for (i, (_, entry, valued)) in parsed.iter().enumerate() {
+        if !valued || slots[i].is_some() {
+            continue;
+        }
+        let Some(line) = lines.iter().find(|l| {
+            is_hymn_label(&l.label) && l.value.trim().is_empty() && !used.contains(&l.para_index)
+        }) else {
+            continue;
+        };
+        used.push(line.para_index);
+        slots[i] = Some(HymnSlot::Replace {
+            para_index: line.para_index,
+            label: line.label.clone(),
+            was_empty: true,
+            value: compose_hymn_value(entry),
+        });
+    }
+    // What is still standing: a hymn entry becomes a new
+    // line; anything else goes in as written.
+    for (i, (_, entry, valued)) in parsed.iter().enumerate() {
+        if slots[i].is_none() {
+            slots[i] = Some(if *valued {
+                HymnSlot::AppendHymn {
+                    value: compose_hymn_value(entry),
+                }
+            } else {
+                HymnSlot::Plain
+            });
+        }
+    }
+    slots
+        .into_iter()
+        .map(|s| s.expect("every paragraph slotted"))
+        .collect()
+}
+
+/// The review's words for a service part (R-2a): when the
+/// part carries hymn entries, the plan names the hymn
+/// lines they fill or replace; when it carries none, the
+/// R-1 words stand.
+fn service_plan_line(doc: &Document, part: &ob_extract::contribution::Part) -> String {
+    let slots = hymn_slots(doc, part);
+    if !slots
+        .iter()
+        .any(|s| matches!(s, HymnSlot::Replace { .. } | HymnSlot::AppendHymn { .. }))
+    {
+        return "Goes into the service lines, added at the end.".to_string();
+    }
+    let mut sentences: Vec<String> = Vec::new();
+    let mut plain = 0usize;
+    for slot in &slots {
+        match slot {
+            HymnSlot::Replace {
+                label,
+                was_empty,
+                value,
+                ..
+            } => {
+                if *was_empty {
+                    sentences.push(format!("Fills the {label} line with {value}."));
+                } else {
+                    sentences.push(format!("The {label} line becomes {value}."));
+                }
+            }
+            HymnSlot::AppendHymn { value } => {
+                sentences.push(format!("Adds a hymn line at the end: {value}."));
+            }
+            HymnSlot::Plain => plain += 1,
+        }
+    }
+    if plain == 1 {
+        sentences.push("1 more line is added at the end.".to_string());
+    } else if plain > 1 {
+        sentences.push(format!("{plain} more lines are added at the end."));
+    }
+    sentences.join(" ")
+}
+
+/// The style the service lines wear, for a line the app
+/// adds itself: the first tabbed line's style in the
+/// service story, or body when there is none.
+fn service_line_style(doc: &Document) -> String {
+    let Some(sid) = service_story_id(doc) else {
+        return "body".to_string();
+    };
+    let Some(story) = doc.story(&sid) else {
+        return "body".to_string();
+    };
+    story
+        .paragraphs
+        .iter()
+        .find(|p| p.text().contains('\t'))
+        .map(|p| p.style.clone())
+        .unwrap_or_else(|| "body".to_string())
+}
+
+/// Push one paragraph onto a story. Answers false when
+/// the story is not there.
+fn push_story_paragraph(doc: &mut Document, sid: &str, p: ob_model::Paragraph) -> bool {
+    match doc.story_mut(sid) {
+        Some(story) => {
+            story.paragraphs.push(p);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Decide every part's slot against this document.
 fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec<PartPlan> {
     use ob_extract::contribution::PartKind;
@@ -2572,7 +3055,7 @@ fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec
             PartKind::Service => match &service {
                 Some(sid) => PartPlan {
                     target: SlotTarget::Story(sid.clone()),
-                    line: "Goes into the service lines, added at the end.".to_string(),
+                    line: service_plan_line(doc, part),
                 },
                 None => PartPlan {
                     target: SlotTarget::AnnouncementsUnderHeading("For the service"),
@@ -2661,6 +3144,44 @@ fn apply_contribution(
     let mut loose = 0usize;
     let mut unplaced = 0usize;
     for (part, plan) in c.parts.iter().zip(plans.iter()) {
+        // The music slip (R-2a): a service part aimed at
+        // the service story slots its hymn lines into the
+        // bulletin's hymn lines, the way the review's plan
+        // said, instead of appending the whole part.
+        if part.kind == PartKind::Service {
+            if let SlotTarget::Story(sid) = &plan.target {
+                if service_story_id(doc).as_deref() == Some(sid.as_str()) {
+                    let slots = hymn_slots(doc, part);
+                    let mut placed = 0usize;
+                    for (p, slot) in part.paragraphs.iter().zip(slots.iter()) {
+                        let landed = match slot {
+                            HymnSlot::Replace {
+                                para_index, value, ..
+                            } => {
+                                set_service_line(doc, *para_index, value);
+                                true
+                            }
+                            HymnSlot::AppendHymn { value } => {
+                                let style = service_line_style(doc);
+                                let text = format!("Hymn\t{value}");
+                                push_story_paragraph(
+                                    doc,
+                                    sid,
+                                    ob_model::Paragraph::plain(&style, &text),
+                                )
+                            }
+                            HymnSlot::Plain => push_story_paragraph(doc, sid, p.clone()),
+                        };
+                        if landed {
+                            placed += 1;
+                        }
+                    }
+                    service_lines += placed;
+                    unplaced += part.paragraphs.len() - placed;
+                    continue;
+                }
+            }
+        }
         match &plan.target {
             SlotTarget::Story(sid) => {
                 let placed = match doc.story_mut(sid) {
@@ -3247,6 +3768,56 @@ fn set_service_line(doc: &mut Document, para_index: usize, new_value: &str) {
         let prefix = text[..=tab].to_string();
         para.set_text(&format!("{prefix}{new_value}"));
     }
+}
+
+/// One hymn value in its three field parts (R-2a), the
+/// This Sunday step's hymn row: hymnal, number, title.
+fn hymn_field_values(value: &str) -> [String; 3] {
+    let e = ob_model::hymns::parse_hymn_value(value);
+    [
+        e.hymnal.unwrap_or_default(),
+        e.number.unwrap_or_default(),
+        e.title.unwrap_or_default(),
+    ]
+}
+
+/// Where the church's hymn memory lives (R-2a): beside
+/// settings.json, in the same app-data folder. It is the
+/// church's own learned pairs, so it travels with the
+/// office's settings, never inside a bulletin file.
+pub fn hymn_memory_path() -> std::path::PathBuf {
+    let dir = settings_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    dir.join("hymn-memory.json")
+}
+
+/// The hymn memory as it stands on disk. A file that
+/// cannot be read starts the memory over: it is learned
+/// data, rebuilt from the church's bulletins as they are
+/// saved, never the only copy of anything.
+fn load_hymn_memory() -> ob_model::hymns::HymnMemory {
+    std::fs::read_to_string(hymn_memory_path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Feed one document to the hymn memory (R-2a): the
+/// document's own date is the Sunday its pairs were
+/// confirmed on. Answers true when the memory learned
+/// something new, so the caller knows to write it back.
+fn learn_hymns(memory: &mut ob_model::hymns::HymnMemory, doc: &Document) -> bool {
+    let Some(date) = doc
+        .fields
+        .get("occasion_date")
+        .and_then(|iso| chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d").ok())
+        .map(simple_of)
+    else {
+        return false;
+    };
+    memory.learn_from_document(doc, date)
 }
 
 /// The "Sermon:" paragraph, as (story id, paragraph index):
@@ -3869,6 +4440,10 @@ impl App {
         // the real font itself arrives, the finding is
         // simply gone.
         notes.extend(wanted_font_notes(&self.doc, &current_library_families()));
+        // The hymn pass (R-2a): numbers and titles checked
+        // against each other and against the church's own
+        // remembered pairs.
+        notes.extend(hymn_findings(&self.doc, &self.hymn_memory));
         // Characters the print copy cannot show get their own
         // findings (not plain notes) so the Check step can put
         // a fix button under each one.
@@ -3948,6 +4523,16 @@ impl App {
                     msg.push_str(&format!(
                         " Cleared for the new week: {}.",
                         report.cleared_participants.join(", ")
+                    ));
+                }
+                // The hymn lines that were cleared get
+                // named the same way (R-2a): their numbers
+                // belonged to last week, and the office
+                // hears which lines to fill in again.
+                if !report.cleared_hymns.is_empty() {
+                    msg.push_str(&format!(
+                        " Hymn numbers cleared for: {}.",
+                        report.cleared_hymns.join(", ")
                     ));
                 }
                 // An accidental click lands here too; say
@@ -9646,6 +10231,11 @@ impl App {
         self.analyzer_armed = false;
         self.asset_base = Some(review.workdir.clone());
         self.adopt_document(review.doc, true);
+        // A template learned from the church's own old
+        // bulletins is confirmed ground for the hymn
+        // memory (R-2a): its pairs were printed, week
+        // after week, by this church.
+        self.learn_hymns_from_current();
         self.path = None;
         self.print_fingerprint = None;
         self.checked_fingerprint = None;
@@ -10117,6 +10707,10 @@ impl App {
                     // The disk now holds what we wrote: the
                     // save guard's stamp follows (R-1).
                     self.note_disk_stamp();
+                    // A saved bulletin is a confirmed one:
+                    // its hymn pairs join the church's hymn
+                    // memory (R-2a).
+                    self.learn_hymns_from_current();
                     return true;
                 }
                 Err(e) => self.fail(format!(
@@ -10125,6 +10719,26 @@ impl App {
             }
         }
         false
+    }
+
+    /// Feed the open document's hymn pairs to the church's
+    /// hymn memory (R-2a), and write the memory back when
+    /// it learned something. Called where a document
+    /// becomes confirmed: a successful save, and accepting
+    /// a learned template.
+    fn learn_hymns_from_current(&mut self) {
+        if learn_hymns(&mut self.hymn_memory, &self.doc) {
+            self.persist_hymn_memory();
+        }
+    }
+
+    /// Write the hymn memory beside the settings. Best
+    /// effort, like the settings themselves: a memory that
+    /// will not write never blocks the work it came from.
+    fn persist_hymn_memory(&self) {
+        if let Ok(text) = serde_json::to_string_pretty(&self.hymn_memory) {
+            let _ = std::fs::write(hymn_memory_path(), text);
+        }
     }
 
     /// Remember the on-disk state of the file now open, as
@@ -11490,8 +12104,80 @@ impl eframe::App for App {
                                 self.service_inputs =
                                     lines.iter().map(|l| l.value.clone()).collect();
                             }
+                            if self.hymn_inputs.len() != lines.len() {
+                                self.hymn_inputs = lines
+                                    .iter()
+                                    .map(|l| hymn_field_values(&l.value))
+                                    .collect();
+                            }
                             for (row, line) in lines.iter().enumerate() {
                                 ui.label(&line.label);
+                                if ob_model::hymns::is_hymn_label(&line.label) {
+                                    // A hymn line is three
+                                    // parts (R-2a): the book,
+                                    // the number, the title.
+                                    // Editing any part writes
+                                    // the composed line back.
+                                    let mut parts_changed = false;
+                                    ui.horizontal(|ui| {
+                                        ui.label("Hymnal");
+                                        let r0 = ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.hymn_inputs[row][0],
+                                            )
+                                            .desired_width(64.0),
+                                        );
+                                        ui.label("Number");
+                                        let r1 = ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.hymn_inputs[row][1],
+                                            )
+                                            .desired_width(56.0),
+                                        );
+                                        ui.label("Title");
+                                        let r2 = ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.hymn_inputs[row][2],
+                                            )
+                                            .desired_width(220.0),
+                                        );
+                                        parts_changed =
+                                            r0.lost_focus() || r1.lost_focus() || r2.lost_focus();
+                                    });
+                                    if parts_changed {
+                                        let part = |s: &String| {
+                                            let t = s.trim();
+                                            if t.is_empty() {
+                                                None
+                                            } else {
+                                                Some(t.to_string())
+                                            }
+                                        };
+                                        let composed =
+                                            ob_model::hymns::compose_hymn_value(
+                                                &ob_model::hymns::HymnEntry {
+                                                    hymnal: part(&self.hymn_inputs[row][0]),
+                                                    number: part(&self.hymn_inputs[row][1]),
+                                                    title: part(&self.hymn_inputs[row][2]),
+                                                },
+                                            );
+                                        if composed != line.value {
+                                            let before = snapshot(&self.doc);
+                                            set_service_line(
+                                                &mut self.doc,
+                                                line.para_index,
+                                                &composed,
+                                            );
+                                            if before != snapshot(&self.doc) {
+                                                self.record_undo(before);
+                                            }
+                                            self.service_inputs[row] = composed.clone();
+                                            self.hymn_inputs[row] =
+                                                hymn_field_values(&composed);
+                                        }
+                                    }
+                                    continue;
+                                }
                                 let resp =
                                     ui.text_edit_singleline(&mut self.service_inputs[row]);
                                 if resp.lost_focus()
@@ -11799,6 +12485,35 @@ impl eframe::App for App {
                             {
                                 self.pin_fonts();
                                 self.save_large_print_copy(&path);
+                            }
+                        }
+                        ui.label("Music proof: the hymn lines and the printed music on their own pages, to check or to hand to the music director.");
+                        if ui.button("Music proof...").clicked() {
+                            self.commit_if_editing();
+                            self.save_announcements();
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_file_name("music-proof.pdf")
+                                .add_filter("PDF", &["pdf"])
+                                .save_file()
+                            {
+                                self.pin_fonts();
+                                let (proof, counts) = music_proof_document(&self.doc);
+                                let (bytes, _report) = ob_pdf::export_reader_pdf_report(
+                                    &proof,
+                                    ob_pdf::ExportPurpose::ForPrinting,
+                                );
+                                self.status = match std::fs::write(&path, &bytes) {
+                                    Ok(()) => format!(
+                                        "Music proof saved: {} hymn{}, {} page{} of printed music.",
+                                        counts.hymns,
+                                        if counts.hymns == 1 { "" } else { "s" },
+                                        counts.music_pages,
+                                        if counts.music_pages == 1 { "" } else { "s" }
+                                    ),
+                                    Err(e) => {
+                                        format!("Could not save the music proof: {e}")
+                                    }
+                                };
                             }
                         }
                         ui.separator();
@@ -15427,13 +16142,27 @@ The prayer list.
         );
         assert_eq!(plans[3].target, SlotTarget::LooseSheet);
 
+        // R-2a: the plan names the hymn slotting out loud.
+        assert!(
+            plans[0]
+                .line
+                .contains("The Hymn of Praise line becomes 433."),
+            "{}",
+            plans[0].line
+        );
         let service_before = doc.story(&service_sid).expect("story").paragraphs.len();
         let summary = apply_contribution(&mut doc, &c);
         let service_after = doc.story(&service_sid).expect("story");
-        assert_eq!(service_after.paragraphs.len(), service_before + 1);
-        assert_eq!(
-            service_after.paragraphs.last().expect("line").text(),
-            "Hymn of Praise\t433"
+        // The part's hymn line names the bulletin's own
+        // Hymn of Praise line, so its value is replaced
+        // (432 becomes 433); no second line piles up.
+        assert_eq!(service_after.paragraphs.len(), service_before);
+        assert!(
+            service_after
+                .paragraphs
+                .iter()
+                .any(|p| p.text() == "Hymn of Praise\t433"),
+            "the named hymn line carries the new number"
         );
         let wid = weekly_story_id(&doc).expect("weekly story");
         let weekly = doc.story(&wid).expect("story");
@@ -15456,6 +16185,323 @@ The prayer list.
         assert!(
             !texts.iter().any(|t| t == "The prayer list."),
             "loose sheet words never land in the pages"
+        );
+    }
+
+    #[test]
+    fn music_slip_fills_replaces_and_appends_hymn_lines() {
+        // R-2a: a service part's hymn entries slot by
+        // label, fill empty hymn lines in order, and only
+        // then append; other lines behave as R-1 left them.
+        let mut doc = r1_template();
+        let sid = service_story_id(&doc).expect("service story");
+        // Empty the Hymn of Response line, so a slip entry
+        // has somewhere to fill.
+        {
+            let story = doc.story_mut(&sid).expect("story");
+            for p in story.paragraphs.iter_mut() {
+                if p.text().starts_with("Hymn of Response") {
+                    p.set_text("Hymn of Response\t");
+                }
+            }
+        }
+        let text = "\
+From: Music director
+For Sunday: October 18, 2026
+
+## For the service
+Opening hymn: ELW 500
+Hymn of Praise\tELW 432 \u{00b7} O Come, All Ye Faithful
+ELW 88 \u{00b7} A Title With No Book
+Prelude is at 9:25 this week.
+";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let plans = plan_parts(&doc, &c);
+        assert!(
+            plans[0]
+                .line
+                .contains("Fills the Hymn of Response line with ELW 500."),
+            "{}",
+            plans[0].line
+        );
+        assert!(
+            plans[0].line.contains(
+                "The Hymn of Praise line becomes ELW 432 \u{00b7} O Come, All Ye Faithful."
+            ),
+            "{}",
+            plans[0].line
+        );
+        assert!(
+            plans[0]
+                .line
+                .contains("Adds a hymn line at the end: ELW 88 \u{00b7} A Title With No Book."),
+            "{}",
+            plans[0].line
+        );
+        assert!(
+            plans[0].line.contains("1 more line is added at the end."),
+            "{}",
+            plans[0].line
+        );
+        let before = doc.story(&sid).expect("story").paragraphs.len();
+        let summary = apply_contribution(&mut doc, &c);
+        let story = doc.story(&sid).expect("story");
+        let texts: Vec<String> = story.paragraphs.iter().map(|p| p.text()).collect();
+        // Two lines replaced in place, two appended: the
+        // leftover hymn (labelled "Hymn") and the plain
+        // note, in the part's own order.
+        assert_eq!(story.paragraphs.len(), before + 2, "{texts:?}");
+        assert!(
+            texts
+                .iter()
+                .any(|t| t == "Hymn of Praise\tELW 432 \u{00b7} O Come, All Ye Faithful"),
+            "{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "Hymn of Response\tELW 500"),
+            "{texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t == "Hymn\tELW 88 \u{00b7} A Title With No Book"),
+            "{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "Prelude is at 9:25 this week."),
+            "{texts:?}"
+        );
+        assert!(summary.join(" ").contains("Added 4 lines to the service."));
+    }
+
+    #[test]
+    fn hymn_findings_name_each_problem_once() {
+        use ob_model::hymns::{HymnEntry, HymnMemory};
+        let mut doc = r1_template();
+        let sid = service_story_id(&doc).expect("service story");
+        {
+            let story = doc.story_mut(&sid).expect("story");
+            for p in story.paragraphs.iter_mut() {
+                if p.text().starts_with("Hymn of Praise") {
+                    p.set_text("Hymn of Praise\tELW 432");
+                }
+                if p.text().starts_with("Hymn of Response") {
+                    p.set_text("Hymn of Response\tAmazing Grace");
+                }
+            }
+        }
+        // Empty memory: incompleteness is named, nothing
+        // is invented about what the numbers should be.
+        let notes = hymn_findings(&doc, &HymnMemory::default());
+        let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(notes.len(), 2, "{texts:?}");
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("the Hymn of Praise line gives hymn 432 but no title")),
+            "{texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("the Hymn of Response line gives the title")),
+            "{texts:?}"
+        );
+        assert!(
+            notes.iter().all(|n| n.step == Some(1)),
+            "findings target This Sunday"
+        );
+
+        // Give the praise line its title, teach the memory
+        // a different one, and add a duplicate number.
+        {
+            let story = doc.story_mut(&sid).expect("story");
+            for p in story.paragraphs.iter_mut() {
+                if p.text().starts_with("Hymn of Praise") {
+                    p.set_text("Hymn of Praise\tELW 432 \u{00b7} Joyful, Joyful We Adore Thee");
+                }
+                if p.text().starts_with("Hymn of Response") {
+                    p.set_text("Hymn of Response\tELW 432 \u{00b7} Joyful, Joyful We Adore Thee");
+                }
+            }
+        }
+        let mut memory = HymnMemory::default();
+        memory.learn(
+            &HymnEntry {
+                hymnal: Some("ELW".to_string()),
+                number: Some("432".to_string()),
+                title: Some("O Come, All Ye Faithful".to_string()),
+            },
+            ob_model::SimpleDate {
+                year: 2026,
+                month: 10,
+                day: 4,
+            },
+        );
+        let notes = hymn_findings(&doc, &memory);
+        let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
+        // Two disagreements (one per line) and the
+        // duplicate named once.
+        assert_eq!(notes.len(), 3, "{texts:?}");
+        assert_eq!(
+            texts
+                .iter()
+                .filter(|t| t.contains(
+                    "was \u{2018}O Come, All Ye Faithful\u{2019} last time (October 4, 2026)"
+                ))
+                .count(),
+            2,
+            "{texts:?}"
+        );
+        assert_eq!(
+            texts
+                .iter()
+                .filter(|t| t.contains("is named by two hymn lines"))
+                .count(),
+            1,
+            "{texts:?}"
+        );
+        // When the memory agrees, it is silent.
+        let mut agreeing = HymnMemory::default();
+        agreeing.learn(
+            &HymnEntry {
+                hymnal: Some("ELW".to_string()),
+                number: Some("432".to_string()),
+                title: Some("Joyful, Joyful We Adore Thee".to_string()),
+            },
+            ob_model::SimpleDate {
+                year: 2026,
+                month: 10,
+                day: 4,
+            },
+        );
+        let notes = hymn_findings(&doc, &agreeing);
+        let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(notes.len(), 1, "only the duplicate remains: {texts:?}");
+        assert!(texts[0].contains("is named by two hymn lines"));
+    }
+
+    #[test]
+    fn music_proof_carries_hymns_music_and_no_spoken_only_words() {
+        let mut doc = r1_template();
+        doc.profile.name = "Grace Lutheran Church".to_string();
+        let sid = service_story_id(&doc).expect("service story");
+        {
+            let story = doc.story_mut(&sid).expect("story");
+            for p in story.paragraphs.iter_mut() {
+                if p.text().starts_with("Hymn of Praise") {
+                    p.set_text("Hymn of Praise\tELW 432 \u{00b7} O Come, All Ye Faithful");
+                }
+            }
+            story.paragraphs.push(ob_model::Paragraph::plain(
+                "order-line",
+                "Anthem\tThe choir sings Morning Has Broken",
+            ));
+            // A spoken-only name rides in the weekly story;
+            // it must never reach the proof.
+            story.paragraphs.push({
+                let mut p = ob_model::Paragraph::plain("body", "Wilhelmina Quietname");
+                p.spoken_only = true;
+                p
+            });
+        }
+        // One engraved music page in a picture box.
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"20\"><path d=\"M0 0h100\"/></svg>";
+        let asset = doc.add_asset(
+            svg,
+            ob_model::AssetKind::Picture,
+            "image/svg+xml",
+            ob_model::RightsRecord::default(),
+        );
+        doc.panels[0].frames.push(ob_model::Frame {
+            id: "music-1".to_string(),
+            name: "Music".to_string(),
+            kind: ob_model::FrameKind::Picture,
+            rect: ob_model::Rect::new(36_000, 36_000, 468_000, 60_000),
+            story_id: None,
+            role: ob_model::ContentRole::Standing,
+            picture: Some(ob_model::PicturePlacement::new(asset.clone())),
+            music: Some(ob_model::MusicFrame {
+                system: 0,
+                staff_mm: 6.5,
+                source: asset,
+            }),
+        });
+        let (proof, counts) = music_proof_document(&doc);
+        assert_eq!(counts.hymns, 2);
+        assert_eq!(counts.music_pages, 1);
+        let all_text: Vec<String> = proof
+            .stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter().map(|p| p.text()))
+            .collect();
+        assert!(
+            all_text
+                .iter()
+                .any(|t| t == "Grace Lutheran Church: music for October 18, 2026"),
+            "{all_text:?}"
+        );
+        assert!(
+            all_text
+                .iter()
+                .any(|t| t == "Hymn of Praise: ELW 432 \u{00b7} O Come, All Ye Faithful"),
+            "{all_text:?}"
+        );
+        assert!(
+            all_text.iter().any(|t| t == "Hymn of Response: 365"),
+            "{all_text:?}"
+        );
+        assert!(
+            all_text
+                .iter()
+                .any(|t| t == "Anthem: The choir sings Morning Has Broken"),
+            "{all_text:?}"
+        );
+        assert!(
+            !all_text.iter().any(|t| t.contains("Quietname")),
+            "spoken-only words never reach the proof"
+        );
+        // Heading page, music page, anthem page.
+        assert_eq!(proof.panels.len(), 3);
+        let music_frame = &proof.panels[1].frames[0];
+        assert!(music_frame.music.is_some());
+        assert_eq!(
+            music_frame.picture.as_ref().map(|p| p.fit),
+            Some(ob_model::PictureFit::ShowWhole)
+        );
+        assert_eq!(music_frame.rect.w, 468_000, "the bulletin size is kept");
+        // And the proof exports through the reader path.
+        let bytes = ob_pdf::export_reader_pdf(&proof, ob_pdf::ExportPurpose::ForPrinting);
+        assert!(bytes.starts_with(b"%PDF"), "a real PDF comes out");
+    }
+
+    #[test]
+    fn learn_hymns_reads_the_saved_documents_date() {
+        let mut doc = r1_template();
+        let sid = service_story_id(&doc).expect("service story");
+        {
+            let story = doc.story_mut(&sid).expect("story");
+            for p in story.paragraphs.iter_mut() {
+                if p.text().starts_with("Hymn of Praise") {
+                    p.set_text("Hymn of Praise\tELW 432 \u{00b7} O Come, All Ye Faithful");
+                }
+            }
+        }
+        let mut memory = ob_model::hymns::HymnMemory::default();
+        assert!(learn_hymns(&mut memory, &doc));
+        let pair = memory.lookup(Some("ELW"), "432").expect("learned");
+        assert_eq!(pair.title, "O Come, All Ye Faithful");
+        assert_eq!(
+            pair.last_seen,
+            ob_model::SimpleDate {
+                year: 2026,
+                month: 10,
+                day: 18
+            }
+        );
+        assert!(
+            !learn_hymns(&mut memory, &doc),
+            "nothing new the second time"
         );
     }
 

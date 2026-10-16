@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::BTreeMap;
 
+pub mod hymns;
 pub mod markdown;
 
 /// One milli-point: 1/1000 of a PostScript point.
@@ -484,7 +485,7 @@ pub fn parse_inches(text: &str) -> Option<f64> {
 /// A calendar date as plain numbers. ob-model carries no
 /// date library; the little calendar math a bulletin needs
 /// (valid days, weekdays) is here and tested.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SimpleDate {
     pub year: i32,
     pub month: u32,

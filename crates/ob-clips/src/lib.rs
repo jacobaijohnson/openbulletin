@@ -33,6 +33,50 @@ pub fn default_library_dir() -> PathBuf {
 /// counted and left out, never shown as blank thumbnails.
 pub type MetafileConverter = dyn Fn(&str, &[u8]) -> Option<Vec<u8>>;
 
+/// Run a converter program with a deadline that bounds
+/// the PROCESS, not only the wait (round 2, R2-3): the
+/// old shape waited on a channel for 30 s while the
+/// LibreOffice child kept running behind it, and the
+/// scratch folder was deleted under a live process.
+/// Here the child is polled to the deadline and, past
+/// it, killed and reaped. The shape is the shared
+/// runner's in miniature; it lives in this crate rather
+/// than borrowing ob-extract's runner because clips sits
+/// below extract in the tree. Returns whether the child
+/// finished in time and said success; a child that
+/// cannot be started at all is a quiet false, which the
+/// converter contract already reads as "not converted".
+pub fn run_converter_with_deadline(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> bool {
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
 /// What a collection says about itself: where it came from
 /// and the rights the office asserts for its contents
 /// (the collection-level default of clipart-landscape.md
@@ -456,6 +500,68 @@ fn unique_name(dir: &Path, base: &str, used: &mut Vec<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sleeping_converter_is_killed_at_the_deadline() {
+        // Round 2, R2-3: the deadline bounds the process.
+        // The fake converter sleeps, then writes a marker
+        // only a process that lived past the deadline
+        // could write. The run must come back at the
+        // deadline, and the marker must never appear.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("deadline");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let marker = dir.join("lived-too-long");
+        let script = dir.join("fake-converter.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nsleep 2\ntouch \"{}\"\n", marker.display()),
+        )
+        .expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let mut cmd = std::process::Command::new(&script);
+        let started = std::time::Instant::now();
+        let ok = run_converter_with_deadline(&mut cmd, std::time::Duration::from_millis(300));
+        let elapsed = started.elapsed();
+        assert!(!ok, "a killed converter is not a success");
+        assert!(
+            elapsed < std::time::Duration::from_millis(1500),
+            "the call returned at the deadline, not at the script's pace: {elapsed:?}"
+        );
+        // The script's own 2 s sleep would have ended by
+        // now if anything of it were still alive.
+        std::thread::sleep(std::time::Duration::from_millis(2200));
+        assert!(
+            !marker.exists(),
+            "the converter was killed, not left running"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prompt_converter_reports_its_own_result() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("prompt");
+        std::fs::create_dir_all(&dir).expect("dir");
+        for (tag, code, want) in [("good", 0, true), ("bad", 3, false)] {
+            let script = dir.join(format!("conv-{tag}.sh"));
+            std::fs::write(&script, format!("#!/bin/sh\nexit {code}\n")).expect("script");
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+            let mut cmd = std::process::Command::new(&script);
+            let ok = run_converter_with_deadline(&mut cmd, std::time::Duration::from_secs(5));
+            assert_eq!(ok, want, "exit {code}");
+        }
+        // A program that does not exist is a quiet false.
+        let mut cmd = std::process::Command::new(dir.join("no-such-program"));
+        assert!(!run_converter_with_deadline(
+            &mut cmd,
+            std::time::Duration::from_secs(1)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir =

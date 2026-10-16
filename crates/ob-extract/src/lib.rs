@@ -175,12 +175,47 @@ pub struct ExtractionDump {
     pub loss_notes: Vec<String>,
 }
 
+/// The loss sentence for text spans addressed to pages
+/// a dump does not list (round 2, R2-8), worded once so
+/// every door says it the same way.
+pub fn unlisted_page_spans_note(dropped: usize) -> String {
+    if dropped == 1 {
+        "1 piece of text pointed at a page the reading did not list, so it was left out."
+            .to_string()
+    } else {
+        format!(
+            "{dropped} pieces of text pointed at pages the reading did not list, \
+             so they were left out."
+        )
+    }
+}
+
 impl ExtractionDump {
     pub fn to_json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
     }
+
+    /// Drop the spans addressed to pages this dump does
+    /// not list, counting them into `loss_notes` (round
+    /// 2, R2-8). The draft builder walks the listed pages,
+    /// so such spans would vanish without a word; here
+    /// they are removed where the loss is counted, in the
+    /// channel the draft review already reads aloud.
+    /// Picture-only markers carry no words and are not
+    /// counted as text losses.
+    pub fn note_unlisted_page_spans(&mut self) {
+        let listed: std::collections::HashSet<u32> = self.pages.iter().map(|p| p.index).collect();
+        let before = self.spans.len();
+        self.spans
+            .retain(|s| s.trust == SpanTrust::PictureOnly || listed.contains(&s.page));
+        let dropped = before - self.spans.len();
+        if dropped > 0 {
+            self.loss_notes.push(unlisted_page_spans_note(dropped));
+        }
+    }
+
     pub fn from_json(s: &str) -> Result<Self, String> {
-        let dump: Self = serde_json::from_str(s)
+        let mut dump: Self = serde_json::from_str(s)
             .map_err(|e| format!("the reading helper answered in a way we cannot read: {e}"))?;
         // The version is checked, not just carried
         // (audit M10, 2026-10-16): a helper answering
@@ -189,7 +224,14 @@ impl ExtractionDump {
         // Versions 1 and 2 are understood; 1 parses
         // with the v2 fields defaulted.
         match dump.schema_version {
-            1..=DUMP_SCHEMA_VERSION => Ok(dump),
+            1..=DUMP_SCHEMA_VERSION => {
+                // Spans addressed to pages the dump does
+                // not list are counted out here, where
+                // every helper answer passes (round 2,
+                // R2-8).
+                dump.note_unlisted_page_spans();
+                Ok(dump)
+            }
             v if v > DUMP_SCHEMA_VERSION => Err(format!(
                 "the reading helper answered in a newer format (version {v}) than this \
                  copy of OpenBulletin understands (version {DUMP_SCHEMA_VERSION} at most)"
@@ -467,6 +509,70 @@ mod tests {
         let json = dump.to_json().expect("json");
         let back = ExtractionDump::from_json(&json).expect("parse");
         assert_eq!(back.pages.len(), 4);
+    }
+
+    #[test]
+    fn spans_for_unlisted_pages_are_counted_not_vanished() {
+        // Round 2, R2-8: words addressed to a page the
+        // dump does not list used to pass the door and
+        // then vanish in the draft builder, which walks
+        // only the listed pages. Reading the dump now
+        // drops them here and counts them into the loss
+        // notes the review reads aloud.
+        let span = |page: u32, text: &str, trust: SpanTrust| Span {
+            page,
+            text: text.into(),
+            trust,
+            x: None,
+            y: None,
+            w: None,
+            h: None,
+            font_size: None,
+            bold: None,
+            font: None,
+            align: None,
+            italic: false,
+            color: [0, 0, 0],
+            runs: Vec::new(),
+            thread: None,
+        };
+        let dump = ExtractionDump {
+            schema_version: DUMP_SCHEMA_VERSION,
+            source_kind: SourceKind::Pdf,
+            source_name: "odd.pdf".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![
+                span(0, "welcome to worship", SpanTrust::RawText),
+                span(7, "words for a page that is not listed", SpanTrust::RawText),
+                span(9, "more words for no listed page", SpanTrust::NeedsReview),
+                span(9, "", SpanTrust::PictureOnly),
+            ],
+            images: Vec::new(),
+            loss_notes: Vec::new(),
+        };
+        let back = ExtractionDump::from_json(&dump.to_json().expect("json")).expect("parse");
+        assert_eq!(
+            back.spans.len(),
+            2,
+            "the listed page's words and the wordless picture marker stay"
+        );
+        assert!(back
+            .spans
+            .iter()
+            .all(|s| s.page == 0 || s.trust == SpanTrust::PictureOnly));
+        assert_eq!(back.loss_notes.len(), 1, "one counted loss");
+        assert!(
+            back.loss_notes[0].contains("2 pieces of text pointed at pages"),
+            "the loss is counted in plain words: {}",
+            back.loss_notes[0]
+        );
     }
 
     #[test]

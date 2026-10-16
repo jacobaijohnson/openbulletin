@@ -161,6 +161,57 @@ fn main() {
     }
 }
 
+/// Whether two paths name the same file, the way the
+/// filesystem sees them. The input resolves through
+/// canonicalize (it exists: every export reads it); the
+/// output may not exist yet, so it resolves through its
+/// parent folder and its name. A `..` or a linked folder
+/// cannot talk its way past this (round 2, R2-6).
+fn same_file(a: &Path, b: &Path) -> bool {
+    let resolve = |p: &Path| -> Option<PathBuf> {
+        if let Ok(c) = std::fs::canonicalize(p) {
+            return Some(c);
+        }
+        std::fs::canonicalize(p.parent()?)
+            .ok()
+            .zip(p.file_name())
+            .map(|(c, name)| c.join(name))
+    };
+    match (resolve(a), resolve(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// The refusal every export door shares when its output
+/// is its own input (round 2, R2-6). Checked before
+/// anything is read or written.
+fn refuse_replacing_itself(input: &Path, out: &Path) -> Result<(), String> {
+    if same_file(input, out) {
+        Err("the copy would replace the bulletin itself; pick a different name".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// Write through a temp file in the same folder, then
+/// rename it over the destination, so a failed export
+/// never leaves a half file where a good one stood
+/// (round 2, R2-6; the same discipline as the document
+/// save). A failed write removes the temp file.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = match path.extension() {
+        Some(e) => path.with_extension(format!("{}.tmp", e.to_string_lossy())),
+        None => path.with_extension("tmp"),
+    };
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
 fn run(cli: Cli) -> Result<(), String> {
     match cli.cmd {
         Cmd::New {
@@ -177,9 +228,12 @@ fn run(cli: Cli) -> Result<(), String> {
             let preset = ob_layout::Preset::parse(&preset)
                 .ok_or_else(|| format!("unknown preset {preset} (try letter-bifold, letter-trifold, letter-portrait, legal-bifold, tabloid-bifold, saddle-booklet)"))?;
             let date = match date {
-                Some(d) => {
-                    chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").map_err(|e| e.to_string())?
-                }
+                Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").map_err(|_| {
+                    format!(
+                        "\"{d}\" does not read as a date; write it as the year, \
+                             then the month, then the day, like 2026-10-18"
+                    )
+                })?,
                 None => chrono::Local::now().date_naive(),
             };
             let profile = ob_model::ChurchProfile {
@@ -207,6 +261,7 @@ fn run(cli: Cli) -> Result<(), String> {
             purpose,
             out,
         } => {
+            refuse_replacing_itself(&input, &out)?;
             let doc = ob_format::load(&input)?;
             let purpose = match purpose.as_deref() {
                 Some(slug) => ob_pdf::ExportPurpose::from_slug(slug)
@@ -221,7 +276,7 @@ fn run(cli: Cli) -> Result<(), String> {
             } else {
                 ob_pdf::export_reader_pdf_report(&doc, purpose)
             };
-            std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
+            write_atomic(&out, &bytes)?;
             println!(
                 "wrote {} ({} bytes, {}, {})",
                 out.display(),
@@ -244,9 +299,10 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Cmd::ExportIdml { input, out } => {
+            refuse_replacing_itself(&input, &out)?;
             let doc = ob_format::load(&input)?;
             let (bytes, report) = ob_extract::idml_export::export_idml(&doc)?;
-            std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
+            write_atomic(&out, &bytes)?;
             println!(
                 "wrote {} ({} bytes, IDML for InDesign: {} pages, {} text frames)",
                 out.display(),
@@ -260,9 +316,10 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Cmd::ExportSla { input, out } => {
+            refuse_replacing_itself(&input, &out)?;
             let doc = ob_format::load(&input)?;
             let (bytes, report) = ob_extract::sla_export::export_sla(&doc)?;
-            std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
+            write_atomic(&out, &bytes)?;
             println!(
                 "wrote {} ({} bytes, Scribus file: {} pages, {} text frames)",
                 out.display(),
@@ -276,9 +333,10 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Cmd::ExportMd { input, out } => {
+            refuse_replacing_itself(&input, &out)?;
             let doc = ob_format::load(&input)?;
             let (text, spoken_left_out) = ob_model::markdown::to_markdown_report(&doc);
-            std::fs::write(&out, &text).map_err(|e| e.to_string())?;
+            write_atomic(&out, text.as_bytes())?;
             println!(
                 "wrote {} ({} bytes, Markdown: the words, for a website or newsletter)",
                 out.display(),
@@ -293,8 +351,6 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Cmd::ExportHtml { input, out } => {
-            let doc = ob_format::load(&input)?;
-            let (bytes, report) = ob_extract::html_export::export_html(&doc)?;
             let out = out.unwrap_or_else(|| {
                 let stem = input
                     .file_stem()
@@ -302,7 +358,10 @@ fn run(cli: Cli) -> Result<(), String> {
                     .unwrap_or_else(|| "bulletin".to_string());
                 input.with_file_name(format!("{stem}-web.html"))
             });
-            std::fs::write(&out, &bytes).map_err(|e| e.to_string())?;
+            refuse_replacing_itself(&input, &out)?;
+            let doc = ob_format::load(&input)?;
+            let (bytes, report) = ob_extract::html_export::export_html(&doc)?;
+            write_atomic(&out, &bytes)?;
             println!(
                 "wrote {} ({} bytes, web page: the reading edition, {} pictures carried, {} credit lines)",
                 out.display(),
@@ -330,7 +389,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Cmd::NextSunday { input, out } => {
             let doc = ob_format::load(&input)?;
-            let next = ob_layout::next_sunday(&doc)?;
+            let (next, report) = ob_layout::next_sunday_report(&doc)?;
             ob_format::save(&next, &out)?;
             println!(
                 "wrote {} for {} ({})",
@@ -344,6 +403,9 @@ fn run(cli: Cli) -> Result<(), String> {
                     .cloned()
                     .unwrap_or_default()
             );
+            if let Some(note) = &report.occasion_note {
+                println!("note: {note}");
+            }
             Ok(())
         }
         Cmd::Info { input } => {
@@ -447,9 +509,21 @@ fn run(cli: Cli) -> Result<(), String> {
                     let lib = ob_fonts::FontLibrary::open(
                         dir.unwrap_or_else(ob_fonts::default_library_dir),
                     )?;
+                    // A bad file in the batch is skipped and
+                    // named, never the end of the batch: the
+                    // good files still land (round 2, R2-6;
+                    // the zip arm has always worked this way).
+                    let mut added = 0usize;
+                    let mut skipped = 0usize;
                     for file in &files {
-                        let bytes = std::fs::read(file)
-                            .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+                        let bytes = match std::fs::read(file) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                println!("skipped {}: it could not be read ({e})", file.display());
+                                skipped += 1;
+                                continue;
+                            }
+                        };
                         if file
                             .extension()
                             .map(|e| e.eq_ignore_ascii_case("zip"))
@@ -458,16 +532,28 @@ fn run(cli: Cli) -> Result<(), String> {
                             for result in lib.add_zip_bytes(&bytes) {
                                 match result {
                                     Ok(info) => {
+                                        added += 1;
                                         println!("added {} ({})", info.full_name, info.file_name)
                                     }
                                     Err(e) => println!("skipped one in {}: {e}", file.display()),
                                 }
                             }
                         } else {
-                            let info = lib.add_path(file)?;
-                            println!("added {} ({})", info.full_name, info.file_name);
-                            println!("{}", info.rights.plain_words());
+                            match lib.add_path(file) {
+                                Ok(info) => {
+                                    added += 1;
+                                    println!("added {} ({})", info.full_name, info.file_name);
+                                    println!("{}", info.rights.plain_words());
+                                }
+                                Err(e) => {
+                                    println!("skipped {}: {e}", file.display());
+                                    skipped += 1;
+                                }
+                            }
                         }
+                    }
+                    if skipped > 0 {
+                        println!("{added} added, {skipped} skipped");
                     }
                 }
             }

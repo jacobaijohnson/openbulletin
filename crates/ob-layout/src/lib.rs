@@ -319,10 +319,52 @@ pub struct NextSundayReport {
     /// order, so the app can name what it cleared the same
     /// way it names ended announcements (J10).
     pub cleared_participants: Vec<String>,
+    /// Set when the document was a one-time occasion (a
+    /// Wedding, an Ash Wednesday) rather than the regular
+    /// weekly service: the sentence, in plain words, saying
+    /// the copy was made for the coming regular Sunday
+    /// instead and the occasion name was not carried
+    /// forward (round 2, R2-11). None for a regular week,
+    /// whose advance changes nothing but the date.
+    pub occasion_note: Option<String>,
+}
+
+/// The name every fresh bulletin starts with: the church's
+/// regular weekly service, before This Sunday gives the week
+/// its own name ("Twentieth Sunday after Pentecost"). It is
+/// what a one-time occasion's copy falls back to.
+pub const DEFAULT_SERVICE_NAME: &str = "Sunday";
+
+/// Is this service name a one-time occasion rather than the
+/// church's regular weekly service? The occasions design
+/// (docs/planning/occasions.md) names the regular rhythm by
+/// its Sundays: the default name itself, or a Sunday name
+/// like "Twentieth Sunday after Pentecost" or "Easter
+/// Sunday". Any other name that names a service at all
+/// (Wedding, Funeral, Ash Wednesday, Christmas Eve) is an
+/// occasion that happens once. The document carries no
+/// other marker: a regular service held on a weekday and
+/// named without the word Sunday cannot be told apart from
+/// a one-time occasion, which is why the guard announces
+/// itself in the report and names the way back (rename it
+/// on This Sunday) instead of acting silently.
+fn is_one_time_occasion(name: &str) -> bool {
+    let name = name.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case(DEFAULT_SERVICE_NAME) {
+        return false;
+    }
+    !name
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| w.eq_ignore_ascii_case("Sunday") || w.eq_ignore_ascii_case("Sundays"))
 }
 
 /// The signature command: clone the document for next Sunday.
 /// - Advances the Sunday date by 7 days (long form too).
+/// - A one-time occasion (a service whose name is not the
+///   regular Sunday name: a Wedding, an Ash Wednesday) does
+///   not repeat a week later: the copy is set for the coming
+///   regular Sunday under the regular name, and the report
+///   carries a note saying so (round 2, R2-11).
 /// - Clears Body paragraphs in Weekly stories (announcements), keeping
 ///   headings and standing structure untouched.
 /// - A weekly story with a keep-through date keeps its words
@@ -390,7 +432,28 @@ pub fn next_sunday_report_as_of(
 ) -> Result<(Document, NextSundayReport), String> {
     let mut out = doc.clone();
     let date = doc_occasion_date(doc)?;
-    let (next, weeks_advanced) = advance_target(date, today);
+    // A one-time occasion (R2-11): the copy is not "the same
+    // service a week later" (there is no second Wedding next
+    // Saturday); it is the coming regular Sunday's bulletin.
+    // The target is the first Sunday after both the file's
+    // date and today, and the occasion name stays behind.
+    let old_name = doc
+        .fields
+        .get("occasion_name")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let one_time = is_one_time_occasion(&old_name);
+    let (next, weeks_advanced) = if one_time {
+        let base = date.max(today);
+        let mut target = base + Duration::days(1);
+        while target.weekday() != chrono::Weekday::Sun {
+            target += Duration::days(1);
+        }
+        let weeks = (((target - date).num_days() as f32 / 7.0).ceil() as u32).max(1);
+        (target, weeks)
+    } else {
+        advance_target(date, today)
+    };
     // The supported calendar ends with the year 9999: a date
     // in its last week has no next week to move to, and the
     // advance used to roll into the year 10000 without a word
@@ -409,6 +472,22 @@ pub fn next_sunday_report_as_of(
     );
     out.fields
         .insert("occasion_date_long".to_string(), long_date(next));
+    // A one-time occasion's name does not travel (R2-11):
+    // the copy is the regular Sunday's bulletin, so it takes
+    // the regular name, and the report says what happened.
+    let occasion_note = if one_time {
+        out.fields.insert(
+            "occasion_name".to_string(),
+            DEFAULT_SERVICE_NAME.to_string(),
+        );
+        Some(format!(
+            "This was a one-time service ({old_name}). The copy is set for \
+             Sunday, {}; if it is a different service, rename it on This Sunday.",
+            long_date(next)
+        ))
+    } else {
+        None
+    };
     out.no_announcements = false;
 
     // Find weekly story ids from frames marked Weekly. Two
@@ -426,6 +505,7 @@ pub fn next_sunday_report_as_of(
     }
     let mut report = NextSundayReport {
         weeks_advanced,
+        occasion_note,
         ..NextSundayReport::default()
     };
     // Participants are weekly people: the new week starts
@@ -582,7 +662,7 @@ mod tests {
             Preset::LetterBifold,
             profile(),
             NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
-            "X",
+            "Sunday",
         );
         let n = next_sunday(&d).unwrap();
         assert_eq!(n.fields["occasion_date"], "2026-10-25");
@@ -614,7 +694,7 @@ mod tests {
             Preset::LetterBifold,
             profile(),
             NaiveDate::from_ymd_opt(9999, 12, 25).unwrap(),
-            "X",
+            "Sunday",
         );
         let err = next_sunday(&d).expect_err("year 10000 must be refused");
         assert!(err.contains("9999"), "plain-words refusal: {err}");
@@ -624,7 +704,7 @@ mod tests {
             Preset::LetterBifold,
             profile(),
             NaiveDate::from_ymd_opt(9999, 12, 18).unwrap(),
-            "X",
+            "Sunday",
         );
         let n = next_sunday(&d).unwrap();
         assert_eq!(n.fields["occasion_date"], "9999-12-25");
@@ -639,7 +719,7 @@ mod tests {
             Preset::LetterBifold,
             profile(),
             NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
-            "X",
+            "Sunday",
         );
         let body_text = |doc: &Document| {
             doc.stories[2]
@@ -704,7 +784,7 @@ mod tests {
             Preset::LetterBifold,
             profile(),
             NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(),
-            "X",
+            "Sunday",
         );
         // Today is Thursday 2026-10-15: +7 lands on 10-11, in
         // the past, so the target snaps to the coming Sunday.
@@ -740,7 +820,7 @@ mod tests {
             Preset::LetterBifold,
             profile(),
             NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
-            "X",
+            "Sunday",
         );
         // No participants set: nothing cleared, nothing named.
         let (n, report) = next_sunday_report(&d).unwrap();
@@ -773,10 +853,82 @@ mod tests {
             Preset::LetterBifold,
             profile(),
             NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
-            "X",
+            "Sunday",
         );
         d.no_announcements = true;
         let n = next_sunday(&d).unwrap();
         assert!(!n.no_announcements, "each week answers for itself");
+    }
+
+    #[test]
+    fn next_sunday_from_a_one_time_occasion_makes_the_regular_sunday() {
+        // A Wedding on Saturday 2026-10-17 (R2-11): there is
+        // no second wedding a week later. The copy is the
+        // coming regular Sunday's bulletin, under the regular
+        // name, and the report says so in plain words.
+        let d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 17).unwrap(),
+            "Wedding",
+        );
+        let (n, report) =
+            next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 10, 16).unwrap()).unwrap();
+        assert_eq!(n.fields["occasion_date"], "2026-10-18");
+        assert_eq!(n.fields["occasion_date_long"], "October 18, 2026");
+        assert_eq!(n.fields["occasion_name"], DEFAULT_SERVICE_NAME);
+        let note = report.occasion_note.expect("the guard speaks");
+        assert_eq!(
+            note,
+            "This was a one-time service (Wedding). The copy is set for \
+             Sunday, October 18, 2026; if it is a different service, rename \
+             it on This Sunday."
+        );
+        // The weekly machinery still ran on the copy.
+        assert!(n.stories[2]
+            .paragraphs
+            .iter()
+            .filter(|p| p.style == "body")
+            .all(|p| p.text().is_empty()));
+    }
+
+    #[test]
+    fn next_sunday_from_a_stale_occasion_lands_on_the_coming_sunday() {
+        // An Ash Wednesday file (Wednesday 2026-02-18) picked
+        // up again the following Monday: the copy is for the
+        // coming Sunday after today, not the Sunday after the
+        // service and not another Wednesday.
+        let d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 2, 18).unwrap(),
+            "Ash Wednesday",
+        );
+        let (n, report) =
+            next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 2, 23).unwrap()).unwrap();
+        assert_eq!(n.fields["occasion_date"], "2026-03-01");
+        assert_eq!(n.fields["occasion_name"], DEFAULT_SERVICE_NAME);
+        assert!(report.occasion_note.is_some());
+    }
+
+    #[test]
+    fn next_sunday_keeps_a_regular_sundays_own_name() {
+        // A liturgical Sunday name is the regular rhythm, not
+        // an occasion: it advances a week and keeps its name,
+        // and the report carries no occasion note.
+        let d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "Twentieth Sunday after Pentecost",
+        );
+        let (n, report) = next_sunday_report(&d).unwrap();
+        assert_eq!(n.fields["occasion_date"], "2026-10-25");
+        assert_eq!(
+            n.fields["occasion_name"],
+            "Twentieth Sunday after Pentecost"
+        );
+        assert!(report.occasion_note.is_none());
+        assert_eq!(report.weeks_advanced, 1);
     }
 }

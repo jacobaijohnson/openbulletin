@@ -495,6 +495,28 @@ fn build_draft(
             detail: note.clone(),
         });
     }
+    // Spans addressed to pages the dump does not list
+    // never reach a panel below (round 2, R2-8). Dumps
+    // that arrived through from_json already dropped and
+    // counted them into loss_notes above; a dump built
+    // any other way gets the same loss counted here, in
+    // the same shape, so its words never vanish silently.
+    {
+        let listed: std::collections::HashSet<u32> = dump.pages.iter().map(|p| p.index).collect();
+        let orphans = dump
+            .spans
+            .iter()
+            .filter(|s| s.trust != SpanTrust::PictureOnly && !listed.contains(&s.page))
+            .count();
+        if orphans > 0 {
+            items.push(ImportItem {
+                panel: 0,
+                label: "Part of the old file was left out".to_string(),
+                badge: Badge::CheckThis,
+                detail: crate::unlisted_page_spans_note(orphans),
+            });
+        }
+    }
     let mut styles: Vec<ParagraphStyle> = default_styles();
     let mut style_ids: BTreeMap<String, String> = BTreeMap::new();
     let mut stories: Vec<Story> = Vec::new();
@@ -865,6 +887,70 @@ mod tests {
             runs: Vec::new(),
             thread: None,
         }
+    }
+
+    #[test]
+    fn spans_for_unlisted_pages_surface_as_a_counted_loss() {
+        // Round 2, R2-8, at the draft door: a dump built
+        // in code (never read through from_json, so the
+        // spans are still present) must still count its
+        // unlisted-page words in the review, in the same
+        // shape as an extractor loss note, and the words
+        // themselves must not appear in the draft.
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pdf,
+            source_name: "odd.pdf".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![PageInfo {
+                index: 0,
+                width_pt: 612.0,
+                height_pt: 792.0,
+                picture_only: false,
+            }],
+            spans: vec![
+                span(0, "Welcome to worship", 60.0, 90.0, 11.0, "Calibri", false),
+                span(
+                    4,
+                    "Words addressed to no listed page",
+                    60.0,
+                    130.0,
+                    11.0,
+                    "Calibri",
+                    false,
+                ),
+            ],
+            images: Vec::new(),
+            loss_notes: Vec::new(),
+        };
+        let out = document_from_dump(&dump, ChurchProfile::default(), false);
+        let losses: Vec<_> = out
+            .items
+            .iter()
+            .filter(|i| i.label == "Part of the old file was left out")
+            .collect();
+        assert_eq!(losses.len(), 1, "one counted loss: {:?}", out.items);
+        assert_eq!(losses[0].badge, Badge::CheckThis);
+        assert!(
+            losses[0]
+                .detail
+                .contains("1 piece of text pointed at a page"),
+            "the loss is counted in plain words: {}",
+            losses[0].detail
+        );
+        let all_text: String = out
+            .doc
+            .stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter().map(|p| p.text()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !all_text.contains("no listed page"),
+            "the orphan words are not in the draft: {all_text}"
+        );
+        assert!(all_text.contains("Welcome to worship"));
     }
 
     #[test]

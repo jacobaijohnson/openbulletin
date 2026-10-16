@@ -343,6 +343,64 @@ pub fn keymap_status(settings: &Settings) -> &'static str {
     }
 }
 
+/// The capture discipline, applied to keymap DATA on load
+/// (round 2, R2-5). A settings file is data: it may be hand
+/// edited, or carried from another machine or version, and
+/// it gets the same rules a captured key gets.
+/// - An entry naming an action we do not have is dropped:
+///   it could never fire, and it must not poison the set's
+///   name to "Custom" forever.
+/// - An entry whose press does not read as a key press is
+///   dropped: the action falls back to the preset's key
+///   instead of sitting silently dead.
+/// - A press claimed by two actions is settled the way
+///   capture settles it (see capture_key): the overrides are
+///   applied in the canonical action order, the later claim
+///   takes the press, and the earlier holder is given the
+///   later action's previous press, a swap, so no press ever
+///   fires two actions and no action is silently left
+///   without one.
+///
+/// The stored overrides are rewritten to the smallest set
+/// that reproduces the settled keys, so the file says what
+/// the keys are from then on.
+pub fn validate_keymap(settings: &mut Settings) {
+    settings
+        .keymap
+        .retain(|action, _| KEY_ACTIONS.iter().any(|(a, _)| a == action));
+    settings
+        .keymap
+        .retain(|_, text| parse_binding(text).is_some());
+    let preset = if settings.keymap_preset.is_empty() {
+        "openbulletin"
+    } else {
+        settings.keymap_preset.as_str()
+    };
+    let defaults = preset_defaults(preset);
+    let mut working = defaults.clone();
+    for (action, _) in KEY_ACTIONS {
+        let Some(want) = settings.keymap.get(*action).cloned() else {
+            continue;
+        };
+        if working.get(*action) == Some(&want) {
+            continue;
+        }
+        let previous = working.get(*action).cloned().unwrap_or_default();
+        let holder = working
+            .iter()
+            .find(|(a, p)| a.as_str() != *action && **p == want)
+            .map(|(a, _)| a.clone());
+        if let Some(holder) = holder {
+            working.insert(holder, previous);
+        }
+        working.insert(action.to_string(), want);
+    }
+    settings.keymap = working
+        .into_iter()
+        .filter(|(a, p)| defaults.get(a) != Some(p))
+        .collect();
+}
+
 /// One key press, as stored: "Ctrl+Shift+Z", "Alt+P", "F12".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyBinding {
@@ -1439,11 +1497,119 @@ pub fn last_bulletin_door(
     Some((path, name))
 }
 
-pub fn load_settings() -> Settings {
-    std::fs::read_to_string(settings_path())
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+/// How reading the settings file went, so the app can say
+/// once, in plain words, when the file could not be trusted
+/// (round 2, R2-4: the courtesy the autosave journal already
+/// had, extended to the settings file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsRead {
+    /// The file read clean, or there was no file yet.
+    Clean,
+    /// Some sections read and some did not: the broken ones
+    /// went back to their defaults, and the rest survived.
+    PartlySalvaged,
+    /// The file was there but could not be read as settings
+    /// at all; it was set aside as settings-unreadable.json
+    /// and fresh settings are in force.
+    SetAside,
+}
+
+/// One section of the settings file, read on its own: a
+/// missing section is the default and no news; a section
+/// that will not read is the default and a mark against the
+/// file, but it never takes the other sections down with
+/// it (round 2, R2-4).
+fn settings_section<T: serde::de::DeserializeOwned>(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    salvaged: &mut bool,
+) -> Option<T> {
+    let value = obj.get(name)?;
+    match serde_json::from_value::<T>(value.clone()) {
+        Ok(v) => Some(v),
+        Err(_) => {
+            *salvaged = true;
+            None
+        }
+    }
+}
+
+impl Settings {
+    /// Read settings from the file's text, section by
+    /// section (round 2, R2-4), and validate the keymap as
+    /// it lands (R2-5). Text that is not a settings object
+    /// at all reads as SetAside: the caller keeps the file
+    /// under a name that says what happened and starts
+    /// fresh, rather than quietly forgetting everything.
+    pub fn load_from_str(text: &str) -> (Settings, SettingsRead) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+            return (Settings::default(), SettingsRead::SetAside);
+        };
+        let Some(obj) = value.as_object() else {
+            return (Settings::default(), SettingsRead::SetAside);
+        };
+        let mut salvaged = false;
+        let mut s = Settings::default();
+        if let Some(v) = settings_section(obj, "printers", &mut salvaged) {
+            s.printers = v;
+        }
+        if let Some(v) = settings_section(obj, "keymap_preset", &mut salvaged) {
+            s.keymap_preset = v;
+        }
+        if let Some(v) = settings_section(obj, "keymap", &mut salvaged) {
+            s.keymap = v;
+        }
+        if let Some(v) = settings_section(obj, "last_bulletin", &mut salvaged) {
+            s.last_bulletin = v;
+        }
+        if let Some(v) = settings_section(obj, "doc_states", &mut salvaged) {
+            s.doc_states = v;
+        }
+        if let Some(v) = settings_section(obj, "last_step", &mut salvaged) {
+            s.last_step = v;
+        }
+        if let Some(v) = settings_section(obj, "pdf_purpose", &mut salvaged) {
+            s.pdf_purpose = v;
+        }
+        if let Some(v) = settings_section(obj, "ui_scale", &mut salvaged) {
+            s.ui_scale = v;
+        }
+        if let Some(v) = settings_section(obj, "high_contrast", &mut salvaged) {
+            s.high_contrast = v;
+        }
+        validate_keymap(&mut s);
+        let read = if salvaged {
+            SettingsRead::PartlySalvaged
+        } else {
+            SettingsRead::Clean
+        };
+        (s, read)
+    }
+}
+
+/// Move an unreadable settings file out of the way, under
+/// a name that says what happened, so the next launch
+/// starts clean and the damaged copy is still on disk for
+/// anyone who goes looking (the journal's pattern). An
+/// older set-aside is replaced: one damaged copy is enough.
+fn set_aside_unreadable_settings(path: &std::path::Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let to = path.with_file_name("settings-unreadable.json");
+    std::fs::rename(path, &to).is_ok()
+}
+
+pub fn load_settings() -> (Settings, SettingsRead) {
+    let path = settings_path();
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return (Settings::default(), SettingsRead::Clean);
+    };
+    let (settings, read) = Settings::load_from_str(&text);
+    if read == SettingsRead::SetAside {
+        set_aside_unreadable_settings(&path);
+    }
+    (settings, read)
 }
 
 pub fn save_settings(settings: &Settings) -> Result<(), String> {
@@ -1452,7 +1618,13 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| e.to_string())
+    // Atomic, the document format's discipline (round 2,
+    // R2-4): write a sibling temp file and rename it over,
+    // so a crash mid-write cannot truncate the one file
+    // that remembers the office's printers and keys.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
 /// One row of the Fonts panel: a library font with everything the
@@ -1575,6 +1747,10 @@ struct App {
     key_capture: Option<String>,
     fonts_loaded: bool,
     font_rows: Vec<FontRow>,
+    /// The named font families the definitions ACTIVE this
+    /// frame bind, snapshotted at the top of every update.
+    /// Painting may name only these (round 2, NOTE 9).
+    bound_families: std::collections::HashSet<String>,
     catalog_query: String,
     catalog_hits: Vec<ob_fonts::catalog::CatalogEntry>,
     catalog_rx: Option<std::sync::mpsc::Receiver<CatalogMsg>>,
@@ -1929,13 +2105,43 @@ fn preview_face_key(rows: &[FontRow], family: &str, bold: bool, italic: bool) ->
     regular.or(any).map(|row| row.key.clone())
 }
 
+/// The named families a set of font definitions binds.
+/// Painting may only name families in this set: egui
+/// panics on a FontId whose family the ACTIVE definitions
+/// do not bind ("is not bound to any fonts"), and new
+/// definitions take a frame to become active, so a freshly
+/// registered library family is unbound for exactly one
+/// frame (round 2, NOTE 9: the first frame after
+/// refresh_fonts painted preview lines in library faces the
+/// still-default definitions had never heard of, and the
+/// app died at startup).
+pub fn bound_name_families(defs: &egui::FontDefinitions) -> std::collections::HashSet<String> {
+    defs.families
+        .keys()
+        .filter_map(|f| match f {
+            egui::FontFamily::Name(name) => Some(name.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The font a preview line is drawn with: its own library
-/// face when the library holds it, the interface font when
-/// it does not.
-fn line_font_id(rows: &[FontRow], line: &PreviewLine, size: f32) -> egui::FontId {
+/// face when the library holds it AND that face's family is
+/// bound in the definitions active this frame; otherwise
+/// the interface font. The bound check is the NOTE 9 rule:
+/// never hand the painter a family name the active
+/// definitions do not bind.
+fn line_font_id(
+    rows: &[FontRow],
+    bound: &std::collections::HashSet<String>,
+    line: &PreviewLine,
+    size: f32,
+) -> egui::FontId {
     match preview_face_key(rows, &line.font_family, line.bold, line.italic) {
-        Some(key) => egui::FontId::new(size, egui::FontFamily::Name(key.into())),
-        None => egui::FontId::proportional(size),
+        Some(key) if bound.contains(&key) => {
+            egui::FontId::new(size, egui::FontFamily::Name(key.into()))
+        }
+        _ => egui::FontId::proportional(size),
     }
 }
 
@@ -1948,6 +2154,7 @@ fn line_font_id(rows: &[FontRow], line: &PreviewLine, size: f32) -> egui::FontId
 fn paint_line_segments(
     painter: &egui::Painter,
     rows: &[FontRow],
+    bound: &std::collections::HashSet<String>,
     line: &PreviewLine,
     scale: f32,
     place: impl Fn(f32) -> egui::Pos2,
@@ -1968,7 +2175,7 @@ fn paint_line_segments(
             place(lx),
             anchor,
             &line.text,
-            line_font_id(rows, line, size),
+            line_font_id(rows, bound, line, size),
             egui::Color32::BLACK,
         );
         return;
@@ -1991,10 +2198,36 @@ fn paint_line_segments(
             place(line.x + seg.dx),
             egui::Align2::LEFT_BOTTOM,
             &seg.text,
-            line_font_id(rows, &probe, size),
+            line_font_id(rows, bound, &probe, size),
             egui::Color32::BLACK,
         );
     }
+}
+
+/// The font definitions and the Fonts panel rows for the
+/// whole library, built together so the two can never
+/// disagree: every row's key is a family the definitions
+/// bind (round 2, NOTE 9's registration rule).
+fn library_font_setup(lib: &ob_fonts::FontLibrary) -> (egui::FontDefinitions, Vec<FontRow>) {
+    let mut defs = egui::FontDefinitions::default();
+    let mut rows = Vec::new();
+    for info in lib.scan() {
+        let Ok(bytes) = lib.read(&info) else { continue };
+        let key = format!("lib-{}", &info.sha256[..12]);
+        defs.font_data
+            .insert(key.clone(), egui::FontData::from_owned(bytes));
+        defs.families.insert(
+            egui::FontFamily::Name(key.clone().into()),
+            vec![key.clone()],
+        );
+        rows.push(FontRow {
+            key,
+            family: info.family.clone(),
+            full_name: info.full_name.clone(),
+            rights_words: info.rights.plain_words().to_string(),
+        });
+    }
+    (defs, rows)
 }
 
 /// A message back from a catalog worker thread (search or install).
@@ -2029,11 +2262,25 @@ impl Default for App {
             service_lines(&doc).into_iter().map(|l| l.value).collect();
         let sermon_input = sermon_title(&doc);
         let participant_inputs = participant_values(&doc);
-        let settings = load_settings();
+        let (settings, settings_read) = load_settings();
         // Reopen on the step the user left (J6), clamped to
         // the steps that exist.
         let step = settings.last_step.min(STEPS.len() - 1);
         let theme = Theme::for_settings(&settings);
+        // A settings file that could not be read is said out
+        // loud once, on the first status line, never suffered
+        // in silence (round 2, R2-4).
+        let status = match settings_read {
+            SettingsRead::Clean => "Welcome to OpenBulletin.".to_string(),
+            SettingsRead::SetAside => "Welcome to OpenBulletin. Your settings file \
+                 could not be read, so it was set aside as settings-unreadable.json \
+                 and fresh settings are in use."
+                .to_string(),
+            SettingsRead::PartlySalvaged => "Welcome to OpenBulletin. Part of your \
+                 settings file could not be read; those parts went back to their \
+                 defaults, and the rest were kept."
+                .to_string(),
+        };
         Self {
             doc,
             preset,
@@ -2052,7 +2299,7 @@ impl Default for App {
             step,
             announcements,
             notes: Vec::new(),
-            status: "Welcome to OpenBulletin.".into(),
+            status,
             export_note: None,
             char_findings: Vec::new(),
             ann_keep_through: String::new(),
@@ -2093,6 +2340,7 @@ impl Default for App {
             show_keys: false,
             key_capture: None,
             fonts_loaded: false,
+            bound_families: std::collections::HashSet::new(),
             font_rows: Vec::new(),
             catalog_query: String::new(),
             catalog_hits: Vec::new(),
@@ -2928,7 +3176,14 @@ impl App {
                     "Started the {} bulletin. Weekly announcements were cleared; standing items carried over. Save it under its own name.",
                     self.doc.fields.get("occasion_date_long").cloned().unwrap_or_default()
                 );
-                if report.weeks_advanced > 1 {
+                // A one-time occasion says its own news
+                // (R2-11): the copy is the coming regular
+                // Sunday's, under the regular name. Its
+                // sentence replaces the stale-file jump
+                // line, which would only repeat it.
+                if let Some(note) = &report.occasion_note {
+                    msg.push_str(&format!(" {note}"));
+                } else if report.weeks_advanced > 1 {
                     msg.push_str(&format!(
                         " The old date had passed, so this jumps ahead {} weeks to the coming Sunday.",
                         report.weeks_advanced
@@ -2983,24 +3238,7 @@ impl App {
                 let _ = lib.add_bytes(bytes, name);
             }
         }
-        let mut defs = egui::FontDefinitions::default();
-        let mut rows = Vec::new();
-        for info in lib.scan() {
-            let Ok(bytes) = lib.read(&info) else { continue };
-            let key = format!("lib-{}", &info.sha256[..12]);
-            defs.font_data
-                .insert(key.clone(), egui::FontData::from_owned(bytes));
-            defs.families.insert(
-                egui::FontFamily::Name(key.clone().into()),
-                vec![key.clone()],
-            );
-            rows.push(FontRow {
-                key,
-                family: info.family.clone(),
-                full_name: info.full_name.clone(),
-                rights_words: info.rights.plain_words().to_string(),
-            });
-        }
+        let (defs, rows) = library_font_setup(&lib);
         ctx.set_fonts(defs);
         self.font_rows = rows;
         self.fonts_loaded = true;
@@ -3379,7 +3617,7 @@ impl App {
                     let pair = i / 2 + 1;
                     let face = if i % 2 == 0 { "front" } else { "back" };
                     ui.label(egui::RichText::new(format!("Sheet {pair}, {face}")).strong());
-                    draw_sheet(ui, sheet, &rows, &textures);
+                    draw_sheet(ui, sheet, &rows, &self.bound_families, &textures);
                 }
             });
     }
@@ -6022,7 +6260,14 @@ impl App {
                         continue;
                     }
                 }
-                paint_line_segments(&clip, &self.font_rows, line, scale, |lx| to_px(lx, line.y));
+                paint_line_segments(
+                    &clip,
+                    &self.font_rows,
+                    &self.bound_families,
+                    line,
+                    scale,
+                    |lx| to_px(lx, line.y),
+                );
                 // The spoken-only tag (prayer-list privacy):
                 // small caps above the paragraph's first line,
                 // in the info color, so the state is seen on
@@ -6805,6 +7050,7 @@ impl App {
                                 };
                                 let fid = line_font_id(
                                     &self.font_rows,
+                                    &self.bound_families,
                                     &probe,
                                     (para.size * scale).max(4.0),
                                 );
@@ -6865,6 +7111,7 @@ impl App {
                                 };
                                 let fid = line_font_id(
                                     &self.font_rows,
+                                    &self.bound_families,
                                     &probe,
                                     (para.size * scale).max(4.0),
                                 );
@@ -8148,6 +8395,21 @@ impl App {
                         spoken_left_out,
                     ));
                 }
+                // The review's note line carries the family's
+                // own news first (too few alike to learn what
+                // stands still, round 2 R2-1), then any files
+                // that could not be read.
+                let mut notes: Vec<String> = Vec::new();
+                if let Some(n) = &out.family_note {
+                    notes.push(n.clone());
+                }
+                if !skipped.is_empty() {
+                    notes.push(format!(
+                        "{} file(s) could not be read and were left out: {}",
+                        skipped.len(),
+                        skipped.join(", ")
+                    ));
+                }
                 Ok(AnalyzerReview {
                     doc: out.doc,
                     items: out.items,
@@ -8155,14 +8417,10 @@ impl App {
                     corpus: out.corpus,
                     mix: mix_line,
                     workdir,
-                    note: if skipped.is_empty() {
+                    note: if notes.is_empty() {
                         None
                     } else {
-                        Some(format!(
-                            "{} file(s) could not be read and were left out: {}",
-                            skipped.len(),
-                            skipped.join(", ")
-                        ))
+                        Some(notes.join(" "))
                     },
                 })
             })();
@@ -8871,14 +9129,25 @@ impl App {
                     .max_height(320.0)
                     .show(ui, |ui| {
                         for row in &self.font_rows {
+                            // The sample line names the row's
+                            // face only when this frame's
+                            // definitions bind it (NOTE 9);
+                            // a just-installed font shows in
+                            // the interface face for one frame
+                            // instead of panicking the painter.
+                            let sample_face = if self.bound_families.contains(&row.key) {
+                                egui::FontId::new(
+                                    17.0,
+                                    egui::FontFamily::Name(row.key.clone().into()),
+                                )
+                            } else {
+                                egui::FontId::proportional(17.0)
+                            };
                             ui.label(
                                 egui::RichText::new(
                                     "Welcome! The Lord be with you. 1234567890",
                                 )
-                                .font(egui::FontId::new(
-                                    17.0,
-                                    egui::FontFamily::Name(row.key.clone().into()),
-                                )),
+                                .font(sample_face),
                             );
                             ui.label(
                                 egui::RichText::new(format!(
@@ -9213,6 +9482,22 @@ impl eframe::App for App {
         if !self.startup_done {
             self.startup();
         }
+        // The families painting may name in THIS frame are
+        // the ones the active definitions bind. egui takes
+        // new definitions at the next frame, so this snapshot
+        // (taken before the refresh below) stays the truth
+        // for everything painted in this frame; a family
+        // registered a moment ago is simply not named yet
+        // (round 2, NOTE 9).
+        self.bound_families = ctx.fonts(|f| {
+            f.families()
+                .iter()
+                .filter_map(|fam| match fam {
+                    egui::FontFamily::Name(name) => Some(name.to_string()),
+                    _ => None,
+                })
+                .collect()
+        });
         // Register the library faces once, up front: the
         // previews draw in them (UI audit round 2, batch 3),
         // and they must not wait for a first visit to the
@@ -10294,9 +10579,14 @@ impl eframe::App for App {
                     }
                     let lines = self.shaped_panel_lines(idx);
                     for line in &lines {
-                        paint_line_segments(&painter, &self.font_rows, line, scale, |lx| {
-                            rect.min + egui::vec2(lx * scale, line.y * scale)
-                        });
+                        paint_line_segments(
+                            &painter,
+                            &self.font_rows,
+                            &self.bound_families,
+                            line,
+                            scale,
+                            |lx| rect.min + egui::vec2(lx * scale, line.y * scale),
+                        );
                     }
                     ui.add_space(14.0);
                 }
@@ -10436,7 +10726,7 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| {
             // The saved comfort settings (A1) shape the
             // very first frame, not just later ones.
-            let settings = load_settings();
+            let (settings, _) = load_settings();
             cc.egui_ctx.set_style(app_style(&settings));
             Ok(Box::new(App::default()))
         }),
@@ -10991,25 +11281,20 @@ fn wmf_converter() -> Option<Box<ob_clips::MetafileConverter>> {
             .map(|(s, _)| s.to_string())
             .unwrap_or_else(|| name.to_string());
         let output = dir.join(format!("{stem}.png"));
-        let (tx, rx) = std::sync::mpsc::channel();
-        let soffice2 = soffice.clone();
-        let input2 = input.clone();
-        let dir2 = dir.clone();
-        std::thread::spawn(move || {
-            let r = std::process::Command::new(&soffice2)
-                .arg("--headless")
-                .arg("--norestore")
-                .arg("--convert-to")
-                .arg("png")
-                .arg("--outdir")
-                .arg(&dir2)
-                .arg(&input2)
-                .output();
-            let _ = tx.send(r.is_ok() && r.unwrap().status.success());
-        });
-        let ok = rx
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .unwrap_or(false);
+        // The 30 s bound the PROCESS, not only the wait
+        // (round 2, R2-3): past it the converter is killed
+        // and reaped, so the scratch folder below is never
+        // deleted under a live LibreOffice.
+        let mut cmd = std::process::Command::new(&soffice);
+        cmd.arg("--headless")
+            .arg("--norestore")
+            .arg("--convert-to")
+            .arg("png")
+            .arg("--outdir")
+            .arg(&dir)
+            .arg(&input);
+        let ok =
+            ob_clips::run_converter_with_deadline(&mut cmd, std::time::Duration::from_secs(30));
         let bytes = if ok {
             std::fs::read(&output).ok()
         } else {
@@ -11133,6 +11418,7 @@ fn draw_sheet(
     ui: &mut egui::Ui,
     sheet: &PreviewSheet,
     rows: &[FontRow],
+    bound: &std::collections::HashSet<String>,
     textures: &std::collections::HashMap<String, egui::TextureHandle>,
 ) {
     let avail = ui.available_width().min(560.0);
@@ -11202,7 +11488,7 @@ fn draw_sheet(
         }
         let clip = painter.with_clip_rect(prect);
         for line in &panel.lines {
-            paint_line_segments(&clip, rows, line, scale, |lx| to_px(lx, line.y));
+            paint_line_segments(&clip, rows, bound, line, scale, |lx| to_px(lx, line.y));
         }
     }
 }
@@ -11367,6 +11653,90 @@ mod settings_tests {
     }
 
     #[test]
+    fn settings_salvage_keeps_the_good_sections() {
+        // One broken section (printers as a string) must not
+        // take the rest of the memory down with it (R2-4).
+        let text = r#"{
+            "printers": "not a map",
+            "keymap_preset": "publisher",
+            "keymap": {"fonts": "Alt+F"},
+            "last_bulletin": "/home/office/week.obd",
+            "doc_states": [["/home/office/week.obd", {"print_fingerprint": "abc", "checked_fingerprint": null}]],
+            "last_step": 3,
+            "pdf_purpose": "web",
+            "ui_scale": "Large",
+            "high_contrast": true
+        }"#;
+        let (st, read) = Settings::load_from_str(text);
+        assert_eq!(read, SettingsRead::PartlySalvaged);
+        assert!(st.printers.is_empty(), "the broken section reset");
+        assert_eq!(st.keymap_preset, "publisher");
+        assert_eq!(effective_keymap(&st)["fonts"], "Alt+F");
+        assert_eq!(st.last_bulletin.as_deref(), Some("/home/office/week.obd"));
+        assert_eq!(st.doc_states.len(), 1);
+        assert_eq!(
+            st.doc_state("/home/office/week.obd")
+                .and_then(|d| d.print_fingerprint.as_deref()),
+            Some("abc")
+        );
+        assert_eq!(st.last_step, 3);
+        assert_eq!(st.pdf_purpose(), ob_pdf::ExportPurpose::ForEmailOrWeb);
+        assert_eq!(st.ui_scale, UiScale::Large);
+        assert!(st.high_contrast);
+    }
+
+    #[test]
+    fn settings_that_are_not_settings_are_set_aside() {
+        // Not JSON at all, and JSON that is not an object:
+        // both read as defaults plus the set-aside word.
+        for text in ["this is not json", "[1, 2, 3]", "\"just a string\""] {
+            let (st, read) = Settings::load_from_str(text);
+            assert_eq!(read, SettingsRead::SetAside, "{text}");
+            assert_eq!(st.last_step, 0);
+            assert!(st.printers.is_empty());
+        }
+        // An empty object is simply a fresh memory.
+        let (st, read) = Settings::load_from_str("{}");
+        assert_eq!(read, SettingsRead::Clean);
+        assert_eq!(st.pdf_purpose(), ob_pdf::ExportPurpose::ForPrinting);
+    }
+
+    #[test]
+    fn keymap_data_is_validated_on_load() {
+        // A press claimed by two actions in the file fires
+        // exactly one action after load (R2-5): the later
+        // claim (in the canonical action order) takes it, and
+        // the earlier holder gets the later action's old
+        // press, the capture swap.
+        let (st, _) =
+            Settings::load_from_str(r#"{"keymap": {"save": "Ctrl+Q", "open": "Ctrl+Q"}}"#);
+        let eff = effective_keymap(&st);
+        assert_eq!(eff.values().filter(|v| *v == "Ctrl+Q").count(), 1);
+        assert_eq!(eff["open"], "Ctrl+Q");
+        assert_eq!(eff["save"], "Ctrl+O", "the swap, as capture does it");
+
+        // Garbage entries are dropped: an unknown action
+        // cannot poison the set's name, and a press that does
+        // not read leaves the action on its preset key.
+        let (st, _) = Settings::load_from_str(
+            r#"{"keymap_preset": "publisher",
+                "keymap": {"nosuch": "Ctrl+Q", "save": "not a key press",
+                           "fonts": "Ctrl+Shift+F"}}"#,
+        );
+        assert_eq!(keymap_status(&st), "Publisher defaults");
+        assert_eq!(effective_keymap(&st)["save"], "Ctrl+S");
+
+        // A file equal to a preset loads as that preset,
+        // whether it names the preset or restates its keys.
+        let (st, _) = Settings::load_from_str(r#"{"keymap_preset": "indesign"}"#);
+        assert_eq!(keymap_status(&st), "InDesign defaults");
+        let (st, _) =
+            Settings::load_from_str(r#"{"keymap": {"redo": "Ctrl+Y", "pages": "Alt+P"}}"#);
+        assert_eq!(keymap_status(&st), "OpenBulletin defaults");
+        assert!(st.keymap.is_empty(), "restated defaults normalize away");
+    }
+
+    #[test]
     fn keymap_bindings_round_trip() {
         for preset in ["openbulletin", "publisher", "indesign"] {
             for (action, text) in preset_defaults(preset) {
@@ -11421,6 +11791,79 @@ mod settings_tests {
         assert_eq!(
             preview_face_key(&rows, "No Such Family", false, false),
             None
+        );
+    }
+
+    #[test]
+    fn library_font_setup_binds_every_row_it_names() {
+        // NOTE 9's registration rule: the definitions and
+        // the rows are built together, and every row's key
+        // must be a family the definitions bind, or a painter
+        // naming that row panics.
+        let dir = std::env::temp_dir().join(format!("ob-font-setup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = ob_fonts::FontLibrary::open(dir.clone()).expect("library");
+        for (name, bytes) in ob_text::shaping::bundled_font_files() {
+            lib.add_bytes(bytes, name).expect("seed bundled face");
+        }
+        let (defs, rows) = library_font_setup(&lib);
+        assert!(!rows.is_empty(), "the bundled faces are rows");
+        let bound = bound_name_families(&defs);
+        for row in &rows {
+            assert!(
+                bound.contains(&row.key),
+                "row {} names a family the definitions do not bind",
+                row.key
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unbound_family_falls_back_for_one_frame() {
+        // NOTE 9's startup frame, at the level the fix
+        // lands: the rows already name library faces, but
+        // the definitions active this frame are still egui's
+        // defaults, which bind none of them. A bold line
+        // must fall back to the interface font, never name
+        // the unbound family; once the family is bound, the
+        // same line draws in its real face.
+        let row = |key: &str, full_name: &str| FontRow {
+            key: key.into(),
+            family: "Liberation Sans".into(),
+            full_name: full_name.into(),
+            rights_words: String::new(),
+        };
+        let rows = vec![
+            row("lib-reg", "Liberation Sans"),
+            row("lib-bold", "Liberation Sans Bold"),
+        ];
+        let line = PreviewLine {
+            text: "Welcome".into(),
+            size: 12.0,
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            align: ob_model::Align::Left,
+            font_family: "Liberation Sans".into(),
+            bold: true,
+            italic: false,
+            segs: Vec::new(),
+            spoken_tag: false,
+        };
+        let unbound = bound_name_families(&egui::FontDefinitions::default());
+        assert!(unbound.is_empty(), "egui defaults bind no lib families");
+        let fid = line_font_id(&rows, &unbound, &line, 12.0);
+        assert_eq!(fid.family, egui::FontFamily::Proportional);
+        let bound: std::collections::HashSet<String> =
+            ["lib-reg".to_string(), "lib-bold".to_string()]
+                .into_iter()
+                .collect();
+        let fid = line_font_id(&rows, &bound, &line, 12.0);
+        assert_eq!(
+            fid.family,
+            egui::FontFamily::Name("lib-bold".into()),
+            "bound, the line draws in its real face"
         );
     }
 

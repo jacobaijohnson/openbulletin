@@ -319,6 +319,13 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> (ExtractionDump,
     let mut pages: Vec<PageInfo> = Vec::new();
     let mut spans: Vec<Span> = Vec::new();
     let mut spoken_left_out = 0usize;
+    // A threaded story is emitted ONCE, from its first
+    // frame (round 2, R2-7): later frames hold the same
+    // words on other panels, and emitting them again
+    // taught the analyzer the story once per frame,
+    // inflating the line counts and counting a
+    // spoken-only paragraph inside it once per frame too.
+    let mut emitted: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (pi, panel) in doc.panels.iter().enumerate() {
         let mut panel_spans: Vec<Span> = Vec::new();
         for frame in &panel.frames {
@@ -328,6 +335,9 @@ pub fn dump_from_document(doc: &Document, source_name: &str) -> (ExtractionDump,
             let Some(story) = frame.story_id.as_ref().and_then(|id| doc.story(id)) else {
                 continue;
             };
+            if !emitted.insert(story.id.as_str()) {
+                continue;
+            }
             let fx = frame.rect.x as f32 / 1000.0;
             let fw = frame.rect.w as f32 / 1000.0;
             let mut y = frame.rect.y as f32 / 1000.0;
@@ -604,6 +614,42 @@ mod tests {
         // The shared JSON contract still holds.
         let back = ExtractionDump::from_json(&dump.to_json().expect("json")).expect("parse");
         assert_eq!(back.spans.len(), 2);
+    }
+
+    #[test]
+    fn a_threaded_story_is_learned_once_from_its_first_frame() {
+        // Round 2, R2-7: one story threaded through three
+        // frames (the order of service running across three
+        // panels) used to be emitted once per frame: its
+        // lines tripled in the learning counts, and a
+        // spoken-only paragraph inside it was counted three
+        // times in the left-out number.
+        let mut doc = small_doc();
+        let mut prayer = Paragraph::new("body", "For Wilhelmina Quietname, spoken at the rail");
+        prayer.spoken_only = true;
+        doc.stories[0].paragraphs.push(prayer);
+        for n in 2..=3 {
+            let mut panel = doc.panels[0].clone();
+            panel.id = format!("page-{n}");
+            panel.name = format!("Page {n}");
+            panel.frames[0].id = format!("frame-{n}");
+            doc.panels.push(panel);
+        }
+        let (dump, spoken_left_out) = dump_from_document(&doc, "week.obd");
+        assert_eq!(
+            spoken_left_out, 1,
+            "the spoken-only paragraph counts once, not once per frame"
+        );
+        assert_eq!(
+            dump.spans.len(),
+            2,
+            "the story's two printed paragraphs, emitted once in all"
+        );
+        assert!(
+            dump.spans.iter().all(|s| s.page == 0),
+            "every span sits on the first frame's page"
+        );
+        assert_eq!(dump.pages.len(), 3);
     }
 
     #[test]

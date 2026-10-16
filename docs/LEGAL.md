@@ -39,6 +39,27 @@ CID-embedding migration of the writer; it must not be bolted
 onto the WinAnsi path. `subsetter` is therefore NOT a
 dependency today.
 
+CID migration and subsetting shipped (2026-10-16, O2): the
+migration the note above waited for has landed. ob-pdf now
+embeds TrueType faces as CID-keyed fonts (Type0 with a
+CIDFontType2 descendant, Identity-H encoding, an explicit
+ToUnicode CMap written from the characters drawn, and glyph
+IDs as CIDs with an Identity CIDToGIDMap), so the embedded
+program's own cmap is no longer on the glyph-mapping path.
+`subsetter` 0.2.6 IS now a dependency of ob-pdf; its license
+was re-verified in the crate's own Cargo.toml as MIT OR
+Apache-2.0 before the dependency was added. Each embedded
+face is subset to the glyphs the document draws in it; a face
+whose packaging rights forbid subsetting embeds whole in the
+same CID shape, and a subsetting error falls back to whole
+embedding for that face, so an export never fails over
+subsetting. The unembedded core-14 fallback keeps the simple
+WinAnsi path. Effect: the 16-panel sample booklet dropped
+from 654,910 bytes (compressed, whole faces) to about 31 KB,
+and characters outside Windows-1252 that the chosen face
+actually has (Greek letters in Liberation Sans, for example)
+now print and extract as themselves instead of spaces.
+
 .obd v1 packaging (2026-10-16): the `zip` crate (v2, MIT) is
 now also a direct dependency of ob-format, which writes and
 reads the v1 zip container, and `sha2` (MIT OR Apache-2.0)

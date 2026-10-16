@@ -1,20 +1,31 @@
 //! PDF export.
 //!
-//! A small hand-rolled PDF 1.4 writer. Fonts are embedded as TrueType
-//! from the same Font Library bytes the shaper measured with, so what
-//! the Check step approves is what prints (docs/FONTS.md). A face whose
-//! license does not allow it to travel, or that cannot be found, falls
-//! back to the core Helvetica fonts for that face only. Text is encoded
-//! as WinAnsi; glyphs outside WinAnsi wait on CID embedding and render
-//! as spaces rather than crashing. CMYK and PDF/X remain roadmap items.
+//! A small hand-rolled PDF 1.4 writer. TrueType faces are embedded
+//! as CID-keyed fonts (Type0 with a CIDFontType2 descendant,
+//! Identity-H encoding, an explicit ToUnicode CMap, and an identity
+//! CIDToGIDMap) from the same Font Library bytes the shaper
+//! measured with, so what the Check step approves is what prints
+//! (docs/FONTS.md). Faces are subset to the glyphs the document
+//! actually draws (the `subsetter` crate, whose subsets are only
+//! usable under CID embedding; see docs/LEGAL.md), unless the face
+//! forbids subsetting, in which case it embeds whole, still
+//! CID-keyed. Because glyphs are addressed by ID rather than by a
+//! WinAnsi byte, any character the printing face actually has
+//! prints, including ones outside Windows-1252. A face whose
+//! license does not allow it to travel, or that cannot be found,
+//! falls back to the core Helvetica fonts for that face only;
+//! CFF-flavored faces keep the older whole-face WinAnsi embedding
+//! (their outlines are not TrueType, and subsetter's CID output
+//! for them is a different font type than this writer emits).
+//! Characters no chosen face can draw render as the face's
+//! missing-glyph mark, never as a wrong letter, and the Check step
+//! names them through [`undrawable_chars`], which applies the same
+//! face resolution and glyph test as this writer.
 //!
 //! Every stream (page content and embedded fonts) is FlateDecode
 //! compressed, and every export carries an ExportPurpose recorded
-//! in the file's information dictionary. Font subsetting is NOT
-//! done: the subsetter crate drops the font's cmap and requires
-//! CID-keyed embedding, which would break this writer's WinAnsi
-//! glyph mapping; see docs/LEGAL.md (2026-10-16 note). Faces are
-//! embedded whole (compressed), honoring the same rights gates.
+//! in the file's information dictionary. CMYK and PDF/X remain
+//! roadmap items.
 //!
 //! Model space is top-left origin; PDF space is bottom-left. The conversion
 //! happens here and only here.
@@ -146,28 +157,151 @@ fn winansi_byte(c: char) -> Option<u8> {
     }
 }
 
-/// True when this character prints as itself in the PDF: the
-/// exact test the encoder below applies (one definition, shared
-/// with the Check step, so the warning and the output can never
-/// disagree). Note the dagger and the curly quotes ARE printable:
-/// they live in the specials table above.
-pub fn winansi_supported(c: char) -> bool {
+/// True when this character has a WinAnsi byte: still the rule
+/// for the core Helvetica fallback and for CFF-flavored faces,
+/// which keep the older simple-font embedding.
+fn winansi_supported(c: char) -> bool {
     winansi_byte(c).is_some()
 }
 
-/// The distinct characters in `text` that the print path would
-/// turn into blank spaces, in the order they first appear.
-/// Tab is not reported: order lines spend it as the dot-leader
-/// marker before encoding, so it never reaches the encoder as
-/// a character and does not print as a blank.
-pub fn unsupported_chars(text: &str) -> Vec<char> {
-    let mut out: Vec<char> = Vec::new();
-    for c in text.chars() {
-        if c != '\t' && !winansi_supported(c) && !out.contains(&c) {
-            out.push(c);
+/// (family, bold, italic): how faces are keyed everywhere here.
+type FaceKey = (String, bool, bool);
+
+/// The outline flavor of a font program, from its sfnt tag.
+/// Only OpenType/CFF programs take the legacy embedding path;
+/// everything else (the common TrueType tag, `true`, collections)
+/// is treated as TrueType outlines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontFlavor {
+    TrueType,
+    Cff,
+}
+
+fn font_flavor(bytes: &[u8]) -> FontFlavor {
+    if bytes.len() >= 4 && &bytes[0..4] == b"OTTO" {
+        FontFlavor::Cff
+    } else {
+        FontFlavor::TrueType
+    }
+}
+
+/// One embeddable face: its bytes and whether its license bits
+/// forbid subsetting it before embedding.
+#[derive(Clone)]
+struct FaceSource {
+    bytes: Vec<u8>,
+    no_subsetting: bool,
+}
+
+/// Every face whose rights let it travel inside a PDF, keyed by
+/// (family, bold, italic): the bundled set first, then the Font
+/// Library, which wins over the bundled set (one definition,
+/// shared by the writer and the Check step's oracle, so what a
+/// warning is computed against is what would actually embed).
+fn face_sources(
+    library: &[(ob_fonts::FontInfo, Vec<u8>)],
+) -> std::collections::HashMap<FaceKey, FaceSource> {
+    let mut sources: std::collections::HashMap<FaceKey, FaceSource> =
+        std::collections::HashMap::new();
+    for (name, bytes) in ob_text::shaping::bundled_font_files() {
+        if let Ok(info) = ob_fonts::inspect(bytes, name) {
+            if info.rights.may_package() {
+                sources.insert(
+                    (info.family, info.bold, info.italic),
+                    FaceSource {
+                        bytes: bytes.to_vec(),
+                        no_subsetting: info.no_subsetting,
+                    },
+                );
+            }
         }
     }
-    out
+    for (info, bytes) in library {
+        if info.rights.may_package() {
+            sources.insert(
+                (info.family.clone(), info.bold, info.italic),
+                FaceSource {
+                    bytes: bytes.clone(),
+                    no_subsetting: info.no_subsetting,
+                },
+            );
+        }
+    }
+    sources
+}
+
+/// A glyph-presence oracle over the bundled faces plus one Font
+/// Library snapshot: it resolves a requested face exactly the way
+/// the writer does (exact face, then the family's plain face,
+/// then the core Helvetica fallback) and answers which characters
+/// that printing face can actually draw. The Check step builds
+/// one oracle and asks about every paragraph, so the warning and
+/// the printed output can never disagree.
+pub struct FaceOracle {
+    sources: std::collections::HashMap<FaceKey, FaceSource>,
+}
+
+impl FaceOracle {
+    pub fn new(library: &[(ob_fonts::FontInfo, Vec<u8>)]) -> FaceOracle {
+        FaceOracle {
+            sources: face_sources(library),
+        }
+    }
+
+    /// The distinct characters in `text` that the face which
+    /// would print (family, bold, italic) cannot draw, in the
+    /// order they first appear. A TrueType face answers from its
+    /// own character map, so characters outside Windows-1252 are
+    /// fine when the face has them; the core fallback and
+    /// CFF-flavored faces answer with the WinAnsi rule. Tab is
+    /// not reported: order lines spend it as the dot-leader
+    /// marker before encoding, so it never reaches the printer
+    /// as a character.
+    pub fn undrawable_chars(
+        &self,
+        text: &str,
+        family: &str,
+        bold: bool,
+        italic: bool,
+    ) -> Vec<char> {
+        let exact: FaceKey = (family.to_string(), bold, italic);
+        let plain: FaceKey = (family.to_string(), false, false);
+        let chosen = self
+            .sources
+            .get(&exact)
+            .or_else(|| self.sources.get(&plain));
+        let face = chosen.and_then(|src| match font_flavor(&src.bytes) {
+            FontFlavor::TrueType => ttf_parser::Face::parse(&src.bytes, 0).ok(),
+            FontFlavor::Cff => None,
+        });
+        let mut out: Vec<char> = Vec::new();
+        for c in text.chars() {
+            if c == '\t' || out.contains(&c) {
+                continue;
+            }
+            let drawable = match &face {
+                Some(face) => face.glyph_index(c).is_some(),
+                None => winansi_supported(c),
+            };
+            if !drawable {
+                out.push(c);
+            }
+        }
+        out
+    }
+}
+
+/// One-off form of [`FaceOracle::undrawable_chars`] for callers
+/// with a single question (it builds the oracle, so callers with
+/// many questions should keep a [`FaceOracle`] instead).
+pub fn undrawable_chars(
+    text: &str,
+    family: &str,
+    bold: bool,
+    italic: bool,
+    library: &[(ob_fonts::FontInfo, Vec<u8>)],
+) -> Vec<char> {
+    FaceOracle::new(library).undrawable_chars(text, family, bold, italic)
 }
 
 /// The character a WinAnsi byte stands for (for width tables).
@@ -203,15 +337,53 @@ fn esc(s: &str) -> String {
     out
 }
 
+/// Which font one text operation draws with: an embedded face,
+/// already resolved by the FontBook's ladder, or a core font.
+/// The operations record this (not a resource name) because
+/// subsetting needs the final draw list before any face is cut
+/// down and its encoding exists.
+#[derive(Clone)]
+enum DrawFont {
+    Embedded(FaceKey),
+    Core(&'static str),
+}
+
+/// One recorded drawing operation. Pages are drawn into these
+/// first; only after every side is drawn are the faces subset
+/// to the glyphs these operations actually use, and the
+/// operations rendered to a content stream.
+enum ContentOp {
+    /// A literal fragment (the shape-guide color push).
+    Raw(String),
+    RectStroke {
+        r: Rect,
+        page_h: ob_model::Mpt,
+    },
+    Text {
+        font: DrawFont,
+        size: ob_model::Mpt,
+        x: ob_model::Mpt,
+        y_top: ob_model::Mpt,
+        page_h: ob_model::Mpt,
+        text: String,
+        color: ob_model::Rgb,
+    },
+}
+
+#[derive(Default)]
 struct PageContent {
-    buf: String,
+    ops: Vec<ContentOp>,
 }
 
 impl PageContent {
+    fn push_raw(&mut self, s: &str) {
+        self.ops.push(ContentOp::Raw(s.to_string()));
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn text(
         &mut self,
-        font: &str,
+        font: DrawFont,
         size_mpt: ob_model::Mpt,
         x: ob_model::Mpt,
         y_top: ob_model::Mpt,
@@ -219,33 +391,110 @@ impl PageContent {
         s: &str,
         color: ob_model::Rgb,
     ) {
-        let y = page_h - y_top; // baseline approx: y_top is the top of the line box
-                                // The paragraph style's color, set on every text op
-                                // (non-stroking `rg`), so color never leaks from one
-                                // paragraph into the next. Black stays the default.
-        let _ = writeln!(
-            self.buf,
-            "{:.2} {:.2} {:.2} rg BT /{} {:.2} Tf 1 0 0 1 {:.2} {:.2} Tm ({}) Tj ET",
-            color.r as f32 / 255.0,
-            color.g as f32 / 255.0,
-            color.b as f32 / 255.0,
+        self.ops.push(ContentOp::Text {
             font,
-            pt(size_mpt),
-            pt(x),
-            pt(y),
-            esc(s)
-        );
+            size: size_mpt,
+            x,
+            y_top,
+            page_h,
+            text: s.to_string(),
+            color,
+        });
     }
+
     fn rect_stroke(&mut self, r: Rect, page_h: ob_model::Mpt) {
-        let y = page_h - r.y - r.h;
-        let _ = writeln!(
-            self.buf,
-            "0.75 w {:.2} {:.2} {:.2} {:.2} re S",
-            pt(r.x),
-            pt(y),
-            pt(r.w),
-            pt(r.h)
-        );
+        self.ops.push(ContentOp::RectStroke { r, page_h });
+    }
+
+    /// Every character this page draws, per embedded face: the
+    /// glyph set the subsetter is allowed to keep.
+    fn collect_used(
+        &self,
+        used: &mut std::collections::HashMap<FaceKey, std::collections::BTreeSet<char>>,
+    ) {
+        for op in &self.ops {
+            if let ContentOp::Text {
+                font: DrawFont::Embedded(key),
+                text,
+                ..
+            } = op
+            {
+                let set = used.entry(key.clone()).or_default();
+                set.extend(text.chars());
+            }
+        }
+    }
+
+    /// Render the recorded operations to a content stream, now
+    /// that the FontBook has embedded the faces and knows each
+    /// one's encoding.
+    fn render(&self, fonts: &FontBook) -> String {
+        let mut buf = String::new();
+        for op in &self.ops {
+            match op {
+                ContentOp::Raw(s) => buf.push_str(s),
+                ContentOp::RectStroke { r, page_h } => {
+                    let y = page_h - r.y - r.h;
+                    let _ = writeln!(
+                        buf,
+                        "0.75 w {:.2} {:.2} {:.2} {:.2} re S",
+                        pt(r.x),
+                        pt(y),
+                        pt(r.w),
+                        pt(r.h)
+                    );
+                }
+                ContentOp::Text {
+                    font,
+                    size,
+                    x,
+                    y_top,
+                    page_h,
+                    text,
+                    color,
+                } => {
+                    let y = page_h - y_top; // baseline approx: y_top is the top of the line box
+                                            // The paragraph style's color, set on every text op
+                                            // (non-stroking `rg`), so color never leaks from one
+                                            // paragraph into the next. Black stays the default.
+                    let shown = match font {
+                        DrawFont::Embedded(key) => match fonts.encodings.get(key) {
+                            Some(FaceEncoding::Cid(cids)) => {
+                                let mut hex = String::with_capacity(text.len() * 4 + 2);
+                                hex.push('<');
+                                for c in text.chars() {
+                                    // A character the face has no
+                                    // glyph for emits CID 0, the
+                                    // face's own missing-glyph mark:
+                                    // visible as missing, never a
+                                    // wrong letter. The Check step
+                                    // names these characters.
+                                    let cid = cids.get(&c).copied().unwrap_or(0);
+                                    let _ = write!(hex, "{cid:04X}");
+                                }
+                                hex.push('>');
+                                hex
+                            }
+                            _ => format!("({})", esc(text)),
+                        },
+                        DrawFont::Core(_) => format!("({})", esc(text)),
+                    };
+                    let _ = writeln!(
+                        buf,
+                        "{:.2} {:.2} {:.2} rg BT /{} {:.2} Tf 1 0 0 1 {:.2} {:.2} Tm {} Tj ET",
+                        color.r as f32 / 255.0,
+                        color.g as f32 / 255.0,
+                        color.b as f32 / 255.0,
+                        fonts.resource_for(font),
+                        pt(*size),
+                        pt(*x),
+                        pt(y),
+                        shown
+                    );
+                }
+            }
+        }
+        buf
     }
 }
 
@@ -370,7 +619,7 @@ fn draw_panel(
                     }
                     let x = fr.x + ((line.x0 + cx) * 1000.0).round() as ob_model::Mpt;
                     pc.text(
-                        &fonts.resource_for_face(&style.font_family, bold, italic),
+                        fonts.resource_for_face(&style.font_family, bold, italic),
                         style.font_size,
                         x,
                         y,
@@ -507,20 +756,45 @@ endobj
     }
 }
 
-/// Embedded faces for one export. Each face is a real TrueType font
-/// embedded from the same library bytes the shaper measured with,
-/// keyed by (family, bold, italic). Faces that cannot be found, or
-/// whose license does not let them travel, are absent here and fall
-/// back to the core fonts at draw time.
+/// How content encodes text for one embedded face.
+enum FaceEncoding {
+    /// Character -> CID, emitted as a 2-byte code in a hex
+    /// string. Characters absent here (the face has no glyph
+    /// for them) emit CID 0 at render time.
+    Cid(std::collections::HashMap<char, u16>),
+    /// The legacy literal-string encoding, kept for
+    /// CFF-flavored faces, which embed whole under the older
+    /// simple-font path.
+    WinAnsi,
+}
+
+/// Embedded faces for one export, in two phases. `prepare`
+/// resolves which faces the document wants and which of them
+/// can travel, and hands out resource names; pages are then
+/// drawn against those names while their operations are
+/// recorded; `embed` finally writes the font objects, cutting
+/// each TrueType face down to the glyphs the recorded draw
+/// list actually used. Faces that cannot be found, cannot be
+/// parsed, or whose license does not let them travel, are
+/// absent and fall back to the core fonts at draw time.
 struct FontBook {
-    faces: std::collections::HashMap<(String, bool, bool), String>,
-    /// Extra resource entries for the page dictionary.
+    /// Face key -> page resource name, in assignment order.
+    faces: std::collections::HashMap<FaceKey, String>,
+    order: Vec<FaceKey>,
+    sources: std::collections::HashMap<FaceKey, FaceSource>,
+    /// Face key -> encoding, filled by `embed`.
+    encodings: std::collections::HashMap<FaceKey, FaceEncoding>,
+    /// Extra resource entries for the page dictionary,
+    /// filled by `embed`.
     resources: String,
 }
 
 impl FontBook {
-    fn build(doc: &Document, pdf: &mut Pdf, library: &[(ob_fonts::FontInfo, Vec<u8>)]) -> FontBook {
-        let mut wanted: Vec<(String, bool, bool)> = Vec::new();
+    fn prepare(
+        doc: &Document,
+        sources: std::collections::HashMap<FaceKey, FaceSource>,
+    ) -> FontBook {
+        let mut wanted: Vec<FaceKey> = Vec::new();
         for style in &doc.styles {
             let key = (style.font_family.clone(), style.bold, style.italic);
             if !wanted.contains(&key) {
@@ -551,61 +825,84 @@ impl FontBook {
         if !wanted.contains(&fallback) {
             wanted.push(fallback);
         }
-        // Candidate bytes by face: the library wins over the bundled
-        // set, and only faces whose rights let them travel are used.
-        let mut sources: std::collections::HashMap<(String, bool, bool), Vec<u8>> =
-            std::collections::HashMap::new();
-        for (name, bytes) in ob_text::shaping::bundled_font_files() {
-            if let Ok(info) = ob_fonts::inspect(bytes, name) {
-                if info.rights.may_package() {
-                    sources.insert((info.family, info.bold, info.italic), bytes.to_vec());
-                }
-            }
-        }
-        for (info, bytes) in library {
-            if info.rights.may_package() {
-                sources.insert((info.family.clone(), info.bold, info.italic), bytes.clone());
-            }
-        }
         let mut faces = std::collections::HashMap::new();
-        let mut resources = String::new();
+        let mut order = Vec::new();
         let mut n = 0;
-        for (family, bold, italic) in &wanted {
-            let key = (family.clone(), *bold, *italic);
-            let Some(bytes) = sources.get(&key) else {
+        for key in &wanted {
+            let Some(src) = sources.get(key) else {
                 continue;
             };
-            let Ok(face) = ttf_parser::Face::parse(bytes, 0) else {
+            // A face that does not parse cannot be embedded;
+            // it falls back at draw time like a missing one.
+            if ttf_parser::Face::parse(&src.bytes, 0).is_err() {
                 continue;
-            };
+            }
             n += 1;
-            let resource = format!("FE{n}");
-            let font_obj = add_embedded_font(pdf, &face, bytes);
-            resources.push_str(&format!(" /{} {} 0 R", resource, font_obj));
-            faces.insert(key, resource);
+            faces.insert(key.clone(), format!("FE{n}"));
+            order.push(key.clone());
         }
-        FontBook { faces, resources }
+        FontBook {
+            faces,
+            order,
+            sources,
+            encodings: std::collections::HashMap::new(),
+            resources: String::new(),
+        }
     }
 
-    /// The resource name to draw a style with: its exact face when
-    /// embedded, its family's plain face when not, else core fonts.
-    /// The resource for one explicit face, walking down the
-    /// same ladder: exact (family, bold, italic), then the
-    /// family's plain face, then the core fallback (F2 bold /
-    /// F1 regular). How a run asks for its face (G1b).
-    fn resource_for_face(&self, family: &str, bold: bool, italic: bool) -> String {
-        let exact = (family.to_string(), bold, italic);
-        if let Some(r) = self.faces.get(&exact) {
-            return r.clone();
+    /// Write every prepared face into the PDF, subset to the
+    /// characters the recorded draw list used in it.
+    fn embed(
+        &mut self,
+        pdf: &mut Pdf,
+        used: &std::collections::HashMap<FaceKey, std::collections::BTreeSet<char>>,
+    ) {
+        let empty = std::collections::BTreeSet::new();
+        let mut resources = String::new();
+        for key in self.order.clone() {
+            let src = self.sources.get(&key).expect("prepared face has a source");
+            let face = ttf_parser::Face::parse(&src.bytes, 0).expect("prepared face parses");
+            let chars = used.get(&key).unwrap_or(&empty);
+            let (font_obj, encoding) = match font_flavor(&src.bytes) {
+                FontFlavor::TrueType => add_cid_font(pdf, &face, src, chars),
+                FontFlavor::Cff => (
+                    add_embedded_font(pdf, &face, &src.bytes),
+                    FaceEncoding::WinAnsi,
+                ),
+            };
+            let resource = self.faces.get(&key).expect("prepared face has a resource");
+            resources.push_str(&format!(" /{} {} 0 R", resource, font_obj));
+            self.encodings.insert(key, encoding);
         }
-        let plain = (family.to_string(), false, false);
-        if let Some(r) = self.faces.get(&plain) {
-            return r.clone();
+        self.resources = resources;
+    }
+
+    /// The font to draw one face request with, walking down the
+    /// ladder: the exact (family, bold, italic) face when
+    /// embedded, the family's plain face when not, else the
+    /// core fallback (F2 bold / F1 regular). How a style and a
+    /// run ask for their faces (G1b).
+    fn resource_for_face(&self, family: &str, bold: bool, italic: bool) -> DrawFont {
+        let exact: FaceKey = (family.to_string(), bold, italic);
+        if self.faces.contains_key(&exact) {
+            return DrawFont::Embedded(exact);
         }
-        if bold {
-            "F2".to_string()
-        } else {
-            "F1".to_string()
+        let plain: FaceKey = (family.to_string(), false, false);
+        if self.faces.contains_key(&plain) {
+            return DrawFont::Embedded(plain);
+        }
+        DrawFont::Core(if bold { "F2" } else { "F1" })
+    }
+
+    /// The page resource name a draw font renders under.
+    fn resource_for(&self, font: &DrawFont) -> String {
+        match font {
+            DrawFont::Embedded(key) => self
+                .faces
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| "F1".to_string()),
+            DrawFont::Core(name) => name.to_string(),
         }
     }
 }
@@ -675,6 +972,178 @@ endstream",
     pdf.add(font.into_bytes())
 }
 
+/// Write one stream object (font program, ToUnicode CMap),
+/// FlateDecode-compressed when that helps, and return its id.
+fn add_stream(pdf: &mut Pdf, dict_extra: &str, data: &[u8]) -> usize {
+    let (bytes, compressed) = flate(data);
+    let filter = if compressed {
+        " /Filter /FlateDecode"
+    } else {
+        ""
+    };
+    let mut stream = format!(
+        "<< /Length {} {}{}>>
+stream
+",
+        bytes.len(),
+        dict_extra,
+        filter
+    )
+    .into_bytes();
+    stream.extend_from_slice(&bytes);
+    stream.extend_from_slice(
+        b"
+endstream",
+    );
+    pdf.add(stream)
+}
+
+/// The ToUnicode CMap for one CID face: each emitted CID mapped
+/// back to the character it stands for, so text extraction and
+/// search recover the real words. Entries are sorted by CID and
+/// chunked at the format's 100-entry block limit; characters
+/// outside the Basic Multilingual Plane are written as UTF-16
+/// surrogate pairs, as the format requires.
+fn to_unicode_cmap(cids: &std::collections::HashMap<char, u16>) -> Vec<u8> {
+    let mut pairs: Vec<(u16, char)> = cids.iter().map(|(c, cid)| (*cid, *c)).collect();
+    pairs.sort_by_key(|(cid, _)| *cid);
+    let mut out = String::new();
+    out.push_str("/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n");
+    for chunk in pairs.chunks(100) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "{} beginbfchar", chunk.len());
+        for (cid, c) in chunk {
+            let mut utf16 = [0u16; 2];
+            let encoded = c.encode_utf16(&mut utf16);
+            let mut val = String::new();
+            for unit in encoded.iter() {
+                let _ = write!(val, "{unit:04X}");
+            }
+            let _ = writeln!(out, "<{cid:04X}> <{val}>");
+        }
+        out.push_str("endbfchar\n");
+    }
+    out.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    out.into_bytes()
+}
+
+/// Add a TrueType face as a CID-keyed font (Type0 + CIDFontType2,
+/// Identity-H, identity CIDToGIDMap, ToUnicode) and return its
+/// font object plus the encoding content rendering must use.
+///
+/// The CID scheme: when the face is subset, the subsetter
+/// remaps glyph IDs consecutively and guarantees an identity
+/// GID-to-CID mapping in its output, so a glyph's CID is its
+/// remapped glyph ID; when the face forbids subsetting (or
+/// subsetting fails), it embeds whole and a glyph's CID is its
+/// original glyph ID. Either way /CIDToGIDMap is /Identity and
+/// the character -> CID map returned here is the only place the
+/// choice lives. Widths always come from the original face's
+/// metrics, the same numbers shaping used.
+fn add_cid_font(
+    pdf: &mut Pdf,
+    face: &ttf_parser::Face,
+    source: &FaceSource,
+    used: &std::collections::BTreeSet<char>,
+) -> (usize, FaceEncoding) {
+    let upem = face.units_per_em() as i32;
+    let scale = |v: i16| v as i32 * 1000 / upem;
+    let advance = |gid: u16| -> i32 {
+        face.glyph_hor_advance(ttf_parser::GlyphId(gid))
+            .map(|a| a as i32 * 1000 / upem)
+            .unwrap_or(0)
+    };
+    let name = postscript_name(face);
+
+    // Decide the embedded program and the character -> CID map.
+    let mut cids: std::collections::HashMap<char, u16> = std::collections::HashMap::new();
+    let mut program: Option<Vec<u8>> = None;
+    if !source.no_subsetting {
+        let mut remapper = subsetter::GlyphRemapper::new();
+        for &c in used {
+            if let Some(g) = face.glyph_index(c) {
+                remapper.remap(g.0);
+            }
+        }
+        if let Ok(subset) = subsetter::subset(&source.bytes, 0, &remapper) {
+            for &c in used {
+                if let Some(g) = face.glyph_index(c) {
+                    if let Some(cid) = remapper.get(g.0) {
+                        cids.insert(c, cid);
+                    }
+                }
+            }
+            program = Some(subset);
+        }
+        // A subsetting error is not an export error: fall
+        // through and embed the face whole instead.
+    }
+    let program = match program {
+        Some(p) => p,
+        None => {
+            cids.clear();
+            for &c in used {
+                if let Some(g) = face.glyph_index(c) {
+                    cids.insert(c, g.0);
+                }
+            }
+            source.bytes.clone()
+        }
+    };
+
+    let stream_id = add_stream(pdf, &format!(" /Length1 {}", program.len()), &program);
+    let bb = face.global_bounding_box();
+    let cap = face
+        .capital_height()
+        .map(scale)
+        .unwrap_or_else(|| scale(face.ascender()) * 7 / 10);
+    let descriptor = format!(
+        "<< /Type /FontDescriptor /FontName /{} /Flags 32 /FontBBox [{} {} {} {}] /ItalicAngle {:.1} /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {} 0 R >>",
+        name,
+        scale(bb.x_min),
+        scale(bb.y_min),
+        scale(bb.x_max),
+        scale(bb.y_max),
+        face.italic_angle(),
+        scale(face.ascender()),
+        scale(face.descender()),
+        cap,
+        stream_id
+    );
+    let descriptor_id = pdf.add(descriptor.into_bytes());
+
+    // /W: CID 0 (the missing-glyph mark) plus one width per
+    // emitted CID, from the original face's advances.
+    let mut w_entries: Vec<(u16, i32)> = vec![(0, advance(0))];
+    for (c, cid) in &cids {
+        if let Some(g) = face.glyph_index(*c) {
+            w_entries.push((*cid, advance(g.0)));
+        }
+    }
+    w_entries.sort_by_key(|(cid, _)| *cid);
+    w_entries.dedup_by_key(|(cid, _)| *cid);
+    let widths: Vec<String> = w_entries
+        .iter()
+        .map(|(cid, w)| format!("{cid} [{w}]"))
+        .collect();
+    let cidfont = format!(
+        "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {} 0 R /CIDToGIDMap /Identity /DW 1000 /W [{}] >>",
+        name,
+        descriptor_id,
+        widths.join(" ")
+    );
+    let cidfont_id = pdf.add(cidfont.into_bytes());
+    let to_unicode_id = add_stream(pdf, "", &to_unicode_cmap(&cids));
+    let font = format!(
+        "<< /Type /Font /Subtype /Type0 /BaseFont /{} /Encoding /Identity-H /DescendantFonts [{} 0 R] /ToUnicode {} 0 R >>",
+        name, cidfont_id, to_unicode_id
+    );
+    let font_id = pdf.add(font.into_bytes());
+    (font_id, FaceEncoding::Cid(cids))
+}
+
 /// The font's PostScript name, sanitized for a PDF name object.
 fn postscript_name(face: &ttf_parser::Face) -> String {
     let mut found: Option<String> = None;
@@ -717,6 +1186,18 @@ fn info_object(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
 
 /// Build a PDF from a set of sheet sides (each side becomes one page).
 fn build_pdf(doc: &Document, sides: &[SheetSide], purpose: ExportPurpose) -> Vec<u8> {
+    build_pdf_with_library(doc, sides, purpose, &library_font_bytes())
+}
+
+/// [`build_pdf`] with the Font Library snapshot given, so tests
+/// can put a document in front of faces the machine's real
+/// library does not hold.
+fn build_pdf_with_library(
+    doc: &Document,
+    sides: &[SheetSide],
+    purpose: ExportPurpose,
+    library: &[(ob_fonts::FontInfo, Vec<u8>)],
+) -> Vec<u8> {
     let mut pdf = Pdf {
         objects: Vec::new(),
     };
@@ -729,14 +1210,16 @@ fn build_pdf(doc: &Document, sides: &[SheetSide], purpose: ExportPurpose) -> Vec
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
             .to_vec(),
     );
-    let library = library_font_bytes();
-    let fonts = FontBook::build(doc, &mut pdf, &library);
+    let mut fonts = FontBook::prepare(doc, face_sources(library));
     let mut shaper = ob_text::shaping::bundled_shaper();
-    register_library_fonts(&mut shaper, &library);
-    let mut page_ids = Vec::new();
+    register_library_fonts(&mut shaper, library);
+    // Draw every side first, recording operations: subsetting
+    // needs the final draw list (the resolved words, dot
+    // leaders and all) before any face can be cut down to it.
+    let mut drawn: Vec<PageContent> = Vec::new();
     for side in sides {
-        let mut pc = PageContent { buf: String::new() };
-        pc.buf.push_str("0.92 0.92 0.92 RG "); // light frame guides color for shapes
+        let mut pc = PageContent::default();
+        pc.push_raw("0.92 0.92 0.92 RG "); // light frame guides color for shapes
         for pl in &side.placements {
             if let Some(panel) = doc.panels.get(pl.panel) {
                 draw_panel(
@@ -751,7 +1234,17 @@ fn build_pdf(doc: &Document, sides: &[SheetSide], purpose: ExportPurpose) -> Vec
                 );
             }
         }
-        let content = pc.buf.into_bytes();
+        drawn.push(pc);
+    }
+    let mut used: std::collections::HashMap<FaceKey, std::collections::BTreeSet<char>> =
+        std::collections::HashMap::new();
+    for pc in &drawn {
+        pc.collect_used(&mut used);
+    }
+    fonts.embed(&mut pdf, &used);
+    let mut page_ids = Vec::new();
+    for (side, pc) in sides.iter().zip(drawn.iter()) {
+        let content = pc.render(&fonts).into_bytes();
         let (content, compressed) = flate(&content);
         let filter = if compressed {
             " /Filter /FlateDecode"
@@ -904,8 +1397,9 @@ fn register_library_fonts(
 
 /// The Font Library's fonts, read once per export: the embedder
 /// and the shaper used to each scan and read the whole library
-/// (closing audit).
-fn library_font_bytes() -> Vec<(ob_fonts::FontInfo, Vec<u8>)> {
+/// (closing audit). Public so the app's Check step works from
+/// the same snapshot the exports use.
+pub fn library_font_bytes() -> Vec<(ob_fonts::FontInfo, Vec<u8>)> {
     let mut out = Vec::new();
     if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
         for info in lib.scan() {
@@ -962,30 +1456,67 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_chars_match_what_the_encoder_does() {
-        // Plain ASCII and the WinAnsi punctuation people actually
-        // type (curly quotes, em dash, the dagger itself, the
-        // bullet) all print as themselves: not flagged.
-        assert!(unsupported_chars("Plain text, 123!").is_empty());
+    fn undrawable_chars_follow_the_printing_face() {
+        // Plain ASCII and the punctuation people actually type
+        // (curly quotes, em dash, the dagger itself, the bullet)
+        // are glyphs the bundled Liberation faces have: not
+        // flagged.
         assert!(
-            unsupported_chars("\u{201C}quoted\u{201D} \u{2014} and \u{2020} \u{2022}").is_empty()
+            undrawable_chars("Plain text, 123!", "Liberation Sans", false, false, &[]).is_empty()
         );
-        // The Latin cross and a check mark have no WinAnsi byte:
-        // the encoder prints a space for them, so they are flagged.
-        assert_eq!(unsupported_chars("a \u{271D} b"), vec!['\u{271D}']);
-        assert_eq!(unsupported_chars("done \u{2713}"), vec!['\u{2713}']);
+        assert!(undrawable_chars(
+            "\u{201C}quoted\u{201D} \u{2014} and \u{2020} \u{2022}",
+            "Liberation Sans",
+            false,
+            false,
+            &[]
+        )
+        .is_empty());
+        // Greek letters have no WinAnsi byte but Liberation has
+        // the glyphs, and CID embedding draws glyphs, not bytes:
+        // not flagged anymore. This is the ceiling O2 lifts.
+        assert!(
+            undrawable_chars("\u{3B1}\u{3C9}", "Liberation Sans", false, false, &[]).is_empty()
+        );
+        // A check mark and the Latin cross are in no bundled
+        // Liberation face (verified against the faces' own
+        // character maps), so they are still named.
+        assert_eq!(
+            undrawable_chars("done \u{2713}", "Liberation Sans", false, false, &[]),
+            vec!['\u{2713}']
+        );
+        assert_eq!(
+            undrawable_chars("a \u{271D} b", "Liberation Sans", false, false, &[]),
+            vec!['\u{271D}']
+        );
         // An emoji is flagged, once, however often it appears.
         assert_eq!(
-            unsupported_chars("\u{1F600} and \u{1F600}"),
+            undrawable_chars(
+                "\u{1F600} and \u{1F600}",
+                "Liberation Sans",
+                false,
+                false,
+                &[]
+            ),
             vec!['\u{1F600}']
         );
-        // Greek letters are outside WinAnsi too.
+        // A family no source provides falls back to the core
+        // fonts, and the WinAnsi rule applies there.
         assert_eq!(
-            unsupported_chars("\u{3B1}\u{3C9}"),
-            vec!['\u{3B1}', '\u{3C9}']
+            undrawable_chars("\u{3B1}", "No Such Family", false, false, &[]),
+            vec!['\u{3B1}']
         );
-        // A tab is the dot-leader marker, never a blank: skipped.
-        assert!(unsupported_chars("Prelude\t").is_empty());
+        assert!(undrawable_chars(
+            "plain \u{201C}quotes\u{201D}",
+            "No Such Family",
+            false,
+            false,
+            &[]
+        )
+        .is_empty());
+        // A tab is the dot-leader marker, never a character:
+        // skipped.
+        assert!(undrawable_chars("Prelude\t", "Liberation Sans", false, false, &[]).is_empty());
     }
 
     /// Every page's content stream, decoded (content streams
@@ -1003,15 +1534,147 @@ mod tests {
         out
     }
 
+    /// One font object's ToUnicode map: CID -> the text it
+    /// stands for, parsed from the bfchar blocks.
+    fn to_unicode_map(
+        parsed: &lopdf::Document,
+        font: &lopdf::Dictionary,
+    ) -> std::collections::HashMap<u16, String> {
+        let mut map = std::collections::HashMap::new();
+        let Some(tu_ref) = font
+            .get(b"ToUnicode")
+            .ok()
+            .and_then(|o| o.as_reference().ok())
+        else {
+            return map;
+        };
+        let Some(stream) = parsed
+            .get_object(tu_ref)
+            .ok()
+            .and_then(|o| o.as_stream().ok())
+        else {
+            return map;
+        };
+        let Ok(content) = stream.decompressed_content() else {
+            return map;
+        };
+        let text = String::from_utf8_lossy(&content).into_owned();
+        for block in text.split("beginbfchar").skip(1) {
+            let block = block.split("endbfchar").next().unwrap_or("");
+            let toks: Vec<&str> = block
+                .split(|c: char| c == '<' || c == '>' || c.is_whitespace())
+                .filter(|t| !t.is_empty())
+                .collect();
+            for pair in toks.chunks_exact(2) {
+                let Ok(cid) = u16::from_str_radix(pair[0], 16) else {
+                    continue;
+                };
+                let units: Vec<u16> = (0..pair[1].len() / 4)
+                    .filter_map(|i| u16::from_str_radix(&pair[1][i * 4..i * 4 + 4], 16).ok())
+                    .collect();
+                if let Ok(s) = String::from_utf16(&units) {
+                    map.insert(cid, s);
+                }
+            }
+        }
+        map
+    }
+
+    /// The text an export actually draws, recovered the way a
+    /// reader would: each show-text operation decoded through
+    /// its font's ToUnicode map (or WinAnsi for the core fonts).
+    /// Returns (resource, text) per operation, in draw order.
+    /// A CID with no map entry (a missing glyph) extracts as
+    /// U+FFFD, as readers conventionally show it.
+    fn extracted_runs(pdf: &[u8]) -> Vec<(String, String)> {
+        let parsed = lopdf::Document::load_mem(pdf).expect("lopdf parses the export");
+        let mut maps: std::collections::HashMap<String, std::collections::HashMap<u16, String>> =
+            std::collections::HashMap::new();
+        for (_, page_id) in parsed.get_pages() {
+            let Ok((Some(resources), _)) = parsed.get_page_resources(page_id) else {
+                continue;
+            };
+            let Ok(font_dict) = resources.get(b"Font").and_then(|o| o.as_dict()) else {
+                continue;
+            };
+            for (name, obj) in font_dict.iter() {
+                let name = String::from_utf8_lossy(name).into_owned();
+                if maps.contains_key(&name) {
+                    continue;
+                }
+                let Some(font_obj) = obj
+                    .as_reference()
+                    .ok()
+                    .and_then(|id| parsed.get_object(id).ok())
+                else {
+                    continue;
+                };
+                let Ok(dict) = font_obj.as_dict() else {
+                    continue;
+                };
+                maps.insert(name, to_unicode_map(&parsed, dict));
+            }
+        }
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (_, page_id) in parsed.get_pages() {
+            let Ok(content) = parsed.get_page_content(page_id) else {
+                continue;
+            };
+            let Ok(ops) = lopdf::content::Content::decode(&content) else {
+                continue;
+            };
+            let mut current = String::new();
+            for op in ops.operations {
+                match op.operator.as_str() {
+                    "Tf" => {
+                        if let Some(lopdf::Object::Name(n)) = op.operands.first() {
+                            current = String::from_utf8_lossy(n).into_owned();
+                        }
+                    }
+                    "Tj" => {
+                        if let Some(lopdf::Object::String(bytes, _)) = op.operands.first() {
+                            let text = match maps.get(&current) {
+                                Some(map) if !map.is_empty() => {
+                                    let mut s = String::new();
+                                    for pair in bytes.chunks_exact(2) {
+                                        let cid = u16::from_be_bytes([pair[0], pair[1]]);
+                                        match map.get(&cid) {
+                                            Some(t) => s.push_str(t),
+                                            None => s.push('\u{FFFD}'),
+                                        }
+                                    }
+                                    s
+                                }
+                                _ => bytes.iter().filter_map(|b| winansi_char(*b)).collect(),
+                            };
+                            out.push((current.clone(), text));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
+    /// All drawn text of an export, operations joined by spaces.
+    fn extracted_text(pdf: &[u8]) -> String {
+        extracted_runs(pdf)
+            .iter()
+            .map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     #[test]
     fn duplex_test_sheet_has_front_and_back() {
         let bytes = export_duplex_test_pdf();
         assert!(bytes.starts_with(b"%PDF-1.4"));
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("/Count 2"), "two pages: {text:.200}");
-        let content = decoded_content(&bytes);
-        assert!(content.contains("FRONT"), "front missing");
-        assert!(content.contains("BACK"), "back missing");
+        let content = extracted_text(&bytes);
+        assert!(content.contains("FRONT"), "front missing: {content:.300}");
+        assert!(content.contains("BACK"), "back missing: {content:.300}");
     }
 
     #[test]
@@ -1024,8 +1687,55 @@ mod tests {
             "reader PDF must have 4 pages: {text:.200}"
         );
         assert!(
-            decoded_content(&bytes).contains("Grace Lutheran Church"),
+            extracted_text(&bytes).contains("Grace Lutheran Church"),
             "cover text missing"
+        );
+    }
+
+    #[test]
+    fn extraction_round_trips_the_documents_words() {
+        // The whole point of CID + ToUnicode: a reader (and a
+        // screen reader, and a search box) gets back the words
+        // the document holds, fields filled in as printed.
+        let bytes = export_reader_pdf(&sample_doc(), ExportPurpose::ForPrinting);
+        let text = extracted_text(&bytes);
+        assert!(
+            text.contains("Grace Lutheran Church"),
+            "church name round-trips: {text:.400}"
+        );
+        assert!(
+            text.contains("Pastor Lee"),
+            "the filled-in pastor field round-trips: {text:.400}"
+        );
+        assert!(
+            text.contains("Twentieth Sunday after Pentecost"),
+            "the occasion name round-trips: {text:.400}"
+        );
+    }
+
+    #[test]
+    fn characters_beyond_winansi_draw_when_the_face_has_them() {
+        // Greek is outside Windows-1252 but inside Liberation
+        // Sans: with glyph addressing it must print, and the
+        // Check predicate must agree (it uses the same oracle).
+        let mut doc = sample_doc();
+        let sid = doc.stories[0].id.clone();
+        doc.story_mut(&sid)
+            .expect("story")
+            .paragraphs
+            .push(ob_model::Paragraph::new(
+                "body",
+                "Peace \u{03B1} and \u{03C9}",
+            ));
+        let bytes = export_reader_pdf(&doc, ExportPurpose::ForPrinting);
+        let text = extracted_text(&bytes);
+        assert!(
+            text.contains('\u{03B1}') && text.contains('\u{03C9}'),
+            "the Greek letters extract back out of the PDF: {text:.400}"
+        );
+        assert!(
+            undrawable_chars("Peace \u{03B1}", "Liberation Sans", false, false, &[]).is_empty(),
+            "and the Check does not flag them"
         );
     }
 
@@ -1060,7 +1770,8 @@ mod tests {
                 .find(&format!("\n{obj} 0 obj"))
                 .or_else(|| raw.find(&format!("{obj} 0 obj")))
                 .expect("font object present");
-            let dict = &raw[at..(at + 400).min(raw.len())];
+            let dict: String = raw[at..].chars().take(400).collect();
+            let dict = dict.as_str();
             if dict.contains("Bold") {
                 bold_resources.push(name);
             } else if dict.contains("/BaseFont") {
@@ -1071,20 +1782,14 @@ mod tests {
             !bold_resources.is_empty(),
             "a bold face was embedded for the run"
         );
-        let content = decoded_content(&bytes);
-        // The resource named on the text op that shows a word.
+        // The resource on the operation that shows a word,
+        // with the shown text recovered through ToUnicode.
+        let runs = extracted_runs(&bytes);
         let resource_showing = |word: &str| -> String {
-            for line in content.lines() {
-                if line.contains(&format!("({word}) Tj")) {
-                    let after_bt = line.split("BT /").nth(1).expect("op names a font");
-                    return after_bt
-                        .split_whitespace()
-                        .next()
-                        .expect("resource name")
-                        .to_string();
-                }
-            }
-            panic!("no text op shows {word}");
+            runs.iter()
+                .find(|(_, t)| t == word)
+                .map(|(r, _)| r.clone())
+                .unwrap_or_else(|| panic!("no text op shows {word}: {runs:?}"))
         };
         assert!(
             bold_resources.contains(&resource_showing("hymn")),
@@ -1165,7 +1870,7 @@ mod tests {
             "content and font streams are compressed"
         );
         // Decompressing a content stream brings the operators
-        // back exactly: text blocks with the words in them.
+        // back exactly: text blocks carrying the glyph codes.
         let content = decoded_content(&bytes);
         assert!(
             content.contains("BT"),
@@ -1173,8 +1878,8 @@ mod tests {
         );
         assert!(content.contains("Tj"), "show-text operators survive");
         assert!(
-            content.contains("Grace Lutheran Church"),
-            "the words survive"
+            extracted_text(&bytes).contains("Grace Lutheran Church"),
+            "the words survive, recovered through ToUnicode"
         );
         // The embedded font stream is compressed too, and a
         // strict parser still reads the file structure whole.
@@ -1225,14 +1930,11 @@ mod tests {
         // The audit measured this fresh 16-panel booklet at
         // 1,254,242 bytes (reader) and 1,251,892 (imposed):
         // whole raw font faces, no compressed streams. Stream
-        // compression alone roughly halves it. Font subsetting
-        // is the remaining lever and is BLOCKED on the writer:
-        // the subsetter crate removes the font's cmap and
-        // requires CID-keyed embedding, while this writer emits
-        // WinAnsi simple fonts whose glyph mapping runs through
-        // that cmap (see docs/LEGAL.md, 2026-10-16 note). Until
-        // the CID migration lands, this bound guards the
-        // compression win; it tightens when subsetting lands.
+        // compression alone (O1) roughly halved it. CID
+        // embedding plus subsetting (O2) cuts each embedded
+        // face to the glyphs the booklet actually draws, which
+        // is where nearly all of the rest was. This bound
+        // guards both wins.
         let doc = ob_layout::build_template(
             ob_layout::Preset::HalfLetterBooklet,
             ob_model::ChurchProfile::default(),
@@ -1242,19 +1944,147 @@ mod tests {
         let imposed = export_imposed_pdf(&doc, ExportPurpose::ForPrinting);
         let reader = export_reader_pdf(&doc, ExportPurpose::ForEmailOrWeb);
         println!(
-            "booklet sizes after O1: imposed {} bytes, reader {} bytes",
+            "booklet sizes after O2: imposed {} bytes, reader {} bytes",
             imposed.len(),
             reader.len()
         );
         assert!(
-            imposed.len() < 800_000,
+            imposed.len() < 400_000,
             "imposed booklet regressed: {} bytes",
             imposed.len()
         );
         assert!(
-            reader.len() < 800_000,
+            reader.len() < 400_000,
             "reader booklet regressed: {} bytes",
             reader.len()
+        );
+    }
+
+    /// The bytes of one stream object our writer produced:
+    /// the payload between the stream markers, decompressed.
+    fn stream_payload(object: &[u8]) -> Vec<u8> {
+        let start = object
+            .windows(b"stream\n".len())
+            .position(|w| w == b"stream\n")
+            .expect("stream marker")
+            + b"stream\n".len();
+        let end = object
+            .windows(b"\nendstream".len())
+            .rposition(|w| w == b"\nendstream")
+            .expect("endstream marker");
+        let raw = &object[start..end];
+        if object[..start]
+            .windows(b"FlateDecode".len())
+            .any(|w| w == b"FlateDecode")
+        {
+            use std::io::Read as _;
+            let mut dec = flate2::read::ZlibDecoder::new(raw);
+            let mut out = Vec::new();
+            dec.read_to_end(&mut out).expect("stream inflates");
+            out
+        } else {
+            raw.to_vec()
+        }
+    }
+
+    #[test]
+    fn subsetting_shrinks_the_program_and_no_subsetting_stays_whole() {
+        let (_, bytes) = ob_text::shaping::bundled_font_files()
+            .into_iter()
+            .find(|(name, _)| *name == "LiberationSans-Regular.ttf")
+            .expect("bundled regular face");
+        let face = ttf_parser::Face::parse(bytes, 0).expect("face parses");
+        let used: std::collections::BTreeSet<char> = "abc".chars().collect();
+
+        // Subset: three glyphs of a ~400 KB face leave a
+        // program a small fraction of the source, and the
+        // encoding names exactly those characters.
+        let mut pdf = Pdf {
+            objects: Vec::new(),
+        };
+        let subset_source = FaceSource {
+            bytes: bytes.to_vec(),
+            no_subsetting: false,
+        };
+        let (_, encoding) = add_cid_font(&mut pdf, &face, &subset_source, &used);
+        let program = stream_payload(&pdf.objects[0]);
+        assert!(
+            program.len() < bytes.len() / 4,
+            "subset program {} bytes vs source {} bytes",
+            program.len(),
+            bytes.len()
+        );
+        match &encoding {
+            FaceEncoding::Cid(cids) => {
+                assert_eq!(cids.len(), 3, "a, b and c each got a CID: {cids:?}");
+                assert!(
+                    cids.values().all(|cid| *cid > 0),
+                    "no drawn character rides the missing-glyph CID"
+                );
+            }
+            FaceEncoding::WinAnsi => panic!("a TrueType face encodes as CID"),
+        }
+
+        // No-subsetting: the same face embeds whole, its
+        // program byte-for-byte the source, and characters
+        // address their original glyph IDs.
+        let mut pdf = Pdf {
+            objects: Vec::new(),
+        };
+        let whole_source = FaceSource {
+            bytes: bytes.to_vec(),
+            no_subsetting: true,
+        };
+        let (_, encoding) = add_cid_font(&mut pdf, &face, &whole_source, &used);
+        let program = stream_payload(&pdf.objects[0]);
+        assert_eq!(program, bytes, "a no-subsetting face embeds whole");
+        match &encoding {
+            FaceEncoding::Cid(cids) => {
+                for c in "abc".chars() {
+                    assert_eq!(
+                        cids.get(&c).copied(),
+                        face.glyph_index(c).map(|g| g.0),
+                        "whole-face CIDs are the original glyph IDs"
+                    );
+                }
+            }
+            FaceEncoding::WinAnsi => panic!("a TrueType face encodes as CID"),
+        }
+    }
+
+    #[test]
+    fn a_face_that_has_the_cross_draws_it() {
+        // No bundled Liberation face carries U+271D (verified
+        // against their character maps), but a library face
+        // that has it must draw it and pass the Check: DejaVu
+        // Sans is such a face. The file lives with the OS, not
+        // in this repo, so the test steps aside where it is
+        // absent instead of failing on a missing fixture.
+        let path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+        let Ok(bytes) = std::fs::read(path) else {
+            eprintln!("DejaVu Sans not present at {path}; cross test skipped");
+            return;
+        };
+        let info = ob_fonts::inspect(&bytes, "DejaVuSans.ttf").expect("DejaVu inspects");
+        assert_eq!(info.family, "DejaVu Sans");
+        let library = vec![(info, bytes)];
+        assert!(
+            undrawable_chars("\u{271D}", "DejaVu Sans", false, false, &library).is_empty(),
+            "the Check does not flag a character this face has"
+        );
+        let mut doc = sample_doc();
+        for style in &mut doc.styles {
+            style.font_family = "DejaVu Sans".into();
+        }
+        let sid = doc.stories[0].id.clone();
+        doc.story_mut(&sid).expect("story").paragraphs =
+            vec![ob_model::Paragraph::new("body", "Peace \u{271D}")];
+        let sides = ob_impose::impose_single(&doc);
+        let pdf = build_pdf_with_library(&doc, &sides, ExportPurpose::ForPrinting, &library);
+        let text = extracted_text(&pdf);
+        assert!(
+            text.contains('\u{271D}'),
+            "the cross extracts back out of the PDF: {text:.300}"
         );
     }
 
@@ -1277,8 +2107,12 @@ mod tests {
         let pdf = export_reader_pdf(&doc, ExportPurpose::ForEmailOrWeb);
         let text = String::from_utf8_lossy(&pdf);
         assert!(
-            text.contains("/Subtype /TrueType"),
-            "embedded TrueType faces"
+            text.contains("/Subtype /Type0"),
+            "faces embedded as CID-keyed Type0 fonts"
+        );
+        assert!(
+            text.contains("/Subtype /CIDFontType2"),
+            "with CIDFontType2 descendants"
         );
         assert!(text.contains("/FontFile2"), "font programs embedded");
         assert!(
@@ -1292,35 +2126,96 @@ mod tests {
 
     #[test]
     fn embedded_widths_match_the_real_font() {
-        // Liberation Sans at 2048 units per em, verified against the
-        // font file itself: space advances 569 units (277 thousandths
-        // scaled) and A advances 1366 (666). The embedded /Widths
-        // table must carry the real font's own numbers, not
-        // core-font stand-ins.
-        let doc = sample_doc();
+        // Liberation Sans at 2048 units per em, verified against
+        // the font file itself: space advances 569 units (277
+        // thousandths scaled) and A advances 1366 (666). The
+        // regular face's CIDFont /W entries, keyed through its
+        // ToUnicode map, must carry the real font's own numbers
+        // for the glyphs drawn, not core-font stand-ins.
+        let mut doc = sample_doc();
+        let sid = doc.stories[0].id.clone();
+        doc.story_mut(&sid)
+            .expect("story")
+            .paragraphs
+            .push(ob_model::Paragraph::new("body", "A A"));
         let pdf = export_reader_pdf(&doc, ExportPurpose::ForEmailOrWeb);
-        let text = String::from_utf8_lossy(&pdf);
-        let mut arrays: Vec<Vec<i32>> = Vec::new();
-        let mut rest = text.as_ref();
-        while let Some(start) = rest.find("/Widths [") {
-            let body = &rest[start + "/Widths [".len()..];
-            let end = body.find(']').expect("widths end");
-            arrays.push(
-                body[..end]
-                    .split_whitespace()
-                    .map(|w| w.parse().expect("width number"))
-                    .collect(),
-            );
-            rest = &body[end..];
+        let parsed = lopdf::Document::load_mem(&pdf).expect("lopdf parses the export");
+        // Walk the page resources to the regular face's Type0
+        // dictionary, then down to its CIDFont descendant.
+        let mut checked = false;
+        for (_, page_id) in parsed.get_pages() {
+            let Ok((Some(resources), _)) = parsed.get_page_resources(page_id) else {
+                continue;
+            };
+            let Ok(font_dict) = resources.get(b"Font").and_then(|o| o.as_dict()) else {
+                continue;
+            };
+            for (_, obj) in font_dict.iter() {
+                let Some(font_obj) = obj
+                    .as_reference()
+                    .ok()
+                    .and_then(|id| parsed.get_object(id).ok())
+                else {
+                    continue;
+                };
+                let Ok(dict) = font_obj.as_dict() else {
+                    continue;
+                };
+                let base = dict
+                    .get(b"BaseFont")
+                    .and_then(|o| o.as_name())
+                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                    .unwrap_or_default();
+                if base != "LiberationSans" {
+                    continue;
+                }
+                let to_unicode = to_unicode_map(&parsed, dict);
+                let by_char: std::collections::HashMap<char, u16> = to_unicode
+                    .iter()
+                    .filter_map(|(cid, s)| s.chars().next().map(|c| (c, *cid)))
+                    .collect();
+                let descendants = dict
+                    .get(b"DescendantFonts")
+                    .and_then(|o| o.as_array())
+                    .expect("Type0 names its descendant");
+                let cidfont = descendants[0]
+                    .as_reference()
+                    .and_then(|id| parsed.get_object(id))
+                    .expect("descendant object")
+                    .as_dict()
+                    .expect("descendant dictionary")
+                    .clone();
+                let w = cidfont
+                    .get(b"W")
+                    .and_then(|o| o.as_array())
+                    .expect("CIDFont carries /W");
+                let mut widths: std::collections::HashMap<u16, i64> =
+                    std::collections::HashMap::new();
+                let mut i = 0;
+                while i + 1 < w.len() {
+                    if let (Ok(cid), Ok(arr)) = (w[i].as_i64(), w[i + 1].as_array()) {
+                        for (j, width) in arr.iter().enumerate() {
+                            if let Ok(width) = width.as_i64() {
+                                widths.insert((cid as u16) + (j as u16), width);
+                            }
+                        }
+                    }
+                    i += 2;
+                }
+                assert_eq!(
+                    widths.get(&by_char[&' ']),
+                    Some(&277),
+                    "space keeps the face's own advance"
+                );
+                assert_eq!(
+                    widths.get(&by_char[&'A']),
+                    Some(&666),
+                    "A keeps the face's own advance"
+                );
+                checked = true;
+            }
         }
-        assert!(arrays.len() >= 2, "regular and bold faces embedded");
-        assert!(arrays.iter().all(|a| a.len() == 224));
-        assert!(
-            arrays
-                .iter()
-                .any(|a| a[0] == 277 && a[(b'A' - 32) as usize] == 666),
-            "the regular face's real metrics are among the embedded tables"
-        );
+        assert!(checked, "the regular Liberation Sans face was embedded");
     }
 
     #[test]

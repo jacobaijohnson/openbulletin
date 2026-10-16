@@ -986,18 +986,45 @@ struct CharFinding {
     target: Option<(usize, Option<usize>)>,
 }
 
-/// Every story in the document that would lose characters to
-/// blank spaces in the print copy. Fields are filled in first,
-/// because the filled-in words are what actually prints.
+/// Every story in the document that uses characters the print
+/// copy cannot draw in the face that would print them. Fields
+/// are filled in first, because the filled-in words are what
+/// actually prints; each run is tested against its own face
+/// (the paragraph style's family with the run's bold/italic),
+/// resolved exactly the way the PDF writer resolves it, so a
+/// character is only named when that face truly has no glyph
+/// for it.
 fn char_findings(doc: &Document) -> Vec<CharFinding> {
+    let oracle = ob_pdf::FaceOracle::new(&ob_pdf::library_font_bytes());
     let mut out = Vec::new();
     for story in &doc.stories {
         let mut chars: Vec<char> = Vec::new();
         for para in &story.paragraphs {
-            let resolved = ob_model::resolve_fields(&para.text(), doc);
-            for c in ob_pdf::unsupported_chars(&resolved) {
-                if !chars.contains(&c) {
-                    chars.push(c);
+            // The same fallback style the PDF writer draws
+            // with when a paragraph names a style the document
+            // no longer carries.
+            let style = doc
+                .style(&para.style)
+                .cloned()
+                .unwrap_or(ob_model::ParagraphStyle {
+                    id: "body".into(),
+                    name: "Body".into(),
+                    font_size: 11_000,
+                    bold: false,
+                    italic: false,
+                    align: ob_model::Align::Left,
+                    space_after: 4_000,
+                    color: ob_model::Rgb::BLACK,
+                    font_family: "Liberation Sans".into(),
+                    font_sha256: None,
+                });
+            for run in ob_model::resolve_runs(&para.runs, doc) {
+                let bold = run.bold.unwrap_or(style.bold);
+                let italic = run.italic.unwrap_or(style.italic);
+                for c in oracle.undrawable_chars(&run.text, &style.font_family, bold, italic) {
+                    if !chars.contains(&c) {
+                        chars.push(c);
+                    }
                 }
             }
         }
@@ -1048,13 +1075,13 @@ fn char_note(f: &CharFinding) -> String {
     if f.chars.len() == 1 {
         format!(
             "Check: the words in \"{}\" use a mark the print copy cannot show: {marks}. \
-             It would print as a blank space. Type a plain mark instead, or take it out.",
+             It would print as an empty box. Type a plain mark instead, or take it out.",
             f.label
         )
     } else {
         format!(
             "Check: the words in \"{}\" use marks the print copy cannot show: {marks}. \
-             They would print as blank spaces. Type plain marks instead, or take them out.",
+             They would print as empty boxes. Type plain marks instead, or take them out.",
             f.label
         )
     }
@@ -9666,9 +9693,12 @@ mod settings_tests {
     #[test]
     fn char_findings_flag_only_what_print_cannot_show() {
         // Workflow review, adopted item 1: a Latin cross and an
-        // emoji would print as blank spaces and must be named;
-        // the dagger and curly quotes print as themselves (they
-        // are real WinAnsi characters) and must not be flagged.
+        // emoji must be named (the bundled Liberation faces have
+        // no glyph for either, so each would print as the face's
+        // missing-glyph box); the dagger and curly quotes print
+        // as themselves (the faces have them) and must not be
+        // flagged. The test is glyph presence in the printing
+        // face, the same test the PDF writer applies (O2).
         let mut doc = ob_layout::build_template(
             ob_layout::Preset::LetterBifold,
             ob_model::ChurchProfile::default(),
@@ -9700,7 +9730,7 @@ mod settings_tests {
         let note = char_note(&findings[0]);
         assert!(note.contains("\u{271D}"), "the note names the mark: {note}");
         assert!(
-            note.contains("blank space"),
+            note.contains("empty box"),
             "the note says what happens: {note}"
         );
     }

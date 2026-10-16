@@ -77,3 +77,33 @@ Not yet: dragging new guides out of the rulers, master
   box, arrows nudge, Shift+arrows stride, Ctrl+Z/Y undo/redo.
 - **Escape cancels typing** (the office convention); Done or
   clicking away saves.
+
+## Interaction vocabulary (integrated 2026-10-15)
+
+The canvas borrows its habits from the two programs the office
+worker's hands already know, filtered by PRINCIPLES.md:
+
+- **Frames are the atom of the page** (InDesign). Boxes hold
+  text and pictures; the word "frame" stays in this document
+  and the code, never on the guided path (Principle 3 says
+  "boxes" and "panels").
+- **One pointer, not two.** InDesign splits Selection and
+  Direct Selection; administrators get one pointer that does
+  the obvious thing (click selects the box, drag moves it,
+  double-click types in it), and the right-click menu carries
+  everything else, in inches.
+- **Threading is made visible when the editor grows it.** A
+  story flowing from one box into another shows its link on
+  the canvas, and overflow is a mark on the box itself, never
+  a surprise at the printer. The .pub reader already honors
+  threading on import; the editor owes the same honesty.
+- **Smart guides grow from what shipped.** Boxes already snap
+  to guides, edges, and centers; frame-to-frame snapping joins
+  in the editor's next phase, with the same live inch readout.
+- **Grab the thing itself** (Apple's Direct Manipulation).
+  Every canvas operation starts from the object under the
+  pointer. Dialogs that ask for instructions about an object
+  the user could be holding are a recorded debt.
+- **What we leave behind:** layers panels, effects, and the
+  rest of the professional depth. A bulletin that needs them
+  belongs in the export-to-InDesign door, not in this app.

@@ -8,7 +8,7 @@
 
 use eframe::egui;
 use ob_layout::{build_template, Preset};
-use ob_model::{ChurchProfile, ContentRole, Document};
+use ob_model::{merge_rights_records, ChurchProfile, ContentRole, Document};
 
 mod editmap;
 mod runsedit;
@@ -3947,60 +3947,6 @@ fn swap_insert_parts(doc: &mut Document, id: &str) -> bool {
     std::mem::swap(&mut doc.stories, &mut doc.inserts[pos].stories);
     std::mem::swap(&mut doc.styles, &mut doc.inserts[pos].styles);
     true
-}
-
-/// Whether one rights record is stronger than another
-/// for the same picture bytes (round 3, R3-11): a
-/// record carrying a credit line (the credit text, or
-/// the copyright line that prints in its place) beats
-/// one without; else a known license beats Unknown.
-/// Equal strength keeps the existing record: the
-/// bulletin's own words are never traded away for a
-/// sheet's.
-/// Merge two records for the same picture, field by
-/// field (round 4, R4-5): the incoming record fills
-/// only what the existing record leaves empty, and a
-/// value already noted is never overwritten, so a
-/// split-strength pair (the bulletin holds the credit
-/// line, the sheet holds the license) ends up carrying
-/// both. The one exception is the children note, which
-/// merges as OR: a "children are in this picture" from
-/// either side stands, because the web page's
-/// hold-back is only as strong as the strongest note.
-/// The caller compares the result with the existing
-/// record to know whether anything was filled in.
-fn merge_rights_records(
-    existing: &ob_model::RightsRecord,
-    incoming: &ob_model::RightsRecord,
-) -> ob_model::RightsRecord {
-    fn fill(existing: &str, incoming: &str) -> String {
-        if existing.trim().is_empty() && !incoming.trim().is_empty() {
-            incoming.to_string()
-        } else {
-            existing.to_string()
-        }
-    }
-    let mut out = existing.clone();
-    out.source = fill(&existing.source, &incoming.source);
-    if existing.source_url.is_none() {
-        out.source_url = incoming.source_url.clone();
-    }
-    if existing.license == ob_model::LicenseKind::Unknown {
-        out.license = incoming.license.clone();
-    }
-    out.title = fill(&existing.title, &incoming.title);
-    out.creator = fill(&existing.creator, &incoming.creator);
-    out.copyright_line = fill(&existing.copyright_line, &incoming.copyright_line);
-    out.credit_text = fill(&existing.credit_text, &incoming.credit_text);
-    out.licensor_ref = fill(&existing.licensor_ref, &incoming.licensor_ref);
-    out.asserted_by = fill(&existing.asserted_by, &incoming.asserted_by);
-    out.asserted_at = fill(&existing.asserted_at, &incoming.asserted_at);
-    out.children_present = match (existing.children_present, incoming.children_present) {
-        (Some(true), _) | (_, Some(true)) => Some(true),
-        (Some(false), _) | (_, Some(false)) => Some(false),
-        _ => None,
-    };
-    out
 }
 
 /// An id no sheet in this document already uses.
@@ -16061,6 +16007,82 @@ mod settings_tests {
         // not claim a fill that did not happen.
         app.add_insert_from_library(&file);
         assert!(!app.status.contains("filled in"), "{}", app.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r5_duplicate_records_in_a_file_fold_and_hold_the_picture_back() {
+        // Round 5 (RT5-1): a hand-built bulletin file
+        // whose document.json carries two records for
+        // one picture: a weak one and the record that
+        // notes the children and the CC BY license.
+        // Readers take the first record they find, so
+        // the weak one used to disarm the children note
+        // and drop the license; the loader now folds
+        // the pair into one record, in either order.
+        // The folded record notes the children and no
+        // permission (a CC BY license is not one), so
+        // the web page holds the picture back.
+        let bytes: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 5 L9 5 L5 9 Z"/></svg>"#;
+        let hash = ob_model::sha256_hex(bytes);
+        let weak = ob_model::RightsRecord {
+            source: "a plainer copy".into(),
+            ..Default::default()
+        };
+        let noting = ob_model::RightsRecord {
+            title: "Harvest supper".into(),
+            creator: "Jane Doe".into(),
+            license: ob_model::LicenseKind::CcBy("4.0".into()),
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let asset = |rights: ob_model::RightsRecord| ob_model::Asset {
+            sha256: hash.clone(),
+            kind: ob_model::AssetKind::Picture,
+            media_type: "image/svg+xml".into(),
+            rights,
+        };
+        let dir = std::env::temp_dir().join(format!("openbulletin-r5-obd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        for (tag, records) in [
+            (
+                "weak-first",
+                vec![asset(weak.clone()), asset(noting.clone())],
+            ),
+            (
+                "noting-first",
+                vec![asset(noting.clone()), asset(weak.clone())],
+            ),
+        ] {
+            let mut doc = doc_with_sheet();
+            doc.assets.extend(records);
+            doc.asset_bytes.insert(hash.clone(), bytes.to_vec());
+            let (mut frame, mut placement) =
+                picture_frame(216_000, 144_000, ob_model::PictureFit::ShowWhole);
+            placement.asset = hash.clone();
+            frame.picture = Some(placement);
+            doc.panels[0].frames.push(frame);
+            let file = dir.join(format!("dup-{tag}.obd"));
+            ob_format::save(&doc, &file).expect("the file saves");
+            let loaded = ob_format::load(&file).expect("the file loads");
+            let stored: Vec<&ob_model::Asset> =
+                loaded.assets.iter().filter(|a| a.sha256 == hash).collect();
+            assert_eq!(stored.len(), 1, "{tag}: the pair folds into one record");
+            let rights = &stored[0].rights;
+            assert_eq!(rights.children_present, Some(true), "{tag}");
+            assert_eq!(
+                rights.license,
+                ob_model::LicenseKind::CcBy("4.0".into()),
+                "{tag}"
+            );
+            assert_eq!(rights.title, "Harvest supper", "{tag}");
+            assert_eq!(rights.creator, "Jane Doe", "{tag}");
+            assert_eq!(rights.source, "a plainer copy", "{tag}");
+            let (_html_bytes, report) =
+                ob_extract::html_export::export_html(&loaded).expect("the web page");
+            assert_eq!(report.children_left_out, 1, "{tag}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

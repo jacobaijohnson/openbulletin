@@ -134,6 +134,12 @@ pub fn load(path: &Path) -> Result<Document, String> {
     } else {
         load_v0_json(path)?
     };
+    // Records that share a hash fold into one before
+    // anything reads them (round 5, RT5-1): a reader
+    // takes the first record it finds for a picture,
+    // so a weak duplicate standing first would
+    // silently shadow the fuller record.
+    ob_model::fold_duplicate_asset_records(&mut doc.assets);
     doc.migrate_occasion_keys();
     doc.migrate_participants();
     absorb_sidecar_pictures(&mut doc, path);
@@ -387,6 +393,10 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
             });
         }
     }
+    // Records that share a hash fold into one before
+    // the attach reads them, the same rule as a
+    // bulletin file (round 5, RT5-1).
+    ob_model::fold_duplicate_asset_records(&mut package.assets);
     // Geometry from a file gets the same clamping the
     // bulletin loader promises: a hostile .obdi must not
     // plant numbers the writer cannot print.
@@ -906,6 +916,91 @@ mod tests {
         }
         let err = load(&bad).expect_err("tampered bytes refuse");
         assert!(err.contains("does not match its fingerprint"), "err: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r5_duplicate_asset_records_fold_on_load() {
+        // Round 5 (RT5-1): document.json carries two
+        // records for one picture: a weak one and the
+        // record noting the children and the CC BY
+        // license. Readers take the first record they
+        // find, so a weak record standing first
+        // disarmed the children note and dropped the
+        // license. The load folds the pair into one
+        // composed record, in either order.
+        let bytes: &[u8] = b"picture bytes whose fingerprint both records share";
+        let hash = ob_model::sha256_hex(bytes);
+        let weak = RightsRecord {
+            source: "a plainer copy".into(),
+            ..Default::default()
+        };
+        let noting = RightsRecord {
+            title: "Harvest supper".into(),
+            license: LicenseKind::CcBy("4.0".into()),
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let asset = |rights: RightsRecord| Asset {
+            sha256: hash.clone(),
+            kind: AssetKind::Picture,
+            media_type: "image/png".into(),
+            rights,
+        };
+        let dir = scratch("dup-records");
+        for (tag, records) in [
+            (
+                "weak-first",
+                vec![asset(weak.clone()), asset(noting.clone())],
+            ),
+            (
+                "noting-first",
+                vec![asset(noting.clone()), asset(weak.clone())],
+            ),
+        ] {
+            let mut doc = test_doc();
+            doc.assets = records;
+            doc.asset_bytes.insert(hash.clone(), bytes.to_vec());
+            let file = dir.join(format!("{tag}.obd"));
+            save(&doc, &file).expect("the file saves");
+            let loaded = load(&file).expect("the file loads");
+            assert_eq!(loaded.assets.len(), 1, "{tag}: one record after the fold");
+            let rights = &loaded.assets[0].rights;
+            assert_eq!(rights.children_present, Some(true), "{tag}");
+            assert_eq!(rights.license, LicenseKind::CcBy("4.0".into()), "{tag}");
+            assert_eq!(rights.title, "Harvest supper", "{tag}");
+            assert_eq!(rights.source, "a plainer copy", "{tag}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r5_duplicate_records_fold_in_a_sheet_file_too() {
+        // Round 5 (RT5-1): the same fold in an .obdi.
+        // The host holds two records for the sheet's
+        // picture; both travel, and the load composes
+        // them into the one record the attach reads.
+        let dir = scratch("obdi-dup");
+        let mut host = test_doc();
+        let (ins, hash) = sheet_with_picture(&mut host);
+        host.assets.push(Asset {
+            sha256: hash.clone(),
+            kind: AssetKind::Picture,
+            media_type: "image/png".into(),
+            rights: RightsRecord {
+                title: "Prayer sheet photo".into(),
+                children_present: Some(true),
+                ..Default::default()
+            },
+        });
+        let path = dir.join("Prayer list.obdi");
+        save_insert(&ins, &host, &path).unwrap();
+        let (_back, assets, _bytes) = load_insert(&path).unwrap();
+        assert_eq!(assets.len(), 1, "the pair folds into one record");
+        assert_eq!(assets[0].rights.source, "the church camera");
+        assert_eq!(assets[0].rights.license, LicenseKind::ChurchOwned);
+        assert_eq!(assets[0].rights.title, "Prayer sheet photo");
+        assert_eq!(assets[0].rights.children_present, Some(true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -734,7 +734,10 @@ const WEB_PPI: f64 = 150.0;
 /// So does a license that needs no one's permission:
 /// the church's own work, public domain, CC0. This is
 /// the office's own note, read at face value, not a
-/// proof that a permission exists.
+/// proof that a permission exists. The same test lives
+/// in ob-model (`rights_permission_noted`), where the
+/// rights merge fences its fills by it (round 5, F2);
+/// the two copies are one rule and must stay one rule.
 fn permission_noted(rights: &ob_model::RightsRecord) -> bool {
     !rights.credit_text.trim().is_empty()
         || matches!(
@@ -1260,6 +1263,46 @@ mod tests {
             children_left_out_sentence(2),
             " 2 pictures of children were left out of the web page; no parent permission is noted for them."
         );
+    }
+
+    #[test]
+    fn a_credit_line_merged_from_another_record_does_not_unlock_a_picture_of_children() {
+        // Round 5 (F2): the bulletin's record for the
+        // picnic photo notes children in it and no
+        // permission; a sheet's record for the same
+        // bytes holds a credit line. Merging the pair
+        // must not complete them into a noted
+        // permission: the credit line stays unfilled,
+        // and this page holds the picture back.
+        let bulletin = RightsRecord {
+            title: "Church picnic".into(),
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let sheet = RightsRecord {
+            credit_text: "Photo by Lee".into(),
+            ..Default::default()
+        };
+        let merged = ob_model::merge_rights_records(&bulletin, &sheet);
+        assert_eq!(merged.credit_text, "");
+        assert_eq!(merged.children_present, Some(true));
+        let mut doc = sample_doc();
+        let asset = doc
+            .assets
+            .iter_mut()
+            .find(|a| a.rights.title == "Church picnic")
+            .expect("the sample photo");
+        asset.rights = merged;
+        let (bytes, report) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            !html.contains("alt=\"Church picnic\""),
+            "a credit line merged from another record unlocked a picture of children"
+        );
+        assert!(html.contains(
+            "A picture with children in it belongs here; it is in the printed bulletin."
+        ));
+        assert_eq!(report.children_left_out, 1);
     }
 
     /// The standard sample: the LetterBifold template for

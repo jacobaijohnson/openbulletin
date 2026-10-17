@@ -978,6 +978,125 @@ pub struct Asset {
     pub rights: RightsRecord,
 }
 
+/// Is a permission noted on this record, for the web
+/// page's children rule? This is the same test the HTML
+/// export applies before a picture with children noted
+/// in it may ride the web page
+/// (crates/ob-extract/src/html_export.rs,
+/// `permission_noted`, whose copy points back here):
+/// a credit line counts, and so does a license that
+/// needs no one's permission (the church's own work,
+/// public domain, CC0). The two copies are one rule
+/// and must stay one rule: the export holds pictures
+/// back by it, and the merge below fences its fills
+/// by it (round 5, F2).
+fn rights_permission_noted(rights: &RightsRecord) -> bool {
+    !rights.credit_text.trim().is_empty()
+        || matches!(
+            rights.license,
+            LicenseKind::ChurchOwned | LicenseKind::PublicDomain | LicenseKind::Cc0
+        )
+}
+
+/// Merge two records for the same picture, field by
+/// field (round 4, R4-5): the incoming record fills
+/// only what the existing record leaves empty, and a
+/// value already noted is never overwritten, so a
+/// split-strength pair (the bulletin holds the credit
+/// line, the sheet holds the license) ends up carrying
+/// both. The children note merges as OR: a "children
+/// are in this picture" from either side stands,
+/// because the web page's hold-back is only as strong
+/// as the strongest note.
+///
+/// One fill is fenced (round 5, F2): when the existing
+/// record notes children in the picture and no
+/// permission is noted on it yet, the incoming
+/// record's credit line does not fill, and neither
+/// does a license that itself counts as a noted
+/// permission (the church's own work, public domain,
+/// CC0). A permission for the web page is noted on
+/// the picture's own record by someone looking at
+/// that record; it is never manufactured by
+/// completing the pair across two records. Every
+/// other fill proceeds as usual.
+///
+/// The assertion fields (asserted_by, asserted_at)
+/// fill only when a substantive field filled from
+/// the same incoming record in the same merge (round
+/// 5): an assertion vouches for a fill and never
+/// rides in alone. The caller compares the result
+/// with the existing record to know whether anything
+/// was filled in.
+pub fn merge_rights_records(existing: &RightsRecord, incoming: &RightsRecord) -> RightsRecord {
+    fn fill(existing: &str, incoming: &str) -> String {
+        if existing.trim().is_empty() && !incoming.trim().is_empty() {
+            incoming.to_string()
+        } else {
+            existing.to_string()
+        }
+    }
+    let fenced = existing.children_present == Some(true) && !rights_permission_noted(existing);
+    let mut out = existing.clone();
+    out.source = fill(&existing.source, &incoming.source);
+    if existing.source_url.is_none() {
+        out.source_url = incoming.source_url.clone();
+    }
+    if existing.license == LicenseKind::Unknown {
+        let permission_license = matches!(
+            incoming.license,
+            LicenseKind::ChurchOwned | LicenseKind::PublicDomain | LicenseKind::Cc0
+        );
+        if !(fenced && permission_license) {
+            out.license = incoming.license.clone();
+        }
+    }
+    out.title = fill(&existing.title, &incoming.title);
+    out.creator = fill(&existing.creator, &incoming.creator);
+    out.copyright_line = fill(&existing.copyright_line, &incoming.copyright_line);
+    if !fenced {
+        out.credit_text = fill(&existing.credit_text, &incoming.credit_text);
+    }
+    out.licensor_ref = fill(&existing.licensor_ref, &incoming.licensor_ref);
+    out.children_present = match (existing.children_present, incoming.children_present) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        _ => None,
+    };
+    if out != *existing {
+        out.asserted_by = fill(&existing.asserted_by, &incoming.asserted_by);
+        out.asserted_at = fill(&existing.asserted_at, &incoming.asserted_at);
+    }
+    out
+}
+
+/// Fold records that share a hash into one record
+/// apiece (round 5, RT5-1): a file may carry two
+/// records for the same picture bytes, and every
+/// reader looks a picture up by its hash and takes
+/// the record it finds, so a weak duplicate standing
+/// first silently shadowed the fuller one: a children
+/// note disarmed, a license dropped. The loaders fold
+/// on load, before any reader sees the records.
+/// Duplicates merge field by field with
+/// `merge_rights_records`; the first record's kind
+/// and media type stand (the same bytes carry the
+/// same kind). After the fold, one hash has exactly
+/// one record, here and in every copy saved onward.
+pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
+    let mut folded: Vec<Asset> = Vec::with_capacity(assets.len());
+    for asset in assets.drain(..) {
+        match folded.iter().position(|a| a.sha256 == asset.sha256) {
+            Some(pos) => {
+                let merged = merge_rights_records(&folded[pos].rights, &asset.rights);
+                folded[pos].rights = merged;
+            }
+            None => folded.push(asset),
+        }
+    }
+    *assets = folded;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub format_version: u32,
@@ -1274,7 +1393,14 @@ impl Insert {
 impl Document {
     /// Store asset bytes in the document, recording (or
     /// keeping) their metadata, and return the SHA-256 they
-    /// travel under. Adding the same bytes twice is one asset.
+    /// travel under. Adding the same bytes twice is one
+    /// asset: the record already held keeps its noted
+    /// values, and the incoming record fills what it
+    /// leaves empty, field by field like every merge of
+    /// records for one picture (round 5, RT5-2: placing
+    /// a library picture whose bytes the bulletin already
+    /// held used to throw the incoming license and title
+    /// away whole).
     pub fn add_asset(
         &mut self,
         bytes: &[u8],
@@ -1283,13 +1409,18 @@ impl Document {
         rights: RightsRecord,
     ) -> String {
         let hash = sha256_hex(bytes);
-        if !self.assets.iter().any(|a| a.sha256 == hash) {
-            self.assets.push(Asset {
-                sha256: hash.clone(),
-                kind,
-                media_type: media_type.to_string(),
-                rights,
-            });
+        match self.assets.iter_mut().find(|a| a.sha256 == hash) {
+            Some(existing) => {
+                existing.rights = merge_rights_records(&existing.rights, &rights);
+            }
+            None => {
+                self.assets.push(Asset {
+                    sha256: hash.clone(),
+                    kind,
+                    media_type: media_type.to_string(),
+                    rights,
+                });
+            }
         }
         self.asset_bytes.insert(hash.clone(), bytes.to_vec());
         hash
@@ -3092,6 +3223,126 @@ mod occasion_tests {
         assert_eq!(back.assets[0].rights.license, LicenseKind::ChurchOwned);
         assert_eq!(back.assets[0].rights.source, "the church camera");
         assert!(back.asset_bytes.is_empty());
+    }
+
+    #[test]
+    fn r5_add_asset_merges_the_rights_of_bytes_already_held() {
+        // Round 5 (RT5-2): the same bytes arrive twice,
+        // strong in different halves. The second record
+        // used to be thrown away whole; now it fills
+        // what the first leaves empty, and the first
+        // record's noted values stand.
+        let mut doc = bare_doc();
+        let h1 = doc.add_asset(
+            b"PNGDATA",
+            AssetKind::Picture,
+            "image/png",
+            RightsRecord {
+                source: "the church camera".into(),
+                ..Default::default()
+            },
+        );
+        let h2 = doc.add_asset(
+            b"PNGDATA",
+            AssetKind::Picture,
+            "image/png",
+            RightsRecord {
+                title: "Harvest supper".into(),
+                license: LicenseKind::CcBy("4.0".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(h1, h2);
+        assert_eq!(doc.assets.len(), 1);
+        let rights = &doc.assets[0].rights;
+        assert_eq!(rights.source, "the church camera");
+        assert_eq!(rights.title, "Harvest supper");
+        assert_eq!(rights.license, LicenseKind::CcBy("4.0".into()));
+    }
+
+    #[test]
+    fn r5_merge_never_manufactures_a_web_permission() {
+        // Round 5 (F2): the bulletin record notes
+        // children in the picture and no permission;
+        // the sheet record holds a credit line. The
+        // merge must not complete the pair into a
+        // noted permission.
+        let bulletin = RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let sheet = RightsRecord {
+            credit_text: "Photo by Lee".into(),
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&bulletin, &sheet);
+        assert_eq!(merged.children_present, Some(true));
+        assert_eq!(merged.credit_text, "");
+        assert_eq!(merged.license, LicenseKind::Unknown);
+        // A license that itself counts as a noted
+        // permission is fenced the same way.
+        let sheet_cc0 = RightsRecord {
+            license: LicenseKind::Cc0,
+            ..Default::default()
+        };
+        assert_eq!(
+            merge_rights_records(&bulletin, &sheet_cc0).license,
+            LicenseKind::Unknown
+        );
+        // Fills that say nothing about permission
+        // still land in a fenced record.
+        let sheet_fuller = RightsRecord {
+            title: "Harvest supper".into(),
+            license: LicenseKind::CcBy("4.0".into()),
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&bulletin, &sheet_fuller);
+        assert_eq!(merged.title, "Harvest supper");
+        assert_eq!(merged.license, LicenseKind::CcBy("4.0".into()));
+        // With no children note, nothing is fenced:
+        // the ordinary fill (round 4, R4-5) carries
+        // the credit line.
+        let plain = RightsRecord::default();
+        let merged = merge_rights_records(&plain, &sheet);
+        assert_eq!(merged.credit_text, "Photo by Lee");
+        // And a record whose permission is already
+        // noted is not fenced at all.
+        let noted = RightsRecord {
+            children_present: Some(true),
+            credit_text: "Photo by Lee, used with parent permission.".into(),
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&noted, &sheet_cc0);
+        assert_eq!(merged.license, LicenseKind::Cc0);
+    }
+
+    #[test]
+    fn r5_merge_assertion_fields_ride_only_with_a_real_fill() {
+        // Round 5: asserted_by / asserted_at vouch for
+        // a fill. An incoming record carrying only an
+        // assertion changes nothing at all.
+        let existing = RightsRecord {
+            source: "the church camera".into(),
+            ..Default::default()
+        };
+        let assertion_only = RightsRecord {
+            asserted_by: "Sam".into(),
+            asserted_at: "2026-10-16".into(),
+            ..Default::default()
+        };
+        assert_eq!(merge_rights_records(&existing, &assertion_only), existing);
+        // With a substantive fill from the same record,
+        // the assertion rides along with it.
+        let with_fill = RightsRecord {
+            title: "Harvest supper".into(),
+            asserted_by: "Sam".into(),
+            asserted_at: "2026-10-16".into(),
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&existing, &with_fill);
+        assert_eq!(merged.title, "Harvest supper");
+        assert_eq!(merged.asserted_by, "Sam");
+        assert_eq!(merged.asserted_at, "2026-10-16");
     }
 
     #[test]

@@ -167,3 +167,58 @@ Baseline entering the fixes: 506 tests, clippy clean.
   distance is a requirement, not an optimization.
   Adjudication record:
   `~/workspace/openbulletin-audit-wave3/tier2-fingerprint-2026-10-16/ADJUDICATION.md`.
+
+## Shipped addendum, R5-A (2026-10-16)
+
+R5-A landed: 506 to 513 tests, all passing, clippy
+clean (full workspace runs, unpiped; the fake-helper
+ETXTBSY flake did not fire).
+
+- RT5-1: `fold_duplicate_asset_records` (ob-model)
+  runs in ob-format's `load()` and `load_insert()`,
+  before any reader sees the records. Tests: the fold
+  in an .obd in both orders and in an .obdi
+  (ob-format), and end to end (ob-app): a hand-built
+  file with two records for one picture loads folded,
+  and the real HTML export holds the picture back in
+  both orders.
+- RT5-2: `Document::add_asset` merges the incoming
+  rights into the record already held (fill only)
+  instead of discarding them. The loaders' honest
+  record pushes for orphan bytes and the sheet
+  attach's None branch are exempt by construction:
+  no incoming record exists there to merge. The
+  sidecar absorb path goes through add_asset, so it
+  gains the merge with everything else.
+- F2: the merge carries the fence. Into a record
+  noting children with no permission noted, the
+  credit line and the permission licenses
+  (ChurchOwned, PublicDomain, Cc0) do not fill, and a
+  skipped fill does not count as a fill. The
+  permission test is replicated in ob-model as
+  `rights_permission_noted`, with comments pointing
+  at html_export.rs and back. Tests at record level
+  (ob-model) and through the real export (ob-extract).
+- asserted_by / asserted_at fill only when a
+  substantive field filled from the same incoming
+  record in the same merge; a test pins an
+  assertion-only record changing nothing.
+- Placement change (flagged): `merge_rights_records`
+  moved from ob-app's main.rs to ob-model, beside
+  RightsRecord, because add_asset (ob-model) and the
+  loaders (ob-format) must call it and neither crate
+  can call into the binary. main.rs keeps the name
+  through a crate-root use; its attach call site and
+  the round-3 and round-4 tests resolve unchanged.
+  The stale winner-take-all doc comment left main.rs
+  with the old definition; the corrected doc
+  (fill-only rule, fence, assertion pairing) sits on
+  the ob-model function. FORMAT.md states the fold
+  rule and the fence where the attach merge is
+  described.
+- Changed pre-existing tests: NONE. The round-4 merge
+  test and the round-3 attach test in ob-app pass
+  unchanged against the moved function. The mapper's
+  check held: no credit-fill case there carries a
+  children note, and the attach test's bulletin
+  record already notes its permission.

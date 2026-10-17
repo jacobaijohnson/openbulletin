@@ -233,6 +233,19 @@ either side stands. The attach says how many records it
 actually filled in, and says nothing when the merge
 changed nothing.
 
+Duplicate records for one picture fold on load (round
+5, RT5-1): a bulletin file or sheet file whose JSON
+carries two records for the same asset hash loads with
+one composed record, merged field by field by the same
+rule, the children note included. No reader ever sees
+the shadow copy, and a copy saved onward carries the
+one folded record. One fence rides with the merge: a
+record that notes children in the picture, with no
+permission noted on it yet, does not gain a noted
+permission by filling (round 5, F2): the incoming
+record's credit line, and a license that itself counts
+as a noted permission, stay unfilled into it.
+
 ### Loading rules
 
 - Readers reject newer-than-known versions with a clear

@@ -3734,6 +3734,7 @@ fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec
             keep_through_weekday_mismatch: c.keep_through_weekday_mismatch.clone(),
             for_sunday_in_words: c.for_sunday_in_words.clone(),
             for_sunday_after_in_words: c.for_sunday_after_in_words.clone(),
+            for_sunday_parenthesized_date: c.for_sunday_parenthesized_date,
         };
         apply_contribution_judged(&mut sim, &single, &judged);
     }

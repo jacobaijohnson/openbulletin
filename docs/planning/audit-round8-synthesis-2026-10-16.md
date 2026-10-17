@@ -545,3 +545,109 @@ set of sections.
   clean, exit 0, no warnings. `cargo fmt --all` run
   before the final run. The fake-helper ETXTBSY flake
   did not fire.
+
+## Shipped addendum, R8-C (2026-10-16)
+
+R8-4 + R8-5 + R8-6 (MAJORs) and the carried
+trailing-date shape shipped in one batch, in
+`crates/ob-extract/src/contribution.rs`, with the
+one field copy in `crates/ob-app/src/main.rs`'s
+plan simulation.
+
+- R8-4: the framed reading needs the weekday
+  directly in front of the date; what follows the
+  date is the line's remainder, not a parse failure.
+  A shared prefix reader (`parse_date_prefix`: the
+  longest opening run of words that reads as a date)
+  serves the framed reader and the Sunday-after
+  base, so a disagreeing framed date records its
+  mismatch wherever the date stands in the line, an
+  agreeing one yields its date by the same rules as
+  the line-ending form, and the Sunday-after reader
+  composes past trailing words — and now finds its
+  shape wherever it stands in the line ("words for
+  Sunday after October 25, 2026 please" resolves to
+  November 1), each "Sunday after" candidate tried
+  in order. The trailing weekday frames a date only
+  when it stands directly after it, in both readers:
+  words between the date and a trailing weekday word
+  make that word part of the remainder, so no
+  mismatch fires across prose. One consequence to
+  state plainly: the review lane's round-8
+  observation that a "…we honor Monday" tail "yields
+  no record, because the suffix stops parsing"
+  described the pre-fix mechanism; under this
+  disposition's remainder rule that tail now reads
+  its framed date (agreeing) with no mismatch
+  recorded — the theft bound the observation was
+  clearing (no trailing mismatch across prose)
+  holds, and the R8-4 agreeing control ("use on
+  Sunday, October 25, 2026 for the picnic" yields
+  its date) is the same shape. Pins:
+  `r8c_a_framed_date_reads_past_words_after_the_date`
+  (RT8-3's E1/E3/E6 verbatim with Keep-through
+  mirrors, the E2 agreeing control on both lines,
+  and E5 on both lines; verdicts pinned where the
+  red team probed them).
+- R8-5: `framed_date_outcome` scans EVERY framing
+  candidate in the line until one frames a date;
+  a candidate whose following words do not parse as
+  a date is not a framing and scanning continues —
+  the round-8 review's D4 control ("on Monday we
+  prayed, service on Sunday, October 25, 2026")
+  still reads clean by exactly that rule and is
+  pinned. Defense in depth shipped with it:
+  `date_line`'s ordinary-text fallback never
+  returns a date whose directly preceding weekday
+  wears the framing garnish stack. Pin:
+  `r8c_a_second_on_framing_is_judged_not_laundered`
+  (RT8-4's F2 verbatim + Keep-through mirror + the
+  D4 control on both lines).
+- R8-6: the framing readers accept the
+  Sunday-after reader's garnish stack in front of
+  the weekday — optional "on", optional "the" —
+  wherever the framing stands (`weekday_is_framed`,
+  shared by the framed reader and the fallback
+  guard; `named_weekday_mismatch` takes the same
+  stack at the line's start). Pin:
+  `r8c_on_the_weekday_frames_with_its_garnish_stack`
+  (RT8-5's F4 verbatim + Keep-through mirror, the
+  mid-line form, and the agreeing "on the Sunday"
+  control).
+- Carried shape: a trailing parenthesized absolute
+  date on a relative Sunday-after or bare relative
+  Sunday phrase is remembered on the Contribution
+  as `for_sunday_parenthesized_date`, beside the
+  in-words phrase (the phrase readers now let
+  trailing parenthesized groups come off one by one
+  until the shape stands alone, and the remembered
+  phrase is the sender's words as written,
+  parenthesis included). The verdict compares the
+  remembered date with the relative resolution once
+  an open bulletin anchors it: agreement reads as
+  the relative verdict does today; disagreement
+  returns `DifferentSunday` carrying the sender's
+  date, so the review's differing-Sunday sentence
+  names it beside the open bulletin's date and
+  Accept arms two-click like any differing named
+  Sunday. With no anchor the verdict stays
+  NoSundayNamed and the review's in-words sentence
+  carries the sender's phrase as now. A parenthesis
+  that does not parse as a date at all is garnish,
+  not memory. Pin:
+  `r8c_a_parenthesized_date_on_a_relative_sunday_is_remembered_and_compared`
+  (RT8-10's C1/C2/C3 verbatim — anchored agreeing,
+  anchored disagreeing, no-anchor — plus a
+  third-Sunday parenthesis, the weekday-garnish
+  control, and an unreadable-date parenthesis).
+- Changed pre-existing tests: none. Every R7-C
+  family pin, the D3 ordinary-text control, and
+  D5b pass unmodified, in their original
+  expectations.
+- Numbers: full workspace suite 608 passed /
+  0 failed (baseline 604 / 0; +4 new tests, all in
+  ob-extract), cargo's own exit code 0, read
+  unpiped. Clippy (`cargo clippy --workspace
+  --all-targets`) clean, exit 0, no warnings.
+  `cargo fmt --all` run before the final run. The
+  fake-helper ETXTBSY flake did not fire.

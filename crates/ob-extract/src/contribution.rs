@@ -15,7 +15,10 @@
 //!   For Sunday: the date, in any form `parse_flexible_date`
 //!     reads (a weekday that disagrees yields no date at
 //!     all, never a guess; a framing weekday may wear the
-//!     filler word "on" wherever it stands in the line,
+//!     filler word "on" — and an optional "the" with it —
+//!     wherever it stands in the line, every framing
+//!     candidate is tried until one frames a date, words
+//!     after the framed date are the line's remainder,
 //!     and a leading and a trailing framing weekday are
 //!     each checked); "the Sunday after [date]" reads
 //!     as that Sunday — its leading "on"/"the" garnishes
@@ -26,7 +29,9 @@
 //!     Sunday", or "the Sunday after next Sunday") is
 //!     remembered in words for the review to read
 //!     against the open bulletin, trailing weekday
-//!     garnish and all
+//!     garnish and all, with any trailing parenthesized
+//!     absolute date remembered beside the words for
+//!     the verdict to compare once a bulletin anchors it
 //!   Keep-through: optional; the last Sunday an announcement
 //!     should keep printing
 //!
@@ -130,6 +135,18 @@ pub struct Contribution {
     /// Sunday is the first Sunday strictly after it),
     /// and arms it like any named Sunday that differs.
     pub for_sunday_after_in_words: Option<String>,
+    /// The absolute date a relative Sunday phrase
+    /// carried in a trailing parenthesis (round 8,
+    /// carried shape): "the Sunday after next Sunday
+    /// (October 25)", "next Sunday (October 25, 2026)".
+    /// The phrase is remembered in words as before;
+    /// this is the date its parenthesis names, when
+    /// the parenthesis reads as a date at all — one
+    /// that does not (a weekday garnish, "(Monday)")
+    /// is garnish, not memory, and leaves this None.
+    /// The verdict compares the date with the relative
+    /// resolution once an open bulletin anchors it.
+    pub for_sunday_parenthesized_date: Option<SimpleDate>,
 }
 
 /// A For Sunday line whose weekday disagrees with its
@@ -207,15 +224,26 @@ fn named_weekday_mismatch(raw: &Option<String>, today: SimpleDate) -> Option<Wee
     // in front of it ("on Monday, October 25, 2026",
     // round 6, R6-6): the weekday still stands directly
     // before the date, so it frames the date exactly as
-    // the bare leading form does. Any other words
-    // between the weekday and the date keep it ordinary
-    // text (round 5, R5-D).
+    // the bare leading form does. The garnish stack
+    // composes (round 8, R8-6): an optional "the" may
+    // stand between "on" and the weekday, or in front
+    // of the weekday at the line's start, as the
+    // Sunday-after reader has long allowed. Any other
+    // words between the weekday and the date keep it
+    // ordinary text (round 5, R5-D).
     let (named_word, rest) = if weekday_word(first).is_some() {
         (first, rest)
-    } else if first.eq_ignore_ascii_case("on") {
+    } else if first.eq_ignore_ascii_case("on") || first.eq_ignore_ascii_case("the") {
         let (second, remainder) = rest.split_once(|c: char| c.is_whitespace())?;
-        weekday_word(second)?;
-        (second, remainder)
+        if weekday_word(second).is_some() {
+            (second, remainder)
+        } else if second.eq_ignore_ascii_case("the") {
+            let (third, tail) = remainder.split_once(|c: char| c.is_whitespace())?;
+            weekday_word(third)?;
+            (third, tail)
+        } else {
+            return None;
+        }
     } else {
         return None;
     };
@@ -304,45 +332,47 @@ enum SundayAfter {
 /// R7-4) — the base is never salvaged as the line's
 /// own date.
 fn sunday_after_outcome(text: &str, today: SimpleDate) -> Option<SundayAfter> {
-    let mut rest = text.trim();
-    // Opening garnishes are decoration, in either order
-    // (round 7, R7-5): "on Sunday after ...", "on the
-    // Sunday after ...", and the plain "the Sunday
-    // after ..." all name the same shape.
-    while let Some((first, remainder)) = rest.split_once(char::is_whitespace) {
-        if first.eq_ignore_ascii_case("the") || first.eq_ignore_ascii_case("on") {
-            rest = remainder.trim_start();
-        } else {
-            break;
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    // The shape may stand anywhere in the line (round
+    // 8, R8-4): words before it are the line's lead-in
+    // ("words for Sunday after ..."), and its opening
+    // garnishes are just lead-in words to walk past —
+    // "on Sunday after ...", "on the Sunday after ...",
+    // and the plain "the Sunday after ..." all name the
+    // same shape (round 7, R7-5). Each "Sunday after"
+    // candidate is tried in order until one reads.
+    let mut start = 0;
+    while start + 1 < tokens.len() {
+        let first = tokens[start].trim_matches(['(', ')', '[', ']', ',', '.']);
+        let second = tokens[start + 1].trim_matches(['(', ')', '[', ']', ',', '.']);
+        if weekday_word(first) == Some(0) && second.eq_ignore_ascii_case("after") {
+            if let Some(outcome) = sunday_after_base(&tokens[start + 2..], today) {
+                return Some(outcome);
+            }
         }
+        start += 1;
     }
-    let (first, remainder) = rest.split_once(char::is_whitespace)?;
-    if weekday_word(first) != Some(0) {
-        return None;
-    }
-    let remainder = remainder.trim_start();
-    let (second, remainder) = remainder.split_once(char::is_whitespace)?;
-    if !second.eq_ignore_ascii_case("after") {
-        return None;
-    }
-    let remainder = remainder.trim();
-    if let Some(named) = parse_flexible_date(remainder, today) {
-        return Some(SundayAfter::Date(first_sunday_after(named)));
-    }
-    // The base did not read whole. Its pieces may still
-    // compose (round 7, R7-4/R7-5): an optional trailing
-    // weekday describing the base, and an optional
-    // leading weekday framing the base (wearing "on" or
-    // not). Take the trailing weekday out first, then
-    // read what is left; whichever framing weekday
-    // disagrees with the base date is the mistake, and
-    // the base date itself is never the line's date.
-    let tokens: Vec<&str> = remainder.split_whitespace().collect();
+    None
+}
+
+/// Read the base date of a "Sunday after ..." shape:
+/// the words after "after", read as the shape's base.
+/// Words after the base date are the line's remainder,
+/// not a parse failure (round 8, R8-4).
+fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<SundayAfter> {
+    // The base's pieces may compose (round 7,
+    // R7-4/R7-5): an optional trailing weekday
+    // describing the base, and an optional leading
+    // weekday framing the base (wearing "on" or not).
+    // Take the trailing weekday out first, then read
+    // what is left; whichever framing weekday disagrees
+    // with the base date is the mistake, and the base
+    // date itself is never the line's date.
     let last_word = tokens
         .iter()
         .rposition(|t| t.chars().any(|c| c.is_alphanumeric()));
     let mut trailing: Option<(String, u32)> = None;
-    let mut core: Vec<&str> = tokens.clone();
+    let mut core: Vec<&str> = tokens.to_vec();
     if let Some(i) = last_word {
         let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.']);
         if let Some(named_number) = weekday_word(word) {
@@ -356,9 +386,13 @@ fn sunday_after_outcome(text: &str, today: SimpleDate) -> Option<SundayAfter> {
                 .collect();
         }
     }
-    if let Some(base) = parse_flexible_date(&core.join(" "), today) {
+    if let Some((base, used)) = parse_date_prefix(&core, today) {
+        // The trailing weekday describes the base only
+        // when it stands directly after it; words
+        // between the base and the trailing word make
+        // that word part of the remainder.
         return Some(match trailing {
-            Some((named, named_number)) if base.weekday() != named_number => {
+            Some((named, named_number)) if used == core.len() && base.weekday() != named_number => {
                 SundayAfter::Mismatch(WeekdayMismatch { named, date: base })
             }
             _ => SundayAfter::Date(first_sunday_after(base)),
@@ -380,7 +414,7 @@ fn sunday_after_outcome(text: &str, today: SimpleDate) -> Option<SundayAfter> {
         _ => return None,
     };
     let lead_number = weekday_word(lead_word)?;
-    let base = parse_flexible_date(&lead_rest.join(" "), today)?;
+    let (base, used) = parse_date_prefix(lead_rest, today)?;
     if base.weekday() != lead_number {
         let named = lead_word
             .trim_matches(['(', ')', '[', ']', ',', '.'])
@@ -389,13 +423,73 @@ fn sunday_after_outcome(text: &str, today: SimpleDate) -> Option<SundayAfter> {
     }
     // The leading weekday agreed (it can only have
     // blocked the whole reading by wearing "on"); the
-    // trailing weekday still has its say.
+    // trailing weekday still has its say, when it
+    // stands directly after the base.
     Some(match trailing {
-        Some((named, named_number)) if base.weekday() != named_number => {
+        Some((named, named_number))
+            if used == lead_rest.len() && base.weekday() != named_number =>
+        {
             SundayAfter::Mismatch(WeekdayMismatch { named, date: base })
         }
         _ => SundayAfter::Date(first_sunday_after(base)),
     })
+}
+
+/// `text` without a trailing "(...)" group, when it
+/// ends with one: the words before the group.
+fn strip_trailing_parenthesized(text: &str) -> Option<&str> {
+    let text = text.trim_end_matches(['.', ',']);
+    if !text.ends_with(')') {
+        return None;
+    }
+    let open = text.rfind('(')?;
+    let inner = &text[open + 1..text.len() - 1];
+    if inner.contains(['(', ')']) {
+        return None;
+    }
+    Some(text[..open].trim_end())
+}
+
+/// Whether `text` names a relative-Sunday shape,
+/// allowing trailing parenthesized groups (round 8,
+/// carried shape) to come off one by one until the
+/// shape stands alone: a "(October 25)" after a
+/// relative Sunday is garnish to the shape — the date
+/// it names is remembered separately — the way a
+/// trailing weekday garnish already is.
+fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> bool {
+    let mut rest = text;
+    loop {
+        if shape(rest) {
+            return true;
+        }
+        match strip_trailing_parenthesized(rest) {
+            Some(stripped) => rest = stripped,
+            None => return false,
+        }
+    }
+}
+
+/// The date a trailing parenthesized group names, if
+/// one does (round 8, carried shape): groups are
+/// taken from the end, and the first that reads as a
+/// date is the remembered one. A group that does not
+/// read as a date at all — a weekday garnish like
+/// "(Monday)" — is garnish, not memory.
+fn trailing_parenthesized_date(text: &str, today: SimpleDate) -> Option<SimpleDate> {
+    let mut rest = text.trim_end_matches(['.', ',']);
+    while rest.ends_with(')') {
+        let open = rest.rfind('(')?;
+        let inner = &rest[open + 1..rest.len() - 1];
+        if inner.contains(['(', ')']) {
+            return None;
+        }
+        if let Some(d) = parse_flexible_date(inner.trim(), today) {
+            return Some(d);
+        }
+        rest = rest[..open].trim_end().trim_end_matches(['.', ',']);
+    }
+    None
 }
 
 /// A For Sunday line that names a Sunday in words
@@ -410,6 +504,17 @@ fn sunday_after_outcome(text: &str, today: SimpleDate) -> Option<SundayAfter> {
 /// is not this shape either.
 fn sunday_after_relative_phrase(raw: &Option<String>) -> Option<String> {
     let text = raw.as_deref()?.trim();
+    if relative_shape_matches(text, sunday_after_relative_shape) {
+        Some(text.trim_end_matches(['.', ',']).to_string())
+    } else {
+        None
+    }
+}
+
+/// Whether `text` is exactly the Sunday-after-a-
+/// relative-Sunday shape, trailing weekday garnish
+/// and all.
+fn sunday_after_relative_shape(text: &str) -> bool {
     let words: Vec<String> = text
         .split_whitespace()
         .map(|w| {
@@ -451,11 +556,7 @@ fn sunday_after_relative_phrase(raw: &Option<String>) -> Option<String> {
         || (core.len() > 1
             && weekday_word(core.last().map(String::as_str).unwrap_or("")).is_some()
             && shape(&core[..core.len() - 1]));
-    if names_shape {
-        Some(text.trim_end_matches(['.', ',']).to_string())
-    } else {
-        None
-    }
+    names_shape
 }
 
 /// A For Sunday line that names its day only in
@@ -467,6 +568,16 @@ fn sunday_after_relative_phrase(raw: &Option<String>) -> Option<String> {
 /// line saying anything more is not this shape.
 fn relative_sunday_phrase(raw: &Option<String>) -> Option<String> {
     let text = raw.as_deref()?.trim();
+    if relative_shape_matches(text, relative_sunday_shape) {
+        Some(text.trim_end_matches(['.', ',']).to_string())
+    } else {
+        None
+    }
+}
+
+/// Whether `text` is exactly a bare relative Sunday,
+/// trailing weekday garnish and all.
+fn relative_sunday_shape(text: &str) -> bool {
     let words: Vec<String> = text
         .split_whitespace()
         .map(|w| {
@@ -497,11 +608,44 @@ fn relative_sunday_phrase(raw: &Option<String>) -> Option<String> {
         || (core.len() > 1
             && weekday_word(core.last().map(String::as_str).unwrap_or("")).is_some()
             && shape(&core[..core.len() - 1]));
-    if names_sunday {
-        Some(text.trim_end_matches(['.', ',']).to_string())
-    } else {
-        None
+    names_sunday
+}
+
+/// Read a date standing at the head of `tokens`,
+/// letting the line's remainder follow it (round 8,
+/// R8-4): the longest opening run of words that reads
+/// as a date, and how many words it took. Words after
+/// the date are the remainder, not a parse failure.
+fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(SimpleDate, usize)> {
+    (1..=tokens.len())
+        .rev()
+        .find_map(|end| parse_flexible_date(&tokens[..end].join(" "), today).map(|d| (d, end)))
+}
+
+/// Whether the weekday at `i` in `core` wears the
+/// framing garnish stack (round 8, R8-6): an optional
+/// "on" and an optional "the" in front of it — the
+/// stack the Sunday-after reader strips — or stands
+/// at the line's start bare, as the leading form
+/// always has. A weekday wearing neither, away from
+/// the line's start, frames nothing and stays
+/// ordinary text (round 5, R5-D).
+fn weekday_is_framed(core: &[&str], i: usize) -> bool {
+    fn clean(t: &str) -> &str {
+        t.trim_matches(['(', ')', '[', ']', ',', '.'])
     }
+    if i == 0 {
+        return true;
+    }
+    if clean(core[i - 1]).eq_ignore_ascii_case("on") {
+        return true;
+    }
+    if clean(core[i - 1]).eq_ignore_ascii_case("the") {
+        // "on the Monday", or the line's own opening
+        // "the" standing in front of the weekday.
+        return i == 1 || clean(core[i - 2]).eq_ignore_ascii_case("on");
+    }
+    false
 }
 
 /// A weekday wearing "on" directly in front of a
@@ -514,6 +658,20 @@ fn relative_sunday_phrase(raw: &Option<String>) -> Option<String> {
 /// the date it frames reads; a weekday with no "on"
 /// away from the line's start frames nothing here and
 /// stays ordinary text (round 5, R5-D).
+///
+/// Round 8 (R8-4/R8-5/R8-6): the framing needs the
+/// weekday directly in front of the date — what
+/// follows the date is the line's remainder, not a
+/// parse failure — the reader scans EVERY framing
+/// candidate in the line until one frames a date (a
+/// candidate whose following words do not parse as a
+/// date is not a framing, and scanning continues),
+/// and the weekday may wear the garnish stack, an
+/// optional "on" and an optional "the". The trailing
+/// weekday frames the same date only when it stands
+/// directly after it; words between the date and a
+/// trailing weekday word make that word part of the
+/// remainder, not a second framing.
 fn framed_date_outcome(
     text: &str,
     today: SimpleDate,
@@ -536,40 +694,31 @@ fn framed_date_outcome(
             .collect(),
         None => tokens.clone(),
     };
-    let mut lead: Option<(&str, u32, usize)> = None;
-    if core.len() >= 2 && clean(core[0]).eq_ignore_ascii_case("on") {
-        if let Some(n) = weekday_word(clean(core[1])) {
-            lead = Some((clean(core[1]), n, 1));
+    for i in 0..core.len() {
+        let Some(lead_number) = weekday_word(clean(core[i])) else {
+            continue;
+        };
+        if !weekday_is_framed(&core, i) {
+            continue;
         }
-    }
-    if lead.is_none() && !core.is_empty() {
-        if let Some(n) = weekday_word(clean(core[0])) {
-            lead = Some((clean(core[0]), n, 0));
+        let Some((date, used)) = parse_date_prefix(&core[i + 1..], today) else {
+            continue;
+        };
+        if date.weekday() != lead_number {
+            let named = clean(core[i]).to_string();
+            return Some((None, Some(WeekdayMismatch { named, date })));
         }
-    }
-    if lead.is_none() {
-        for i in 1..core.len() {
-            if clean(core[i - 1]).eq_ignore_ascii_case("on") {
-                if let Some(n) = weekday_word(clean(core[i])) {
-                    lead = Some((clean(core[i]), n, i));
-                    break;
+        if i + 1 + used == core.len() {
+            if let Some((trailing_word, trailing_number)) = trailing {
+                if date.weekday() != trailing_number {
+                    let named = trailing_word.to_string();
+                    return Some((None, Some(WeekdayMismatch { named, date })));
                 }
             }
         }
+        return Some((Some(date), None));
     }
-    let (lead_word, lead_number, lead_idx) = lead?;
-    let date = parse_flexible_date(&core[lead_idx + 1..].join(" "), today)?;
-    if date.weekday() != lead_number {
-        let named = lead_word.to_string();
-        return Some((None, Some(WeekdayMismatch { named, date })));
-    }
-    if let Some((trailing_word, trailing_number)) = trailing {
-        if date.weekday() != trailing_number {
-            let named = trailing_word.to_string();
-            return Some((None, Some(WeekdayMismatch { named, date })));
-        }
-    }
-    Some((Some(date), None))
+    None
 }
 
 /// Read one of a contribution's two date lines: the
@@ -651,10 +800,17 @@ fn date_line(
     // claim about the date: the date reads, and no
     // mismatch is recorded. (A weekday in the line's
     // first position is the claim case, handled above
-    // by `named_weekday_mismatch`.)
+    // by `named_weekday_mismatch`.) Defense in depth
+    // (round 8, R8-5): a weekday wearing the framing
+    // garnish stack was the framing check's to judge,
+    // so this fallback never returns the date it
+    // stands in front of clean.
     for i in 1..tokens.len() {
         let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.']);
         if weekday_word(word).is_none() {
+            continue;
+        }
+        if weekday_is_framed(&tokens, i) {
             continue;
         }
         if let Some(date) = parse_flexible_date(&tokens[i + 1..].join(" "), today) {
@@ -821,6 +977,20 @@ pub fn parse_contribution(text: &str, today: SimpleDate) -> Result<Contribution,
     } else {
         None
     };
+    // A trailing parenthesized absolute date on a
+    // relative phrase is remembered with the phrase
+    // (round 8, carried shape): the verdict compares
+    // it with the relative resolution once a bulletin
+    // anchors it. A parenthesis that does not read as
+    // a date is garnish and leaves no memory.
+    let for_sunday_parenthesized_date =
+        if for_sunday_in_words.is_some() || for_sunday_after_in_words.is_some() {
+            raw.for_sunday
+                .as_deref()
+                .and_then(|t| trailing_parenthesized_date(t, today))
+        } else {
+            None
+        };
     Ok(Contribution {
         from: raw.from.filter(|s| !s.trim().is_empty()),
         for_date,
@@ -830,6 +1000,7 @@ pub fn parse_contribution(text: &str, today: SimpleDate) -> Result<Contribution,
         keep_through_weekday_mismatch,
         for_sunday_in_words,
         for_sunday_after_in_words,
+        for_sunday_parenthesized_date,
     })
 }
 
@@ -911,10 +1082,32 @@ pub fn week_verdict(c: &Contribution, bulletin: Option<SimpleDate>) -> WeekVerdi
         // strictly after it, so it always differs from
         // the open bulletin and arms like any named
         // Sunday that does.
+        //
+        // Round 8 (carried shape): a trailing
+        // parenthesized absolute date is compared with
+        // that resolution. Agreement reads exactly as
+        // the relative verdict does; disagreement names
+        // the sender's own date instead, and arms the
+        // same way — the review's sentence names it
+        // beside the open bulletin's date.
         (None, Some(open)) if c.for_sunday_after_in_words.is_some() => {
-            WeekVerdict::DifferentSunday(first_sunday_after(open))
+            let resolved = first_sunday_after(open);
+            match c.for_sunday_parenthesized_date {
+                Some(said) if said != resolved => WeekVerdict::DifferentSunday(said),
+                _ => WeekVerdict::DifferentSunday(resolved),
+            }
         }
-        (None, Some(open)) if c.for_sunday_in_words.is_some() => WeekVerdict::SundayInWords(open),
+        // The same comparison for a bare relative
+        // Sunday: its resolution is the open bulletin
+        // itself, so an agreeing parenthesis reads as
+        // the in-words verdict does, and a disagreeing
+        // one names its date and arms.
+        (None, Some(open)) if c.for_sunday_in_words.is_some() => {
+            match c.for_sunday_parenthesized_date {
+                Some(said) if said != open => WeekVerdict::DifferentSunday(said),
+                _ => WeekVerdict::SundayInWords(open),
+            }
+        }
         _ => WeekVerdict::NoSundayNamed,
     }
 }
@@ -1794,5 +1987,298 @@ Youth group meets Wednesday at 6 PM.
         assert_eq!(raw.parts.len(), 5);
         assert_eq!(raw.parts[0].0, PartKind::Service);
         assert!(raw.parts[0].1.contains("Sermon: **The Good Shepherd**"));
+    }
+
+    #[test]
+    fn r8c_a_framed_date_reads_past_words_after_the_date() {
+        // Round 8 (R8-4 / RT8-3): "use on Monday,
+        // October 25, 2026 for the picnic" recorded
+        // nothing — the framed reader parsed everything
+        // after the framing weekday as one date, and any
+        // word after the date killed the reading. The
+        // framing needs the weekday directly in front of
+        // the date; what follows the date is the line's
+        // remainder. October 25, 2026 is a Sunday.
+        for line in [
+            "use on Monday, October 25, 2026 for the picnic",
+            "please use on Monday, October 25, 2026, thank you",
+            "on Monday, October 25, 2026 we celebrate",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the impossible day does not read");
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::NoSundayNamed,
+                "{line}: no date reads, and the mismatch record speaks instead"
+            );
+            let m = c
+                .named_weekday_mismatch
+                .expect("the mismatch is recorded wherever the date stands");
+            assert_eq!(m.named, "Monday", "{line}");
+            assert_eq!(m.date, oct(25), "{line}");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: the mirror drops it too");
+            let m = c
+                .keep_through_weekday_mismatch
+                .expect("the keep-through mirror records it");
+            assert_eq!(m.named, "Monday", "{line}");
+            assert_eq!(m.date, oct(25), "{line}");
+        }
+        // The agreeing control (RT8-3's E2) died the
+        // same way — the shape failed on the trailing
+        // words, not the weekday. It now yields its
+        // date by the same rules as the line-ending
+        // form, on both lines.
+        let text = "For Sunday: use on Sunday, October 25, 2026 for the picnic\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.named_weekday_mismatch, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        let text = "Keep-through: use on Sunday, October 25, 2026 for the picnic\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(oct(25)));
+        assert_eq!(c.keep_through_weekday_mismatch, None);
+        // The Sunday-after variant (RT8-3's E5) lost a
+        // determined date to one trailing word the same
+        // way: the Sunday after October 25, 2026 is
+        // November 1.
+        let nov1 = SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 1,
+        };
+        let text = "For Sunday: words for Sunday after October 25, 2026 please\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov1));
+        assert_eq!(c.named_weekday_mismatch, None);
+        let text = "Keep-through: words for Sunday after October 25, 2026 please\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov1));
+        assert_eq!(c.keep_through_weekday_mismatch, None);
+    }
+
+    #[test]
+    fn r8c_a_second_on_framing_is_judged_not_laundered() {
+        // Round 8 (R8-5 / RT8-4): the framed reader
+        // tried only the FIRST "on"+weekday candidate;
+        // when it failed, the ordinary-text fallback
+        // returned the second framed date clean —
+        // SameSunday, unarmed, no mismatch. The reader
+        // now scans every candidate until one frames a
+        // date, and the fallback never returns a date
+        // whose weekday wears the framing stack.
+        // October 25, 2026 is a Sunday.
+        let text = "For Sunday: meet on Friday, then use on Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "no longer a clean read of an impossible day"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::NoSundayNamed,
+            "not the unarmed SameSunday the red team probed"
+        );
+        let m = c
+            .named_weekday_mismatch
+            .expect("the second framing is judged, not laundered");
+        assert_eq!(m.named, "Monday");
+        assert_eq!(m.date, oct(25));
+        let text = "Keep-through: meet on Friday, then use on Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, None);
+        let m = c
+            .keep_through_weekday_mismatch
+            .expect("the keep-through mirror records it too");
+        assert_eq!(m.named, "Monday");
+        assert_eq!(m.date, oct(25));
+        // The shadow control (round 8 review, D4): a
+        // candidate whose following words do not parse
+        // as a date is not a framing — scanning
+        // continues, and the real date reads clean.
+        let text = "For Sunday: on Monday we prayed, service on Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "D4 still reads clean");
+        assert_eq!(c.named_weekday_mismatch, None, "D4 still records nothing");
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        let text = "Keep-through: on Monday we prayed, service on Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(oct(25)));
+        assert_eq!(c.keep_through_weekday_mismatch, None);
+    }
+
+    #[test]
+    fn r8c_on_the_weekday_frames_with_its_garnish_stack() {
+        // Round 8 (R8-6 / RT8-5): the plain-date
+        // readers required the weekday immediately
+        // after "on", so "on the Monday, October 25,
+        // 2026" read clean — SameSunday, unarmed —
+        // though the Sunday-after reader strips
+        // "on"/"the" garnishes in a loop. The framing
+        // readers accept the same garnish stack,
+        // wherever the framing stands. October 25, 2026
+        // is a Sunday.
+        let text = "For Sunday: on the Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "no longer an unarmed SameSunday");
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::NoSundayNamed,
+            "not the unarmed SameSunday the red team probed"
+        );
+        let m = c
+            .named_weekday_mismatch
+            .expect("the garnished framing is judged");
+        assert_eq!(m.named, "Monday");
+        assert_eq!(m.date, oct(25));
+        let text = "Keep-through: on the Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, None);
+        let m = c
+            .keep_through_weekday_mismatch
+            .expect("the keep-through mirror records it too");
+        assert_eq!(m.named, "Monday");
+        assert_eq!(m.date, oct(25));
+        // Wherever the framing stands in the line.
+        let text = "For Sunday: use on the Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, None);
+        let m = c
+            .named_weekday_mismatch
+            .expect("mid-line, the stack still frames");
+        assert_eq!(m.named, "Monday");
+        assert_eq!(m.date, oct(25));
+        // An agreeing weekday behind the stack reads
+        // clean, exactly as "on Sunday" does.
+        let text = "For Sunday: on the Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.named_weekday_mismatch, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    }
+
+    #[test]
+    fn r8c_a_parenthesized_date_on_a_relative_sunday_is_remembered_and_compared() {
+        // Round 8 (carried shape, open two rounds /
+        // RT8-10): "the Sunday after next Sunday
+        // (October 25)" named no Sunday anywhere — the
+        // trailing parenthesized absolute date was
+        // remembered nowhere. It is now remembered with
+        // the in-words phrase, and the verdict compares
+        // it with the relative resolution once an open
+        // bulletin anchors it. October 25, 2026 is a
+        // Sunday; the Sunday after October 18 is
+        // October 25, and after October 25, November 1.
+        let nov8 = SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 8,
+        };
+        for line in [
+            "the Sunday after next Sunday (October 25)",
+            "the Sunday after next Sunday (October 25, 2026)",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: no date in the words alone");
+            assert_eq!(c.named_weekday_mismatch, None, "{line}");
+            assert_eq!(
+                c.for_sunday_after_in_words.as_deref(),
+                Some(line),
+                "{line}: the phrase is remembered as written"
+            );
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(oct(25)),
+                "{line}: the parenthesized date is remembered with it"
+            );
+            // Anchored and agreeing (resolution October
+            // 25 against the October 18 bulletin): reads
+            // as the relative verdict does today.
+            assert_eq!(
+                week_verdict(&c, Some(oct(18))),
+                WeekVerdict::DifferentSunday(oct(25)),
+                "{line}: resolution and parenthesis agree"
+            );
+            // Anchored and disagreeing (the resolution
+            // against October 25 is November 1): the
+            // verdict names the sender's date, and arms.
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::DifferentSunday(oct(25)),
+                "{line}: the parenthesized date is the named Sunday"
+            );
+            // No anchor: the review's in-words sentence
+            // carries the sender's phrase as now.
+            assert_eq!(
+                week_verdict(&c, None),
+                WeekVerdict::NoSundayNamed,
+                "{line}: no bulletin date to read against"
+            );
+        }
+        // A parenthesis naming a third Sunday: the
+        // verdict names it, not the resolution.
+        let text =
+            "For Sunday: the Sunday after next Sunday (November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_sunday_parenthesized_date, Some(nov8));
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::DifferentSunday(nov8),
+            "the resolution is November 1; the sender's date is named instead"
+        );
+        // The bare relative Sunday carries the same
+        // memory: agreement reads as the in-words
+        // verdict does today, disagreement names the
+        // sender's date and arms like any differing
+        // named Sunday.
+        let text = "For Sunday: next Sunday (October 25)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some("next Sunday (October 25)")
+        );
+        assert_eq!(c.for_sunday_after_in_words, None);
+        assert_eq!(c.for_sunday_parenthesized_date, Some(oct(25)));
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "agreeing: read as the open bulletin's Sunday, as today"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(18))),
+            WeekVerdict::DifferentSunday(oct(25)),
+            "disagreeing: the named date, armed"
+        );
+        assert_eq!(week_verdict(&c, None), WeekVerdict::NoSundayNamed);
+        // A parenthesis that does not read as a date at
+        // all is garnish, not memory: "(Monday)" stands
+        // beside the phrase as it always has (round 6,
+        // RT6-8), and an unreadable date remembers
+        // nothing either.
+        let text = "For Sunday: next Sunday (Monday)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some("next Sunday (Monday)")
+        );
+        assert_eq!(c.for_sunday_parenthesized_date, None);
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25))
+        );
+        let text = "For Sunday: next Sunday (October 32)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some("next Sunday (October 32)")
+        );
+        assert_eq!(c.for_sunday_parenthesized_date, None);
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25))
+        );
     }
 }

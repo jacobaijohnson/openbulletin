@@ -246,6 +246,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 expected_parts: Vec::new(),
                 children_names: Default::default(),
                 serving_lines: ob_model::default_serving_lines(),
+                serving_aliases: Default::default(),
             };
             let doc = ob_layout::build_template(preset, profile, date, &sunday_name);
             ob_format::save(&doc, &out)?;

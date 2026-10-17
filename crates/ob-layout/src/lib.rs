@@ -799,6 +799,7 @@ mod tests {
             expected_parts: Vec::new(),
             children_names: Default::default(),
             serving_lines: ob_model::default_serving_lines(),
+            serving_aliases: Default::default(),
         }
     }
 

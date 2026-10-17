@@ -393,3 +393,177 @@ weekly story, and the rest is missing either way) and
 slip lands on an appended line labelled "Hymn", which
 the hymn-line rule counts). The fake-helper ETXTBSY
 flake did not fire.
+
+## Shipped addendum, R6-C (2026-10-16)
+
+Serving-line identity, second pass, shipped over
+HEAD `9715b75`. Pairings are now recorded, claimed-
+ness follows resolution, and pairing works on
+anchored segments:
+
+- Aliases, not positions (RT6-5). `ChurchProfile`
+  gains `serving_aliases` (a slug map, serde-default
+  empty, so old profiles load with none). When a
+  profile save pairs a rename, the migration records
+  the pairing there — the old line's key slug (its
+  built-in canonical slug for a built-in line, else
+  its derived slug) to the new line's slug.
+  `participant_value` resolves in this order: the
+  slug itself (or its built-in twin key) in the
+  participants map; then the alias chain from the
+  token's canonical slug, hop by hop; then the
+  legacy same-slug weekly-fields fallback. The
+  round-3 POSITIONAL BRIDGE IS DELETED: a token that
+  resolves by neither slug nor alias resolves EMPTY,
+  never to another line's names. Alias chains across
+  successive renames resolve (Readers to Lectors to
+  Readers' leaders). Cycle rule: the walk keeps a
+  visited set and a 64-hop cap; a crafted cycle
+  stops at the first repeated slug and resolves
+  EMPTY. The R3-C pin (an in-place rename keeps the
+  old built-in token working) stays green, now
+  through the alias. `field_tokens` also mints the
+  alias slugs, so an old line's token stays a token.
+  Every `participant_value` caller already works
+  against a `Document` (hence a profile); none
+  needed a new path.
+- Claimed-ness follows resolution (R6-4).
+  `serving_line_slug_conflict` now takes the alias
+  record, and its line-itself test is: a built-in's
+  canonical slug is claimed by the OLD-list line the
+  built-in's token currently resolves to — the line
+  whose own key IS the canonical slug, or the line
+  the alias chain from the canonical slug ends at.
+  Only the claiming line may take a name deriving
+  the slug, and the claiming line itself may always
+  rename to such a name, including back to the
+  built-in's own name. Both probes flip: Ushers
+  renamed to "Children's message" is refused while
+  "Kids message" holds the claim; "Kids message"
+  renaming itself to "Children's message" (or
+  "Childrens Message") is accepted. The R5-C
+  refusals (slug twins in one list; an added
+  "Childrens Message" while the built-in stands
+  under its own name; Acolytes renamed onto it) stay
+  refused. When no old-list line claims a slug, the
+  name is free.
+- Segment pairing; ambiguity refuses the change
+  (R6-5, RT6-6). `serving_pairing` anchors on the
+  names present in both lists, in order; the runs
+  of old-only and new-only names between anchors
+  (and at the ends) are segments. Equal counts in a
+  segment pair in order; only-new is additions;
+  only-old is removals; exactly one old-only and one
+  new-only name in the whole edit pair wherever they
+  sit (a single rename, with or without a move).
+  If unpaired old-only AND new-only names both
+  remain (a rename crossed an anchor), the pairing
+  is ambiguous: `ServingLineMigration.ambiguous` is
+  set, NOTHING is moved, cleared, or aliased, and
+  the app refuses the serving-lines change as a
+  whole (saved list restored, typed lines left in
+  the editor) with the status sentence "Serving
+  lines not saved: several lines were renamed and
+  moved at once, and the app cannot tell which names
+  belong to which line. The lines were left as they
+  were. Rename one line at a time, then save again."
+  The word "unfollowed" leaves the status vocabulary
+  (it survives only in comments recording its
+  removal). A name that ends as a removal has its
+  values cleared under all its keys AND any alias
+  pointing at its slug (or keyed by it) dropped, and
+  is reported as removed in the same save as any
+  successful renames (RT6-6's delete-plus-rename now
+  reports the deletion as removed). A new line later
+  taking a removed line's exact name starts fresh
+  and inherits no alias. Pure swap and pure reorder
+  still leave the participants map byte-identical
+  (no old-only or new-only names exist). The R5-C
+  swapped-pair residual is untouched and stays
+  recorded, not fixed: it lives inside a segment,
+  where in-order pairing is the in-place rule.
+- The profile rebuild in ob-app (template/preset
+  path) now carries `serving_aliases` across, so
+  the record cannot be wiped by an unrelated edit.
+
+FORMAT.md's serving-lines discussion was rewritten
+for the alias record (where it lives, that old
+profiles load with none), the segment pairing and
+whole-change refusal, claimed-ness by resolution,
+removal dropping aliases, and resolution by slug
+then alias — never by position.
+
+Tests: 550 → 558 passing, 0 failed (full workspace,
+unpiped, `--no-fail-fast`; all 28 suite results ok);
+clippy `--workspace --all-targets -- -D warnings`
+exit 0. Eight new tests, all in ob-model: the RT6-5
+probe as it was actually probed — rename Readers to
+Lectors in one save, insert "Band" at the front in
+a second, then {Sunday.readers} returns the renamed
+line's names through the alias, {Sunday.ushers} the
+Ushers', and a nonexistent line's token resolves
+empty; an alias chain across two successive renames
+resolves; a crafted alias cycle in a loaded profile
+resolves empty and cannot hang; both R6-4 probes
+(claimed-ness both ways, both spellings back);
+two in-place renames plus one added line all take
+effect in one save; delete-plus-rename in one save
+reports the deletion as removed with its names
+cleared and pairs the rename; a removal drops the
+aliases that pointed at it and a new line reusing
+the exact name starts fresh with no inherited
+alias; a profile JSON without the alias record
+loads with none. One deviation from the brief's
+test list, stated plainly: the brief described the
+RT6-5 probe as "one save", but the probe itself was
+two saves, and a single save holding both a rename
+and an insertion in the SAME segment is precisely
+the unequal-count segment the binding segment rule
+refuses as ambiguous — so the test runs the probe's
+own two saves. The fake-helper ETXTBSY flake did
+not fire.
+
+Pre-existing tests changed, each flagged by name:
+
+- `two_renames_with_a_reorder_cross_nothing_and_are_named`
+  (ob-model) — DISPOSITION CHANGED. It pinned the
+  round-5 unfollowed disposition for F3's exact edit
+  (new names kept, names stranded under old slugs,
+  `migration.unfollowed` naming both lines). Round 6
+  refuses the change as a whole: the test now pins
+  `migration.ambiguous`, and the no-crossing, no-loss
+  properties it protected are re-pinned under the
+  new disposition (participants map and alias record
+  byte-identical, saved list still the old names,
+  old rows and tokens still resolving).
+- `ambiguous_and_refused_serving_lines_are_named_in_the_status_words`
+  (ob-app; renamed from
+  `unfollowed_and_refused_serving_lines_are_named_in_the_status_words`)
+  — DISPOSITION CHANGED. Its two unfollowed-sentence
+  pins are replaced by the one ambiguous-refusal
+  sentence pin above; its two slug-refusal sentence
+  pins are unchanged.
+- `two_renames_in_place_pair_by_position`
+  (ob-model) and
+  `a_refused_serving_save_changes_nothing_and_rows_stay_with_tokens`
+  (ob-app) — API adaptation only: the detailed
+  migration and slug-conflict calls now take the
+  profile's alias record, and the
+  `migration.unfollowed.is_empty()` assertions are
+  now `!migration.ambiguous`. Every other assertion
+  is unchanged.
+- Every other pre-existing migrate/conflict call
+  site in the ob-model tests
+  (`a_profile_rename_moves_the_stored_names`,
+  `a_rename_moves_names_from_either_stored_key`,
+  `a_swap_or_reorder_moves_and_crosses_nothing`,
+  `a_rename_with_a_reorder_lands_on_the_renamed_line`,
+  `a_rename_onto_a_filled_slug_keeps_both_values`,
+  `slug_twins_in_one_list_are_a_conflict`,
+  `a_name_taking_a_builtin_slug_is_a_conflict`,
+  `a_removed_line_loses_its_names_and_is_reported`,
+  `a_rename_onto_an_existing_line_clears_the_merged_names`)
+  gained the alias-record argument mechanically;
+  no assertion in them changed, and all stay green —
+  including the R5-C refusal pins and the swap /
+  reorder byte-identical pin.

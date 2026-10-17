@@ -1936,31 +1936,18 @@ fn removed_serving_lines_sentence(removed: &[String]) -> String {
     }
 }
 
-/// The profile save's words when renamed serving
-/// lines could not be followed to their new names
-/// (round 5, F3): several renames and a new order in
-/// one save leave the pairing ambiguous, so the
-/// names stay saved under the old names, and the
-/// status says which lines and what to do instead.
-fn unfollowed_serving_lines_sentence(unfollowed: &[String]) -> String {
-    let quoted = unfollowed
-        .iter()
-        .map(|n| format!("'{n}'"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    if unfollowed.len() == 1 {
-        format!(
-            "The names saved for {quoted} were kept under that name: with several \
-             renames and a new order, the app cannot tell which new name is \
-             theirs. Rename one line at a time to move them."
-        )
-    } else {
-        format!(
-            "The names saved for {quoted} were kept under those names: with \
-             several renames and a new order, the app cannot tell which new \
-             names are theirs. Rename one line at a time to move them."
-        )
-    }
+/// The profile save's words when a serving-lines
+/// change is refused as a whole (round 6, R6-C):
+/// several lines were renamed and moved at once, so
+/// the app cannot tell which names belong to which
+/// line; the lines were left as they were, and the
+/// remedy — rename one line at a time — now works,
+/// because nothing half-applied.
+fn ambiguous_serving_lines_sentence() -> String {
+    "Serving lines not saved: several lines were renamed and moved at once, \
+     and the app cannot tell which names belong to which line. The lines \
+     were left as they were. Rename one line at a time, then save again."
+        .to_string()
 }
 
 /// The profile save's words when serving lines are
@@ -5380,6 +5367,7 @@ impl App {
                 expected_parts: self.doc.profile.expected_parts.clone(),
                 children_names: self.doc.profile.children_names,
                 serving_lines: self.doc.profile.serving_lines.clone(),
+                serving_aliases: self.doc.profile.serving_aliases.clone(),
             },
             chrono::Local::now().date_naive(),
             "Sunday",
@@ -14587,6 +14575,7 @@ impl eframe::App for App {
                                 let conflict = ob_model::serving_line_slug_conflict(
                                     &self.doc.profile.serving_lines,
                                     &parsed,
+                                    &self.doc.profile.serving_aliases,
                                 );
                                 if let Some(conflict) = conflict {
                                     let sentence = serving_line_conflict_sentence(&conflict);
@@ -14599,17 +14588,22 @@ impl eframe::App for App {
                                     // rename only when the
                                     // pairing is unambiguous
                                     // (round 3, R3-3; round
-                                    // 4, R4-2; round 5, F3).
-                                    // An ambiguous pairing
-                                    // moves nothing and
-                                    // clears nothing, and
-                                    // the status names the
-                                    // lines kept under their
-                                    // old names. A line
-                                    // removed with names
-                                    // still saved loses them
-                                    // here, and the status
-                                    // says so (RT-6c).
+                                    // 4, R4-2; round 5, F3;
+                                    // segment pairing and
+                                    // recorded aliases since
+                                    // round 6, R6-C). An
+                                    // ambiguous pairing
+                                    // refuses the lines
+                                    // change as a whole:
+                                    // nothing is paired,
+                                    // moved, or cleared, and
+                                    // the saved list stays
+                                    // exactly as it was. A
+                                    // line removed with
+                                    // names still saved
+                                    // loses them here, and
+                                    // the status says so
+                                    // (RT-6c).
                                     let old_lines =
                                         std::mem::take(&mut self.doc.profile.serving_lines);
                                     let migration =
@@ -14617,24 +14611,25 @@ impl eframe::App for App {
                                             &old_lines,
                                             &parsed,
                                             &mut self.doc.participants,
+                                            &mut self.doc.profile.serving_aliases,
                                         );
-                                    self.doc.profile.serving_lines = parsed;
-                                    self.record_undo(before);
-                                    let mut notes: Vec<String> = Vec::new();
-                                    if !migration.removed.is_empty() {
-                                        let sentence = removed_serving_lines_sentence(
-                                            &migration.removed,
-                                        );
-                                        notes.push(sentence);
-                                    }
-                                    if !migration.unfollowed.is_empty() {
-                                        let sentence = unfollowed_serving_lines_sentence(
-                                            &migration.unfollowed,
-                                        );
-                                        notes.push(sentence);
-                                    }
-                                    if !notes.is_empty() {
-                                        self.status = notes.join(" ");
+                                    if migration.ambiguous {
+                                        self.doc.profile.serving_lines = old_lines;
+                                        let sentence = ambiguous_serving_lines_sentence();
+                                        self.fail(sentence);
+                                    } else {
+                                        self.doc.profile.serving_lines = parsed;
+                                        self.record_undo(before);
+                                        let mut notes: Vec<String> = Vec::new();
+                                        if !migration.removed.is_empty() {
+                                            let sentence = removed_serving_lines_sentence(
+                                                &migration.removed,
+                                            );
+                                            notes.push(sentence);
+                                        }
+                                        if !notes.is_empty() {
+                                            self.status = notes.join(" ");
+                                        }
                                     }
                                 }
                             }
@@ -18662,23 +18657,22 @@ mod settings_tests {
     }
 
     #[test]
-    fn unfollowed_and_refused_serving_lines_are_named_in_the_status_words() {
-        // Round 5, F3 + RT5-4: the profile save's new
-        // words, pinned exactly as the removed-line
-        // words are: an ambiguous rename names the
-        // lines kept under their old names, and a
-        // slug refusal names both lines in the clash.
+    fn ambiguous_and_refused_serving_lines_are_named_in_the_status_words() {
+        // Round 5, F3 + RT5-4, words changed in round
+        // 6 (R6-C): the profile save's words, pinned
+        // exactly as the removed-line words are. An
+        // ambiguous rename no longer keeps names under
+        // old names (the round-5 "unfollowed" words
+        // are gone): the whole lines change is
+        // refused, the lines are left as they were,
+        // and a slug refusal names both lines in the
+        // clash.
         assert_eq!(
-            unfollowed_serving_lines_sentence(&["Acolytes".to_string()]),
-            "The names saved for 'Acolytes' were kept under that name: with \
-             several renames and a new order, the app cannot tell which new \
-             name is theirs. Rename one line at a time to move them."
-        );
-        assert_eq!(
-            unfollowed_serving_lines_sentence(&["Readers".to_string(), "Acolytes".to_string(),]),
-            "The names saved for 'Readers', 'Acolytes' were kept under those \
-             names: with several renames and a new order, the app cannot tell \
-             which new names are theirs. Rename one line at a time to move them."
+            ambiguous_serving_lines_sentence(),
+            "Serving lines not saved: several lines were renamed and moved \
+             at once, and the app cannot tell which names belong to which \
+             line. The lines were left as they were. Rename one line at a \
+             time, then save again."
         );
         let first = "Prayer Team".to_string();
         let second = "Prayer-Team".to_string();
@@ -18738,7 +18732,11 @@ mod settings_tests {
         // agree on Ms. Patty.
         let mut renamed = lines_before.clone();
         renamed[5] = "Childrens Message".to_string();
-        let conflict = ob_model::serving_line_slug_conflict(&lines_before, &renamed);
+        let conflict = ob_model::serving_line_slug_conflict(
+            &lines_before,
+            &renamed,
+            &doc.profile.serving_aliases,
+        );
         assert!(conflict.is_some_and(|c| c.builtin));
         assert_eq!(doc.profile.serving_lines, lines_before);
         assert_eq!(doc.participants, map_before);
@@ -18754,7 +18752,12 @@ mod settings_tests {
         let mut twins = lines_before.clone();
         twins.push("Prayer Team".to_string());
         twins.push("Prayer-Team".to_string());
-        assert!(ob_model::serving_line_slug_conflict(&lines_before, &twins).is_some());
+        assert!(ob_model::serving_line_slug_conflict(
+            &lines_before,
+            &twins,
+            &doc.profile.serving_aliases
+        )
+        .is_some());
         assert_eq!(doc.profile.serving_lines, lines_before);
         assert_eq!(doc.participants, map_before);
         // Lookalike but distinct slugs save fine.
@@ -18762,7 +18765,11 @@ mod settings_tests {
         lookalikes.push("Prayer Team".to_string());
         lookalikes.push("Prayer Teams".to_string());
         assert_eq!(
-            ob_model::serving_line_slug_conflict(&lines_before, &lookalikes),
+            ob_model::serving_line_slug_conflict(
+                &lines_before,
+                &lookalikes,
+                &doc.profile.serving_aliases
+            ),
             None
         );
         // An accepted in-place rename of the built-in
@@ -18770,16 +18777,21 @@ mod settings_tests {
         let mut in_place = lines_before.clone();
         in_place[4] = "Kids' message".to_string();
         assert_eq!(
-            ob_model::serving_line_slug_conflict(&lines_before, &in_place),
+            ob_model::serving_line_slug_conflict(
+                &lines_before,
+                &in_place,
+                &doc.profile.serving_aliases
+            ),
             None
         );
         let migration = ob_model::migrate_serving_line_renames_detailed(
             &lines_before,
             &in_place,
             &mut doc.participants,
+            &mut doc.profile.serving_aliases,
         );
         assert!(migration.removed.is_empty());
-        assert!(migration.unfollowed.is_empty());
+        assert!(!migration.ambiguous);
         doc.profile.serving_lines = in_place;
         assert_eq!(doc.participant_value_for_name("Kids' message"), "Ms. Patty");
         assert_eq!(

@@ -94,57 +94,99 @@ names, keyed by serving-line slug. A value is stored
 under the slug of the line's name AS SHOWN (lowercase,
 non-alphanumerics become underscores, trimmed). A
 template prints a line's names with the token
-`{Sunday.<slug>}`. When the church renames a line in
+`{Sunday.<slug>}`. The profile also carries
+`serving_aliases` (round 6, R6-C): a map from a
+renamed line's OLD slug (its built-in canonical
+slug when the old name is a built-in line, else the
+slug its name derives) to its NEW slug, recorded
+durably at the save that pairs the rename. A
+profile written before the record existed loads
+with no aliases. When the church renames a line in
 the Church Profile and saves, the stored names move
-with the rename: saving compares the old and new
-lists as sets of names
-(`ob_model::migrate_serving_line_renames`). A name
-present in both lists keeps its names exactly where
-they are, so reordering or swapping lines in the
-editor moves nothing and crosses nothing. A name
-only in the old list pairs with a name only in the
-new list, and the pair is a rename, ONLY when the
-pairing is unambiguous: exactly one changed name on
-each side, or several renames where nothing moved
-(same list length, and every position either
-unchanged or the changed pair at that same
-position). A followed rename moves the value stored
-under the old name's slug (or its built-in canonical
-slug, when the value sits under it) to the new
-name's slug, clearing the old keys, so the renamed
-row shows the names in the editor and the old name's
-token stops printing them (round 3, R3-3; set-based
-since round 4, R4-2; unambiguous-only since round 5,
-R5-C). When the new name's slug already holds a
-different value, both values stay where they are and
-neither is discarded. When several renames coincide
-with any reordering, no pairing is followed: the
-names stay stored under their old slugs, neither
-crossed nor deleted, and the status names the lines
-whose new names could not be followed, with the
-remedy (rename one line at a time). A name only in
-the old list with no new name anywhere in the new
-list is a removed line (deleted, or renamed onto a
-line that already exists): its stored names are
-cleared at the save, all its keys, and the app names
-the line in its status line, so names never vanish
-silently (round 4, RT-6b/c). The slug is many-to-one,
-so the save is refused, leaving the typed lines in
+with the rename: saving pairs the old and new lists
+by anchored segments
+(`ob_model::migrate_serving_line_renames`). The
+names present in both lists are anchors, in order;
+the runs of old-only and new-only names between
+consecutive anchors (and at the ends) are segments.
+Within a segment, equal counts pair in order (the
+in-place case, immune to additions and removals in
+other segments); a segment with only new names is
+additions; a segment with only old names is
+removals. Exactly one old-only and one new-only
+name in the whole edit also pair wherever either
+sits (a single rename, with or without a move). A
+name present in both lists keeps its names exactly
+where they are, so reordering or swapping lines in
+the editor moves nothing and crosses nothing. A
+followed rename moves the value stored under the
+old name's slug (or its built-in canonical slug,
+when the value sits under it) to the new name's
+slug, clearing the old keys, AND records the
+pairing in `serving_aliases`, so the renamed row
+shows the names in the editor and the old name's
+token keeps printing them through the alias (round
+3, R3-3; set-based since round 4, R4-2;
+unambiguous-only since round 5, R5-C; segment
+pairing and recorded aliases since round 6, R6-C).
+When the new name's slug already holds a different
+value, both values stay where they are and neither
+is discarded. When unpaired old-only AND new-only
+names both remain after segment pairing — a rename
+crossed an anchor, so its partner sits in another
+segment — the pairing is ambiguous and the serving
+-lines change is REFUSED AS A WHOLE: the saved list
+keeps the old names, nothing is paired, moved, or
+cleared, and the status says several lines were
+renamed and moved at once, that the app cannot tell
+which names belong to which line, that the lines
+were left as they were, and to rename one line at a
+time. (Round 5 instead kept the new names and
+reported the lines "unfollowed" with their names
+stranded under the old slugs; that disposition and
+its status word are gone.) A name only in the old
+list with no partner anywhere is a removed line
+(deleted, or renamed onto a line that already
+exists): its stored names are cleared at the save,
+all its keys, any alias pointing at its slug (or
+keyed by it) is dropped so the names cannot
+reattach later, and the app names the line as
+removed in its status line — in the same save as
+any successful renames — so names never vanish
+silently (round 4, RT-6b/c). A new line later
+taking a removed line's exact name starts fresh and
+inherits no alias. The slug is many-to-one, so the
+save is also refused, leaving the typed lines in
 place and nothing else changed, when two names in
 the new list derive the same slug or a name derives
 a built-in line's canonical (or shown-name) slug
-without being that line itself (the line itself is
-the built-in's own display name, or the unambiguous
-rename target of it); the refusal sentence names
-both lines (round 5, RT5-4).
-Resolution also bridges by position for anything not
-yet moved: it honors the slug of the current name,
-the built-in slug from the alias table in
+without being the line that CLAIMS that slug.
+Claimed-ness follows resolution, not spelling: a
+built-in's canonical slug is claimed by the
+old-list line its token currently resolves to (the
+line whose own key is the canonical slug, or the
+line the alias record maps the canonical slug to,
+through its chain); only the claiming line may take
+a name deriving the slug, and the claiming line
+itself may always rename to such a name, including
+back to the built-in's own name; the refusal
+sentence names both lines (round 5, RT5-4; round 6,
+R6-4).
+Resolution never guesses a line by position. It
+honors the slug of the current name, the built-in
+slug from the alias table in
 `ob_model::PARTICIPANT_FIELDS` (display names matched
-case-insensitively), and, when a position's shown
-name is a rename, the other side of that rename, so
+case-insensitively), and then the recorded alias
+chain from the token's canonical slug, followed hop
+by hop (a chain across successive renames works; a
+crafted cycle stops at the first repeated slug and
+resolves empty, and the walk is depth-capped). A
+token that resolves by neither slug nor alias
+resolves EMPTY, never to another line's names, so
 `{Sunday.childrens_message}` and `{Sunday.acolytes}`
-keep resolving for values saved before the rename.
+keep resolving for values saved before the rename —
+through the recorded alias, not their old position
+in the list.
 Before the map existed, the four original lines kept
 their names in ordinary document fields under their
 slugs (`readers`, `ushers`, `greeters`,

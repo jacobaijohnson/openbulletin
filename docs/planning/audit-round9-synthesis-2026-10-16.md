@@ -353,3 +353,108 @@ full suite + clippy unpiped before accepting. Round
 10 (verify / review / red team over the new HEAD)
 follows R9-D. The Tier-2 final gate runs only after
 a Wonder round returns zero BLOCKER + zero MAJOR.
+
+## Shipped addendum, R9-A (2026-10-17)
+
+Rights, one final judgment: R9-1 + R9-4 + R9-5,
+in `crates/ob-model/src/lib.rs`. Full suite
+**619 passed / 0 failed** (baseline 614; +5 new
+pins, all in ob-model), clippy clean, exit codes
+read unpiped from cargo's own output.
+
+- R9-1: the class-specific arms are replaced by
+  ONE final judgment, `judged_composed_license`,
+  run on every composed record — in a single merge
+  at the end of `merge_rights_records_inner`, and
+  in a fold once at the fold's end over the fold's
+  own source records (`judge_folded_composed_record`,
+  replacing `judge_folded_composed_license`). If
+  the composed record notes children and its credit
+  line is empty and it carries a license, the
+  license stands only if vouched: some record in
+  the composition held that same license together
+  with a children note, or together with the credit
+  that stands in the composed record, or a
+  children-bearing record in the composition noted
+  a permission under the fence's bearer rule. An
+  attribution license is never vouched on an empty
+  credit line (its credit is its own requirement),
+  which preserves the round-7 togetherness outcome
+  inside the one judgment. Unvouched, a license
+  falls to a vouched license from the composition,
+  else Unknown. The publish fence itself is
+  untouched; every fence pin passes unchanged.
+  Pins (`r9_unvouched_licensed_reprint_falls_in_both_paths`,
+  `r9_vouched_licensed_reprint_controls_stand_in_every_order`):
+  the three RT9-1 witness shapes — `[lr, kidsCcBy]`,
+  `[kids, lr]`, `[kidsCcBy, titleOnly, lr]`, plus
+  their reverses — compose to Unknown in BOTH the
+  single-merge path and the fold, and the two paths
+  agree triple-for-triple on each shape. The vouched
+  controls stand in every order in both paths: a
+  record holding LicensedReprint + children, and a
+  record holding LicensedReprint + its own credit
+  (both as a children-bearing record whose credit
+  stands, and paired with a children-bearing record
+  holding the same credit).
+- Permutation check
+  (`r9_fold_triple_is_permutation_invariant_over_the_pool`):
+  an in-tree brute-force-style check over a small
+  archetype pool — every permutation of each tested
+  multiset folds to the same (children, license,
+  credit) triple (7 multisets, 26 permutations).
+  Scope, stated plainly: each multiset tested
+  carries at most one vouched non-attribution
+  license, so the final judgment fully determines
+  its triple. A multiset carrying two vouched
+  licenses is NOT triple-invariant under all
+  permutations, by the fill law rather than the
+  judgment: when a vouched license is itself the
+  standing license it stands (the first noted value
+  is never overwritten), while a fallen license
+  drops to the precedence winner — those multisets
+  are pinned by their RT9-4 witness orders, next.
+- R9-4 (`r9_fold_fallback_winner_is_order_independent`):
+  fallback selection in `fallback_license` is a
+  function of the composition, not of fold order:
+  a vouched license carried by a children-bearing
+  source record (tier 0) beats one vouched only
+  through the bearer rule (tier 1); among equals
+  the fixed precedence is **ChurchOwned, then
+  PublicDomain, then Cc0, then LicensedReprint**
+  (strongest claim first; a reprint license rests
+  on an outside licensor and stands last), stated
+  here and at `fallback_rank` in the code. The
+  RT9-4 witness pairs compose identically in both
+  orders: `[kidsCcBy, kidsCc0, church]` → Cc0
+  (children-carried beats bearer-only),
+  `[kidsCcBy, kidsPD, kidsChurch]` → ChurchOwned
+  (precedence among children-carried equals), and
+  `[kidsCcBy, kidsLR, kidsCc0]` → Cc0 (precedence
+  over a reprint license).
+- R9-5 (`r9_fold_rejudges_the_assertion_against_the_final_record`):
+  at fold end, `rejudge_folded_assertion` re-judges
+  the assertion by the R7-8 rule against the FINAL
+  folded record — it stands only if a substantive
+  rights fill from its own record stands there (its
+  credit line, or its license). Pins: both RT9-5
+  witness folds (`[empty, kidsCcByAsserted]` and
+  `[titleOnly, kidsCcByAsserted, titleOnly]`) end
+  at license Unknown with `asserted_by` /
+  `asserted_at` empty; the single-merge control is
+  unchanged; and a fold whose asserting record's
+  own credit stands keeps its assertion.
+- FORMAT.md: the merge paragraph now states the
+  final-judgment rule (every license class, every
+  composing path), the order-independent fallback
+  with its precedence, and the fold-end assertion
+  re-judgment, in place of the class-specific arms
+  it described before.
+- **Changed pre-existing tests: none.** No R7-A /
+  R8-A pin changed, and no pin anywhere in the
+  suite asserted an unvouched standing
+  LicensedReprint — the R8-3 pin's fallback
+  direction was the only LicensedReprint shape the
+  old suite pinned, as the disposition expected.
+  The full suite went 614 → 619 with additions
+  only.

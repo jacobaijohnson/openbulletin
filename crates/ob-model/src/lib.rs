@@ -1043,8 +1043,8 @@ fn rights_permission_noted(rights: &RightsRecord) -> bool {
 /// a fold of three or more records holds by
 /// composition: every single merge leaves the
 /// invariant standing. (The one step a fold defers
-/// to its own end is the composed togetherness rule
-/// below — round 8, R8-9, at
+/// to its own end is the final judgment below —
+/// round 8, R8-9, at
 /// `fold_duplicate_asset_records`.)
 ///
 /// A license and its credit travel together (round 6,
@@ -1057,20 +1057,33 @@ fn rights_permission_noted(rights: &RightsRecord) -> bool {
 /// merge leaves a record claiming a license whose
 /// required attribution was dropped in the same merge.
 ///
-/// The togetherness rule judges the composed record,
-/// not the direction (round 7, R7-1): after all the
-/// fills and reversions above, if the composed record
-/// notes children, carries a license that requires
-/// attribution (CC BY, CC BY-SA), and its credit line
-/// is empty, that license does not stand either —
-/// whichever side it came from. It reverts to what
-/// the merge holds without it: the other record's
-/// license when that license itself stands under
-/// these same rules, and Unknown where nothing else
-/// vouches a license. A children-bearing record whose
-/// own credit line stands keeps its license, and
-/// licenses that require no attribution (CC0, public
-/// domain, the church's own work) are untouched.
+/// One final judgment judges the composed record,
+/// not the direction (round 7, R7-1, as the
+/// togetherness rule; round 9, R9-1, as the only
+/// judgment): after all the fills and reversions
+/// above, if the composed record notes children and
+/// its credit line is empty and it carries a
+/// license, that license stands only if vouched —
+/// some record in the composition held that same
+/// license together with a children note, or
+/// together with the credit that stands in the
+/// composed record, or a children-bearing record in
+/// the composition noted a permission under the
+/// fence's bearer rule. This holds for every license
+/// class, a reprint license included, and whichever
+/// path composed the record: the license filled,
+/// already stood, or would stand as a fallback. An
+/// attribution license (CC BY, CC BY-SA) is never
+/// vouched on an empty credit line. Unvouched, a
+/// license falls to another license in the
+/// composition that is vouched under this same
+/// judgment — chosen order-independently, a license
+/// carried by a children-bearing record first, then
+/// by a fixed precedence (the church's own work,
+/// public domain, CC0, a reprint license) — and to
+/// Unknown where nothing vouches a license. A
+/// children-bearing record whose own credit line
+/// stands keeps its license.
 ///
 /// The assertion fields (asserted_by, asserted_at)
 /// fill only when a substantive rights fill from the
@@ -1086,17 +1099,17 @@ pub fn merge_rights_records(existing: &RightsRecord, incoming: &RightsRecord) ->
     merge_rights_records_inner(existing, incoming, false)
 }
 
-/// `merge_rights_records`, with the composed
-/// togetherness rule optionally deferred (round 8,
-/// R8-9): a fold defers that one step — the license
-/// fall for an empty credit line — so a credit
-/// arriving later in the same fold can stand beside
-/// the license it belongs to, and judges it once, on
-/// the folded record, at the fold's end (see
-/// `fold_duplicate_asset_records`). Every other step
-/// — the fills, the fence reversions, the incoming
-/// license-and-credit pairing, the assertion rule —
-/// runs per merge exactly as in a single merge.
+/// `merge_rights_records`, with the final judgment
+/// optionally deferred (round 8, R8-9): a fold defers
+/// that one step — the license fall for an empty
+/// credit line — so a credit arriving later in the
+/// same fold can stand beside the license it belongs
+/// to, and judges it once, on the folded record, at
+/// the fold's end (see `fold_duplicate_asset_records`).
+/// Every other step — the fills, the fence reversions,
+/// the incoming license-and-credit pairing, the
+/// assertion rule — runs per merge exactly as in a
+/// single merge.
 fn merge_rights_records_inner(
     existing: &RightsRecord,
     incoming: &RightsRecord,
@@ -1183,58 +1196,24 @@ fn merge_rights_records_inner(
         let standing_license = existing.license.clone();
         out.license = standing_license;
     }
-    // The togetherness rule on the composed record
-    // (round 7, R7-1): a license requiring attribution
-    // does not stand beside a children note with an
-    // empty credit line, whichever side the license
-    // came from — the mirror of the rule above, where
-    // the license already stood and the only credit
-    // was refused by the fence. The license reverts to
-    // what the merge holds without it: the other
-    // record's license, when that license itself
-    // stands under the fence and this same rule, and
-    // Unknown otherwise.
-    if !defer_composed_rule
-        && children_present == Some(true)
-        && matches!(out.license, LicenseKind::CcBy(_) | LicenseKind::CcBySa(_))
-        && out.credit_text.trim().is_empty()
-    {
-        let other_license = if license_from_incoming {
-            existing.license.clone()
-        } else {
-            incoming.license.clone()
-        };
-        let other_source = if license_from_incoming {
-            existing
-        } else {
-            incoming
-        };
-        // The fallback arms are uniform (round 8,
-        // R8-3): a fallback license stands only if its
-        // own source record notes children, or a bearer
-        // noted a permission. LicensedReprint used to
-        // stand unconditionally here — the only arm
-        // with no condition — and so displaced a
-        // standing license on the say-so of a record
-        // that vouched for nothing.
-        let bearer_noted_permission = [existing, incoming]
-            .iter()
-            .any(|r| r.children_present == Some(true) && rights_permission_noted(r));
-        let other_stands = match &other_license {
-            LicenseKind::Unknown => false,
-            LicenseKind::CcBy(_) | LicenseKind::CcBySa(_) => false,
-            LicenseKind::LicensedReprint
-            | LicenseKind::ChurchOwned
-            | LicenseKind::PublicDomain
-            | LicenseKind::Cc0 => {
-                other_source.children_present == Some(true) || bearer_noted_permission
-            }
-        };
-        out.license = if other_stands {
-            other_license
-        } else {
-            LicenseKind::Unknown
-        };
+    // The final judgment on the composed record
+    // (round 9, R9-1): ONE judgment, on every license
+    // class, whatever path composed the record (the
+    // license filled, already stood, or would stand
+    // as a fallback). It subsumes the round-7
+    // togetherness rule (an attribution license does
+    // not stand beside a children note with an empty
+    // credit line) and the round-8 uniform fallback
+    // condition. The judgment itself lives at
+    // `judged_composed_license`, shared with the
+    // fold's end (where it is deferred to, so a credit
+    // arriving later in the same fold can stand
+    // beside the license it belongs to).
+    if !defer_composed_rule {
+        let sources: [&RightsRecord; 2] = [existing, incoming];
+        let judged =
+            judged_composed_license(&out.license, children_present, &out.credit_text, &sources);
+        out.license = judged;
     }
     out.children_present = children_present;
     // The assertion stands only with a substantive
@@ -1251,47 +1230,191 @@ fn merge_rights_records_inner(
     out
 }
 
-/// Judge the composed togetherness rule once, on a
-/// folded record (round 8, R8-9): the folded record
-/// notes children, carries an attribution license,
-/// and holds an empty credit line, so the license
-/// does not stand. It falls to a license one of the
-/// fold's own records carried, when that license
-/// itself stands under the uniform fallback condition
-/// (its source record notes children, or a
-/// children-bearing record among the fold's records
-/// noted a permission on its own fields) — the same
-/// fallback a single merge would have chosen for a
-/// two-record fold — and to Unknown where no record
-/// in the fold vouches such a license.
-fn judge_folded_composed_license(folded: &mut RightsRecord, sources: &[RightsRecord]) {
-    if folded.children_present != Some(true) {
-        return;
+/// Is a license vouched, under the final judgment
+/// (round 9, R9-1)? A license in a composition that
+/// notes children, with the credit line that stands
+/// in the composed record, is vouched when some
+/// record in the composition held that same license
+/// together with a children note, or together with
+/// the credit that stands in the composed record,
+/// or when a children-bearing record in the
+/// composition noted a permission on its own fields
+/// (the fence's bearer rule: its credit line, or a
+/// license that itself counts as a noted permission).
+/// An attribution license (CC BY, CC BY-SA) is never
+/// vouched on an empty credit line: its credit is
+/// the license's own requirement, so with no credit
+/// standing it falls whatever else vouches it.
+fn license_vouched(
+    license: &LicenseKind,
+    standing_credit: &str,
+    sources: &[&RightsRecord],
+) -> bool {
+    if matches!(license, LicenseKind::CcBy(_) | LicenseKind::CcBySa(_))
+        && standing_credit.trim().is_empty()
+    {
+        return false;
     }
-    if !matches!(
-        folded.license,
-        LicenseKind::CcBy(_) | LicenseKind::CcBySa(_)
-    ) {
-        return;
-    }
-    if !folded.credit_text.trim().is_empty() {
-        return;
-    }
-    let bearer_noted_permission = sources
+    let held_with_children = sources
         .iter()
-        .any(|r| r.children_present == Some(true) && rights_permission_noted(r));
-    let fallback = sources.iter().find_map(|source| match &source.license {
-        LicenseKind::LicensedReprint
-        | LicenseKind::ChurchOwned
-        | LicenseKind::PublicDomain
-        | LicenseKind::Cc0
-            if source.children_present == Some(true) || bearer_noted_permission =>
-        {
-            Some(source.license.clone())
+        .any(|r| r.license == *license && r.children_present == Some(true));
+    if held_with_children {
+        return true;
+    }
+    let held_with_standing_credit = !standing_credit.trim().is_empty()
+        && sources
+            .iter()
+            .any(|r| r.license == *license && r.credit_text == standing_credit);
+    if held_with_standing_credit {
+        return true;
+    }
+    sources
+        .iter()
+        .any(|r| r.children_present == Some(true) && rights_permission_noted(r))
+}
+
+/// The fixed precedence among fallback licenses
+/// (round 9, R9-4), strongest claim first: the
+/// church's own work, then public domain, then CC0,
+/// then a reprint license (CCLI, One License), which
+/// rests on an outside licensor and stands last.
+fn fallback_rank(license: &LicenseKind) -> u8 {
+    match license {
+        LicenseKind::ChurchOwned => 0,
+        LicenseKind::PublicDomain => 1,
+        LicenseKind::Cc0 => 2,
+        LicenseKind::LicensedReprint => 3,
+        _ => 4,
+    }
+}
+
+/// Pick the fallback license for a composed record
+/// whose standing license falls (round 9, R9-1 and
+/// R9-4): a license one of the composition's records
+/// carried, vouched under the same judgment as a
+/// standing license. Selection is order-independent:
+/// a vouched license carried by a children-bearing
+/// source record beats one vouched only through the
+/// bearer rule, and among equals the fixed precedence
+/// at `fallback_rank` decides, never the order the
+/// records arrived in.
+fn fallback_license(standing_credit: &str, sources: &[&RightsRecord]) -> Option<LicenseKind> {
+    let mut best: Option<(u8, u8, LicenseKind)> = None;
+    for source in sources {
+        let candidate = &source.license;
+        if matches!(
+            candidate,
+            LicenseKind::Unknown | LicenseKind::CcBy(_) | LicenseKind::CcBySa(_)
+        ) {
+            continue;
         }
-        _ => None,
+        if best.as_ref().is_some_and(|(_, _, held)| held == candidate) {
+            continue;
+        }
+        if !license_vouched(candidate, standing_credit, sources) {
+            continue;
+        }
+        let carried_by_children_bearer = sources
+            .iter()
+            .any(|r| r.license == *candidate && r.children_present == Some(true));
+        let tier: u8 = if carried_by_children_bearer { 0 } else { 1 };
+        let rank = fallback_rank(candidate);
+        let is_better = match &best {
+            None => true,
+            Some((held_tier, held_rank, _)) => (tier, rank) < (*held_tier, *held_rank),
+        };
+        if is_better {
+            let chosen = candidate.clone();
+            best = Some((tier, rank, chosen));
+        }
+    }
+    best.map(|(_, _, license)| license)
+}
+
+/// The ONE final judgment on a composed record
+/// (round 9, R9-1): if the composed record notes
+/// children and its credit line is empty and it
+/// carries a license, that license stands only if
+/// vouched (see `license_vouched`). Unvouched, it
+/// falls — to another license in the composition
+/// that is vouched under this same judgment (see
+/// `fallback_license`), else Unknown. Every other
+/// composed record (no children note, a credit line
+/// standing, or no license) is left exactly as it
+/// stands: the publish fence above has already
+/// judged the permission-satisfying fields on their
+/// own provenance, and a standing credit vouches
+/// through the bearer rule by construction.
+fn judged_composed_license(
+    license: &LicenseKind,
+    children_present: Option<bool>,
+    credit_text: &str,
+    sources: &[&RightsRecord],
+) -> LicenseKind {
+    if children_present != Some(true) {
+        return license.clone();
+    }
+    if !credit_text.trim().is_empty() {
+        return license.clone();
+    }
+    if *license == LicenseKind::Unknown {
+        return license.clone();
+    }
+    if license_vouched(license, credit_text, sources) {
+        return license.clone();
+    }
+    fallback_license(credit_text, sources).unwrap_or(LicenseKind::Unknown)
+}
+
+/// Re-judge a folded record's assertion against the
+/// FINAL folded record (round 9, R9-5), by the R7-8
+/// rule a single merge applies: the assertion stands
+/// only if a substantive rights fill from its own
+/// record stands there — that record's credit line,
+/// or that record's license. In a fold the per-merge
+/// assertion rule runs while a license still stands
+/// under deferral; when the fold-end judgment drops
+/// that license, the assertion that rode in on it
+/// does not stay behind.
+fn rejudge_folded_assertion(folded: &mut RightsRecord, sources: &[RightsRecord]) {
+    if folded.asserted_by.trim().is_empty() && folded.asserted_at.trim().is_empty() {
+        return;
+    }
+    let supplier_stands = sources.iter().any(|source| {
+        let is_supplier = (!folded.asserted_by.trim().is_empty()
+            && source.asserted_by == folded.asserted_by)
+            || (!folded.asserted_at.trim().is_empty() && source.asserted_at == folded.asserted_at);
+        if !is_supplier {
+            return false;
+        }
+        let credit_stands =
+            !source.credit_text.trim().is_empty() && folded.credit_text == source.credit_text;
+        let license_stands =
+            source.license != LicenseKind::Unknown && folded.license == source.license;
+        credit_stands || license_stands
     });
-    folded.license = fallback.unwrap_or(LicenseKind::Unknown);
+    if !supplier_stands {
+        folded.asserted_by = String::new();
+        folded.asserted_at = String::new();
+    }
+}
+
+/// Judge the final judgment once, on a folded
+/// record (round 8, R8-9; round 9, R9-1): the same
+/// `judged_composed_license` a single merge applies,
+/// run over the fold's own source records, and then
+/// the assertion re-judged against what finally
+/// stands (round 9, R9-5).
+fn judge_folded_composed_record(folded: &mut RightsRecord, sources: &[RightsRecord]) {
+    let source_refs: Vec<&RightsRecord> = sources.iter().collect();
+    let judged = judged_composed_license(
+        &folded.license,
+        folded.children_present,
+        &folded.credit_text,
+        &source_refs,
+    );
+    folded.license = judged;
+    rejudge_folded_assertion(folded, sources);
 }
 
 /// Fold records that share a hash into one record
@@ -1307,9 +1430,11 @@ fn judge_folded_composed_license(folded: &mut RightsRecord, sources: &[RightsRec
 /// and media type stand (the same bytes carry the
 /// same kind). After the fold, one hash has exactly
 /// one record, here and in every copy saved onward.
-/// The merges run with the composed togetherness rule
-/// deferred, and that rule is judged once, on the
-/// folded record, at the end (round 8, R8-9).
+/// The merges run with the final judgment deferred,
+/// and that judgment is run once, on the folded
+/// record, at the end (round 8, R8-9; round 9, R9-1),
+/// with the assertion then re-judged against what
+/// finally stands (round 9, R9-5).
 pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
     let mut folded: Vec<Asset> = Vec::with_capacity(assets.len());
     // The records each folded record was composed
@@ -1329,14 +1454,14 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
             }
         }
     }
-    // The composed togetherness rule is judged once,
-    // here, on each folded record that a merge
-    // actually composed (round 8, R8-9): a record no
-    // duplicate folded into is left exactly as it
-    // stood, as before.
+    // The final judgment is judged once, here, on
+    // each folded record that a merge actually
+    // composed (round 8, R8-9; round 9, R9-1): a
+    // record no duplicate folded into is left exactly
+    // as it stood, as before.
     for (asset, sources) in folded.iter_mut().zip(folded_sources.iter()) {
         if sources.len() > 1 {
-            judge_folded_composed_license(&mut asset.rights, sources);
+            judge_folded_composed_record(&mut asset.rights, sources);
         }
     }
     *assets = folded;
@@ -5687,6 +5812,494 @@ mod occasion_tests {
         assert_eq!(rights.license, LicenseKind::Unknown);
         assert_eq!(rights.credit_text, credit_text);
         assert_eq!(rights.title, title_text);
+    }
+
+    #[test]
+    fn r9_unvouched_licensed_reprint_falls_in_both_paths() {
+        // Round 9 (R9-1 / RT9-1): a LicensedReprint
+        // that IS the standing license, or that fills
+        // the empty slot beside a children note, was
+        // judged by nothing. One final judgment now
+        // runs on every composed record: unvouched, it
+        // falls to Unknown in both paths, in every
+        // witness order.
+        let lr = RightsRecord {
+            license: LicenseKind::LicensedReprint,
+            ..Default::default()
+        };
+        let kids = RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let kids_ccby = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::CcBy("4.0".into()),
+            ..Default::default()
+        };
+        let title_text = "Harvest supper".to_string();
+        let title_only = RightsRecord {
+            title: title_text.clone(),
+            ..Default::default()
+        };
+        let single = |seq: &[RightsRecord]| -> RightsRecord {
+            let mut acc = seq[0].clone();
+            for next in &seq[1..] {
+                acc = merge_rights_records(&acc, next);
+            }
+            acc
+        };
+        let folded = |seq: &[RightsRecord]| -> RightsRecord {
+            let hash = sha256_hex(b"R9FOLD");
+            let mut assets: Vec<Asset> = seq
+                .iter()
+                .cloned()
+                .map(|rights| Asset {
+                    sha256: hash.clone(),
+                    kind: AssetKind::Picture,
+                    media_type: "image/png".into(),
+                    rights,
+                })
+                .collect();
+            fold_duplicate_asset_records(&mut assets);
+            assert_eq!(assets.len(), 1);
+            assets[0].rights.clone()
+        };
+        let witnesses: Vec<Vec<RightsRecord>> = vec![
+            vec![lr.clone(), kids_ccby.clone()],
+            vec![kids_ccby.clone(), lr.clone()],
+            vec![kids.clone(), lr.clone()],
+            vec![lr.clone(), kids.clone()],
+            vec![kids_ccby.clone(), title_only.clone(), lr.clone()],
+            vec![lr.clone(), kids_ccby.clone(), title_only.clone()],
+        ];
+        for seq in &witnesses {
+            for composed in [single(seq), folded(seq)] {
+                assert_eq!(composed.children_present, Some(true), "{seq:?}");
+                assert_eq!(composed.credit_text, "", "{seq:?}");
+                assert_eq!(composed.license, LicenseKind::Unknown, "{seq:?}");
+            }
+            // The two paths compose identically.
+            let via_single = single(seq);
+            let via_fold = folded(seq);
+            assert_eq!(
+                (
+                    via_single.children_present,
+                    via_single.license.clone(),
+                    via_single.credit_text.clone()
+                ),
+                (
+                    via_fold.children_present,
+                    via_fold.license.clone(),
+                    via_fold.credit_text.clone()
+                ),
+                "{seq:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn r9_vouched_licensed_reprint_controls_stand_in_every_order() {
+        // Round 9 (R9-1): the vouched controls stand —
+        // a record holding LicensedReprint together
+        // with a children note, and a record holding
+        // LicensedReprint together with its own credit
+        // (that credit standing in the composed
+        // record) — in every order, in both paths.
+        let kids_ccby = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::CcBy("4.0".into()),
+            ..Default::default()
+        };
+        let kids_lr = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::LicensedReprint,
+            ..Default::default()
+        };
+        let credit_text = "Photo by H".to_string();
+        let kids_lr_credit = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::LicensedReprint,
+            credit_text: credit_text.clone(),
+            ..Default::default()
+        };
+        let lr_credit = RightsRecord {
+            license: LicenseKind::LicensedReprint,
+            credit_text: credit_text.clone(),
+            ..Default::default()
+        };
+        let kids_credit = RightsRecord {
+            children_present: Some(true),
+            credit_text: credit_text.clone(),
+            ..Default::default()
+        };
+        let title_text = "Harvest supper".to_string();
+        let title_only = RightsRecord {
+            title: title_text.clone(),
+            ..Default::default()
+        };
+        let single = |seq: &[RightsRecord]| -> RightsRecord {
+            let mut acc = seq[0].clone();
+            for next in &seq[1..] {
+                acc = merge_rights_records(&acc, next);
+            }
+            acc
+        };
+        let folded = |seq: &[RightsRecord]| -> RightsRecord {
+            let hash = sha256_hex(b"R9CTRL");
+            let mut assets: Vec<Asset> = seq
+                .iter()
+                .cloned()
+                .map(|rights| Asset {
+                    sha256: hash.clone(),
+                    kind: AssetKind::Picture,
+                    media_type: "image/png".into(),
+                    rights,
+                })
+                .collect();
+            fold_duplicate_asset_records(&mut assets);
+            assert_eq!(assets.len(), 1);
+            assets[0].rights.clone()
+        };
+        // LicensedReprint + children, against the
+        // attribution record, in both orders.
+        for seq in [
+            vec![kids_ccby.clone(), kids_lr.clone()],
+            vec![kids_lr.clone(), kids_ccby.clone()],
+        ] {
+            for composed in [single(&seq), folded(&seq)] {
+                assert_eq!(composed.license, LicenseKind::LicensedReprint, "{seq:?}");
+                assert_eq!(composed.children_present, Some(true), "{seq:?}");
+            }
+        }
+        // LicensedReprint + children + its own credit:
+        // the credit stands, the license stands.
+        for seq in [
+            vec![kids_lr_credit.clone(), title_only.clone()],
+            vec![title_only.clone(), kids_lr_credit.clone()],
+        ] {
+            for composed in [single(&seq), folded(&seq)] {
+                assert_eq!(composed.license, LicenseKind::LicensedReprint, "{seq:?}");
+                assert_eq!(composed.credit_text, credit_text, "{seq:?}");
+            }
+        }
+        // LicensedReprint + its own credit, where the
+        // same credit stands on a children-bearing
+        // record in the composition: the credit that
+        // stands is the credit its record held.
+        for seq in [
+            vec![lr_credit.clone(), kids_credit.clone()],
+            vec![kids_credit.clone(), lr_credit.clone()],
+        ] {
+            for composed in [single(&seq), folded(&seq)] {
+                assert_eq!(composed.license, LicenseKind::LicensedReprint, "{seq:?}");
+                assert_eq!(composed.credit_text, credit_text, "{seq:?}");
+                assert_eq!(composed.children_present, Some(true), "{seq:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn r9_fold_fallback_winner_is_order_independent() {
+        // Round 9 (R9-4 / RT9-4): the fold's fallback
+        // winner was the first vouched match in fold
+        // order. Fallback selection is order-independent
+        // now: a vouched license carried by a
+        // children-bearing source record beats one
+        // vouched only through the bearer rule, and
+        // among equals the fixed precedence decides —
+        // the church's own work, then public domain,
+        // then CC0, then a reprint license.
+        let kids_ccby = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::CcBy("4.0".into()),
+            ..Default::default()
+        };
+        let kids_cc0 = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::Cc0,
+            ..Default::default()
+        };
+        let church = RightsRecord {
+            license: LicenseKind::ChurchOwned,
+            ..Default::default()
+        };
+        let kids_pd = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::PublicDomain,
+            ..Default::default()
+        };
+        let kids_church = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::ChurchOwned,
+            ..Default::default()
+        };
+        let kids_lr = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::LicensedReprint,
+            ..Default::default()
+        };
+        let folded_license = |seq: &[RightsRecord]| -> LicenseKind {
+            let hash = sha256_hex(b"R9FALL");
+            let mut assets: Vec<Asset> = seq
+                .iter()
+                .cloned()
+                .map(|rights| Asset {
+                    sha256: hash.clone(),
+                    kind: AssetKind::Picture,
+                    media_type: "image/png".into(),
+                    rights,
+                })
+                .collect();
+            fold_duplicate_asset_records(&mut assets);
+            assert_eq!(assets.len(), 1);
+            assets[0].rights.license.clone()
+        };
+        // The RT9-4 witness pair: Cc0 is carried by a
+        // children-bearing record; ChurchOwned is
+        // vouched only through the bearer rule (the
+        // Cc0 record). Cc0 wins in both orders.
+        assert_eq!(
+            folded_license(&[kids_ccby.clone(), kids_cc0.clone(), church.clone()]),
+            LicenseKind::Cc0
+        );
+        assert_eq!(
+            folded_license(&[kids_ccby.clone(), church.clone(), kids_cc0.clone()]),
+            LicenseKind::Cc0
+        );
+        // Both carriers children-bearing: the fixed
+        // precedence decides — ChurchOwned over
+        // PublicDomain, in both orders.
+        assert_eq!(
+            folded_license(&[kids_ccby.clone(), kids_pd.clone(), kids_church.clone()]),
+            LicenseKind::ChurchOwned
+        );
+        assert_eq!(
+            folded_license(&[kids_ccby.clone(), kids_church.clone(), kids_pd.clone()]),
+            LicenseKind::ChurchOwned
+        );
+        // Both carriers children-bearing: CC0 over a
+        // reprint license, in both orders.
+        assert_eq!(
+            folded_license(&[kids_ccby.clone(), kids_lr.clone(), kids_cc0.clone()]),
+            LicenseKind::Cc0
+        );
+        assert_eq!(
+            folded_license(&[kids_ccby.clone(), kids_cc0.clone(), kids_lr.clone()]),
+            LicenseKind::Cc0
+        );
+    }
+
+    #[test]
+    fn r9_fold_rejudges_the_assertion_against_the_final_record() {
+        // Round 9 (R9-5 / RT9-5): in a fold, an
+        // assertion rode in on a license the fold-end
+        // judge then dropped, and the assertion stayed.
+        // At fold end the assertion is re-judged by
+        // the R7-8 rule against the FINAL folded
+        // record: it stands only if a substantive
+        // rights fill from its own record stands there.
+        let empty = RightsRecord::default();
+        let asserter_name = "Mallory".to_string();
+        let asserter_date = "2026-01-01".to_string();
+        let kids_ccby_asserted = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::CcBy("4.0".into()),
+            asserted_by: asserter_name.clone(),
+            asserted_at: asserter_date.clone(),
+            ..Default::default()
+        };
+        let title_text = "Harvest supper".to_string();
+        let title_only = RightsRecord {
+            title: title_text.clone(),
+            ..Default::default()
+        };
+        let folded = |seq: &[RightsRecord]| -> RightsRecord {
+            let hash = sha256_hex(b"R9ASSERT");
+            let mut assets: Vec<Asset> = seq
+                .iter()
+                .cloned()
+                .map(|rights| Asset {
+                    sha256: hash.clone(),
+                    kind: AssetKind::Picture,
+                    media_type: "image/png".into(),
+                    rights,
+                })
+                .collect();
+            fold_duplicate_asset_records(&mut assets);
+            assert_eq!(assets.len(), 1);
+            assets[0].rights.clone()
+        };
+        for seq in [
+            vec![empty.clone(), kids_ccby_asserted.clone()],
+            vec![
+                title_only.clone(),
+                kids_ccby_asserted.clone(),
+                title_only.clone(),
+            ],
+        ] {
+            let composed = folded(&seq);
+            assert_eq!(composed.license, LicenseKind::Unknown, "{seq:?}");
+            assert_eq!(composed.asserted_by, "", "{seq:?}");
+            assert_eq!(composed.asserted_at, "", "{seq:?}");
+        }
+        // The single-merge control is unchanged: the
+        // same pair through one merge leaves the
+        // assertion empty too.
+        let merged = merge_rights_records(&empty, &kids_ccby_asserted);
+        assert_eq!(merged.license, LicenseKind::Unknown);
+        assert_eq!(merged.asserted_by, "");
+        assert_eq!(merged.asserted_at, "");
+        // Control: when the asserting record's own
+        // credit stands in the final folded record,
+        // the assertion stands with it.
+        let credit_text = "Photo by Alice".to_string();
+        let kids_credit_asserted = RightsRecord {
+            children_present: Some(true),
+            credit_text: credit_text.clone(),
+            asserted_by: asserter_name.clone(),
+            asserted_at: asserter_date.clone(),
+            ..Default::default()
+        };
+        let composed = folded(&[empty.clone(), kids_credit_asserted]);
+        assert_eq!(composed.credit_text, credit_text);
+        assert_eq!(composed.asserted_by, asserter_name);
+        assert_eq!(composed.asserted_at, asserter_date);
+    }
+
+    #[test]
+    fn r9_fold_triple_is_permutation_invariant_over_the_pool() {
+        // Round 9 (R9-1): a brute-force-style
+        // permutation check, in-tree over a small
+        // archetype pool: for each multiset tested,
+        // every permutation folds to the same
+        // (children, license, credit) triple.
+        fn all_perms(idxs: &[usize]) -> Vec<Vec<usize>> {
+            if idxs.len() <= 1 {
+                return vec![idxs.to_vec()];
+            }
+            let mut out = Vec::new();
+            for i in 0..idxs.len() {
+                let mut rest = idxs.to_vec();
+                let first = rest.remove(i);
+                for tail in all_perms(&rest) {
+                    let mut perm = vec![first];
+                    perm.extend(tail);
+                    out.push(perm);
+                }
+            }
+            out
+        }
+        let lr = RightsRecord {
+            license: LicenseKind::LicensedReprint,
+            ..Default::default()
+        };
+        let kids = RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let kids_ccby = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::CcBy("4.0".into()),
+            ..Default::default()
+        };
+        let kids_cc0 = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::Cc0,
+            ..Default::default()
+        };
+        let kids_lr = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::LicensedReprint,
+            ..Default::default()
+        };
+        let title_text = "Harvest supper".to_string();
+        let title_only = RightsRecord {
+            title: title_text.clone(),
+            ..Default::default()
+        };
+        let credit_text = "Photo by H".to_string();
+        let kids_lr_credit = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::LicensedReprint,
+            credit_text: credit_text.clone(),
+            ..Default::default()
+        };
+        // (multiset, the triple every permutation
+        // must fold to). Each multiset tested here
+        // carries at most one vouched non-attribution
+        // license, so the final judgment fully
+        // determines the triple: the witness multisets
+        // (no vouched license at all), the vouched
+        // controls (one), and single-candidate
+        // fallback multisets (one). Multisets with
+        // two vouched licenses are pinned by their
+        // RT9-4 witness orders in
+        // `r9_fold_fallback_winner_is_order_independent`
+        // — there the standing license, when it is
+        // itself vouched, stands under the fill law,
+        // and precedence governs only the fallback a
+        // fallen license drops to.
+        type Triple = (Option<bool>, LicenseKind, String);
+        let cases: Vec<(Vec<RightsRecord>, Triple)> = vec![
+            (
+                vec![lr.clone(), kids_ccby.clone()],
+                (Some(true), LicenseKind::Unknown, String::new()),
+            ),
+            (
+                vec![kids.clone(), lr.clone()],
+                (Some(true), LicenseKind::Unknown, String::new()),
+            ),
+            (
+                vec![kids_ccby.clone(), title_only.clone(), lr.clone()],
+                (Some(true), LicenseKind::Unknown, String::new()),
+            ),
+            (
+                vec![kids_ccby.clone(), kids_lr.clone()],
+                (Some(true), LicenseKind::LicensedReprint, String::new()),
+            ),
+            (
+                vec![kids_ccby.clone(), kids_cc0.clone(), title_only.clone()],
+                (Some(true), LicenseKind::Cc0, String::new()),
+            ),
+            (
+                vec![kids_ccby.clone(), kids_lr.clone(), title_only.clone()],
+                (Some(true), LicenseKind::LicensedReprint, String::new()),
+            ),
+            (
+                vec![kids_lr_credit.clone(), title_only.clone()],
+                (
+                    Some(true),
+                    LicenseKind::LicensedReprint,
+                    credit_text.clone(),
+                ),
+            ),
+        ];
+        for (multiset, expected) in &cases {
+            let indices: Vec<usize> = (0..multiset.len()).collect();
+            for perm in all_perms(&indices) {
+                let seq: Vec<RightsRecord> = perm.iter().map(|&i| multiset[i].clone()).collect();
+                let hash = sha256_hex(b"R9PERM");
+                let mut assets: Vec<Asset> = seq
+                    .iter()
+                    .cloned()
+                    .map(|rights| Asset {
+                        sha256: hash.clone(),
+                        kind: AssetKind::Picture,
+                        media_type: "image/png".into(),
+                        rights,
+                    })
+                    .collect();
+                fold_duplicate_asset_records(&mut assets);
+                assert_eq!(assets.len(), 1);
+                let rights = &assets[0].rights;
+                let triple = (
+                    rights.children_present,
+                    rights.license.clone(),
+                    rights.credit_text.clone(),
+                );
+                assert_eq!(&triple, expected, "permutation {perm:?} of {multiset:?}");
+            }
+        }
     }
 
     #[test]

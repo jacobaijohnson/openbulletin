@@ -354,21 +354,38 @@ only credit was refused by the fence above. Either
 way, no composed record that notes children claims
 an attribution license with an empty credit line,
 and a record whose own credit line stands keeps
-its license. When an attribution license falls
-this way in a merge, the other record's license
-stands in its place only when that license itself
-stands under the same rules — its own record notes
-the children, or a children-bearing record already
-noted a permission — and that condition is the
-same for every fallback license, a reprint license
-(CCLI, One License) included (round 8, R8-3): an
-unvouched fallback license falls to unknown like
-any other. In a fold of duplicate records the
-togetherness judgment runs once, on the final
-folded record, so a credit line arriving later in
-the same fold stands beside the license it belongs
-to (round 8, R8-9); single merges outside a fold
-judge each pair as before.
+its license. One final judgment then runs on
+every composed record, whatever path composed it
+(round 9, R9-1): if the composed record notes
+children and its credit line is empty and it
+carries a license, that license stands only when
+vouched — some record in the composition held that
+same license together with the children note, or
+together with the credit line that stands in the
+composed record, or a children-bearing record in
+the composition noted a permission under the
+fence rule above. The judgment is the same for
+every license class, a reprint license (CCLI, One
+License) included, whether the license filled,
+already stood, or would stand as a fallback; an
+attribution license is never vouched on an empty
+credit line. An unvouched license falls to another
+license in the composition that is vouched under
+the same judgment, chosen the same way in any
+order — a vouched license carried by a
+children-bearing record first, then by a fixed
+precedence: the church's own work, public domain,
+CC0, a reprint license (round 9, R9-4) — and to
+unknown where nothing vouches a license. In a fold
+of duplicate records the final judgment runs once,
+on the final folded record, so a credit line
+arriving later in the same fold stands beside the
+license it belongs to (round 8, R8-9), and the
+record's assertion (who noted it, and when) is
+then re-judged against what finally stands: it
+stays only when a rights fill from its own record
+stands there (round 9, R9-5). Single merges
+outside a fold judge each pair as before.
 
 ### Loading rules
 

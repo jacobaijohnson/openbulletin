@@ -299,3 +299,97 @@ other assertions (one folded record, source, title,
 children note) stand unchanged, and the test carries
 a comment saying so. No other pre-existing test was
 changed.
+
+## Shipped addendum, R6-B (2026-10-16)
+
+Target-aware presence, shipped over HEAD `c32d5bb`.
+Presence is now judged per part against the story
+that part would land in, and the claim, the plan, and
+the apply all use that same judgment:
+
+- `plan_part` decides the part's planned target first
+  (`planned_part_plan`), then judges presence against
+  it. Story target: the part's paragraphs are searched
+  within that story only. AnnouncementsUnderHeading:
+  within the weekly story. KeptWithPart: never
+  present, unless the part carries no words.
+  LooseSheet: never present by words, and never plans
+  AlreadyThere. A service part aimed at the service
+  story judges its hymn-valued paragraphs by the
+  hymn-line rule and its other paragraphs within the
+  service story.
+- Hymn presence is a hymn line (R6-3 / RT6-4): a
+  hymn-valued paragraph is present only when a hymn
+  line in the service story carries its composed
+  value — on a service line with the slip's named
+  label (case-insensitive), or on an appended line
+  labelled "Hymn", when the slip names a line; on any
+  hymn-labelled service line when it names none. An
+  announcement mentioning ELW 500, and the template's
+  own Hymn of Praise line carrying 432 under a
+  different label than the slip names, no longer make
+  a slip present.
+- The claim (R6-2): `applied_claim` judges
+  story-landing parts by target-scoped presence and
+  loose parts by the record. AlreadyIn is every story
+  part present in its target AND (no loose parts OR
+  recorded); RecordedButWordsGone is recorded with
+  some story part absent from its target; a loose-only
+  contribution is AlreadyIn exactly when recorded and
+  NotApplied when not. The claim and the per-part plan
+  lines now use the one presence notion, so the
+  review's first line and its plan lines cannot
+  contradict each other.
+- Landing is per paragraph (RT6-3): the Story and
+  AnnouncementsUnderHeading arms skip the paragraphs
+  already present in the target story (scoped, spent
+  one by one) and land only the missing ones; skipped
+  paragraphs count toward the existing `already`
+  summary. The under-heading arm adds its heading
+  only when at least one paragraph actually lands,
+  and keep-through lands only when at least one
+  paragraph landed. A part is complete for the record
+  when every paragraph ended up in its target, landed
+  or already there, and its target story exists. In
+  the hymn path, an AppendHymn whose composed value
+  already sits on a hymn line in the service story
+  (the hymn-line judgment for that paragraph) counts
+  as already there instead of appending a duplicate
+  line, a plain line already in the service story is
+  skipped the same way, and Replace stays as it was.
+
+FORMAT.md is unchanged: the record's rules did not
+move; the claim's evidence is what moved.
+
+Tests: 541 → 550 passing, 0 failed (full workspace,
+unpiped, `--no-fail-fast`, exit 0); clippy
+`--workspace --all-targets -- -D warnings` exit 0.
+Nine new tests, all in ob-app: a hymn mention in the
+announcements does not make a slip present and the
+slip lands on its named line; a hymn value carried
+under a different label is not present on that line;
+fragments scattered across three other stories leave
+an announcement NotApplied and it applies as a unit
+into its target; the longer re-send and the
+one-word-changed re-send each land only the missing
+or changed paragraph (paragraph counts exact, no
+duplicates); a loose-sheet part is judged by the
+record (mixed contribution AlreadyIn once recorded,
+RecordedButWordsGone when the story part's words are
+deleted, the loose part never planning AlreadyThere);
+a loose-only contribution is NotApplied before any
+record and AlreadyIn once recorded; an under-heading
+part lands only its missing paragraph, heading
+included once; an appended hymn already on a hymn
+line is not appended twice.
+
+No pre-existing test was changed. The two R5-B tests
+whose fixtures touch the old doc-wide haystack keep
+their original assertions because their truths are
+unchanged under scoping: `r5_one_shared_line_does_not_make_a_part_already_in`
+(the shared line stands in the part's own target, the
+weekly story, and the rest is missing either way) and
+`r5_a_hymn_line_is_present_by_its_composed_form` (the
+slip lands on an appended line labelled "Hymn", which
+the hymn-line rule counts). The fake-helper ETXTBSY
+flake did not fire.

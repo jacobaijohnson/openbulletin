@@ -3177,10 +3177,11 @@ enum SlotTarget {
     KeptWithPart,
     /// The part's words are already in the bulletin
     /// (round 5, R5-B): the presence check found every
-    /// one of its paragraphs in the document's stories,
-    /// so applying it again would print the words twice.
-    /// The apply step leaves the document untouched and
-    /// counts the part as landed: it is where it belongs.
+    /// one of its paragraphs in the story the part would
+    /// land in (round 6, R6-B), so applying it again
+    /// would print the words twice. The apply step
+    /// leaves the document untouched and counts the part
+    /// as landed: it is where it belongs.
     AlreadyThere,
 }
 
@@ -3496,19 +3497,38 @@ fn plan_part(
     c: &ob_extract::contribution::Contribution,
     part: &ob_extract::contribution::Part,
 ) -> PartPlan {
-    use ob_extract::contribution::PartKind;
     // Round 5 (R5-B): a part whose words are already in
     // the bulletin is planned as already there, whatever
     // box it would otherwise have gone into, so the
     // review's sentence and the apply step agree that
-    // nothing is added.
-    if part_words_present(doc, part) {
+    // nothing is added. Round 6 (R6-B): presence is
+    // judged against the part's own planned target (see
+    // `part_words_present`), never against the whole
+    // document, so the plan target is decided first and
+    // the presence judgment follows it.
+    let plan = planned_part_plan(doc, c, part);
+    if part_words_present(doc, c, part) {
+        let line =
+            "These words are already in the bulletin, so they are not added again.".to_string();
         return PartPlan {
             target: SlotTarget::AlreadyThere,
-            line: "These words are already in the bulletin, so they are not added again."
-                .to_string(),
+            line,
         };
     }
+    plan
+}
+
+/// The slot a part would land in, decided without the
+/// presence judgment: `plan_part`'s match, shared with
+/// the presence machinery, which must know a part's
+/// target before it can say whether the part's words
+/// are already in the story that target names.
+fn planned_part_plan(
+    doc: &Document,
+    c: &ob_extract::contribution::Contribution,
+    part: &ob_extract::contribution::Part,
+) -> PartPlan {
+    use ob_extract::contribution::PartKind;
     let service = service_story_id(doc);
     let weekly = weekly_story_id(doc);
     match part.kind {
@@ -3651,6 +3671,38 @@ struct ApplyCounts {
     already: usize,
 }
 
+/// Split a part's paragraphs against one target story
+/// (round 6, R6-B): the paragraphs still missing from
+/// that story, in the part's own order, and how many
+/// were already there. Presence spends the story's
+/// paragraphs one by one, so a paragraph the part
+/// carries twice needs the story to carry it twice
+/// before both are skipped. An empty paragraph has no
+/// words that could be missing; it lands as before.
+fn split_present_paragraphs(
+    doc: &Document,
+    sid: &str,
+    part: &ob_extract::contribution::Part,
+) -> (Vec<ob_model::Paragraph>, usize) {
+    let mut spent: Vec<usize> = Vec::new();
+    let mut to_land: Vec<ob_model::Paragraph> = Vec::new();
+    let mut skipped = 0usize;
+    for p in &part.paragraphs {
+        if normalized_words(&p.text()).is_empty() {
+            to_land.push(p.clone());
+            continue;
+        }
+        match story_paragraph_index(doc, sid, &p.text(), &spent) {
+            Some(i) => {
+                spent.push(i);
+                skipped += 1;
+            }
+            None => to_land.push(p.clone()),
+        }
+    }
+    (to_land, skipped)
+}
+
 /// Put one part into the document, per its plan. The
 /// plan is decided against the document as it stands
 /// when the part lands, so an apply walks the same
@@ -3661,7 +3713,11 @@ struct ApplyCounts {
 /// applied record is written only for contributions
 /// whose every part answers true, so a part that
 /// landed partly or not at all is never remembered as
-/// applied.
+/// applied. Round 6 (R6-B): landing is per paragraph —
+/// a paragraph already in the part's target story is
+/// skipped and counted as already there, and only the
+/// missing ones land, so a partly present part never
+/// prints its present paragraphs twice.
 fn apply_part(
     doc: &mut Document,
     c: &ob_extract::contribution::Contribution,
@@ -3678,84 +3734,141 @@ fn apply_part(
         if let SlotTarget::Story(sid) = &plan.target {
             if service_story_id(doc).as_deref() == Some(sid.as_str()) {
                 let slots = hymn_slots(doc, part);
-                let mut placed = 0usize;
+                let mut spent: Vec<usize> = Vec::new();
+                let mut landed = 0usize;
+                let mut complete = 0usize;
                 for (p, slot) in part.paragraphs.iter().zip(slots.iter()) {
-                    let landed = match slot {
+                    match slot {
                         HymnSlot::Replace {
                             para_index, value, ..
                         } => {
+                            // Replace stays as it is: setting
+                            // the line to the same value is
+                            // its own no-op.
                             set_service_line(doc, *para_index, value);
-                            true
+                            spent.push(*para_index);
+                            landed += 1;
+                            complete += 1;
                         }
                         HymnSlot::AppendHymn { value } => {
-                            let style = service_line_style(doc);
-                            let text = format!("Hymn\t{value}");
-                            push_story_paragraph(
-                                doc,
-                                sid,
-                                ob_model::Paragraph::plain(&style, &text),
-                            )
+                            // Round 6 (R6-B): a hymn whose
+                            // composed value already sits on
+                            // a hymn line in the service story
+                            // (the rule-2 judgment for this
+                            // paragraph) counts as already
+                            // there instead of appending a
+                            // duplicate line.
+                            if let Some(i) = find_hymn_line(doc, &p.text(), &spent) {
+                                spent.push(i);
+                                counts.already += 1;
+                                complete += 1;
+                            } else {
+                                let style = service_line_style(doc);
+                                let text = format!("Hymn\t{value}");
+                                let para = ob_model::Paragraph::plain(&style, &text);
+                                let new_index = doc.story(sid).map(|s| s.paragraphs.len());
+                                if push_story_paragraph(doc, sid, para) {
+                                    if let Some(i) = new_index {
+                                        spent.push(i);
+                                    }
+                                    landed += 1;
+                                    complete += 1;
+                                }
+                            }
                         }
-                        HymnSlot::Plain => push_story_paragraph(doc, sid, p.clone()),
-                    };
-                    if landed {
-                        placed += 1;
+                        HymnSlot::Plain => {
+                            // A plain line already in the
+                            // service story is skipped, not
+                            // printed twice.
+                            if let Some(i) = story_paragraph_index(doc, sid, &p.text(), &spent) {
+                                spent.push(i);
+                                counts.already += 1;
+                                complete += 1;
+                            } else {
+                                let new_index = doc.story(sid).map(|s| s.paragraphs.len());
+                                if push_story_paragraph(doc, sid, p.clone()) {
+                                    if let Some(i) = new_index {
+                                        spent.push(i);
+                                    }
+                                    landed += 1;
+                                    complete += 1;
+                                }
+                            }
+                        }
                     }
                 }
-                counts.service_lines += placed;
-                counts.unplaced += part.paragraphs.len() - placed;
-                if placed > 0 {
+                counts.service_lines += landed;
+                counts.unplaced += part.paragraphs.len() - complete;
+                if landed > 0 {
                     if let Some(kt) = c.keep_through {
                         apply_keep_through(doc, sid, kt);
                     }
                 }
-                return placed == part.paragraphs.len();
+                return complete == part.paragraphs.len();
             }
         }
     }
     match &plan.target {
         SlotTarget::Story(sid) => {
-            let placed = match doc.story_mut(sid) {
-                Some(story) => {
-                    story.paragraphs.extend(part.paragraphs.iter().cloned());
-                    true
+            if doc.story(sid).is_none() {
+                counts.unplaced += part.paragraphs.len();
+                return false;
+            }
+            // Per-paragraph landing: the paragraphs
+            // already in this story are skipped, only the
+            // missing ones land. The part is complete when
+            // every paragraph ended up in its target,
+            // landed or already there, and the target
+            // story exists.
+            let (to_land, skipped) = split_present_paragraphs(doc, sid, part);
+            let landed = to_land.len();
+            if landed > 0 {
+                if let Some(story) = doc.story_mut(sid) {
+                    story.paragraphs.extend(to_land);
                 }
-                None => false,
-            };
-            if placed {
-                match part.kind {
-                    PartKind::Service => counts.service_lines += part.paragraphs.len(),
-                    PartKind::Announcement => counts.announcements += part.paragraphs.len(),
-                    _ => counts.named += part.paragraphs.len(),
-                }
+            }
+            match part.kind {
+                PartKind::Service => counts.service_lines += landed,
+                PartKind::Announcement => counts.announcements += landed,
+                _ => counts.named += landed,
+            }
+            counts.already += skipped;
+            if landed > 0 {
                 if let Some(kt) = c.keep_through {
                     apply_keep_through(doc, sid, kt);
                 }
-            } else {
-                counts.unplaced += part.paragraphs.len();
             }
-            placed
+            true
         }
         SlotTarget::AnnouncementsUnderHeading(heading) => {
-            let head = heading_paragraph(doc, heading);
             let wid = weekly_story_id(doc);
-            let placed = match wid.as_ref().and_then(|wid| doc.story_mut(wid)) {
-                Some(story) => {
-                    story.paragraphs.push(head);
-                    story.paragraphs.extend(part.paragraphs.iter().cloned());
-                    true
-                }
-                None => false,
+            let Some(wid) = wid.as_ref() else {
+                counts.unplaced += part.paragraphs.len();
+                return false;
             };
-            if placed {
-                counts.under_headings += part.paragraphs.len();
-                if let (Some(kt), Some(wid)) = (c.keep_through, &wid) {
+            if doc.story(wid).is_none() {
+                counts.unplaced += part.paragraphs.len();
+                return false;
+            }
+            // Presence is scoped to the weekly story the
+            // part lands in; the heading paragraph is
+            // added only when at least one paragraph
+            // actually lands under it.
+            let (to_land, skipped) = split_present_paragraphs(doc, wid, part);
+            let landed = to_land.len();
+            if landed > 0 {
+                let head = heading_paragraph(doc, heading);
+                if let Some(story) = doc.story_mut(wid) {
+                    story.paragraphs.push(head);
+                    story.paragraphs.extend(to_land);
+                }
+                counts.under_headings += landed;
+                if let Some(kt) = c.keep_through {
                     apply_keep_through(doc, wid, kt);
                 }
-            } else {
-                counts.unplaced += part.paragraphs.len();
             }
-            placed
+            counts.already += skipped;
+            true
         }
         // A loose sheet lands by being kept with the
         // part, exactly as its plan said: complete.
@@ -4348,73 +4461,261 @@ fn hymn_composed_form(text: &str) -> Option<String> {
     }
 }
 
-/// Whether one paragraph's words are in the bulletin,
-/// against the haystack of the document's paragraph
-/// words. A match spends its haystack entry, so a line
-/// the part carries twice needs the bulletin to carry
-/// it twice. A hymn line may match by its composed
-/// form instead of its sent form (see above).
-fn paragraph_words_present(haystack: &mut Vec<String>, text: &str) -> bool {
+/// The index of the paragraph in story `sid` whose
+/// words contain `text`'s words, skipping the indexes
+/// in `spent`. Presence is scoped to one story (round
+/// 6, R6-B): words standing in some other story never
+/// count for a part that would land here. A match
+/// spends its paragraph, so a line the part carries
+/// twice needs the story to carry it twice.
+fn story_paragraph_index(doc: &Document, sid: &str, text: &str, spent: &[usize]) -> Option<usize> {
     let needle = normalized_words(text);
     if needle.is_empty() {
-        return true;
+        return None;
     }
-    if let Some(i) = haystack.iter().position(|e| contains_words(e, &needle)) {
-        haystack.remove(i);
-        return true;
+    let story = doc.story(sid)?;
+    story
+        .paragraphs
+        .iter()
+        .enumerate()
+        .find(|(i, p)| !spent.contains(i) && contains_words(&normalized_words(&p.text()), &needle))
+        .map(|(i, _)| i)
+}
+
+/// The paragraph index of the service-story hymn line
+/// carrying a hymn paragraph's composed value, when
+/// the paragraph counts as present (round 6, R6-B,
+/// rule 2). A hymn-valued paragraph is present only on
+/// a hymn line in the service story: when the paragraph
+/// names a line (its label), the value must sit on a
+/// service line with that label, or on an appended line
+/// labelled "Hymn"; when it names none, any
+/// hymn-labelled service line carrying the value
+/// counts. Text anywhere else — announcements, other
+/// stories, non-hymn service lines — never counts.
+/// Indexes in `spent` are skipped, so each line can
+/// satisfy one paragraph.
+fn find_hymn_line(doc: &Document, text: &str, spent: &[usize]) -> Option<usize> {
+    let composed = normalized_words(&hymn_composed_form(text)?);
+    if composed.is_empty() {
+        return None;
     }
-    if let Some(composed) = hymn_composed_form(text) {
-        let composed = normalized_words(&composed);
-        if let Some(i) = haystack.iter().position(|e| contains_words(e, &composed)) {
-            haystack.remove(i);
+    let (label, _) = part_line_label(text);
+    service_lines(doc)
+        .into_iter()
+        .find(|line| {
+            if spent.contains(&line.para_index) {
+                return false;
+            }
+            let label_ok = match &label {
+                Some(named) => {
+                    line.label.eq_ignore_ascii_case(named)
+                        || line.label.eq_ignore_ascii_case("Hymn")
+                }
+                None => ob_model::hymns::is_hymn_label(&line.label),
+            };
+            label_ok && contains_words(&normalized_words(&line.value), &composed)
+        })
+        .map(|line| line.para_index)
+}
+
+/// Presence judged against one target story (round 6,
+/// R6-B): the paragraphs of that story only, each
+/// spendable once. In hymn mode (a service part whose
+/// target is the service story itself), hymn-valued
+/// paragraphs are judged by the hymn-line rule and the
+/// rest by their words in the service story.
+struct TargetPresence<'a> {
+    doc: &'a Document,
+    sid: Option<String>,
+    hymn_mode: bool,
+    spent: Vec<usize>,
+}
+
+impl TargetPresence<'_> {
+    fn paragraph_present(&mut self, text: &str) -> bool {
+        if normalized_words(text).is_empty() {
             return true;
         }
+        if self.hymn_mode && hymn_composed_form(text).is_some() {
+            match find_hymn_line(self.doc, text, &self.spent) {
+                Some(i) => {
+                    self.spent.push(i);
+                    return true;
+                }
+                None => return false,
+            }
+        }
+        let Some(sid) = self.sid.clone() else {
+            return false;
+        };
+        match story_paragraph_index(self.doc, &sid, text, &self.spent) {
+            Some(i) => {
+                self.spent.push(i);
+                true
+            }
+            None => false,
+        }
     }
-    false
+
+    fn part_present(&mut self, part: &ob_extract::contribution::Part) -> bool {
+        part.paragraphs
+            .iter()
+            .all(|p| self.paragraph_present(&p.text()))
+    }
 }
 
-/// The words of every paragraph in the document's
-/// stories, normalized: the haystack presence is
-/// checked against. Loose sheets are not in it;
-/// contribution words never land on a sheet.
-fn document_paragraph_words(doc: &Document) -> Vec<String> {
-    doc.stories
-        .iter()
-        .flat_map(|s| s.paragraphs.iter())
-        .map(|p| normalized_words(&p.text()))
-        .filter(|w| !w.is_empty())
-        .collect()
-}
-
-/// Whether every one of a part's paragraphs is in the
-/// bulletin. A part is more than its first line: one
-/// shared boilerplate line cannot make a part
-/// "already in" while the rest of its words are
-/// missing. A part carrying no words is present
-/// trivially: there is nothing that could be missing.
-fn part_words_present(doc: &Document, part: &ob_extract::contribution::Part) -> bool {
-    part_words_present_in(&mut document_paragraph_words(doc), part)
-}
-
-/// `part_words_present` against a shared haystack, so
-/// a whole contribution's parts spend the bulletin's
-/// paragraphs between them.
-fn part_words_present_in(
-    haystack: &mut Vec<String>,
+/// The presence checker for a part's planned target:
+/// the story it would land in (the weekly story for an
+/// under-heading part). None when the target names no
+/// story a checker can search.
+fn target_checker<'a>(
+    doc: &'a Document,
     part: &ob_extract::contribution::Part,
-) -> bool {
+    target: &SlotTarget,
+) -> Option<TargetPresence<'a>> {
+    use ob_extract::contribution::PartKind;
+    match target {
+        SlotTarget::Story(sid) => {
+            let hymn_mode = part.kind == PartKind::Service
+                && service_story_id(doc).as_deref() == Some(sid.as_str());
+            Some(TargetPresence {
+                doc,
+                sid: Some(sid.clone()),
+                hymn_mode,
+                spent: Vec::new(),
+            })
+        }
+        SlotTarget::AnnouncementsUnderHeading(_) => {
+            weekly_story_id(doc).map(|wid| TargetPresence {
+                doc,
+                sid: Some(wid),
+                hymn_mode: false,
+                spent: Vec::new(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Whether a part carries no words at all: every
+/// paragraph empty. There is nothing that could be
+/// missing, so such a part is present trivially
+/// wherever it would land — the one case a part with
+/// no landing story (KeptWithPart) counts as present.
+fn part_has_no_words(part: &ob_extract::contribution::Part) -> bool {
     part.paragraphs
         .iter()
-        .all(|p| paragraph_words_present(haystack, &p.text()))
+        .all(|p| normalized_words(&p.text()).is_empty())
 }
 
-/// Whether every part of a contribution has all its
-/// words in the bulletin.
+/// Whether every one of a part's paragraphs is present
+/// in the story the part would land in (round 6,
+/// R6-B). A part is more than its first line: one
+/// shared boilerplate line cannot make a part "already
+/// in" while the rest of its words are missing, and
+/// words standing in another story cannot make it
+/// present here. A loose-sheet part is never present
+/// by words: its landing is its filing, judged by the
+/// record in `applied_claim`, so the plan never calls
+/// it AlreadyThere.
+fn part_words_present(
+    doc: &Document,
+    c: &ob_extract::contribution::Contribution,
+    part: &ob_extract::contribution::Part,
+) -> bool {
+    let plan = planned_part_plan(doc, c, part);
+    match &plan.target {
+        SlotTarget::LooseSheet => false,
+        SlotTarget::KeptWithPart => part_has_no_words(part),
+        SlotTarget::AlreadyThere => true,
+        target => match target_checker(doc, part, target) {
+            Some(mut checker) => checker.part_present(part),
+            None => part_has_no_words(part),
+        },
+    }
+}
+
+/// Find (or make) the shared checker for one target
+/// key, so a whole contribution's parts spend a target
+/// story's paragraphs between them.
+fn checker_index<'a>(
+    checkers: &mut Vec<(String, TargetPresence<'a>)>,
+    doc: &'a Document,
+    key: &str,
+    sid: Option<String>,
+    hymn_mode: bool,
+) -> usize {
+    if let Some(i) = checkers.iter().position(|(k, _)| k == key) {
+        return i;
+    }
+    let spent: Vec<usize> = Vec::new();
+    let checker = TargetPresence {
+        doc,
+        sid,
+        hymn_mode,
+        spent,
+    };
+    checkers.push((key.to_string(), checker));
+    checkers.len() - 1
+}
+
+/// Whether every story-landing part of a contribution
+/// has all its words present in its own target story,
+/// the parts sharing each story's paragraphs between
+/// them. Loose-sheet parts are not judged here at all:
+/// their words never enter a story, so their presence
+/// is the applied record's business (see
+/// `applied_claim`).
 fn contribution_words_present(doc: &Document, c: &ob_extract::contribution::Contribution) -> bool {
-    let mut haystack = document_paragraph_words(doc);
-    c.parts
-        .iter()
-        .all(|part| part_words_present_in(&mut haystack, part))
+    use ob_extract::contribution::PartKind;
+    let mut checkers: Vec<(String, TargetPresence)> = Vec::new();
+    for part in &c.parts {
+        let plan = planned_part_plan(doc, c, part);
+        match &plan.target {
+            SlotTarget::LooseSheet => continue,
+            SlotTarget::KeptWithPart => {
+                if !part_has_no_words(part) {
+                    return false;
+                }
+            }
+            SlotTarget::AlreadyThere => continue,
+            SlotTarget::Story(sid) => {
+                let hymn_mode = part.kind == PartKind::Service
+                    && service_story_id(doc).as_deref() == Some(sid.as_str());
+                let key = format!("story:{sid}:{hymn_mode}");
+                let idx = checker_index(&mut checkers, doc, &key, Some(sid.clone()), hymn_mode);
+                if !checkers[idx].1.part_present(part) {
+                    return false;
+                }
+            }
+            SlotTarget::AnnouncementsUnderHeading(_) => {
+                let Some(wid) = weekly_story_id(doc) else {
+                    if part_has_no_words(part) {
+                        continue;
+                    }
+                    return false;
+                };
+                let key = format!("heading:{wid}");
+                let idx = checker_index(&mut checkers, doc, &key, Some(wid), false);
+                if !checkers[idx].1.part_present(part) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Whether any part of a contribution lands as a loose
+/// sheet: filed with the part, never in a story.
+fn contribution_has_loose_part(doc: &Document, c: &ob_extract::contribution::Contribution) -> bool {
+    c.parts.iter().any(|part| {
+        matches!(
+            planned_part_plan(doc, c, part).target,
+            SlotTarget::LooseSheet
+        )
+    })
 }
 
 /// What the review may honestly say about a part and
@@ -4441,15 +4742,25 @@ enum AppliedClaim {
 }
 
 /// The claim for one reviewed contribution against
-/// this document.
+/// this document (round 6, R6-B, rule 3). Story-landing
+/// parts are judged by target-scoped presence; a loose
+/// part's landing IS its filing, so loose parts are
+/// judged by the record. AlreadyIn: every story part is
+/// present in its target, and the contribution either
+/// carries no loose parts or is recorded. A loose-only
+/// contribution is therefore AlreadyIn exactly when
+/// recorded, and NotApplied when not.
 fn applied_claim(
     doc: &Document,
     c: &ob_extract::contribution::Contribution,
     text: &str,
 ) -> AppliedClaim {
-    if contribution_words_present(doc, c) {
+    let recorded = part_already_applied(doc, text);
+    let story_present = contribution_words_present(doc, c);
+    let has_loose = contribution_has_loose_part(doc, c);
+    if story_present && (!has_loose || recorded) {
         AppliedClaim::AlreadyIn
-    } else if part_already_applied(doc, text) {
+    } else if recorded {
         AppliedClaim::RecordedButWordsGone
     } else {
         AppliedClaim::NotApplied
@@ -19743,6 +20054,369 @@ mod settings_tests {
         assert_eq!(
             doc.story(&sid).expect("story").paragraphs.len(),
             lines_before
+        );
+    }
+
+    #[test]
+    fn r6b_a_hymn_mention_in_the_announcements_does_not_make_a_slip_present() {
+        // Round 6 (R6-B, R6-3 + RT6-4): hymn presence is
+        // a hymn line in the service story. An
+        // announcement mentioning the same hymn is not a
+        // hymn line, so the slip is not present, and
+        // Accept sets the named service line.
+        let mut doc = r1_template();
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        doc.story_mut(&wid)
+            .expect("story")
+            .paragraphs
+            .push(ob_model::Paragraph::plain(
+                "body",
+                "We will sing ELW 500 at the harvest supper.",
+            ));
+        let text = "From: Music director\n\n## For the service\n\nHymn of Praise: ELW 500\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert!(!part_words_present(&doc, &c, &c.parts[0]));
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::NotApplied);
+        let plans = plan_parts(&doc, &c);
+        let service_sid = service_story_id(&doc).expect("service story");
+        assert_eq!(plans[0].target, SlotTarget::Story(service_sid.clone()));
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let story = doc.story(&service_sid).expect("story");
+        assert!(
+            story
+                .paragraphs
+                .iter()
+                .any(|p| p.text() == "Hymn of Praise\tELW 500"),
+            "the hymn lands on the named line"
+        );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r6b_a_hymn_on_a_differently_named_line_is_not_present() {
+        // Round 6 (R6-B, RT6-4 B3b): the template's own
+        // Hymn of Praise line stands with 432. A slip
+        // naming a DIFFERENT line (Opening hymn) for 432
+        // is not present on that line: it plans as an
+        // ordinary landing, appends its own hymn line,
+        // and only then reads as already in.
+        let mut doc = r1_template();
+        let text = "From: Music director\n\n## For the service\n\nOpening hymn: 432\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert!(!part_words_present(&doc, &c, &c.parts[0]));
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::NotApplied);
+        let plans = plan_parts(&doc, &c);
+        assert!(
+            matches!(plans[0].target, SlotTarget::Story(_)),
+            "{:?}",
+            plans[0].target
+        );
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let sid = service_story_id(&doc).expect("service story");
+        let texts: Vec<String> = doc
+            .story(&sid)
+            .expect("story")
+            .paragraphs
+            .iter()
+            .map(|p| p.text())
+            .collect();
+        assert!(texts.iter().any(|t| t == "Hymn\t432"), "{texts:?}");
+        assert!(
+            texts.iter().any(|t| t == "Hymn of Praise\t432"),
+            "{texts:?}"
+        );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r6b_fragments_scattered_in_other_stories_do_not_make_a_part_present() {
+        // Round 6 (R6-B, RT6-4 second half): every one of
+        // this announcement's paragraphs stands somewhere
+        // in the document — in the service story, the
+        // cover story, and the back story — but none
+        // stands in the weekly story the part would land
+        // in. Presence is judged there, so the part is
+        // NotApplied and Accept lands it as a unit.
+        let mut doc = r1_template();
+        let text = "From: Sue\n\n## Announcement\n\nOrder of Service\n\nWe are glad you are here.\n\nService Times\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert!(!part_words_present(&doc, &c, &c.parts[0]));
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::NotApplied);
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        let plans = plan_parts(&doc, &c);
+        assert_eq!(plans[0].target, SlotTarget::Story(wid.clone()));
+        let before = doc.story(&wid).expect("story").paragraphs.len();
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let weekly = doc.story(&wid).expect("story");
+        assert_eq!(weekly.paragraphs.len(), before + 3);
+        for needle in [
+            "Order of Service",
+            "We are glad you are here.",
+            "Service Times",
+        ] {
+            assert_eq!(
+                weekly
+                    .paragraphs
+                    .iter()
+                    .filter(|p| p.text() == needle)
+                    .count(),
+                1,
+                "{needle}"
+            );
+        }
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r6b_reaccepting_a_longer_resend_lands_only_the_missing_paragraph() {
+        // Round 6 (R6-B, RT6-3 B1): the shipped R5-B
+        // shape. The longer re-send's claim is
+        // NotApplied and Accept is offered — and the
+        // paragraph already in the weekly story is
+        // skipped, not printed a second time.
+        let mut doc = r1_template();
+        let first = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let c1 = ob_extract::contribution::parse_contribution(first, r1_today()).expect("parses");
+        apply_contribution_recording(&mut doc, &c1, first);
+        let longer = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n\nBring a chair and a friend.\n";
+        let c2 = ob_extract::contribution::parse_contribution(longer, r1_today()).expect("parses");
+        assert_eq!(applied_claim(&doc, &c2, longer), AppliedClaim::NotApplied);
+        let outcome = apply_contribution_recording(&mut doc, &c2, longer);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        let count = |doc: &Document, needle: &str| {
+            doc.story(&wid)
+                .expect("story")
+                .paragraphs
+                .iter()
+                .filter(|p| p.text() == needle)
+                .count()
+        };
+        assert_eq!(count(&doc, "The bake sale is Friday."), 1);
+        assert_eq!(count(&doc, "Bring a chair and a friend."), 1);
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("Added 1 announcement line.")),
+            "{:?}",
+            outcome.lines
+        );
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("1 line was already in the bulletin")),
+            "{:?}",
+            outcome.lines
+        );
+        assert_eq!(applied_claim(&doc, &c2, longer), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r6b_a_one_word_changed_resend_lands_only_the_changed_paragraph() {
+        // Round 6 (R6-B, RT6-3 B2): a two-paragraph part
+        // is applied; the re-send changes one word in
+        // paragraph two. Accept lands the changed
+        // paragraph and skips the unchanged one, so
+        // paragraph one never prints twice.
+        let mut doc = r1_template();
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n\nBring a chair and a friend.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        apply_contribution_recording(&mut doc, &c, text);
+        let resent = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n\nBring a chair and a neighbor.\n";
+        let c2 = ob_extract::contribution::parse_contribution(resent, r1_today()).expect("parses");
+        assert_eq!(applied_claim(&doc, &c2, resent), AppliedClaim::NotApplied);
+        let outcome = apply_contribution_recording(&mut doc, &c2, resent);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        let count = |doc: &Document, needle: &str| {
+            doc.story(&wid)
+                .expect("story")
+                .paragraphs
+                .iter()
+                .filter(|p| p.text() == needle)
+                .count()
+        };
+        assert_eq!(count(&doc, "The bake sale is Friday."), 1);
+        assert_eq!(count(&doc, "Bring a chair and a friend."), 1);
+        assert_eq!(count(&doc, "Bring a chair and a neighbor."), 1);
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("Added 1 announcement line.")),
+            "{:?}",
+            outcome.lines
+        );
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("1 line was already in the bulletin")),
+            "{:?}",
+            outcome.lines
+        );
+        assert_eq!(applied_claim(&doc, &c2, resent), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r6b_a_loose_sheet_part_is_judged_by_the_record_not_by_words() {
+        // Round 6 (R6-B, R6-2): a loose sheet's words
+        // never enter a story, by design — its landing IS
+        // its filing. A recorded contribution carrying
+        // one therefore reopens AlreadyIn, and the
+        // sheet's plan line never claims AlreadyThere.
+        // With the story part's words deleted by hand,
+        // the same contribution is RecordedButWordsGone.
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n\n## Insert\n\nThe prayer list.\n";
+        let mut doc = r1_template();
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::NotApplied);
+        let plans = plan_parts(&doc, &c);
+        assert_eq!(plans[1].target, SlotTarget::LooseSheet);
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        assert!(part_already_applied(&doc, text));
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+        let plans = plan_parts(&doc, &c);
+        assert_eq!(plans[0].target, SlotTarget::AlreadyThere);
+        assert_eq!(
+            plans[1].target,
+            SlotTarget::LooseSheet,
+            "a loose part never plans AlreadyThere"
+        );
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        doc.story_mut(&wid)
+            .expect("story")
+            .paragraphs
+            .retain(|p| !p.text().contains("bake sale"));
+        assert_eq!(
+            applied_claim(&doc, &c, text),
+            AppliedClaim::RecordedButWordsGone
+        );
+    }
+
+    #[test]
+    fn r6b_a_loose_only_contribution_is_already_in_exactly_when_recorded() {
+        // Round 6 (R6-B, rule 3): with no story parts at
+        // all, the record is the whole evidence: before
+        // it, NotApplied; once recorded, AlreadyIn.
+        let text = "From: Sue\n\n## Insert\n\nThe prayer list.\n";
+        let mut doc = r1_template();
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::NotApplied);
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        assert!(part_already_applied(&doc, text));
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r6b_an_under_heading_part_lands_only_its_missing_paragraphs() {
+        // Round 6 (R6-B, rule 5): the under-heading arm
+        // lands per paragraph too, and adds its heading
+        // only because a paragraph actually lands.
+        let mut doc = r1_template();
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        doc.story_mut(&wid)
+            .expect("story")
+            .paragraphs
+            .push(ob_model::Paragraph::plain("body", "Classes meet at 9 AM."));
+        let text =
+            "From: Sue\n\n## Sunday school\n\nClasses meet at 9 AM.\n\nBring a friend to class.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let plans = plan_parts(&doc, &c);
+        assert_eq!(
+            plans[0].target,
+            SlotTarget::AnnouncementsUnderHeading("Sunday school")
+        );
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let weekly = doc.story(&wid).expect("story");
+        let count = |needle: &str| {
+            weekly
+                .paragraphs
+                .iter()
+                .filter(|p| p.text() == needle)
+                .count()
+        };
+        assert_eq!(count("Sunday school"), 1, "the heading lands once");
+        assert_eq!(count("Classes meet at 9 AM."), 1);
+        assert_eq!(count("Bring a friend to class."), 1);
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("Added 1 line") && s.contains("under their headings")),
+            "{:?}",
+            outcome.lines
+        );
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("1 line was already in the bulletin")),
+            "{:?}",
+            outcome.lines
+        );
+    }
+
+    #[test]
+    fn r6b_an_appended_hymn_already_on_a_hymn_line_is_not_appended_twice() {
+        // Round 6 (R6-B, rule 5): the service story
+        // already carries an appended "Hymn" line with
+        // ELW 777. A slip carrying that hymn plus one
+        // missing plain line is not wholly present, so
+        // the hymn path runs — and counts the hymn as
+        // already there instead of appending a second
+        // Hymn line with the same value.
+        let mut doc = r1_template();
+        let sid = service_story_id(&doc).expect("service story");
+        doc.story_mut(&sid)
+            .expect("story")
+            .paragraphs
+            .push(ob_model::Paragraph::plain("order-line", "Hymn\tELW 777"));
+        let text = "From: Music director\n\n## For the service\n\nELW 777\n\nPrelude is at 9:25 this week.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert!(!part_words_present(&doc, &c, &c.parts[0]));
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let story = doc.story(&sid).expect("story");
+        assert_eq!(
+            story
+                .paragraphs
+                .iter()
+                .filter(|p| p.text() == "Hymn\tELW 777")
+                .count(),
+            1
+        );
+        assert_eq!(
+            story
+                .paragraphs
+                .iter()
+                .filter(|p| p.text() == "Prelude is at 9:25 this week.")
+                .count(),
+            1
+        );
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("Added 1 line to the service.")),
+            "{:?}",
+            outcome.lines
+        );
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("1 line was already in the bulletin")),
+            "{:?}",
+            outcome.lines
         );
     }
 

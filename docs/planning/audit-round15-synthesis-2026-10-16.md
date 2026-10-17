@@ -90,3 +90,106 @@ parenthetical, never arms one. Reopens only on harm beyond that.
 
 Round 16 audits the fixes. The Tier-2 final gate runs only after a
 round returns zero BLOCKER + zero MAJOR.
+
+## Shipped addendum, R15-A — 2026-10-17
+
+Batch R15-A (governors) shipped in `crates/ob-extract/src/contribution.rs`
+only: **693 → 698 tests passing, 0 failed** (full workspace suite run
+unpiped on the final tree, cargo exit code 0 read from a file; run
+twice, same totals), **clippy clean** (`--workspace --all-targets
+-- -D warnings`, exit 0). Five new pins, all `r15a_*`. **No
+pre-existing test was changed** — every round 11–15 held shape stands
+at its shipped expectation, including the r12a held care
+"(it was moved, November 1)" (see the judgment call below). Neither
+the fake-helper ETXTBSY flake nor timing contention fired in either
+full run.
+
+What landed, per disposition:
+
+- **R15-1.** The displacement stems `move`, `shift`, `bump`,
+  `reschedule` joined the cancellation stem set, so every stem form
+  governs before and trailing, on all consuming paths. The phrasal
+  pairs are form-aware through one helper (`is_phrasal_governor_pair`):
+  "call off", "put back", "push back", "put off", "forget about" in
+  any inflection of their first word. Split forms govern as "put …
+  off" has since round 14: "(called November 1 off)", "(put
+  November 1 back)", "(push November 1 back)". **To-target rule:**
+  in `governed_before`, a displacement phrase standing directly
+  before a "to" is skipped — it governs the FROM date (through
+  `governed_after` when one stands before it), and the target
+  asserts. Pinned both ways: "(rescheduled to November 8)" /
+  "(moved to November 8)" assert November 8 with no from-date;
+  "(move November 1 to November 8)", "(November 1, moved to
+  November 8)", "(reschedule …)", "(bump …)" assert November 8 with
+  November 1 governed.
+- **R15-2.** `is_verb_form` gained the -s form (bare -s and the
+  sibilant -es: cancels, postpones, scratches, pushes) and forget's
+  irregular pasts (forgot, forgotten — so "forgot about" governs
+  through the pair rule). Subject shapes pinned: "(choir cancels
+  November 1)", "(Sue postpones November 1)", "(we forgot
+  November 1)", plus trailing "(November 1, cancels)" /
+  "(November 1, forgot)" and the two-date corrections
+  "(cancels November 1, use November 8)" / "(forgot November 1,
+  use November 8)", which assert November 8 again.
+- **R15-3.** The reach-back walk in `governor_window_start` never
+  extends a later date's window into a cancellation-only clause
+  standing after a previous date; filler clauses are crossed as
+  before, so a RUN of consecutive cancellation-only clauses (with
+  filler between phrases) spends together on the first date. All
+  seven lane constructions pinned on the relative, paren-only, and
+  Keep-through paths, plus the "scratch that" second-phrase
+  variant: each asserts November 8.
+- **RT15-5.** "of" joined the filler word set in the one clause
+  test (`is_filler_clause`). Rule for the second witness, stated
+  plainly: **a clause headed by "date of" — "(ignore, the date of
+  the service, November 1)" — is a genitive fragment of the date
+  phrase itself; it names the date by naming the occasion the date
+  belongs to and asserts no event of its own, so the reach-back
+  crosses it like any filler clause.** The content-clause control
+  "(ignore, the date, choir, November 1)" still contributes, pinned.
+- **R15-6.** One clause-scope rule, in `governed_after`: a trailing
+  phrase governs the date it follows only when every clause
+  between that date and the phrase is itself a cancellation or
+  filler clause. (a) "(November 1, choir practice, ignore)" now
+  contributes November 1 on all paths; the in-scope twins
+  "(November 1, ignore)" and "(November 1, the date, ignore)" still
+  govern. (b) A date disqualified only by a trailing phrase after
+  the group's last date is governed but NAMED: beside a standing
+  date it joins the alternatives the second-date note prints, on
+  the paren-only, relative, and Keep-through paths alike —
+  "(November 1, November 8, drop it)" asserts November 1 and names
+  November 8; the mirror "(November 8, November 1, postponed, drop
+  it)" asserts November 8 and names November 1. A lone governed
+  date keeps the standing silence ("(November 1, cancelled)"
+  names nothing anywhere).
+
+Reading changes to lane witnesses, flagged as directed: the
+two-date move shapes the lanes verified as noting both dates as
+alternatives ("(move November 1 to November 8)" and twins) now
+**assert the target date**, exactly as the disposition orders and
+as the held "(moved from November 1 to November 8)" always did;
+likewise "(November 1, called off, November 8)" and its
+rescheduled / moved twins now assert November 8 like
+"(November 1, cancelled, November 8)", instead of offering both
+dates as alternatives. No other witness reading changed.
+
+Judgment calls, stated plainly:
+
+1. **Auxiliary-spent displacement.** A displacement verb standing
+   directly after an auxiliary ("it was moved") is that clause's
+   own predicate, spent on its subject, so it does not reach
+   across a clause break as an unspent governor. Without this, the
+   r12a held pin "(it was moved, November 1)" — which names its
+   date — would have flipped when "moved" joined the stem set.
+   Scoped to the displacement stems only.
+2. **The -s noun/verb identity.** Adding the -s form means a
+   plural noun spelled as a verb's -s form ("drops" standing
+   alone as its clause) now governs, the same verb-form identity
+   the review lane recorded for "delay" the noun. The disposition
+   lists "(drops November 1)" as the harm to fix; the noun reading
+   in that exact shape is indistinguishable without syntax the
+   app does not have, and the failure direction is the accepted
+   suppression class. Recorded here, not reopened.
+3. RT15-4's innocent-suppression family (drop-off, forget-me-nots,
+   weather delay, and the rest) was not touched, per the standing
+   R13-6/RT14-6 acceptance.

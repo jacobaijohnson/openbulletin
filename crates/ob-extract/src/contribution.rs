@@ -801,6 +801,81 @@ fn clause_break_after(raw: &str) -> bool {
         || (trimmed.len() > 1 && trimmed.ends_with('-'))
 }
 
+/// Whether a clause carries no content of its
+/// own (round 14, RT14-4; round 15, RT15-5): every
+/// word is date-referring filler — "the", "a",
+/// "an", "date", "it", "note", "notes", and now
+/// "of" — or the clause is a genitive fragment of
+/// the date phrase itself: a clause headed by
+/// "date of" ("the date of the service") names
+/// the date by naming the occasion the date
+/// belongs to; it asserts no event of its own, so
+/// it is filler for the reach-back like any pure
+/// filler clause. A clause of nothing but break
+/// punctuation (a standalone dash) is likewise
+/// empty. Any other word is content and stops
+/// the reach-back.
+fn is_filler_clause(clause: &[String]) -> bool {
+    if clause.iter().all(|w| w.is_empty()) {
+        return true;
+    }
+    if clause.iter().all(|w| {
+        matches!(
+            w.as_str(),
+            "the" | "a" | "an" | "date" | "it" | "note" | "notes" | "of"
+        )
+    }) {
+        return true;
+    }
+    let body: &[String] = match clause.first().map(String::as_str) {
+        Some("the" | "a" | "an") => &clause[1..],
+        _ => clause,
+    };
+    body.len() >= 3
+        && body[0] == "date"
+        && body[1] == "of"
+        && body[2..]
+            .iter()
+            .all(|w| !direct_single_governor(w) && weekday_word(w).is_none())
+}
+
+/// Whether a clause is a cancellation and
+/// nothing else (round 15, R15-3): it holds a
+/// cancellation phrase, and every word outside
+/// that phrase is date-referring filler ("the",
+/// "a", "an", "date", "it", "that", "note",
+/// "notes", "of") — "postponed", "drop it",
+/// "scratch that", "cancelled, the date" read
+/// as clauses. Such a clause standing after a
+/// date is spent on that date, and a run of
+/// them is spent together.
+fn is_cancellation_only_clause(clause: &[String]) -> bool {
+    for i in 0..clause.len() {
+        for len in 1..=3usize {
+            let Some(phrase) = clause.get(i..i + len) else {
+                break;
+            };
+            if !is_cancellation_phrase(phrase) {
+                continue;
+            }
+            let rest_filler = clause
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j < i || *j >= i + len)
+                .all(|(_, w)| {
+                    matches!(
+                        w.as_str(),
+                        "the" | "a" | "an" | "date" | "it" | "that" | "note" | "notes" | "of"
+                    )
+                });
+            if rest_filler {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// The governor window standing before one date
 /// occurrence inside its group (round 12, R12-1 /
 /// R12-2): the tokens after the previous date
@@ -870,6 +945,22 @@ fn governor_window_start(
             }
             let clause = &tokens[clause_start..clause_end];
             let clause_follows_a_date = has_prev_date && clause_start == lo;
+            // Round 15 (R15-3): a clause that is a
+            // cancellation and nothing else, standing
+            // in a window that follows a date, is
+            // spent on that date — and so is a whole
+            // RUN of them: "(November 1, postponed,
+            // drop it, November 8)" spends both
+            // phrases on November 1, and November 8
+            // asserts. The walk simply never extends
+            // the window into such a clause; filler
+            // clauses between the run's phrases are
+            // crossed by the filler rule below, so a
+            // run wearing one ("cancelled, the date,
+            // drop it") is spent together too.
+            if has_prev_date && is_cancellation_only_clause(clause) {
+                continue;
+            }
             if unspent_trailing_governor(clause, clause_follows_a_date) {
                 start = clause_start;
                 break;
@@ -885,13 +976,12 @@ fn governor_window_start(
             // clause holds no date token: its words
             // are the filler set itself.) A clause
             // with real content stops the reach-back,
-            // exactly as before.
-            if clause.iter().all(|w| {
-                matches!(
-                    w.as_str(),
-                    "the" | "a" | "an" | "date" | "it" | "note" | "notes"
-                )
-            }) {
+            // exactly as before. Round 15 (RT15-5):
+            // "of" joins the filler set, and a
+            // genitive fragment of the date phrase
+            // ("the date of the service") counts as
+            // filler too — see `is_filler_clause`.
+            if is_filler_clause(clause) {
                 continue;
             }
             break;
@@ -927,12 +1017,29 @@ fn governor_window_start(
 fn governed_before(window: &[String]) -> bool {
     for i in 0..window.len() {
         for len in 1..=3usize {
-            if window.get(i..i + len).is_none() {
+            let Some(phrase) = window.get(i..i + len) else {
                 break;
+            };
+            if !phrase_governs(window, i, len) {
+                continue;
             }
-            if phrase_governs(window, i, len) {
-                return true;
+            // Round 15 (R15-1): a displacement
+            // phrase standing directly before a
+            // "to" governs the date it moves FROM;
+            // the date the "to" names is its
+            // target and asserts — "(rescheduled
+            // to November 8)" and "(moved to
+            // November 8)" name November 8, the
+            // held "(moved to ...)" shape, and in
+            // "(November 1, moved to November 8)"
+            // the phrase governs November 1
+            // through `governed_after` instead.
+            if window.get(i + len).map(String::as_str) == Some("to")
+                && is_displacement_phrase(phrase)
+            {
+                continue;
             }
+            return true;
         }
     }
     false
@@ -973,7 +1080,7 @@ fn phrase_governs(slice: &[String], i: usize, len: usize) -> bool {
 /// suffix. Noun derivations are not forms of the
 /// verb: "cancellation" and "postponement" govern
 /// nothing (pinned in the r14a tests).
-const CANCELLATION_STEMS: [&str; 9] = [
+const CANCELLATION_STEMS: [&str; 13] = [
     "cancel",
     "scratch",
     "drop",
@@ -983,7 +1090,67 @@ const CANCELLATION_STEMS: [&str; 9] = [
     "omit",
     "disregard",
     "forget",
+    // Round 15 (R15-1): the displacement verbs
+    // govern like the cancellation verbs — a date
+    // a sender moved, shifted, bumped, or
+    // rescheduled is precisely the date that is
+    // not it, and with no new date named there is
+    // nothing to lose by silencing it. Where a
+    // new date IS named through "to", the target
+    // asserts (see `governed_before`).
+    "move",
+    "shift",
+    "bump",
+    "reschedule",
 ];
+
+/// The displacement verb stems (round 15,
+/// R15-1): the subset of the cancellation stems
+/// that name a move to another date rather than
+/// an end. A displacement phrase standing before
+/// a "to" governs the date it moves FROM, never
+/// the target the "to" names.
+const DISPLACEMENT_STEMS: [&str; 4] = ["move", "shift", "bump", "reschedule"];
+
+/// Whether `word` is a form of one of the
+/// displacement verbs (round 15, R15-1).
+fn is_displacement_verb(word: &str) -> bool {
+    DISPLACEMENT_STEMS
+        .iter()
+        .any(|stem| is_verb_form(word, stem))
+}
+
+/// Whether a two-word phrase is one of the
+/// phrasal governors whose first word inflects
+/// (round 15, R15-1): "call off" in any of
+/// call's forms (called off, calling off, calls
+/// off), "put back" and "push back" in any of
+/// their forms (pushed back, putting back), the
+/// older "put off" in put's forms, and "forget
+/// about" in any of forget's forms, the
+/// irregular "forgot about" included. A bare
+/// "call", "push", or "put" with no second word
+/// governs nothing, as a bare "put" never has.
+fn is_phrasal_governor_pair(a: &str, b: &str) -> bool {
+    (is_verb_form(a, "call") && b == "off")
+        || (is_verb_form(a, "put") && matches!(b, "off" | "back"))
+        || (is_verb_form(a, "push") && b == "back")
+        || (is_verb_form(a, "forget") && b == "about")
+}
+
+/// Whether one run of words is a displacement
+/// phrase (round 15, R15-1): a displacement verb
+/// on its own, or a "put back" / "push back"
+/// pair. These are the phrases a "to" after them
+/// turns into a from/to shape.
+fn is_displacement_phrase(phrase: &[String]) -> bool {
+    let words: Vec<&str> = phrase.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        [w] => is_displacement_verb(w),
+        [a, b] => (is_verb_form(a, "put") || is_verb_form(a, "push")) && *b == "back",
+        _ => false,
+    }
+}
 
 /// A stem with a doubled final consonant undoubled:
 /// "dropp" -> "drop", "cancell" -> "cancel".
@@ -998,16 +1165,35 @@ fn undoubled(stem: &str) -> &str {
 }
 
 /// Whether `word` is an inflection of the verb
-/// `stem`: the base form, an -ed form, or an -ing
-/// form, with the spelling adjustments English
+/// `stem`: the base form, an -ed form, an -ing
+/// form, or an -s form, with the spelling adjustments English
 /// makes — a final "e" drops before -ing
 /// (postponing, removing) and takes a bare "d" for
 /// the past (postponed, removed), and a final
 /// consonant may double (dropping, omitting, and
 /// "cancel"'s British cancelling / cancelled).
+/// Round 15 (R15-2): the -s form (cancels,
+/// postpones, scratches — the last with the -es
+/// spelling a sibilant-final stem takes) is a form
+/// of the verb like any other, and "forget" has an
+/// irregular past the suffix rules cannot build:
+/// "forgot" and "forgotten" are its forms too.
 fn is_verb_form(word: &str, stem: &str) -> bool {
     if word == stem {
         return true;
+    }
+    if stem == "forget" && matches!(word, "forgot" | "forgotten") {
+        return true;
+    }
+    if let Some(base) = word.strip_suffix('s') {
+        if base == stem {
+            return true;
+        }
+    }
+    if let Some(base) = word.strip_suffix("es") {
+        if base == stem {
+            return true;
+        }
     }
     if let Some(base) = word.strip_suffix("ing") {
         if base == stem || undoubled(base) == stem {
@@ -1124,21 +1310,22 @@ fn is_governor_phrase(phrase: &[String]) -> bool {
     match words.as_slice() {
         [w] => is_single_governor(w),
         [a, b] => {
-            matches!(
-                (*a, *b),
-                ("no", "longer")
-                    | ("don't", "use")
-                    | ("didn't", "use")
-                    | ("dont", "use")
-                    | ("didnt", "use")
-                    | ("rather", "than")
-                    | ("instead", "of")
-                    | ("never", "mind")
-                    | ("old", "date")
-                    | ("hold", "off")
-                    | ("put", "off")
-                    | ("forget", "about")
-            )
+            is_phrasal_governor_pair(a, b)
+                || matches!(
+                    (*a, *b),
+                    ("no", "longer")
+                        | ("don't", "use")
+                        | ("didn't", "use")
+                        | ("dont", "use")
+                        | ("didnt", "use")
+                        | ("rather", "than")
+                        | ("instead", "of")
+                        | ("never", "mind")
+                        | ("old", "date")
+                        | ("hold", "off")
+                        | ("put", "off")
+                        | ("forget", "about")
+                )
         }
         [a, b, c] => {
             matches!((*a, *b, *c), ("used", "to", "be") | ("do", "not", "use"))
@@ -1191,10 +1378,12 @@ fn is_cancellation_phrase(phrase: &[String]) -> bool {
                 })
         }
         [a, b] => {
-            matches!(
-                (*a, *b),
-                ("hold", "off") | ("put", "off") | ("never", "mind") | ("forget", "about")
-            ) || (is_cancellation_verb(a) && matches!(*b, "it" | "that"))
+            is_phrasal_governor_pair(a, b)
+                || matches!(
+                    (*a, *b),
+                    ("hold", "off") | ("put", "off") | ("never", "mind") | ("forget", "about")
+                )
+                || (is_cancellation_verb(a) && matches!(*b, "it" | "that"))
         }
         _ => false,
     }
@@ -1218,6 +1407,22 @@ fn unspent_trailing_governor(clause: &[String], clause_follows_a_date: bool) -> 
                 break;
             };
             if !phrase_governs(clause, i, len) {
+                continue;
+            }
+            // Round 15 (R15-1): a displacement verb
+            // standing directly after an auxiliary
+            // ("it was moved") is that clause's own
+            // predicate, already spent on its
+            // subject — the held "(it was moved,
+            // November 1)" shape names its date.
+            if len == 1
+                && is_displacement_verb(&clause[i])
+                && i > 0
+                && matches!(
+                    clause[i - 1].as_str(),
+                    "was" | "is" | "were" | "be" | "been"
+                )
+            {
                 continue;
             }
             // Round 14 (R14-2): the spent exception
@@ -1257,9 +1462,35 @@ fn unspent_trailing_governor(clause: &[String], clause_follows_a_date: bool) -> 
 /// rule: in "(November 1, not October 25)" the
 /// trailing "not" has a date after it to govern, so
 /// November 1 is untouched.
-fn governed_after(tokens: &[String], date_end: usize, next_start: Option<usize>) -> bool {
-    let end = next_start.unwrap_or(tokens.len());
-    let after = &tokens[date_end.min(tokens.len())..end.min(tokens.len())];
+///
+/// Round 15 (R15-6): the trailing reach is
+/// clause-scoped — a phrase governs the date it
+/// follows only when every clause between that
+/// date and the phrase is itself a cancellation
+/// or filler clause. A content clause breaks the
+/// reach: "(November 1, choir practice, ignore)"
+/// now contributes November 1, because the
+/// "ignore" stands behind words that are neither.
+fn governed_after(
+    raw_tokens: &[&str],
+    tokens: &[String],
+    date_end: usize,
+    next_start: Option<usize>,
+) -> bool {
+    let seg_start = date_end.min(tokens.len());
+    let seg_end = next_start.unwrap_or(tokens.len()).min(tokens.len());
+    if seg_start >= seg_end {
+        return false;
+    }
+    // The clause starts inside the segment: a new
+    // clause opens after every clause break.
+    let mut clause_starts: Vec<usize> = vec![seg_start];
+    for j in seg_start + 1..seg_end {
+        if raw_tokens.get(j - 1).map(|t| clause_break_after(t)) == Some(true) {
+            clause_starts.push(j);
+        }
+    }
+    let after = &tokens[seg_start..seg_end];
     for i in 0..after.len() {
         for len in 1..=3usize {
             let Some(phrase) = after.get(i..i + len) else {
@@ -1267,13 +1498,11 @@ fn governed_after(tokens: &[String], date_end: usize, next_start: Option<usize>)
             };
             // Round 14 (R14-2): a cancellation phrase
             // standing after a date cancels the date
-            // it follows, wherever it stands — the
-            // trailing position draws from the same
-            // family as the before position, not the
-            // cancelled/canceled pair alone.
-            if is_cancellation_phrase(phrase) {
-                return true;
-            }
+            // it follows — the trailing position draws
+            // from the same family as the before
+            // position, not the cancelled/canceled
+            // pair alone. Round 15 (R15-6): subject
+            // to the clause scope stated above.
             // The rest of the family is prospective:
             // standing between two dates it governs
             // the later one (judged by that date's own
@@ -1281,7 +1510,27 @@ fn governed_after(tokens: &[String], date_end: usize, next_start: Option<usize>)
             // it follows when no later date is left —
             // the standing "not" / "no longer" rule,
             // now read off the one family definition.
-            if next_start.is_none() && phrase_governs(after, i, len) {
+            let governs = is_cancellation_phrase(phrase)
+                || (next_start.is_none() && phrase_governs(after, i, len));
+            if !governs {
+                continue;
+            }
+            // The clause the phrase stands in, and
+            // every clause between the date and it,
+            // judged by the one scope rule.
+            let pos = seg_start + i;
+            let clause_idx = clause_starts.iter().rposition(|s| *s <= pos).unwrap_or(0);
+            let mut in_scope = true;
+            for k in 0..clause_idx {
+                let c_start = clause_starts[k];
+                let c_end = clause_starts.get(k + 1).copied().unwrap_or(seg_end);
+                let clause = &tokens[c_start..c_end];
+                if !is_cancellation_only_clause(clause) && !is_filler_clause(clause) {
+                    in_scope = false;
+                    break;
+                }
+            }
+            if in_scope {
                 return true;
             }
         }
@@ -1384,6 +1633,15 @@ fn analyze_group(inner: &str, today: SimpleDate) -> GroupAnalysis {
     let tokens: Vec<String> = raw_tokens.iter().map(|t| group_token(t)).collect();
     let positional = dates_inside_group_positional(&unwrapped, today);
     let mut qualified: Vec<(SimpleDate, usize, usize)> = Vec::new();
+    // Round 15 (R15-6): dates disqualified ONLY by
+    // a trailing phrase standing after the group's
+    // last date — governed, but the line did name
+    // them, and beside a date that stands they are
+    // named on the second-date note like any other
+    // distinct date the line named, never silently
+    // dropped: "(November 1, November 8, drop it)"
+    // asserts November 1 and names November 8.
+    let mut trailing_named: Vec<SimpleDate> = Vec::new();
     for (idx, entry) in positional.iter().enumerate() {
         let (d, start, used) = *entry;
         // Round 12 (R12-2): the governor window for
@@ -1403,14 +1661,28 @@ fn analyze_group(inner: &str, today: SimpleDate) -> GroupAnalysis {
         // "put" standing last in the window and "off"
         // standing first after the date is the pair
         // "put off" wrapped around its date:
-        // "(put November 1 off)" governs.
-        let split_put_off = window.last().map(String::as_str) == Some("put")
-            && tokens.get(start + used).map(String::as_str) == Some("off");
-        if governed_before(window)
-            || split_put_off
-            || contradicted_before(&tokens, start, d)
-            || governed_after(&tokens, start + used, next_start)
-        {
+        // "(put November 1 off)" governs. Round 15
+        // (R15-1): the same wrap for every phrasal
+        // pair whose first word inflects — "(called
+        // November 1 off)", "(put November 1
+        // back)", "(push November 1 back)".
+        let split_first = window.last().map(String::as_str);
+        let split_second = tokens.get(start + used).map(String::as_str);
+        let split_phrasal = match (split_first, split_second) {
+            (Some(first), Some(second)) => is_phrasal_governor_pair(first, second),
+            _ => false,
+        };
+        let before_disqualified =
+            governed_before(window) || split_phrasal || contradicted_before(&tokens, start, d);
+        let after_disqualified = governed_after(&raw_tokens, &tokens, start + used, next_start);
+        if before_disqualified || after_disqualified {
+            if after_disqualified
+                && !before_disqualified
+                && next_start.is_none()
+                && !trailing_named.contains(&d)
+            {
+                trailing_named.push(d);
+            }
             continue;
         }
         qualified.push(*entry);
@@ -1423,9 +1695,15 @@ fn analyze_group(inner: &str, today: SimpleDate) -> GroupAnalysis {
         }
     }
     if distinct.len() == 1 && partial.is_none() {
+        let mut alternatives: Vec<SimpleDate> = Vec::new();
+        for d in &trailing_named {
+            if *d != distinct[0] && !alternatives.contains(d) {
+                alternatives.push(*d);
+            }
+        }
         let analysis = GroupAnalysis {
             contributed: Some(distinct[0]),
-            alternatives: Vec::new(),
+            alternatives,
         };
         return analysis;
     }
@@ -1433,6 +1711,19 @@ fn analyze_group(inner: &str, today: SimpleDate) -> GroupAnalysis {
     for (d, _, _) in &qualified {
         if !alternatives.contains(d) {
             alternatives.push(*d);
+        }
+    }
+    // A trailing-governed date is named beside the
+    // offered alternatives too, when the group
+    // offers more than one date and asserts none —
+    // but a lone governed date (distinct is empty)
+    // keeps the standing silence: "(November 1,
+    // cancelled)" names nothing anywhere.
+    if distinct.len() >= 2 {
+        for d in &trailing_named {
+            if !alternatives.contains(d) {
+                alternatives.push(*d);
+            }
         }
     }
     if let Some(p) = partial {
@@ -2514,13 +2805,23 @@ fn date_line(raw: &Option<String>, today: SimpleDate, anchor: SimpleDate) -> Dat
         // the last group stands, and an earlier group
         // naming a different date is recorded against
         // it, its source stated as the parentheses.
+        // Round 15 (R15-6): a date the standing group
+        // governed only by its trailing phrase is
+        // named on the second-date note, like the
+        // alternatives on every other path.
         let read = *groups.last().expect("a group stands");
         let parenthesized_mismatch = mismatch_from_groups(&groups, read, true);
+        let mut second_dates: Vec<SimpleDate> = Vec::new();
+        for d in &alternatives {
+            if *d != read && !second_dates.contains(d) {
+                second_dates.push(*d);
+            }
+        }
         return DateLineReading {
             date: Some(read),
             weekday_mismatch: None,
             parenthesized_mismatch,
-            second_dates: Vec::new(),
+            second_dates,
         };
     }
     if core == text {
@@ -6207,6 +6508,368 @@ Youth group meets Wednesday at 6 PM.
             Some(nov(8)),
             "the unspent governor spends on the first date only"
         );
+    }
+
+    #[test]
+    fn r15a_remaining_verbs_govern_before_and_trailing() {
+        // Round 15 (R15-1, review R15-1 + red team
+        // RT15-1): the verb family round 14 recorded
+        // as not taken — called off / call off, put
+        // back, push back, reschedule, move, shift,
+        // bump, in their stem forms — contributed at
+        // full strength before and trailing, on
+        // every path. They govern now.
+        for phrase in [
+            "called off",
+            "call off",
+            "calling off",
+            "calls off",
+            "put back",
+            "push back",
+            "pushed back",
+            "pushing back",
+            "reschedule",
+            "rescheduled",
+            "rescheduling",
+            "move",
+            "moved",
+            "moving",
+            "shift",
+            "shifted",
+            "bump",
+            "bumped",
+        ] {
+            let group = format!("({phrase} November 1)");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: governs on the relative path"
+            );
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::SundayInWords(oct(25)),
+                "{group}: no arming on the governed date"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: paren-only");
+            assert_eq!(
+                week_verdict(&c, Some(nov(1))),
+                WeekVerdict::NoSundayNamed,
+                "{group}: never SameSunday on a governed date"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through");
+            let text = format!("Keep-through: choir anthem {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through fallback");
+        }
+        for phrase in [
+            "called off",
+            "call off",
+            "put back",
+            "pushed back",
+            "push back",
+            "rescheduled",
+            "reschedule",
+            "reschedule it",
+            "moved",
+            "move",
+            "shifted",
+            "bumped",
+        ] {
+            let group = format!("(November 1, {phrase})");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: the trailing form governs on the relative path"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: paren-only");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through");
+        }
+        // The split forms: the pair wrapped around
+        // its date governs, as "put ... off" has
+        // since round 14.
+        for group in [
+            "(called November 1 off)",
+            "(put November 1 back)",
+            "(push November 1 back)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: the split form governs");
+        }
+        // A spent trailing phrase of the new family
+        // governs nothing after it — the fresh date
+        // asserts, as with cancelled.
+        for group in [
+            "(November 1, called off, November 8)",
+            "(November 1, rescheduled, November 8)",
+            "(November 1, moved, November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{group}: the spent trailing governor governs nothing after it"
+            );
+        }
+        // The "to"-target shapes assert their
+        // target: the phrase governs the FROM date
+        // when one stands before it, and with no
+        // from-date the to-date is the line's date.
+        for group in [
+            "(rescheduled to November 8)",
+            "(moved to November 8)",
+            "(move November 1 to November 8)",
+            "(November 1, moved to November 8)",
+            "(reschedule November 1 to November 8)",
+            "(bump November 1 to November 8)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(8)),
+                "{group}: the target asserts on the relative path"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        }
+    }
+
+    #[test]
+    fn r15a_s_forms_and_forgots_irregular_past_govern() {
+        // Round 15 (R15-2, review R15-2 + red team
+        // RT15-2): the stem rule missed its own
+        // fourth form — every -s form — and forget's
+        // irregular past. Both govern now, subject
+        // shapes included.
+        for phrase in [
+            "cancels",
+            "postpones",
+            "removes",
+            "delays",
+            "drops",
+            "scratches",
+            "omits",
+            "disregards",
+            "forgets",
+            "forgot",
+            "forgotten",
+            "forgot about",
+            "choir cancels",
+            "Sue postpones",
+            "it removes",
+            "choir drops",
+            "we forgot",
+        ] {
+            let group = format!("({phrase} November 1)");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: governs on the relative path"
+            );
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::SundayInWords(oct(25)),
+                "{group}: no arming on the governed date"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: paren-only");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through");
+        }
+        for group in ["(November 1, cancels)", "(November 1, forgot)"] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: the trailing form governs");
+        }
+        // The two-date correction shapes read their
+        // asserted date again, on its own terms.
+        for group in [
+            "(cancels November 1, use November 8)",
+            "(forgot November 1, use November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{group}: the asserted date is read"
+            );
+        }
+    }
+
+    #[test]
+    fn r15a_stacked_cancellations_spend_the_whole_run() {
+        // Round 15 (R15-3, red team RT15-3): the
+        // spent-trailing exception covered only the
+        // clause immediately after a date, so a
+        // second cancellation phrase between the
+        // dates read unspent and governed the
+        // replacement — both dates vanished. The
+        // exception now covers a RUN of consecutive
+        // cancellation-only clauses: the whole run
+        // spends on the first date, the second
+        // asserts. Every lane construction is a
+        // witness, the "scratch that" variant
+        // included.
+        for group in [
+            "(November 1, cancelled, cancelled, November 8)",
+            "(November 1, postponed, postponed, November 8)",
+            "(November 1, cancelled, drop it, November 8)",
+            "(November 1, drop it, drop it, November 8)",
+            "(November 1, postponed, drop it, November 8)",
+            "(November 1, postponed, drop it, the date, November 8)",
+            "(November 1, cancelled, the date, drop it, November 8)",
+            "(November 1, postponed, scratch that, November 8)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(8)),
+                "{group}: the replacement asserts on the relative path"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        }
+    }
+
+    #[test]
+    fn r15a_of_joins_the_filler_reach_back() {
+        // Round 15 (RT15-5): the filler reach-back
+        // stopped at "of" — a filler clause carrying
+        // it read as content and armed the governed
+        // date. "of" is filler now, and a genitive
+        // fragment of the date phrase ("the date of
+        // the service") counts as filler too: it
+        // names the date's occasion, not content.
+        for group in [
+            "(ignore, the date of, November 1)",
+            "(ignore, the date of the service, November 1)",
+            "(ignore, the date of November 1)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: the reach-back crosses it"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: paren-only");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through");
+        }
+        // Content-clause control stands: a clause
+        // with real content of its own still stops
+        // the reach-back.
+        let text = "For Sunday: (ignore, the date, choir, November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "a content clause still stops the reach-back"
+        );
+    }
+
+    #[test]
+    fn r15a_trailing_scope_and_the_named_governed_date() {
+        // Round 15 (R15-6, red team RT15-6): one
+        // clause-scope rule for the trailing reach.
+        // (a) A trailing phrase governs the date it
+        // follows only when every clause between
+        // the date and the phrase is itself a
+        // cancellation or filler clause — a content
+        // clause breaks the reach, and the date
+        // contributes.
+        let group = "(November 1, choir practice, ignore)";
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{group}: the content clause breaks the trailing reach"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+        // The in-scope twins still govern: the
+        // phrase in the date's own clause, and the
+        // phrase behind nothing but filler.
+        for group in ["(November 1, ignore)", "(November 1, the date, ignore)"] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: still governs");
+        }
+        // (b) A trailing phrase governs the date it
+        // follows, and that date is still NAMED on
+        // the second-date note — governed, but
+        // named like any distinct date the line
+        // named, never silently dropped.
+        for (group, read, named) in [
+            ("(November 1, November 8, drop it)", nov(1), nov(8)),
+            ("(November 1, November 8, cancelled)", nov(1), nov(8)),
+            (
+                "(November 8, November 1, postponed, drop it)",
+                nov(8),
+                nov(1),
+            ),
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(read), "{group}: the first date stands");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![named],
+                "{group}: the governed date is named on the note"
+            );
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(read),
+                "{group}: relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![named],
+                "{group}: named on the relative path too"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(read), "{group}: keep-through");
+            assert_eq!(
+                c.keep_through_second_dates,
+                vec![named],
+                "{group}: named on the keep-through note"
+            );
+        }
     }
 
     #[test]

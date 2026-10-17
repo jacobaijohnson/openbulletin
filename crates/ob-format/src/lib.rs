@@ -4666,21 +4666,38 @@ mod tests {
                 err, "that file has no bulletin inside it (no document.json)",
                 "{tag} candidates: the refusal is the control's"
             );
-            // The timing pin, with margins wide enough
-            // for a contended machine: before the fix
-            // this shape cost ≈0.33 s PER CANDIDATE —
-            // the 300-candidate file took 100.5 s on
-            // the red team's machine and the 2,900 one
-            // did not finish in 100 s. The budget is
-            // `shared_directory_budget` (FLAGGED,
-            // round 12 R12-8: the old control-multiple
-            // budget failed under contention alone;
-            // the outcome assertions are unchanged).
-            let budget = shared_directory_budget(control_elapsed, candidates);
+            // The timing assertion is a HANG GUARD
+            // now (FLAGGED, round 13 R13-8, by
+            // disposition): a 300 s cap whose only
+            // job is catching a hung or runaway load.
+            // Before the round-10 fix this shape cost
+            // ≈0.33 s PER CANDIDATE — the 300-candidate
+            // file took 100.5 s on the red team's
+            // machine and the 2,900 one did not finish
+            // in 100 s — so a true multiplication is
+            // still caught, at these counts, well
+            // under the cap on an uncontended machine;
+            // what the cap no longer tries to do is
+            // grade the load's time class. The
+            // contention measurements across rounds
+            // 12–13 are why: this pin's phases measured
+            // 23–90 s at machine loads 8–13.5 with
+            // every outcome assertion passing, and
+            // BOTH previous budget formulas failed
+            // under contention alone — first the
+            // control ×20 multiple, then the round-12
+            // formula (control + 15 ms × candidates).
+            // The outcome assertions above and the
+            // one-candidate structural assertion are
+            // unchanged and primary; they, plus the
+            // r11/r12b timing pins at smaller counts
+            // (which keep `shared_directory_budget`),
+            // guard per-candidate multiplication.
+            let budget = std::time::Duration::from_secs(300);
             assert!(
                 elapsed < budget,
-                "{tag} candidates: {elapsed:?} must land in the control's \
-                 time class (control {control_elapsed:?}, budget {budget:?})"
+                "{tag} candidates: {elapsed:?} must finish within the hang \
+                 guard {budget:?} (control {control_elapsed:?})"
             );
             if candidates == 300 {
                 // The sheet door shares the enumeration.
@@ -4710,10 +4727,13 @@ mod tests {
             err.contains("checksum"),
             "the first candidate's error stands: {err}"
         );
-        let budget = shared_directory_budget(control_elapsed, 300);
+        // The same hang guard as the loop above
+        // (round 13, R13-8): 300 s, catching a hung
+        // or runaway load only.
+        let budget = std::time::Duration::from_secs(300);
         assert!(
             elapsed < budget,
-            "bad-document 300: {elapsed:?} within budget {budget:?}"
+            "bad-document 300: {elapsed:?} within the hang guard {budget:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

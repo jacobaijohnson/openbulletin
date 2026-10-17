@@ -3086,8 +3086,12 @@ pub struct ServingLineMigration {
     /// Pairings and removals the migration did not
     /// follow because the old name was already spent
     /// by an earlier pairing (round 12, R12-11), in
-    /// the order the pairing computed them. Empty
-    /// when every pairing and removal was followed.
+    /// segment order — the order the office wrote
+    /// them (round 13, R13-7b). A later pairing to
+    /// the SAME target as the kept pairing is not
+    /// recorded at all: its end state is the single
+    /// pairing's (round 13, R13-7a). Empty when
+    /// every pairing and removal was followed.
     pub unfollowed: Vec<ServingLineUnfollowed>,
     /// True when the pairing was ambiguous (renames
     /// crossed anchors): NOTHING was moved, cleared,
@@ -3194,6 +3198,19 @@ pub fn migrate_serving_line_renames_detailed(
             .iter()
             .find(|(spent_name, _)| *spent_name == old_name.as_str())
         {
+            // Round 13 (R13-7a): a later pairing to
+            // the SAME target as the kept pairing is
+            // not an event at all — the end state is
+            // the single pairing's, and naming it as
+            // not followed would be a false alarm
+            // inviting a by-hand correction of names
+            // that are already right. The accounting
+            // is unchanged: the pairing is still not
+            // followed (the name is spent); it is
+            // simply not recorded.
+            if new_name == kept_new_name {
+                continue;
+            }
             // Not followed — but not silent (round
             // 12, R12-11): the detail carries the
             // event, naming the name, the pairing
@@ -3260,6 +3277,77 @@ pub fn migrate_serving_line_renames_detailed(
         if held {
             migration.removed.push(old_name.to_string());
         }
+    }
+    // Round 13 (R13-7b): the unfollowed events are
+    // carried in SEGMENT ORDER — the order the
+    // office wrote them — not pairings-then-
+    // removals. The accounting above is unchanged:
+    // pairings were still followed (and spent)
+    // before removals were judged, exactly as
+    // before; only the order the events are
+    // carried in changes, so the app's status
+    // words them as they were written. Each
+    // event's place is the place of its own item
+    // in the pairing's segment runs, recomputed
+    // here on the filtered runs the pairing
+    // itself paired from; an event no segment
+    // item matches keeps its collected place,
+    // after every matched event.
+    if migration.unfollowed.len() > 1 {
+        let old_all: Vec<String> = old_lines
+            .iter()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .collect();
+        let new_all: Vec<String> = new_lines
+            .iter()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .collect();
+        // The pairing's items in segment order:
+        // (the new name, the old name) for a
+        // pairing, (None, the old name) for a
+        // removal.
+        let mut order_items: Vec<(Option<String>, String)> = Vec::new();
+        for (seg_old_run, seg_new_run) in &pairing.segments {
+            let seg_old: Vec<&String> = seg_old_run
+                .iter()
+                .filter(|n| !new_all.contains(n))
+                .collect();
+            let seg_new: Vec<&String> = seg_new_run
+                .iter()
+                .filter(|n| !old_all.contains(n))
+                .collect();
+            if seg_old.len() == seg_new.len() {
+                for (o, n) in seg_old.iter().zip(seg_new.iter()) {
+                    let item_new = Some((*n).clone());
+                    let item_old = (*o).clone();
+                    order_items.push((item_new, item_old));
+                }
+            } else if seg_new.is_empty() {
+                for o in seg_old {
+                    let item_old = o.clone();
+                    order_items.push((None, item_old));
+                }
+            }
+        }
+        let mut keys: Vec<usize> = Vec::new();
+        for event in &migration.unfollowed {
+            let item = (event.unfollowed_new_name.clone(), event.old_name.clone());
+            let key = order_items
+                .iter()
+                .position(|it| *it == item)
+                .unwrap_or(usize::MAX);
+            keys.push(key);
+        }
+        let mut order: Vec<usize> = (0..migration.unfollowed.len()).collect();
+        order.sort_by_key(|&k| keys[k]);
+        let collected = std::mem::take(&mut migration.unfollowed);
+        let mut reordered: Vec<ServingLineUnfollowed> = Vec::new();
+        for &k in &order {
+            reordered.push(collected[k].clone());
+        }
+        migration.unfollowed = reordered;
     }
     migration
 }
@@ -5773,6 +5861,185 @@ mod tests {
         assert!(!migration.ambiguous);
         assert_eq!(migration.removed, vec!["Gone".to_string()]);
         assert!(migration.unfollowed.is_empty());
+    }
+
+    #[test]
+    fn r13c_same_target_pairings_are_not_unfollowed_events() {
+        // Round 13 (R13-7a, review R13-6 + red team
+        // RT13-6a): a duplicate pairing to the SAME
+        // target produced an unfollowed event whose
+        // sentence was a tautological false alarm —
+        // "'Xray' was paired with 'Yankee' and with
+        // 'Yankee' … the pairing with 'Yankee' was
+        // not followed. Correct the names by hand" —
+        // although the end state is byte-identical
+        // to the single pairing and nothing was
+        // lost. The event is not recorded now; the
+        // accounting (the name is spent once, the
+        // names and the alias stand with the kept
+        // pairing) is unchanged.
+        let lines =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        let old_lines = lines(&["Alpha", "Xray", "Beta", "Xray", "Gamma"]);
+        let new_lines = lines(&["Alpha", "Yankee", "Beta", "Yankee", "Gamma"]);
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        let migration = migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        assert!(migration.removed.is_empty());
+        assert!(
+            migration.unfollowed.is_empty(),
+            "a same-target duplicate pairing carries no unfollowed event"
+        );
+        assert_eq!(participants.get("yankee").map(String::as_str), Some("Ann"));
+        assert_eq!(aliases.get("xray").map(String::as_str), Some("yankee"));
+        // A triple pairing — Yankee, Zulu, Yankee —
+        // carries only the real Zulu event; the
+        // same-target repeat beside it does not
+        // dilute it with a false alarm.
+        let old_lines = lines(&["Alpha", "Xray", "Beta", "Xray", "Gamma", "Xray", "Delta"]);
+        let new_lines = lines(&[
+            "Alpha", "Yankee", "Beta", "Zulu", "Gamma", "Yankee", "Delta",
+        ]);
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        let migration = migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        let noted_old_name = "Xray".to_string();
+        let noted_kept_new_name = "Yankee".to_string();
+        let noted_unfollowed_new_name = Some("Zulu".to_string());
+        let expected = ServingLineUnfollowed {
+            old_name: noted_old_name,
+            kept_new_name: noted_kept_new_name,
+            unfollowed_new_name: noted_unfollowed_new_name,
+        };
+        assert_eq!(migration.unfollowed, vec![expected]);
+        assert_eq!(participants.get("yankee").map(String::as_str), Some("Ann"));
+        assert!(!participants.contains_key("zulu"));
+        // A different target still notes, as R12-C
+        // pinned, and an unfollowed REMOVAL is
+        // unaffected: a removal is never the same
+        // event as the kept pairing, even when the
+        // same name's duplicate pairing to its kept
+        // target stands in the same edit. (Covered
+        // by the segment-order pin below, whose
+        // first construction carries a removal.)
+        let new_lines = lines(&["Alpha", "Yankee", "Beta", "Zulu", "Gamma"]);
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        let migration = migrate_serving_line_renames_detailed(
+            &lines(&["Alpha", "Xray", "Beta", "Xray", "Gamma"]),
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert_eq!(migration.unfollowed.len(), 1);
+        assert_eq!(
+            migration.unfollowed[0].unfollowed_new_name.as_deref(),
+            Some("Zulu")
+        );
+    }
+
+    #[test]
+    fn r13c_unfollowed_events_are_carried_in_segment_order() {
+        // Round 13 (R13-7b, red team RT13-6b):
+        // unfollowed events were collected
+        // pairings-then-removals, so in a
+        // pair/removal/pair edit the status named
+        // the later pairing before the removal that
+        // precedes it in the edit. The events are
+        // carried in segment order now — the order
+        // the office wrote them — with the
+        // accounting unchanged.
+        let lines =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        // Pair, removal, pair: Xray pairs to Yankee
+        // (kept), stands removal-only in the next
+        // segment, then pairs to Zulu.
+        let old_lines = lines(&["A0", "Xray", "A1", "Xray", "A2", "Xray", "A3"]);
+        let new_lines = lines(&["A0", "Yankee", "A1", "A2", "Zulu", "A3"]);
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        let migration = migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        assert!(migration.removed.is_empty());
+        assert_eq!(participants.get("yankee").map(String::as_str), Some("Ann"));
+        assert_eq!(aliases.get("xray").map(String::as_str), Some("yankee"));
+        let removal_old = "Xray".to_string();
+        let removal_kept = "Yankee".to_string();
+        let expected_removal = ServingLineUnfollowed {
+            old_name: removal_old,
+            kept_new_name: removal_kept,
+            unfollowed_new_name: None,
+        };
+        let pairing_old = "Xray".to_string();
+        let pairing_kept = "Yankee".to_string();
+        let pairing_unfollowed = Some("Zulu".to_string());
+        let expected_pairing = ServingLineUnfollowed {
+            old_name: pairing_old,
+            kept_new_name: pairing_kept,
+            unfollowed_new_name: pairing_unfollowed,
+        };
+        assert_eq!(
+            migration.unfollowed,
+            vec![expected_removal, expected_pairing],
+            "the removal was written before the Zulu pairing, and is carried first"
+        );
+        // Two names interleaved: a removal of Xray
+        // in segment two precedes an unfollowed
+        // pairing of Yoke in segment four, and the
+        // carried order follows the segments, not
+        // the kinds.
+        let old_lines = lines(&["A0", "Xray", "A1", "Xray", "A2", "Yoke", "A3", "Yoke", "A4"]);
+        let new_lines = lines(&["A0", "Yankee", "A1", "A2", "Zed", "A3", "Whiskey", "A4"]);
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        participants.insert("yoke".to_string(), "Yolanda".to_string());
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        let migration = migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        assert_eq!(participants.get("yankee").map(String::as_str), Some("Ann"));
+        assert_eq!(participants.get("zed").map(String::as_str), Some("Yolanda"));
+        let first_old = "Xray".to_string();
+        let first_kept = "Yankee".to_string();
+        let expected_first = ServingLineUnfollowed {
+            old_name: first_old,
+            kept_new_name: first_kept,
+            unfollowed_new_name: None,
+        };
+        let second_old = "Yoke".to_string();
+        let second_kept = "Zed".to_string();
+        let second_unfollowed = Some("Whiskey".to_string());
+        let expected_second = ServingLineUnfollowed {
+            old_name: second_old,
+            kept_new_name: second_kept,
+            unfollowed_new_name: second_unfollowed,
+        };
+        assert_eq!(migration.unfollowed, vec![expected_first, expected_second]);
     }
 
     #[test]

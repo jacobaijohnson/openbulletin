@@ -1895,6 +1895,24 @@ fn sunday_after_phrase_run(
     Some((base, i + 2 + offset + used))
 }
 
+/// The Sunday a bare relative phrase names,
+/// resolved against `today` — the only anchor a
+/// plain line carries at parse time (round 13,
+/// R13-5): "this Sunday" and a bare "Sunday" name
+/// the coming Sunday (today itself when today is
+/// one), and "next Sunday" names the Sunday after
+/// it — the reading under which "this" and "next"
+/// name different days, as the sender's words do.
+fn relative_sunday_date(next: bool, today: SimpleDate) -> SimpleDate {
+    let until_sunday = (7 - today.weekday()) % 7;
+    let coming = add_days(today, until_sunday);
+    if next {
+        add_days(coming, 7)
+    } else {
+        coming
+    }
+}
+
 /// A plain line naming two or more framed dates
 /// and reading in no other way (round 12, R12-6):
 /// "October 25, 2026 and November 1, 2026" used to
@@ -1907,31 +1925,177 @@ fn sunday_after_phrase_run(
 /// as that date plainly, with nothing noted. A line
 /// naming fewer than two date runs is not this
 /// shape and keeps its standing readings.
+///
+/// Round 13 (R13-5): the reading covers MIXED
+/// signals — a framed date and a relative phrase
+/// ("next Sunday", "this Sunday", a bare "Sunday",
+/// "the Sunday after next Sunday", or a Sunday-
+/// after phrase, whose resolution the second-date
+/// scan already computes) in either order. The
+/// FIRST signal is the line's date, the standing
+/// primacy: a first framed date reads as itself,
+/// and a first relative phrase reads as its
+/// resolution against `today`. Every other
+/// distinct signal date joins the second-date
+/// note — a relative phrase's resolution named as
+/// a second date, or a framed date named beside
+/// the resolution. The same signal twice — the
+/// framed date restated, a relative phrase whose
+/// resolution IS the framed date, or the same
+/// relative phrase twice — reads plainly, with
+/// nothing noted, as the framed twin already
+/// does. A line whose only signals are relative
+/// phrases naming DIFFERENT Sundays is not this
+/// shape: a bare relative line keeps its standing
+/// in-words reading, anchored on the bulletin.
 fn plain_multi_date_reading(
     core: &str,
     today: SimpleDate,
     alternatives: &[SimpleDate],
 ) -> Option<DateLineReading> {
+    fn clean(t: &str) -> String {
+        t.trim_matches(['(', ')', '[', ']', ',', '.', ';'])
+            .to_ascii_lowercase()
+    }
     let tokens: Vec<&str> = core.split_whitespace().collect();
-    let mut runs: Vec<SimpleDate> = Vec::new();
+    let cleaned: Vec<String> = tokens.iter().map(|t| clean(t)).collect();
+    // Every signal in the line, in written order:
+    // a date, and whether it stood framed (an
+    // absolute date as written) or relative (a
+    // phrase, carried here by its resolution).
+    struct Signal {
+        date: SimpleDate,
+        framed: bool,
+    }
+    let mut signals: Vec<Signal> = Vec::new();
+    // The token index just past the last signal,
+    // and whether that signal was a framed Sunday:
+    // a bare "Sunday" standing directly after a
+    // framed Sunday date is that date's trailing
+    // weekday garnish, not a second signal.
+    let mut last_end = 0usize;
+    let mut last_framed_sunday = false;
     let mut i = 0;
     while i < tokens.len() {
+        // A Sunday-after phrase consumes its run
+        // first, as the second-date scan has it:
+        // its base is never a separate signal.
+        if cleaned[i] == "sunday" && cleaned.get(i + 1).map(String::as_str) == Some("after") {
+            // "Sunday after next/this Sunday", the
+            // relative base wearing an optional
+            // "the": the resolution is the first
+            // Sunday strictly after the relative
+            // base's own resolution.
+            let (which_at, used) = if cleaned.get(i + 2).map(String::as_str) == Some("the") {
+                (i + 3, 5)
+            } else {
+                (i + 2, 4)
+            };
+            let which = cleaned.get(which_at).map(String::as_str);
+            let base_day = cleaned.get(which_at + 1).map(String::as_str);
+            if (which == Some("next") || which == Some("this")) && base_day == Some("sunday") {
+                let base = relative_sunday_date(which == Some("next"), today);
+                let date = first_sunday_after(base);
+                signals.push(Signal {
+                    date,
+                    framed: false,
+                });
+                last_end = i + used;
+                last_framed_sunday = false;
+                i += used;
+                continue;
+            }
+            if let Some((base, end)) = sunday_after_phrase_run(&tokens, &cleaned, i, today) {
+                let date = first_sunday_after(base);
+                signals.push(Signal {
+                    date,
+                    framed: false,
+                });
+                last_end = end.max(i + 1);
+                last_framed_sunday = false;
+                i = end.max(i + 1);
+                continue;
+            }
+        }
+        // A bare relative phrase: "next Sunday" /
+        // "this Sunday" (a framed date cannot stand
+        // at "next"/"this", so no order is lost).
+        if (cleaned[i] == "next" || cleaned[i] == "this")
+            && cleaned.get(i + 1).map(String::as_str) == Some("sunday")
+        {
+            let date = relative_sunday_date(cleaned[i] == "next", today);
+            signals.push(Signal {
+                date,
+                framed: false,
+            });
+            last_end = i + 2;
+            last_framed_sunday = false;
+            i += 2;
+            continue;
+        }
         match parse_date_prefix(&tokens[i..], today) {
             Some((d, used)) => {
-                runs.push(d);
+                signals.push(Signal {
+                    date: d,
+                    framed: true,
+                });
+                last_end = i + used.max(1);
+                last_framed_sunday = d.weekday() == 0;
                 i += used.max(1);
             }
-            None => i += 1,
+            None => {
+                // A bare "Sunday" the framed reader
+                // did not take (it framed no date
+                // here) is a relative signal naming
+                // the coming Sunday — unless it
+                // stands directly after a framed
+                // Sunday date, whose trailing
+                // weekday garnish it is.
+                if cleaned[i] == "sunday" && !(i == last_end && last_framed_sunday) {
+                    let date = relative_sunday_date(false, today);
+                    signals.push(Signal {
+                        date,
+                        framed: false,
+                    });
+                    last_end = i + 1;
+                    last_framed_sunday = false;
+                }
+                i += 1;
+            }
         }
     }
-    if runs.len() < 2 {
+    if signals.len() < 2 {
         return None;
     }
-    let read = runs[0];
+    let framed_count = signals.iter().filter(|s| s.framed).count();
+    if framed_count == 0 {
+        // No framed signal: only the restated
+        // relative phrase — every signal resolving
+        // to one date — reads, and it reads
+        // plainly. Differing relative phrases keep
+        // the standing readings.
+        let read = signals[0].date;
+        if signals.iter().any(|s| s.date != read) {
+            return None;
+        }
+        let mut second_dates: Vec<SimpleDate> = Vec::new();
+        for d in alternatives {
+            if *d != read && !second_dates.contains(d) {
+                second_dates.push(*d);
+            }
+        }
+        return Some(DateLineReading {
+            date: Some(read),
+            weekday_mismatch: None,
+            parenthesized_mismatch: None,
+            second_dates,
+        });
+    }
+    let read = signals[0].date;
     let mut second_dates: Vec<SimpleDate> = Vec::new();
-    for d in &runs[1..] {
-        if *d != read && !second_dates.contains(d) {
-            second_dates.push(*d);
+    for s in &signals[1..] {
+        if s.date != read && !second_dates.contains(&s.date) {
+            second_dates.push(s.date);
         }
     }
     for d in alternatives {
@@ -5492,6 +5656,132 @@ Youth group meets Wednesday at 6 PM.
         let text = "For Sunday: October 25, 2026 please\n\n## Announcement\n\nHi.\n";
         let c = parse_contribution(text, today()).expect("parses");
         assert_eq!(c.for_date, None, "a single passing date is not this shape");
+    }
+
+    #[test]
+    fn r13c_mixed_plain_signals_read_the_first_and_note_the_other() {
+        // Round 13 (R13-5, red team RT13-4): "October
+        // 25, 2026 and next Sunday" read NoSundayNamed
+        // with nothing noted — the R12-6 plain
+        // multi-date reading covered framed + framed
+        // only. The mixed reading stands now: the
+        // FIRST signal is the line's date, the other
+        // is noted through the second-date machinery.
+        // Today is Friday, October 16, 2026, so
+        // "this Sunday" resolves to October 18 and
+        // "next Sunday" to October 25 — the Sundays
+        // the lane fixtures name.
+        // Framed first: the framed date reads, and
+        // the relative phrase's resolution is noted
+        // as a second date.
+        let text = "For Sunday: November 1, 2026 and next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "the first signal reads");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(25)],
+            "next Sunday resolves to October 25 against today, and is noted"
+        );
+        assert_eq!(
+            second_dates_sentence(&c.for_sunday_second_dates),
+            "This file named another date too: Sunday, October 25, 2026. \
+             Check which date was meant."
+        );
+        assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::DifferentSunday(nov(1)),
+            "armed — words meant for November 1 no longer land silently"
+        );
+        let text = "For Sunday: October 25, 2026 and this Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18)],
+            "this Sunday resolves to October 18, the coming Sunday"
+        );
+        // Relative first: the resolution reads, and
+        // the framed date is named beside it as the
+        // second date.
+        let text = "For Sunday: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(oct(25)),
+            "the first signal — the relative phrase — reads by its resolution"
+        );
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::DifferentSunday(oct(25))
+        );
+        let text = "For Sunday: this Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(18)));
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+        // A Sunday-after relative phrase is a
+        // relative signal too, in either order: its
+        // resolution (the Sunday after next Sunday,
+        // November 1) is the signal's date.
+        let text =
+            "For Sunday: October 25, 2026 and the Sunday after next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+        let text =
+            "For Sunday: the Sunday after next Sunday and October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)));
+        assert_eq!(c.for_sunday_second_dates, vec![oct(25)]);
+        // The same signal twice reads plainly, as
+        // the framed twin already does: a relative
+        // phrase whose resolution IS the framed date
+        // restates it, in either order, and the same
+        // relative phrase twice is one signal.
+        for line in [
+            "October 25, 2026 and next Sunday",
+            "next Sunday and October 25, 2026",
+            "October 25, 2026 and next Sunday and next Sunday",
+            "next Sunday and next Sunday",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(oct(25)), "{line}: reads plainly");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: nothing is noted — the signals agree"
+            );
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::SameSunday,
+                "{line}"
+            );
+        }
+        // The Keep-through mirror shares the rule.
+        let text = "Keep-through: November 1, 2026 and next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)));
+        assert_eq!(c.keep_through_second_dates, vec![oct(25)]);
+        let text = "Keep-through: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(oct(25)));
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+        // Held lines stand: a bare relative line
+        // keeps its in-words reading (no date is read
+        // from the words alone), and differing
+        // relative phrases with no framed signal are
+        // not this shape either.
+        let text = "For Sunday: next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, None);
+        assert_eq!(c.for_sunday_in_words.as_deref(), Some("next Sunday"));
+        let text = "For Sunday: this Sunday and next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
     }
 
     #[test]

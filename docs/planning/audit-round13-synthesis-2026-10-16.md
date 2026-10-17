@@ -312,4 +312,95 @@ FORMAT.md wording corrections named below.
 
 ## Shipped addendum, R13-C
 
-_(appended by the R13-C builder with real numbers and flagged pin changes)_
+Shipped 2026-10-17 on top of `ac08ea2`. **685 tests passing / 0 failed**
+(full unpiped `cargo test --workspace`, cargo exit 0; baseline 681),
+**clippy clean** (`cargo clippy --workspace --all-targets -- -D warnings`,
+exit 0). Changes in `crates/ob-extract/src/contribution.rs` (R13-5),
+`crates/ob-model/src/lib.rs` and `crates/ob-app/src/main.rs` (R13-7),
+and `crates/ob-format/src/lib.rs` (R13-8, test-only).
+
+- **R13-5.** `plain_multi_date_reading` now scans a plain line for
+  SIGNALS in written order — a framed date, or a relative phrase
+  carried by its resolution — instead of framed runs only. A relative
+  phrase resolves against `today`, the only anchor a plain line
+  carries at parse time, under the reading in which "this" and
+  "next" name different days: "this Sunday" and a bare "Sunday" name
+  the coming Sunday (October 18 at the fixtures' today, Friday
+  October 16, 2026), "next Sunday" the Sunday after it (October 25),
+  a Sunday-after phrase its standing first-Sunday-after resolution,
+  its base consumed as the second-date scan already consumes it.
+  The FIRST signal is the line's date (standing first-date primacy,
+  either order); every other distinct signal date joins the
+  second-date note through the existing machinery — a relative
+  phrase's resolution named as a second date, or a framed date named
+  beside the resolution. The same signal twice reads plainly with
+  nothing noted: the framed date restated, a relative phrase whose
+  resolution IS the framed date (in either order), or the same
+  relative phrase twice. A bare "Sunday" standing directly after a
+  framed Sunday date is that date's trailing weekday garnish, not a
+  second signal. Lines whose only signals are relative phrases
+  naming different Sundays are not this shape: a bare relative line
+  keeps its standing in-words reading, anchored on the bulletin, and
+  differing relatives with no framed signal still read
+  NoSundayNamed. The Keep-through line shares the reading, as it
+  shares R12-6.
+- **R13-7.** (a) In `migrate_serving_line_renames_detailed`, a later
+  pairing whose target equals the kept pairing's target is still not
+  followed (the name is spent; the accounting is unchanged) but is
+  NOT recorded as an unfollowed event — the end state is the single
+  pairing's, and the shipped sentence was a false alarm. An
+  unfollowed removal is unaffected: a removal is never the same
+  event as the kept pairing. (b) The collected events are reordered
+  into SEGMENT ORDER before the migration returns: each event takes
+  the place of its own item in the pairing's segment runs
+  (recomputed on the filtered runs the pairing paired from), an
+  event no segment item matches keeps its collected place after
+  every matched event, and the app's sentence — which words the
+  events in carried order — now speaks them as the office wrote
+  them. The migration accounting is unchanged: pairings are still
+  followed (and spent) before removals are judged, exactly as
+  before; only the event recording and the carried order changed.
+- **R13-8 (test-only, FLAGGED as by-disposition).** The r10
+  shared-directory pin's two wall-clock budget computations are now
+  a single hang guard, `Duration::from_secs(300)`, whose only job is
+  catching a hung or runaway load; the assertion messages say so.
+  The reason is recorded in a comment at the budget site: the
+  contention measurements (23–90 s at machine loads 8–13.5 across
+  rounds 12–13, outcomes always passing) and that both previous
+  formulas — the control ×20 multiple, then control + 15 ms ×
+  candidates — failed under contention alone. The pin's name and
+  structure are unchanged; its outcome assertions and its
+  one-candidate structural assertion are unchanged and primary, and
+  the r12b timing pins in the same crate keep
+  `shared_directory_budget` and their time-class budgets, so
+  per-candidate multiplication remains guarded there and by the
+  structural assertion here. The pin passes with the hang guard
+  (11.75 s solo in this run; its outcome assertions untouched).
+- **Pins.** Four new `r13c_*` pins: in ob-extract (174 → 175)
+  `r13c_mixed_plain_signals_read_the_first_and_note_the_other`
+  (framed-first and relative-first in both directions, a
+  Sunday-after relative phrase in both orders, the restated-signal
+  cases reading plainly, the Keep-through mirror, and the held
+  bare-relative and differing-relatives lines); in ob-model
+  (112 → 114) `r13c_same_target_pairings_are_not_unfollowed_events`
+  (same-target duplicate carries no event and no note, the
+  participants and alias standing exactly as the single pairing's;
+  a Yankee/Zulu/Yankee triple carries only the real Zulu event; a
+  different target still notes) and
+  `r13c_unfollowed_events_are_carried_in_segment_order`
+  (pair/removal/pair and a two-name interleaving, carried in
+  segment order with the accounting standing); in ob-app
+  (173 → 174) `r13c_same_target_pairings_speak_no_note_and_events_follow_segment_order`
+  (the status sentence is empty for the same-target duplicate, and
+  the pair/removal/pair wording names the removal before the Zulu
+  pairing). The R12-C pins pass with their original expectations in
+  both crates. The r10 pin is counted under R13-8 above, not here:
+  ob-format stays at 55 pins, its only change the flagged budget.
+- **Pre-existing test changes: one, flagged.** The r10
+  shared-directory pin's budget computations, assertion messages,
+  and timing comment (R13-8, by disposition, FLAGGED in the pin's
+  body) — its outcome and structural assertions are untouched. No
+  other pre-existing test line is removed or altered; the diff's
+  other removed lines are the production code this batch rewrote
+  (`plain_multi_date_reading`'s framed-run scan, the pairs loop's
+  event recording in the migration) and their comments.

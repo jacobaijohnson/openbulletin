@@ -19579,6 +19579,66 @@ mod settings_tests {
     }
 
     #[test]
+    fn r13c_same_target_pairings_speak_no_note_and_events_follow_segment_order() {
+        // Round 13 (R13-7, review R13-6 + red team
+        // RT13-6): the same-target duplicate pairing
+        // spoke a tautological false alarm ("paired
+        // with 'Yankee' and with 'Yankee' … Correct
+        // the names by hand if they belong under
+        // 'Yankee'") about names that are already
+        // right, and multiple unfollowed events
+        // printed pairings-then-removals rather
+        // than in the order the office wrote them.
+        let lines =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        // Same target twice: no event, no note.
+        let old_lines = lines(&["Alpha", "Xray", "Beta", "Xray", "Gamma"]);
+        let new_lines = lines(&["Alpha", "Yankee", "Beta", "Yankee", "Gamma"]);
+        let mut participants: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        assert!(migration.unfollowed.is_empty());
+        assert_eq!(unfollowed_serving_lines_sentence(&migration.unfollowed), "");
+        assert_eq!(participants.get("yankee").map(String::as_str), Some("Ann"));
+        // Pair, removal, pair: the removal was
+        // written before the Zulu pairing, and the
+        // status words it first.
+        let old_lines = lines(&["A0", "Xray", "A1", "Xray", "A2", "Xray", "A3"]);
+        let new_lines = lines(&["A0", "Yankee", "A1", "A2", "Zulu", "A3"]);
+        let mut participants: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        assert_eq!(
+            unfollowed_serving_lines_sentence(&migration.unfollowed),
+            "'Xray' was paired with 'Yankee' and was also removed: the \
+             names went to 'Yankee', and the removal was not followed. \
+             Correct the names by hand if they do not belong under \
+             'Yankee'. 'Xray' was paired with 'Yankee' and with 'Zulu': \
+             the names went to 'Yankee', and the pairing with 'Zulu' was \
+             not followed. Correct the names by hand if they belong \
+             under 'Zulu'."
+        );
+    }
+
+    #[test]
     fn ambiguous_and_refused_serving_lines_are_named_in_the_status_words() {
         // Round 5, F3 + RT5-4, words changed in round
         // 6 (R6-C): the profile save's words, pinned

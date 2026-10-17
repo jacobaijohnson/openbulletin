@@ -722,3 +722,21 @@ crossed renames {renamed, moved}), and
 (the pair-plus-removal shape, the double-pairing shape,
 and the duplicate-new-name shape, asserting participants
 and aliases together in each).
+
+## Coordinator close (2026-10-17)
+
+All five batches shipped and were independently re-verified by the
+coordinator (full unpiped suite + clippy -D warnings at each step): R11-0
+`18c445e` + `379feff` + addendum `d7a7b94` (651 tests; CI run 39038915426
+green on ubuntu/windows/macos — the three-OS bar is now the standing
+acceptance for platform work, and its one in-batch scope call, gating
+dead-on-Windows test imports in helper.rs, is accepted: test code only,
+unmasked by the first fix, required by the batch's own acceptance, flagged
+in its commit and addendum), R11-A `ff36206` (653 tests; permission
+divergences 2,034 → 0 over the widened pool; credit one-sided loss
+eliminated; zero changed pins), R11-B `0a719d6` (656 tests; declared-varied
+fixtures ~45× → ~3× of control; every dead-zone row loads; zero changed
+pins), R11-C `995890b` (660 tests; one flagged pin change — the pin had
+asserted the R11-6 poisoning itself), R11-D `e736bbb` (662 tests; zero
+changed pins). Round 12 audits these fixes. The Tier-2 final gate runs only
+after a round returns zero BLOCKER + zero MAJOR.

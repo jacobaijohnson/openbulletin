@@ -247,18 +247,39 @@ fn count_directory_records(
 /// the format's own search would find.
 const TAIL_WINDOW: u64 = 65_535 + 22 + 20 + 56;
 
+/// The directory one candidate resolves to, named
+/// by the parts that decide what opening it would
+/// read: the resolved directory start (None when no
+/// central header stands in its window), the offset
+/// the directory ends at, the zip64 record it
+/// resolves through where one stands, and — only
+/// when no directory start resolved, where the
+/// declared total is all that separates an honestly
+/// empty candidate from an unwalkable one — that
+/// total. Two candidates carrying the same key read
+/// the same directory, so the second is a repeat,
+/// not another directory (round 10, R10-1).
+type DirKey = (Option<u64>, u64, Option<u64>, u64);
+
 /// Every end-record candidate in a file whose
 /// directory can be walked, latest first, as
-/// (candidate position, raw entry count) pairs.
-/// Candidates are collected by ONE scan of the tail
-/// window; every candidate's directory start (and
-/// any zip64 record position its locator names) is
-/// resolved in one shared pass per signature over
-/// the region those windows span (round 9, R9-2);
-/// the per-candidate directory walks then run as
-/// they always have, each stopping just past `cap`.
-fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize)> {
-    let mut out: Vec<(u64, usize)> = Vec::new();
+/// (candidate position, raw entry count, resolved
+/// directory) triples. Candidates are collected by
+/// ONE scan of the tail window; every candidate's
+/// directory start (and any zip64 record position
+/// its locator names) is resolved in one shared
+/// pass per signature over the region those
+/// windows span (round 9, R9-2); the per-candidate
+/// directory walks then run as they always have,
+/// each stopping just past `cap` — except that a
+/// directory is walked at most once, however many
+/// candidates resolve to it (round 10, R10-1):
+/// appended candidates can all point at one shared
+/// directory just under the cap, and walking it per
+/// candidate multiplied the whole walk by the
+/// candidate count.
+fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
+    let mut out: Vec<(u64, usize, DirKey)> = Vec::new();
     let Ok(mut file) = std::fs::File::open(path) else {
         return out;
     };
@@ -373,6 +394,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize)> {
         dir_end: u64,
         declared_total: u64,
         cd_query: Option<usize>,
+        zip64_at: Option<u64>,
     }
     let mut windows: Vec<Windowed> = Vec::new();
     let mut cd_queries: Vec<FirstHit> = Vec::new();
@@ -380,6 +402,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize)> {
         let mut dir_end = cand.at;
         let mut declared_offset = u64::from(cand.cd_offset32);
         let mut declared_total = u64::from(cand.total16);
+        let mut zip64_at = None;
         if let (Some(qi), Some(_)) = (cand.zip64_query, cand.locator_at) {
             if let Some(record_at) = queries[qi].answer {
                 let mut record = [0u8; 56];
@@ -387,6 +410,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize)> {
                     && record.starts_with(b"PK\x06\x06")
                 {
                     dir_end = record_at;
+                    zip64_at = Some(record_at);
                     declared_total =
                         u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
                     declared_offset =
@@ -411,14 +435,35 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize)> {
             dir_end,
             declared_total,
             cd_query,
+            zip64_at,
         });
     }
     if !cd_queries.is_empty() {
         resolve_first_hits(&mut file, &mut cd_queries);
     }
-    // Stage 3: walk each candidate's directory.
+    // Stage 3: walk each DISTINCT directory once.
+    // Candidates that resolve to a directory already
+    // walked are repeats of it (round 10, R10-1) and
+    // are not walked, counted, or returned again:
+    // the loaders below open each returned candidate,
+    // so a repeat returned here would be opened again
+    // there too.
+    let mut seen: HashSet<DirKey> = HashSet::new();
     for win in &windows {
         let cd_start = win.cd_query.and_then(|qi| cd_queries[qi].answer);
+        let key: DirKey = (
+            cd_start,
+            win.dir_end,
+            win.zip64_at,
+            if cd_start.is_none() {
+                win.declared_total
+            } else {
+                0
+            },
+        );
+        if !seen.insert(key) {
+            continue;
+        }
         let count = match cd_start {
             Some(cd_start) => count_directory_records(&mut file, cd_start, win.dir_end, cap),
             None => {
@@ -434,7 +479,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize)> {
             }
         };
         if let Some(count) = count {
-            out.push((win.at, count));
+            out.push((win.at, count, key));
         }
     }
     out
@@ -498,7 +543,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize)> {
 /// opening take minutes on a 1 MB file.
 fn raw_entry_count(path: &Path, cap: usize) -> Option<usize> {
     let mut first_count: Option<usize> = None;
-    for (_, count) in directory_candidates(path, cap) {
+    for (_, count, _) in directory_candidates(path, cap) {
         if count > cap {
             return Some(count);
         }
@@ -541,6 +586,140 @@ fn end_record_positions_in(bytes: &[u8]) -> Vec<usize> {
     out
 }
 
+/// The directory description one end-record
+/// candidate in `bytes` carries, in its own
+/// declared fields: the total, size, and offset of
+/// its end record, plus the zip64 record position
+/// its locator names where the plain fields are
+/// sentinels. The loaders' fallback enumerates
+/// candidates over the whole file's bytes, where a
+/// file body can carry tens of thousands of
+/// end-record signatures, so this key is read
+/// straight off the candidate in O(1) — never by
+/// scanning for the directory it resolves to.
+/// Candidates carrying identical declared fields
+/// present the same directory description to the
+/// reader, so trying the first of them tries them
+/// all (round 10, R10-1).
+type DeclaredKey = (u16, u32, u32, Option<u64>);
+
+/// The declared-fields key of the candidate at
+/// `at` in `bytes`; None when `at` does not stand
+/// on an end record.
+fn candidate_declared_key_in(bytes: &[u8], at: usize) -> Option<DeclaredKey> {
+    if at + 22 > bytes.len() || !bytes[at..].starts_with(b"PK\x05\x06") {
+        return None;
+    }
+    let total16 = u16::from_le_bytes([bytes[at + 10], bytes[at + 11]]);
+    let cd_size32 = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().ok()?);
+    let cd_offset32 = u32::from_le_bytes(bytes[at + 16..at + 20].try_into().ok()?);
+    let mut zip64_declared = None;
+    if (total16 == u16::MAX || cd_size32 == u32::MAX || cd_offset32 == u32::MAX) && at >= 20 {
+        let locator = &bytes[at - 20..at];
+        if locator.starts_with(b"PK\x06\x07") {
+            zip64_declared = Some(u64::from_le_bytes(locator[8..16].try_into().ok()?));
+        }
+    }
+    Some((total16, cd_size32, cd_offset32, zip64_declared))
+}
+
+/// How far past a declared offset the fallback's
+/// walk gate looks for the thing the offset names
+/// (a zip64 record, a first central header). An
+/// honest candidate names its target exactly, and
+/// prepended junk shifts it by the junk's length;
+/// the format's own largest structure space — the
+/// 64 KB comment — bounds how far a gate should
+/// chase a declared offset before calling the
+/// candidate unwalkable.
+const FALLBACK_SEARCH_BOUND: u64 = TAIL_WINDOW;
+
+/// Whether the end-record candidate at `at` in
+/// `bytes` names a directory that walks, resolved
+/// the way the count walk resolves it — through
+/// its zip64 record where the plain fields are
+/// sentinels, then the first central header at or
+/// after the declared offset, then the records
+/// chaining exactly to the directory's end — but
+/// over the in-memory bytes and with each search
+/// bounded by [`FALLBACK_SEARCH_BOUND`]. The
+/// fallback gates its opens on this (round 10,
+/// R10-1/R10-3): handing the archive reader a
+/// candidate whose directory does not walk makes
+/// the reader retry every earlier end record in
+/// the stream itself, so thousands of fake
+/// signatures in a comment or a file body cost
+/// seconds EACH — a candidate that cannot walk is
+/// not opened at all, and one that can walk is the
+/// reader's own first choice in its stream, which
+/// the reader opens at once.
+fn fallback_walkable(bytes: &[u8], at: usize) -> bool {
+    if at + 22 > bytes.len() || !bytes[at..].starts_with(b"PK\x05\x06") {
+        return false;
+    }
+    let total16 = u16::from_le_bytes([bytes[at + 10], bytes[at + 11]]);
+    let cd_offset32 = u32::from_le_bytes(bytes[at + 16..at + 20].try_into().unwrap_or([0; 4]));
+    let mut dir_end = at as u64;
+    let mut declared_offset = u64::from(cd_offset32);
+    let mut declared_total = u64::from(total16);
+    if (total16 == u16::MAX || cd_offset32 == u32::MAX) && at >= 20 {
+        let lat = at - 20;
+        let locator = &bytes[lat..at];
+        if locator.starts_with(b"PK\x06\x07") {
+            let record_declared = u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
+            if record_declared < lat as u64 {
+                let from = record_declared as usize;
+                let to = ((record_declared + FALLBACK_SEARCH_BOUND) as usize).min(lat);
+                if let Some(found) = bytes[from..to].windows(4).position(|w| w == b"PK\x06\x06") {
+                    let record_at = from + found;
+                    if record_at + 56 <= bytes.len() {
+                        let record = &bytes[record_at..record_at + 56];
+                        dir_end = record_at as u64;
+                        declared_total =
+                            u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
+                        declared_offset =
+                            u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+                    }
+                }
+            }
+        }
+    }
+    if declared_offset >= dir_end {
+        // No directory window at all: an honestly
+        // empty archive counts zero; anything else
+        // does not walk.
+        return declared_total == 0;
+    }
+    let from = declared_offset as usize;
+    let to = ((declared_offset + FALLBACK_SEARCH_BOUND) as usize).min(dir_end as usize);
+    let Some(found) = bytes[from..to].windows(4).position(|w| w == b"PK\x01\x02") else {
+        return false;
+    };
+    // Walk the records, measured by their own
+    // lengths, until the directory's end — the
+    // count walk's rule, stopping just past the
+    // cap (a directory past the cap walks; the
+    // archive read refuses it in the cap's words).
+    let mut count = 0usize;
+    let mut pos = (from + found) as u64;
+    while pos < dir_end {
+        if count > MAX_ENTRIES {
+            return true;
+        }
+        let start = pos as usize;
+        if start + 46 > bytes.len() || !bytes[start..].starts_with(b"PK\x01\x02") {
+            return false;
+        }
+        let header = &bytes[start..start + 46];
+        let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
+        count += 1;
+        pos += 46 + name_len + extra_len + comment_len;
+    }
+    pos == dir_end
+}
+
 /// Open the archive ONE end-record candidate
 /// describes: the file's bytes up to that record,
 /// with the record's comment length zeroed — the
@@ -581,6 +760,12 @@ struct TrimmedReader {
     /// candidate's end record read as zero.
     zero_at: u64,
     pos: u64,
+    /// Where the file's own cursor stands: a read
+    /// that starts there needs no seek first. The
+    /// archive reader makes many small reads, most
+    /// of them sequential, and a seek per read
+    /// multiplied an open's cost (round 10, R10-1).
+    file_at: u64,
 }
 
 impl Read for TrimmedReader {
@@ -589,7 +774,10 @@ impl Read for TrimmedReader {
             return Ok(0);
         }
         let want = ((self.end - self.pos).min(buf.len() as u64)) as usize;
-        self.file.seek(std::io::SeekFrom::Start(self.pos))?;
+        if self.file_at != self.pos {
+            self.file.seek(std::io::SeekFrom::Start(self.pos))?;
+            self.file_at = self.pos;
+        }
         let n = self.file.read(&mut buf[..want])?;
         for (i, byte) in buf.iter_mut().enumerate().take(n) {
             let at = self.pos + i as u64;
@@ -598,6 +786,7 @@ impl Read for TrimmedReader {
             }
         }
         self.pos += n as u64;
+        self.file_at = self.pos;
         Ok(n)
     }
 }
@@ -633,6 +822,7 @@ fn archive_from_candidate_file(path: &Path, at: u64) -> Option<zip::ZipArchive<T
         end,
         zero_at: at + 20,
         pos: 0,
+        file_at: 0,
     };
     zip::ZipArchive::new(reader).ok()
 }
@@ -761,10 +951,15 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     // candidate's error — the most informative
     // refusal the office would have gotten without
     // the junk. The flood shapes are already refused
-    // by the cap above.
+    // by the cap above. The candidates are distinct
+    // directories (round 10, R10-1): a directory is
+    // opened at most once here, however many
+    // candidates pointed at it.
     let mut first_error: Option<String> = None;
     let mut opened_any = false;
-    for (at, _) in directory_candidates(path, MAX_ENTRIES) {
+    let mut tried_positions: HashSet<u64> = HashSet::new();
+    for (at, _, _) in directory_candidates(path, MAX_ENTRIES) {
+        tried_positions.insert(at);
         let Some(mut zip) = archive_from_candidate_file(path, at) else {
             continue;
         };
@@ -781,45 +976,98 @@ fn load_v1(path: &Path) -> Result<Document, String> {
             }
         }
     }
-    if let Some(e) = first_error {
-        return Err(e);
-    }
-    if opened_any {
-        // A walkable directory opened and held no
-        // bulletin: that is the answer, stated in the
-        // no-bulletin words below — the reader's own
-        // search would land on the same directories.
-        return Err("that file has no bulletin inside it (no document.json)".to_string());
-    }
-    // No walkable candidate could even be opened:
-    // the file may carry a directory the count walk
-    // cannot walk (an exotic but valid layout, or
-    // one outside the tail window), or be damaged in
-    // a way only the reader can name. The reader's
-    // own path decides, with the same stepping
+    // No candidate YIELDED a bulletin: the reader's
+    // own path runs now (round 10, R10-3). It used to
+    // run only when no walkable candidate could even
+    // be opened, but opening is not evidence — a
+    // walkable fake candidate standing in front of
+    // trailing junk opened, held no bulletin, and
+    // closed this gate on the honest directory the
+    // junk had pushed out of the tail window. The
+    // reader's path decides, with the same stepping
     // aside: its chosen directory first, then every
-    // enumerated candidate's.
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    // enumerated candidate's — each directory once,
+    // the ones already tried above skipped, and no
+    // candidate whose directory does not walk opened
+    // at all (the walk gate in `fallback_walkable`:
+    // the reader retries every earlier end record in
+    // a stream whose chosen candidate fails, so an
+    // unwalkable fake at the head of thousands of
+    // signatures costs seconds per retry if it is
+    // handed over).
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let positions = end_record_positions_in(&bytes);
+    // The reader's chosen directory is the one its
+    // backward search lands on — the latest candidate
+    // in the file. That attempt runs when there is
+    // no candidate at all (the reader's damaged
+    // words are the answer then), when its chosen
+    // candidate is new here and its directory walks,
+    // or when no candidate above could even be
+    // opened and the candidate count is small (the
+    // reader's damaged words are the informative
+    // answer for a corrupt file, and a handful of
+    // candidates cannot storm). Otherwise — a chosen
+    // candidate already tried above, or one that
+    // does not walk, among many — the reader has
+    // nothing the enumeration below does not cover.
+    let reader_gate_open = match positions.first() {
+        None => true,
+        Some(first) => {
+            (!tried_positions.contains(&(*first as u64)) && fallback_walkable(&bytes, *first))
+                || (!opened_any && positions.len() <= 64)
+        }
+    };
     let mut damaged: Option<String> = None;
-    match zip::ZipArchive::new(file) {
-        Ok(mut zip) => {
-            if zip.file_names().any(|n| n == "document.json") {
-                match read_bulletin_archive(&mut zip) {
-                    Ok(doc) => return Ok(doc),
-                    Err(e) => {
-                        if first_error.is_none() {
-                            first_error = Some(e);
+    if reader_gate_open {
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        match zip::ZipArchive::new(file) {
+            Ok(mut zip) => {
+                if zip.file_names().any(|n| n == "document.json") {
+                    match read_bulletin_archive(&mut zip) {
+                        Ok(doc) => return Ok(doc),
+                        Err(e) => {
+                            if first_error.is_none() {
+                                first_error = Some(e);
+                            }
                         }
                     }
                 }
             }
-        }
-        Err(e) => {
-            damaged = Some(format!("that file's container is damaged: {e}"));
+            Err(e) => {
+                damaged = Some(format!("that file's container is damaged: {e}"));
+            }
         }
     }
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    for at in end_record_positions_in(&bytes) {
+    // The declared descriptions already tried
+    // above, so a repeat of one of those directories
+    // is not opened again in this enumeration
+    // either (round 10, R10-1).
+    let mut tried_declared: HashSet<DeclaredKey> = HashSet::new();
+    for pos in &tried_positions {
+        if let Some(key) = candidate_declared_key_in(&bytes, *pos as usize) {
+            tried_declared.insert(key);
+        }
+    }
+    for at in &positions {
+        let at = *at;
+        // A candidate already tried above, and any
+        // repeat of a directory description already
+        // tried, is not opened again (round 10,
+        // R10-1); a candidate whose directory does
+        // not walk is not opened either (the walk
+        // gate, round 10, R10-3).
+        if tried_positions.contains(&(at as u64)) {
+            continue;
+        }
+        if let Some(key) = candidate_declared_key_in(&bytes, at) {
+            if !tried_declared.insert(key) {
+                continue;
+            }
+        }
+        if !fallback_walkable(&bytes, at) {
+            continue;
+        }
         let Some(mut zip) = archive_from_candidate(&bytes, at) else {
             continue;
         };
@@ -1003,12 +1251,17 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     // and so does one whose sheet fails to read; only
     // when every candidate fails does the load
     // refuse, with the first failed candidate's
-    // error. When no walkable candidate yields a
-    // sheet or an error, the reader's own path
-    // decides, as at the bulletin door.
+    // error. The candidates are distinct directories
+    // (round 10, R10-1), each opened at most once.
+    // And as at the bulletin door, the reader's own
+    // path runs whenever no candidate YIELDS a sheet
+    // (round 10, R10-3): a candidate that merely
+    // opens does not close the fallback gate.
     let mut first_error: Option<String> = None;
     let mut opened_any = false;
-    for (at, _) in directory_candidates(path, MAX_ENTRIES) {
+    let mut tried_positions: HashSet<u64> = HashSet::new();
+    for (at, _, _) in directory_candidates(path, MAX_ENTRIES) {
+        tried_positions.insert(at);
         let Some(mut zip) = archive_from_candidate_file(path, at) else {
             continue;
         };
@@ -1025,33 +1278,72 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
             }
         }
     }
-    if let Some(e) = first_error {
-        return Err(e);
-    }
-    if opened_any {
-        return Err("that file has no loose sheet inside it (no insert.json)".to_string());
-    }
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    // The reader's own path, gated exactly as at
+    // the bulletin door (round 10, R10-3): its chosen
+    // directory first when that candidate is new
+    // here and walks, then every enumerated
+    // candidate's — each directory once, the ones
+    // already tried above skipped, and no candidate
+    // whose directory does not walk opened at all.
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let positions = end_record_positions_in(&bytes);
+    let reader_gate_open = match positions.first() {
+        None => true,
+        Some(first) => {
+            (!tried_positions.contains(&(*first as u64)) && fallback_walkable(&bytes, *first))
+                || (!opened_any && positions.len() <= 64)
+        }
+    };
     let mut damaged: Option<String> = None;
-    match zip::ZipArchive::new(file) {
-        Ok(mut zip) => {
-            if zip.file_names().any(|n| n == "insert.json") {
-                match read_insert_archive(&mut zip) {
-                    Ok(loaded) => return Ok(loaded),
-                    Err(e) => {
-                        if first_error.is_none() {
-                            first_error = Some(e);
+    if reader_gate_open {
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        match zip::ZipArchive::new(file) {
+            Ok(mut zip) => {
+                if zip.file_names().any(|n| n == "insert.json") {
+                    match read_insert_archive(&mut zip) {
+                        Ok(loaded) => return Ok(loaded),
+                        Err(e) => {
+                            if first_error.is_none() {
+                                first_error = Some(e);
+                            }
                         }
                     }
                 }
             }
-        }
-        Err(e) => {
-            damaged = Some(format!("that file's container is damaged: {e}"));
+            Err(e) => {
+                damaged = Some(format!("that file's container is damaged: {e}"));
+            }
         }
     }
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    for at in end_record_positions_in(&bytes) {
+    // The declared descriptions already tried
+    // above, so a repeat of one of those directories
+    // is not opened again in this enumeration
+    // either (round 10, R10-1).
+    let mut tried_declared: HashSet<DeclaredKey> = HashSet::new();
+    for pos in &tried_positions {
+        if let Some(key) = candidate_declared_key_in(&bytes, *pos as usize) {
+            tried_declared.insert(key);
+        }
+    }
+    for at in &positions {
+        let at = *at;
+        // A candidate already tried above, and any
+        // repeat of a directory description already
+        // tried, is not opened again (round 10,
+        // R10-1); a candidate whose directory does
+        // not walk is not opened either (the walk
+        // gate, round 10, R10-3).
+        if tried_positions.contains(&(at as u64)) {
+            continue;
+        }
+        if let Some(key) = candidate_declared_key_in(&bytes, at) {
+            if !tried_declared.insert(key) {
+                continue;
+            }
+        }
+        if !fallback_walkable(&bytes, at) {
+            continue;
+        }
         let Some(mut zip) = archive_from_candidate(&bytes, at) else {
             continue;
         };
@@ -3581,6 +3873,368 @@ mod tests {
         let bytes = "picture number 7".as_bytes().to_vec();
         let hash = ob_model::sha256_hex(&bytes);
         assert_eq!(loaded.asset_bytes.get(&hash), Some(&bytes));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One central directory record for the shared-
+    /// directory builder below, in the shape
+    /// `append_directory` writes.
+    fn shared_central_record(name: &str, crc: u32, size: u32, local_offset: u32) -> Vec<u8> {
+        let mut central = Vec::new();
+        central.extend_from_slice(b"PK\x01\x02");
+        central.extend_from_slice(&20u16.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u32.to_le_bytes());
+        central.extend_from_slice(&local_offset.to_le_bytes());
+        central.extend_from_slice(name.as_bytes());
+        central
+    }
+
+    /// The round-10 red team's shared-directory
+    /// shape (RT10-T1): one local header, one central
+    /// directory of `entries` records just under the
+    /// cap, one shared zip64 end record, then
+    /// `candidates` appended candidates, each a
+    /// locator pointing at the SAME zip64 record
+    /// plus a sentinel end record — every candidate
+    /// walkable, all resolving to the same directory.
+    /// With `doc_payload`, the directory's first
+    /// record is a document.json carrying those bytes
+    /// (its central record declares their CRC and
+    /// size; the only local header in the file is
+    /// another entry's, so reading it fails).
+    fn shared_directory_zip(
+        candidates: usize,
+        entries: usize,
+        doc_payload: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let crc_x = entry_crcs(&stored_zip(&[("a", b"x")]))[0].1;
+        let mut out = Vec::new();
+        // One local header: entry "a", payload "x".
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&crc_x.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(b"a");
+        out.extend_from_slice(b"x");
+        let cd_offset = out.len() as u64;
+        let mut names: Vec<String> = Vec::new();
+        if doc_payload.is_some() {
+            names.push("document.json".to_string());
+        }
+        for i in 0..entries - names.len() {
+            names.push(format!("f{i:04}"));
+        }
+        let doc_crc =
+            doc_payload.map(|payload| entry_crcs(&stored_zip(&[("document.json", payload)]))[0].1);
+        let mut cd_size = 0u64;
+        for name in &names {
+            let (crc, size) = if name == "document.json" {
+                let payload = doc_payload.expect("the document payload");
+                (doc_crc.expect("the document crc"), payload.len() as u32)
+            } else {
+                (crc_x, 1u32)
+            };
+            let record = shared_central_record(name, crc, size, 0);
+            cd_size += record.len() as u64;
+            out.extend_from_slice(&record);
+        }
+        // The shared zip64 end record.
+        let z64_at = out.len() as u64;
+        let mut record = Vec::new();
+        record.extend_from_slice(b"PK\x06\x06");
+        record.extend_from_slice(&44u64.to_le_bytes());
+        record.extend_from_slice(&45u16.to_le_bytes());
+        record.extend_from_slice(&45u16.to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&(entries as u64).to_le_bytes());
+        record.extend_from_slice(&(entries as u64).to_le_bytes());
+        record.extend_from_slice(&cd_size.to_le_bytes());
+        record.extend_from_slice(&cd_offset.to_le_bytes());
+        assert_eq!(record.len(), 56);
+        out.extend_from_slice(&record);
+        // The appended candidates.
+        for _ in 0..candidates {
+            let mut locator = Vec::new();
+            locator.extend_from_slice(b"PK\x06\x07");
+            locator.extend_from_slice(&0u32.to_le_bytes());
+            locator.extend_from_slice(&z64_at.to_le_bytes());
+            locator.extend_from_slice(&1u32.to_le_bytes());
+            assert_eq!(locator.len(), 20);
+            out.extend_from_slice(&locator);
+            let mut eocd = Vec::new();
+            eocd.extend_from_slice(b"PK\x05\x06");
+            eocd.extend_from_slice(&0u16.to_le_bytes());
+            eocd.extend_from_slice(&0u16.to_le_bytes());
+            eocd.extend_from_slice(&u16::MAX.to_le_bytes());
+            eocd.extend_from_slice(&u16::MAX.to_le_bytes());
+            eocd.extend_from_slice(&u32::MAX.to_le_bytes());
+            eocd.extend_from_slice(&u32::MAX.to_le_bytes());
+            eocd.extend_from_slice(&0u16.to_le_bytes());
+            assert_eq!(eocd.len(), 22);
+            out.extend_from_slice(&eocd);
+        }
+        out
+    }
+
+    /// The control beside the shared shape: the same
+    /// 8,191-entry directory (no document record)
+    /// under ONE plain end record.
+    fn shared_directory_control(entries: usize) -> Vec<u8> {
+        let full = shared_directory_zip(1, entries, None);
+        // The plain control is the shared file's head
+        // — local header plus directory — with the
+        // zip64 structures replaced by one plain end
+        // record naming the same directory.
+        let z64_at = full.len() - 56 - 20 - 22;
+        let cd_offset = u64::from_le_bytes(
+            full[z64_at + 48..z64_at + 56]
+                .try_into()
+                .expect("offset field"),
+        );
+        let cd_size = (z64_at as u64 - cd_offset) as u32;
+        let mut out = full[..z64_at].to_vec();
+        let mut eocd = Vec::new();
+        eocd.extend_from_slice(b"PK\x05\x06");
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&(entries as u16).to_le_bytes());
+        eocd.extend_from_slice(&(entries as u16).to_le_bytes());
+        eocd.extend_from_slice(&cd_size.to_le_bytes());
+        eocd.extend_from_slice(&(cd_offset as u32).to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&eocd);
+        out
+    }
+
+    #[test]
+    fn r10_candidates_sharing_one_directory_pay_for_it_once() {
+        // Round 10 (R10-1, red team RT10-T1): many
+        // walkable candidates sharing ONE directory
+        // just under the entry cap multiplied the
+        // whole walk — every candidate paid the full
+        // 8,191-record walk in the cap check, the
+        // same walk again in the loader's own
+        // enumeration, and one trimmed archive open:
+        // ≈0.33 s per candidate on the red team's
+        // machine (30 candidates 6.0 s, 300 in
+        // 100.5 s, 2,900 unfinished in 100 s). A
+        // directory is walked and opened at most once
+        // per load now, however many candidates point
+        // at it: the enumeration returns ONE candidate
+        // for the shared directory, and the loads land
+        // in the one-candidate control's time class.
+        let dir = scratch("r10-shared-dir");
+        let entries = MAX_ENTRIES - 1;
+        let control_path = dir.join("control.obd");
+        std::fs::write(&control_path, shared_directory_control(entries)).expect("write control");
+        let control_start = std::time::Instant::now();
+        let control_err = load(&control_path).expect_err("the control holds no bulletin");
+        let control_elapsed = control_start.elapsed();
+        assert_eq!(
+            control_err, "that file has no bulletin inside it (no document.json)",
+            "the control's refusal"
+        );
+        for (tag, candidates) in [("30", 30usize), ("300", 300), ("2900", 2900)] {
+            let path = dir.join(format!("shared-{tag}.obd"));
+            std::fs::write(&path, shared_directory_zip(candidates, entries, None))
+                .expect("write shared copy");
+            // The structural pin: one distinct
+            // directory, however many candidates.
+            assert_eq!(
+                directory_candidates(&path, MAX_ENTRIES).len(),
+                1,
+                "{tag} candidates: the shared directory is enumerated once"
+            );
+            let start = std::time::Instant::now();
+            let err = load(&path).expect_err("the shared directory holds no bulletin");
+            let elapsed = start.elapsed();
+            assert_eq!(
+                err, "that file has no bulletin inside it (no document.json)",
+                "{tag} candidates: the refusal is the control's"
+            );
+            // The timing pin, with margins wide enough
+            // for a contended machine: before the fix
+            // this shape cost ≈0.33 s PER CANDIDATE —
+            // the 300-candidate file took 100.5 s on
+            // the red team's machine and the 2,900 one
+            // did not finish in 100 s.
+            let budget = control_elapsed * 20 + std::time::Duration::from_secs(10);
+            assert!(
+                elapsed < budget,
+                "{tag} candidates: {elapsed:?} must land in the control's \
+                 time class (control {control_elapsed:?}, budget {budget:?})"
+            );
+            if candidates == 300 {
+                // The sheet door shares the enumeration.
+                let err = load_insert(&path).expect_err("the shared directory holds no sheet");
+                assert_eq!(
+                    err, "that file has no loose sheet inside it (no insert.json)",
+                    "300 candidates at the sheet door"
+                );
+            }
+        }
+        // The bad-document variant at scale: the
+        // shared directory's document fails to read,
+        // and the refusal is that first candidate's
+        // error — surfaced after the fallback has also
+        // been tried (round 10, R10-3), not multiplied
+        // by the candidate count.
+        let bad_path = dir.join("shared-baddoc-300.obd");
+        std::fs::write(
+            &bad_path,
+            shared_directory_zip(300, entries, Some(b"{not json")),
+        )
+        .expect("write bad-document copy");
+        let start = std::time::Instant::now();
+        let err = load(&bad_path).expect_err("the shared document fails");
+        let elapsed = start.elapsed();
+        assert!(
+            err.contains("checksum"),
+            "the first candidate's error stands: {err}"
+        );
+        let budget = control_elapsed * 20 + std::time::Duration::from_secs(10);
+        assert!(
+            elapsed < budget,
+            "bad-document 300: {elapsed:?} within budget {budget:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r10_the_fallback_does_not_storm_over_comment_signatures() {
+        // Round 10 (R10-3's cost half): the fallback
+        // runs whenever no candidate yields, so it
+        // now runs at the sheet door over a bulletin
+        // file — and over a file whose candidates all
+        // fail. A comment carrying 2,900 fake end
+        // records must not make those loads storm:
+        // handing the archive reader a stream whose
+        // chosen candidate cannot walk makes the
+        // reader retry every fake in turn (the round-9
+        // signature fixtures took 7.5 s / 35 s / 66 s
+        // at the sheet door for 500 / 1,500 / 2,900
+        // fakes in this build's first cut, before the
+        // walk gate). The gate refuses to open a
+        // candidate whose directory does not walk, so
+        // both loads refuse in the plain no-inside
+        // words, fast.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let dir = scratch("r10-fallback-storm");
+        let honest = zip_with_fillers("document.json", &doc_json, 1);
+        let faked = with_timing_end_records_in_comment(&honest, 2900);
+        let sheet_path = dir.join("bulletin-at-the-sheet-door.obd");
+        std::fs::write(&sheet_path, &faked).expect("write faked bulletin");
+        let start = std::time::Instant::now();
+        let err = load_insert(&sheet_path).expect_err("a bulletin holds no sheet");
+        let elapsed = start.elapsed();
+        assert_eq!(
+            err,
+            "that file has no loose sheet inside it (no insert.json)"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "the sheet door over 2,900 comment fakes: {elapsed:?}"
+        );
+        let nodoc = zip_with_fillers("other.json", &doc_json, 1);
+        let faked_nodoc = with_timing_end_records_in_comment(&nodoc, 2900);
+        let nodoc_path = dir.join("nodoc-faked.obd");
+        std::fs::write(&nodoc_path, &faked_nodoc).expect("write faked nodoc");
+        let start = std::time::Instant::now();
+        let err = load(&nodoc_path).expect_err("no candidate yields a bulletin");
+        let elapsed = start.elapsed();
+        assert_eq!(
+            err,
+            "that file has no bulletin inside it (no document.json)"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "the bulletin door over 2,900 comment fakes: {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r10_a_walkable_fake_candidate_does_not_shadow_the_fallback() {
+        // Round 10 (R10-3, red team RT10-L1): an
+        // honest zip plus 70,000 bytes of signature-
+        // free trailing junk (the honest end record
+        // pushed out of the tail window) plus one
+        // appended walkable empty candidate refused
+        // with "no bulletin inside it" — the fake
+        // OPENED, and opening closed the reader-side
+        // fallback gate on the honest directory.
+        // Opening is not evidence: the fallback runs
+        // whenever no candidate YIELDS a bulletin, so
+        // both the empty fake and the bad-document
+        // fake now step aside for the honest bulletin
+        // behind the junk, at both doors.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        let junk: Vec<u8> = b"JUNKJUNK".repeat(8_750);
+        assert_eq!(junk.len(), 70_000);
+        let dir = scratch("r10-fake-shadow");
+        for (json_name, json, ext, honest_title) in [
+            ("document.json", doc_json.as_str(), "obd", "Roundtrip"),
+            ("insert.json", sheet_json.as_str(), "obdi", "sheet-lying"),
+        ] {
+            let honest = zip_with_fillers(json_name, json, 1);
+            let mut junked = honest.clone();
+            junked.extend_from_slice(&junk);
+            // The control: the same junk, no fake —
+            // the fallback finds the honest directory.
+            let control_path = dir.join(format!("control.{ext}"));
+            std::fs::write(&control_path, &junked).expect("write control");
+            // The empty fake standing in front of it.
+            let shadowed_path = dir.join(format!("shadowed.{ext}"));
+            std::fs::write(&shadowed_path, append_empty_end_record(&junked))
+                .expect("write shadowed copy");
+            // The bad-document fake in front of it.
+            let bad_name = json_name;
+            let bad_payload: &[u8] = b"{not json";
+            let bad_entries: Vec<(&str, &[u8])> = vec![(bad_name, bad_payload)];
+            let bad_path = dir.join(format!("bad-fake.{ext}"));
+            std::fs::write(
+                &bad_path,
+                append_decoy_directory(&junked, &bad_entries, None),
+            )
+            .expect("write bad-fake copy");
+            for (tag, path) in [
+                ("control", &control_path),
+                ("shadowed", &shadowed_path),
+                ("bad-fake", &bad_path),
+            ] {
+                if ext == "obd" {
+                    let loaded =
+                        load(path).unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(loaded.title, honest_title, "{ext} {tag}");
+                } else {
+                    let (insert, _, _) = load_insert(path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(insert.id, honest_title, "{ext} {tag}");
+                }
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

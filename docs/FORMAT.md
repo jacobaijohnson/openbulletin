@@ -420,13 +420,25 @@ outside a fold judge each pair as before.
   candidate's directory start is resolved in one
   shared pass, and any candidate whose walk passes
   the cap refuses the file in the cap's words
-  (round 9, R9-2). When several candidates stand,
-  their directories are tried latest first; a
-  directory holding no document steps aside, and so
-  does one whose document fails to read — bad JSON,
-  a newer version, a lying fingerprint or size —
-  and only when every candidate fails does the load
-  refuse, with the first candidate's error
+  (round 9, R9-2). Candidates that resolve to the
+  same directory — its offset, its size, and the
+  zip64 record it resolves through where one
+  stands — are one directory, not several: it is
+  walked and opened at most once per load, however
+  many candidates point at it (round 10, R10-1).
+  When several candidates stand, their directories
+  are tried latest first; a directory holding no
+  document steps aside, and so does one whose
+  document fails to read — bad JSON, a newer
+  version, a lying fingerprint or size. When no
+  candidate yields a document, the reader's own
+  path runs — its chosen directory first, then
+  every enumerated candidate's, each directory
+  once — because a candidate that merely opens is
+  not evidence the file holds nothing (round 10,
+  R10-3); and only when nothing anywhere yields a
+  document does the load refuse, with the first
+  candidate's error where one exists
   (round 9, R9-6).
 - Saves are atomic (temp file + rename) and always write
   v1. The GUI keeps an autosave journal (the current work,

@@ -292,7 +292,85 @@ after a round returns zero BLOCKER + zero MAJOR.
 
 ## Shipped addendum, R10-A
 
-_(appended by the R10-A builder with real numbers and flagged pin changes)_
+Shipped 2026-10-17 on top of `039cfc0`. Both findings are fixed in
+`crates/ob-format/src/lib.rs`; FORMAT.md's loading-rules bullet now states both
+rules. Suite: **640 passed / 0 failed** unpiped (baseline 637 + 3 new pins, all
+in ob-format, 40 → 43 there), clippy exit 0 with no warnings. No pre-existing
+test was changed or removed; the R9-D first-error pins
+(`r9_a_file_whose_every_candidate_is_junk_refuses_with_the_first_error` and its
+sheet-door twin) pass unchanged and now also exercise the widened fallback.
+Timings below are debug builds on this machine from a probe driving
+`Document::load` / `load_insert`; the red team's contended-machine figures are
+cited where this lane did not re-measure.
+
+**R10-1 — a directory is walked and opened at most once per load.**
+`directory_candidates` now keys each candidate by the directory it resolves to
+(resolved start, directory end, zip64 record position where one stands, and
+the declared total only when no start resolved) and walks, counts, and returns
+each distinct directory once, so the load loops open it at most once; the
+fallback enumeration likewise skips candidates already tried and repeats of a
+directory description already tried (by an O(1) declared-fields key — total,
+size, offset, zip64 target — read straight off each candidate), and opens no
+candidate whose directory does not walk (`fallback_walkable`, the count walk's
+resolution over the file's bytes with bounded searches). Measured, load door:
+
+| Fixture | Before | After |
+|---|---|---|
+| Control, same 8,191-entry directory, one plain end record | ERR (no bulletin) 0.091 s | ERR (no bulletin) 0.084 s |
+| 30 shared candidates | ERR 2.55 s | ERR 0.091 s (≈1.0× control) |
+| 300 shared candidates | ERR 35.3 s (red team: 100.5 s) | ERR 0.128 s (≈1.5× control) |
+| 300 shared, directory's document fails | ERR "Invalid checksum" 28.2 s (red team: 41.6 s quiet / 97.9 s contended) | ERR "Invalid checksum" 0.151 s |
+| 2,900 shared candidates (≈1,562 in the tail window) | did not finish in 100 s on the red team's lane (projected ~9–10 min); not run to completion here | ERR 4.05 s (sheet door 4.12 s) |
+
+The 2,900 residual is one trimmed archive open, paid once per load: the zip
+crate's own open cost grows with the candidate records standing in the trimmed
+stream even when the chosen candidate is the valid one. It is a constant per
+load now, not a per-candidate product. Pins:
+`r10_candidates_sharing_one_directory_pay_for_it_once` asserts the enumeration
+returns exactly one candidate for the shared directory at 30 / 300 / 2,900, the
+control's refusal wording (and the sheet door's, at 300), the bad-document
+variant's first-candidate error ("Invalid checksum"), and a timing budget of
+20× the in-test control + 10 s at each size.
+
+**R10-3 — the reader's own path runs whenever no candidate YIELDS a bulletin.**
+Both loaders dropped the `opened_any` gate (and the early first-error return in
+front of it): a candidate that opens but holds no readable document, or whose
+document fails, no longer closes the fallback. The fallback itself is gated so
+the widened rule cannot storm: the whole-file reader attempt runs only when
+there is no candidate at all, when its chosen (latest) candidate is new and
+walks, or when nothing above could even be opened and at most 64 candidates
+stand; the enumerated candidates open only when their directory walks. That
+gate matters — the first cut of this fix, with the fallback simply widened,
+took 7.5 s / 35 s / 66 s at the sheet door over the round-9 files carrying
+500 / 1,500 / 2,900 comment signatures (the reader retries every fake end
+record whose directory fails), where the shipped gate takes 0.098 s / 0.133 s /
+0.121 s with the identical refusal. Measured:
+
+| Fixture | Before | After |
+|---|---|---|
+| Honest zip + 70,000 B junk + walkable empty fake | ERR "no bulletin inside it" (11.5 ms) | loads the honest bulletin (7.3 ms); sheet door refuses in 3.8 ms |
+| Same, fake's directory holds bad-JSON document.json | ERR, the fake's JSON error (32 ms) | loads the honest bulletin (12.9 ms) |
+| Control, same junk, no fake | loads (5.1 ms) | loads |
+
+Pins: `r10_a_walkable_fake_candidate_does_not_shadow_the_fallback` (empty fake
+and bad-document fake, bulletin and sheet doors, with the no-fake control) and
+`r10_the_fallback_does_not_storm_over_comment_signatures` (2,900 comment fakes
+at both doors refuse in the plain words inside a 20 s budget; shipped ~0.2 s).
+
+**Round-9 shapes re-measured, outcomes unchanged.** Timing-signature fixtures
+(load / insert): 500 — 0.198 s / 0.075 s before, 0.140 s / 0.098 s after;
+1,500 — 0.168 / 0.075 before, 0.339 / 0.133 after; 2,900 — 0.189 / 0.087
+before, 0.187 / 0.121 after. Body-signature fixtures (no comment / plain
+comment / signature comment, load / insert): 0.515 s / 0.344 s, 0.619 / 0.273,
+0.814 / 0.326 before; 0.604 / 0.372, 0.461 / 0.475, 0.543 / 0.413 after. All
+load or refuse exactly as before. The mid-record declared-offset fixture keeps
+its refusal wording verbatim ("that file's container is damaged: invalid Zip
+archive: Could not find EOCD") at both doors — the widened reader gate's
+nothing-opened clause exists to keep it. The honest zip64 file, the
+prepend shapes, the size-lie, and the into-another-directory candidate all
+keep their round-10 outcomes. Also shipped in passing: `TrimmedReader` no
+longer seeks before a read that starts where the file's cursor already stands
+(the archive reader's many small sequential reads each paid a seek).
 
 ## Shipped addendum, R10-B
 

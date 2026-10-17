@@ -1956,6 +1956,44 @@ fn removed_serving_lines_sentence(removed: &[String]) -> String {
 }
 
 /// The profile save's words when a serving-lines
+/// migration did not follow a pairing or a removal
+/// because the old name was already paired (round
+/// 12, R12-11): the save stands, the names stand
+/// with the pairing that was kept, and the status
+/// names the name, the kept pairing, and the event
+/// that was not followed, so the office can correct
+/// the names by hand.
+fn unfollowed_serving_lines_sentence(unfollowed: &[ob_model::ServingLineUnfollowed]) -> String {
+    let mut sentences: Vec<String> = Vec::new();
+    for event in unfollowed {
+        let old = format!("'{}'", event.old_name);
+        let kept = format!("'{}'", event.kept_new_name);
+        match &event.unfollowed_new_name {
+            Some(unfollowed_new_name) => {
+                let other = format!("'{unfollowed_new_name}'");
+                let sentence = format!(
+                    "{old} was paired with {kept} and with {other}: the names \
+                     went to {kept}, and the pairing with {other} was not \
+                     followed. Correct the names by hand if they belong \
+                     under {other}."
+                );
+                sentences.push(sentence);
+            }
+            None => {
+                let sentence = format!(
+                    "{old} was paired with {kept} and was also removed: the \
+                     names went to {kept}, and the removal was not followed. \
+                     Correct the names by hand if they do not belong under \
+                     {kept}."
+                );
+                sentences.push(sentence);
+            }
+        }
+    }
+    sentences.join(" ")
+}
+
+/// The profile save's words when a serving-lines
 /// change is refused as a whole (round 6, R6-C):
 /// the app cannot tell which names belong to which
 /// line; the lines were left as they were, and the
@@ -15273,6 +15311,12 @@ impl eframe::App for App {
                                             );
                                             notes.push(sentence);
                                         }
+                                        if !migration.unfollowed.is_empty() {
+                                            let sentence = unfollowed_serving_lines_sentence(
+                                                &migration.unfollowed,
+                                            );
+                                            notes.push(sentence);
+                                        }
                                         if !notes.is_empty() {
                                             self.status = notes.join(" ");
                                         }
@@ -19447,6 +19491,90 @@ mod settings_tests {
             ]),
             "Names saved for 'Acolytes', 'Nursery workers' were removed with their lines."
         );
+    }
+
+    #[test]
+    fn r12c_unfollowed_serving_pairings_are_named_in_the_status_words() {
+        // Round 12 (R12-11, review R12-8): a duplicate
+        // pairing, or a removal of an already-paired
+        // name, is not followed (round 11, R11-D) —
+        // and the save now says so, in the same status
+        // the handler builds from `migration.removed`:
+        // the sentence names the old name, the pairing
+        // that was kept, and the event that was not
+        // followed, so the office can correct the
+        // names by hand. A migration with no duplicates
+        // carries no note.
+        let lines =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        let old_lines = lines(&["Alpha", "Xray", "Beta", "Xray", "Gamma"]);
+        // The review's double-pairing shape: the
+        // people land under the first target, the
+        // second target's row stands blank, and the
+        // status names both pairings.
+        let new_lines = lines(&["Alpha", "Yankee", "Beta", "Zulu", "Gamma"]);
+        let mut participants: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        assert_eq!(participants.get("yankee").map(String::as_str), Some("Ann"));
+        assert!(!participants.contains_key("zulu"));
+        assert_eq!(
+            unfollowed_serving_lines_sentence(&migration.unfollowed),
+            "'Xray' was paired with 'Yankee' and with 'Zulu': the names \
+             went to 'Yankee', and the pairing with 'Zulu' was not \
+             followed. Correct the names by hand if they belong under \
+             'Zulu'."
+        );
+        // The unfollowed removal: paired in one
+        // segment, removal-only in another.
+        let new_lines = lines(&["Alpha", "Yankee", "Beta", "Gamma"]);
+        let mut participants: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        assert!(migration.removed.is_empty());
+        assert_eq!(
+            unfollowed_serving_lines_sentence(&migration.unfollowed),
+            "'Xray' was paired with 'Yankee' and was also removed: the \
+             names went to 'Yankee', and the removal was not followed. \
+             Correct the names by hand if they do not belong under \
+             'Yankee'."
+        );
+        // No duplicates: no note is carried, and the
+        // handler — which speaks only from a non-empty
+        // `unfollowed` — stays silent.
+        let old_lines = lines(&["Alpha", "Xray", "Beta"]);
+        let new_lines = lines(&["Alpha", "Yankee", "Beta"]);
+        let mut participants: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(migration.unfollowed.is_empty());
+        assert_eq!(unfollowed_serving_lines_sentence(&migration.unfollowed), "");
     }
 
     #[test]

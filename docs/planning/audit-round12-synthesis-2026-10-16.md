@@ -477,4 +477,115 @@ into.
 
 ## Shipped addendum, R12-C
 
-_(appended by the R12-C builder with real numbers and flagged pin changes)_
+Shipped 2026-10-17. Files changed:
+`crates/ob-model/src/lib.rs` (the migration detail),
+`crates/ob-app/src/main.rs` (the status sentence and
+its wiring in the serving-lines save), and
+`docs/FORMAT.md` (below). Tests: **672 → 674
+passing** (workspace, unpiped, exit 0; the log read
+back complete after the run settled: 28 result
+lines, 674 / 0), clippy `--workspace --all-targets
+-D warnings` exit 0, `cargo fmt --all` applied. Two
+new pins, both `r12c_*`; **no pre-existing test
+changed** — the R11-D pins pass with their original
+expectations, the accounting untouched. Run note,
+stated exactly: one solo rerun of the full suite
+stopped at the openbulletin binary with ETXTBSY
+("Resource temporarily unavailable" launching the
+test binary) after 502 passed / 0 failed, exit 101;
+the solo rerun of that binary adjudicates it —
+173 passed / 0 failed, exit 0 — a transient launch
+failure, not a test outcome.
+
+What shipped, per finding:
+
+- **R12-11.** The migration detail no longer
+  discards the unfollowed events.
+  `ServingLineMigration` gains `unfollowed:
+  Vec<ServingLineUnfollowed>` — each event naming
+  the old name, the new name in the pairing that
+  was kept, and the new name in the pairing that
+  was not followed (`None` when the event not
+  followed was a removal of the already-paired
+  name). The spent-name tracking in
+  `migrate_serving_line_renames_detailed` now
+  records which pairing each name was spent on, so
+  both unfollowed shapes are reported in the order
+  the pairing computed them (identical repeats are
+  noted once). The accounting is the R11-D
+  accounting, unchanged: first pairing in segment
+  order wins; participants and aliases behave
+  exactly as the R11-D pins expect. In `ob-app`,
+  the serving-lines save speaks from
+  `migration.unfollowed` through the same notes
+  channel as `migration.removed`, in a new sentence
+  beside the other migration sentences
+  (`unfollowed_serving_lines_sentence`). The exact
+  words shipped, for the review's double-pairing
+  shape (Xray paired to Yankee, then to Zulu):
+  "'Xray' was paired with 'Yankee' and with
+  'Zulu': the names went to 'Yankee', and the
+  pairing with 'Zulu' was not followed. Correct
+  the names by hand if they belong under 'Zulu'."
+  For an unfollowed removal: "'Xray' was paired
+  with 'Yankee' and was also removed: the names
+  went to 'Yankee', and the removal was not
+  followed. Correct the names by hand if they do
+  not belong under 'Yankee'." A migration with no
+  duplicates carries an empty `unfollowed` and the
+  status says nothing. Pins:
+  `r12c_unfollowed_pairings_and_removals_are_carried_on_the_migration`
+  (ob-model: both events carried, accounting as
+  pinned by R11-D, a no-duplicate rename-plus-
+  removal carrying no note) and
+  `r12c_unfollowed_serving_pairings_are_named_in_the_status_words`
+  (ob-app: both sentences word for word, and no
+  note on a clean migration).
+- **R12-9(c).** FORMAT.md's composition and
+  loading sections were read end to end against
+  the code as shipped at `7639c51`. Two sentences
+  were corrected, one was added, and the rest was
+  confirmed (below). Corrected, quoted: (1) the
+  guards bullet's "The total is summed from the
+  zip directory before anything is decompressed"
+  was false at this HEAD — the loaders count
+  actual bytes as each entry is read
+  (`read_entry_capped` / `read_bulletin_archive` /
+  `read_insert_archive` in `ob-format`) and never
+  sum declared sizes; the bullet now says so.
+  (2) The composition section's "the fold route
+  and a chain of single merges agree on both,
+  always" overstated a census result the way
+  R12-7 flagged in the R11-A addendum; it now
+  reads that the two routes agreed on both across
+  the pools and lengths the round-11 and round-12
+  censuses ran, and that "that agreement is
+  measured, not proved". Added, in the serving-
+  lines account: the per-occurrence rule FORMAT.md
+  had never stated — a name standing in more than
+  one segment is spent once (R11-D), a later
+  pairing or a removal of an already-paired name
+  is not followed, and the save's status names the
+  name, the kept pairing, and the event not
+  followed (R12-11, above). Confirmed against the
+  code, unchanged: the composition rules (the
+  fence, license-and-credit traveling together,
+  the credit-pairing precedence, the final
+  judgment and its fallback precedence, standing-
+  wins for license and credit) match
+  `merge_rights_records` / `fold_duplicate_asset_records`
+  as shipped, including "no merge manufactures a
+  permission", which the per-merge fence
+  reversions and the final judgment carry by
+  construction; the loading section's identity,
+  counting, and resolution claims (entry count by
+  walking records, never declared totals; candidate
+  identity as the directory described; one shared
+  resolution pass, never carried across candidates;
+  the zip64-total tolerance; latest-first trials
+  and the reader-attempt conditions) match
+  `ob-format` at this HEAD, as R12-B left them.
+
+Flagged pre-existing pin changes: **none.** No
+pre-existing test was modified; the two `r12c_*`
+pins are new.

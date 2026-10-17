@@ -182,7 +182,16 @@ keyed by it) is dropped so the names cannot
 reattach later, and the app names the line as
 removed in its status line — in the same save as
 any successful renames — so names never vanish
-silently (round 4, RT-6b/c). A new line later
+silently (round 4, RT-6b/c). A name standing in
+more than one segment is spent once (round 11,
+R11-D): the first pairing in segment order is the
+pairing followed, a later pairing of the same name
+is not followed, and a removal of an already-paired
+name is not followed either; the save's status
+names the name, the pairing that was kept, and the
+pairing or removal that was not followed, so the
+office can correct the names by hand (round 12,
+R12-11). A new line later
 taking a removed line's exact name starts fresh and
 inherits no alias. The slug is many-to-one, so the
 save is also refused, leaving the typed lines in
@@ -426,10 +435,14 @@ precedence, and credit-pairing); they are not
 promised order-free. Two answers are. The
 children's-photos answer — the children note
 itself, and whether a permission stands beside
-it — never depends on the order the records
-arrived in or the route they arrived by: the
-fold route and a chain of single merges agree on
-both, always (round 11, R11-1). The permission
+it — does not depend on the order the records
+arrived in or the route they arrived by, in
+every composition the censuses behind round 11
+(R11-1) and round 12 ran: the fold route and a
+chain of single merges agreed on both across
+those pools and lengths. That agreement is
+measured, not proved (corrected round 12,
+R12-9c). The permission
 half of that answer is decided over the whole
 composition by one rule on both routes: when the
 composed record notes children and its credit
@@ -450,8 +463,10 @@ can produce is vouched.
 - Guards: `document.json` may not exceed 64 MB, and the
   total uncompressed size of a v1 file may not exceed
   512 MB; both refusals say so in plain words. The total is
-  summed from the zip directory before anything is
-  decompressed.
+  counted in actual bytes as each entry is read — the
+  zip directory's declared sizes are never summed,
+  because a directory can lie about them (round 3,
+  RT3-B; corrected round 12, R12-9c).
 - A v1 file may hold at most 8,192 entries, counted by
   walking every end-record candidate's directory
   records (never the directory's declared totals):

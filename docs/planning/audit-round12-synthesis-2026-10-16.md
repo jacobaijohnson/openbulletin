@@ -589,3 +589,22 @@ What shipped, per finding:
 Flagged pre-existing pin changes: **none.** No
 pre-existing test was modified; the two `r12c_*`
 pins are new.
+
+## Coordinator close (2026-10-17)
+
+All three batches shipped and were independently re-verified by the
+coordinator (full unpiped suite + clippy -D warnings at each step): R12-A
+`490ecb4` (667 tests; governor families completed and clause-scoped; one
+flagged pin change — the pin had asserted the nested-group invisibility),
+R12-B `7639c51` (672 tests; plain-2,900 113 s → 893 ms, distinct-key 4 MB
+10.95 s → 501 ms, the DeclaredKey memo deleted; one flagged change by
+disposition, the timing pin's floor), R12-C `4cf20e4` (674 tests; the save
+speaks on unfollowed pairings; two FORMAT.md sentences corrected; zero
+changed pins). One ETXTBSY variant fired during R12-C (a transient
+test-binary launch failure); adjudicated by solo rerun (173/0) and stated
+exactly in the addendum. Round 13 audits these fixes, and its lanes are
+briefed to re-probe the two governor phrasings R12-A deliberately left at
+the disposition's edge ("won't be November 1", "wrong: November 1") — if
+they reproduce the harm, the families gain them by disposition there. The
+Tier-2 final gate runs only after a round returns zero BLOCKER + zero
+MAJOR.

@@ -290,3 +290,20 @@ October 16, 2026, filed under an October 25 name, scanned
 November 14 — past the 28-day bound — re-parses to
 November 22 in the scan itself, yet still counts for
 October 25 and not for November 22).
+
+## Coordinator close (2026-10-17)
+
+Both batches shipped and were independently re-verified by the
+coordinator (full unpiped suite + clippy -D warnings at each step):
+R16-A `0fb1947` (707 tests; group-level target rule, run
+composition incl. prospective clauses, auxiliary class with
+symmetric spent, plain-line parity for all-framed lines, between-
+dates naming, genitive crossing, determiner-headed -s nouns; zero
+changed pins; scope calls recorded for round-17 grading: delayed-
+until claims no target, mixed framed+relative plain lines keep the
+first-signal reading, "the choir cancels" reads noun-headed),
+R16-B `e9cfb5b` (709 tests; a filed copy counts for the Sunday in
+its filename - the decoding already existed; still_waiting's
+precedence was the whole defect; zero changed pins). Round 17
+audits these fixes. The Tier-2 final gate runs only after a round
+returns zero BLOCKER + zero MAJOR.

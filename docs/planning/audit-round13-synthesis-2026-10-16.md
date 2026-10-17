@@ -181,7 +181,58 @@ Each batch appends its dated Shipped addendum here with real numbers. Round
 
 ## Shipped addendum, R13-A
 
-_(appended by the R13-A builder with real numbers and flagged pin changes)_
+Shipped 2026-10-17 on top of `2156588`. **677 tests passing / 0 failed**
+(full unpiped `cargo test --workspace`, cargo exit 0; baseline 674),
+**clippy clean** (`cargo clippy --workspace --all-targets -- -D warnings`,
+exit 0). All changes are in `crates/ob-extract/src/contribution.rs`, in
+the one group analysis every consuming path reads.
+
+- **R13-1.** The governor families are stated once, in a new
+  `is_governor_phrase` helper that the window check and the new
+  clause-trailing check both read. Negation is the contraction class as
+  a class: any token ending in "n't" (either apostrophe), plus
+  unpunctuated "wont" and "cannot", is a negation governor; the R12
+  unpunctuated forms (isnt / arent / wasnt / werent) stand as before.
+  Cancellation gains the verbs cancel, scratch, drop, postpone, remove,
+  and the pair "hold off". Labels gain "wrong" — `group_token` strips
+  the colon, so the token governs bare as well as in the "wrong:" label
+  form; both forms reproduce the harm in the review lane's probe and
+  both are now disqualified. Held controls stand: will-not / must-not /
+  is-not still govern.
+- **R13-2.** `governor_window_start` now takes the group's tokens and,
+  when the last clause break before a date closes a clause whose
+  trailing element is an unspent governor (nothing after the governor
+  phrase but the filler "the" / "date" / "it"), the window reaches back
+  to that clause's start, so the governor governs the first date of the
+  next clause. A cancellation standing in the clause directly after a
+  date is spent on that date (the `governed_after` rule) and carries no
+  further, so "(November 1, cancelled, November 8)" still asserts
+  November 8. `clause_break_after` now classes dash breaks with comma
+  and semicolon breaks (a standalone "-" / "--" token, or a token
+  wearing a trailing hyphen or en/em dash; `group_token` strips the
+  same dashes), in both directions: "(ignore - November 1)"
+  disqualifies, "(notes from the pastor - November 1)" contributes as
+  garnish. One consequence of the disposition's formal rule, named for
+  the record: "(ignore, use November 1)" no longer contributes — the
+  unspent trailing "ignore" governs the next clause's first date,
+  where round 13's probe recorded the pre-fix contribution as
+  accidentally right.
+- **Pins.** Three new `r13a_*` pins, all in ob-extract (171 → 174 in
+  that crate): `r13a_contraction_class_and_wrong_label_on_every_path`
+  (won't / wont / cannot / can't / shouldn't / couldn't on the relative
+  path; won't + "wrong:" on all five paths; will-not / must-not /
+  is-not held), `r13a_cancellation_verbs_disqualify` (all six verbs on
+  the relative path; cancel + scratch on both Keep-through paths),
+  `r13a_unspent_governor_survives_clause_break` (all six witnesses plus
+  the semicolon, hyphen-dash, and em-dash forms on the relative,
+  paren-only, and Keep-through paths; the garnish pin on comma,
+  semicolon, and dash; "(choir was singing, November 1)" still
+  contributes; "(choir from November)" still reads no date; the
+  between-two-dates pins re-asserted with original expectations).
+- **Pre-existing test changes: none.** The diff removes no pre-existing
+  test line; the removed lines are the production functions this batch
+  rewrote (`governed_before`, `governor_window_start`,
+  `clause_break_after`, `group_token`) and their doc comments.
 
 ## Shipped addendum, R13-B
 

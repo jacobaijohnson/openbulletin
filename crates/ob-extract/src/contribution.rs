@@ -777,17 +777,28 @@ fn dates_inside_group_positional(
 /// lowercased: the shape the governor and weekday
 /// checks read.
 fn group_token(raw: &str) -> String {
-    raw.trim_matches(['(', ')', '[', ']', ',', '.', ':', ';'])
-        .to_ascii_lowercase()
+    raw.trim_matches([
+        '(', ')', '[', ']', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}',
+    ])
+    .to_ascii_lowercase()
 }
 
 /// Whether a raw group token ends a clause: a token
 /// wearing a trailing comma or semicolon closes the
 /// words it stands in, so a governor on the far side
-/// of it does not reach across it.
+/// of it does not reach across it. A dash closes a
+/// clause the same way (round 13, R13-2): a
+/// standalone "-" / "--" token, or a token wearing a
+/// trailing en/em dash or hyphen.
 fn clause_break_after(raw: &str) -> bool {
     let trimmed = raw.trim_end_matches([')', ']', ' ']);
-    trimmed.ends_with(',') || trimmed.ends_with(';')
+    trimmed.ends_with(',')
+        || trimmed.ends_with(';')
+        || trimmed.ends_with('\u{2013}')
+        || trimmed.ends_with('\u{2014}')
+        || trimmed == "-"
+        || trimmed == "--"
+        || (trimmed.len() > 1 && trimmed.ends_with('-'))
 }
 
 /// The governor window standing before one date
@@ -802,12 +813,61 @@ fn clause_break_after(raw: &str) -> bool {
 /// the pastor, November 1)" and "(choir was singing,
 /// November 1)" name November 1 in a fresh clause,
 /// and "(not November 1, November 8)" asserts
-/// November 8 on its own terms.
-fn governor_window_start(raw_tokens: &[&str], prev_end: usize, date_start: usize) -> usize {
-    let mut start = prev_end.min(date_start);
-    for j in prev_end.min(date_start)..date_start {
+/// November 8 on its own terms. Round 13 (R13-2):
+/// the break erases only a spent governor — an
+/// unspent governor standing as its clause's
+/// trailing element reaches the first date of the
+/// next clause (see the body).
+fn governor_window_start(
+    raw_tokens: &[&str],
+    tokens: &[String],
+    prev_end: usize,
+    date_start: usize,
+    has_prev_date: bool,
+) -> usize {
+    let lo = prev_end.min(date_start);
+    let mut start = lo;
+    let mut last_break: Option<usize> = None;
+    for j in lo..date_start {
         if raw_tokens.get(j).map(|t| clause_break_after(t)) == Some(true) {
             start = j + 1;
+            last_break = Some(j);
+        }
+    }
+    // Round 13 (R13-2): a clause break erases only a
+    // SPENT governor. When the clause standing
+    // before the last break ends in an unspent
+    // governor — nothing between it and the break
+    // but date-referring filler — that governor
+    // still governs the first date of the next
+    // clause, so the window reaches back to that
+    // clause's start. A governor followed by other
+    // words in its own clause ("notes from the
+    // pastor, …") reaches nothing across the break:
+    // the garnish pin stands. Semicolon and dash
+    // breaks behave like comma breaks here, as
+    // `clause_break_after` already classes them.
+    if let Some(b) = last_break {
+        let mut clause_start = lo;
+        for j in lo..b {
+            if raw_tokens.get(j).map(|t| clause_break_after(t)) == Some(true) {
+                clause_start = j + 1;
+            }
+        }
+        // A standalone dash break token carries no
+        // word of the clause it closes.
+        let mut clause_end = b + 1;
+        if matches!(tokens.get(b).map(String::as_str), Some("" | "-" | "--")) {
+            clause_end = b;
+        }
+        let clause_follows_a_date = has_prev_date && clause_start == lo;
+        if clause_start < clause_end
+            && tokens
+                .get(clause_start..clause_end)
+                .map(|clause| unspent_trailing_governor(clause, clause_follows_a_date))
+                == Some(true)
+        {
+            start = clause_start;
         }
     }
     start
@@ -825,39 +885,135 @@ fn governor_window_start(raw_tokens: &[&str], prev_end: usize, date_start: usize
 /// "used to be", "was", "old date") standing in the
 /// window means the group does not assert that
 /// date — it denies it, cancels it, or names it as
-/// the superseded one. "Was" and "no" are common
+/// the superseded one. Round 13 (R13-1) completes
+/// the classes structurally: any "n't" contraction
+/// (plus wont / cannot) negates, the cancellation
+/// verbs cancel / scratch / drop / postpone /
+/// remove and the pair "hold off" govern, and the
+/// label "wrong:" (the token "wrong", its colon
+/// stripped by `group_token`) disowns its date.
+/// "Was" and "no" are common
 /// words: they govern only here, in the governing
 /// clause the window defines, never anywhere in
 /// prose at large. "Moved to" and "correction:"
 /// carry no marker and keep contributing.
 fn governed_before(window: &[String]) -> bool {
-    for (i, w) in window.iter().enumerate() {
-        match w.as_str() {
-            "not" | "ignore" | "never" | "originally" | "from" | "skip" | "except"
-            | "previously" | "formerly" | "was" | "no" | "cancelled" | "canceled" | "isn't"
-            | "isnt" | "aren't" | "arent" | "wasn't" | "wasnt" | "weren't" | "werent" => {
-                return true
-            }
-            _ => {}
-        }
-        if let Some(next) = window.get(i + 1) {
-            let pair = (w.as_str(), next.as_str());
-            if pair == ("no", "longer")
-                || pair == ("don't", "use")
-                || pair == ("didn't", "use")
-                || pair == ("dont", "use")
-                || pair == ("didnt", "use")
-                || pair == ("rather", "than")
-                || pair == ("instead", "of")
-                || pair == ("never", "mind")
-                || pair == ("old", "date")
-            {
+    for i in 0..window.len() {
+        for len in 1..=3usize {
+            let Some(phrase) = window.get(i..i + len) else {
+                break;
+            };
+            if is_governor_phrase(phrase) {
                 return true;
             }
-            if let Some(third) = window.get(i + 2) {
-                if (w.as_str(), next.as_str(), third.as_str()) == ("used", "to", "be") {
-                    return true;
-                }
+        }
+    }
+    false
+}
+
+/// Whether one run of words is a governor phrase
+/// (round 11–13): the single words, the pairs, and
+/// the triples the families recognize, stated once
+/// so the window check and the clause-trailing
+/// check (round 13, R13-2) read the same families.
+/// Round 13 (R13-1): negation gains the contraction
+/// class AS A CLASS — any token ending in "n't"
+/// (either apostrophe), plus the unpunctuated
+/// "wont" and "cannot", is a negation governor, the
+/// rule a reader applies rather than another word
+/// list; cancellation gains the verbs cancel /
+/// scratch / drop / postpone / remove and the pair
+/// "hold off"; the label word "wrong" (its colon
+/// stripped by `group_token`) disowns its date.
+fn is_governor_phrase(phrase: &[String]) -> bool {
+    let words: Vec<&str> = phrase.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        [w] => {
+            *w == "cannot"
+                || *w == "wont"
+                || w.ends_with("n't")
+                || w.ends_with("n\u{2019}t")
+                || matches!(
+                    *w,
+                    "not"
+                        | "ignore"
+                        | "never"
+                        | "originally"
+                        | "from"
+                        | "skip"
+                        | "except"
+                        | "previously"
+                        | "formerly"
+                        | "was"
+                        | "no"
+                        | "cancelled"
+                        | "canceled"
+                        | "isnt"
+                        | "arent"
+                        | "wasnt"
+                        | "werent"
+                        | "cancel"
+                        | "scratch"
+                        | "drop"
+                        | "postpone"
+                        | "remove"
+                        | "wrong"
+                )
+        }
+        [a, b] => {
+            matches!(
+                (*a, *b),
+                ("no", "longer")
+                    | ("don't", "use")
+                    | ("didn't", "use")
+                    | ("dont", "use")
+                    | ("didnt", "use")
+                    | ("rather", "than")
+                    | ("instead", "of")
+                    | ("never", "mind")
+                    | ("old", "date")
+                    | ("hold", "off")
+            )
+        }
+        [a, b, c] => {
+            matches!((*a, *b, *c), ("used", "to", "be") | ("do", "not", "use"))
+        }
+        _ => false,
+    }
+}
+
+/// Whether a clause ending at a clause break holds
+/// an UNSPENT governor as its trailing element
+/// (round 13, R13-2): a governor phrase after which
+/// nothing stands in the clause but date-referring
+/// filler ("the", "date", "it"). Such a governor
+/// has governed no date yet, so the break does not
+/// erase it. A cancellation standing in the clause
+/// directly after a date is the exception: it was
+/// spent on that date by `governed_after`
+/// ("(November 1, cancelled, November 8)" still
+/// asserts November 8), so it carries no further.
+fn unspent_trailing_governor(clause: &[String], clause_follows_a_date: bool) -> bool {
+    for i in 0..clause.len() {
+        for len in 1..=3usize {
+            let Some(phrase) = clause.get(i..i + len) else {
+                break;
+            };
+            if !is_governor_phrase(phrase) {
+                continue;
+            }
+            if clause_follows_a_date
+                && len == 1
+                && matches!(phrase[0].as_str(), "cancelled" | "canceled")
+            {
+                continue;
+            }
+            let suffix = &clause[i + len..];
+            if suffix
+                .iter()
+                .all(|w| matches!(w.as_str(), "the" | "date" | "it"))
+            {
+                return true;
             }
         }
     }
@@ -1007,7 +1163,7 @@ fn analyze_group(inner: &str, today: SimpleDate) -> GroupAnalysis {
         } else {
             positional[idx - 1].1 + positional[idx - 1].2
         };
-        let window_start = governor_window_start(&raw_tokens, prev_end, start);
+        let window_start = governor_window_start(&raw_tokens, &tokens, prev_end, start, idx > 0);
         let window = &tokens[window_start..start.min(tokens.len())];
         let next_start = positional.get(idx + 1).map(|(_, s, _)| *s);
         if governed_before(window)
@@ -1075,6 +1231,16 @@ fn analyze_group(inner: &str, today: SimpleDate) -> GroupAnalysis {
 /// governor with no later date to govern
 /// disqualifies the date it follows, and the
 /// content reading sees through inner parentheses.
+///
+/// Round 13 (R13-1/R13-2): the families are
+/// completed structurally — negation is the
+/// "n't" contraction class (plus wont / cannot),
+/// cancellation gains cancel / scratch / drop /
+/// postpone / remove / hold off, labels gain
+/// "wrong:" — and a clause break erases only a
+/// spent governor: an unspent governor standing
+/// as its clause's trailing element still governs
+/// the first date of the next clause.
 fn group_date(inner: &str, today: SimpleDate) -> Option<SimpleDate> {
     analyze_group(inner, today).contributed
 }
@@ -4909,6 +5075,239 @@ Youth group meets Wednesday at 6 PM.
                 "{group}: a non-governing \"was\"/\"no\" does not disqualify"
             );
         }
+    }
+
+    #[test]
+    fn r13a_contraction_class_and_wrong_label_on_every_path() {
+        // Round 13 (R13-1, review R13-1 + red team
+        // RT13-1): the governor families missed the
+        // contraction class, and "(won't be November
+        // 1)" / "(wrong: November 1)" reproduced the
+        // full R11-4 harm on every consuming path.
+        // Negation is now a class: any token ending
+        // in "n't", plus unpunctuated "wont" and
+        // "cannot", governs — the rule a reader
+        // applies, not another word list.
+        for phrase in [
+            "won't be",
+            "wont be",
+            "cannot be",
+            "can't be",
+            "shouldn't be",
+            "couldn't be",
+        ] {
+            let group = format!("({phrase} November 1)");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: the contraction class governs on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_parenthesized_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: the governed date is not remembered"
+            );
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::SundayInWords(oct(25)),
+                "{group}: no arming on the governed date"
+            );
+            assert_eq!(
+                week_verdict(&c, Some(nov(1))),
+                WeekVerdict::SundayInWords(nov(1)),
+                "{group}: the words resolve against the bulletin, \
+                 never DifferentSunday on the governed date"
+            );
+        }
+        // Held controls: the spelled-out forms the
+        // bare "not" token has always caught still
+        // govern.
+        for phrase in ["will not be", "must not be", "is not"] {
+            let group = format!("({phrase} November 1)");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: the spelled-out negation still governs"
+            );
+        }
+        // "won't" and the "wrong:" label are pinned
+        // on every consuming path, the way the R12
+        // families are.
+        for phrase in ["won't be", "wrong:"] {
+            let group = format!("({phrase} November 1)");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            let expected_words = format!("next Sunday {group}");
+            assert_eq!(
+                c.for_sunday_in_words.as_deref(),
+                Some(expected_words.as_str()),
+                "{group}: the relative words still stand"
+            );
+            assert_eq!(c.for_sunday_parenthesized_date, None, "{group}");
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::SundayInWords(oct(25)),
+                "{group}: no arming on the governed date"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: paren-only");
+            assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{group}");
+            assert_eq!(
+                week_verdict(&c, Some(nov(1))),
+                WeekVerdict::NoSundayNamed,
+                "{group}: never SameSunday on a governed date"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through paren-only");
+            let text = format!("Keep-through: choir anthem {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through fallback");
+            assert_eq!(c.keep_through_parenthesized_mismatch, None, "{group}");
+            let text = format!("For Sunday: October 25, 2026 {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(oct(25)), "{group}");
+            assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{group}");
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::SameSunday,
+                "{group}"
+            );
+        }
+    }
+
+    #[test]
+    fn r13a_cancellation_verbs_disqualify() {
+        // Round 13 (R13-1, red team RT13-1): the
+        // cancellation family held only the past
+        // forms cancelled/canceled; the verbs an
+        // office actually writes — cancel, scratch,
+        // drop, postpone, remove, hold off — governed
+        // nothing, and every miss set the dropped
+        // date as keep-through or armed it.
+        for phrase in [
+            "cancel", "scratch", "drop", "postpone", "remove", "hold off",
+        ] {
+            let group = format!("({phrase} November 1)");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: the cancellation verb governs on the relative path"
+            );
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::SundayInWords(oct(25)),
+                "{group}: no arming on the cancelled date"
+            );
+        }
+        // Cancel and scratch are also pinned on the
+        // Keep-through paths, trailing and fallback.
+        for phrase in ["cancel", "scratch"] {
+            let group = format!("({phrase} November 1)");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through paren-only");
+            let text = format!("Keep-through: choir anthem {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through fallback");
+            assert_eq!(c.keep_through_parenthesized_mismatch, None, "{group}");
+        }
+    }
+
+    #[test]
+    fn r13a_unspent_governor_survives_clause_break() {
+        // Round 13 (R13-2, review R13-2): a clause
+        // break erased a governor that had governed
+        // nothing yet — "(ignore, November 1)" and
+        // its family contributed in full. A break now
+        // erases only a spent governor: an unspent
+        // governor standing as its clause's trailing
+        // element (nothing after it but date-referring
+        // filler) still governs the first date of the
+        // next clause.
+        for group in [
+            "(ignore, November 1)",
+            "(from, November 1)",
+            "(skip, November 1)",
+            "(please ignore, November 1)",
+            "(do not use, November 1)",
+            "(ignore the date, November 1)",
+            "(ignore; November 1)",
+            "(ignore - November 1)",
+            "(ignore \u{2014} November 1)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: the unspent governor survives the break"
+            );
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::SundayInWords(oct(25)),
+                "{group}: no arming on the governed date"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: paren-only");
+            assert_eq!(
+                week_verdict(&c, Some(nov(1))),
+                WeekVerdict::NoSundayNamed,
+                "{group}: never SameSunday on a governed date"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through");
+        }
+        // The garnish pin stands, on comma, semicolon
+        // and dash alike: a governor followed by other
+        // words in its own clause reaches nothing
+        // across the break, and the fresh-clause date
+        // is named, not silently dropped.
+        for group in [
+            "(notes from the pastor, November 1)",
+            "(notes from the pastor; November 1)",
+            "(notes from the pastor - November 1)",
+        ] {
+            let text = format!("For Sunday: October 25, 2026 {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(oct(25)), "{group}");
+            let m = c
+                .for_sunday_parenthesized_mismatch
+                .expect("the fresh-clause date is named, not silently dropped");
+            assert_eq!(m.named, nov(1), "{group}");
+        }
+        // Held care cases stand with original
+        // expectations: a non-governing clause before
+        // the break contributes its date, a group
+        // naming no full date reads nothing, and the
+        // between-two-dates pins are untouched — a
+        // governor spent on one date (forward, or as
+        // the trailing cancellation the date it
+        // follows claims) governs nothing after it.
+        let text =
+            "For Sunday: next Sunday (choir was singing, November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_sunday_parenthesized_date, Some(nov(1)));
+        let text = "For Sunday: next Sunday (choir from November)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_sunday_parenthesized_date, None);
+        assert_eq!(c.for_sunday_parenthesized_dates, Vec::<SimpleDate>::new());
+        let text =
+            "For Sunday: next Sunday (ignore November 1, use November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_sunday_parenthesized_date, Some(nov(8)));
+        let text = "For Sunday: (November 1, cancelled, November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "a spent cancellation governs nothing in the fresh clause"
+        );
     }
 
     #[test]

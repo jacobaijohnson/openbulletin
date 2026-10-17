@@ -2274,14 +2274,20 @@ struct ServingPairing {
     /// On an ambiguous pairing, the kinds of change
     /// the pairing saw; None otherwise.
     ambiguous_kinds: Option<ServingLineEditKinds>,
-    /// Every segment's runs of old-only and new-only
-    /// names, in segment order: the positional
-    /// evidence the slug-conflict check judges from
-    /// (round 8, R8-11) — within a segment, a new name
-    /// sits at the position of the old name it is
-    /// paired with, or, in a segment the pairing
-    /// could not resolve, at the position of the line
-    /// the pairing's own in-order reading assigns it.
+    /// Every segment's runs of lines AS THEY STAND
+    /// in the segment, in segment order — kept names
+    /// included, as in-segment anchors (round 9,
+    /// R9-15): the positional evidence the
+    /// slug-conflict check judges from (round 8,
+    /// R8-11) — within a segment, a new name sits at
+    /// the position of the old name it is paired
+    /// with, or, in a segment the pairing could not
+    /// resolve, at the position of the line the
+    /// pairing's own in-order reading assigns it.
+    /// Positions are read on these unfiltered runs:
+    /// on the filtered runs a kept name that moved
+    /// into the segment shifted every later position
+    /// and the evidence named the wrong line.
     segments: Vec<(Vec<String>, Vec<String>)>,
 }
 
@@ -2290,26 +2296,30 @@ struct ServingPairing {
 /// R7-10): the refusal sentence for an ambiguous
 /// edit names only the kinds that are present, so a
 /// rename-plus-removal refusal no longer claims a
-/// move that never happened. `moved` is the pairing's
-/// own crossing signal: names the pairing could not
-/// resolve spread over more than one segment, so a
-/// partner must sit in another segment than its
-/// line. Segments the pairing DID resolve — a
-/// segment holding only removals, or only additions
-/// — contribute their own kinds only and never count
-/// toward `moved` (round 8, R8-10); an old-only
-/// segment counts toward it only when an unresolved
-/// segment holds more new names than old ones, so
-/// one of those new names' partners must sit in
-/// another segment and an old-only segment is where
-/// it can sit. A rename, a removal, or an addition
-/// the counts cannot account for the other way is
-/// read off the two lists' old-only and new-only
-/// totals: more old-only names than new-only means a
-/// line was removed, more new-only than old-only
-/// means a line was added, and unpaired names on
-/// both sides mean at least one rename is among the
-/// changes the pairing could not resolve.
+/// move that never happened. The kinds are computed
+/// from the pairing's PER-SEGMENT outcomes (round
+/// 9, R9-14), not from the two lists' global totals
+/// plus a surplus inference: each segment
+/// contributes the kinds its own evidence shows —
+/// the renames it paired or left unresolved, the
+/// removals and additions it resolved. A segment
+/// the pairing resolved on its own — one holding
+/// only removals between anchors, or only
+/// additions — names its own kind and is never a
+/// partner reservoir. `moved` is the pairing's own
+/// crossing signal, claimed only when names
+/// demonstrably crossed segments: unresolved names
+/// spread over more than one segment, whose surplus
+/// and deficit answer each other, or a surplus of
+/// new names in an unresolved segment whose
+/// partners can only sit in the segment after the
+/// last anchor — the one old-only segment whose
+/// names such a surplus can pair with, up to as
+/// many names as the surplus needs (the canonical
+/// crossed renames); that segment's names past the
+/// need are removals. A surplus with no partner
+/// segment to sit in is an addition, and a deficit
+/// left over after any crossing is a removal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ServingLineEditKinds {
     /// At least one line was renamed.
@@ -2392,21 +2402,23 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
     let mut leftover_new: Vec<String> = Vec::new();
     let mut segment_runs: Vec<(Vec<String>, Vec<String>)> = Vec::new();
     // The segment tallies the ambiguous kinds are
-    // read from (round 7, R7-10; round 8, R8-10):
-    // segments holding leftover names on both sides
-    // are the ones the pairing could not resolve;
-    // removal-only and addition-only segments are
-    // resolved as what they are. An unresolved
-    // segment holding more new names than old ones
-    // means one of those new names' partners sits in
-    // another segment, and an old-only segment is
-    // where such a partner can sit — only then does
-    // an old-only segment count toward `moved` too.
+    // read from (round 7, R7-10; round 8, R8-10;
+    // round 9, R9-14): each segment contributes the
+    // kinds its own evidence shows, tallied here —
+    // the surplus and deficit an unresolved segment
+    // was left holding, the names a removal-only
+    // segment resolved (kept apart for the segment
+    // after the last anchor, the trailing segment,
+    // whose names are the one place a surplus new
+    // name's partner can sit), and whether an
+    // addition-only segment stood anywhere.
     let mut leftover_segments = 0usize;
-    let mut removal_only_segments = 0usize;
+    let mut surplus_new_excess = 0usize;
+    let mut deficit_old_excess = 0usize;
+    let mut bounded_removal_names = 0usize;
+    let mut trailing_removal_names = 0usize;
     let mut addition_only_segments = 0usize;
-    let mut leftover_has_surplus_new = false;
-    for ((o0, o1), (n0, n1)) in &segments {
+    for (seg_index, ((o0, o1), (n0, n1))) in segments.iter().enumerate() {
         let seg_old: Vec<String> = old_trim[*o0..*o1]
             .iter()
             .filter(|n| !new_trim.contains(n))
@@ -2417,14 +2429,26 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
             .filter(|n| !old_trim.contains(n))
             .cloned()
             .collect();
-        segment_runs.push((seg_old.clone(), seg_new.clone()));
+        // The runs the pairing stores are the
+        // segment's lines AS THEY STAND, kept names
+        // included (round 9, R9-15): the slug-conflict
+        // check reads positions from them, and a kept
+        // name standing inside the segment is an
+        // in-segment anchor for those positions. The
+        // pairing itself works on the filtered runs
+        // above, as it always has.
+        segment_runs.push((old_trim[*o0..*o1].to_vec(), new_trim[*n0..*n1].to_vec()));
         if seg_old.len() == seg_new.len() {
             for (o, n) in seg_old.iter().zip(seg_new.iter()) {
                 pairs.push((o.clone(), n.clone()));
             }
         } else if seg_new.is_empty() {
             if !seg_old.is_empty() {
-                removal_only_segments += 1;
+                if seg_index + 1 == segments.len() {
+                    trailing_removal_names += seg_old.len();
+                } else {
+                    bounded_removal_names += seg_old.len();
+                }
             }
             removals.extend(seg_old);
         } else if seg_old.is_empty() {
@@ -2433,7 +2457,9 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
         } else {
             leftover_segments += 1;
             if seg_new.len() > seg_old.len() {
-                leftover_has_surplus_new = true;
+                surplus_new_excess += seg_new.len() - seg_old.len();
+            } else {
+                deficit_old_excess += seg_old.len() - seg_new.len();
             }
             leftover_old.extend(seg_old);
             leftover_new.extend(seg_new);
@@ -2445,18 +2471,39 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
         // as the record of the intent the pairing saw
         // (round 7, R7-9, R7-10). Nothing follows
         // them: the migration checks `ambiguous` first.
-        let unresolved_segments = leftover_segments
-            + if leftover_has_surplus_new {
-                removal_only_segments
-            } else {
-                0
-            };
+        // The kinds are the segments' own outcomes
+        // (round 9, R9-14), not the two lists' global
+        // totals plus a surplus inference — both
+        // round-9 lanes found shapes that inference
+        // misdescribed in mirror directions. Surplus
+        // new names and deficit old names in
+        // unresolved segments first answer each
+        // other: a surplus and a deficit spread over
+        // segments are the same crossed renames, and
+        // claim neither an addition nor a removal. A
+        // surplus left over can still pair across an
+        // anchor with the trailing segment's old
+        // names (the canonical crossed renames), up
+        // to as many of those names as the surplus
+        // needs; any further surplus is an addition.
+        // A bounded removal-only segment — closed by
+        // anchors on both sides — is a removal the
+        // pairing resolved in place, never a partner
+        // reservoir; the trailing segment's old names
+        // past the surplus's need are removals, as is
+        // a deficit left over after the crossing.
+        let crossed_pairs = surplus_new_excess.min(deficit_old_excess);
+        let surplus_after_cross = surplus_new_excess - crossed_pairs;
+        let deficit_after_cross = deficit_old_excess - crossed_pairs;
+        let reservoir_used = trailing_removal_names.min(surplus_after_cross);
+        let surplus_final = surplus_after_cross - reservoir_used;
         let kinds = ServingLineEditKinds {
             renamed: true,
-            removed: old_only.len() > new_only.len()
-                || (removal_only_segments > 0 && !leftover_has_surplus_new),
-            added: new_only.len() > old_only.len() || addition_only_segments > 0,
-            moved: unresolved_segments >= 2,
+            removed: bounded_removal_names > 0
+                || trailing_removal_names > reservoir_used
+                || deficit_after_cross > 0,
+            added: addition_only_segments > 0 || surplus_final > 0,
+            moved: leftover_segments >= 2 || reservoir_used > 0,
         };
         return ServingPairing {
             pairs,
@@ -4568,6 +4615,187 @@ mod tests {
                 moved: true,
             }
         );
+    }
+
+    #[test]
+    fn r9_kinds_come_from_each_segments_own_outcome() {
+        // Round 9 (R9-14, review R9-R3 + red team
+        // RT9-14): the kinds used to be read off the
+        // two lists' global totals plus a surplus
+        // inference — an unresolved segment holding
+        // surplus new names made every old-only
+        // segment count toward `moved` and suppressed
+        // `removed`. Two mirror compositions broke in
+        // opposite directions, and both are pinned
+        // here with the kind sets their segments' own
+        // outcomes show.
+        let kinds_of = |old: &[&str], new: &[&str]| {
+            let old_lines: Vec<String> = old.iter().map(|n| n.to_string()).collect();
+            let new_lines: Vec<String> = new.iter().map(|n| n.to_string()).collect();
+            let mut participants: BTreeMap<String, String> = BTreeMap::new();
+            let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+            let migration = migrate_serving_line_renames_detailed(
+                &old_lines,
+                &new_lines,
+                &mut participants,
+                &mut aliases,
+            );
+            assert!(migration.ambiguous, "the refusal itself stands");
+            migration.ambiguous_kinds.expect("kinds on a refusal")
+        };
+        // The review lane's K1: a deficit rename
+        // segment (two old names against one new)
+        // plus an addition-only segment. The shipped
+        // kinds were {renamed, added}, matching no
+        // possible reading: the deficit segment's
+        // second old name was removed or renamed
+        // across the anchor, and the addition stands
+        // in its own segment. The segment-local
+        // reading — one rename, one removal in the
+        // segment, the addition in its own — is the
+        // pinned set.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "Old One", "Old Two", "Beta"],
+                &["Alpha", "New One", "Beta", "Fresh Line"],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: true,
+                added: true,
+                moved: false,
+            }
+        );
+        // The red team's RT9-14 witness: a surplus
+        // rename segment plus a removal-only segment
+        // BETWEEN anchors. The shipped kinds were
+        // {renamed, moved} — claiming the one kind
+        // that may not have happened (the surplus name
+        // is indistinguishable from an addition) while
+        // denying the removal that stands resolved in
+        // its own bounded segment. Per-segment, the
+        // shape is two renames and a surplus addition
+        // in the first segment, a removal in the
+        // second, and no move.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "X1", "X2", "Beta", "Gone", "Gamma"],
+                &["Alpha", "Y1", "Y2", "Y3", "Beta", "Gamma"],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: true,
+                added: true,
+                moved: false,
+            }
+        );
+        // The same shape plus a clean addition-only
+        // segment: the removal still stands.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "X1", "X2", "Beta", "Gone", "Gamma"],
+                &["Alpha", "Y1", "Y2", "Y3", "Beta", "Gamma", "Fresh"],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: true,
+                added: true,
+                moved: false,
+            }
+        );
+        // The mirror control (review K2): a surplus
+        // segment plus an old-only segment AFTER the
+        // last anchor — the canonical crossed-renames
+        // geometry, where the trailing segment's name
+        // is the surplus name's partner across the
+        // anchor. {renamed, moved}, as pinned since
+        // round 6.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "Old One", "Beta", "Gone"],
+                &["Alpha", "New One", "New Two", "Beta"],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: false,
+                added: false,
+                moved: true,
+            }
+        );
+        // A surplus segment standing alone: the
+        // surplus name has no partner segment to sit
+        // in, so it reads as an addition and no move
+        // is claimed (the red team's control).
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "X1", "X2", "Beta"],
+                &["Alpha", "Y1", "Y2", "Y3", "Beta"],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: false,
+                added: true,
+                moved: false,
+            }
+        );
+    }
+
+    #[test]
+    fn r9_positional_evidence_reads_the_segments_unfiltered_runs() {
+        // Round 9 (R9-15, red team RT9-15): the
+        // positional excuse read the pairing's segment
+        // runs AFTER kept names were filtered out, so
+        // a kept name moved into the segment shifted
+        // every later position. The Beta/Wanderer
+        // witness, verbatim: "Kids message" claims the
+        // children's-message slug through the alias;
+        // in the contested segment the lines stand
+        // old [Kids message, Choir] against new [Beta,
+        // Children's message, New B, Extra] — Beta is
+        // a kept line that moved into the segment. On
+        // the unfiltered runs, "Children's message"
+        // stands at Choir's position (1), and the
+        // conflict names Choir as the taker. On the
+        // filtered runs it stood at index 0, aligned
+        // with the claimant, and the hijack was
+        // excused with its reason lost (the save was
+        // still refused, as ambiguous).
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        aliases.insert("childrens_message".to_string(), "kids_message".to_string());
+        let lines =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        let old_lines = lines(&[
+            "Alpha",
+            "Kids message",
+            "Choir",
+            "Wanderer",
+            "Beta",
+            "Omega",
+        ]);
+        let new_lines = lines(&[
+            "Alpha",
+            "Beta",
+            "Children's message",
+            "New B",
+            "Extra",
+            "Wanderer",
+            "Omega",
+        ]);
+        let conflict = serving_line_slug_conflict(&old_lines, &new_lines, &aliases)
+            .expect("the hijack's reason is named, not excused");
+        assert!(conflict.builtin);
+        assert_eq!(conflict.first, "Choir");
+        assert_eq!(conflict.second, "Kids message");
+        assert!(!conflict.taker_is_new);
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        let mut alias_record = aliases.clone();
+        let migration = migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut alias_record,
+        );
+        assert!(migration.ambiguous, "the save is still refused");
     }
 
     #[test]

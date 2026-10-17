@@ -91,6 +91,355 @@ fn read_entry_text_capped(
     String::from_utf8(bytes).map_err(|_| "that file does not hold text we can read".to_string())
 }
 
+/// Read `buf` at absolute offset `at`.
+fn read_at(file: &mut std::fs::File, at: u64, buf: &mut [u8]) -> Option<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(at)).ok()?;
+    file.read_exact(buf).ok()?;
+    Some(())
+}
+
+/// One first-signature query for
+/// [`resolve_first_hits`]: the first place `sig`
+/// occurs in `[from, to)`, or None when it does not
+/// occur there.
+struct FirstHit {
+    sig: [u8; 4],
+    from: u64,
+    to: u64,
+    answer: Option<u64>,
+}
+
+/// Resolve every query in `queries` with ONE pass
+/// over the file region the queries span
+/// (round 9, R9-2). The shipped code searched that
+/// region once PER end-record candidate, so a zip
+/// comment carrying thousands of end-record
+/// signatures paid a full scan for each of them and
+/// a crafted 1 MB file took minutes to open. Here
+/// the region is read once, in chunks; each query
+/// is answered by the first signature at or after
+/// its own start, exactly as a search of its own
+/// window would answer it, and the pass stops as
+/// soon as every query is answered.
+fn resolve_first_hits(file: &mut std::fs::File, queries: &mut [FirstHit]) {
+    let mut order: Vec<usize> = (0..queries.len())
+        .filter(|&i| queries[i].from < queries[i].to)
+        .collect();
+    if order.is_empty() {
+        return;
+    }
+    let scan_start = order.iter().map(|&i| queries[i].from).min().unwrap_or(0);
+    let scan_end = order.iter().map(|&i| queries[i].to).max().unwrap_or(0);
+    if scan_start >= scan_end {
+        return;
+    }
+    order.sort_by_key(|&i| (queries[i].sig, queries[i].from));
+    // Contiguous groups of one signature in `order`,
+    // each with a pointer to its first unanswered
+    // query. Queries are answered in `from` order
+    // within a group: the first chunk holding a
+    // signature at or after a query's start answers
+    // it (an earlier chunk either held no signature
+    // or held only signatures before its start, or
+    // the query would already be answered).
+    let mut groups: Vec<(usize, usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    while start < order.len() {
+        let mut end = start + 1;
+        while end < order.len() && queries[order[end]].sig == queries[order[start]].sig {
+            end += 1;
+        }
+        groups.push((start, end, start));
+        start = end;
+    }
+    let mut pos = scan_start;
+    while pos < scan_end && groups.iter().any(|&(_, end, ptr)| ptr < end) {
+        let want = ((scan_end - pos).min(65_536)) as usize;
+        let read_end = (pos + want as u64 + 3).min(scan_end);
+        let mut hay = vec![0u8; (read_end - pos) as usize];
+        if read_at(file, pos, &mut hay).is_none() {
+            return;
+        }
+        for (gstart, gend, ptr) in groups.iter_mut() {
+            if *ptr >= *gend {
+                continue;
+            }
+            let sig = queries[order[*gstart]].sig;
+            // Signature starts inside this chunk's own
+            // span, [pos, pos + want): the three read-
+            // ahead bytes let a signature starting at
+            // the span's last bytes still be seen whole.
+            let mut positions: Vec<u64> = Vec::new();
+            for i in 0..want {
+                if i + 4 > hay.len() {
+                    break;
+                }
+                if hay[i..].starts_with(&sig[..]) {
+                    positions.push(pos + i as u64);
+                }
+            }
+            if positions.is_empty() {
+                continue;
+            }
+            let last = *positions.last().unwrap_or(&0);
+            while *ptr < *gend {
+                let qi = order[*ptr];
+                if queries[qi].from > last {
+                    break;
+                }
+                let idx = positions.partition_point(|&p| p < queries[qi].from);
+                let found = positions[idx];
+                queries[qi].answer = if found + 4 <= queries[qi].to {
+                    Some(found)
+                } else {
+                    None
+                };
+                *ptr += 1;
+            }
+        }
+        pos += want as u64;
+    }
+}
+
+/// Count the directory records in front of one end
+/// record: walk from the directory's first record
+/// at `cd_start`, each record measured by its own
+/// name, extra, and comment lengths, until the end
+/// structures begin at `dir_end`. The walk stops as
+/// soon as the count passes `cap`. None when the
+/// records do not chain exactly to `dir_end`.
+fn count_directory_records(
+    file: &mut std::fs::File,
+    cd_start: u64,
+    dir_end: u64,
+    cap: usize,
+) -> Option<usize> {
+    let mut count = 0usize;
+    let mut at = cd_start;
+    while at < dir_end {
+        if count > cap {
+            return Some(count);
+        }
+        let mut header = [0u8; 46];
+        read_at(file, at, &mut header)?;
+        if !header.starts_with(b"PK\x01\x02") {
+            return None;
+        }
+        let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
+        count += 1;
+        at += 46 + name_len + extra_len + comment_len;
+    }
+    if at == dir_end {
+        Some(count)
+    } else {
+        None
+    }
+}
+
+/// The tail window where end records can live: the
+/// trailing comment space (at most 65,535 bytes)
+/// plus the end structures — the end record itself,
+/// a zip64 locator, and a zip64 end record. End
+/// records outside this window are not candidates
+/// the format's own search would find.
+const TAIL_WINDOW: u64 = 65_535 + 22 + 20 + 56;
+
+/// Every end-record candidate in a file whose
+/// directory can be walked, latest first, as
+/// (candidate position, raw entry count) pairs.
+/// Candidates are collected by ONE scan of the tail
+/// window; every candidate's directory start (and
+/// any zip64 record position its locator names) is
+/// resolved in one shared pass per signature over
+/// the region those windows span (round 9, R9-2);
+/// the per-candidate directory walks then run as
+/// they always have, each stopping just past `cap`.
+fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize)> {
+    let mut out: Vec<(u64, usize)> = Vec::new();
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return out;
+    };
+    let Ok(meta) = file.metadata() else {
+        return out;
+    };
+    let file_len = meta.len();
+    if file_len < 22 {
+        return out;
+    }
+    // One scan of the tail window collects every
+    // candidate position, latest first, under the
+    // reader's relaxed rule: a "PK\x05\x06" whose
+    // comment length fits before the end of the file
+    // (the comment may end early — trailing junk).
+    // EVERY candidate in the window is collected
+    // (round 8, R8-1): an earlier bound of sixteen
+    // let fifteen junk records push a flood's own
+    // end record past the enumeration, so the cap
+    // never counted it.
+    let window_start = file_len.saturating_sub(TAIL_WINDOW);
+    let window_len = (file_len - window_start) as usize;
+    let mut window = vec![0u8; window_len];
+    if read_at(&mut file, window_start, &mut window).is_none() {
+        return out;
+    }
+    let mut positions: Vec<u64> = Vec::new();
+    if window.len() >= 22 {
+        for pos in (0..=window.len() - 22).rev() {
+            if !window[pos..].starts_with(b"PK\x05\x06") {
+                continue;
+            }
+            let at = window_start + pos as u64;
+            let comment_len = u64::from(u16::from_le_bytes([window[pos + 20], window[pos + 21]]));
+            if at + 22 + comment_len <= file_len {
+                positions.push(at);
+            }
+        }
+    }
+    // Stage 1: parse each candidate's end record.
+    // A zip64 locator in front of the record points
+    // at the zip64 record, which carries the
+    // directory's real offset when the plain fields
+    // are too small to hold it (its total-entries
+    // field sits at byte 32, its offset at 48). The
+    // reader finds that record by searching forward
+    // from the locator's declared offset; each such
+    // search becomes one query, resolved together
+    // below, not one scan per candidate.
+    struct Candidate {
+        at: u64,
+        total16: u16,
+        cd_offset32: u32,
+        zip64_query: Option<usize>,
+        locator_at: Option<u64>,
+    }
+    let mut candidates: Vec<Candidate> = Vec::new();
+    let mut queries: Vec<FirstHit> = Vec::new();
+    for at in positions {
+        let mut eocd = [0u8; 22];
+        if read_at(&mut file, at, &mut eocd).is_none() || !eocd.starts_with(b"PK\x05\x06") {
+            continue;
+        }
+        let total16 = u16::from_le_bytes([eocd[10], eocd[11]]);
+        let cd_offset32 = u32::from_le_bytes(eocd[16..20].try_into().unwrap_or([0; 4]));
+        let mut zip64_query = None;
+        let mut locator_at = None;
+        if (total16 == u16::MAX || cd_offset32 == u32::MAX) && at >= 20 {
+            let lat = at - 20;
+            let mut locator = [0u8; 20];
+            if read_at(&mut file, lat, &mut locator).is_some() && locator.starts_with(b"PK\x06\x07")
+            {
+                let record_declared =
+                    u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
+                if record_declared < lat {
+                    zip64_query = Some(queries.len());
+                    queries.push(FirstHit {
+                        sig: *b"PK\x06\x06",
+                        from: record_declared,
+                        to: lat,
+                        answer: None,
+                    });
+                    locator_at = Some(lat);
+                }
+            }
+        }
+        candidates.push(Candidate {
+            at,
+            total16,
+            cd_offset32,
+            zip64_query,
+            locator_at,
+        });
+    }
+    if !queries.is_empty() {
+        resolve_first_hits(&mut file, &mut queries);
+    }
+    // Stage 2: each candidate's directory window.
+    // The zip64 record, when the shared pass found
+    // it and it parses, retargets the window: the
+    // directory ends where the record stands, and
+    // the record's fields replace the sentinels.
+    // The directory's real start is then the first
+    // central header at or after the declared
+    // offset: prepended bytes shift it forward, and
+    // the declared totals (either field, either
+    // record) are never consulted again (round 6,
+    // RT6-7). Those searches are queries too, one
+    // shared pass for every candidate.
+    struct Windowed {
+        at: u64,
+        dir_end: u64,
+        declared_total: u64,
+        cd_query: Option<usize>,
+    }
+    let mut windows: Vec<Windowed> = Vec::new();
+    let mut cd_queries: Vec<FirstHit> = Vec::new();
+    for cand in &candidates {
+        let mut dir_end = cand.at;
+        let mut declared_offset = u64::from(cand.cd_offset32);
+        let mut declared_total = u64::from(cand.total16);
+        if let (Some(qi), Some(_)) = (cand.zip64_query, cand.locator_at) {
+            if let Some(record_at) = queries[qi].answer {
+                let mut record = [0u8; 56];
+                if read_at(&mut file, record_at, &mut record).is_some()
+                    && record.starts_with(b"PK\x06\x06")
+                {
+                    dir_end = record_at;
+                    declared_total =
+                        u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
+                    declared_offset =
+                        u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+                }
+            }
+        }
+        let cd_query = if declared_offset < dir_end {
+            let qi = cd_queries.len();
+            cd_queries.push(FirstHit {
+                sig: *b"PK\x01\x02",
+                from: declared_offset,
+                to: dir_end,
+                answer: None,
+            });
+            Some(qi)
+        } else {
+            None
+        };
+        windows.push(Windowed {
+            at: cand.at,
+            dir_end,
+            declared_total,
+            cd_query,
+        });
+    }
+    if !cd_queries.is_empty() {
+        resolve_first_hits(&mut file, &mut cd_queries);
+    }
+    // Stage 3: walk each candidate's directory.
+    for win in &windows {
+        let cd_start = win.cd_query.and_then(|qi| cd_queries[qi].answer);
+        let count = match cd_start {
+            Some(cd_start) => count_directory_records(&mut file, cd_start, win.dir_end, cap),
+            None => {
+                // No directory records in front of the
+                // end record: an honestly empty archive
+                // counts zero; anything else is the
+                // reader's error to report.
+                if win.declared_total == 0 {
+                    Some(0)
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(count) = count {
+            out.push((win.at, count));
+        }
+    }
+    out
+}
+
 /// How many entries a container's central directory
 /// lists, counting every record as written: two entries
 /// that share a name count twice (round 5, RT5-5).
@@ -139,186 +488,17 @@ fn read_entry_text_capped(
 /// itself would choose, so honest files with trailing
 /// junk but no second directory count as they always
 /// have.
+///
+/// The cost is one scan of the tail window where end
+/// records can live, one shared pass over the region
+/// the candidates' directory windows span, and the
+/// bounded walks (round 9, R9-2): the round-8 code
+/// searched the file once per candidate, so a comment
+/// carrying thousands of end-record signatures made
+/// opening take minutes on a 1 MB file.
 fn raw_entry_count(path: &Path, cap: usize) -> Option<usize> {
-    use std::io::{Read, Seek, SeekFrom};
-    fn read_at(file: &mut std::fs::File, at: u64, buf: &mut [u8]) -> Option<()> {
-        file.seek(SeekFrom::Start(at)).ok()?;
-        file.read_exact(buf).ok()?;
-        Some(())
-    }
-    /// The first place `sig` occurs in `[from, to)`,
-    /// read in chunks so a directory of any size is
-    /// scanned without holding it.
-    fn find_signature(file: &mut std::fs::File, from: u64, to: u64, sig: &[u8]) -> Option<u64> {
-        let mut carry: Vec<u8> = Vec::new();
-        let mut pos = from;
-        while pos < to {
-            let want = ((to - pos).min(65_536)) as usize;
-            let mut buf = vec![0u8; want];
-            read_at(file, pos, &mut buf)?;
-            let base = pos - carry.len() as u64;
-            let mut hay = std::mem::take(&mut carry);
-            hay.extend_from_slice(&buf);
-            if let Some(found) = hay
-                .windows(sig.len())
-                .position(|w| w == sig)
-                .map(|i| base + i as u64)
-                .filter(|at| *at >= from && at + sig.len() as u64 <= to)
-            {
-                return Some(found);
-            }
-            let keep = (sig.len() - 1).min(hay.len());
-            carry = hay[hay.len() - keep..].to_vec();
-            pos += want as u64;
-        }
-        None
-    }
-    /// The end record's candidate positions, latest
-    /// first: every "PK\x05\x06" whose comment length
-    /// fits before the end of the file (the reader's
-    /// relaxed rule: the comment may end early, which
-    /// is what trailing junk means). EVERY candidate
-    /// the scan finds is collected (round 8, R8-1):
-    /// an earlier bound of sixteen let fifteen junk
-    /// records push a flood's own end record past the
-    /// enumeration, so the cap never counted it. There
-    /// is no count bound and no work bound here: a
-    /// candidate whose directory cannot be walked is
-    /// cheap (its walk breaks at the first bad header
-    /// or finds no header in its declared window), and
-    /// a walkable candidate's count stops just past
-    /// the cap, so enumerating every candidate stays
-    /// proportional to the file's own tail structures.
-    fn end_record_candidates(file: &mut std::fs::File, file_len: u64) -> Vec<u64> {
-        let mut out = Vec::new();
-        let mut carry: Vec<u8> = Vec::new();
-        let mut end = file_len;
-        while end > 0 {
-            let start = end.saturating_sub(1 << 20);
-            let want = (end - start) as usize;
-            let mut buf = vec![0u8; want];
-            if read_at(file, start, &mut buf).is_none() {
-                return out;
-            }
-            let mut hay = buf;
-            hay.extend_from_slice(&carry);
-            for pos in (0..hay.len().saturating_sub(21)).rev() {
-                if !hay[pos..].starts_with(b"PK\x05\x06") {
-                    continue;
-                }
-                let at = start + pos as u64;
-                let comment_len = u64::from(u16::from_le_bytes([hay[pos + 20], hay[pos + 21]]));
-                if at + 22 + comment_len <= file_len {
-                    out.push(at);
-                }
-            }
-            let keep = 21.min(hay.len());
-            carry = hay[..keep].to_vec();
-            end = start;
-        }
-        out
-    }
-    /// Count the directory records in front of one end
-    /// record candidate: None when this candidate's
-    /// directory cannot be walked, so the caller can
-    /// try an earlier candidate.
-    fn count_from_end_record(file: &mut std::fs::File, eocd_at: u64, cap: usize) -> Option<usize> {
-        let mut eocd = [0u8; 22];
-        read_at(file, eocd_at, &mut eocd)?;
-        if !eocd.starts_with(b"PK\x05\x06") {
-            return None;
-        }
-        let total16 = u16::from_le_bytes([eocd[10], eocd[11]]);
-        let cd_offset32 = u32::from_le_bytes(eocd[16..20].try_into().ok()?);
-        let mut dir_end = eocd_at;
-        let mut declared_offset = u64::from(cd_offset32);
-        let mut declared_total = u64::from(total16);
-        // A zip64 locator in front of the record points
-        // at the zip64 record, which carries the
-        // directory's real offset when the plain fields
-        // are too small to hold it (its total-entries
-        // field sits at byte 32, its offset at 48). The
-        // reader finds that record by searching forward
-        // from the locator's declared offset; its real
-        // position is where the directory ends.
-        if (total16 == u16::MAX || cd_offset32 == u32::MAX) && eocd_at >= 20 {
-            let locator_at = eocd_at - 20;
-            let mut locator = [0u8; 20];
-            if read_at(file, locator_at, &mut locator).is_some()
-                && locator.starts_with(b"PK\x06\x07")
-            {
-                let record_declared = u64::from_le_bytes(locator[8..16].try_into().ok()?);
-                if record_declared < locator_at {
-                    if let Some(record_at) =
-                        find_signature(file, record_declared, locator_at, b"PK\x06\x06")
-                    {
-                        let mut record = [0u8; 56];
-                        if read_at(file, record_at, &mut record).is_some()
-                            && record.starts_with(b"PK\x06\x06")
-                        {
-                            dir_end = record_at;
-                            declared_total = u64::from_le_bytes(record[32..40].try_into().ok()?);
-                            declared_offset = u64::from_le_bytes(record[48..56].try_into().ok()?);
-                        }
-                    }
-                }
-            }
-        }
-        // The directory's real start is the first
-        // central header at or after the declared
-        // offset: prepended bytes shift it forward, and
-        // the declared totals (either field, either
-        // record) are never consulted again.
-        let Some(cd_start) = find_signature(file, declared_offset, dir_end, b"PK\x01\x02") else {
-            // No directory records in front of the end
-            // record: an honestly empty archive counts
-            // zero; anything else is the reader's error
-            // to report.
-            return if declared_total == 0 { Some(0) } else { None };
-        };
-        // Walk the records: a fixed 46-byte header, then
-        // the name, extra field, and comment its header
-        // measures, until the end structures begin.
-        let mut count = 0usize;
-        let mut at = cd_start;
-        while at < dir_end {
-            if count > cap {
-                return Some(count);
-            }
-            let mut header = [0u8; 46];
-            read_at(file, at, &mut header)?;
-            if !header.starts_with(b"PK\x01\x02") {
-                return None;
-            }
-            let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
-            let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
-            let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
-            count += 1;
-            at += 46 + name_len + extra_len + comment_len;
-        }
-        if at == dir_end {
-            Some(count)
-        } else {
-            None
-        }
-    }
-
-    let mut file = std::fs::File::open(path).ok()?;
-    let file_len = file.metadata().ok()?.len();
-    if file_len < 22 {
-        return None;
-    }
-    // Every candidate is examined (round 7, RT7-5):
-    // a count past the cap from any one of them
-    // refuses the file, whichever directory the
-    // reader would have used. Otherwise the first
-    // walkable candidate's count stands — the latest
-    // directory, the reader's own choice.
     let mut first_count: Option<usize> = None;
-    for eocd_at in end_record_candidates(&mut file, file_len) {
-        let Some(count) = count_from_end_record(&mut file, eocd_at, cap) else {
-            continue;
-        };
+    for (_, count) in directory_candidates(path, cap) {
         if count > cap {
             return Some(count);
         }
@@ -380,6 +560,81 @@ fn archive_from_candidate(
     trimmed[at + 20] = 0;
     trimmed[at + 21] = 0;
     zip::ZipArchive::new(std::io::Cursor::new(trimmed)).ok()
+}
+
+/// A seekable stream over the file's bytes up to ONE
+/// end-record candidate, with that record's comment
+/// length reading as zero: the same trimmed archive
+/// `archive_from_candidate` builds, without copying
+/// the file's prefix — a picture-heavy bulletin is
+/// hundreds of megabytes, and a candidate try must
+/// not cost a copy of it (round 9, R9-2). The zip
+/// reader handed this stream finds the candidate's
+/// own end record at its end at once, instead of
+/// searching the whole file past every fake end
+/// record a comment can carry.
+struct TrimmedReader {
+    file: std::fs::File,
+    /// The stream's length: the candidate's end.
+    end: u64,
+    /// The two comment-length bytes of the
+    /// candidate's end record read as zero.
+    zero_at: u64,
+    pos: u64,
+}
+
+impl Read for TrimmedReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.end || buf.is_empty() {
+            return Ok(0);
+        }
+        let want = ((self.end - self.pos).min(buf.len() as u64)) as usize;
+        self.file.seek(std::io::SeekFrom::Start(self.pos))?;
+        let n = self.file.read(&mut buf[..want])?;
+        for (i, byte) in buf.iter_mut().enumerate().take(n) {
+            let at = self.pos + i as u64;
+            if at == self.zero_at || at == self.zero_at + 1 {
+                *byte = 0;
+            }
+        }
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for TrimmedReader {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        let target = match from {
+            std::io::SeekFrom::Start(n) => n as i64,
+            std::io::SeekFrom::End(n) => self.end as i64 + n,
+            std::io::SeekFrom::Current(n) => self.pos as i64 + n,
+        };
+        if target < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek before the start of the trimmed archive",
+            ));
+        }
+        self.pos = target as u64;
+        Ok(self.pos)
+    }
+}
+
+/// Open the archive ONE end-record candidate
+/// describes, straight from the file: the bytes up
+/// to that record through a [`TrimmedReader`]. None
+/// when that candidate's directory cannot be opened
+/// at all.
+fn archive_from_candidate_file(path: &Path, at: u64) -> Option<zip::ZipArchive<TrimmedReader>> {
+    let end = at.checked_add(22)?;
+    let file = std::fs::File::open(path).ok()?;
+    let reader = TrimmedReader {
+        file,
+        end,
+        zero_at: at + 20,
+        pos: 0,
+    };
+    zip::ZipArchive::new(reader).ok()
 }
 
 pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
@@ -484,36 +739,104 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     // is refused from the directory alone (round 5,
     // RT5-5).
     check_entry_cap(path)?;
+    // The directories are tried latest first, the
+    // reader's own order (round 8, R8-12): a zip
+    // comment can carry end-record signatures of its
+    // own, and the latest end record can name an
+    // empty or fake directory while the bulletin
+    // stands behind it. The candidates whose
+    // directories walk are tried first, each opened
+    // at its own end record (round 9, R9-2: handing
+    // the whole file to the archive reader makes the
+    // reader search past every fake signature itself,
+    // the same per-candidate cost the count paid).
+    // A candidate whose directory holds no
+    // document.json steps aside, and so does one
+    // whose document FAILS to read — bad JSON, a
+    // newer version, a lying fingerprint or size
+    // (round 9, R9-6): the retry's business is trying
+    // the other candidates before declaring there is
+    // no bulletin. Only when every candidate fails
+    // does the load refuse, with the FIRST failed
+    // candidate's error — the most informative
+    // refusal the office would have gotten without
+    // the junk. The flood shapes are already refused
+    // by the cap above.
+    let mut first_error: Option<String> = None;
+    let mut opened_any = false;
+    for (at, _) in directory_candidates(path, MAX_ENTRIES) {
+        let Some(mut zip) = archive_from_candidate_file(path, at) else {
+            continue;
+        };
+        opened_any = true;
+        if !zip.file_names().any(|n| n == "document.json") {
+            continue;
+        }
+        match read_bulletin_archive(&mut zip) {
+            Ok(doc) => return Ok(doc),
+            Err(e) => {
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+        }
+    }
+    if let Some(e) = first_error {
+        return Err(e);
+    }
+    if opened_any {
+        // A walkable directory opened and held no
+        // bulletin: that is the answer, stated in the
+        // no-bulletin words below — the reader's own
+        // search would land on the same directories.
+        return Err("that file has no bulletin inside it (no document.json)".to_string());
+    }
+    // No walkable candidate could even be opened:
+    // the file may carry a directory the count walk
+    // cannot walk (an exotic but valid layout, or
+    // one outside the tail window), or be damaged in
+    // a way only the reader can name. The reader's
+    // own path decides, with the same stepping
+    // aside: its chosen directory first, then every
+    // enumerated candidate's.
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut damaged: Option<String> = None;
     match zip::ZipArchive::new(file) {
         Ok(mut zip) => {
             if zip.file_names().any(|n| n == "document.json") {
-                return read_bulletin_archive(&mut zip);
+                match read_bulletin_archive(&mut zip) {
+                    Ok(doc) => return Ok(doc),
+                    Err(e) => {
+                        if first_error.is_none() {
+                            first_error = Some(e);
+                        }
+                    }
+                }
             }
         }
         Err(e) => {
             damaged = Some(format!("that file's container is damaged: {e}"));
         }
     }
-    // The directory the reader chose holds no
-    // document.json (round 8, R8-12): a zip comment
-    // can carry end-record signatures of its own, and
-    // the reader's latest-first rule can land on a
-    // fake inside the comment whose directory is
-    // empty. Try the other enumerated end-record
-    // candidates' directories before declaring there
-    // is no bulletin: a fake directory that yields no
-    // bulletin never satisfies a load, and the flood
-    // shapes are already refused by the cap above.
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     for at in end_record_positions_in(&bytes) {
         let Some(mut zip) = archive_from_candidate(&bytes, at) else {
             continue;
         };
-        if zip.file_names().any(|n| n == "document.json") {
-            return read_bulletin_archive(&mut zip);
+        if !zip.file_names().any(|n| n == "document.json") {
+            continue;
         }
+        match read_bulletin_archive(&mut zip) {
+            Ok(doc) => return Ok(doc),
+            Err(e) => {
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+        }
+    }
+    if let Some(e) = first_error {
+        return Err(e);
     }
     if let Some(damaged) = damaged {
         return Err(damaged);
@@ -672,31 +995,80 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     // checked before the archive is opened (round 5,
     // RT5-5).
     check_entry_cap(path)?;
+    // The same candidate order and stepping aside as
+    // the bulletin door (round 8, R8-12; round 9,
+    // R9-2 and R9-6): walkable candidates latest
+    // first, each opened at its own end record; a
+    // candidate holding no insert.json steps aside,
+    // and so does one whose sheet fails to read; only
+    // when every candidate fails does the load
+    // refuse, with the first failed candidate's
+    // error. When no walkable candidate yields a
+    // sheet or an error, the reader's own path
+    // decides, as at the bulletin door.
+    let mut first_error: Option<String> = None;
+    let mut opened_any = false;
+    for (at, _) in directory_candidates(path, MAX_ENTRIES) {
+        let Some(mut zip) = archive_from_candidate_file(path, at) else {
+            continue;
+        };
+        opened_any = true;
+        if !zip.file_names().any(|n| n == "insert.json") {
+            continue;
+        }
+        match read_insert_archive(&mut zip) {
+            Ok(loaded) => return Ok(loaded),
+            Err(e) => {
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+        }
+    }
+    if let Some(e) = first_error {
+        return Err(e);
+    }
+    if opened_any {
+        return Err("that file has no loose sheet inside it (no insert.json)".to_string());
+    }
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut damaged: Option<String> = None;
     match zip::ZipArchive::new(file) {
         Ok(mut zip) => {
             if zip.file_names().any(|n| n == "insert.json") {
-                return read_insert_archive(&mut zip);
+                match read_insert_archive(&mut zip) {
+                    Ok(loaded) => return Ok(loaded),
+                    Err(e) => {
+                        if first_error.is_none() {
+                            first_error = Some(e);
+                        }
+                    }
+                }
             }
         }
         Err(e) => {
             damaged = Some(format!("that file's container is damaged: {e}"));
         }
     }
-    // The same second look as the bulletin door
-    // (round 8, R8-12): when the directory the reader
-    // chose holds no insert.json, the other
-    // enumerated end-record candidates' directories
-    // are tried before declaring there is no sheet.
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     for at in end_record_positions_in(&bytes) {
         let Some(mut zip) = archive_from_candidate(&bytes, at) else {
             continue;
         };
-        if zip.file_names().any(|n| n == "insert.json") {
-            return read_insert_archive(&mut zip);
+        if !zip.file_names().any(|n| n == "insert.json") {
+            continue;
         }
+        match read_insert_archive(&mut zip) {
+            Ok(loaded) => return Ok(loaded),
+            Err(e) => {
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+        }
+    }
+    if let Some(e) = first_error {
+        return Err(e);
     }
     if let Some(damaged) = damaged {
         return Err(damaged);
@@ -2744,6 +3116,390 @@ mod tests {
             err,
             "that file has no bulletin inside it (no document.json)"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One decoy flavor for the round-9 retry pins:
+    /// a tag, the decoy directory's entries, and the
+    /// entry whose central record lies about its
+    /// size, if this flavor is the lying-size one.
+    type DecoyFlavor<'a> = (&'a str, Vec<(&'a str, &'a [u8])>, Option<&'a str>);
+
+    /// A small stored zip holding exactly `entries`,
+    /// built by the writer so its checksums are
+    /// honest; `entry_crcs` reads them back for the
+    /// hand-appended decoy directories below.
+    fn stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let stored = || {
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+        };
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            for (name, payload) in entries {
+                zip.start_file(*name, stored()).expect("decoy entry");
+                zip.write_all(payload).expect("decoy bytes");
+            }
+            zip.finish().expect("finish");
+        }
+        buf
+    }
+
+    /// The (name, CRC) pairs of a zip built by
+    /// `stored_zip`, read off its central records.
+    fn entry_crcs(zip_bytes: &[u8]) -> Vec<(String, u32)> {
+        let eocd = find_eocd(zip_bytes);
+        let mut at = u32::from_le_bytes(
+            zip_bytes[eocd + 16..eocd + 20]
+                .try_into()
+                .expect("offset field"),
+        ) as usize;
+        let mut out = Vec::new();
+        while at < eocd {
+            assert!(zip_bytes[at..].starts_with(b"PK\x01\x02"), "a record");
+            let crc =
+                u32::from_le_bytes(zip_bytes[at + 16..at + 20].try_into().expect("crc field"));
+            let name_len = u16::from_le_bytes([zip_bytes[at + 28], zip_bytes[at + 29]]) as usize;
+            let extra_len = u16::from_le_bytes([zip_bytes[at + 30], zip_bytes[at + 31]]) as usize;
+            let comment_len = u16::from_le_bytes([zip_bytes[at + 32], zip_bytes[at + 33]]) as usize;
+            let name = String::from_utf8(zip_bytes[at + 46..at + 46 + name_len].to_vec())
+                .expect("entry name is text");
+            out.push((name, crc));
+            at += 46 + name_len + extra_len + comment_len;
+        }
+        out
+    }
+
+    /// Append a whole second directory to a zip:
+    /// stored local headers for `entries` (each with
+    /// the CRC the writer computed for it), their
+    /// central records, and an end record naming
+    /// them, all at absolute file offsets — the red
+    /// team's decoy-directory shape (round 9,
+    /// RT9-6). When `lie_size_for` names an entry,
+    /// its CENTRAL record declares 5 bytes for the
+    /// real payload while its local header stays
+    /// honest: the lie the round-9 probes used.
+    fn append_directory(
+        base: &[u8],
+        entries: &[(&str, &[u8], u32)],
+        lie_size_for: Option<&str>,
+    ) -> Vec<u8> {
+        let mut out = base.to_vec();
+        let mut centrals: Vec<Vec<u8>> = Vec::new();
+        for (name, payload, crc) in entries {
+            let local_offset = out.len() as u32;
+            let mut local = Vec::new();
+            local.extend_from_slice(b"PK\x03\x04");
+            local.extend_from_slice(&20u16.to_le_bytes());
+            local.extend_from_slice(&0u16.to_le_bytes());
+            local.extend_from_slice(&0u16.to_le_bytes());
+            local.extend_from_slice(&0u16.to_le_bytes());
+            local.extend_from_slice(&0u16.to_le_bytes());
+            local.extend_from_slice(&crc.to_le_bytes());
+            local.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            local.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            local.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            local.extend_from_slice(&0u16.to_le_bytes());
+            local.extend_from_slice(name.as_bytes());
+            local.extend_from_slice(payload);
+            out.extend_from_slice(&local);
+            let declared = if lie_size_for == Some(name) {
+                5u32
+            } else {
+                payload.len() as u32
+            };
+            let mut central = Vec::new();
+            central.extend_from_slice(b"PK\x01\x02");
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&crc.to_le_bytes());
+            central.extend_from_slice(&declared.to_le_bytes());
+            central.extend_from_slice(&declared.to_le_bytes());
+            central.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&local_offset.to_le_bytes());
+            central.extend_from_slice(name.as_bytes());
+            centrals.push(central);
+        }
+        let cd_offset = out.len() as u32;
+        let mut cd_size = 0u32;
+        for central in &centrals {
+            cd_size += central.len() as u32;
+            out.extend_from_slice(central);
+        }
+        let mut eocd = Vec::new();
+        eocd.extend_from_slice(b"PK\x05\x06");
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        eocd.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        eocd.extend_from_slice(&cd_size.to_le_bytes());
+        eocd.extend_from_slice(&cd_offset.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&eocd);
+        out
+    }
+
+    /// Append a decoy directory carrying `entries`
+    /// to `base`, checksums taken from a writer-built
+    /// zip of the same entries.
+    fn append_decoy_directory(
+        base: &[u8],
+        entries: &[(&str, &[u8])],
+        lie_size_for: Option<&str>,
+    ) -> Vec<u8> {
+        let crcs = entry_crcs(&stored_zip(entries));
+        let with_crc: Vec<(&str, &[u8], u32)> = entries
+            .iter()
+            .map(|(name, payload)| {
+                let crc = crcs
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, c)| *c)
+                    .expect("the writer recorded a CRC");
+                (*name, *payload, crc)
+            })
+            .collect();
+        append_directory(base, &with_crc, lie_size_for)
+    }
+
+    /// Append an end record naming an EMPTY
+    /// directory (its offset is its own position):
+    /// the primary directory of the RT9-6 shapes, the
+    /// one the reader chooses first.
+    fn append_empty_end_record(base: &[u8]) -> Vec<u8> {
+        let mut out = base.to_vec();
+        let pos = out.len() as u32;
+        let mut eocd = Vec::new();
+        eocd.extend_from_slice(b"PK\x05\x06");
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&0u32.to_le_bytes());
+        eocd.extend_from_slice(&pos.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&eocd);
+        out
+    }
+
+    #[test]
+    fn r9_a_failed_candidate_document_steps_aside_for_the_honest_directory() {
+        // Round 9 (R9-6, review R9-R5 + red team
+        // RT9-6): the retry used to step aside only
+        // when the chosen directory held NO
+        // document.json. A decoy directory whose
+        // document.json points at junk — bad JSON, a
+        // version from the future, a picture whose
+        // bytes lie about their fingerprint, a
+        // directory record lying about the document's
+        // size — aborted the load, and the honest
+        // directory behind it was never tried. Every
+        // junk flavor now steps aside, in both
+        // positions: the decoy as the reader's chosen
+        // directory, and the decoy behind an appended
+        // empty directory (the RT9-6 layout).
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let mut version_value: serde_json::Value = serde_json::from_str(&doc_json).expect("value");
+        version_value["format_version"] = serde_json::json!(999);
+        let version_json = serde_json::to_string(&version_value).expect("json");
+        let zero_hash = "0".repeat(64);
+        let lying_asset_name = format!("assets/{zero_hash}");
+        let flavors: Vec<DecoyFlavor> = vec![
+            (
+                "bad-json",
+                vec![("document.json", b"not json at all")],
+                None,
+            ),
+            (
+                "version-999",
+                vec![("document.json", version_json.as_bytes())],
+                None,
+            ),
+            (
+                "lying-asset",
+                vec![
+                    ("document.json", doc_json.as_bytes()),
+                    (lying_asset_name.as_str(), b"not the hashed bytes"),
+                ],
+                None,
+            ),
+            (
+                "lie-size",
+                vec![("document.json", doc_json.as_bytes())],
+                Some("document.json"),
+            ),
+        ];
+        let dir = scratch("r9-retry-doc");
+        let honest = zip_with_fillers("document.json", &doc_json, 1);
+        for (tag, entries, lie) in &flavors {
+            let as_primary = append_decoy_directory(&honest, entries, *lie);
+            let behind_empty = append_empty_end_record(&as_primary);
+            for (pos_tag, bytes) in [("primary", as_primary), ("behind-empty", behind_empty)] {
+                let path = dir.join(format!("{tag}-{pos_tag}.obd"));
+                std::fs::write(&path, &bytes).expect("write decoy copy");
+                let loaded = load(&path)
+                    .unwrap_or_else(|e| panic!("{tag} {pos_tag}: honest loads, got {e}"));
+                assert_eq!(loaded.title, "Roundtrip", "{tag} {pos_tag}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r9_a_file_whose_every_candidate_is_junk_refuses_with_the_first_error() {
+        // Round 9 (R9-6), the other half: when every
+        // candidate fails, the load still refuses —
+        // with the FIRST candidate's error, the refusal
+        // the office would have gotten without the
+        // junk behind it. Here the latest
+        // document-holding candidate is a
+        // version-from-the-future decoy standing in
+        // front of a bad-JSON decoy: the version error
+        // is the refusal, not the JSON error behind it
+        // and not the no-bulletin words.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let mut version_value: serde_json::Value = serde_json::from_str(&doc_json).expect("value");
+        version_value["format_version"] = serde_json::json!(999);
+        let version_json = serde_json::to_string(&version_value).expect("json");
+        let dir = scratch("r9-retry-junk");
+        let nodoc = zip_with_fillers("other.json", &doc_json, 1);
+        let bad: Vec<(&str, &[u8])> = vec![("document.json", b"not json at all")];
+        let with_bad = append_decoy_directory(&nodoc, &bad, None);
+        let versioned: Vec<(&str, &[u8])> = vec![("document.json", version_json.as_bytes())];
+        let with_both = append_decoy_directory(&with_bad, &versioned, None);
+        let bytes = append_empty_end_record(&with_both);
+        let path = dir.join("all-junk.obd");
+        std::fs::write(&path, &bytes).expect("write all-junk copy");
+        let err = load(&path).expect_err("every candidate junk refuses");
+        assert!(
+            err.contains("document format 999 is newer"),
+            "the first candidate's error stands: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r9_a_failed_candidate_sheet_steps_aside_for_the_honest_directory() {
+        // Round 9 (R9-6) at the sheet door, the
+        // flavors that translate: bad JSON, a lying
+        // fingerprint, a lying size. (A sheet package
+        // carries no format version of its own, so
+        // the version flavor has no shape here.)
+        let sheet_json = lying_sheet_json();
+        let zero_hash = "0".repeat(64);
+        let lying_asset_name = format!("assets/{zero_hash}");
+        let flavors: Vec<DecoyFlavor> = vec![
+            ("bad-json", vec![("insert.json", b"not json at all")], None),
+            (
+                "lying-asset",
+                vec![
+                    ("insert.json", sheet_json.as_bytes()),
+                    (lying_asset_name.as_str(), b"not the hashed bytes"),
+                ],
+                None,
+            ),
+            (
+                "lie-size",
+                vec![("insert.json", sheet_json.as_bytes())],
+                Some("insert.json"),
+            ),
+        ];
+        let dir = scratch("r9-retry-sheet");
+        let honest = zip_with_fillers("insert.json", &sheet_json, 1);
+        for (tag, entries, lie) in &flavors {
+            let as_primary = append_decoy_directory(&honest, entries, *lie);
+            let behind_empty = append_empty_end_record(&as_primary);
+            for (pos_tag, bytes) in [("primary", as_primary), ("behind-empty", behind_empty)] {
+                let path = dir.join(format!("{tag}-{pos_tag}.obdi"));
+                std::fs::write(&path, &bytes).expect("write decoy copy");
+                let (insert, _, _) = load_insert(&path)
+                    .unwrap_or_else(|e| panic!("{tag} {pos_tag}: honest loads, got {e}"));
+                assert_eq!(insert.id, "sheet-lying", "{tag} {pos_tag}");
+            }
+        }
+        // And a sheet file whose every candidate is
+        // junk refuses with the first candidate's
+        // error, not the no-sheet words.
+        let nodoc = zip_with_fillers("other.json", &sheet_json, 1);
+        let bad: Vec<(&str, &[u8])> = vec![("insert.json", b"not json at all")];
+        let with_bad = append_decoy_directory(&nodoc, &bad, None);
+        let bytes = append_empty_end_record(&with_bad);
+        let path = dir.join("all-junk.obdi");
+        std::fs::write(&path, &bytes).expect("write all-junk copy");
+        let err = load_insert(&path).expect_err("every candidate junk refuses");
+        assert!(err.contains("ident"), "the first error stands: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// Give a zip a comment carrying `fakes` fake end
+    /// records in the red team's timing shape (round
+    /// 9, RT9-2): each record claims two entries at
+    /// offset zero and a zero-length comment of its
+    /// own, so the file's comment is a solid run of
+    /// end-record signatures.
+    fn with_timing_end_records_in_comment(zip_bytes: &[u8], fakes: usize) -> Vec<u8> {
+        let eocd = find_eocd(zip_bytes);
+        let comment_len = fakes * 22;
+        let mut out = zip_bytes.to_vec();
+        out[eocd + 20..eocd + 22].copy_from_slice(&(comment_len as u16).to_le_bytes());
+        for _ in 0..fakes {
+            let mut rec = Vec::new();
+            rec.extend_from_slice(b"PK\x05\x06");
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&2u16.to_le_bytes());
+            rec.extend_from_slice(&2u16.to_le_bytes());
+            rec.extend_from_slice(&0u32.to_le_bytes());
+            rec.extend_from_slice(&0u32.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            assert_eq!(rec.len(), 22);
+            out.extend_from_slice(&rec);
+        }
+        out
+    }
+
+    #[test]
+    fn r9_thousands_of_comment_signatures_count_and_load_the_honest_bulletin() {
+        // Round 9 (R9-2): 2,900 end-record signatures
+        // in a zip comment — the most a legal comment
+        // carries, the red team's largest fixture —
+        // in BOTH fake shapes (the round-8 records,
+        // whose comment lengths reach the end of the
+        // file, and the timing records, claiming two
+        // entries at offset zero). The count walk
+        // counts the real directory's two records and
+        // the bulletin loads. No wall-clock is
+        // asserted here — the measured times live in
+        // the round-9 synthesis addendum (R9-D); this
+        // pin holds the behavior at the fixture's
+        // scale.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let dir = scratch("r9-comment-sigs");
+        let honest = zip_with_fillers("document.json", &doc_json, 1);
+        for (tag, bytes) in [
+            ("carried", with_fake_end_records_in_comment(&honest, 2900)),
+            ("timing", with_timing_end_records_in_comment(&honest, 2900)),
+        ] {
+            let path = dir.join(format!("{tag}.obd"));
+            std::fs::write(&path, &bytes).expect("write signature copy");
+            assert_eq!(
+                raw_entry_count(&path, MAX_ENTRIES),
+                Some(2),
+                "{tag}: the real directory's two records are the count"
+            );
+            let loaded = load(&path).expect("the honest bulletin loads");
+            assert_eq!(loaded.title, "Roundtrip", "{tag}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

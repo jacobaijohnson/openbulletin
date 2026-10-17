@@ -686,3 +686,183 @@ flake did not fire.
   test changed. The full suite went 626 → 631 with
   that one expectation updated and additions
   otherwise.
+
+## Shipped addendum, R9-D (2026-10-17)
+
+Counts and serving, third pass: R9-2 (MAJOR) + R9-6 +
+R9-14 + R9-15, in `crates/ob-format/src/lib.rs` and
+`crates/ob-model/src/lib.rs`. Full suite **637 passed /
+0 failed** (baseline 631; +6 new pins: 4 in ob-format,
+2 in ob-model), clippy clean (exit 0, no warnings),
+exit codes read unpiped from files holding cargo's
+own output. The fake-helper ETXTBSY flake fired
+twice under parallel load, in crates this batch does
+not touch, and is stated exactly: ob-extract
+`a_sleeping_helper_meets_the_deadline` panicked
+"Text file busy (os error 26)" in the first full run
+(cargo stopped there; its solo rerun passed in
+1.02 s, and ob-extract passed 156/156 in the
+no-fail-fast run), and ob-clips
+`a_prompt_converter_reports_its_own_result` failed
+in the no-fail-fast run (636 passed there); the
+ob-clips suite passed solo, 7/7.
+
+- R9-2: the enumeration no longer pays a scan per
+  candidate, in either of the two places that
+  charged it. For the count: end-record candidates
+  are collected by ONE scan of the tail window where
+  end records can live — 65,633 bytes (the 65,535-byte
+  comment space plus the end record, a zip64 locator,
+  and a zip64 end record) — each position recorded
+  once, latest first. Every candidate's directory
+  start (and any zip64 record position its locator
+  names) is resolved by ONE shared first-signature
+  pass per signature family over the region the
+  candidates' windows span (`resolve_first_hits`; a
+  second pass runs only for zip64 records, whose
+  positions must be known before their directory
+  windows exist — the shipped code's own dependency).
+  The per-candidate directory walks are unchanged,
+  cap early-stop included, and a count past the cap
+  from ANY candidate still refuses the file, at both
+  loaders. For the load itself, an isolation probe
+  showed the zip reader's OWN candidate search was a
+  large share of the cost (`ZipArchive::new` alone on
+  the 500-signature fixture: 5.89 s, against 0.008 s
+  for the plain pad), so the loaders now walk the
+  candidates themselves and open each walkable one
+  at its own end record through a trimmed stream
+  (`TrimmedReader` — the file's prefix is never
+  copied). The honest cost claim, restated: one tail
+  scan, one shared pass per signature family, bounded
+  walks, and one trimmed open per walkable candidate
+  — independent of how many signatures the comment
+  carries. Measured with a scratch harness calling
+  the shipped `load` (debug build, this shared
+  machine), on fixtures rebuilt to the red team's
+  builder byte for byte (a 1 MB incompressible
+  picture; the comment padded to identical length
+  both ways). BEFORE, the lanes' numbers: plain pad
+  0.02–0.04 s; 500 signatures 1.26 s; 1,500 → 2.01 s;
+  2,900 → did not finish (the load + load-insert pair
+  burned over 3:02 of CPU, killed). Spot-checked on
+  this machine before the change with the same
+  harness: plain-500 0.109 s, sigs-500 21.58 s,
+  sigs-1500 unfinished inside a 60 s cap. AFTER, same
+  harness, same fixtures: plain-500 0.071 s,
+  sigs-500 0.132 s; plain-1500 0.088 s, sigs-1500
+  0.147 s; plain-2900 0.068 s, sigs-2900 0.158 s;
+  and `load_insert` on sigs-2900 (a bulletin at the
+  sheet door) refuses "no loose sheet" in 0.120 s.
+  No unit test asserts a wall clock; the behavior at
+  scale is pinned (`r9_thousands_of_comment_signatures_count_and_load_the_honest_bulletin`:
+  2,900 comment signatures in both fake shapes count
+  the real directory's two records and load), and
+  every R8-1 coverage pin (15-junk, 16-decoy,
+  64-decoy refusals; honest loads; boundary
+  exactness; the RT8-9 comment loads) passes in its
+  original expectation.
+- R9-6: both loaders try candidates latest first,
+  and a candidate steps aside on ANY failure of its
+  document — missing, unparseable, wrong version,
+  failed hash or size checks — not only when its
+  directory holds no document. When every candidate
+  fails, the load refuses with the FIRST failed
+  candidate's error. One bound, stated plainly: when
+  no walkable candidate can even be opened (a
+  directory the count walk cannot walk, or one
+  outside the tail window), the reader's own path
+  still decides, with the same stepping aside; when
+  a walkable directory opened and held no document,
+  the no-document words are the answer. Pins
+  (`r9_a_failed_candidate_document_steps_aside_for_the_honest_directory`,
+  `r9_a_failed_candidate_sheet_steps_aside_for_the_honest_directory`):
+  each junk flavor (bad JSON, version 999, a lying
+  asset fingerprint, a lying declared size) in the
+  chosen directory AND behind an appended empty
+  directory loads the honest bulletin; at the sheet
+  door the flavors that translate (bad JSON, lying
+  fingerprint, lying size — a sheet package carries
+  no format version) load the honest sheet.
+  `r9_a_file_whose_every_candidate_is_junk_refuses_with_the_first_error`:
+  an all-junk file refuses with the latest
+  document-holding candidate's error (the version
+  error, standing in front of a bad-JSON decoy), not
+  the error behind it and not the no-bulletin words;
+  the sheet door's all-junk shape refuses with its
+  first error likewise. Flood shapes still refuse by
+  the cap before any candidate is tried.
+- R9-14: `ServingLineEditKinds` are computed from
+  the pairing's per-segment outcomes
+  (`serving_pairing`), not from global totals plus a
+  surplus inference. The rule, segment by segment:
+  a segment's renames are what it paired or left
+  unresolved; surplus new names and deficit old
+  names in unresolved segments first answer each
+  other (a surplus and a deficit spread over
+  segments are the same crossed renames — neither an
+  addition nor a removal); a removal-only segment
+  BETWEEN anchors is a removal the pairing resolved
+  in place, never a partner reservoir; the segment
+  after the last anchor can hold a leftover
+  surplus's partners (the canonical crossed
+  renames), up to as many of its names as the
+  surplus needs, and its names past the need are
+  removals; a surplus with nothing left to pair
+  with is an addition, and a deficit left over
+  after any crossing is a removal; unresolved
+  names spread over two or more segments still
+  claim `moved` on their own. Pin
+  (`r9_kinds_come_from_each_segments_own_outcome`):
+  the review lane's K1 (deficit segment +
+  addition-only segment) reads {renamed, removed,
+  added}; the red team's RT9-14 witness (surplus
+  segment + a bounded removal segment) reads
+  {renamed, removed, added}, and the same shape
+  with a clean addition-only segment added reads
+  the same — the shipped {renamed, moved} and
+  {renamed, added, moved} claimed a move the
+  pairing could not tell from an addition while
+  denying the removal standing in its own segment;
+  the mirror control K2 (surplus segment + an
+  old-only segment after the last anchor) keeps
+  the canonical {renamed, moved}; a surplus
+  segment standing alone reads {renamed, added}.
+  The canonical crossed-renames kinds {renamed,
+  moved} and its round-6 sentence stand word for
+  word, and the R8-D pins S-C {renamed, removed,
+  added}, S-D {renamed, removed}, D8 {renamed,
+  removed} stand as pinned — all verified by the
+  unmodified pre-existing tests.
+- R9-15: `serving_pairing`'s stored segment runs
+  are the segments' lines AS THEY STAND — kept
+  names included as in-segment anchors — and the
+  slug-conflict check reads its positional evidence
+  on those unfiltered runs. (The pairing itself
+  still pairs on the filtered runs, as it always
+  has; only the stored evidence changed.) Pin
+  (`r9_positional_evidence_reads_the_segments_unfiltered_runs`):
+  the Beta/Wanderer witness verbatim — old
+  [Alpha, Kids message, Choir, Wanderer, Beta,
+  Omega], new [Alpha, Beta, Children's message,
+  New B, Extra, Wanderer, Omega] — now names Choir
+  as the taker of the claimed name, where the
+  filtered runs had aligned the contested name with
+  the claimant and excused the hijack; the save is
+  still refused, as ambiguous. The R8-D positional
+  pins (S-B, S-A2, S-A, and the R7-9 excuse) are
+  unchanged in outcome.
+- FORMAT.md: the serving-kinds paragraph now states
+  the per-segment rule and the unfiltered positional
+  runs, and the loading rules gained the entry-count
+  walk (tail-window collection, one shared pass, any
+  candidate over the cap refuses) and the candidate
+  stepping (any failed document steps aside; the
+  first candidate's error when all fail).
+- **Changed pre-existing tests: none.** No
+  pre-existing assertion was removed or altered
+  anywhere in the suite (verified on the diff);
+  every R8-1 / R8-D pin, the canonical kinds and
+  sentence, and the R8-D positional pins pass in
+  their original expectation. The full suite went
+  631 → 637 with additions only.

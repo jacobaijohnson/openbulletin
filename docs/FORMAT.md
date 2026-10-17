@@ -154,10 +154,22 @@ the lines were left as they were, and names the
 remedy in the same kinds: rename, remove, or add
 one line at a time, whichever kinds the edit
 contained. A kind is claimed only when the pairing
-saw it: `moved` only when names the pairing could
-not resolve spread over more than one segment, so
-a clean removal or addition standing in its own
-segment names its own kind and never a move.
+saw it, segment by segment (round 9, R9-14): each
+segment contributes the kinds its own evidence
+shows — the renames it paired or left unresolved,
+the removals and additions it resolved — so a
+clean removal between anchors, or a clean
+addition, names its own kind even beside an
+unresolved segment, and `moved` is claimed only
+when names demonstrably crossed segments:
+unresolved names spread over more than one
+segment whose surplus and deficit answer each
+other, or a surplus of new names in an unresolved
+segment whose partners sit in the segment after
+the last anchor (the canonical crossed renames).
+The slug-conflict judgment reads its positions on
+the segments' runs as the lines stand, kept names
+included as in-segment anchors (round 9, R9-15).
 (Round 5 instead kept the new names and
 reported the lines "unfollowed" with their names
 stranded under the old slugs; that disposition and
@@ -399,6 +411,23 @@ outside a fold judge each pair as before.
   512 MB; both refusals say so in plain words. The total is
   summed from the zip directory before anything is
   decompressed.
+- A v1 file may hold at most 8,192 entries, counted by
+  walking every end-record candidate's directory
+  records (never the directory's declared totals):
+  candidates are collected in one scan of the tail
+  window where end records can live (the trailing
+  64 KB comment space plus the end structures), every
+  candidate's directory start is resolved in one
+  shared pass, and any candidate whose walk passes
+  the cap refuses the file in the cap's words
+  (round 9, R9-2). When several candidates stand,
+  their directories are tried latest first; a
+  directory holding no document steps aside, and so
+  does one whose document fails to read — bad JSON,
+  a newer version, a lying fingerprint or size —
+  and only when every candidate fails does the load
+  refuse, with the first candidate's error
+  (round 9, R9-6).
 - Saves are atomic (temp file + rename) and always write
   v1. The GUI keeps an autosave journal (the current work,
   rewritten as you edit, in this same format) beside its

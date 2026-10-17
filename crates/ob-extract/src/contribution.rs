@@ -673,19 +673,41 @@ fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<SundayAfter> 
     })
 }
 
-/// `text` without a trailing "(...)" group, when it
-/// ends with one: the words before the group.
-fn strip_trailing_parenthesized(text: &str) -> Option<&str> {
+/// The last trailing "(...)" group of `text`, split
+/// as (the words before it, the group's own words).
+/// The group's opening parenthesis is found by
+/// balancing, so a nested group ("(note (November
+/// 1))") is one trailing group, not a defect that
+/// poisons the line it trails (round 11, R11-6).
+fn split_last_trailing_group(text: &str) -> Option<(&str, &str)> {
     let text = text.trim_end_matches(['.', ',']);
     if !text.ends_with(')') {
         return None;
     }
-    let open = text.rfind('(')?;
-    let inner = &text[open + 1..text.len() - 1];
-    if inner.contains(['(', ')']) {
-        return None;
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut open = None;
+    for i in (0..bytes.len()).rev() {
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => {
+                depth -= 1;
+                if depth == 0 {
+                    open = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
     }
-    Some(text[..open].trim_end())
+    let open = open?;
+    Some((text[..open].trim_end(), &text[open + 1..text.len() - 1]))
+}
+
+/// `text` without a trailing "(...)" group, when it
+/// ends with one: the words before the group.
+fn strip_trailing_parenthesized(text: &str) -> Option<&str> {
+    split_last_trailing_group(text).map(|(before, _)| before)
 }
 
 /// Whether `text` names a relative-Sunday shape,
@@ -714,19 +736,27 @@ fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> bool {
 /// date is the remembered one. A group that does not
 /// read as a date at all — a weekday garnish like
 /// "(Monday)" — is garnish, not memory.
-/// The absolute dates standing inside a parenthesized
-/// group's words, distinct and in written order: the
-/// line's own prefix reader tried at each word, the
-/// same reader the second-date scan uses.
-fn dates_inside_group(inner: &str, today: SimpleDate) -> Vec<SimpleDate> {
+/// The dates standing inside a parenthesized
+/// group's words, distinct and in written order,
+/// with where each one stands: the line's own prefix
+/// reader tried at each word, the same reader the
+/// second-date scan uses; the
+/// token index its reading starts at, and how many
+/// tokens it took. The words standing before a date
+/// inside its group decide whether that date may
+/// contribute at all (round 11, R11-4/R11-8).
+fn dates_inside_group_positional(
+    inner: &str,
+    today: SimpleDate,
+) -> Vec<(SimpleDate, usize, usize)> {
     let tokens: Vec<&str> = inner.split_whitespace().collect();
-    let mut out: Vec<SimpleDate> = Vec::new();
+    let mut out: Vec<(SimpleDate, usize, usize)> = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
         match parse_date_prefix(&tokens[i..], today) {
             Some((d, used)) => {
-                if !out.contains(&d) {
-                    out.push(d);
+                if !out.iter().any(|(seen, _, _)| *seen == d) {
+                    out.push((d, i, used));
                 }
                 i += used.max(1);
             }
@@ -736,6 +766,163 @@ fn dates_inside_group(inner: &str, today: SimpleDate) -> Vec<SimpleDate> {
     out
 }
 
+/// One group token with its wrapping punctuation off,
+/// lowercased: the shape the governor and weekday
+/// checks read.
+fn group_token(raw: &str) -> String {
+    raw.trim_matches(['(', ')', '[', ']', ',', '.', ':', ';'])
+        .to_ascii_lowercase()
+}
+
+/// Whether the words standing before a date inside
+/// its group disqualify that date (round 11, R11-4):
+/// a negation ("not", "ignore", "never", "no
+/// longer", "don't/didn't use") or an origin marker
+/// ("from", "originally") standing before the date
+/// means the group does not assert that date — it
+/// denies it, or names where it came from. "Moved
+/// to" and "correction:" carry neither marker and
+/// keep contributing.
+fn governed_before(tokens: &[String], date_start: usize) -> bool {
+    let before = &tokens[..date_start.min(tokens.len())];
+    for (i, w) in before.iter().enumerate() {
+        match w.as_str() {
+            "not" | "ignore" | "never" | "originally" | "from" => return true,
+            _ => {}
+        }
+        if let Some(next) = before.get(i + 1) {
+            let pair = (w.as_str(), next.as_str());
+            if pair == ("no", "longer")
+                || pair == ("don't", "use")
+                || pair == ("didn't", "use")
+                || pair == ("dont", "use")
+                || pair == ("didnt", "use")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a weekday word standing directly before a
+/// date inside its group contradicts that date
+/// (round 11, R11-8): the same wrong-weekday-yields-
+/// no-date rule the line readers obey, applied
+/// inside groups — "(Monday November 1)" names an
+/// impossible day, since November 1, 2026 is a
+/// Sunday, and contributes nothing.
+fn contradicted_before(tokens: &[String], date_start: usize, date: SimpleDate) -> bool {
+    if date_start == 0 {
+        return false;
+    }
+    match weekday_word(&tokens[date_start - 1]) {
+        Some(named) => named != date.weekday(),
+        None => false,
+    }
+}
+
+/// The partial date an "or" tail offers inside a
+/// group (round 11, R11-6): "(November 1 or the 8th)"
+/// offers two dates, not one — the tail names only a
+/// day, so it takes the month and year of the full
+/// date standing before the "or".
+fn partial_or_alternative(
+    tokens: &[String],
+    qualified: &[(SimpleDate, usize, usize)],
+) -> Option<SimpleDate> {
+    for (i, w) in tokens.iter().enumerate() {
+        if w != "or" {
+            continue;
+        }
+        let base = qualified
+            .iter()
+            .rev()
+            .find(|(_, start, _)| *start < i)
+            .map(|(d, _, _)| *d)?;
+        let mut j = i + 1;
+        if tokens.get(j).map(String::as_str) == Some("the") {
+            j += 1;
+        }
+        let day_token = tokens.get(j)?;
+        let mut digits: &str = day_token.as_str();
+        for suffix in ["st", "nd", "rd", "th"] {
+            if let Some(stripped) = digits.strip_suffix(suffix) {
+                digits = stripped;
+                break;
+            }
+        }
+        let digits: String = digits.to_string();
+        if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let day: u32 = digits.parse().ok()?;
+        let candidate = SimpleDate {
+            year: base.year,
+            month: base.month,
+            day,
+        };
+        if candidate.is_valid() && candidate != base {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// What one parenthesized group offers (round 11,
+/// R11-4/R11-6/R11-8): at most one contributed date,
+/// and — when the group offers two or more dates
+/// instead — the offered dates as named alternatives,
+/// which the account names on the unarmed second-date
+/// note and which never stand as the group's date.
+struct GroupAnalysis {
+    contributed: Option<SimpleDate>,
+    alternatives: Vec<SimpleDate>,
+}
+
+fn analyze_group(inner: &str, today: SimpleDate) -> GroupAnalysis {
+    if let Some(d) = parse_flexible_date(inner.trim(), today) {
+        let analysis = GroupAnalysis {
+            contributed: Some(d),
+            alternatives: Vec::new(),
+        };
+        return analysis;
+    }
+    let tokens: Vec<String> = inner.split_whitespace().map(group_token).collect();
+    let positional = dates_inside_group_positional(inner, today);
+    let mut qualified: Vec<(SimpleDate, usize, usize)> = Vec::new();
+    for entry in positional {
+        let (d, start, _) = entry;
+        if governed_before(&tokens, start) || contradicted_before(&tokens, start, d) {
+            continue;
+        }
+        qualified.push(entry);
+    }
+    let partial = partial_or_alternative(&tokens, &qualified);
+    if qualified.len() == 1 && partial.is_none() {
+        let analysis = GroupAnalysis {
+            contributed: Some(qualified[0].0),
+            alternatives: Vec::new(),
+        };
+        return analysis;
+    }
+    let mut alternatives: Vec<SimpleDate> = Vec::new();
+    for (d, _, _) in &qualified {
+        if !alternatives.contains(d) {
+            alternatives.push(*d);
+        }
+    }
+    if let Some(p) = partial {
+        if !alternatives.contains(&p) {
+            alternatives.push(p);
+        }
+    }
+    GroupAnalysis {
+        contributed: None,
+        alternatives,
+    }
+}
+
 /// The date one parenthesized group contributes
 /// (round 10, R10-5): a group that is itself a bare
 /// date contributes that date, as it always has; a
@@ -743,30 +930,32 @@ fn dates_inside_group(inner: &str, today: SimpleDate) -> Vec<SimpleDate> {
 /// date it contains when it contains exactly one —
 /// "correction: November 1", "use November 1 instead"
 /// — and a group containing no date, or several,
-/// contributes nothing, as today.
+/// contributes nothing.
+///
+/// Round 11 (R11-4/R11-8): a contained date governed
+/// by a negation or an origin marker standing before
+/// it, or contradicted by a weekday word standing
+/// directly before it, does not contribute — the
+/// analysis in `analyze_group` is the one rule, and
+/// every consumer of group contributions reads it
+/// through here.
 fn group_date(inner: &str, today: SimpleDate) -> Option<SimpleDate> {
-    if let Some(d) = parse_flexible_date(inner.trim(), today) {
-        return Some(d);
-    }
-    let inside = dates_inside_group(inner, today);
-    if inside.len() == 1 {
-        return Some(inside[0]);
-    }
-    None
+    analyze_group(inner, today).contributed
+}
+
+/// The dates a trailing group offers as alternatives
+/// instead of contributing one (round 11, R11-6).
+fn group_alternatives(inner: &str, today: SimpleDate) -> Vec<SimpleDate> {
+    analyze_group(inner, today).alternatives
 }
 
 fn trailing_parenthesized_date(text: &str, today: SimpleDate) -> Option<SimpleDate> {
-    let mut rest = text.trim_end_matches(['.', ',']);
-    while rest.ends_with(')') {
-        let open = rest.rfind('(')?;
-        let inner = &rest[open + 1..rest.len() - 1];
-        if inner.contains(['(', ')']) {
-            return None;
-        }
+    let mut rest = text;
+    while let Some((before, inner)) = split_last_trailing_group(rest) {
         if let Some(d) = group_date(inner, today) {
             return Some(d);
         }
-        rest = rest[..open].trim_end().trim_end_matches(['.', ',']);
+        rest = before;
     }
     None
 }
@@ -779,21 +968,37 @@ fn trailing_parenthesized_date(text: &str, today: SimpleDate) -> Option<SimpleDa
 /// the collected dates are put back in written order.
 fn trailing_parenthesized_dates(text: &str, today: SimpleDate) -> Vec<SimpleDate> {
     let mut found: Vec<SimpleDate> = Vec::new();
-    let mut rest = text.trim_end_matches(['.', ',']);
-    while rest.ends_with(')') {
-        let Some(open) = rest.rfind('(') else {
-            break;
-        };
-        let inner = &rest[open + 1..rest.len() - 1];
-        if inner.contains(['(', ')']) {
-            break;
-        }
+    let mut rest = text;
+    while let Some((before, inner)) = split_last_trailing_group(rest) {
         if let Some(d) = group_date(inner, today) {
             found.push(d);
         }
-        rest = rest[..open].trim_end().trim_end_matches(['.', ',']);
+        rest = before;
     }
     found.reverse();
+    found
+}
+
+/// Every alternative a trailing parenthesized group
+/// offers, in written order (round 11, R11-6): a
+/// group that offers two or more dates contributes
+/// none of them, and these are named on the line's
+/// second-date note instead.
+fn trailing_group_alternatives(text: &str, today: SimpleDate) -> Vec<SimpleDate> {
+    let mut by_group: Vec<Vec<SimpleDate>> = Vec::new();
+    let mut rest = text;
+    while let Some((before, inner)) = split_last_trailing_group(rest) {
+        by_group.push(group_alternatives(inner, today));
+        rest = before;
+    }
+    let mut found: Vec<SimpleDate> = Vec::new();
+    for group in by_group.into_iter().rev() {
+        for d in group {
+            if !found.contains(&d) {
+                found.push(d);
+            }
+        }
+    }
     found
 }
 
@@ -1182,6 +1387,7 @@ fn mid_date_group_reading(
     text: &str,
     today: SimpleDate,
     trailing_groups: &[SimpleDate],
+    trailing_alternatives: &[SimpleDate],
 ) -> Option<DateLineReading> {
     for (start, end) in parenthesized_spans(text) {
         let after = text[end..].trim_start();
@@ -1200,7 +1406,15 @@ fn mid_date_group_reading(
         let mut candidate = String::with_capacity(text.len());
         candidate.push_str(&text[..start]);
         candidate.push_str(&text[end..]);
-        let candidate_raw = Some(candidate.clone());
+        // Round 11 (R11-6/R11-7 review shape): a
+        // trailing group standing after the year is
+        // garnish the composition already holds; the
+        // de-grouped candidate is read on its core,
+        // trailing groups off, so a mid-date group and
+        // a trailing group together no longer defeat
+        // each other and read as nothing.
+        let candidate_core = strip_all_trailing_parenthesized(candidate.trim()).to_string();
+        let candidate_raw = Some(candidate_core.clone());
         let (cand_date, _) = date_line_inner(&candidate_raw, today);
         let Some(read) = cand_date else {
             continue;
@@ -1216,7 +1430,12 @@ fn mid_date_group_reading(
             }
         }
         let parenthesized_mismatch = mismatch_from_groups(&all_groups, read, false);
-        let second_dates = second_dates_in_line(&candidate, today, read);
+        let mut second_dates = second_dates_in_line(&candidate_core, today, read);
+        for d in trailing_alternatives {
+            if *d != read && !second_dates.contains(d) {
+                second_dates.push(*d);
+            }
+        }
         return Some(DateLineReading {
             date: Some(read),
             weekday_mismatch: None,
@@ -1239,23 +1458,80 @@ fn mid_date_group_reading(
 /// second date, in written order. Trailing
 /// parenthesized groups are garnish, remembered on
 /// their own records, and are not scanned here.
+///
+/// Round 11 (R11-7): the anchor is the read date's
+/// OWN occurrence — the first run that is the read
+/// date itself. A distinct date in the six days
+/// before the read date shares its Sunday but is not
+/// its proxy: it is a second date. On a Sunday-after
+/// line the one other anchor is the resolution's
+/// base — the date run the "Sunday after" phrase
+/// itself consumes, identified by the phrase
+/// standing in or directly before that run — and the
+/// base is never flagged as its own second date.
 fn second_dates_in_line(text: &str, today: SimpleDate, read: SimpleDate) -> Vec<SimpleDate> {
+    fn clean(t: &str) -> String {
+        t.trim_matches(['(', ')', '[', ']', ',', '.', ';'])
+            .to_ascii_lowercase()
+    }
     let core = strip_all_trailing_parenthesized(text.trim());
     let tokens: Vec<&str> = core.split_whitespace().collect();
-    let mut anchored = false;
-    let mut out: Vec<SimpleDate> = Vec::new();
+    let cleaned: Vec<String> = tokens.iter().map(|t| clean(t)).collect();
+    // Every date-shaped run in the line, with where
+    // it stands.
+    let mut runs: Vec<(SimpleDate, usize, usize)> = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
         match parse_date_prefix(&tokens[i..], today) {
             Some((d, used)) => {
-                if !anchored && (d == read || first_sunday_after(d) == read) {
-                    anchored = true;
-                } else if d != read && !out.contains(&d) {
-                    out.push(d);
-                }
+                runs.push((d, i, used.max(1)));
                 i += used.max(1);
             }
             None => i += 1,
+        }
+    }
+    // Whether a run is the Sunday-after phrase's own
+    // base: the phrase's "Sunday after" stands inside
+    // the run's opening tokens (the prefix reader
+    // consumes the phrase words with the date), or
+    // directly before the run, allowing the base its
+    // own leading weekday between "after" and the
+    // date.
+    let is_base = |start: usize, used: usize| -> bool {
+        let mut j = start;
+        while j < start + used && matches!(cleaned[j].as_str(), "on" | "the") {
+            j += 1;
+        }
+        if j + 1 < start + used && weekday_word(&cleaned[j]) == Some(0) && cleaned[j + 1] == "after"
+        {
+            return true;
+        }
+        let mut k = start;
+        while k > 0 && matches!(cleaned[k - 1].as_str(), "on" | "the") {
+            k -= 1;
+        }
+        if k >= 2 && cleaned[k - 1] == "after" && weekday_word(&cleaned[k - 2]) == Some(0) {
+            return true;
+        }
+        k >= 3
+            && weekday_word(&cleaned[k - 1]).is_some()
+            && cleaned[k - 2] == "after"
+            && weekday_word(&cleaned[k - 3]) == Some(0)
+    };
+    let mut own_anchored = false;
+    let mut base_anchored = false;
+    let mut out: Vec<SimpleDate> = Vec::new();
+    for (d, start, used) in runs {
+        if !own_anchored && d == read {
+            own_anchored = true;
+            continue;
+        }
+        if !base_anchored && d != read && first_sunday_after(d) == read && is_base(start, used) {
+            base_anchored = true;
+            continue;
+        }
+        if d != read && !out.contains(&d) {
+            out.push(d);
         }
     }
     out
@@ -1297,9 +1573,19 @@ fn date_line(raw: &Option<String>, today: SimpleDate) -> DateLineReading {
         return none_reading;
     };
     let groups = trailing_parenthesized_dates(text, today);
+    // Round 11 (R11-6): the alternatives a trailing
+    // group offers instead of contributing are named
+    // on the second-date note, beside whatever the
+    // line itself reads.
+    let alternatives = trailing_group_alternatives(text, today);
     if let Some(read) = date {
         let parenthesized_mismatch = mismatch_from_groups(&groups, read, false);
-        let second_dates = second_dates_in_line(text, today, read);
+        let mut second_dates = second_dates_in_line(text, today, read);
+        for d in &alternatives {
+            if *d != read && !second_dates.contains(d) {
+                second_dates.push(*d);
+            }
+        }
         return DateLineReading {
             date: Some(read),
             weekday_mismatch,
@@ -1318,22 +1604,28 @@ fn date_line(raw: &Option<String>, today: SimpleDate) -> DateLineReading {
     // Round 10 (R10-10b): a group standing between a
     // month-day and its year does not poison the plain
     // date; the group is compared as garnish.
-    if let Some(reading) = mid_date_group_reading(text, today, &groups) {
+    if let Some(reading) = mid_date_group_reading(text, today, &groups, &alternatives) {
         return reading;
     }
-    if groups.is_empty() {
-        return DateLineReading {
-            date: None,
-            weekday_mismatch,
-            parenthesized_mismatch: None,
-            second_dates: Vec::new(),
-        };
-    }
-    // Nothing read and a trailing parenthesized date
-    // stands: the core may still carry the plain
-    // reading the parenthesis poisoned.
+    // Round 11 (R11-6): the core re-read below no
+    // longer waits for a group to have contributed.
+    // A group that contributes nothing — several
+    // dates, a negated date, no date, nested groups —
+    // behaves as if absent: the line's own reading
+    // proceeds on its core either way.
     let core = strip_all_trailing_parenthesized(text);
     if core.trim().is_empty() {
+        if groups.is_empty() {
+            // Only non-contributing groups stand: no
+            // date governs, and the alternatives they
+            // offered are named on the note.
+            return DateLineReading {
+                date: None,
+                weekday_mismatch: None,
+                parenthesized_mismatch: None,
+                second_dates: alternatives,
+            };
+        }
         // Round 10 (R10-10a): a line that is only
         // parenthesized groups reads its date exactly
         // as the Keep-through line has since round 9 —
@@ -1354,7 +1646,7 @@ fn date_line(raw: &Option<String>, today: SimpleDate) -> DateLineReading {
             date: None,
             weekday_mismatch,
             parenthesized_mismatch: None,
-            second_dates: Vec::new(),
+            second_dates: alternatives,
         };
     }
     let core_raw = Some(core.to_string());
@@ -1362,7 +1654,12 @@ fn date_line(raw: &Option<String>, today: SimpleDate) -> DateLineReading {
     match core_date {
         Some(read) => {
             let parenthesized_mismatch = mismatch_from_groups(&groups, read, false);
-            let second_dates = second_dates_in_line(core, today, read);
+            let mut second_dates = second_dates_in_line(core, today, read);
+            for d in &alternatives {
+                if *d != read && !second_dates.contains(d) {
+                    second_dates.push(*d);
+                }
+            }
             DateLineReading {
                 date: Some(read),
                 weekday_mismatch: None,
@@ -1374,7 +1671,7 @@ fn date_line(raw: &Option<String>, today: SimpleDate) -> DateLineReading {
             date: None,
             weekday_mismatch: core_mismatch,
             parenthesized_mismatch: None,
-            second_dates: Vec::new(),
+            second_dates: alternatives,
         },
     }
 }
@@ -3617,21 +3914,40 @@ Youth group meets Wednesday at 6 PM.
             .keep_through_parenthesized_mismatch
             .expect("the keep-through mirror records it too");
         assert_eq!(m.named, nov(1));
-        // A trailing group with no date in it contributes
-        // nothing, as today: the existing verdict stands.
+        // FLAGGED PIN CHANGE (round 11, R11-6): both
+        // blocks below used to expect NoSundayNamed —
+        // the non-contributing group poisoned the plain
+        // reading it trailed, which is the defect
+        // RT11-6 names. A group that contributes nothing
+        // now behaves as if absent: the plain date
+        // reads and stands, and a two-date group's
+        // dates are named as alternatives on the
+        // second-date note. The groups themselves still
+        // contribute nothing, as they always have.
         let text = "For Sunday: October 25, 2026 (Room 2)\n\n## Announcement\n\nHi.\n";
         let c = parse_contribution(text, today()).expect("parses");
-        assert_eq!(c.for_date, None, "preserved: no date is read");
+        assert_eq!(
+            c.for_date,
+            Some(oct(25)),
+            "the no-date group no longer poisons the line"
+        );
         assert_eq!(c.for_sunday_parenthesized_mismatch, None);
-        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+        assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
         // A trailing group with two dates in it
-        // contributes nothing either, as today.
+        // contributes nothing either — but the dates
+        // are named as alternatives, not laundered.
         let text =
             "For Sunday: October 25, 2026 (November 1 and November 8)\n\n## Announcement\n\nHi.\n";
         let c = parse_contribution(text, today()).expect("parses");
-        assert_eq!(c.for_date, None, "preserved: no date is read");
+        assert_eq!(
+            c.for_date,
+            Some(oct(25)),
+            "the multi-date group no longer poisons the line"
+        );
         assert_eq!(c.for_sunday_parenthesized_mismatch, None);
-        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
     }
 
     #[test]
@@ -3911,5 +4227,284 @@ Youth group meets Wednesday at 6 PM.
         let c = parse_contribution(text, today()).expect("parses");
         assert_eq!(c.for_date, None);
         assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+    }
+
+    #[test]
+    fn r11c_negated_and_origin_groups_contribute_nothing() {
+        // Round 11 (R11-4, red team RT11-5 verbatim): a
+        // contained date governed by a negation or an
+        // origin marker standing before it inside its
+        // group does not contribute, on every consuming
+        // path. November 1, 2026 is a Sunday.
+        for group in [
+            "(not November 1)",
+            "(ignore November 1)",
+            "(moved from November 1)",
+            "(from November 1)",
+            "(never November 1)",
+            "(no longer November 1)",
+            "(don't use November 1)",
+            "(didn't use November 1)",
+            "(originally November 1)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            let expected_words = format!("next Sunday {group}");
+            assert_eq!(
+                c.for_sunday_in_words.as_deref(),
+                Some(expected_words.as_str()),
+                "{group}: the relative words still stand"
+            );
+            assert_eq!(c.for_sunday_parenthesized_date, None, "{group}");
+            assert_eq!(
+                c.for_sunday_parenthesized_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: the governed date is not remembered"
+            );
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::SundayInWords(oct(25)),
+                "{group}: no arming on the governed date"
+            );
+            // Paren-only lines: the governed date never
+            // becomes the operative date.
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: paren-only");
+            assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{group}");
+            assert_eq!(
+                week_verdict(&c, Some(nov(1))),
+                WeekVerdict::NoSundayNamed,
+                "{group}: never SameSunday on a negated date"
+            );
+            // Keep-through lines: trailing governed
+            // groups and the fallback alike set nothing.
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through paren-only");
+            let text = format!("Keep-through: choir anthem {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through fallback");
+            assert_eq!(c.keep_through_parenthesized_mismatch, None, "{group}");
+        }
+        // The review lane's origin witness through the
+        // Keep-through fallback (R11-6 in their numbering).
+        let text =
+            "Keep-through: choir anthem (from November 1 service)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "an origin mention sets no keep-through"
+        );
+        // The Sunday-after relative shape: the sentence
+        // never states a negated date as the sender's.
+        let text =
+            "For Sunday: the Sunday after next Sunday (not November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::DifferentSunday(nov(8)),
+            "resolved against November 1, not SameSunday on the negated group"
+        );
+        assert_eq!(c.parenthesized_same_sunday_sentence(nov(1)), None);
+        // Absolute composition: the plain date stands,
+        // no mismatch is recorded on the governed date.
+        let text = "For Sunday: October 25, 2026 (not November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        let text = "Keep-through: November 8, 2026 (ignore November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)));
+        assert_eq!(c.keep_through_parenthesized_mismatch, None);
+        // Held shapes, unchanged: "(moved to ...)" is
+        // an assertion and arms; "(correction: ...)"
+        // contributes; a group restating the line's own
+        // date records no mismatch.
+        let text = "For Sunday: next Sunday (moved to November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_sunday_parenthesized_date, Some(nov(1)));
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::DifferentSunday(nov(1))
+        );
+        let text =
+            "For Sunday: October 25, 2026 (correction: November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the correction shape still contributes");
+        assert_eq!(m.named, nov(1));
+        let text = "For Sunday: October 25, 2026 (service on October 25, 2026)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    }
+
+    #[test]
+    fn r11c_non_contributing_groups_name_alternatives_and_never_poison() {
+        // Round 11 (R11-6, red team RT11-6 + review
+        // R11-7): a group that contributes nothing never
+        // takes the line's reading with it, and offered
+        // alternatives are named on the second-date
+        // note, not laundered into a clean reading.
+        let text =
+            "For Sunday: October 25, 2026 (November 1 or November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "the plain date stands");
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+        assert_eq!(
+            second_dates_sentence(&c.for_sunday_second_dates),
+            "This file named other dates too: Sunday, November 1, 2026 and \
+             Sunday, November 8, 2026. Check which date was meant."
+        );
+        // The relative mirror: the words resolve, the
+        // alternatives are named beside the resolution,
+        // and no group feeds the verdict.
+        let text = "For Sunday: next Sunday (November 1 or November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some("next Sunday (November 1 or November 8)")
+        );
+        assert_eq!(c.for_sunday_parenthesized_dates, Vec::<SimpleDate>::new());
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "resolved on the words, not armed on an alternative"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), nov(8)],
+            "the alternatives are named, not laundered into a clean acceptance"
+        );
+        // Nested groups kill neither reading.
+        let text = "For Sunday: October 25, 2026 (note (November 1))\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        let text = "For Sunday: next Sunday (note (November 1))\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some("next Sunday (note (November 1))")
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25))
+        );
+        // "Or the 8th" is an offered alternative, not a
+        // promotion of November 1 alone to a certainty.
+        let text = "For Sunday: next Sunday (November 1 or the 8th)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_sunday_parenthesized_dates, Vec::<SimpleDate>::new());
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "November 1 alone no longer arms"
+        );
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+        let text =
+            "For Sunday: October 25, 2026 (November 1 or the 8th)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+        // A mid-date group plus a trailing group
+        // together (review R11-7): the plain date reads,
+        // and both groups are compared as garnish.
+        let text =
+            "For Sunday: October 25 (November 1), 2026 (November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("both groups are named as garnish");
+        assert_eq!(m.named, nov(1));
+        assert_eq!(m.also_named, vec![nov(8)]);
+    }
+
+    #[test]
+    fn r11c_the_second_date_anchor_is_the_read_dates_own_occurrence() {
+        // Round 11 (R11-7, review R11-3 + red team
+        // RT11-3): "October 20, then Sunday, October 25,
+        // 2026" notes October 20 — a date in the six
+        // days before the read date is a second date,
+        // not the read date's anchor by proxy.
+        let text =
+            "For Sunday: October 20, then Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_dates, vec![oct(20)]);
+        assert_eq!(
+            second_dates_sentence(&c.for_sunday_second_dates),
+            "This file named another date too: Tuesday, October 20, 2026. \
+             Check which date was meant."
+        );
+        let text = "For Sunday: October 20, 2026 planning day; service is Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_dates, vec![oct(20)]);
+        // The Keep-through mirror.
+        let text = "Keep-through: October 20, 2026 planning day; service is Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(oct(25)));
+        assert_eq!(c.keep_through_second_dates, vec![oct(20)]);
+        // On a Sunday-after line the resolution's base
+        // is never flagged as its own second date...
+        let text = "For Sunday: the Sunday after October 20, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+        // ...and a stray date standing before the phrase
+        // is the date noted, not the base.
+        let text = "For Sunday: October 22, 2026 social; the Sunday after October 20, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_dates, vec![oct(22)]);
+    }
+
+    #[test]
+    fn r11c_a_contradicting_weekday_inside_a_wordy_group_contributes_nothing() {
+        // Round 11 (R11-8, review R11-4 + red team
+        // RT11-6 tail): November 1, 2026 is a Sunday, so
+        // a group naming it a Monday contributes
+        // nothing — the weekday law inside groups.
+        let text = "For Sunday: October 25, 2026 (Monday November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        let text =
+            "For Sunday: October 25, 2026 (correction: Monday, November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+        // A paren-only line governed by such a group
+        // reads no date at all.
+        for line in ["(Monday November 1)", "(correction: Monday, November 1)"] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}");
+            assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{line}");
+            assert_eq!(
+                week_verdict(&c, Some(nov(1))),
+                WeekVerdict::NoSundayNamed,
+                "{line}: no governing on a weekday-contradicted date"
+            );
+        }
+        // An agreeing weekday inside the group leaves
+        // the contribution standing.
+        let text =
+            "For Sunday: October 25, 2026 (correction: Sunday, November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("an agreeing weekday still contributes");
+        assert_eq!(m.named, nov(1));
     }
 }

@@ -557,9 +557,100 @@ in both enumerations however far prepended bytes shifted it,
 and that the reader attempt is gated on its chosen directory
 walking rather than on whether an earlier candidate opened.
 
-## Shipped addendum, R11-C
+## Shipped addendum, R11-C (2026-10-17)
 
-_(appended by the R11-C builder with real numbers and flagged pin changes)_
+All four findings landed in `crates/ob-extract/src/contribution.rs`;
+no sentence in `crates/ob-app/src/main.rs` changed — the
+alternatives ride the existing second-date note machinery, whose
+fields the review simulation already copies. Local totals: before
+656 passed / 0 failed; after **660 passed / 0 failed**, full
+unpiped `cargo test --workspace` exit 0; `cargo clippy --workspace
+--all-targets -- -D warnings` exit 0; `cargo fmt --all -- --check`
+exit 0. Four new tests (below); **one pre-existing test changed**,
+flagged in its body and below.
+
+**R11-4 — governed dates do not contribute.** One group analysis
+(`analyze_group`) now stands behind `group_date`, so every consumer
+reads the same rule: the dates a wordy group contains are read with
+their positions, and a date is disqualified when a governor stands
+before it inside the group — negation (not, ignore, never, no
+longer, don't/didn't use) or origin (from, originally; "moved
+from" is the "from" case) — on every consuming path (relative and
+absolute composition, paren-only lines, Keep-through trailing
+groups, and the Keep-through fallback, which reads the same
+trailing-group walk). A disqualified group behaves as a no-date
+group. Held shapes pinned unchanged: "(moved to November 1)" arms
+as an assertion, "(correction: November 1)" contributes, and a
+group restating the line's own date records no mismatch.
+
+**R11-6 — non-contributing groups never poison; alternatives are
+named.** Three changes compose. (a) Trailing groups are split by
+balancing parentheses, so a nested group ("(note (November 1))")
+is one trailing group rather than a defect. (b) `date_line`'s core
+re-read no longer waits for a group to have contributed: a group
+that contributes nothing behaves as if absent and the line's own
+reading proceeds on its core, on absolute lines, relative phrases,
+and paren-only lines alike; `mid_date_group_reading` reads its
+de-grouped candidate on its core too, so a mid-date group plus a
+trailing group together read the plain date with both groups
+compared as garnish (review R11-7's witness). (c) A group
+containing two or more qualified dates — counting an "or
+<partial date>" tail ("November 1 or the 8th", the partial date
+taking the full date's month and year) as an offered alternative —
+contributes none of them as a single date; its dates are recorded
+as named alternatives on the line's second-date note
+(`for_sunday_second_dates` / `keep_through_second_dates`), the
+existing unarmed note machinery, on relative lines as on absolute
+ones: "next Sunday (November 1 or November 8)" resolves
+SundayInWords(October 25) with both alternatives named in the
+account and no group feeding the verdict, instead of the previous
+silent clean acceptance or the promoted single date.
+
+**R11-7 — the anchor is the read date's own occurrence.**
+`second_dates_in_line` collects the line's date runs first, then
+anchors only the first run that IS the read date, plus — on a
+Sunday-after line — the one run the "Sunday after" phrase itself
+consumes (the phrase standing in or directly before that run),
+which is never flagged as its own second date. Sunday-proximity
+no longer anchors: "October 20, then Sunday, October 25, 2026"
+notes October 20, the red team's stray-date shape notes the stray
+(October 22) rather than the base (October 20), and any date in
+the six days before the read date is a second date.
+
+**R11-8 — the weekday law inside groups.** The same group
+analysis disqualifies a contained date when a weekday word
+standing directly before it inside the group contradicts it:
+"(Monday November 1)" and "(correction: Monday, November 1)"
+contribute nothing (November 1, 2026 is a Sunday); an agreeing
+weekday ("(correction: Sunday, November 1)") still contributes.
+
+**Tests.** Four new pins, all in `contribution.rs`:
+`r11c_negated_and_origin_groups_contribute_nothing` (every RT11-5
+governor, on relative lines, paren-only lines, Keep-through
+trailing groups and the fallback, plus the choir-anthem origin
+witness and the held moved-to / correction / restatement shapes),
+`r11c_non_contributing_groups_name_alternatives_and_never_poison`
+(the RT11-6 witnesses: absolute and relative multi-date groups,
+nested groups, "or the 8th", and the mid-date-plus-trailing
+composition), `r11c_the_second_date_anchor_is_the_read_dates_own_occurrence`
+(the October 20 witnesses on both lines, the Sunday-after base
+never self-flagged, the stray-date inversion), and
+`r11c_a_contradicting_weekday_inside_a_wordy_group_contributes_nothing`
+(both weekday witnesses plus the agreeing-weekday control).
+
+**Flagged pre-existing test change (one).**
+`r10b_a_wordy_trailing_group_contributes_its_date`: its two tail
+blocks asserted `for_date = None` / `NoSundayNamed` for "October
+25, 2026 (Room 2)" and "October 25, 2026 (November 1 and November
+8)" — the pins asserted the R11-6 defect itself (a
+non-contributing group poisoning the plain reading). Both blocks
+now expect the plain date to read and stand (SameSunday), the
+no-date group recording nothing, and the two-date group's dates
+named as alternatives on the second-date note; the reason is
+stated in a FLAGGED comment in the test body. No other
+pre-existing test changed: the R9/R10 stacked-group, verdict-
+contract, restatement, and second-date families pass with their
+original expectations in the full run.
 
 ## Shipped addendum, R11-D
 

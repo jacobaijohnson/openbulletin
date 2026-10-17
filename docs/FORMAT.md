@@ -137,11 +137,28 @@ crossed an anchor, so its partner sits in another
 segment — the pairing is ambiguous and the serving
 -lines change is REFUSED AS A WHOLE: the saved list
 keeps the old names, nothing is paired, moved, or
-cleared, and the status says several lines were
-renamed and moved at once, that the app cannot tell
-which names belong to which line, that the lines
-were left as they were, and to rename one line at a
-time. (Round 5 instead kept the new names and
+cleared, and the status names the kinds of change
+the pairing actually saw. For the shape the refusal
+was first written for — renames that crossed
+anchors, with nothing removed or added — it says
+several lines were renamed and moved at once, that
+the app cannot tell which names belong to which
+line, that the lines were left as they were, and to
+rename one line at a time. Every other ambiguous
+shape is worded by its own kinds (round 7, R7-10;
+round 8, R8-10): the status says the lines were
+renamed, removed, added, or moved at once — only
+the kinds present, in that order — that the app
+cannot tell which names belong to which line, that
+the lines were left as they were, and names the
+remedy in the same kinds: rename, remove, or add
+one line at a time, whichever kinds the edit
+contained. A kind is claimed only when the pairing
+saw it: `moved` only when names the pairing could
+not resolve spread over more than one segment, so
+a clean removal or addition standing in its own
+segment names its own kind and never a move.
+(Round 5 instead kept the new names and
 reported the lines "unfollowed" with their names
 stranded under the old slugs; that disposition and
 its status word are gone.) A name only in the old

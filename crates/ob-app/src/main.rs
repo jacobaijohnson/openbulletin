@@ -2054,7 +2054,21 @@ fn ambiguous_serving_lines_sentence(kinds: &ob_model::ServingLineEditKinds) -> S
 fn serving_line_conflict_sentence(conflict: &ob_model::ServingLineSlugConflict) -> String {
     let first = format!("'{}'", conflict.first);
     let second = format!("'{}'", conflict.second);
-    if conflict.builtin {
+    if conflict.builtin && conflict.taker_is_new {
+        // The taking line is a new line (round 8,
+        // R8-11): it has no old name to be named by,
+        // and the holding side is named by the name
+        // the bulletin currently prints for the
+        // claimed line, so the two sides never read
+        // as one unqualified name.
+        format!(
+            "Serving lines not saved: a new line, {first}, would take the \
+             place of the built-in line {second}, so the line's row and \
+             the names the bulletin prints could name different people. \
+             Rename the new line, then save again. The serving lines \
+             were left as they were."
+        )
+    } else if conflict.builtin {
         format!(
             "Serving lines not saved: {first} would take the place of the \
              built-in line {second}, so the line's row and the names the \
@@ -19332,6 +19346,7 @@ mod settings_tests {
             second,
             slug,
             builtin: false,
+            taker_is_new: false,
         };
         assert_eq!(
             serving_line_conflict_sentence(&twins),
@@ -19348,6 +19363,7 @@ mod settings_tests {
             second,
             slug,
             builtin: true,
+            taker_is_new: false,
         };
         assert_eq!(
             serving_line_conflict_sentence(&alias),
@@ -19472,6 +19488,107 @@ mod settings_tests {
              and the app cannot tell which names belong to which line. The lines \
              were left as they were. Rename or add one line at a time, then \
              save again."
+        );
+    }
+
+    #[test]
+    fn the_ambiguous_refusal_sentence_for_resolved_segments_names_no_move() {
+        // Round 8 (R8-10): the red team's S-C shape
+        // (one rename segment, one clean removal, one
+        // clean addition; nothing crossed an anchor)
+        // used to read "renamed, removed and moved",
+        // claiming the kind that was absent and
+        // omitting the addition. The verify lane's D8
+        // shape (a rename segment plus a removal in
+        // its own segment) claimed the same absent
+        // move. Both sentences now name only what the
+        // pairing saw.
+        let mut participants: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let mut aliases: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let lines =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        let sc_old = lines(&["Alpha", "Old One", "Old Two", "Beta", "Gone Line", "Gamma"]);
+        let sc_new = lines(&["Alpha", "New One", "Beta", "Gamma", "Fresh Line"]);
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &sc_old,
+            &sc_new,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(migration.ambiguous);
+        let kinds = migration.ambiguous_kinds.expect("kinds on a refusal");
+        assert_eq!(
+            ambiguous_serving_lines_sentence(&kinds),
+            "Serving lines not saved: lines were renamed, removed and added at once, \
+             and the app cannot tell which names belong to which line. The lines \
+             were left as they were. Rename, remove or add one line at a time, then \
+             save again."
+        );
+        let d8_old = lines(&["Alpha", "Choir", "Bells", "Beta", "Solo"]);
+        let d8_new = lines(&["Alpha", "Choir team", "Beta"]);
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &d8_old,
+            &d8_new,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(migration.ambiguous);
+        let kinds = migration.ambiguous_kinds.expect("kinds on a refusal");
+        assert_eq!(
+            ambiguous_serving_lines_sentence(&kinds),
+            "Serving lines not saved: lines were renamed and removed at once, \
+             and the app cannot tell which names belong to which line. The lines \
+             were left as they were. Rename or remove one line at a time, then \
+             save again."
+        );
+    }
+
+    #[test]
+    fn the_slug_conflict_sentence_names_the_taker_and_the_holder() {
+        // Round 8 (R8-11): the sentence built from a
+        // built-in conflict names the taking line
+        // distinguishably and the holding side by the
+        // name the bulletin currently prints for the
+        // claimed line — never the same unqualified
+        // name on both sides. "Kids message" claims
+        // the children's-message slug here through
+        // the recorded alias.
+        let mut aliases: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        aliases.insert("childrens_message".to_string(), "kids_message".to_string());
+        let lines =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        // S-A2: Choir's line takes the name; the
+        // holder stands as "Kids message".
+        let old_lines = lines(&["Readers", "Kids message", "Choir", "Ushers"]);
+        let new_lines = lines(&["Readers", "Story time", "Children's message", "Ushers"]);
+        let conflict = ob_model::serving_line_slug_conflict(&old_lines, &new_lines, &aliases)
+            .expect("choir taking the claimed name conflicts");
+        assert_eq!(
+            serving_line_conflict_sentence(&conflict),
+            "Serving lines not saved: 'Choir' would take the place of the \
+             built-in line 'Kids message', so the line's row and the names \
+             the bulletin prints could name different people. Rename \
+             'Choir', then save again. The serving lines were left as \
+             they were."
+        );
+        // S-B: a new line takes the name the claimant
+        // renames back to; the sentence says a new
+        // line, and does not accuse the rename-back
+        // line of conflicting with itself.
+        let old_lines = lines(&["Readers", "Kids message", "Ushers"]);
+        let new_lines = lines(&["Readers", "Children's message", "Kids message", "Ushers"]);
+        let conflict = ob_model::serving_line_slug_conflict(&old_lines, &new_lines, &aliases)
+            .expect("the new line taking the claimed name conflicts");
+        assert_eq!(
+            serving_line_conflict_sentence(&conflict),
+            "Serving lines not saved: a new line, 'Children's message', \
+             would take the place of the built-in line 'Kids message', so \
+             the line's row and the names the bulletin prints could name \
+             different people. Rename the new line, then save again. The \
+             serving lines were left as they were."
         );
     }
 

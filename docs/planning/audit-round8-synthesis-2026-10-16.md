@@ -651,3 +651,180 @@ plan simulation.
   --all-targets`) clean, exit 0, no warnings.
   `cargo fmt --all` run before the final run. The
   fake-helper ETXTBSY flake did not fire.
+
+## Shipped addendum, R8-D (2026-10-16)
+
+R8-1 (MAJOR) + R8-12 + R8-10 + R8-11 + R8-13
+shipped in one batch: the entry-count enumeration
+and the candidate fallback in
+`crates/ob-format/src/lib.rs`, the pairing kinds
+and the slug-conflict judgment in
+`crates/ob-model/src/lib.rs`, the conflict
+sentence in `crates/ob-app/src/main.rs`, and the
+ambiguous-refusal paragraph in `docs/FORMAT.md`.
+
+- R8-1: `end_record_candidates` no longer stops
+  at sixteen: the enumeration collects EVERY
+  end-record candidate the tail scan finds, the
+  count walk keeps its per-candidate early stop
+  past the cap, and refusal follows if ANY
+  candidate directory exceeds the cap, on both
+  loaders (the shared `check_entry_cap`). No
+  global work bound was added, so there is no
+  deviation to record: an unwalkable candidate's
+  walk breaks at its first bad header or finds no
+  header in its declared window, and a walkable
+  candidate counts at most cap + 1 records, so
+  enumerating every candidate stays proportional
+  to the file's own tail structures. Pin:
+  `junk_end_records_and_many_decoys_do_not_hide_a_flood`
+  — the red team's 15-junk boundary shape in both
+  orders (junk before and after the fake
+  directory), the review's 16-decoy shape, and a
+  64-decoy shape all count `Some(8193)` and refuse
+  with the cap sentence on `load` AND
+  `load_insert`, for both the .obd and .obdi
+  shapes. Every honest and held shape from rounds
+  6–8 behaves as pinned, unmodified: the lying
+  totals plain and zip64, the 8,192/8,193
+  boundary exact on both loaders, honest trailing
+  junk loading, a truncated directory, the
+  f1a/f1b fake-directory shapes, and the
+  signature-in-comment counts (whose load
+  behavior is R8-12's new pin, below).
+- R8-12: when the directory the reader chose
+  holds no `document.json` (or no `insert.json`
+  at the sheet door), the loaders try the OTHER
+  enumerated end-record candidates' directories
+  before declaring no bulletin: each candidate is
+  opened from the file's bytes up to that record
+  with its comment length zeroed
+  (`end_record_positions_in` /
+  `archive_from_candidate`), and the first
+  candidate whose directory holds the document is
+  read with the same caps and fingerprint checks
+  as the primary path (the read itself is now one
+  shared `read_bulletin_archive` /
+  `read_insert_archive`). A fake directory that
+  yields no bulletin never satisfies a load; if
+  no candidate yields one, the refusal is the
+  one the file always met — the damaged-container
+  words when the archive would not open at all,
+  else the no-bulletin / no-sheet words. The
+  flood shapes never reach the fallback: the cap
+  refuses them first. Pin:
+  `end_record_signatures_inside_the_zip_comment_do_not_hide_the_bulletin`
+  — RT8-9's two fixtures (20 signature strings as
+  the zip comment; the same plus 3 pad bytes)
+  LOAD and yield their bulletin on the .obd door
+  and their sheet on the .obdi door, counting
+  `Some(2)`; and the f1a fake-directory shape at
+  honest size still refuses as no-bulletin,
+  because its chosen fake yields none and no
+  other candidate yields one either.
+- R8-10: `moved` counts only segments with
+  leftover names the pairing could not resolve —
+  plus old-only segments in the one case a
+  partner must sit in another segment: an
+  unresolved segment holding more new names than
+  old ones (the canonical crossed-renames shape,
+  where the Acolytes line's old-only segment is
+  exactly where the first segment's spare new
+  name's partner sits). Resolved removal-only
+  segments contribute `removed` and resolved
+  addition-only segments `added`, and neither
+  counts toward `moved` otherwise. Pins:
+  `ambiguous_kinds_count_only_segments_the_pairing_could_not_resolve`
+  in ob-model (RT8-6 S-C → {renamed, removed,
+  added}, no moved; S-D → {renamed, removed};
+  verify D8's shape → {renamed, removed}; the
+  canonical crossed-renames shape's kinds stay
+  exactly {renamed, moved}) and
+  `the_ambiguous_refusal_sentence_for_resolved_segments_names_no_move`
+  in ob-app (both sentences in full). The
+  canonical crossed-renames sentence keeps the
+  round-6 wording word for word, through the
+  pre-existing ob-app pin, unmodified.
+- R8-11: the slug-conflict judgment works from
+  the pairing's best evidence (the pairing now
+  records every segment's runs). A followed pair
+  assigning the contested name decides who takes
+  it; failing that, the line standing at the
+  name's position inside its segment does —
+  inside unequal segments as much as equal ones;
+  a name past its segment's old run arrives on a
+  new line. The membership excuse survives only
+  as the last resort, where no positional
+  evidence assigns the name to a different line.
+  `ServingLineSlugConflict` now reports the
+  taking line distinguishably (`first`: the name
+  it had, or the contested name as typed for a
+  new or standing line, with a new `taker_is_new`
+  flag) and the holding side (`second`) by the
+  claimant's current display name; the app
+  sentence's new-line branch says "a new line,
+  '<name>', would take the place of the built-in
+  line '<holder>'". Pins:
+  `a_slug_conflict_names_the_taking_line_and_the_current_holder`
+  in ob-model and
+  `the_slug_conflict_sentence_names_the_taker_and_the_holder`
+  in ob-app — RT8-7 S-B (no self-naming; the
+  rename-back line is not accused), S-A2
+  (conflict names Choir's line as taker and
+  "Kids message" as holder), RT8-8 S-A (the
+  hijack is named, not excused; the save is still
+  refused, as ambiguous), and the review's
+  crossed-segment claimant shape (no
+  self-conflict sentence). R7-9's excuse pin and
+  the genuine-hijack pins from R6-C/R7-D pass —
+  three of them with their `first`/`second`
+  assertions updated, flagged below.
+- R8-13: the FORMAT.md ambiguous-refusal
+  paragraph no longer states the pre-R7-10
+  sentence as universal: it describes the refusal
+  by its kinds, the canonical shape keeping its
+  wording, every other shape naming only the
+  kinds present with the remedy in the same
+  kinds, and `moved` claimed only when unresolved
+  names spread over more than one segment.
+- Changed pre-existing tests, flagged in source
+  at each site:
+  (1) ob-model
+  `claimedness_follows_the_alias_record_both_ways`:
+  the hijack conflict's `first` assertion changed
+  from "Children's message" to "Ushers" and a
+  `second` assertion ("Kids message") added —
+  the old assertion encoded the defect R8-11
+  fixes (the contested name on the taking side,
+  the built-in's name on the holding side, for a
+  shape whose holder stands as "Kids message").
+  (2) ob-model
+  `a_name_taking_a_builtin_slug_is_a_conflict`:
+  the renamed half's `first` changed from
+  "Childrens Message" to "Acolytes" (the taking
+  line named by the name it had); the added
+  half's assertions stand, with `taker_is_new`
+  assertions added to both halves.
+  (3) ob-model
+  `a_claimant_renaming_back_inside_an_ambiguous_edit_is_not_its_own_conflict`:
+  the hijack half's `first` changed from
+  "Children's message" to "Acolytes" and a
+  `second` assertion ("Kids message") added; the
+  slug assertion and both verdicts (excuse for
+  the claimant, conflict for the hijack) are
+  unchanged.
+  (4) ob-app
+  `ambiguous_and_refused_serving_lines_are_named_in_the_status_words`:
+  mechanical only — the two hand-built
+  `ServingLineSlugConflict` literals gained
+  `taker_is_new: false` for the new field; every
+  asserted sentence is byte-identical.
+  No other pre-existing test changed.
+- Numbers: full workspace suite 614 passed /
+  0 failed (baseline 608 / 0; +6 new tests:
+  2 in ob-format, 2 in ob-model, 2 in ob-app),
+  cargo's own exit code 0, read unpiped. Clippy
+  (`cargo clippy --workspace --all-targets`)
+  clean, exit 0, no warnings. `cargo fmt --all`
+  run before the final run. The fake-helper
+  ETXTBSY flake did not fire.

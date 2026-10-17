@@ -17,7 +17,7 @@
 use ob_model::{Asset, AssetKind, Document, Insert, RightsRecord};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 
 /// document.json stays small; refuse absurd sizes before
@@ -177,7 +177,18 @@ fn raw_entry_count(path: &Path, cap: usize) -> Option<usize> {
     /// first: every "PK\x05\x06" whose comment length
     /// fits before the end of the file (the reader's
     /// relaxed rule: the comment may end early, which
-    /// is what trailing junk means).
+    /// is what trailing junk means). EVERY candidate
+    /// the scan finds is collected (round 8, R8-1):
+    /// an earlier bound of sixteen let fifteen junk
+    /// records push a flood's own end record past the
+    /// enumeration, so the cap never counted it. There
+    /// is no count bound and no work bound here: a
+    /// candidate whose directory cannot be walked is
+    /// cheap (its walk breaks at the first bad header
+    /// or finds no header in its declared window), and
+    /// a walkable candidate's count stops just past
+    /// the cap, so enumerating every candidate stays
+    /// proportional to the file's own tail structures.
     fn end_record_candidates(file: &mut std::fs::File, file_len: u64) -> Vec<u64> {
         let mut out = Vec::new();
         let mut carry: Vec<u8> = Vec::new();
@@ -199,9 +210,6 @@ fn raw_entry_count(path: &Path, cap: usize) -> Option<usize> {
                 let comment_len = u64::from(u16::from_le_bytes([hay[pos + 20], hay[pos + 21]]));
                 if at + 22 + comment_len <= file_len {
                     out.push(at);
-                    if out.len() >= 16 {
-                        return out;
-                    }
                 }
             }
             let keep = 21.min(hay.len());
@@ -332,6 +340,48 @@ fn check_entry_cap(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Every end-record candidate position in `bytes`,
+/// latest first, under the same rule the count walk
+/// uses: a "PK\x05\x06" whose comment length fits
+/// before the end of the file (round 8, R8-12).
+fn end_record_positions_in(bytes: &[u8]) -> Vec<usize> {
+    let mut out = Vec::new();
+    if bytes.len() < 22 {
+        return out;
+    }
+    for at in (0..=bytes.len() - 22).rev() {
+        if !bytes[at..].starts_with(b"PK\x05\x06") {
+            continue;
+        }
+        let comment_len = usize::from(u16::from_le_bytes([bytes[at + 20], bytes[at + 21]]));
+        if at + 22 + comment_len <= bytes.len() {
+            out.push(at);
+        }
+    }
+    out
+}
+
+/// Open the archive ONE end-record candidate
+/// describes: the file's bytes up to that record,
+/// with the record's comment length zeroed — the
+/// comment is no part of the directory, and any
+/// signatures inside it are exactly what is being
+/// stepped past. None when that candidate's
+/// directory cannot be opened at all.
+fn archive_from_candidate(
+    bytes: &[u8],
+    at: usize,
+) -> Option<zip::ZipArchive<std::io::Cursor<Vec<u8>>>> {
+    let end = at.checked_add(22)?;
+    if end > bytes.len() {
+        return None;
+    }
+    let mut trimmed = bytes[..end].to_vec();
+    trimmed[at + 20] = 0;
+    trimmed[at + 21] = 0;
+    zip::ZipArchive::new(std::io::Cursor::new(trimmed)).ok()
+}
+
 pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
     let mut doc = doc.clone();
     // Save what the document will say it is: the current
@@ -435,8 +485,48 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     // RT5-5).
     check_entry_cap(path)?;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut zip =
-        zip::ZipArchive::new(file).map_err(|e| format!("that file's container is damaged: {e}"))?;
+    let mut damaged: Option<String> = None;
+    match zip::ZipArchive::new(file) {
+        Ok(mut zip) => {
+            if zip.file_names().any(|n| n == "document.json") {
+                return read_bulletin_archive(&mut zip);
+            }
+        }
+        Err(e) => {
+            damaged = Some(format!("that file's container is damaged: {e}"));
+        }
+    }
+    // The directory the reader chose holds no
+    // document.json (round 8, R8-12): a zip comment
+    // can carry end-record signatures of its own, and
+    // the reader's latest-first rule can land on a
+    // fake inside the comment whose directory is
+    // empty. Try the other enumerated end-record
+    // candidates' directories before declaring there
+    // is no bulletin: a fake directory that yields no
+    // bulletin never satisfies a load, and the flood
+    // shapes are already refused by the cap above.
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    for at in end_record_positions_in(&bytes) {
+        let Some(mut zip) = archive_from_candidate(&bytes, at) else {
+            continue;
+        };
+        if zip.file_names().any(|n| n == "document.json") {
+            return read_bulletin_archive(&mut zip);
+        }
+    }
+    if let Some(damaged) = damaged {
+        return Err(damaged);
+    }
+    Err("that file has no bulletin inside it (no document.json)".to_string())
+}
+
+/// Read a bulletin out of an opened archive: the
+/// entry cap on the archive's own count, the total
+/// cap counted in actual bytes as entries are read,
+/// and every asset entry's bytes checked against the
+/// hash in its name before anything is trusted.
+fn read_bulletin_archive<R: Read + Seek>(zip: &mut zip::ZipArchive<R>) -> Result<Document, String> {
     // The entry cap counts the archive's parts before
     // any payload is read (round 4, RT-2).
     if zip.len() > MAX_ENTRIES {
@@ -583,8 +673,45 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     // RT5-5).
     check_entry_cap(path)?;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut zip =
-        zip::ZipArchive::new(file).map_err(|e| format!("that file's container is damaged: {e}"))?;
+    let mut damaged: Option<String> = None;
+    match zip::ZipArchive::new(file) {
+        Ok(mut zip) => {
+            if zip.file_names().any(|n| n == "insert.json") {
+                return read_insert_archive(&mut zip);
+            }
+        }
+        Err(e) => {
+            damaged = Some(format!("that file's container is damaged: {e}"));
+        }
+    }
+    // The same second look as the bulletin door
+    // (round 8, R8-12): when the directory the reader
+    // chose holds no insert.json, the other
+    // enumerated end-record candidates' directories
+    // are tried before declaring there is no sheet.
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    for at in end_record_positions_in(&bytes) {
+        let Some(mut zip) = archive_from_candidate(&bytes, at) else {
+            continue;
+        };
+        if zip.file_names().any(|n| n == "insert.json") {
+            return read_insert_archive(&mut zip);
+        }
+    }
+    if let Some(damaged) = damaged {
+        return Err(damaged);
+    }
+    Err("that file has no loose sheet inside it (no insert.json)".to_string())
+}
+
+/// Read a loose sheet out of an opened archive, the
+/// discipline `load_insert` states: caps counted in
+/// actual bytes as entries are read, and every asset
+/// entry's bytes checked against the fingerprint in
+/// its name before anything is trusted.
+fn read_insert_archive<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+) -> Result<LoadedInsert, String> {
     // The entry cap counts the archive's parts before
     // any payload is read (round 4, RT-2).
     if zip.len() > MAX_ENTRIES {
@@ -2426,6 +2553,198 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// Append one genuinely unwalkable junk end
+    /// record: it declares seven entries and a
+    /// directory window of the eight bytes just
+    /// before it, in which no central-header
+    /// signature stands, so its count walk returns
+    /// None (round 8, R8-1). Junk records like this
+    /// burn candidate slots without ever being
+    /// counted themselves.
+    fn append_junk_end_record(base: &[u8]) -> Vec<u8> {
+        let mut out = base.to_vec();
+        let at = out.len() as u32;
+        let mut eocd = Vec::new();
+        eocd.extend_from_slice(b"PK\x05\x06");
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&7u16.to_le_bytes());
+        eocd.extend_from_slice(&7u16.to_le_bytes());
+        eocd.extend_from_slice(&8u32.to_le_bytes());
+        eocd.extend_from_slice(&(at - 8).to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        assert_eq!(eocd.len(), 22);
+        out.extend_from_slice(&eocd);
+        out
+    }
+
+    #[test]
+    fn junk_end_records_and_many_decoys_do_not_hide_a_flood() {
+        // Round 8 (R8-1, all three lanes): the
+        // candidate enumeration used to stop at
+        // sixteen candidates. Fifteen unwalkable junk
+        // end records plus one fake directory — in
+        // either order — pushed a 9,001-entry flood's
+        // own end record to position seventeen, where
+        // it was never counted, and the file loaded
+        // through the fake directory; sixteen decoy
+        // directories did the same. The enumeration
+        // collects every candidate now, so each of
+        // these shapes is counted and refused with
+        // the cap sentence at both doors.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        for (json_name, json, ext) in [
+            ("document.json", doc_json.as_str(), "obd"),
+            ("insert.json", sheet_json.as_str(), "obdi"),
+        ] {
+            let dir = scratch(&format!("junk-candidates-{ext}"));
+            let flood = zip_with_same_name_fillers(json_name, json, 9_000);
+            let doc_record = central_record(&flood, 0);
+            let mut junk_then_fake = flood.clone();
+            for _ in 0..15 {
+                junk_then_fake = append_junk_end_record(&junk_then_fake);
+            }
+            junk_then_fake = append_fake_directory(&junk_then_fake, &doc_record);
+            let mut fake_then_junk = append_fake_directory(&flood, &doc_record);
+            for _ in 0..15 {
+                fake_then_junk = append_junk_end_record(&fake_then_junk);
+            }
+            let mut decoys16 = flood.clone();
+            for _ in 0..16 {
+                decoys16 = append_fake_directory(&decoys16, &doc_record);
+            }
+            let mut decoys64 = flood.clone();
+            for _ in 0..64 {
+                decoys64 = append_fake_directory(&decoys64, &doc_record);
+            }
+            for (tag, bytes) in [
+                ("junk-then-fake", junk_then_fake),
+                ("fake-then-junk", fake_then_junk),
+                ("decoys-16", decoys16),
+                ("decoys-64", decoys64),
+            ] {
+                let path = dir.join(format!("{tag}.{ext}"));
+                std::fs::write(&path, &bytes).expect("write candidate copy");
+                assert_eq!(
+                    raw_entry_count(&path, MAX_ENTRIES),
+                    Some(MAX_ENTRIES + 1),
+                    "{ext} {tag}: the flood's own candidate is counted, \
+                     however many candidates stand in front of it"
+                );
+                assert_eq!(
+                    check_entry_cap(&path),
+                    Err(TOO_MANY_PARTS.to_string()),
+                    "{ext} {tag}: the cap itself refuses"
+                );
+                let err = load(&path).expect_err("the flood refuses at the bulletin door");
+                assert_eq!(err, TOO_MANY_PARTS, "{ext} {tag} at the bulletin door");
+                let err = load_insert(&path).expect_err("the flood refuses at the sheet door");
+                assert_eq!(err, TOO_MANY_PARTS, "{ext} {tag} at the sheet door");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Give a zip a comment carrying `fakes` fake
+    /// end records: each is a full record whose
+    /// comment length reaches exactly to the end of
+    /// the file and whose directory is empty (zero
+    /// entries at offset zero), so the reader's
+    /// latest-first search takes the last fake as the
+    /// file's end record and reads its empty
+    /// directory (round 8, R8-12, the red team's
+    /// RT8-9 shape).
+    fn with_fake_end_records_in_comment(zip_bytes: &[u8], fakes: usize) -> Vec<u8> {
+        let eocd = find_eocd(zip_bytes);
+        let comment_len = fakes * 22;
+        let file_len = zip_bytes.len() + comment_len;
+        let mut out = zip_bytes.to_vec();
+        out[eocd + 20..eocd + 22].copy_from_slice(&(comment_len as u16).to_le_bytes());
+        for i in 0..fakes {
+            let pos = zip_bytes.len() + i * 22;
+            let mut rec = Vec::new();
+            rec.extend_from_slice(b"PK\x05\x06");
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u32.to_le_bytes());
+            rec.extend_from_slice(&0u32.to_le_bytes());
+            rec.extend_from_slice(&((file_len - pos - 22) as u16).to_le_bytes());
+            assert_eq!(rec.len(), 22);
+            out.extend_from_slice(&rec);
+        }
+        assert_eq!(out.len(), file_len);
+        out
+    }
+
+    #[test]
+    fn end_record_signatures_inside_the_zip_comment_do_not_hide_the_bulletin() {
+        // Round 8 (R8-12): a well-formed 2-entry
+        // bulletin whose zip comment contains twenty
+        // end-record signatures with self-consistent
+        // lengths failed to load — the reader took a
+        // comment-internal fake as its end record,
+        // read its empty directory, and reported no
+        // bulletin inside. The loaders now try the
+        // other enumerated candidates' directories
+        // when the chosen one holds no document, so
+        // both of the red team's fixtures load, at
+        // both doors; and a file whose every candidate
+        // yields no bulletin still refuses as
+        // no-bulletin.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        for (json_name, json, ext) in [
+            ("document.json", doc_json.as_str(), "obd"),
+            ("insert.json", sheet_json.as_str(), "obdi"),
+        ] {
+            let dir = scratch(&format!("comment-sigs-{ext}"));
+            let honest = zip_with_fillers(json_name, json, 1);
+            let commented = with_fake_end_records_in_comment(&honest, 20);
+            let mut padded = commented.clone();
+            padded.extend_from_slice(b"pad");
+            for (tag, bytes) in [("comment", commented), ("comment-padded", padded)] {
+                let path = dir.join(format!("{tag}.{ext}"));
+                std::fs::write(&path, &bytes).expect("write commented copy");
+                assert_eq!(
+                    raw_entry_count(&path, MAX_ENTRIES),
+                    Some(2),
+                    "{ext} {tag}: the count walk defers on the fakes and \
+                     counts the real directory's two records"
+                );
+                if ext == "obd" {
+                    let loaded = load(&path).expect("the bulletin behind the comment loads");
+                    assert_eq!(loaded.title, "Roundtrip", "{ext} {tag}");
+                } else {
+                    let (insert, _, _) =
+                        load_insert(&path).expect("the sheet behind the comment loads");
+                    assert_eq!(insert.id, "sheet-lying", "{ext} {tag}");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // The f1a shape at honest size: a fake
+        // directory carrying no document record, over
+        // a real directory that holds no document
+        // either. The chosen fake yields no bulletin
+        // and no other candidate yields one, so the
+        // refusal stands, in the no-bulletin words.
+        let dir = scratch("comment-sigs-nodoc");
+        let nodoc = zip_with_fillers("other.json", &doc_json, 1);
+        let filler_record = central_record(&nodoc, 1);
+        let bytes = append_fake_directory(&nodoc, &filler_record);
+        let path = dir.join("nodoc.obd");
+        std::fs::write(&path, &bytes).expect("write no-document copy");
+        let err = load(&path).expect_err("no candidate yields a bulletin");
+        assert_eq!(
+            err,
+            "that file has no bulletin inside it (no document.json)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Rename one entry everywhere its name is

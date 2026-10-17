@@ -2149,6 +2149,15 @@ struct ServingPairing {
     /// On an ambiguous pairing, the kinds of change
     /// the pairing saw; None otherwise.
     ambiguous_kinds: Option<ServingLineEditKinds>,
+    /// Every segment's runs of old-only and new-only
+    /// names, in segment order: the positional
+    /// evidence the slug-conflict check judges from
+    /// (round 8, R8-11) — within a segment, a new name
+    /// sits at the position of the old name it is
+    /// paired with, or, in a segment the pairing
+    /// could not resolve, at the position of the line
+    /// the pairing's own in-order reading assigns it.
+    segments: Vec<(Vec<String>, Vec<String>)>,
 }
 
 /// The kinds of change one serving-line edit
@@ -2157,17 +2166,25 @@ struct ServingPairing {
 /// edit names only the kinds that are present, so a
 /// rename-plus-removal refusal no longer claims a
 /// move that never happened. `moved` is the pairing's
-/// own crossing signal: unpaired names spread over
-/// more than one segment, so a partner must sit in
-/// another segment than its line. A rename, a
-/// removal, or an addition the counts cannot account
-/// for the other way is read off the two lists'
-/// old-only and new-only totals: more old-only names
-/// than new-only means a line was removed, more
-/// new-only than old-only means a line was added,
-/// and unpaired names on both sides mean at least
-/// one rename is among the changes the pairing
-/// could not resolve.
+/// own crossing signal: names the pairing could not
+/// resolve spread over more than one segment, so a
+/// partner must sit in another segment than its
+/// line. Segments the pairing DID resolve — a
+/// segment holding only removals, or only additions
+/// — contribute their own kinds only and never count
+/// toward `moved` (round 8, R8-10); an old-only
+/// segment counts toward it only when an unresolved
+/// segment holds more new names than old ones, so
+/// one of those new names' partners must sit in
+/// another segment and an old-only segment is where
+/// it can sit. A rename, a removal, or an addition
+/// the counts cannot account for the other way is
+/// read off the two lists' old-only and new-only
+/// totals: more old-only names than new-only means a
+/// line was removed, more new-only than old-only
+/// means a line was added, and unpaired names on
+/// both sides mean at least one rename is among the
+/// changes the pairing could not resolve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ServingLineEditKinds {
     /// At least one line was renamed.
@@ -2192,6 +2209,7 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
             unpaired_old: Vec::new(),
             unpaired_new: Vec::new(),
             ambiguous_kinds: None,
+            segments: Vec::new(),
         };
     }
     if old_only.len() == 1 && new_only.len() == 1 {
@@ -2203,6 +2221,7 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
             unpaired_old: Vec::new(),
             unpaired_new: Vec::new(),
             ambiguous_kinds: None,
+            segments: Vec::new(),
         };
     }
     // Anchors: names present in both lists, matched
@@ -2246,11 +2265,22 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
     let mut removals: Vec<String> = Vec::new();
     let mut leftover_old: Vec<String> = Vec::new();
     let mut leftover_new: Vec<String> = Vec::new();
-    // Segments that hold names the pairing could not
-    // pair in place (round 7, R7-10): unpaired names
-    // in more than one segment mean a partner sits in
-    // another segment — the change crossed an anchor.
-    let mut unpaired_segments = 0usize;
+    let mut segment_runs: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+    // The segment tallies the ambiguous kinds are
+    // read from (round 7, R7-10; round 8, R8-10):
+    // segments holding leftover names on both sides
+    // are the ones the pairing could not resolve;
+    // removal-only and addition-only segments are
+    // resolved as what they are. An unresolved
+    // segment holding more new names than old ones
+    // means one of those new names' partners sits in
+    // another segment, and an old-only segment is
+    // where such a partner can sit — only then does
+    // an old-only segment count toward `moved` too.
+    let mut leftover_segments = 0usize;
+    let mut removal_only_segments = 0usize;
+    let mut addition_only_segments = 0usize;
+    let mut leftover_has_surplus_new = false;
     for ((o0, o1), (n0, n1)) in &segments {
         let seg_old: Vec<String> = old_trim[*o0..*o1]
             .iter()
@@ -2262,20 +2292,24 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
             .filter(|n| !old_trim.contains(n))
             .cloned()
             .collect();
+        segment_runs.push((seg_old.clone(), seg_new.clone()));
         if seg_old.len() == seg_new.len() {
             for (o, n) in seg_old.iter().zip(seg_new.iter()) {
                 pairs.push((o.clone(), n.clone()));
             }
         } else if seg_new.is_empty() {
             if !seg_old.is_empty() {
-                unpaired_segments += 1;
+                removal_only_segments += 1;
             }
             removals.extend(seg_old);
         } else if seg_old.is_empty() {
             // Additions only: nothing to pair or clear.
-            unpaired_segments += 1;
+            addition_only_segments += 1;
         } else {
-            unpaired_segments += 1;
+            leftover_segments += 1;
+            if seg_new.len() > seg_old.len() {
+                leftover_has_surplus_new = true;
+            }
             leftover_old.extend(seg_old);
             leftover_new.extend(seg_new);
         }
@@ -2286,11 +2320,18 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
         // as the record of the intent the pairing saw
         // (round 7, R7-9, R7-10). Nothing follows
         // them: the migration checks `ambiguous` first.
+        let unresolved_segments = leftover_segments
+            + if leftover_has_surplus_new {
+                removal_only_segments
+            } else {
+                0
+            };
         let kinds = ServingLineEditKinds {
             renamed: true,
-            removed: old_only.len() > new_only.len(),
-            added: new_only.len() > old_only.len(),
-            moved: unpaired_segments >= 2,
+            removed: old_only.len() > new_only.len()
+                || (removal_only_segments > 0 && !leftover_has_surplus_new),
+            added: new_only.len() > old_only.len() || addition_only_segments > 0,
+            moved: unresolved_segments >= 2,
         };
         return ServingPairing {
             pairs,
@@ -2299,6 +2340,7 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
             unpaired_old: leftover_old,
             unpaired_new: leftover_new,
             ambiguous_kinds: Some(kinds),
+            segments: segment_runs,
         };
     }
     removals.extend(leftover_old);
@@ -2309,6 +2351,7 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
         unpaired_old: Vec::new(),
         unpaired_new: Vec::new(),
         ambiguous_kinds: None,
+        segments: segment_runs,
     }
 }
 
@@ -2445,18 +2488,32 @@ pub fn migrate_serving_line_renames(
 /// the app's refusal sentence names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServingLineSlugConflict {
-    /// The new-list name that cannot be saved.
+    /// For two new-list lines deriving one slug: the
+    /// first of them. For a built-in conflict: the
+    /// taking line, identified distinguishably
+    /// (round 8, R8-11) — the name it had in the old
+    /// list, or, when the taking line is a new line
+    /// or a line standing under the contested name
+    /// itself, the contested name as typed.
     pub first: String,
-    /// The other line: the twin in the new list, or
-    /// the built-in line whose place the name would
-    /// take.
+    /// The other line: the twin in the new list, or,
+    /// for a built-in conflict, the holding side —
+    /// the name the bulletin currently prints for
+    /// the claimed line (the claimant's current
+    /// display name), never the built-in's own name
+    /// unless the claimant currently stands under it.
     pub second: String,
     /// The slug both sides resolve through.
     pub slug: String,
-    /// True when `second` is a built-in line (the
-    /// alias case); false for two new-list lines
-    /// deriving the same slug.
+    /// True when `second` is a built-in line's
+    /// claimed place (the alias case); false for two
+    /// new-list lines deriving the same slug.
     pub builtin: bool,
+    /// True when the taking line is a new line in
+    /// the new list (built-in conflicts only), so the
+    /// refusal sentence can say "a new line" instead
+    /// of naming a line that has no old name.
+    pub taker_is_new: bool,
 }
 
 /// The slug conflict a profile save must refuse, if
@@ -2490,6 +2547,12 @@ pub struct ServingLineSlugConflict {
 /// the built-in's own name. When no old-list line
 /// claims the slug (the built-in line is gone and
 /// no alias record survives), the name is free.
+/// The conflict the check returns names the taking
+/// line by the pairing's best evidence — the name it
+/// had, or a new line — and the holding side by the
+/// name the bulletin currently prints for the claimed
+/// line, so a sentence built from it never names one
+/// unqualified name on both sides (round 8, R8-11).
 /// Pure over the two lists and the alias record;
 /// the app calls it at the profile save and refuses
 /// before anything changes.
@@ -2510,6 +2573,7 @@ pub fn serving_line_slug_conflict(
                     second: second.to_string(),
                     slug: first_slug,
                     builtin: false,
+                    taker_is_new: false,
                 };
                 return Some(conflict);
             }
@@ -2536,39 +2600,103 @@ pub fn serving_line_slug_conflict(
             if name.trim() == claimant {
                 continue;
             }
-            // ...or the claimant renaming to this
-            // name in this very save.
-            let paired_from_claimant = pairing
+            // Who takes this name, on the pairing's
+            // best evidence (round 8, R8-11)? The
+            // round-7 excuse tested set membership —
+            // the claimant among the unpaired old
+            // names, the contested name among the
+            // unpaired new ones — which excused a
+            // genuine hijack sharing those sets and
+            // missed a claimant the pairing guessed
+            // across inside an equal-count segment.
+            // The judgment now works from who the
+            // pairing assigns the name to: a followed
+            // pair, or the line standing at the
+            // name's own position inside its segment.
+            // The excuse is reserved for the shapes
+            // where that evidence assigns the name to
+            // the claimant itself, or where no
+            // positional evidence assigns it to a
+            // different line. The excuse changes only
+            // WHICH refusal the save meets — the
+            // migration still refuses an ambiguous
+            // edit whole — so the claimant is never
+            // reported as conflicting with itself.
+            let contested = name.trim();
+            let mut taker: Option<(String, bool)> = None;
+            let mut excused = false;
+            if pairing
                 .pairs
                 .iter()
-                .any(|(o, n)| o == claimant && n == name.trim());
-            if paired_from_claimant {
+                .any(|(o, n)| o == claimant && n == contested)
+            {
+                // The claimant renaming to this name
+                // in a pairing that would be followed.
+                excused = true;
+            } else if let Some((o, _)) = pairing.pairs.iter().find(|(_, n)| n == contested) {
+                // A followed pair assigns the name to
+                // a different line: that line takes it.
+                taker = Some((o.clone(), false));
+            } else {
+                // Positional evidence inside the
+                // segments: the contested name at
+                // position i of a segment's new run
+                // sits on the line at position i of
+                // its old run, resolved segment or
+                // not; past the old run's end, it
+                // arrives on a new line.
+                for (seg_old, seg_new) in &pairing.segments {
+                    let Some(idx) = seg_new.iter().position(|n| n == contested) else {
+                        continue;
+                    };
+                    if idx < seg_old.len() {
+                        if seg_old[idx] == claimant {
+                            excused = true;
+                        } else {
+                            taker = Some((seg_old[idx].clone(), false));
+                        }
+                    } else {
+                        taker = Some((contested.to_string(), true));
+                    }
+                    break;
+                }
+            }
+            if !excused && taker.is_none() {
+                if old_lines.iter().any(|l| l.trim() == contested) {
+                    // A line standing under this very
+                    // name in the old list, unchanged:
+                    // it is the taker, under its own
+                    // name.
+                    taker = Some((contested.to_string(), false));
+                } else if pairing.ambiguous
+                    && pairing.unpaired_old.iter().any(|o| o == claimant)
+                    && pairing.unpaired_new.iter().any(|n| n == contested)
+                {
+                    // The membership excuse, kept for
+                    // the shapes it was pinned on
+                    // (round 7, R7-9) and only where no
+                    // positional evidence above assigned
+                    // the name to a different line.
+                    excused = true;
+                } else {
+                    // No evidence assigns the name to
+                    // any old line: it arrives on a
+                    // new line.
+                    taker = Some((contested.to_string(), true));
+                }
+            }
+            if excused {
                 continue;
             }
-            // ...or the claimant renaming to this
-            // name inside an edit the pairing refused
-            // as ambiguous (round 7, R7-9): the refused
-            // pairing keeps the unpaired names it
-            // computed, and a claimant standing among
-            // the old unpaired names with this name
-            // among the new unpaired ones is renaming
-            // itself, never hijacking itself. The
-            // excuse changes only WHICH refusal the
-            // save meets — the migration still refuses
-            // the ambiguous edit whole — so the
-            // claimant is never reported as conflicting
-            // with itself.
-            let intent_from_claimant = pairing.ambiguous
-                && pairing.unpaired_old.iter().any(|o| o == claimant)
-                && pairing.unpaired_new.iter().any(|n| n == name.trim());
-            if intent_from_claimant {
-                continue;
-            }
+            let (taker_label, taker_is_new) =
+                taker.unwrap_or_else(|| (contested.to_string(), false));
+            let holder = claimant.to_string();
             let conflict = ServingLineSlugConflict {
-                first: name.to_string(),
-                second: bname.to_string(),
+                first: taker_label,
+                second: holder,
                 slug,
                 builtin: true,
+                taker_is_new,
             };
             return Some(conflict);
         }
@@ -3845,7 +3973,16 @@ mod tests {
             serving_line_slug_conflict(&lines_now, &hijack, &doc.profile.serving_aliases)
                 .expect("ushers taking the claimed name conflicts");
         assert!(conflict.builtin);
-        assert_eq!(conflict.first, "Children's message");
+        // FLAGGED, round 8 (R8-11): `first` used to be
+        // the contested name itself and `second` the
+        // built-in's display name, so this assertion
+        // pair read "Children's message" on both
+        // sides. The conflict now names the taking
+        // line by the name it had and the holding
+        // side by the name the bulletin currently
+        // prints for the claimed line.
+        assert_eq!(conflict.first, "Ushers");
+        assert_eq!(conflict.second, "Kids message");
         // The claiming line itself may take the name
         // back, in either spelling.
         let mut back = lines_now.clone();
@@ -4051,15 +4188,25 @@ mod tests {
         assert_eq!(conflict.second, "Children's message");
         assert_eq!(conflict.slug, "childrens_message");
         assert!(conflict.builtin);
+        // Round 8 (R8-11): the taking line here is a
+        // new line, and the conflict says so.
+        assert!(conflict.taker_is_new);
         // Round 5, RT5-4 (3): renaming Acolytes onto
         // that name is the same taking, by rename.
         let mut renamed = old_lines.clone();
         renamed[5] = "Childrens Message".to_string();
         let conflict = serving_line_slug_conflict(&old_lines, &renamed, &BTreeMap::new())
             .expect("alias rename conflicts");
-        assert_eq!(conflict.first, "Childrens Message");
+        // FLAGGED, round 8 (R8-11): `first` used to be
+        // the contested name as typed; the conflict
+        // now names the taking line by the name it
+        // had — Acolytes — while the holding side
+        // keeps the name the bulletin prints for the
+        // claimed line.
+        assert_eq!(conflict.first, "Acolytes");
         assert_eq!(conflict.second, "Children's message");
         assert!(conflict.builtin);
+        assert!(!conflict.taker_is_new);
         // The built-in renaming ITSELF to the same
         // words without the apostrophe is the line
         // itself: no conflict, and after the save its
@@ -4180,8 +4327,234 @@ mod tests {
         let conflict = serving_line_slug_conflict(&old_lines, &hijack, &aliases)
             .expect("a different line taking the name still conflicts");
         assert!(conflict.builtin);
-        assert_eq!(conflict.first, "Children's message");
+        // FLAGGED, round 8 (R8-11): `first` used to be
+        // the contested name itself; the conflict now
+        // names the taking line by the name it had
+        // (Acolytes, paired with the name inside its
+        // segment) and the holding side by the name
+        // the bulletin currently prints for the
+        // claimed line ("Kids message").
+        assert_eq!(conflict.first, "Acolytes");
+        assert_eq!(conflict.second, "Kids message");
         assert_eq!(conflict.slug, "children_s_message");
+    }
+
+    #[test]
+    fn ambiguous_kinds_count_only_segments_the_pairing_could_not_resolve() {
+        // Round 8 (R8-10, all three lanes): the
+        // `moved` tally used to increment for
+        // removal-only and addition-only segments
+        // too, so an ambiguous rename segment plus a
+        // clean removal elsewhere claimed a move that
+        // never happened, and the addition in the
+        // first shape below was omitted while the
+        // absent move was claimed. Resolved segments
+        // now contribute their own kinds only.
+        let kinds_of = |old: &[&str], new: &[&str]| {
+            let old_lines: Vec<String> = old.iter().map(|n| n.to_string()).collect();
+            let new_lines: Vec<String> = new.iter().map(|n| n.to_string()).collect();
+            let mut participants: BTreeMap<String, String> = BTreeMap::new();
+            let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+            let migration = migrate_serving_line_renames_detailed(
+                &old_lines,
+                &new_lines,
+                &mut participants,
+                &mut aliases,
+            );
+            assert!(migration.ambiguous, "the refusal itself stands");
+            migration.ambiguous_kinds.expect("kinds on a refusal")
+        };
+        // The red team's S-C: one rename segment, one
+        // clean removal, one clean addition; nothing
+        // crossed an anchor.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "Old One", "Old Two", "Beta", "Gone Line", "Gamma"],
+                &["Alpha", "New One", "Beta", "Gamma", "Fresh Line"],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: true,
+                added: true,
+                moved: false,
+            }
+        );
+        // The red team's S-D: rename segment plus a
+        // removal only — no move, and no addition.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "Old One", "Old Two", "Beta", "Gone", "Gamma"],
+                &["Alpha", "New One", "Beta", "Gamma"],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: true,
+                added: false,
+                moved: false,
+            }
+        );
+        // The verify lane's D8 shape: an ambiguous
+        // rename segment between two anchors, plus a
+        // line removed in its own segment after the
+        // last anchor.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "Choir", "Bells", "Beta", "Solo"],
+                &["Alpha", "Choir team", "Beta"],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: true,
+                added: false,
+                moved: false,
+            }
+        );
+        // The canonical crossed-renames shape keeps
+        // its kinds exactly: two renames crossing
+        // anchors, nothing removed or added. (The
+        // Acolytes line's old-only segment counts
+        // toward `moved` here because the first
+        // segment holds more new names than old ones:
+        // one of those names' partners — the Acolytes
+        // line itself — must sit in another segment.)
+        assert_eq!(
+            kinds_of(
+                &[
+                    "Readers",
+                    "Ushers",
+                    "Greeters",
+                    "Communion assistants",
+                    "Children's message",
+                    "Acolytes",
+                ],
+                &[
+                    "Candle lighters",
+                    "Lectors",
+                    "Ushers",
+                    "Greeters",
+                    "Communion assistants",
+                    "Children's message",
+                ],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: false,
+                added: false,
+                moved: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_slug_conflict_names_the_taking_line_and_the_current_holder() {
+        // Round 8 (R8-11, review R8-R8 + red team
+        // RT8-7/RT8-8): around the built-in's own
+        // name, the conflict used to name the built-in
+        // on both sides, excuse a hijack that merely
+        // shared the unpaired sets, and miss a
+        // claimant the pairing guessed across inside
+        // an equal-count segment. The judgment now
+        // works from the pairing's best evidence. In
+        // every shape here "Kids message" claims
+        // childrens_message through the recorded
+        // alias, so the holding side is "Kids
+        // message" — the name the bulletin currently
+        // prints for that line.
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        aliases.insert("childrens_message".to_string(), "kids_message".to_string());
+        let lines =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        // S-A2: the segment pairs in order — Kids
+        // message to "Story time", Choir to
+        // "Children's message". Choir's line is the
+        // taker, named by the name it had.
+        let old_lines = lines(&["Readers", "Kids message", "Choir", "Ushers"]);
+        let new_lines = lines(&["Readers", "Story time", "Children's message", "Ushers"]);
+        let conflict = serving_line_slug_conflict(&old_lines, &new_lines, &aliases)
+            .expect("choir taking the claimed name conflicts");
+        assert!(conflict.builtin);
+        assert_eq!(conflict.first, "Choir");
+        assert_eq!(conflict.second, "Kids message");
+        assert!(!conflict.taker_is_new);
+        // S-B: the claimant renames back while another
+        // (new) line takes its freed name in the same
+        // save. The rename-back line is not accused of
+        // conflicting with itself: the taker is a new
+        // line, and the holder is "Kids message", so
+        // no side names the contested name
+        // unqualified.
+        let old_lines = lines(&["Readers", "Kids message", "Ushers"]);
+        let new_lines = lines(&["Readers", "Children's message", "Kids message", "Ushers"]);
+        let conflict = serving_line_slug_conflict(&old_lines, &new_lines, &aliases)
+            .expect("the new line taking the claimed name conflicts");
+        assert!(conflict.builtin);
+        assert_eq!(conflict.first, "Children's message");
+        assert_eq!(conflict.second, "Kids message");
+        assert!(conflict.taker_is_new);
+        // S-A: a genuine hijack sharing the unpaired
+        // sets. The segment holds old [Kids message,
+        // Choir] against new [Story time, Children's
+        // message, Bonus line]: the claimant's own
+        // in-segment position pairs it with "Story
+        // time", and Choir's line sits at the
+        // contested name's position. The membership
+        // excuse used to excuse this; the conflict
+        // now names the hijack, and the save is still
+        // refused (by the migration, as ambiguous).
+        let old_lines = lines(&["Readers", "Kids message", "Choir", "Ushers"]);
+        let new_lines = lines(&[
+            "Readers",
+            "Story time",
+            "Children's message",
+            "Bonus line",
+            "Ushers",
+        ]);
+        let conflict = serving_line_slug_conflict(&old_lines, &new_lines, &aliases)
+            .expect("the hijack is named, not excused");
+        assert!(conflict.builtin);
+        assert_eq!(conflict.first, "Choir");
+        assert_eq!(conflict.second, "Kids message");
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        let mut alias_record = aliases.clone();
+        let migration = migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut alias_record,
+        );
+        assert!(migration.ambiguous, "the save is still refused");
+        // The review's crossed-segment shape: inside
+        // an equal-count segment the pairing pairs
+        // Kids message with "Other name" and Other
+        // line with "Children's message", while a
+        // different segment is ambiguous. Membership
+        // found the claimant in neither a pair to the
+        // name nor the leftover sets and printed the
+        // self-conflict sentence; the positional
+        // evidence reports the conflict against Other
+        // line instead.
+        let old_lines = lines(&[
+            "Alpha",
+            "Kids message",
+            "Other line",
+            "Beta",
+            "Old One",
+            "Old Two",
+            "Gamma",
+        ]);
+        let new_lines = lines(&[
+            "Alpha",
+            "Other name",
+            "Children's message",
+            "Beta",
+            "New One",
+            "Gamma",
+        ]);
+        let conflict = serving_line_slug_conflict(&old_lines, &new_lines, &aliases)
+            .expect("the crossed segment's taker is named");
+        assert!(conflict.builtin);
+        assert_eq!(conflict.first, "Other line");
+        assert_eq!(conflict.second, "Kids message");
     }
 
     #[test]

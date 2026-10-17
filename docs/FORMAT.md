@@ -96,13 +96,28 @@ non-alphanumerics become underscores, trimmed). A
 template prints a line's names with the token
 `{Sunday.<slug>}`. When the church renames a line in
 the Church Profile and saves, the stored names move
-with the rename: saving migrates values by position,
-from the old name's slug (or the built-in canonical
-slug for that position, when the value sits under it)
-to the new name's slug, clearing the old keys
-(`ob_model::migrate_serving_line_renames`), so the
-renamed row shows the names in the editor and the old
-name's token stops printing them (round 3, R3-3).
+with the rename: saving compares the old and new
+lists as sets of names
+(`ob_model::migrate_serving_line_renames`). A name
+present in both lists keeps its names exactly where
+they are, so reordering or swapping lines in the
+editor moves nothing and crosses nothing. A name
+only in the old list pairs, in list order, with a
+name only in the new list, and the pair is a rename:
+the value stored under the old name's slug (or its
+built-in canonical slug, when the value sits under
+it) moves to the new name's slug, clearing the old
+keys, so the renamed row shows the names in the
+editor and the old name's token stops printing them
+(round 3, R3-3; set-based since round 4, R4-2). When
+the new name's slug already holds a different value,
+both values stay where they are and neither is
+discarded. A name only in the old list with no new
+name to pair with is a removed line (deleted, or
+renamed onto a line that already exists): its
+stored names are cleared at the save, all its keys,
+and the app names the line in its status line, so
+names never vanish silently (round 4, RT-6b/c).
 Resolution also bridges by position for anything not
 yet moved: it honors the slug of the current name,
 the built-in slug from the alias table in

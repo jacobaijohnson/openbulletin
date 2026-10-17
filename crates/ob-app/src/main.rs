@@ -1513,7 +1513,13 @@ fn music_proof_document(doc: &Document) -> (Document, MusicProofCounts) {
     // own order (round 3, R3-15): a box moved on the
     // page in the editor reorders the bulletin, not the
     // piece, and two boxes carrying the same system
-    // print that system once.
+    // print that system once. The key is (source,
+    // system), and the pieces come in the order their
+    // first box appears in the bulletin (round 4,
+    // R4-3): system numbers count from 0 per piece, so
+    // on their own they collide across pieces, and the
+    // later piece's systems used to vanish from the
+    // proof the music director checks.
     let mut systems: Vec<&ob_model::Frame> = Vec::new();
     for panel in &base.panels {
         for frame in &panel.frames {
@@ -1522,8 +1528,29 @@ fn music_proof_document(doc: &Document) -> (Document, MusicProofCounts) {
             }
         }
     }
-    systems.sort_by_key(|f| f.music.as_ref().map(|m| m.system).unwrap_or(0));
-    systems.dedup_by_key(|f| f.music.as_ref().map(|m| m.system).unwrap_or(0));
+    let mut piece_order: Vec<&str> = Vec::new();
+    for f in &systems {
+        let src = f.music.as_ref().map(|m| m.source.as_str()).unwrap_or("");
+        if !piece_order.contains(&src) {
+            piece_order.push(src);
+        }
+    }
+    let piece_rank = |f: &ob_model::Frame| {
+        let src = f.music.as_ref().map(|m| m.source.as_str()).unwrap_or("");
+        piece_order.iter().position(|s| *s == src).unwrap_or(0)
+    };
+    systems.sort_by_key(|f| {
+        (
+            piece_rank(f),
+            f.music.as_ref().map(|m| m.system).unwrap_or(0),
+        )
+    });
+    systems.dedup_by_key(|f| {
+        f.music
+            .as_ref()
+            .map(|m| (m.source.clone(), m.system))
+            .unwrap_or_default()
+    });
     let mut music_pages = 0usize;
     for frame in systems {
         let Some(picture) = &frame.picture else {
@@ -1866,6 +1893,23 @@ fn date_passed_sentence(doc_iso: Option<&str>, today: chrono::NaiveDate) -> Opti
     } else {
         "That date has passed. Set the date on the This Sunday step.".to_string()
     })
+}
+
+/// The profile save's words when serving lines were
+/// removed with names still saved for them (round 4,
+/// RT-6c): the names are cleared with the line, and
+/// the status says so plainly, one line or several.
+fn removed_serving_lines_sentence(removed: &[String]) -> String {
+    let quoted = removed
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if removed.len() == 1 {
+        format!("Names saved for {quoted} were removed with the line.")
+    } else {
+        format!("Names saved for {quoted} were removed with their lines.")
+    }
 }
 
 /// The Start step's words for a remembered file state (J6):
@@ -13790,20 +13834,27 @@ impl eframe::App for App {
                                 let before = snapshot(&self.doc);
                                 // A renamed line keeps its
                                 // names: the stored values
-                                // follow the rename by
-                                // position, so the renamed
-                                // row still shows them and
-                                // the old slug stops printing
-                                // them (round 3, R3-3).
+                                // follow the rename, matched
+                                // by name rather than by
+                                // position, so reordering the
+                                // list moves nothing (round
+                                // 3, R3-3; round 4, R4-2). A
+                                // line removed with names
+                                // still saved loses them
+                                // here, and the status says
+                                // so (RT-6c).
                                 let old_lines =
                                     std::mem::take(&mut self.doc.profile.serving_lines);
-                                ob_model::migrate_serving_line_renames(
+                                let removed = ob_model::migrate_serving_line_renames(
                                     &old_lines,
                                     &parsed,
                                     &mut self.doc.participants,
                                 );
                                 self.doc.profile.serving_lines = parsed;
                                 self.record_undo(before);
+                                if !removed.is_empty() {
+                                    self.status = removed_serving_lines_sentence(&removed);
+                                }
                             }
                         }
                         ui.small("Serving lines are the names your bulletin prints each week for the people serving. Add your own, in the words you use. Each line gets its own row on This Sunday.");
@@ -17435,6 +17486,24 @@ mod settings_tests {
     }
 
     #[test]
+    fn removed_serving_lines_are_named_in_the_status_words() {
+        // Round 4, RT-6c: names cleared with a removed
+        // serving line are reported, in words that stay
+        // honest for one line or several.
+        assert_eq!(
+            removed_serving_lines_sentence(&["Acolytes".to_string()]),
+            "Names saved for 'Acolytes' were removed with the line."
+        );
+        assert_eq!(
+            removed_serving_lines_sentence(&[
+                "Acolytes".to_string(),
+                "Nursery workers".to_string(),
+            ]),
+            "Names saved for 'Acolytes', 'Nursery workers' were removed with their lines."
+        );
+    }
+
+    #[test]
     fn start_status_speaks_the_remembered_state() {
         // J6: the state sentence is the strongest true one,
         // appended to whatever the next step is.
@@ -19255,6 +19324,80 @@ Prelude is at 9:25 this week.
             proof.panels.len(),
             1 + 3,
             "the words page plus one page per system"
+        );
+    }
+
+    #[test]
+    fn music_proof_prints_every_piece_in_the_service() {
+        // Round 4, R4-3: two MusicXML pieces in one
+        // service (an opening hymn and a communion
+        // hymn). System numbers count from 0 per piece,
+        // so keying the proof on the number alone kept
+        // only the first piece's system at each number
+        // and the second piece vanished from the proof
+        // the music director checks. The proof keys on
+        // (source, system): pieces in the order their
+        // first box appears in the bulletin, systems
+        // ascending within a piece, a repeated box
+        // printing its system once.
+        let mut doc = r1_template();
+        let svg_a = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"20\"><path d=\"M0 0h100\"/></svg>";
+        let svg_b = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"24\"><path d=\"M0 0h120\"/></svg>";
+        let asset_a = doc.add_asset(
+            svg_a,
+            ob_model::AssetKind::Picture,
+            "image/svg+xml",
+            ob_model::RightsRecord::default(),
+        );
+        let asset_b = doc.add_asset(
+            svg_b,
+            ob_model::AssetKind::Picture,
+            "image/svg+xml",
+            ob_model::RightsRecord::default(),
+        );
+        assert_ne!(asset_a, asset_b, "two pieces, two sources");
+        let frame = |id: &str, asset: &String, system: u32| ob_model::Frame {
+            id: id.to_string(),
+            name: "Music".to_string(),
+            kind: ob_model::FrameKind::Picture,
+            rect: ob_model::Rect::new(36_000, 36_000, 468_000, 60_000),
+            story_id: None,
+            role: ob_model::ContentRole::Standing,
+            picture: Some(ob_model::PicturePlacement::new(asset.clone())),
+            music: Some(ob_model::MusicFrame {
+                system,
+                staff_mm: 6.5,
+                source: asset.clone(),
+            }),
+        };
+        // Interleaved on the page, out of order, with
+        // piece A's first system carried by two boxes.
+        doc.panels[0].frames.push(frame("a-1", &asset_a, 1));
+        doc.panels[0].frames.push(frame("b-0", &asset_b, 0));
+        doc.panels[0].frames.push(frame("a-0", &asset_a, 0));
+        doc.panels[0].frames.push(frame("b-1", &asset_b, 1));
+        doc.panels[0].frames.push(frame("a-1-dup", &asset_a, 1));
+        let (proof, counts) = music_proof_document(&doc);
+        assert_eq!(counts.music_pages, 4, "both pieces print in full");
+        let systems: Vec<(String, u32)> = proof
+            .panels
+            .iter()
+            .flat_map(|p| p.frames.iter())
+            .filter_map(|f| f.music.as_ref().map(|m| (m.source.clone(), m.system)))
+            .collect();
+        assert_eq!(
+            systems,
+            vec![
+                (asset_a.clone(), 0),
+                (asset_a.clone(), 1),
+                (asset_b.clone(), 0),
+                (asset_b.clone(), 1),
+            ]
+        );
+        assert_eq!(
+            proof.panels.len(),
+            1 + 4,
+            "the words page plus one page per system across both pieces"
         );
     }
 

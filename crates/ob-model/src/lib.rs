@@ -1604,64 +1604,121 @@ pub fn default_serving_lines() -> Vec<String> {
 }
 
 /// Move stored serving names across a profile edit
-/// that renamed lines (round 3, R3-3). The profile
-/// editor works on the list of names, so a rename
-/// presents as the same POSITION carrying a new name:
-/// for each position where the name changed, a value
-/// stored under the old name's keys moves to the new
-/// name's slug, and the old keys are cleared. The old
-/// keys are the old name's shown slug, its built-in
-/// slug when the old name is a built-in, and the
-/// built-in slug of the line at that position (a
-/// rename of a rename can leave the value under the
-/// position's permanent slug). A value already stored
-/// under the new name's slug is the fresher typing
-/// and is never overwritten. Positions past the
-/// shorter list (lines added or removed around the
-/// edit) are left alone, and values under keys no
-/// rename points at are untouched. Pure over the two
-/// lists and the map, so the rule is testable without
-/// the app; the app calls it when the profile's
-/// serving lines are saved.
+/// that renamed or removed lines (round 3, R3-3;
+/// set-based since round 4, R4-2). The two lists are
+/// compared AS SETS of names, never by position: a
+/// name present in both lists is the same line
+/// wherever it now sits, so reordering or swapping
+/// lines in the editor moves nothing and crosses
+/// nothing. A name only in the old list was renamed
+/// or removed; a name only in the new list is its
+/// replacement or an addition. Old-only and new-only
+/// names pair up in list order, and each pair is a
+/// rename: the value stored under the old name's
+/// keys (its shown slug, and its built-in canonical
+/// slug when the old name is a built-in) moves to
+/// the new name's slug. When the new name's slug
+/// already holds a DIFFERENT value, both values stay
+/// where they are: the target's value is the fresher
+/// typing, and the source value keeps its old key
+/// rather than being discarded. No branch drops a
+/// value silently.
+///
+/// An old-only name with no new-only partner is a
+/// REMOVED line (deleted outright, or renamed onto
+/// a line that already exists): its stored values
+/// are cleared, all its keys, and its name is
+/// returned so the app can say what happened. Only
+/// names that actually held stored values are
+/// returned. Pure over the two lists and the map,
+/// so the rule is testable without the app; the app
+/// calls it when the profile's serving lines are
+/// saved, and words the returned names in its
+/// status line.
 pub fn migrate_serving_line_renames(
     old_lines: &[String],
     new_lines: &[String],
     participants: &mut BTreeMap<String, String>,
-) {
-    let common = old_lines.len().min(new_lines.len());
-    for i in 0..common {
-        let old_name = old_lines[i].trim();
-        let new_name = new_lines[i].trim();
-        if old_name == new_name {
-            continue;
-        }
-        let target = serving_slug(new_name);
-        let mut sources: Vec<String> = vec![serving_slug(old_name)];
+) -> Vec<String> {
+    let old_only: Vec<&str> = old_lines
+        .iter()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty() && !new_lines.iter().any(|m| m.trim() == *n))
+        .collect();
+    let new_only: Vec<&str> = new_lines
+        .iter()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty() && !old_lines.iter().any(|m| m.trim() == *n))
+        .collect();
+    // The pairs: the i-th old-only name was renamed
+    // to the i-th new-only name.
+    for (old_name, new_name) in old_only.iter().zip(new_only.iter()) {
+        move_participant_value(old_name, new_name, participants);
+    }
+    // Old-only names past the pairs have no rename
+    // target: their lines are gone, so their stored
+    // names go too, and are reported.
+    let mut removed = Vec::new();
+    for old_name in old_only.iter().skip(new_only.len()) {
+        let mut keys = vec![serving_slug(old_name)];
         if let Some(bslug) = builtin_serving_slug(old_name) {
-            if !sources.contains(&bslug.to_string()) {
-                sources.push(bslug.to_string());
+            if !keys.contains(&bslug.to_string()) {
+                keys.push(bslug.to_string());
             }
         }
-        if let Some((bslug, bname)) = PARTICIPANT_FIELDS.get(i) {
-            if !sources.contains(&bslug.to_string()) {
-                sources.push(bslug.to_string());
-            }
-            let derived = serving_slug(bname);
-            if !sources.contains(&derived) {
-                sources.push(derived);
+        let mut held = false;
+        for k in &keys {
+            if participants.remove(k).is_some() {
+                held = true;
             }
         }
-        let found = sources
-            .iter()
-            .filter(|k| k.as_str() != target)
-            .find_map(|k| participants.get(k).cloned());
-        for k in &sources {
-            if *k != target {
-                participants.remove(k);
-            }
+        if held {
+            removed.push(old_name.to_string());
         }
-        if let Some(value) = found {
-            participants.entry(target).or_insert(value);
+    }
+    removed
+}
+
+/// Move one renamed line's stored value to its new
+/// name's slug, under the keeping rules
+/// `migrate_serving_line_renames` states: the value
+/// comes from the first of the old name's keys that
+/// holds one (shown slug first, canonical slug
+/// second); a target already holding a different
+/// value keeps it, and the source value then stays
+/// under its old key; source keys holding the moved
+/// value are cleared, while a source key holding a
+/// different value keeps it, so no stored name is
+/// ever discarded by a rename.
+fn move_participant_value(
+    old_name: &str,
+    new_name: &str,
+    participants: &mut BTreeMap<String, String>,
+) {
+    let target = serving_slug(new_name);
+    let mut sources: Vec<String> = vec![serving_slug(old_name)];
+    if let Some(bslug) = builtin_serving_slug(old_name) {
+        if !sources.contains(&bslug.to_string()) {
+            sources.push(bslug.to_string());
+        }
+    }
+    let found = sources
+        .iter()
+        .filter(|k| k.as_str() != target)
+        .find_map(|k| participants.get(k).cloned());
+    let Some(value) = found else {
+        return;
+    };
+    if let Some(existing) = participants.get(&target) {
+        if *existing != value {
+            // Both values stay where they are.
+            return;
+        }
+    }
+    participants.insert(target.clone(), value.clone());
+    for k in &sources {
+        if *k != target && participants.get(k).map(String::as_str) == Some(value.as_str()) {
+            participants.remove(k);
         }
     }
 }
@@ -2445,6 +2502,171 @@ mod tests {
         let lines_now = doc.profile.serving_lines.clone();
         migrate_serving_line_renames(&lines_now, &lines_now, &mut doc.participants);
         assert_eq!(doc.participants, before);
+    }
+
+    #[test]
+    fn a_swap_or_reorder_moves_and_crosses_nothing() {
+        // Round 4, R4-2: the migration compares the
+        // lists as sets of names. A name in both lists
+        // is the same line wherever it sits, so tidying
+        // the list's order loses nothing and crosses
+        // nothing (the positional rule lost one line's
+        // names and printed another's against the
+        // wrong duty).
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = default_serving_lines();
+        doc.set_participant_value("Readers", "Ann");
+        doc.set_participant_value("Acolytes", "Bob");
+        let before = doc.participants.clone();
+        let old_lines = doc.profile.serving_lines.clone();
+        let mut swapped = old_lines.clone();
+        swapped.swap(0, 5);
+        let removed = migrate_serving_line_renames(&old_lines, &swapped, &mut doc.participants);
+        assert!(removed.is_empty());
+        assert_eq!(doc.participants, before);
+        doc.profile.serving_lines = swapped;
+        assert_eq!(doc.participant_value_for_name("Readers"), "Ann");
+        assert_eq!(doc.participant_value_for_name("Acolytes"), "Bob");
+        assert_eq!(resolve_fields("{Sunday.readers}", &doc), "Ann");
+        assert_eq!(resolve_fields("{Sunday.acolytes}", &doc), "Bob");
+
+        // A three-line reorder, the review lane's
+        // traced shape, is the same story.
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = default_serving_lines();
+        doc.set_participant_value("Readers", "Rae");
+        doc.set_participant_value("Ushers", "Uma");
+        doc.set_participant_value("Greeters", "Gus");
+        let before = doc.participants.clone();
+        let old_lines = doc.profile.serving_lines.clone();
+        let mut reordered = old_lines.clone();
+        reordered.swap(1, 2);
+        let removed = migrate_serving_line_renames(&old_lines, &reordered, &mut doc.participants);
+        assert!(removed.is_empty());
+        assert_eq!(doc.participants, before);
+        doc.profile.serving_lines = reordered;
+        assert_eq!(resolve_fields("{Sunday.ushers}", &doc), "Uma");
+        assert_eq!(resolve_fields("{Sunday.greeters}", &doc), "Gus");
+    }
+
+    #[test]
+    fn a_rename_with_a_reorder_lands_on_the_renamed_line() {
+        // Round 4, R4-2: one edit that renames
+        // "Acolytes" to "Candle lighters" AND moves
+        // the line to the top of the list. The acolyte's
+        // names land on the renamed line; the readers'
+        // names stay on Readers, which also moved.
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = default_serving_lines();
+        doc.set_participant_value("Readers", "Ann");
+        doc.set_participant_value("Acolytes", "Bob");
+        let old_lines = doc.profile.serving_lines.clone();
+        let mut new_lines = old_lines.clone();
+        new_lines.remove(5);
+        new_lines.insert(0, "Candle lighters".to_string());
+        let removed = migrate_serving_line_renames(&old_lines, &new_lines, &mut doc.participants);
+        assert!(removed.is_empty());
+        assert_eq!(
+            doc.participants.get("candle_lighters").map(String::as_str),
+            Some("Bob")
+        );
+        assert_eq!(
+            doc.participants.get("readers").map(String::as_str),
+            Some("Ann")
+        );
+        assert!(!doc.participants.contains_key("acolytes"));
+        doc.profile.serving_lines = new_lines;
+        assert_eq!(doc.participant_value_for_name("Candle lighters"), "Bob");
+        assert_eq!(resolve_fields("{Sunday.candle_lighters}", &doc), "Bob");
+        assert_eq!(resolve_fields("{Sunday.readers}", &doc), "Ann");
+    }
+
+    #[test]
+    fn a_rename_onto_a_filled_slug_keeps_both_values() {
+        // Round 4, R4-2: when the renamed line's slug
+        // already holds a different value (names typed
+        // for that slug in an earlier week), both values
+        // stay where they are: the target's value is
+        // the fresher typing, and the renamed line's
+        // value keeps its old key instead of being
+        // discarded.
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = default_serving_lines();
+        doc.set_participant_value("Acolytes", "Bob");
+        doc.participants
+            .insert("candle_lighters".to_string(), "Zed".to_string());
+        let old_lines = doc.profile.serving_lines.clone();
+        let mut new_lines = old_lines.clone();
+        new_lines[5] = "Candle lighters".to_string();
+        let removed = migrate_serving_line_renames(&old_lines, &new_lines, &mut doc.participants);
+        assert!(removed.is_empty());
+        assert_eq!(
+            doc.participants.get("candle_lighters").map(String::as_str),
+            Some("Zed")
+        );
+        assert_eq!(
+            doc.participants.get("acolytes").map(String::as_str),
+            Some("Bob")
+        );
+    }
+
+    #[test]
+    fn a_removed_line_loses_its_names_and_is_reported() {
+        // Round 4, RT-6c: deleting a line from the
+        // profile list used to leave its names in the
+        // map, invisible in every list yet still
+        // printing through the line's token. The save
+        // now clears them, and the migration returns
+        // the line's name so the app can say so.
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = default_serving_lines();
+        doc.set_participant_value("Readers", "Ana Ruiz");
+        doc.set_participant_value("Acolytes", "Sam, Jo");
+        let old_lines = doc.profile.serving_lines.clone();
+        let mut new_lines = old_lines.clone();
+        new_lines.remove(5);
+        let removed = migrate_serving_line_renames(&old_lines, &new_lines, &mut doc.participants);
+        assert_eq!(removed, vec!["Acolytes".to_string()]);
+        assert!(!doc.participants.contains_key("acolytes"));
+        doc.profile.serving_lines = new_lines;
+        assert_eq!(doc.participant_value("acolytes"), "");
+        assert_eq!(resolve_fields("{Sunday.acolytes}", &doc), "");
+        assert_eq!(
+            doc.participants.get("readers").map(String::as_str),
+            Some("Ana Ruiz")
+        );
+        // A line removed while it holds no names is
+        // not reported: nothing was removed.
+        let old_lines = doc.profile.serving_lines.clone();
+        let mut new_lines = old_lines.clone();
+        new_lines.retain(|n| n != "Greeters");
+        let removed = migrate_serving_line_renames(&old_lines, &new_lines, &mut doc.participants);
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn a_rename_onto_an_existing_line_clears_the_merged_names() {
+        // Round 4, RT-6b: renaming "Readers" onto the
+        // already-present "Ushers" leaves Ushers' own
+        // names in place, and the merged-away line's
+        // names are cleared and reported instead of
+        // vanishing silently.
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = default_serving_lines();
+        doc.set_participant_value("Readers", "Ann");
+        doc.set_participant_value("Ushers", "Uma");
+        let old_lines = doc.profile.serving_lines.clone();
+        let mut new_lines = old_lines.clone();
+        new_lines[0] = "Ushers".to_string();
+        let removed = migrate_serving_line_renames(&old_lines, &new_lines, &mut doc.participants);
+        assert_eq!(removed, vec!["Readers".to_string()]);
+        assert!(!doc.participants.contains_key("readers"));
+        assert_eq!(
+            doc.participants.get("ushers").map(String::as_str),
+            Some("Uma")
+        );
+        doc.profile.serving_lines = new_lines;
+        assert_eq!(doc.participant_value_for_name("Ushers"), "Uma");
     }
 
     #[test]

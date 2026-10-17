@@ -266,3 +266,57 @@ Then round 5.
   `-D warnings` clean, both from unpiped runs reading
   cargo's own exit code. The known helper flake did
   not fire. No pre-existing test was changed.
+
+## Shipped addendum, R4-C: people + proof (2026-10-16)
+
+- **Renames are set-based (R4-2).**
+  `migrate_serving_line_renames` compares the old
+  and new serving-line lists as sets of names,
+  never by position. A name present in both lists
+  keeps its stored names exactly where they are,
+  so the red team's measured scenarios (a two-line
+  swap, a three-line reorder, a rename combined
+  with a reorder) lose nothing and cross nothing,
+  and a true rename still moves the value from
+  the old name's keys (its shown slug, then its
+  built-in canonical slug) to the new name's slug.
+  When the target slug already holds a different
+  value, both values stay where they are: the
+  target's value is the fresher typing, and the
+  renamed line's value keeps its old key rather
+  than being discarded.
+- **Removal honesty (RT-6b, RT-6c).** An
+  old-only name with no new-only partner is a
+  removed line (deleted outright, or renamed onto
+  a line that already exists): the migration
+  clears its stored values under all its keys and
+  returns the names of the lines that actually
+  held values. The profile save words them in
+  the app status: "Names saved for 'Acolytes'
+  were removed with the line." (several lines:
+  "...were removed with their lines."). A removed
+  line's names no longer resolve through its
+  token, and the surviving line in a
+  rename-onto-existing keeps its own names.
+  FORMAT.md's rename paragraph now states the
+  set-based rule and the removal rule. Noted
+  residual: the resolution bridge in
+  `participant_value` is positional, so after a
+  rename combined with a reorder the old built-in
+  token no longer bridges to the renamed line;
+  the names themselves sit on the renamed line
+  and print through its own token, and an
+  in-place rename keeps the old token working.
+- **Music proof key (R4-3).** The proof orders
+  and dedupes on (source, system): pieces appear
+  in the order their first box appears in the
+  bulletin, systems ascend within a piece, and a
+  system carried by two boxes prints once. Two
+  pieces sharing system numbers (an opening hymn
+  and a communion hymn) now both print in full,
+  and `music_pages` counts both pieces.
+- Suite: 500 passed / 0 failed (493 + 7 new),
+  clippy `-D warnings` clean, both from unpiped
+  runs reading cargo's own exit code. The known
+  helper flake did not fire. No pre-existing test
+  was changed.

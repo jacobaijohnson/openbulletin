@@ -275,3 +275,66 @@ fired once, in the first final run
 - FORMAT.md: the `applied_contributions` paragraph
   now states the complete-landing rule and the
   presence check.
+
+## Shipped addendum, R5-C (2026-10-16)
+
+R5-C landed: 520 to 526 tests, all passing, clippy
+clean (full workspace runs, unpiped). Flake
+statement, exactly: the fake-helper ETXTBSY flake
+did not fire.
+
+- F3: rename pairings are followed only when
+  unambiguous (`serving_rename_pairs` in ob-model):
+  exactly one old-only and one new-only name, or
+  several renames where nothing moved (same list
+  length, and at every position the name is either
+  unchanged or the old-only / new-only pair at that
+  same position; those pair by position). Anything
+  else with names on both sides pairs NONE:
+  `migrate_serving_line_renames_detailed` leaves
+  every old-only line's names under their old slugs
+  (preserved, not crossed, not deleted) and reports
+  them as unfollowed; the profile status names them
+  ("The names saved for 'Readers', 'Acolytes' were
+  kept under those names: ... Rename one line at a
+  time to move them."). `migrate_serving_line_renames`
+  keeps its signature and returns the removed half,
+  so every R4-C test reads unchanged: pure swap and
+  pure reorder still leave the participants map
+  byte-identical, a single rename with or without a
+  move still pairs, and removal honesty stands.
+  Tests: the F3 shape (two renames whose lines move
+  across unchanged lines in one save: map unchanged,
+  values reachable under their old names and tokens,
+  both lines named unfollowed), two renames in place
+  pairing by position, and the pre-existing single
+  rename + reorder test.
+- RT5-4: `serving_line_slug_conflict` (ob-model) is
+  the pure save-time check, and the profile save in
+  ob-app calls it before anything changes. A save is
+  refused, the typed lines left in the editor and
+  nothing else changed, with a sentence naming both
+  lines, when two new-list names derive the same
+  slug ("Prayer Team" / "Prayer-Team") or a name
+  derives a built-in line's canonical (or
+  shown-name) slug without being that line itself.
+  The line-itself definition: a name is the built-in
+  line itself only when it is the built-in's own
+  display name (matched without case), or the
+  unambiguous pairing pairs it with an old-list line
+  that is the built-in's own display name. So
+  "Children's message" renamed to "Childrens
+  Message" is the line renaming itself (accepted;
+  its row and the {Sunday.childrens_message} token
+  then read the same names, pinned by test), while
+  adding "Childrens Message", or renaming Acolytes
+  to it, is refused and named. A normal save with
+  lookalike-but-distinct slugs ("Prayer Team" and
+  "Prayer Teams") is accepted, pinned by test.
+- Changed pre-existing tests: NONE. All 520 baseline
+  tests pass unchanged; the six new tests are four
+  in ob-model and two in ob-app.
+- FORMAT.md: the serving-lines rename caveat now
+  states the unambiguous-pairing rule, the
+  kept-under-the-old-name outcome, and the slug
+  refusal with the line-itself definition.

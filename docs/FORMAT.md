@@ -102,22 +102,41 @@ lists as sets of names
 present in both lists keeps its names exactly where
 they are, so reordering or swapping lines in the
 editor moves nothing and crosses nothing. A name
-only in the old list pairs, in list order, with a
-name only in the new list, and the pair is a rename:
-the value stored under the old name's slug (or its
-built-in canonical slug, when the value sits under
-it) moves to the new name's slug, clearing the old
-keys, so the renamed row shows the names in the
-editor and the old name's token stops printing them
-(round 3, R3-3; set-based since round 4, R4-2). When
-the new name's slug already holds a different value,
-both values stay where they are and neither is
-discarded. A name only in the old list with no new
-name to pair with is a removed line (deleted, or
-renamed onto a line that already exists): its
-stored names are cleared at the save, all its keys,
-and the app names the line in its status line, so
-names never vanish silently (round 4, RT-6b/c).
+only in the old list pairs with a name only in the
+new list, and the pair is a rename, ONLY when the
+pairing is unambiguous: exactly one changed name on
+each side, or several renames where nothing moved
+(same list length, and every position either
+unchanged or the changed pair at that same
+position). A followed rename moves the value stored
+under the old name's slug (or its built-in canonical
+slug, when the value sits under it) to the new
+name's slug, clearing the old keys, so the renamed
+row shows the names in the editor and the old name's
+token stops printing them (round 3, R3-3; set-based
+since round 4, R4-2; unambiguous-only since round 5,
+R5-C). When the new name's slug already holds a
+different value, both values stay where they are and
+neither is discarded. When several renames coincide
+with any reordering, no pairing is followed: the
+names stay stored under their old slugs, neither
+crossed nor deleted, and the status names the lines
+whose new names could not be followed, with the
+remedy (rename one line at a time). A name only in
+the old list with no new name anywhere in the new
+list is a removed line (deleted, or renamed onto a
+line that already exists): its stored names are
+cleared at the save, all its keys, and the app names
+the line in its status line, so names never vanish
+silently (round 4, RT-6b/c). The slug is many-to-one,
+so the save is refused, leaving the typed lines in
+place and nothing else changed, when two names in
+the new list derive the same slug or a name derives
+a built-in line's canonical (or shown-name) slug
+without being that line itself (the line itself is
+the built-in's own display name, or the unambiguous
+rename target of it); the refusal sentence names
+both lines (round 5, RT5-4).
 Resolution also bridges by position for anything not
 yet moved: it honors the slug of the current name,
 the built-in slug from the alias table in

@@ -1746,69 +1746,160 @@ pub fn default_serving_lines() -> Vec<String> {
         .collect()
 }
 
+/// The names only in one of the two serving-line
+/// lists, trimmed, in list order: the first list's
+/// names the second list does not carry.
+fn serving_names_only_in<'a>(list: &'a [String], other: &[String]) -> Vec<&'a str> {
+    list.iter()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty() && !other.iter().any(|m| m.trim() == *n))
+        .collect()
+}
+
+/// The storage keys one serving line's names can sit
+/// under: the slug of the name as shown, plus its
+/// built-in canonical slug when the name is a
+/// built-in and the two differ.
+fn serving_participant_keys(name: &str) -> Vec<String> {
+    let mut keys = vec![serving_slug(name)];
+    if let Some(bslug) = builtin_serving_slug(name) {
+        if !keys.contains(&bslug.to_string()) {
+            keys.push(bslug.to_string());
+        }
+    }
+    keys
+}
+
+/// The rename pairs a profile save may follow
+/// (round 5, R5-C). A pairing is followed only when
+/// it is UNAMBIGUOUS from the two lists alone:
+///
+/// - exactly one old-only name and one new-only
+///   name: that pair, wherever either sits (a single
+///   rename with a move still pairs); or
+/// - several renames where nothing moved: the lists
+///   have the same length, and at every position the
+///   name is either unchanged or the old-only /
+///   new-only pair at that same position. Those pair
+///   by position.
+///
+/// Anything else with names on both sides (several
+/// renames with any reordering, or counts that do
+/// not match) pairs NOTHING: guessing by order in
+/// the changed subsequence is how two lines' names
+/// crossed in the round-5 F3 probe. The caller keeps
+/// the values under their old slugs and says so.
+fn serving_rename_pairs(old_lines: &[String], new_lines: &[String]) -> Vec<(String, String)> {
+    let old_only = serving_names_only_in(old_lines, new_lines);
+    let new_only = serving_names_only_in(new_lines, old_lines);
+    if old_only.len() == 1 && new_only.len() == 1 {
+        let pair = (old_only[0].to_string(), new_only[0].to_string());
+        return vec![pair];
+    }
+    if old_only.len() > 1 && old_only.len() == new_only.len() && old_lines.len() == new_lines.len()
+    {
+        let in_place = old_lines.iter().zip(new_lines.iter()).all(|(o, n)| {
+            let o = o.trim();
+            let n = n.trim();
+            o == n || (old_only.contains(&o) && new_only.contains(&n))
+        });
+        if in_place {
+            let pairs: Vec<(String, String)> = old_lines
+                .iter()
+                .zip(new_lines.iter())
+                .filter(|(o, n)| o.trim() != n.trim())
+                .map(|(o, n)| (o.trim().to_string(), n.trim().to_string()))
+                .collect();
+            return pairs;
+        }
+    }
+    Vec::new()
+}
+
+/// What a profile save's rename migration did, in
+/// the two kinds of names the app must report
+/// (round 5, R5-C).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ServingLineMigration {
+    /// Old-only lines whose stored names were
+    /// cleared because the line is gone. Only lines
+    /// that actually held names are listed.
+    pub removed: Vec<String>,
+    /// Old-only lines the save could not follow to a
+    /// new name: their names stay stored under the
+    /// old name's slugs, preserved and uncrossed.
+    /// Only lines that actually hold names are
+    /// listed.
+    pub unfollowed: Vec<String>,
+}
+
 /// Move stored serving names across a profile edit
 /// that renamed or removed lines (round 3, R3-3;
-/// set-based since round 4, R4-2). The two lists are
-/// compared AS SETS of names, never by position: a
-/// name present in both lists is the same line
-/// wherever it now sits, so reordering or swapping
-/// lines in the editor moves nothing and crosses
-/// nothing. A name only in the old list was renamed
-/// or removed; a name only in the new list is its
-/// replacement or an addition. Old-only and new-only
-/// names pair up in list order, and each pair is a
-/// rename: the value stored under the old name's
-/// keys (its shown slug, and its built-in canonical
-/// slug when the old name is a built-in) moves to
-/// the new name's slug. When the new name's slug
-/// already holds a DIFFERENT value, both values stay
-/// where they are: the target's value is the fresher
-/// typing, and the source value keeps its old key
-/// rather than being discarded. No branch drops a
-/// value silently.
+/// set-based since round 4, R4-2; unambiguous-only
+/// since round 5, R5-C). The two lists are compared
+/// AS SETS of names: a name present in both lists is
+/// the same line wherever it now sits, so reordering
+/// or swapping lines in the editor moves nothing and
+/// crosses nothing. A name only in the old list was
+/// renamed or removed; a name only in the new list
+/// is its replacement or an addition. Only the
+/// unambiguous rename pairs `serving_rename_pairs`
+/// states are followed: each pair's value, stored
+/// under the old name's keys (its shown slug, and
+/// its built-in canonical slug when the old name is
+/// a built-in), moves to the new name's slug. When
+/// the new name's slug already holds a DIFFERENT
+/// value, both values stay where they are: the
+/// target's value is the fresher typing, and the
+/// source value keeps its old key rather than being
+/// discarded. No branch drops a value silently.
 ///
-/// An old-only name with no new-only partner is a
-/// REMOVED line (deleted outright, or renamed onto
-/// a line that already exists): its stored values
-/// are cleared, all its keys, and its name is
-/// returned so the app can say what happened. Only
+/// When names changed on both sides but the pairing
+/// is ambiguous, nothing is paired and nothing is
+/// cleared: every old-only line's names stay under
+/// their old slugs, and the lines that hold names
+/// are reported as unfollowed so the app can say
+/// they were kept and why.
+///
+/// An old-only name with no new-only name anywhere
+/// in the new list is a REMOVED line (deleted
+/// outright, or renamed onto a line that already
+/// exists): its stored values are cleared, all its
+/// keys, and its name is reported as removed. Only
 /// names that actually held stored values are
-/// returned. Pure over the two lists and the map,
-/// so the rule is testable without the app; the app
-/// calls it when the profile's serving lines are
-/// saved, and words the returned names in its
-/// status line.
-pub fn migrate_serving_line_renames(
+/// reported, in either list. Pure over the two
+/// lists and the map, so the rule is testable
+/// without the app; the app calls the detailed form
+/// when the profile's serving lines are saved, and
+/// words the reported names in its status line.
+pub fn migrate_serving_line_renames_detailed(
     old_lines: &[String],
     new_lines: &[String],
     participants: &mut BTreeMap<String, String>,
-) -> Vec<String> {
-    let old_only: Vec<&str> = old_lines
-        .iter()
-        .map(|n| n.trim())
-        .filter(|n| !n.is_empty() && !new_lines.iter().any(|m| m.trim() == *n))
-        .collect();
-    let new_only: Vec<&str> = new_lines
-        .iter()
-        .map(|n| n.trim())
-        .filter(|n| !n.is_empty() && !old_lines.iter().any(|m| m.trim() == *n))
-        .collect();
-    // The pairs: the i-th old-only name was renamed
-    // to the i-th new-only name.
-    for (old_name, new_name) in old_only.iter().zip(new_only.iter()) {
+) -> ServingLineMigration {
+    let old_only = serving_names_only_in(old_lines, new_lines);
+    let new_only = serving_names_only_in(new_lines, old_lines);
+    let pairs = serving_rename_pairs(old_lines, new_lines);
+    for (old_name, new_name) in &pairs {
         move_participant_value(old_name, new_name, participants);
     }
-    // Old-only names past the pairs have no rename
-    // target: their lines are gone, so their stored
-    // names go too, and are reported.
-    let mut removed = Vec::new();
-    for old_name in old_only.iter().skip(new_only.len()) {
-        let mut keys = vec![serving_slug(old_name)];
-        if let Some(bslug) = builtin_serving_slug(old_name) {
-            if !keys.contains(&bslug.to_string()) {
-                keys.push(bslug.to_string());
-            }
+    let ambiguous = !old_only.is_empty() && !new_only.is_empty() && pairs.is_empty();
+    let mut migration = ServingLineMigration::default();
+    for old_name in &old_only {
+        if pairs.iter().any(|(o, _)| o == old_name) {
+            continue;
         }
+        if ambiguous {
+            // The names stay where they are; only a
+            // line that holds names is worth a word.
+            let keys = serving_participant_keys(old_name);
+            let held = keys.iter().any(|k| participants.contains_key(k));
+            if held {
+                migration.unfollowed.push(old_name.to_string());
+            }
+            continue;
+        }
+        let keys = serving_participant_keys(old_name);
         let mut held = false;
         for k in &keys {
             if participants.remove(k).is_some() {
@@ -1816,10 +1907,121 @@ pub fn migrate_serving_line_renames(
             }
         }
         if held {
-            removed.push(old_name.to_string());
+            migration.removed.push(old_name.to_string());
         }
     }
-    removed
+    migration
+}
+
+/// The removed-line half of
+/// [`migrate_serving_line_renames_detailed`], kept
+/// for the callers and tests that only ask what was
+/// cleared.
+pub fn migrate_serving_line_renames(
+    old_lines: &[String],
+    new_lines: &[String],
+    participants: &mut BTreeMap<String, String>,
+) -> Vec<String> {
+    migrate_serving_line_renames_detailed(old_lines, new_lines, participants).removed
+}
+
+/// One serving-line slug conflict in a profile
+/// save's new list (round 5, R5-C): the two lines
+/// the app's refusal sentence names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServingLineSlugConflict {
+    /// The new-list name that cannot be saved.
+    pub first: String,
+    /// The other line: the twin in the new list, or
+    /// the built-in line whose place the name would
+    /// take.
+    pub second: String,
+    /// The slug both sides resolve through.
+    pub slug: String,
+    /// True when `second` is a built-in line (the
+    /// alias case); false for two new-list lines
+    /// deriving the same slug.
+    pub builtin: bool,
+}
+
+/// The slug conflict a profile save must refuse, if
+/// any (round 5, R5-C, RT5-4). `serving_slug` is
+/// many-to-one, so distinct display names can share
+/// one storage slot and silently share one set of
+/// names. The save refuses when:
+///
+/// - two names in the new list derive the same
+///   slug ("Prayer Team" and "Prayer-Team"), or
+/// - a name in the new list derives the canonical
+///   slug (or the shown-name slug) of a built-in
+///   serving line while that line is not the line
+///   itself, so the name would hijack the built-in
+///   line's This Sunday row and its printed
+///   `{Sunday.<slug>}` token.
+///
+/// A name IS the built-in line itself only when the
+/// name is the built-in's own display name (matched
+/// without case), or the unambiguous pairing from
+/// `serving_rename_pairs` pairs it with an old-list
+/// line that is the built-in's own display name:
+/// renaming "Children's message" to "Childrens
+/// Message" is the line renaming itself, while
+/// renaming any other line to "Childrens Message",
+/// or adding that name, takes the built-in's place
+/// and is refused. Pure over the two lists; the app
+/// calls it at the profile save and refuses before
+/// anything changes.
+pub fn serving_line_slug_conflict(
+    old_lines: &[String],
+    new_lines: &[String],
+) -> Option<ServingLineSlugConflict> {
+    let names = serving_names_only_in(new_lines, &[]);
+    // Two names the editor kept as distinct lines
+    // deriving one slug share one storage slot.
+    for (i, first) in names.iter().enumerate() {
+        let first_slug = serving_slug(first);
+        for second in names.iter().skip(i + 1) {
+            if serving_slug(second) == first_slug {
+                let conflict = ServingLineSlugConflict {
+                    first: first.to_string(),
+                    second: second.to_string(),
+                    slug: first_slug,
+                    builtin: false,
+                };
+                return Some(conflict);
+            }
+        }
+    }
+    let pairs = serving_rename_pairs(old_lines, new_lines);
+    for name in &names {
+        let slug = serving_slug(name);
+        if slug.is_empty() {
+            continue;
+        }
+        for (bslug, bname) in PARTICIPANT_FIELDS {
+            let derived = serving_slug(bname);
+            if slug != bslug && slug != derived {
+                continue;
+            }
+            if name.eq_ignore_ascii_case(bname) {
+                continue;
+            }
+            let paired_from_builtin = pairs
+                .iter()
+                .any(|(o, n)| n == name && o.eq_ignore_ascii_case(bname));
+            if paired_from_builtin {
+                continue;
+            }
+            let conflict = ServingLineSlugConflict {
+                first: name.to_string(),
+                second: bname.to_string(),
+                slug,
+                builtin: true,
+            };
+            return Some(conflict);
+        }
+    }
+    None
 }
 
 /// Move one renamed line's stored value to its new
@@ -2752,6 +2954,174 @@ mod tests {
         assert_eq!(
             doc.participants.get("acolytes").map(String::as_str),
             Some("Bob")
+        );
+    }
+
+    #[test]
+    fn two_renames_with_a_reorder_cross_nothing_and_are_named() {
+        // Round 5, F3: Acolytes ("Bob") and Readers
+        // ("Ann") are both renamed in one save, and
+        // the renamed lines move across the list:
+        // "Candle lighters" (the acolytes' new name)
+        // lands at the top and "Lectors" (the readers'
+        // new name) just under it, ahead of lines that
+        // did not change. The pairing is ambiguous
+        // from the lists alone, so no pairing is
+        // followed: under the old zip rule "Candle
+        // lighters" read back "Ann", the readers'
+        // names on the wrong duty.
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = default_serving_lines();
+        doc.set_participant_value("Readers", "Ann");
+        doc.set_participant_value("Acolytes", "Bob");
+        let before = doc.participants.clone();
+        let old_lines = doc.profile.serving_lines.clone();
+        let new_lines: Vec<String> = [
+            "Candle lighters",
+            "Lectors",
+            "Ushers",
+            "Greeters",
+            "Communion assistants",
+            "Children's message",
+        ]
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+        let migration =
+            migrate_serving_line_renames_detailed(&old_lines, &new_lines, &mut doc.participants);
+        // Nothing crossed, nothing cleared, nothing
+        // reported removed: the names stay under
+        // their old slugs, reachable by their old
+        // names and their built-in tokens.
+        assert_eq!(doc.participants, before);
+        assert!(migration.removed.is_empty());
+        assert_eq!(
+            migration.unfollowed,
+            vec!["Readers".to_string(), "Acolytes".to_string()]
+        );
+        doc.profile.serving_lines = new_lines;
+        assert_eq!(doc.participant_value_for_name("Readers"), "Ann");
+        assert_eq!(doc.participant_value_for_name("Acolytes"), "Bob");
+        assert_eq!(resolve_fields("{Sunday.readers}", &doc), "Ann");
+        assert_eq!(resolve_fields("{Sunday.acolytes}", &doc), "Bob");
+        // The wrapper still answers only what was
+        // cleared: nothing.
+        let mut map = before.clone();
+        let removed =
+            migrate_serving_line_renames(&old_lines, &doc.profile.serving_lines, &mut map);
+        assert!(removed.is_empty());
+        assert_eq!(map, before);
+    }
+
+    #[test]
+    fn two_renames_in_place_pair_by_position() {
+        // Round 5, R5-C: two renames in one save where
+        // nothing moved (same length, every position
+        // unchanged or the pair at that position) pair
+        // by position and land on the right lines.
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = default_serving_lines();
+        doc.set_participant_value("Readers", "Ann");
+        doc.set_participant_value("Acolytes", "Bob");
+        let old_lines = doc.profile.serving_lines.clone();
+        let mut new_lines = old_lines.clone();
+        new_lines[0] = "Lectors".to_string();
+        new_lines[5] = "Candle lighters".to_string();
+        let migration =
+            migrate_serving_line_renames_detailed(&old_lines, &new_lines, &mut doc.participants);
+        assert!(migration.removed.is_empty());
+        assert!(migration.unfollowed.is_empty());
+        doc.profile.serving_lines = new_lines;
+        assert_eq!(doc.participant_value_for_name("Lectors"), "Ann");
+        assert_eq!(doc.participant_value_for_name("Candle lighters"), "Bob");
+        assert_eq!(resolve_fields("{Sunday.readers}", &doc), "Ann");
+        assert_eq!(resolve_fields("{Sunday.acolytes}", &doc), "Bob");
+        // The token bridge stays honest: each renamed
+        // line's row and its built-in token agree.
+        assert_eq!(
+            doc.participant_value_for_name("Candle lighters"),
+            resolve_fields("{Sunday.acolytes}", &doc)
+        );
+    }
+
+    #[test]
+    fn slug_twins_in_one_list_are_a_conflict() {
+        // Round 5, RT5-4 (1): "Prayer Team" and
+        // "Prayer-Team" pass exact-name dedupe but
+        // derive one slug, so they would share one
+        // storage slot.
+        let old_lines = default_serving_lines();
+        let mut new_lines = old_lines.clone();
+        new_lines.push("Prayer Team".to_string());
+        new_lines.push("Prayer-Team".to_string());
+        let conflict =
+            serving_line_slug_conflict(&old_lines, &new_lines).expect("slug twins conflict");
+        assert_eq!(conflict.first, "Prayer Team");
+        assert_eq!(conflict.second, "Prayer-Team");
+        assert_eq!(conflict.slug, "prayer_team");
+        assert!(!conflict.builtin);
+        // Lookalike but distinct slugs are no
+        // conflict: "Prayer Team" and "Prayer Teams"
+        // save normally.
+        let mut fine_lines = old_lines.clone();
+        fine_lines.push("Prayer Team".to_string());
+        fine_lines.push("Prayer Teams".to_string());
+        assert_eq!(serving_line_slug_conflict(&old_lines, &fine_lines), None);
+        // A plain reorder of the built-ins is no
+        // conflict either.
+        let mut swapped = old_lines.clone();
+        swapped.swap(0, 5);
+        assert_eq!(serving_line_slug_conflict(&old_lines, &swapped), None);
+    }
+
+    #[test]
+    fn a_name_taking_a_builtin_slug_is_a_conflict() {
+        // Round 5, RT5-4 (2): an added "Childrens
+        // Message" derives the built-in Children's
+        // message canonical slug and would hijack its
+        // row and its printed token.
+        let old_lines = default_serving_lines();
+        let mut added = old_lines.clone();
+        added.push("Childrens Message".to_string());
+        let conflict =
+            serving_line_slug_conflict(&old_lines, &added).expect("alias addition conflicts");
+        assert_eq!(conflict.first, "Childrens Message");
+        assert_eq!(conflict.second, "Children's message");
+        assert_eq!(conflict.slug, "childrens_message");
+        assert!(conflict.builtin);
+        // Round 5, RT5-4 (3): renaming Acolytes onto
+        // that name is the same taking, by rename.
+        let mut renamed = old_lines.clone();
+        renamed[5] = "Childrens Message".to_string();
+        let conflict =
+            serving_line_slug_conflict(&old_lines, &renamed).expect("alias rename conflicts");
+        assert_eq!(conflict.first, "Childrens Message");
+        assert_eq!(conflict.second, "Children's message");
+        assert!(conflict.builtin);
+        // The built-in renaming ITSELF to the same
+        // words without the apostrophe is the line
+        // itself: no conflict, and after the save its
+        // row and its token read the same names.
+        let mut itself = old_lines.clone();
+        itself[4] = "Childrens Message".to_string();
+        assert_eq!(serving_line_slug_conflict(&old_lines, &itself), None);
+        let mut doc = bare_doc();
+        doc.profile.serving_lines = old_lines.clone();
+        doc.set_participant_value("Children's message", "Ms. Patty");
+        migrate_serving_line_renames(&old_lines, &itself, &mut doc.participants);
+        doc.profile.serving_lines = itself;
+        assert_eq!(
+            doc.participant_value_for_name("Childrens Message"),
+            "Ms. Patty"
+        );
+        assert_eq!(
+            resolve_fields("{Sunday.childrens_message}", &doc),
+            "Ms. Patty"
+        );
+        // The built-in under its own name is itself.
+        assert_eq!(
+            serving_line_slug_conflict(&old_lines, &default_serving_lines()),
+            None
         );
     }
 

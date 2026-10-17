@@ -1908,6 +1908,58 @@ fn removed_serving_lines_sentence(removed: &[String]) -> String {
     }
 }
 
+/// The profile save's words when renamed serving
+/// lines could not be followed to their new names
+/// (round 5, F3): several renames and a new order in
+/// one save leave the pairing ambiguous, so the
+/// names stay saved under the old names, and the
+/// status says which lines and what to do instead.
+fn unfollowed_serving_lines_sentence(unfollowed: &[String]) -> String {
+    let quoted = unfollowed
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if unfollowed.len() == 1 {
+        format!(
+            "The names saved for {quoted} were kept under that name: with several \
+             renames and a new order, the app cannot tell which new name is \
+             theirs. Rename one line at a time to move them."
+        )
+    } else {
+        format!(
+            "The names saved for {quoted} were kept under those names: with \
+             several renames and a new order, the app cannot tell which new \
+             names are theirs. Rename one line at a time to move them."
+        )
+    }
+}
+
+/// The profile save's words when serving lines are
+/// refused over a shared slug (round 5, RT5-4): the
+/// save does not apply, the typed lines stay in the
+/// editor for correction, and the sentence names
+/// both lines so the office can find the clash.
+fn serving_line_conflict_sentence(conflict: &ob_model::ServingLineSlugConflict) -> String {
+    let first = format!("'{}'", conflict.first);
+    let second = format!("'{}'", conflict.second);
+    if conflict.builtin {
+        format!(
+            "Serving lines not saved: {first} would take the place of the \
+             built-in line {second}, so the line's row and the names the \
+             bulletin prints could name different people. Rename {first}, \
+             then save again. Nothing else was changed."
+        )
+    } else {
+        format!(
+            "Serving lines not saved: {first} and {second} would be stored \
+             as the same line, so typing names for one would change the \
+             other. Rename one of them, then save again. Nothing else was \
+             changed."
+        )
+    }
+}
+
 /// The Start step's words for a remembered file state (J6):
 /// the strongest true statement about the print copy and the
 /// last clean check, compared against the document as it
@@ -14149,29 +14201,69 @@ impl eframe::App for App {
                         if resp_serving.lost_focus() {
                             let parsed = parse_expected_parts(&self.profile_serving_lines);
                             if parsed != self.doc.profile.serving_lines {
-                                let before = snapshot(&self.doc);
-                                // A renamed line keeps its
-                                // names: the stored values
-                                // follow the rename, matched
-                                // by name rather than by
-                                // position, so reordering the
-                                // list moves nothing (round
-                                // 3, R3-3; round 4, R4-2). A
-                                // line removed with names
-                                // still saved loses them
-                                // here, and the status says
-                                // so (RT-6c).
-                                let old_lines =
-                                    std::mem::take(&mut self.doc.profile.serving_lines);
-                                let removed = ob_model::migrate_serving_line_renames(
-                                    &old_lines,
+                                // Two lines sharing one
+                                // slug would share one set
+                                // of names, and a line
+                                // taking a built-in line's
+                                // slug would split its row
+                                // from its printed token:
+                                // refuse the save before
+                                // anything changes, leaving
+                                // the typed lines in place
+                                // for correction (round 5,
+                                // RT5-4).
+                                let conflict = ob_model::serving_line_slug_conflict(
+                                    &self.doc.profile.serving_lines,
                                     &parsed,
-                                    &mut self.doc.participants,
                                 );
-                                self.doc.profile.serving_lines = parsed;
-                                self.record_undo(before);
-                                if !removed.is_empty() {
-                                    self.status = removed_serving_lines_sentence(&removed);
+                                if let Some(conflict) = conflict {
+                                    let sentence = serving_line_conflict_sentence(&conflict);
+                                    self.fail(sentence);
+                                } else {
+                                    let before = snapshot(&self.doc);
+                                    // A renamed line keeps
+                                    // its names: the stored
+                                    // values follow the
+                                    // rename only when the
+                                    // pairing is unambiguous
+                                    // (round 3, R3-3; round
+                                    // 4, R4-2; round 5, F3).
+                                    // An ambiguous pairing
+                                    // moves nothing and
+                                    // clears nothing, and
+                                    // the status names the
+                                    // lines kept under their
+                                    // old names. A line
+                                    // removed with names
+                                    // still saved loses them
+                                    // here, and the status
+                                    // says so (RT-6c).
+                                    let old_lines =
+                                        std::mem::take(&mut self.doc.profile.serving_lines);
+                                    let migration =
+                                        ob_model::migrate_serving_line_renames_detailed(
+                                            &old_lines,
+                                            &parsed,
+                                            &mut self.doc.participants,
+                                        );
+                                    self.doc.profile.serving_lines = parsed;
+                                    self.record_undo(before);
+                                    let mut notes: Vec<String> = Vec::new();
+                                    if !migration.removed.is_empty() {
+                                        let sentence = removed_serving_lines_sentence(
+                                            &migration.removed,
+                                        );
+                                        notes.push(sentence);
+                                    }
+                                    if !migration.unfollowed.is_empty() {
+                                        let sentence = unfollowed_serving_lines_sentence(
+                                            &migration.unfollowed,
+                                        );
+                                        notes.push(sentence);
+                                    }
+                                    if !notes.is_empty() {
+                                        self.status = notes.join(" ");
+                                    }
                                 }
                             }
                         }
@@ -17990,6 +18082,133 @@ mod settings_tests {
                 "Nursery workers".to_string(),
             ]),
             "Names saved for 'Acolytes', 'Nursery workers' were removed with their lines."
+        );
+    }
+
+    #[test]
+    fn unfollowed_and_refused_serving_lines_are_named_in_the_status_words() {
+        // Round 5, F3 + RT5-4: the profile save's new
+        // words, pinned exactly as the removed-line
+        // words are: an ambiguous rename names the
+        // lines kept under their old names, and a
+        // slug refusal names both lines in the clash.
+        assert_eq!(
+            unfollowed_serving_lines_sentence(&["Acolytes".to_string()]),
+            "The names saved for 'Acolytes' were kept under that name: with \
+             several renames and a new order, the app cannot tell which new \
+             name is theirs. Rename one line at a time to move them."
+        );
+        assert_eq!(
+            unfollowed_serving_lines_sentence(&["Readers".to_string(), "Acolytes".to_string(),]),
+            "The names saved for 'Readers', 'Acolytes' were kept under those \
+             names: with several renames and a new order, the app cannot tell \
+             which new names are theirs. Rename one line at a time to move them."
+        );
+        let first = "Prayer Team".to_string();
+        let second = "Prayer-Team".to_string();
+        let slug = "prayer_team".to_string();
+        let twins = ob_model::ServingLineSlugConflict {
+            first,
+            second,
+            slug,
+            builtin: false,
+        };
+        assert_eq!(
+            serving_line_conflict_sentence(&twins),
+            "Serving lines not saved: 'Prayer Team' and 'Prayer-Team' would be \
+             stored as the same line, so typing names for one would change \
+             the other. Rename one of them, then save again. Nothing else \
+             was changed."
+        );
+        let first = "Childrens Message".to_string();
+        let second = "Children's message".to_string();
+        let slug = "childrens_message".to_string();
+        let alias = ob_model::ServingLineSlugConflict {
+            first,
+            second,
+            slug,
+            builtin: true,
+        };
+        assert_eq!(
+            serving_line_conflict_sentence(&alias),
+            "Serving lines not saved: 'Childrens Message' would take the \
+             place of the built-in line 'Children's message', so the line's \
+             row and the names the bulletin prints could name different \
+             people. Rename 'Childrens Message', then save again. Nothing \
+             else was changed."
+        );
+    }
+
+    #[test]
+    fn a_refused_serving_save_changes_nothing_and_rows_stay_with_tokens() {
+        // Round 5, RT5-4: the save handler's order,
+        // in its pieces: the slug check runs first and
+        // a refusal applies nothing; an accepted save
+        // keeps each built-in line's This Sunday row
+        // and its printed token naming the same people.
+        let mut doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        doc.set_participant_value("Children's message", "Ms. Patty");
+        doc.set_participant_value("Acolytes", "Bob");
+        let lines_before = doc.profile.serving_lines.clone();
+        let map_before = doc.participants.clone();
+        // Renaming Acolytes onto the built-in alias
+        // is refused: lines and names stay as they
+        // were, and the Children's row and token still
+        // agree on Ms. Patty.
+        let mut renamed = lines_before.clone();
+        renamed[5] = "Childrens Message".to_string();
+        let conflict = ob_model::serving_line_slug_conflict(&lines_before, &renamed);
+        assert!(conflict.is_some_and(|c| c.builtin));
+        assert_eq!(doc.profile.serving_lines, lines_before);
+        assert_eq!(doc.participants, map_before);
+        assert_eq!(
+            doc.participant_value_for_name("Children's message"),
+            "Ms. Patty"
+        );
+        assert_eq!(
+            ob_model::resolve_fields("{Sunday.childrens_message}", &doc),
+            "Ms. Patty"
+        );
+        // Slug twins are refused the same way.
+        let mut twins = lines_before.clone();
+        twins.push("Prayer Team".to_string());
+        twins.push("Prayer-Team".to_string());
+        assert!(ob_model::serving_line_slug_conflict(&lines_before, &twins).is_some());
+        assert_eq!(doc.profile.serving_lines, lines_before);
+        assert_eq!(doc.participants, map_before);
+        // Lookalike but distinct slugs save fine.
+        let mut lookalikes = lines_before.clone();
+        lookalikes.push("Prayer Team".to_string());
+        lookalikes.push("Prayer Teams".to_string());
+        assert_eq!(
+            ob_model::serving_line_slug_conflict(&lines_before, &lookalikes),
+            None
+        );
+        // An accepted in-place rename of the built-in
+        // keeps its row and its token together.
+        let mut in_place = lines_before.clone();
+        in_place[4] = "Kids' message".to_string();
+        assert_eq!(
+            ob_model::serving_line_slug_conflict(&lines_before, &in_place),
+            None
+        );
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &lines_before,
+            &in_place,
+            &mut doc.participants,
+        );
+        assert!(migration.removed.is_empty());
+        assert!(migration.unfollowed.is_empty());
+        doc.profile.serving_lines = in_place;
+        assert_eq!(doc.participant_value_for_name("Kids' message"), "Ms. Patty");
+        assert_eq!(
+            ob_model::resolve_fields("{Sunday.childrens_message}", &doc),
+            doc.participant_value_for_name("Kids' message")
         );
     }
 

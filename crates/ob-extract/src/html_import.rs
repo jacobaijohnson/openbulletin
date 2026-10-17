@@ -1376,6 +1376,7 @@ pub fn document_from_html(
         wanted_fonts: Vec::new(),
         participants: Default::default(),
         inserts: Default::default(),
+        applied_contributions: Vec::new(),
     };
 
     // Lay the blocks down the pages: word runs become story

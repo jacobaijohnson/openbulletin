@@ -383,6 +383,21 @@ mod tests {
     }
 
     #[test]
+    fn a_learned_template_starts_with_nothing_applied() {
+        // Round 4 (R4-4): the applied-parts record
+        // describes one bulletin's own week, so a
+        // template learned from old bulletins starts
+        // with an empty one.
+        let dumps = vec![
+            dump_with("a.pdf", "potluck this friday at six bring a dish"),
+            dump_with("b.pdf", "choir rehearsal moved to thursday evening"),
+            dump_with("c.pdf", "youth group car wash on saturday morning"),
+        ];
+        let out = analyze(&dumps, ChurchProfile::default(), &[]).expect("analyze");
+        assert!(out.doc.applied_contributions.is_empty());
+    }
+
+    #[test]
     fn analyzer_separates_standing_from_weekly() {
         let dumps = vec![
             dump_with("a.pdf", "potluck this friday at six bring a dish"),

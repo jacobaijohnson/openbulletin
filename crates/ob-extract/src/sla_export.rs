@@ -644,6 +644,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         }
     }
 
@@ -823,6 +824,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         }
     }
 

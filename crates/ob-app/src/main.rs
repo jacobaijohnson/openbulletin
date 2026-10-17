@@ -982,14 +982,10 @@ impl App {
         // A contribution review and the save guard's state
         // belong to the old document too (R-1).
         self.contribution_review = None;
-        // The applied-parts memory belongs to the old
-        // document too (round 3, R3-5): words applied to
-        // another bulletin say nothing about this one.
-        // Undo and Redo keep it: they stay inside one
-        // document's session.
-        if clear_history {
-            self.applied_contribution_fps.clear();
-        }
+        // The applied-parts record needs no clearing
+        // here: it lives in the document being adopted
+        // (round 4, R4-4), so it arrives and leaves with
+        // the words it describes, Undo included.
         self.save_conflict = None;
         self.replace_armed = false;
         self.replace_ok = None;
@@ -2431,14 +2427,6 @@ struct App {
     /// A contribution (from the inbox or the paste box)
     /// waiting for its Accept/Edit/Cancel answer (R-1).
     contribution_review: Option<ContributionReview>,
-    /// Content fingerprints of contributions already
-    /// APPLIED to the document on screen in this session
-    /// (round 3, R3-5). A review that opens for one of
-    /// these offers filing only: applying the same words
-    /// twice would print them twice. In memory only, and
-    /// cleared when a different document is adopted: the
-    /// set speaks for this document, not for the folder.
-    applied_contribution_fps: std::collections::HashSet<String>,
     /// The paste box: words someone sent, pasted in.
     show_paste: bool,
     paste_text: String,
@@ -3050,7 +3038,6 @@ impl Default for App {
             import_review: None,
             import_armed: false,
             contribution_review: None,
-            applied_contribution_fps: std::collections::HashSet::new(),
             show_paste: false,
             paste_text: String::new(),
             inbox_items: Vec::new(),
@@ -3524,6 +3511,7 @@ fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec
             keep_through: c.keep_through,
             parts: vec![part.clone()],
             named_weekday_mismatch: c.named_weekday_mismatch.clone(),
+            keep_through_weekday_mismatch: c.keep_through_weekday_mismatch.clone(),
         };
         apply_contribution(&mut sim, &single);
     }
@@ -3969,20 +3957,50 @@ fn swap_insert_parts(doc: &mut Document, id: &str) -> bool {
 /// Equal strength keeps the existing record: the
 /// bulletin's own words are never traded away for a
 /// sheet's.
-fn rights_record_stronger(
-    incoming: &ob_model::RightsRecord,
+/// Merge two records for the same picture, field by
+/// field (round 4, R4-5): the incoming record fills
+/// only what the existing record leaves empty, and a
+/// value already noted is never overwritten, so a
+/// split-strength pair (the bulletin holds the credit
+/// line, the sheet holds the license) ends up carrying
+/// both. The one exception is the children note, which
+/// merges as OR: a "children are in this picture" from
+/// either side stands, because the web page's
+/// hold-back is only as strong as the strongest note.
+/// The caller compares the result with the existing
+/// record to know whether anything was filled in.
+fn merge_rights_records(
     existing: &ob_model::RightsRecord,
-) -> bool {
-    let has_credit = |r: &ob_model::RightsRecord| {
-        !r.credit_text.trim().is_empty() || !r.copyright_line.trim().is_empty()
-    };
-    match (has_credit(incoming), has_credit(existing)) {
-        (true, false) => return true,
-        (false, true) => return false,
-        _ => {}
+    incoming: &ob_model::RightsRecord,
+) -> ob_model::RightsRecord {
+    fn fill(existing: &str, incoming: &str) -> String {
+        if existing.trim().is_empty() && !incoming.trim().is_empty() {
+            incoming.to_string()
+        } else {
+            existing.to_string()
+        }
     }
-    incoming.license != ob_model::LicenseKind::Unknown
-        && existing.license == ob_model::LicenseKind::Unknown
+    let mut out = existing.clone();
+    out.source = fill(&existing.source, &incoming.source);
+    if existing.source_url.is_none() {
+        out.source_url = incoming.source_url.clone();
+    }
+    if existing.license == ob_model::LicenseKind::Unknown {
+        out.license = incoming.license.clone();
+    }
+    out.title = fill(&existing.title, &incoming.title);
+    out.creator = fill(&existing.creator, &incoming.creator);
+    out.copyright_line = fill(&existing.copyright_line, &incoming.copyright_line);
+    out.credit_text = fill(&existing.credit_text, &incoming.credit_text);
+    out.licensor_ref = fill(&existing.licensor_ref, &incoming.licensor_ref);
+    out.asserted_by = fill(&existing.asserted_by, &incoming.asserted_by);
+    out.asserted_at = fill(&existing.asserted_at, &incoming.asserted_at);
+    out.children_present = match (existing.children_present, incoming.children_present) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        _ => None,
+    };
+    out
 }
 
 /// An id no sheet in this document already uses.
@@ -4149,12 +4167,30 @@ const APPLIED_PART_FIRST_LINE: &str = "These words are already in the bulletin o
     Saving the bulletin finishes this part; there is nothing more to add.";
 
 /// Whether these exact words were already applied to
-/// the open document in this session. The fingerprint
-/// is the same one the filed name carries, so the file
-/// a failed save left in the inbox and the words on
-/// screen compare equal.
-fn part_already_applied(fps: &std::collections::HashSet<String>, text: &str) -> bool {
-    fps.contains(&content_fingerprint(text.as_bytes()))
+/// this document. The record lives in the document
+/// itself (round 4, R4-4/R4-6), so it survives a save
+/// that failed, a save done by hand, and a crash the
+/// journal recovers from; Undo takes it away with the
+/// words, and Next Sunday starts the new week without
+/// it. The fingerprint is the same one the filed name
+/// carries, so the file a failed save left in the
+/// inbox and the words on screen compare equal.
+fn part_already_applied(doc: &Document, text: &str) -> bool {
+    doc.applied_contributions
+        .iter()
+        .any(|fp| fp == &content_fingerprint(text.as_bytes()))
+}
+
+/// Record a contribution's words as applied to the
+/// document, at the moment they land (round 4, R4-4):
+/// before any save is attempted, so no path that
+/// follows (a failed save, a manual save, a recovery)
+/// can offer to apply them again.
+fn record_applied_fingerprint(doc: &mut Document, text: &str) {
+    let fp = content_fingerprint(text.as_bytes());
+    if !doc.applied_contributions.contains(&fp) {
+        doc.applied_contributions.push(fp);
+    }
 }
 
 /// One markdown file found in the inbox, read and parsed.
@@ -8061,18 +8097,20 @@ impl App {
         self.push_undo_now();
         ins.id = fresh_insert_id(&self.doc);
         // A picture the bulletin already holds keeps its
-        // bytes; its rights record merges toward the
-        // stronger one (round 3, R3-11): a sheet saved
+        // bytes; its rights record merges field by field
+        // (round 3, R3-11; round 4, R4-5): a sheet saved
         // from a fuller bulletin used to lose its credit
         // lines silently when the plainer copy was
-        // already here.
-        let mut strengthened = 0usize;
+        // already here, and a whole-record win used to
+        // lose the other side's half just as silently.
+        let mut filled = 0usize;
         for rec in assets {
             match self.doc.assets.iter_mut().find(|a| a.sha256 == rec.sha256) {
                 Some(existing) => {
-                    if rights_record_stronger(&rec.rights, &existing.rights) {
-                        existing.rights = rec.rights;
-                        strengthened += 1;
+                    let merged = merge_rights_records(&existing.rights, &rec.rights);
+                    if merged != existing.rights {
+                        existing.rights = merged;
+                        filled += 1;
                     }
                 }
                 None => self.doc.assets.push(rec),
@@ -8087,12 +8125,12 @@ impl App {
         self.insert_sel = Some(new_id);
         self.insert_sel_loaded = None;
         let mut msg = format!("Added the loose sheet '{name}' to this bulletin.");
-        if strengthened > 0 {
+        if filled > 0 {
             msg.push_str(&format!(
                 " {} picture record{} {} filled in from the sheet.",
-                strengthened,
-                if strengthened == 1 { "" } else { "s" },
-                if strengthened == 1 { "was" } else { "were" }
+                filled,
+                if filled == 1 { "" } else { "s" },
+                if filled == 1 { "was" } else { "were" }
             ));
         }
         self.note(msg);
@@ -11272,11 +11310,12 @@ impl App {
         let Some(review) = self.contribution_review.take() else {
             return;
         };
-        // A part this session already applied is filed,
-        // never applied twice (round 3, R3-5). The review
-        // normally routes these to "File it"; this keeps
-        // every other path to Accept honest too.
-        if part_already_applied(&self.applied_contribution_fps, &review.text) {
+        // A part this document already carries is filed,
+        // never applied twice (round 3, R3-5; the record
+        // moved into the document in round 4, R4-4). The
+        // review normally routes these to "File it"; this
+        // keeps every other path to Accept honest too.
+        if part_already_applied(&self.doc, &review.text) {
             let filed = self.file_contribution(&review);
             self.note(filed);
             self.inbox_dirty = true;
@@ -11284,6 +11323,14 @@ impl App {
         }
         let before = snapshot(&self.doc);
         let summary = apply_contribution(&mut self.doc, &review.contribution);
+        // The words have landed: the document itself
+        // remembers them, from this moment, before any
+        // save is attempted (round 4, R4-4). A save that
+        // fails, a save done by hand, and a crash the
+        // journal recovers from all meet the same record,
+        // so the copy still sitting in the inbox can only
+        // ever be filed from here on, not applied again.
+        record_applied_fingerprint(&mut self.doc, &review.text);
         if before != snapshot(&self.doc) {
             self.record_undo(before);
         }
@@ -11303,12 +11350,6 @@ impl App {
             // the part likewise stays in the inbox.
             return;
         }
-        // The words are in the bulletin and the bulletin
-        // is saved: this session remembers them (R3-5),
-        // so the copy still sitting in the inbox can only
-        // ever be filed from here on, not applied again.
-        self.applied_contribution_fps
-            .insert(content_fingerprint(review.text.as_bytes()));
         let filed = self.file_contribution(&review);
         let mut msg = summary.join(" ");
         if !msg.is_empty() {
@@ -11472,7 +11513,7 @@ impl App {
                     });
                     return;
                 }
-                if part_already_applied(&self.applied_contribution_fps, &review.text) {
+                if part_already_applied(&self.doc, &review.text) {
                     // Round 3 (R3-5): these words are
                     // already in this bulletin. The first
                     // line says so, and the only answer
@@ -11547,6 +11588,17 @@ impl App {
                             }
                         }
                     }
+                }
+                if let Some(mismatch) = &review.contribution.keep_through_weekday_mismatch {
+                    // Round 4 (R4-7): the Keep-through line
+                    // named an impossible day too. The date
+                    // did not apply (the announcement runs
+                    // one Sunday), and the office hears why
+                    // instead of the date vanishing quietly.
+                    ui.label(
+                        egui::RichText::new(mismatch.keep_through_sentence())
+                            .color(self.theme.warn),
+                    );
                 }
                 let sender = match (&review.contribution.from, &review.source) {
                     (Some(f), _) => format!("From: {f}"),
@@ -15762,6 +15814,7 @@ mod settings_tests {
             wanted_fonts: vec![],
             participants: Default::default(),
             inserts: vec![new_insert("sheet-1", "Prayer list")],
+            applied_contributions: Vec::new(),
         };
         doc.fields
             .insert("occasion_date".into(), "2026-10-18".into());
@@ -15834,47 +15887,117 @@ mod settings_tests {
     }
 
     #[test]
-    fn r3_rights_merge_prefers_the_record_with_a_credit_line() {
-        // Round 3 (R3-11): credit line first, then a
-        // known license over Unknown; equal strength
-        // keeps the record already there.
+    fn r4_rights_merge_fills_fields_and_never_overwrites() {
+        // Round 4 (R4-5), replacing the round-3 test of
+        // the winner-take-all predicate: the merge is
+        // field-wise now. An empty record is filled from
+        // a fuller one, as R3-11 asked; the new pins are
+        // that a split-strength pair keeps both halves
+        // and a noted value is never overwritten.
         let weak = ob_model::RightsRecord::default();
         let strong = ob_model::RightsRecord {
             license: ob_model::LicenseKind::CcBy("4.0".into()),
             credit_text: "Photo by Jane Doe, CC BY 4.0".into(),
             ..Default::default()
         };
-        assert!(rights_record_stronger(&strong, &weak));
-        assert!(!rights_record_stronger(&weak, &strong));
-        let licensed = ob_model::RightsRecord {
+        let merged = merge_rights_records(&weak, &strong);
+        assert_eq!(merged.credit_text, "Photo by Jane Doe, CC BY 4.0");
+        assert_eq!(merged.license, ob_model::LicenseKind::CcBy("4.0".into()));
+        // Split strength: the bulletin holds the credit
+        // and the title, the sheet holds only the
+        // license. The merged record carries all three;
+        // under the whole-record rule the license half
+        // was lost and the picture printed unlicensed.
+        let has_credit = ob_model::RightsRecord {
+            title: "Harvest supper".into(),
+            credit_text: "Photo by Jane Doe".into(),
+            ..Default::default()
+        };
+        let has_license = ob_model::RightsRecord {
+            license: ob_model::LicenseKind::CcBy("4.0".into()),
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&has_credit, &has_license);
+        assert_eq!(merged.credit_text, "Photo by Jane Doe");
+        assert_eq!(merged.title, "Harvest supper");
+        assert_eq!(merged.license, ob_model::LicenseKind::CcBy("4.0".into()));
+        // A value already noted is never overwritten,
+        // and a known license already noted stands.
+        let other = ob_model::RightsRecord {
+            title: "A different title".into(),
+            credit_text: "Someone else".into(),
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&has_credit, &other);
+        assert_eq!(merged.title, "Harvest supper");
+        assert_eq!(merged.credit_text, "Photo by Jane Doe");
+        let cc0 = ob_model::RightsRecord {
             license: ob_model::LicenseKind::Cc0,
             ..Default::default()
         };
-        assert!(rights_record_stronger(&licensed, &weak));
-        assert!(!rights_record_stronger(&weak, &licensed));
-        assert!(!rights_record_stronger(&weak, &weak));
+        assert_eq!(
+            merge_rights_records(&cc0, &has_license).license,
+            ob_model::LicenseKind::Cc0
+        );
+        // The children note merges as OR: a yes from
+        // either side stands, a no stands over silence,
+        // and silence stays silence.
+        let yes = ob_model::RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let no = ob_model::RightsRecord {
+            children_present: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(merge_rights_records(&yes, &no).children_present, Some(true));
+        assert_eq!(merge_rights_records(&no, &yes).children_present, Some(true));
+        assert_eq!(
+            merge_rights_records(&yes, &weak).children_present,
+            Some(true)
+        );
+        assert_eq!(
+            merge_rights_records(&no, &weak).children_present,
+            Some(false)
+        );
+        assert_eq!(merge_rights_records(&weak, &weak).children_present, None);
+        // A merge that adds nothing changes nothing:
+        // the attach counts only real fills.
+        assert_eq!(merge_rights_records(&strong, &weak), strong);
+        assert_eq!(merge_rights_records(&strong, &strong), strong);
     }
 
     #[test]
     fn r3_sheet_attach_fills_in_a_weak_picture_record() {
-        // Round 3 (R3-11): the same picture bytes in both
-        // stores. The bulletin holds the picture with
-        // nothing noted; the sheet's copy carries the CC
-        // BY credit. Attaching the sheet fills the record
-        // in, and the note says so.
-        let bytes: &[u8] = b"fake picture bytes for the merge test";
+        // Round 3 (R3-11), reshaped by round 4 (R4-5):
+        // the same picture bytes in both stores, and the
+        // two records are strong in different halves. The
+        // bulletin holds the credit line, the title, and
+        // the children note; the sheet holds only the CC
+        // BY license. The field-wise merge carries all of
+        // it (the whole-record rule this replaces lost
+        // whichever half the losing record held), the
+        // composed credits show both halves, and the
+        // note says a record was filled in. The bytes are
+        // a real drawing, so the web door can carry the
+        // picture and its credits.
+        let bytes: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 5 L9 5 L5 9 Z"/></svg>"#;
         let hash = ob_model::sha256_hex(bytes);
-        let weak = ob_model::RightsRecord {
+        let in_bulletin = ob_model::RightsRecord {
             source: "the church camera".into(),
+            title: "Harvest supper".into(),
+            credit_text: "Photo by Jane Doe".into(),
+            children_present: Some(true),
             ..Default::default()
         };
-        let mut strong = weak.clone();
-        strong.license = ob_model::LicenseKind::CcBy("4.0".into());
-        strong.credit_text = "Photo by Jane Doe, CC BY 4.0".into();
+        let in_sheet = ob_model::RightsRecord {
+            license: ob_model::LicenseKind::CcBy("4.0".into()),
+            ..Default::default()
+        };
         let asset = |rights: ob_model::RightsRecord| ob_model::Asset {
             sha256: hash.clone(),
             kind: ob_model::AssetKind::Picture,
-            media_type: "image/png".into(),
+            media_type: "image/svg+xml".into(),
             rights,
         };
         let mut ins = new_insert("sheet-9", "Photo sheet");
@@ -15884,7 +16007,7 @@ mod settings_tests {
         frame.picture = Some(placement);
         ins.panels[0].frames.push(frame);
         let mut host = doc_with_sheet();
-        host.assets.push(asset(strong));
+        host.assets.push(asset(in_sheet));
         host.asset_bytes.insert(hash.clone(), bytes.to_vec());
         let dir = std::env::temp_dir().join(format!("openbulletin-r3-obdi-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -15895,7 +16018,7 @@ mod settings_tests {
             doc: doc_with_sheet(),
             ..Default::default()
         };
-        app.doc.assets.push(asset(weak));
+        app.doc.assets.push(asset(in_bulletin));
         app.doc.asset_bytes.insert(hash.clone(), bytes.to_vec());
         app.add_insert_from_library(&file);
         let stored = app
@@ -15904,17 +16027,40 @@ mod settings_tests {
             .iter()
             .find(|a| a.sha256 == hash)
             .expect("the picture stays");
-        assert_eq!(stored.rights.credit_text, "Photo by Jane Doe, CC BY 4.0");
+        assert_eq!(stored.rights.credit_text, "Photo by Jane Doe");
         assert_eq!(
             stored.rights.license,
             ob_model::LicenseKind::CcBy("4.0".into())
         );
+        assert_eq!(stored.rights.title, "Harvest supper");
+        assert_eq!(stored.rights.children_present, Some(true));
         assert!(
             app.status
                 .contains("1 picture record was filled in from the sheet."),
             "{}",
             app.status
         );
+        // The composed credits carry both halves: the
+        // credit the bulletin held and the license the
+        // sheet brought, whose address the line shows.
+        let (mut placed, mut placed_at) =
+            picture_frame(216_000, 144_000, ob_model::PictureFit::ShowWhole);
+        placed_at.asset = hash.clone();
+        placed.picture = Some(placed_at);
+        app.doc.panels[0].frames.push(placed);
+        let (html_bytes, _report) =
+            ob_extract::html_export::export_html(&app.doc).expect("the web page");
+        let html = String::from_utf8(html_bytes).expect("utf8");
+        assert!(html.contains("Photo by Jane Doe"), "{html}");
+        assert!(
+            html.contains("creativecommons.org/licenses/by/4.0"),
+            "{html}"
+        );
+        // Attaching the same sheet again fills nothing:
+        // the records already agree, and the note does
+        // not claim a fill that did not happen.
+        app.add_insert_from_library(&file);
+        assert!(!app.status.contains("filled in"), "{}", app.status);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -16026,6 +16172,7 @@ mod settings_tests {
             }],
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         };
         // Nothing in the library: today's stand-in is the
         // house default, and the words say so (the record
@@ -16097,6 +16244,7 @@ mod settings_tests {
             }],
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         };
         // Restyled away in the bulletin itself: silent.
         let notes = wanted_font_notes(&base_doc, &[]);
@@ -17912,6 +18060,7 @@ mod settings_tests {
             wanted_fonts: Vec::new(),
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         };
         let mut shaper = ob_text::shaping::bundled_shaper();
         let threads = ob_text::threading::layout_document_threads(&mut shaper, &doc);
@@ -18100,6 +18249,7 @@ mod settings_tests {
             wanted_fonts: Vec::new(),
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         };
         let placed = doc.add_asset(
             &[1, 2, 3],
@@ -18478,22 +18628,63 @@ mod settings_tests {
     fn r3_applied_part_fingerprint_guard() {
         // Round 3 (R3-5): the guard is the content
         // fingerprint of the words as reviewed, the same
-        // fingerprint the filed name carries.
-        let mut fps = std::collections::HashSet::new();
+        // fingerprint the filed name carries. Round 4
+        // (R4-4): the record lives in the DOCUMENT, not
+        // in a session set, so this test now reads and
+        // writes the document's own list.
+        let mut doc = r1_template();
         let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
-        assert!(!part_already_applied(&fps, text));
-        fps.insert(content_fingerprint(text.as_bytes()));
-        assert!(part_already_applied(&fps, text));
+        assert!(!part_already_applied(&doc, text));
+        record_applied_fingerprint(&mut doc, text);
+        assert!(part_already_applied(&doc, text));
         assert!(
-            !part_already_applied(&fps, "From: Sue\n\n## Announcement\n\nChanged words.\n"),
+            !part_already_applied(&doc, "From: Sue\n\n## Announcement\n\nChanged words.\n"),
             "different words are a different part"
         );
+        // Recording the same words twice keeps one record.
+        record_applied_fingerprint(&mut doc, text);
+        assert_eq!(doc.applied_contributions.len(), 1);
         // The review's first line is the settled sentence,
         // pinned word for word.
         assert_eq!(
             APPLIED_PART_FIRST_LINE,
             "These words are already in the bulletin on screen. Saving the bulletin finishes this part; there is nothing more to add."
         );
+    }
+
+    #[test]
+    fn r4_the_applied_record_travels_with_the_document() {
+        // Round 4 (R4-4/R4-6): the record is document
+        // state, so every road the document travels
+        // carries it, and the roads back remove it.
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let mut doc = r1_template();
+        // Before the apply: the state Undo would restore.
+        let before = snapshot(&doc);
+        let summary = apply_contribution(&mut doc, &c);
+        assert!(!summary.is_empty());
+        record_applied_fingerprint(&mut doc, text);
+        assert!(part_already_applied(&doc, text));
+        // Undo restores the earlier serialization whole
+        // (that is exactly what undo() does with it):
+        // the words and their record leave together, and
+        // the part can be applied again.
+        let restored: Document = serde_json::from_str(&before).expect("snapshot reads back");
+        assert!(!part_already_applied(&restored, text));
+        // The journal's road: the canonical snapshot is
+        // this same serialization, so a recovered
+        // document still carries the record and the part
+        // cannot be applied twice after a crash.
+        let recovered: Document =
+            serde_json::from_str(&snapshot(&doc)).expect("snapshot reads back");
+        assert!(part_already_applied(&recovered, text));
+        // Next Sunday: the new week's document starts
+        // unapplied, so the same part sent again applies
+        // normally.
+        let (next, _report) = ob_layout::next_sunday_report(&doc).expect("next week");
+        assert!(next.applied_contributions.is_empty());
+        assert!(!part_already_applied(&next, text));
     }
 
     #[test]

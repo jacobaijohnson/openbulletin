@@ -534,6 +534,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         }
     }
 
@@ -579,6 +580,32 @@ mod tests {
         assert_eq!(&head[..4], b"PK\x03\x04", "v1 files are zips");
         let back = load(&path).unwrap();
         assert_eq!(doc, back);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_applied_parts_record_survives_a_save_and_an_old_file_loads_without_one() {
+        // Round 4 (R4-4): the record rides in the file,
+        // so a bulletin saved by hand and reopened still
+        // knows which parts were applied to it. A file
+        // written before the field existed has no key
+        // and loads with an empty record.
+        let mut doc = test_doc();
+        doc.applied_contributions = vec!["abcd1234".to_string(), "ef567890".to_string()];
+        let dir = scratch("applied");
+        let path = dir.join("applied.obd");
+        save(&doc, &path).unwrap();
+        let back = load(&path).unwrap();
+        assert_eq!(back.applied_contributions, doc.applied_contributions);
+        let mut json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&doc).expect("json")).expect("value");
+        json.as_object_mut()
+            .expect("object")
+            .remove("applied_contributions");
+        let old_path = dir.join("old.obd");
+        std::fs::write(&old_path, serde_json::to_string(&json).expect("json")).expect("write");
+        let old = load(&old_path).unwrap();
+        assert!(old.applied_contributions.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

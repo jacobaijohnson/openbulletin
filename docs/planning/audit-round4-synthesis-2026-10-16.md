@@ -320,3 +320,76 @@ Then round 5.
   runs reading cargo's own exit code. The known
   helper flake did not fire. No pre-existing test
   was changed.
+
+## Shipped addendum, R4-D: seam, rights, dates (2026-10-16)
+
+- **Fingerprints live in the document (R4-4,
+  R4-6).** `Document.applied_contributions` (serde
+  default, `format_version` stays 1) carries the
+  content fingerprints of the parts applied to
+  that bulletin. Accept records the fingerprint
+  into the document at the moment the words land,
+  before any save is attempted; the session set is
+  gone, and the review's already-applied check
+  reads the document. The finding's headline path
+  is closed: a failed save, a save done by hand,
+  and a crash the journal recovers from all meet
+  the same record, so the copy left in the inbox
+  is offered "File it", never a second apply.
+  Undo restores the pre-apply serialization
+  whole, so the record leaves with the words and
+  the part can be applied again; Next Sunday
+  clears the list, so the same part sent again
+  next week applies normally. The record is
+  bookkeeping: never printed, read by no export
+  door, absent from a sheet's .obdi file, and a
+  learned template starts with an empty one.
+  FORMAT.md carries the field and its accepted
+  older-build caveat.
+- **Rights merge is field-wise (R4-5).**
+  `merge_rights_records` fills only what the
+  existing record leaves empty; a noted value is
+  never overwritten. The split-strength pair (the
+  bulletin holds the credit line and title, the
+  sheet holds the CC BY license) now merges to a
+  record carrying all of it, and the composed
+  credits show both halves, credit text and the
+  license's address together. `children_present`
+  merges as OR: a yes from either side stands.
+  The attach counts a record as filled in only
+  when the merge changed a field, and a second
+  attach of the same sheet claims no fill.
+- **Weekday kindness everywhere (R4-7, RT-5d).**
+  Both of a contribution's date lines now read
+  through one helper. The Keep-through line gets
+  the WeekdayMismatch record the For Sunday line
+  had: "This part says keep through Friday,
+  November 30, 2026, but that date is a Monday.
+  Check the date with the sender." The date does
+  not apply. A weekday written after the date
+  ("October 25, 2026 (Monday)", "..., Monday") is
+  found wherever it sits: wrong, it is recorded
+  and the date does not read; right, the line
+  parses normally. The review shows the
+  keep-through sentence under the Sunday verdict.
+- Tests changed knowingly: `r3_applied_part_
+  fingerprint_guard` now reads and writes the
+  document's list instead of a hand-built session
+  set (the pinned first line is unchanged);
+  `r3_rights_merge_prefers_the_record_with_a_
+  credit_line` is replaced by `r4_rights_merge_
+  fills_fields_and_never_overwrites`, the
+  predicate being gone; `r3_sheet_attach_fills_
+  in_a_weak_picture_record` keeps its name and
+  its filled-in claim but its scenario is now
+  the split-strength pair, its bytes a real
+  drawing so the web door can carry the picture,
+  and it gains the children-note, composed-
+  credits, and second-attach assertions.
+- Suite: 506 passed / 0 failed (500 + 6 new),
+  clippy `-D warnings` clean, both from unpiped
+  runs reading cargo's own exit code. One
+  partial run hit the known helper ETXTBSY flake
+  (`a_good_fake_helper_still_answers_through_
+  the_new_runner`); it passed solo in 0.02 s and
+  the full run above is clean.

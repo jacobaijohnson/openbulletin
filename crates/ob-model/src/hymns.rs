@@ -495,6 +495,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
             inserts: Vec::new(),
+            applied_contributions: Vec::new(),
         };
         let mut mem = HymnMemory::default();
         assert!(mem.learn_from_document(&doc, d(2026, 10, 18)));

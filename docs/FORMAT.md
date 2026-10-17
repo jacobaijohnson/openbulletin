@@ -180,6 +180,25 @@ such a file, shows no sheets, and drops them on save.
 That exposure was accepted, the same one the
 spoken-only flags already carry.)
 
+A document may carry `applied_contributions` (round 4,
+R4-4): the content fingerprints of contributions
+already applied to this document, recorded at the
+moment the words land. The record lives in the
+document, not in the app's memory, so it survives a
+save that failed, a save done by hand, and a crash
+the recovery journal restores from; Undo removes a
+fingerprint with the words it describes, and Next
+Sunday clears the list for the new week. It is
+bookkeeping only: never printed, and no export door
+reads it. It lives only on the bulletin document; a
+sheet's `.obdi` file has no such list (a sheet is not
+a bulletin and applies nothing). Files written before
+the field existed load with an empty list;
+`format_version` stays 1. (The
+same accepted cost as the fields above: a build from
+before the field existed drops the list on save, and
+a part could then be offered for applying twice.)
+
 An insert's `life` is `standing`, `dated`, or
 `this_week_only` (the default). Next Sunday follows it:
 standing sheets ride untouched and unmentioned; a dated
@@ -204,7 +223,15 @@ folder. Attaching a library sheet copies it into the
 document under a fresh id and merges its pictures into
 the document's store; from then on the bulletin travels
 complete, and editing the attached copy never writes
-back to the library.
+back to the library. When the bulletin already holds a
+picture the sheet carries, the two rights records merge
+field by field (round 4, R4-5): the sheet's record fills
+only what the bulletin's leaves empty, a value already
+noted is never overwritten, and `children_present`
+merges as OR, so a "children are in this picture" from
+either side stands. The attach says how many records it
+actually filled in, and says nothing when the merge
+changed nothing.
 
 ### Loading rules
 

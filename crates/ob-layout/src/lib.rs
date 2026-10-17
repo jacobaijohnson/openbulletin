@@ -293,6 +293,7 @@ pub fn build_template(
         wanted_fonts: Vec::new(),
         participants: BTreeMap::new(),
         inserts: Vec::new(),
+        applied_contributions: Vec::new(),
     }
 }
 
@@ -407,6 +408,9 @@ fn is_one_time_occasion(name: &str) -> bool {
 ///   keep-through date is on or after the new Sunday and
 ///   is taken out and named once it has passed, and a
 ///   this-week-only sheet is taken out and named.
+/// - The applied-parts record is cleared (round 4,
+///   R4-6): it described last week's words, and the new
+///   week starts unapplied.
 ///
 /// Returns an error string if the stored date cannot be parsed.
 pub fn next_sunday(doc: &Document) -> Result<Document, String> {
@@ -518,6 +522,11 @@ pub fn next_sunday_report_as_of(
         None
     };
     out.no_announcements = false;
+    // The applied-parts record does not travel (round 4,
+    // R4-6): it describes words applied to LAST week's
+    // bulletin, and the new week starts unapplied, so a
+    // part sent again applies normally.
+    out.applied_contributions.clear();
 
     // Find weekly story ids from frames marked Weekly. Two
     // frames can share one story; visit each story once so the
@@ -849,6 +858,22 @@ mod tests {
             .paragraphs
             .iter()
             .any(|p| p.text().contains("Hymn of Praise")));
+    }
+
+    #[test]
+    fn next_sunday_clears_the_applied_parts_record() {
+        // Round 4 (R4-6): the record describes words
+        // applied to last week's bulletin; the new week
+        // starts unapplied.
+        let mut d = build_template(
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+            "Sunday",
+        );
+        d.applied_contributions.push("abcd1234".to_string());
+        let n = next_sunday(&d).unwrap();
+        assert!(n.applied_contributions.is_empty());
     }
 
     fn sheet(name: &str, life: InsertLife, keep_through: Option<SimpleDate>) -> Insert {

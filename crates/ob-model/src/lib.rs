@@ -1044,6 +1044,18 @@ pub struct Document {
     /// none, and `format_version` stays 1.
     #[serde(default)]
     pub inserts: Vec<Insert>,
+    /// Content fingerprints of contributions already
+    /// applied to THIS document (round 4, R4-4/R4-6):
+    /// the record lives in the document, not in the
+    /// app's session, so it survives a failed save, a
+    /// manual save, and a crash the journal recovers
+    /// from, and Undo takes it away with the words it
+    /// describes. Next Sunday clears it: the new week
+    /// starts unapplied. Bookkeeping only: it is never
+    /// printed and no export door reads it. Serde-
+    /// defaulted, and `format_version` stays 1.
+    #[serde(default)]
+    pub applied_contributions: Vec<String>,
 }
 
 /// One font an imported document names that the library did
@@ -2316,6 +2328,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
             inserts: Vec::new(),
+            applied_contributions: Vec::new(),
         };
         assert_eq!(
             resolve_fields("{Church.name} - {Sunday.name}, {Sunday.date}", &doc),
@@ -2343,6 +2356,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
             inserts: Vec::new(),
+            applied_contributions: Vec::new(),
         }
     }
 
@@ -2820,6 +2834,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
             inserts: Vec::new(),
+            applied_contributions: Vec::new(),
         }
     }
 
@@ -3001,6 +3016,7 @@ mod occasion_tests {
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
             inserts: Vec::new(),
+            applied_contributions: Vec::new(),
         }
     }
 
@@ -3320,6 +3336,7 @@ mod picture_tests {
             wanted_fonts: Vec::new(),
             participants: BTreeMap::new(),
             inserts: Vec::new(),
+            applied_contributions: Vec::new(),
         }
     }
 

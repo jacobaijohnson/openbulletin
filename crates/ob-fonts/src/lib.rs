@@ -1108,6 +1108,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         };
         pin_document_fonts(&mut doc, &lib, &bundled_infos());
         assert_eq!(
@@ -1218,6 +1219,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         };
         let bundled = bundled_infos();
         let regular_sha = bundled
@@ -1276,6 +1278,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         };
         pin_document_fonts(&mut doc, &lib, &[]);
         assert_eq!(doc.styles[0].font_sha256, None);
@@ -1337,6 +1340,7 @@ mod tests {
             wanted_fonts: Vec::new(),
             participants: Default::default(),
             inserts: Default::default(),
+            applied_contributions: Vec::new(),
         };
         pin_document_fonts(&mut doc, &lib, &bundled_infos());
         assert_eq!(

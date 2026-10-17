@@ -922,6 +922,7 @@ fn build_draft(
         wanted_fonts,
         participants: Default::default(),
         inserts: Default::default(),
+        applied_contributions: Vec::new(),
     };
     // The picture channel: bytes the caller supplied ride
     // into the asset store, one review item per page that

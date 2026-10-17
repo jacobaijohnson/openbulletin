@@ -1083,7 +1083,15 @@ fn rights_permission_noted(rights: &RightsRecord) -> bool {
 /// public domain, CC0, a reprint license) — and to
 /// Unknown where nothing vouches a license. A
 /// children-bearing record whose own credit line
-/// stands keeps its license.
+/// stands keeps its license. One part of the
+/// judgment is a safety axis (round 11, R11-1):
+/// when the composed record notes children and its
+/// credit line is empty, a vouched license that
+/// itself counts as a noted permission stands in
+/// preference to a non-noting license, however well
+/// vouched, so whether a permission stands beside
+/// the children note is decided over the
+/// composition the same way on both routes.
 ///
 /// The assertion fields (asserted_by, asserted_at)
 /// fill only when a substantive rights fill from the
@@ -1331,21 +1339,47 @@ fn fallback_license(standing_credit: &str, sources: &[&RightsRecord]) -> Option<
     best.map(|(_, _, license)| license)
 }
 
+/// The precedence among attribution licenses for
+/// the credit-pairing tie-break (round 11, R11-9):
+/// CC BY before CC BY-SA (the fallback precedence's
+/// own spirit — the plainer claim first), then the
+/// version string, so two records carrying the same
+/// license kind at different versions still order
+/// deterministically.
+fn attribution_rank(license: &LicenseKind) -> (u8, String) {
+    match license {
+        LicenseKind::CcBy(version) => (0, version.clone()),
+        LicenseKind::CcBySa(version) => (1, version.clone()),
+        _ => (2, String::new()),
+    }
+}
+
 /// The attribution license that travels with the
 /// standing credit (round 10, R10-2): a license some
 /// record in the composition held together with the
 /// very credit line that stands in the composed
-/// record. Returns that license when the standing
-/// license is NOT itself vouched in this paired way
-/// (no record in the composition held the standing
-/// license together with the standing credit) and
-/// another attribution license in the composition
-/// is so vouched; the first such license in the
-/// composition is the one. Where the standing
-/// license is itself the credit-paired one, or no
-/// attribution license is vouched by the standing
-/// credit, there is nothing to answer with and the
-/// rest of the judgment runs unchanged.
+/// record. Returns that license when it outranks
+/// the standing license under the pairing rule:
+/// the standing license is not itself vouched in
+/// this paired way (no record in the composition
+/// held the standing license together with the
+/// standing credit), or it is so vouched but
+/// another attribution license vouched by the same
+/// credit outranks it. Where several attribution
+/// licenses travel with the one standing credit
+/// (round 11, R11-9: two licenses carrying the SAME
+/// credit text), the winner is chosen by the
+/// standing precedence order (`attribution_rank`),
+/// never by the order the records arrived in — the
+/// fold used to take the first pairing in fold
+/// order and a chain of single merges another, and
+/// the choice between two vouched pairings was
+/// arrival order, undisclosed. Where the standing
+/// license is itself the precedence winner among
+/// the credit-paired licenses, or no attribution
+/// license is vouched by the standing credit, there
+/// is nothing to answer with and the rest of the
+/// judgment runs unchanged.
 fn credit_paired_attribution_license(
     license: &LicenseKind,
     standing_credit: &str,
@@ -1354,21 +1388,88 @@ fn credit_paired_attribution_license(
     if standing_credit.trim().is_empty() {
         return None;
     }
-    let standing_paired = *license != LicenseKind::Unknown
-        && sources
-            .iter()
-            .any(|r| r.license == *license && r.credit_text == standing_credit);
-    if standing_paired {
-        return None;
-    }
-    sources
+    let candidates: Vec<LicenseKind> = sources
         .iter()
-        .find(|r| {
+        .filter(|r| {
             r.credit_text == standing_credit
                 && matches!(r.license, LicenseKind::CcBy(_) | LicenseKind::CcBySa(_))
-                && r.license != *license
         })
         .map(|r| r.license.clone())
+        .collect();
+    credit_paired_from_candidates(license, &candidates)
+}
+
+/// The pairing step over an explicit candidate set:
+/// the precedence winner among the attribution
+/// licenses that travel with the standing credit,
+/// returned when it is not the standing license
+/// itself. Shared by the judgment over a merge's
+/// own sources and by the fold's end, which passes
+/// the pairings its merges actually saw (see
+/// `fold_duplicate_asset_records`).
+fn credit_paired_from_candidates(
+    license: &LicenseKind,
+    candidates: &[LicenseKind],
+) -> Option<LicenseKind> {
+    let mut best: Option<LicenseKind> = None;
+    for candidate in candidates {
+        let is_better = match &best {
+            None => true,
+            Some(held) => attribution_rank(candidate) < attribution_rank(held),
+        };
+        if is_better {
+            best = Some(candidate.clone());
+        }
+    }
+    match best {
+        Some(winner) if winner != *license => Some(winner),
+        _ => None,
+    }
+}
+
+/// The best vouched permission-noting license in
+/// a composition (round 11, R11-1): a license that
+/// itself counts as a noted permission (the church's
+/// own work, public domain, CC0 — the licenses in
+/// `rights_permission_noted`), vouched under the
+/// same judgment as a standing license (`license_vouched`
+/// with the empty credit line of the branch that
+/// calls this). Selection mirrors `fallback_license`:
+/// a license carried by a children-bearing source
+/// record first, then the fixed precedence at
+/// `fallback_rank`, never the order the records
+/// arrived in.
+fn permission_fallback_license(sources: &[&RightsRecord]) -> Option<LicenseKind> {
+    let mut best: Option<(u8, u8, LicenseKind)> = None;
+    for source in sources {
+        let candidate = &source.license;
+        if !matches!(
+            candidate,
+            LicenseKind::ChurchOwned | LicenseKind::PublicDomain | LicenseKind::Cc0
+        ) {
+            continue;
+        }
+        if best.as_ref().is_some_and(|(_, _, held)| held == candidate) {
+            continue;
+        }
+        if !license_vouched(candidate, "", sources) {
+            continue;
+        }
+        let carried_by_children_bearer = sources
+            .iter()
+            .any(|r| r.license == *candidate && r.children_present == Some(true));
+        let tier: u8 = if carried_by_children_bearer { 0 } else { 1 };
+        let rank = fallback_rank(candidate);
+        let is_better = match &best {
+            None => true,
+            Some((held_tier, held_rank, _)) => (tier, rank) < (*held_tier, *held_rank),
+        };
+        if is_better {
+            let chosen = candidate.clone();
+            best = Some((tier, rank, chosen));
+        }
+    }
+    best.map(|(_, _, license)| license)
 }
 
 /// The ONE final judgment on a composed record
@@ -1401,13 +1502,68 @@ fn credit_paired_attribution_license(
 /// composition is (see
 /// `credit_paired_attribution_license`), the
 /// credit-paired license stands.
+///
+/// One more step runs inside the empty-credit
+/// branch (round 11, R11-1): the permission axis is
+/// a safety axis, route-invariant like the children
+/// note itself. When children stand and the credit
+/// line is empty, whether a permission stands
+/// beside the note is decided over the sources this
+/// judgment sees, by one rule on both routes: a
+/// vouched permission-noting license in the
+/// composition (see `permission_fallback_license`)
+/// stands in preference to any non-noting license,
+/// however well vouched the non-noting license is.
+/// The routes used to disagree here in both
+/// directions — the fold judged the whole
+/// composition at its end, a chain of single merges
+/// judged pair by pair, and a permission-noting
+/// claim (a CC0 carried by a children-bearing
+/// record) won on one route and lost to a vouched
+/// reprint license on the other, so the same
+/// children's picture rode the web page or was held
+/// back by the accident of how its records arrived.
+/// This step does NOT give a single merge the
+/// fold's full end-state judgment: it runs on the
+/// sources each route's own judgment already sees,
+/// and because it runs at every pairwise judgment,
+/// a permission-noting claim that stands in any
+/// prefix of a single-merge chain is carried into
+/// the chain's later judgments by the composed
+/// record itself.
 fn judged_composed_license(
     license: &LicenseKind,
     children_present: Option<bool>,
     credit_text: &str,
     sources: &[&RightsRecord],
 ) -> LicenseKind {
-    if let Some(paired) = credit_paired_attribution_license(license, credit_text, sources) {
+    judged_composed_license_inner(license, children_present, credit_text, sources, None)
+}
+
+/// `judged_composed_license`, with the credit-paired
+/// candidate set optionally supplied by the caller
+/// instead of read off `sources`. Only the fold's
+/// end supplies it (round 11, R11-9): the fold judges
+/// pairings its merges actually saw, tracked by
+/// `fold_duplicate_asset_records`, because a pairing
+/// whose credit the fence reverted at its own merge
+/// is no longer visible to a chain of single merges
+/// either — counting it at fold end would pick a
+/// license the other route cannot reach.
+fn judged_composed_license_inner(
+    license: &LicenseKind,
+    children_present: Option<bool>,
+    credit_text: &str,
+    sources: &[&RightsRecord],
+    paired_candidates: Option<&[LicenseKind]>,
+) -> LicenseKind {
+    let paired = match paired_candidates {
+        Some(candidates) if !credit_text.trim().is_empty() => {
+            credit_paired_from_candidates(license, candidates)
+        }
+        _ => credit_paired_attribution_license(license, credit_text, sources),
+    };
+    if let Some(paired) = paired {
         return paired;
     }
     if children_present != Some(true) {
@@ -1415,6 +1571,23 @@ fn judged_composed_license(
     }
     if !credit_text.trim().is_empty() {
         return license.clone();
+    }
+    // The permission axis (round 11, R11-1), stated
+    // above: a standing permission-noting license
+    // that is itself vouched stands (standing-wins
+    // among noting claims); otherwise a vouched
+    // permission-noting license anywhere in the
+    // composition stands in preference to a
+    // non-noting one.
+    let license_noted = matches!(
+        license,
+        LicenseKind::ChurchOwned | LicenseKind::PublicDomain | LicenseKind::Cc0
+    );
+    if license_noted && license_vouched(license, credit_text, sources) {
+        return license.clone();
+    }
+    if let Some(permission) = permission_fallback_license(sources) {
+        return permission;
     }
     if *license == LicenseKind::Unknown {
         return license.clone();
@@ -1458,19 +1631,135 @@ fn rejudge_folded_assertion(folded: &mut RightsRecord, sources: &[RightsRecord])
     }
 }
 
+/// A credit line vouched in a fold (round 11,
+/// R11-5), under the fence's own rule read with the
+/// fold's arrival timing: the credit's own record
+/// notes the children, or a children-bearing record
+/// standing at or before it in fold order noted a
+/// permission on its own fields. The first such
+/// credit in fold order is the one — the fill order
+/// the merges themselves follow. A credit vouched
+/// only by a bearer that arrives AFTER it is not
+/// restored: a chain of single merges drops that
+/// credit at its arrival, before the bearer is
+/// seen, and the fold keeps the same answer (the
+/// credit class the round-8 deferral already
+/// leaves to arrival timing), while a credit whose
+/// bearer stands before it — the R11-5 shape — is
+/// the one the fold used to lose.
+fn vouched_fold_credit(sources: &[RightsRecord]) -> Option<String> {
+    let mut bearer_noted_permission = false;
+    for source in sources {
+        if !source.credit_text.trim().is_empty()
+            && (source.children_present == Some(true) || bearer_noted_permission)
+        {
+            return Some(source.credit_text.clone());
+        }
+        if source.children_present == Some(true) && rights_permission_noted(source) {
+            bearer_noted_permission = true;
+        }
+    }
+    None
+}
+
+/// The attribution licenses that travel with a
+/// restored credit (round 11, R11-9, companion to
+/// `vouched_fold_credit`): the pairings of the
+/// credit's prefix-vouched carriers — the records
+/// carrying that credit that pass the same arrival
+/// test the restored credit itself passed (their
+/// own record notes the children, or a
+/// children-bearing permission-noting record stands
+/// at or before them). A carrier the bearer had not
+/// yet vouched when it arrived contributes no
+/// pairing: a chain of single merges dropped that
+/// carrier's license at its arrival, before the
+/// credit was restored, and cannot reach it again.
+fn restored_credit_pairings(sources: &[RightsRecord], credit: &str) -> Vec<LicenseKind> {
+    let mut bearer_noted_permission = false;
+    let mut pairings: Vec<LicenseKind> = Vec::new();
+    for source in sources {
+        let prefix_vouched = source.children_present == Some(true) || bearer_noted_permission;
+        if prefix_vouched
+            && source.credit_text == credit
+            && matches!(
+                source.license,
+                LicenseKind::CcBy(_) | LicenseKind::CcBySa(_)
+            )
+            && !pairings.contains(&source.license)
+        {
+            pairings.push(source.license.clone());
+        }
+        if source.children_present == Some(true) && rights_permission_noted(source) {
+            bearer_noted_permission = true;
+        }
+    }
+    pairings
+}
+
 /// Judge the final judgment once, on a folded
 /// record (round 8, R8-9; round 9, R9-1): the same
 /// `judged_composed_license` a single merge applies,
 /// run over the fold's own source records, and then
 /// the assertion re-judged against what finally
 /// stands (round 9, R9-5).
-fn judge_folded_composed_record(folded: &mut RightsRecord, sources: &[RightsRecord]) {
+///
+/// Before that judgment, one fold-only repair
+/// (round 11, R11-5): a fold defers the license
+/// judgment to its end, so during the fold a
+/// children-bearing record's permission-noting
+/// license may never stand in the composed record —
+/// the attribution license it will eventually fall
+/// to a fallback for is still standing in its
+/// place — and the per-merge fence, seeing no
+/// permission noted on the pair before it, reverts
+/// a late-arriving credit line that the composition
+/// as a whole vouches for. The fold then ended with
+/// the credit silently gone and the fallback
+/// license (which carries no credit) standing in
+/// its place, while a chain of single merges —
+/// whose first pairwise judgment had already
+/// dropped the attribution license to the
+/// permission-noting fallback — let the same credit
+/// stand and paired its license beside it. So: when
+/// the folded record notes children and its credit
+/// line came out empty, a credit vouched under the
+/// fence's rule with the fold's arrival timing (see
+/// `vouched_fold_credit`) stands in the folded
+/// record before the license is judged, and the
+/// judgment's credit-pairing step then stands the
+/// license that traveled with that credit beside
+/// it. A fallback license never orphans the
+/// composition's only vouched credit. No credit is
+/// manufactured by this: the restored line is a
+/// source record's own line, vouched under the
+/// fence's rule, and a credit no source vouches
+/// for stays reverted.
+fn judge_folded_composed_record(
+    folded: &mut RightsRecord,
+    sources: &[RightsRecord],
+    paired_candidates: &[LicenseKind],
+) {
+    let mut candidates: Vec<LicenseKind> = paired_candidates.to_vec();
+    if folded.children_present == Some(true) && folded.credit_text.trim().is_empty() {
+        if let Some(credit) = vouched_fold_credit(sources) {
+            folded.credit_text = credit;
+            // A restored credit stood at no merge, so
+            // its pairings were never tracked; its
+            // prefix-vouched carriers supply them (see
+            // `restored_credit_pairings`), as a single
+            // merge's own judgment would see on the
+            // merges that let the credit stand.
+            candidates = restored_credit_pairings(sources, &folded.credit_text);
+        }
+    }
     let source_refs: Vec<&RightsRecord> = sources.iter().collect();
-    let judged = judged_composed_license(
+    let judged = judged_composed_license_inner(
         &folded.license,
         folded.children_present,
         &folded.credit_text,
         &source_refs,
+        Some(&candidates),
     );
     folded.license = judged;
     rejudge_folded_assertion(folded, sources);
@@ -1500,15 +1789,113 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
     // from, in fold order: the fold's final judging
     // (below) reads them for its fallback.
     let mut folded_sources: Vec<Vec<RightsRecord>> = Vec::with_capacity(assets.len());
+    // The credit pairings each fold's merges actually
+    // saw, in fold order (round 11, R11-9): after a
+    // merge, the attribution licenses the merge's
+    // source records held together with the credit
+    // line the merge left standing — the incoming
+    // record at every merge, and the standing record
+    // too at the first merge, where it is still a
+    // source record itself. (At later merges the
+    // standing side is a composed record: its license
+    // and a same-text credit filled from different
+    // sources can sit together in it without any
+    // source holding that pairing, and no single
+    // merge counts such an accidental pairing — its
+    // genuine pairing, if it has one, was counted at
+    // the merge that formed it.) The fold's final
+    // judgment chooses among these, not among every
+    // pairing in the source set — a pairing whose
+    // credit the fence reverted at its own merge is
+    // invisible to a chain of single merges from
+    // that merge on, and the routes must choose the
+    // shared credit's license from the same
+    // candidates.
+    let mut folded_paired: Vec<Vec<LicenseKind>> = Vec::with_capacity(assets.len());
+    // Pairings vouched on arrival, with the credit
+    // text they travel with (round 11, R11-9): a
+    // pairing whose credit is prefix-vouched at its
+    // merge (see `vouched_fold_credit`) counts even
+    // when the fold's deferred fence reverts that
+    // credit pair-locally — the same blindness the
+    // R11-5 restoration repairs — because a chain of
+    // single merges, whose composed record already
+    // carries the bearer's permission, lets the
+    // credit stand at that merge and sees the
+    // pairing. These are filtered to the credit that
+    // finally stands, at the fold's end.
+    let mut folded_vouched_pairs: Vec<Vec<(LicenseKind, String)>> =
+        Vec::with_capacity(assets.len());
+    // Whether a children-bearing permission-noting
+    // record stands among the sources folded so far,
+    // per folded record: the prefix the arrival test
+    // reads.
+    let mut folded_bearer_seen: Vec<bool> = Vec::with_capacity(assets.len());
     for asset in assets.drain(..) {
         match folded.iter().position(|a| a.sha256 == asset.sha256) {
             Some(pos) => {
+                let first_merge = folded_sources[pos].len() == 1;
                 folded_sources[pos].push(asset.rights.clone());
-                let merged = merge_rights_records_inner(&folded[pos].rights, &asset.rights, true);
+                let before = folded[pos].rights.clone();
+                let incoming = asset.rights.clone();
+                // The incoming record's pairing, vouched
+                // on arrival: its own record notes the
+                // children, or the fold's prefix already
+                // holds a noting bearer.
+                let arrival_vouched =
+                    incoming.children_present == Some(true) || folded_bearer_seen[pos];
+                if arrival_vouched
+                    && !incoming.credit_text.trim().is_empty()
+                    && matches!(
+                        incoming.license,
+                        LicenseKind::CcBy(_) | LicenseKind::CcBySa(_)
+                    )
+                {
+                    let pair = (incoming.license.clone(), incoming.credit_text.clone());
+                    if !folded_vouched_pairs[pos].contains(&pair) {
+                        folded_vouched_pairs[pos].push(pair);
+                    }
+                }
+                if incoming.children_present == Some(true) && rights_permission_noted(&incoming) {
+                    folded_bearer_seen[pos] = true;
+                }
+                let merged = merge_rights_records_inner(&before, &incoming, true);
+                if merged.credit_text.trim().is_empty() || merged.credit_text != before.credit_text
+                {
+                    // The credit these pairings traveled
+                    // with no longer stands: a reverted
+                    // credit takes its pairings with it,
+                    // on this route as on a chain of
+                    // single merges, whose composed
+                    // record holds neither after the
+                    // reversion.
+                    folded_paired[pos].clear();
+                }
+                if !merged.credit_text.trim().is_empty() {
+                    let sides: &[&RightsRecord] = if first_merge {
+                        &[&before, &incoming]
+                    } else {
+                        &[&incoming]
+                    };
+                    for side in sides {
+                        if side.credit_text == merged.credit_text
+                            && matches!(side.license, LicenseKind::CcBy(_) | LicenseKind::CcBySa(_))
+                            && !folded_paired[pos].contains(&side.license)
+                        {
+                            let seen = side.license.clone();
+                            folded_paired[pos].push(seen);
+                        }
+                    }
+                }
                 folded[pos].rights = merged;
             }
             None => {
+                let bearer = asset.rights.children_present == Some(true)
+                    && rights_permission_noted(&asset.rights);
                 folded_sources.push(vec![asset.rights.clone()]);
+                folded_paired.push(Vec::new());
+                folded_vouched_pairs.push(Vec::new());
+                folded_bearer_seen.push(bearer);
                 folded.push(asset);
             }
         }
@@ -1518,9 +1905,25 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
     // composed (round 8, R8-9; round 9, R9-1): a
     // record no duplicate folded into is left exactly
     // as it stood, as before.
-    for (asset, sources) in folded.iter_mut().zip(folded_sources.iter()) {
+    for (((asset, sources), paired), vouched_pairs) in folded
+        .iter_mut()
+        .zip(folded_sources.iter())
+        .zip(folded_paired.iter())
+        .zip(folded_vouched_pairs.iter())
+    {
         if sources.len() > 1 {
-            judge_folded_composed_record(&mut asset.rights, sources);
+            // The candidates the fold's end chooses
+            // among: the pairings its merges saw
+            // standing, plus the arrival-vouched
+            // pairings that travel with the credit
+            // that finally stands.
+            let mut candidates: Vec<LicenseKind> = paired.clone();
+            for (license, credit) in vouched_pairs {
+                if *credit == asset.rights.credit_text && !candidates.contains(license) {
+                    candidates.push(license.clone());
+                }
+            }
+            judge_folded_composed_record(&mut asset.rights, sources, &candidates);
         }
     }
     *assets = folded;
@@ -6637,7 +7040,8 @@ mod occasion_tests {
         // both routes (see
         // `credit_paired_attribution_license`), and
         // this pin holds the property in three parts
-        // over the lane's 24-archetype pool:
+        // over the lane's 24-archetype pool (27
+        // archetypes since the R11-A widening below):
         //
         // (1) The rule itself, on both routes, over
         // every sequence of lengths 2 and 3: judged
@@ -6673,6 +7077,25 @@ mod occasion_tests {
         // beside children with an empty credit line,
         // no manufactured credit or license, no
         // orphan assertion.
+        //
+        // Round 11 (R11-A) widens the pool and the
+        // pin. The pool gains children-bearing
+        // records carrying fallback-class licenses
+        // WITH credit lines (CC0, public domain, and
+        // the church's own work, each beside a
+        // children note and a credit) — the paired
+        // family below used to exclude every kids
+        // record with a fallback-class license, the
+        // blind spot the R11-5 witness lived in. And
+        // `check_seq` now asserts the safety axes on
+        // EVERY sequence, not only where the routes
+        // fully agree: the children note and
+        // `rights_permission_noted` (the web page's
+        // hold-back bit) must agree between the
+        // routes with zero tolerance, at every
+        // length the pin runs, over the full pool
+        // and over a widened family that carries the
+        // new archetypes at lengths 2 to 4.
         fn arch(children: Option<bool>, license: LicenseKind, credit: &str) -> RightsRecord {
             RightsRecord {
                 children_present: children,
@@ -6716,6 +7139,12 @@ mod occasion_tests {
             asserted_at: "2026-01-01".into(),
             ..arch(Some(true), ccby(), "")
         });
+        // The R11-A widening (indices 24 to 26):
+        // children-bearing records carrying
+        // fallback-class licenses with credit lines.
+        pool.push(arch(Some(true), LicenseKind::Cc0, "Photo by I"));
+        pool.push(arch(Some(true), LicenseKind::PublicDomain, "Photo by J"));
+        pool.push(arch(Some(true), LicenseKind::ChurchOwned, "Photo by K"));
         let fold_route = |seq: &[RightsRecord]| -> RightsRecord {
             let hash = sha256_hex(b"R10ROUTES");
             let mut assets: Vec<Asset> = seq
@@ -6777,6 +7206,16 @@ mod occasion_tests {
         let check_seq = |seq: &[RightsRecord], agree: bool| {
             let folded = fold_route(seq);
             let (merged, before_last) = single_route(seq);
+            // The safety axes (round 11, R11-1), on
+            // every sequence regardless of `agree`:
+            // the children note and whether a
+            // permission stands beside it are
+            // route-invariant, zero tolerance.
+            assert_eq!(
+                (folded.children_present, rights_permission_noted(&folded)),
+                (merged.children_present, rights_permission_noted(&merged)),
+                "safety axes disagree on {seq:?}: fold {folded:?} vs single {merged:?}"
+            );
             if agree {
                 assert_eq!(
                     triple(&folded),
@@ -6876,6 +7315,26 @@ mod occasion_tests {
                 check_seq(&seq, true);
             }
         }
+        // The widened family (round 11, R11-A):
+        // children-bearing records carrying
+        // fallback-class licenses, with and without
+        // credit lines, beside the attribution
+        // records — the shapes the R11-1 and R11-5
+        // witnesses live in. Full triple agreement
+        // is NOT asserted here (the license-only
+        // deferral residual lives in this family
+        // too); the safety axes, the credit-paired
+        // rule, and the invariants are, on every
+        // sequence, lengths 2 to 4.
+        let widened_family: Vec<RightsRecord> = [1usize, 2, 5, 8, 10, 14, 24, 25]
+            .iter()
+            .map(|&i| pool[i].clone())
+            .collect();
+        for len in 2usize..=4 {
+            for seq in sequences_over(&widened_family, len) {
+                check_seq(&seq, false);
+            }
+        }
         // The lane's named shape as a readable
         // witness beside the brute force: two
         // attribution licenses and the credit record
@@ -6891,6 +7350,326 @@ mod occasion_tests {
             assert_eq!(triple(&fold_route(&seq)), expected, "fold witness {seq:?}");
             let (merged, _) = single_route(&seq);
             assert_eq!(triple(&merged), expected, "single witness {seq:?}");
+        }
+    }
+
+    #[test]
+    fn r11_permission_axis_and_credit_witnesses_agree_on_both_routes() {
+        // Round 11 (R11-A, review R11-1 and red team
+        // RT11-7): the two named witnesses, pinned on
+        // both routes with their exact outcomes.
+        //
+        // R11-1 witness 1: [LicensedReprint, {children},
+        // {children, Cc0}] folded to not-noted (the
+        // picture held back) and single-merged to
+        // noted (it rode the web page). The shared
+        // judgment's permission step now stands the
+        // vouched permission-noting license (Cc0) on
+        // both routes.
+        //
+        // R11-1 witness 2: [{children, CcBy},
+        // {children, LicensedReprint}, {children,
+        // Cc0}] folded to noted and single-merged to
+        // not-noted; both routes now end at Cc0.
+        //
+        // R11-5 witness: [{children, CcBy},
+        // {children, Cc0}, {CcBy, "Photo by B"}]
+        // folded to (children, Cc0, "") — the
+        // composition's only credit silently dropped
+        // on the load route — and single-merged to
+        // (children, CcBy, "Photo by B"). The fold-end
+        // restoration now stands the vouched credit,
+        // and its paired license beside it, on the
+        // fold route too.
+        fn arch(children: Option<bool>, license: LicenseKind, credit: &str) -> RightsRecord {
+            RightsRecord {
+                children_present: children,
+                license,
+                credit_text: credit.into(),
+                ..Default::default()
+            }
+        }
+        let ccby = || LicenseKind::CcBy("4.0".into());
+        let fold_route = |seq: &[RightsRecord]| -> RightsRecord {
+            let hash = sha256_hex(b"R11WIT");
+            let mut assets: Vec<Asset> = seq
+                .iter()
+                .cloned()
+                .map(|rights| Asset {
+                    sha256: hash.clone(),
+                    kind: AssetKind::Picture,
+                    media_type: "image/png".into(),
+                    rights,
+                })
+                .collect();
+            fold_duplicate_asset_records(&mut assets);
+            assert_eq!(assets.len(), 1);
+            assets[0].rights.clone()
+        };
+        let single_route = |seq: &[RightsRecord]| -> RightsRecord {
+            let mut acc = seq[0].clone();
+            for next in &seq[1..] {
+                acc = merge_rights_records(&acc, next);
+            }
+            acc
+        };
+        let triple =
+            |r: &RightsRecord| (r.children_present, r.license.clone(), r.credit_text.clone());
+        let kids_cc0 = (Some(true), LicenseKind::Cc0, String::new());
+        let witness1 = vec![
+            arch(None, LicenseKind::LicensedReprint, ""),
+            arch(Some(true), LicenseKind::Unknown, ""),
+            arch(Some(true), LicenseKind::Cc0, ""),
+        ];
+        assert_eq!(triple(&fold_route(&witness1)), kids_cc0, "fold witness 1");
+        assert_eq!(
+            triple(&single_route(&witness1)),
+            kids_cc0,
+            "single witness 1"
+        );
+        assert!(rights_permission_noted(&fold_route(&witness1)));
+        let witness2 = vec![
+            arch(Some(true), ccby(), ""),
+            arch(Some(true), LicenseKind::LicensedReprint, ""),
+            arch(Some(true), LicenseKind::Cc0, ""),
+        ];
+        assert_eq!(triple(&fold_route(&witness2)), kids_cc0, "fold witness 2");
+        assert_eq!(
+            triple(&single_route(&witness2)),
+            kids_cc0,
+            "single witness 2"
+        );
+        assert!(rights_permission_noted(&single_route(&witness2)));
+        let credit_witness = vec![
+            arch(Some(true), ccby(), ""),
+            arch(Some(true), LicenseKind::Cc0, ""),
+            arch(None, ccby(), "Photo by B"),
+        ];
+        let with_credit = (Some(true), ccby(), "Photo by B".to_string());
+        assert_eq!(
+            triple(&fold_route(&credit_witness)),
+            with_credit,
+            "fold credit witness"
+        );
+        assert_eq!(
+            triple(&single_route(&credit_witness)),
+            with_credit,
+            "single credit witness"
+        );
+    }
+
+    #[test]
+    fn r11_shared_credit_pairings_follow_the_precedence_on_both_routes() {
+        // Round 11 (R11-9, review R11-2): two
+        // attribution licenses carrying the SAME
+        // credit text — the fold used to pick the
+        // first pairing in fold order, a chain of
+        // single merges another (132 divergences in
+        // the review lane's shared-credit pool). The
+        // pairing is now chosen by the standing
+        // precedence (CC BY before CC BY-SA, then
+        // version) among the pairings the routes'
+        // merges actually saw, identically on both
+        // routes. The named shapes below are pinned
+        // to that tie-break, and the shared-credit
+        // pool they live in joins the pin pool: over
+        // every sequence of lengths 2 to 4 the two
+        // routes agree on the full triple.
+        fn arch(children: Option<bool>, license: LicenseKind, credit: &str) -> RightsRecord {
+            RightsRecord {
+                children_present: children,
+                license,
+                credit_text: credit.into(),
+                ..Default::default()
+            }
+        }
+        let ccby = || LicenseKind::CcBy("4.0".into());
+        let ccbysa = || LicenseKind::CcBySa("4.0".into());
+        let fold_route = |seq: &[RightsRecord]| -> RightsRecord {
+            let hash = sha256_hex(b"R11SHARED");
+            let mut assets: Vec<Asset> = seq
+                .iter()
+                .cloned()
+                .map(|rights| Asset {
+                    sha256: hash.clone(),
+                    kind: AssetKind::Picture,
+                    media_type: "image/png".into(),
+                    rights,
+                })
+                .collect();
+            fold_duplicate_asset_records(&mut assets);
+            assert_eq!(assets.len(), 1);
+            assets[0].rights.clone()
+        };
+        let single_route = |seq: &[RightsRecord]| -> RightsRecord {
+            let mut acc = seq[0].clone();
+            for next in &seq[1..] {
+                acc = merge_rights_records(&acc, next);
+            }
+            acc
+        };
+        let triple =
+            |r: &RightsRecord| (r.children_present, r.license.clone(), r.credit_text.clone());
+        let by_x = (Some(true), ccby(), "Photo by X".to_string());
+        let bysa_x = (Some(true), ccbysa(), "Photo by X".to_string());
+        // The review lane's witness: the fold took
+        // the first pairing (CC BY-SA), the single
+        // merges the later one (CC BY). The
+        // precedence winner (CC BY) now stands on
+        // both routes.
+        let review_witness = vec![
+            arch(Some(true), LicenseKind::LicensedReprint, ""),
+            arch(None, ccbysa(), "Photo by X"),
+            arch(Some(true), ccby(), "Photo by X"),
+        ];
+        assert_eq!(
+            triple(&fold_route(&review_witness)),
+            by_x,
+            "fold review witness"
+        );
+        assert_eq!(
+            triple(&single_route(&review_witness)),
+            by_x,
+            "single review witness"
+        );
+        // The mirror order: the precedence winner
+        // arrives first and stands on both routes.
+        let mirror_witness = vec![
+            arch(Some(true), ccby(), "Photo by X"),
+            arch(None, ccbysa(), "Photo by X"),
+            arch(Some(true), LicenseKind::LicensedReprint, ""),
+        ];
+        assert_eq!(
+            triple(&fold_route(&mirror_witness)),
+            by_x,
+            "fold mirror witness"
+        );
+        assert_eq!(
+            triple(&single_route(&mirror_witness)),
+            by_x,
+            "single mirror witness"
+        );
+        // A pairing whose credit a later merge
+        // reverts (the children note arrives with no
+        // permission noted) no longer counts on
+        // either route: the pairing that re-supplies
+        // the credit stands alone.
+        let reverted_pairing = vec![
+            arch(None, ccby(), "Photo by X"),
+            arch(None, ccbysa(), "Photo by X"),
+            arch(Some(true), LicenseKind::LicensedReprint, ""),
+            arch(Some(true), ccbysa(), "Photo by X"),
+        ];
+        assert_eq!(
+            triple(&fold_route(&reverted_pairing)),
+            bysa_x,
+            "fold reverted pairing"
+        );
+        assert_eq!(
+            triple(&single_route(&reverted_pairing)),
+            bysa_x,
+            "single reverted pairing"
+        );
+        // The bearer shape: a permission-noting
+        // children record stands before both
+        // pairings, so each pairing's credit stands
+        // at its arrival on both routes and the
+        // precedence chooses between the two.
+        let bearer_shape = vec![
+            arch(Some(true), LicenseKind::LicensedReprint, ""),
+            arch(Some(true), LicenseKind::Cc0, ""),
+            arch(None, ccby(), "Photo by X"),
+            arch(None, ccbysa(), "Photo by X"),
+        ];
+        assert_eq!(
+            triple(&fold_route(&bearer_shape)),
+            by_x,
+            "fold bearer shape"
+        );
+        assert_eq!(
+            triple(&single_route(&bearer_shape)),
+            by_x,
+            "single bearer shape"
+        );
+        // The dropped-pairing shape: the first
+        // pairing's credit is reverted at its
+        // arrival (the children note arrives with no
+        // permission noted beside it), so a chain of
+        // single merges drops that pairing there and
+        // the second pairing — carried by a
+        // children-bearing record — stands alone;
+        // the fold route answers the same.
+        let dropped_pairing = vec![
+            arch(None, ccby(), "Photo by X"),
+            arch(Some(true), LicenseKind::LicensedReprint, ""),
+            arch(Some(true), ccbysa(), "Photo by X"),
+        ];
+        assert_eq!(
+            triple(&fold_route(&dropped_pairing)),
+            bysa_x,
+            "fold dropped pairing"
+        );
+        assert_eq!(
+            triple(&single_route(&dropped_pairing)),
+            bysa_x,
+            "single dropped pairing"
+        );
+        // Both pairings stand before any children
+        // note arrives, and a children-bearing
+        // fallback record vouches the credit: the
+        // precedence winner of the two stands on
+        // both routes.
+        let vouched_pairings = vec![
+            arch(None, ccbysa(), "Photo by X"),
+            arch(None, ccby(), "Photo by X"),
+            arch(Some(true), LicenseKind::Cc0, ""),
+        ];
+        assert_eq!(
+            triple(&fold_route(&vouched_pairings)),
+            by_x,
+            "fold vouched pairings"
+        );
+        assert_eq!(
+            triple(&single_route(&vouched_pairings)),
+            by_x,
+            "single vouched pairings"
+        );
+        // The shared-credit pool joins the pin pool:
+        // full triple agreement between the routes
+        // over every sequence of lengths 2 to 4.
+        let pool: Vec<RightsRecord> = vec![
+            arch(Some(true), LicenseKind::LicensedReprint, ""),
+            arch(None, ccbysa(), "Photo by X"),
+            arch(Some(true), ccby(), "Photo by X"),
+            arch(Some(true), LicenseKind::Unknown, ""),
+            arch(None, ccby(), "Photo by X"),
+            arch(Some(true), ccbysa(), "Photo by X"),
+            arch(Some(true), LicenseKind::Cc0, ""),
+            arch(None, LicenseKind::Unknown, ""),
+            arch(Some(false), ccbysa(), "Photo by X"),
+        ];
+        let sequences_over = |pool: &[RightsRecord], len: usize| -> Vec<Vec<RightsRecord>> {
+            let n = pool.len() as u64;
+            let count = n.pow(len as u32);
+            let mut out = Vec::with_capacity(count as usize);
+            for mut code in 0..count {
+                let mut seq: Vec<RightsRecord> = Vec::with_capacity(len);
+                for _ in 0..len {
+                    seq.push(pool[(code % n) as usize].clone());
+                    code /= n;
+                }
+                out.push(seq);
+            }
+            out
+        };
+        for len in 2usize..=4 {
+            for seq in sequences_over(&pool, len) {
+                assert_eq!(
+                    triple(&fold_route(&seq)),
+                    triple(&single_route(&seq)),
+                    "shared-credit routes disagree on {seq:?}"
+                );
+            }
         }
     }
 

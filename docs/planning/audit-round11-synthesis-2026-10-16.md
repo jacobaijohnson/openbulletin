@@ -355,9 +355,129 @@ unmasked helper.rs lints above), run failed. Run **39038915426**
 Build desktop app), macos-latest 8m44s. The R11-0 acceptance bar is
 met.
 
-## Shipped addendum, R11-A
+## Shipped addendum, R11-A (2026-10-17)
 
-_(appended by the R11-A builder with real numbers and flagged pin changes)_
+All four findings landed in the shared judgment and the fold's end, in
+`crates/ob-model/src/lib.rs`; no merge plumbing changed, and a single
+merge did not gain end-state judgment. FORMAT.md carries the corrected
+invariance wording (R11-12). Local totals: before 651 passed / 0
+failed; after **653 passed / 0 failed**, full unpiped
+`cargo test --workspace` exit 0; `cargo clippy --workspace
+--all-targets -- -D warnings` exit 0; `cargo fmt --all -- --check`
+exit 0. The two new tests are the pins below; **no pre-existing test
+changed** — the R8-9 pin and the R9-A / R10-2 pins pass with their
+original expectations, verified by name in the run
+(`r8_fold_judges_the_composed_rule_once_at_the_end`,
+`r10_fold_and_single_merge_routes_agree_over_the_pool`, the r9
+witnesses). The R10 pin's pool and assertions were *extended* (below),
+with every prior assertion kept.
+
+**R11-1 — the permission axis is route-invariant.** One new step in
+`judged_composed_license`, the judgment both routes share: when the
+composed record notes children and its credit line is empty, a
+standing permission-noting license that is itself vouched stands;
+otherwise a vouched permission-noting license anywhere in the
+judgment's sources (`permission_fallback_license`: ChurchOwned /
+PublicDomain / Cc0, children-carried first, then the fallback
+precedence) stands in preference to a non-noting license, however
+well vouched. It runs at every pairwise judgment, so a single-merge
+chain carries the axis in its composed record; the fold reads it off
+the full source set at fold end. Both named witnesses now end at
+(children, Cc0, "") on both routes. The R10 brute-force pin gains
+`rights_permission_noted` as a permanently tracked field: `check_seq`
+asserts (children, permission-noted) agreement on *every* sequence it
+runs, zero tolerance, alongside the prior assertions (the credit-paired
+rule on both routes; on the folded record: unvouched license 0,
+manufactured credit/license 0, orphan assertion 0 — all still hold).
+
+**R11-5 — the fold keeps a vouched credit, and its license.** The
+blind spot is closed in the pool first: the pin pool gains three
+archetypes (indices 24–26) — children-bearing records carrying
+fallback-class licenses *with* credits (Cc0 / PublicDomain /
+ChurchOwned beside children, each with a credit line) — plus a widened
+family (indices 1, 2, 5, 8, 10, 14, 24, 25) run at lengths 2–4. The
+code fix is at the fold's end (`judge_folded_composed_record`): when
+the folded record notes children and its credit came out empty, a
+credit vouched under the fence's rule with the fold's arrival timing
+— its own record notes the children, or a children-bearing
+permission-noting record stands at or before it in fold order
+(`vouched_fold_credit`) — stands in the folded record before the
+license is judged, and the credit-pairing step then stands the
+license that traveled with it. A credit vouched only by a bearer
+arriving *after* it is not restored: both routes drop that credit at
+its arrival, and that arrival-timing class is unchanged. The witness
+now ends (children, CcBy, "Photo by B") on both routes, pinned by
+name. Within a pairwise judgment no fallback can orphan a vouched
+credit — the fence has already reverted any credit the pair does not
+vouch — so the orphaning was fold-level only, and the restoration is
+the repair.
+
+**R11-9 — shared-credit pairing is deterministic.** 
+`credit_paired_attribution_license` no longer takes the first pairing
+in source order: among the attribution licenses traveling with the
+standing credit, the winner is chosen by precedence
+(`attribution_rank`: CC BY before CC BY-SA, then the version string),
+including when the standing license is itself paired but outranked.
+The fold chooses among the pairings its merges actually saw —
+tracked per merge in `fold_duplicate_asset_records`: a pairing counts
+when its credit stands at its merge (the incoming record, and the
+standing record at the first merge where it is still a source), when
+it is prefix-vouched on arrival even if the deferred fence reverts
+that credit pair-locally, and it stops counting when a later merge
+reverts the credit it travels with. A restored credit's pairings are
+its prefix-vouched carriers'. The review lane's witness and five
+further named shapes (mirror order, reverted pairing, bearer before
+both pairings, dropped pairing, both pairings vouched by a later
+fallback record) are pinned to the tie-break on both routes in
+`r11_shared_credit_pairings_follow_the_precedence_on_both_routes`,
+and that test runs the lane-style shared-credit pool (9 archetypes:
+both attribution licenses carrying "Photo by X") at lengths 2–4 with
+full triple agreement asserted on every sequence.
+
+**Census, before → after** (scratch harness over the pools above,
+fold vs single-merge, divergences by outcome field):
+
+- Widened pool, 27 archetypes, lengths 2–4, 551,853 sequences:
+  license 34,676 → 33,844; credit 3,360 → **504**; permission-noted
+  2,034 → **0**; children 0 → 0. (The same harness over the original
+  24-archetype pool reproduces the review lane's baseline exactly —
+  16,553 triple divergences, 2,034 permission flips — before the fix,
+  and 13,702 license / 288 credit / 0 permission after.)
+- Shared-credit pool, 9 archetypes, lengths 2–4, 7,371 sequences:
+  license 280 → **0**; credit 9 → **0**; permission 60 → **0**; pure
+  paired ambiguity (same standing credit both routes, two paired
+  attribution licenses, different winners) 211 → **0**. The review
+  lane's differently-shaped pool counted 132 such divergences; on
+  this pool the class is zero, named shapes included.
+- Permutation check (widened pool, lengths 2–3, 4,032 multisets):
+  children-bearing outcomes whose permission answer differs across
+  any permutation or route: **0**.
+
+**Residual classes, named with bounds.** (1) License-only divergence
+33,844 of 551,853 widened sequences (6.1%): the round-10 adjudicated
+deferral / fence-timing class — every outcome vouched against its
+composition (unvouched 0 on both routes), nothing manufactured, and
+now provably disjoint from the safety axes. (2) Credit divergence
+504, all at length 4 (lengths 2–3 are 0), and all
+*both-present-but-different*: each route stands a vouched credit, a
+different one (which credit fills first under each route's fence
+timing), one-sided credit loss is 0 in both directions at every
+length, and since a standing credit notes a permission, this class
+cannot touch the safety axes either. No other divergence class
+remains on either pool.
+
+**R11-12 — FORMAT.md.** The composition account now states exactly:
+the children note and whether a permission stands beside it are
+route- and order-invariant (with the permission rule stated — a
+vouched permission-noting license stands in preference to a
+non-noting one when children stand and the credit is empty); the
+license follows standing-wins and the fallback precedence, with the
+credit-pairing rule as a stated exception; the credit follows the
+pairing rule, now including the R11-9 precedence tie-break among
+shared-credit pairings and the R11-5 fold-end restoration. The
+R10-2 credit-paired sentence and the R10-11 standing-wins paragraph
+were revised to match the shipped code.
+
 
 ## Shipped addendum, R11-B
 

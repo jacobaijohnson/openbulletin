@@ -371,7 +371,18 @@ arrived with a different attribution license from
 the one standing, the license that traveled with
 that credit is the one that stands, on the fold
 route and on a single merge alike (round 10,
-R10-2). One final judgment then runs on
+R10-2). Where two attribution licenses in one
+composition travel with the same standing credit,
+the license is chosen by a fixed precedence —
+CC BY before CC BY-SA, then the version — among
+the pairings the composition's merges saw, the
+same on both routes, never by arrival order
+(round 11, R11-9); and in a fold, a credit line
+vouched by the records standing at or before it
+stands at the fold's end with the license that
+traveled with it, even where the fold's deferred
+judgment had left the pair before it looking
+unvouched (round 11, R11-5). One final judgment then runs on
 every composed record, whatever path composed it
 (round 9, R9-1): if the composed record notes
 children and its credit line is empty and it
@@ -407,11 +418,27 @@ Composition is not quite order-free: when two
 records in one composition each carry a vouched
 claim to be the record's license, the claim that
 stands is the one already standing when they meet
-(round 9, R9-1). Every claim a composition can
-produce is vouched, and the children's-photos
-answer — the children note itself, and whether a
-permission stands beside it — never depends on
-the order the records arrived in.
+(round 9, R9-1) — with two stated exceptions, the
+credit-pairing rule above and the permission rule
+below. The license and the credit line follow the
+stated rules (standing-wins, the fallback
+precedence, and credit-pairing); they are not
+promised order-free. Two answers are. The
+children's-photos answer — the children note
+itself, and whether a permission stands beside
+it — never depends on the order the records
+arrived in or the route they arrived by: the
+fold route and a chain of single merges agree on
+both, always (round 11, R11-1). The permission
+half of that answer is decided over the whole
+composition by one rule on both routes: when the
+composed record notes children and its credit
+line is empty, a vouched license that itself
+counts as a noted permission (the church's own
+work, public domain, CC0) stands in preference
+to a license that does not, however well vouched
+the other license is. Every claim a composition
+can produce is vouched.
 
 ### Loading rules
 

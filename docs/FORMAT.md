@@ -467,20 +467,29 @@ can produce is vouched.
   stands — are one directory, not several: it is
   walked and opened at most once per load, however
   many candidates point at it (round 10, R10-1).
-  When several candidates stand, their directories
-  are tried latest first; a directory holding no
-  document steps aside, and so does one whose
-  document fails to read — bad JSON, a newer
-  version, a lying fingerprint or size. When no
-  candidate yields a document, the reader's own
-  path runs — its chosen directory first, then
-  every enumerated candidate's, each directory
-  once — because a candidate that merely opens is
-  not evidence the file holds nothing (round 10,
-  R10-3); and only when nothing anywhere yields a
-  document does the load refuse, with the first
-  candidate's error where one exists
-  (round 9, R9-6).
+  The whole-file fallback enumeration below dedupes
+  by that same resolved identity, never by the
+  fields a candidate declares, which the sender
+  controls (round 11, R11-2); and a candidate's
+  directory is resolved the same way in both
+  enumerations, however far prepended bytes have
+  shifted it (round 11, R11-3). When several
+  candidates stand, their directories are tried
+  latest first; a directory holding no document
+  steps aside, and so does one whose document
+  fails to read — bad JSON, a newer version, a
+  lying fingerprint or size. When no candidate
+  yields a document, the reader's own path runs —
+  its chosen directory first (the attempt is
+  gated on that directory walking, not on whether
+  an earlier candidate opened), then every
+  enumerated candidate's, each directory once —
+  because a candidate that merely opens is not
+  evidence the file holds nothing (round 10,
+  R10-3; round 11, R11-3); and only when nothing
+  anywhere yields a document does the load
+  refuse, with the first candidate's error where
+  one exists (round 9, R9-6).
 - Saves are atomic (temp file + rename) and always write
   v1. The GUI keeps an autosave journal (the current work,
   rewritten as you edit, in this same format) beside its

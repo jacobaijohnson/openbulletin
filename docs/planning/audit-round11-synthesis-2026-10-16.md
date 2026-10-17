@@ -479,9 +479,83 @@ R10-2 credit-paired sentence and the R10-11 standing-wins paragraph
 were revised to match the shipped code.
 
 
-## Shipped addendum, R11-B
+## Shipped addendum, R11-B (2026-10-17)
 
-_(appended by the R11-B builder with real numbers and flagged pin changes)_
+Both findings landed in `crates/ob-format/src/lib.rs`, at both
+doors (`load` / `load_insert`) identically. Local totals: before
+653 passed / 0 failed; after **656 passed / 0 failed**, full
+unpiped `cargo test --workspace` exit 0; `cargo clippy
+--workspace --all-targets -- -D warnings` exit 0; `cargo fmt
+--all -- --check` exit 0. Three new tests (below); **no
+pre-existing test changed** — the round-9/round-10 fixture
+families (comment signature storms 500/1500/2900 in both fake
+shapes, shared-directory 30/300/2900, fake-shadow, the
+first-error precedence pins) pass with their original
+expectations, verified in the full run.
+
+**R11-2 — the fallback dedupes by the resolved directory.**
+One resolution function, `candidate_resolution_in`, now serves
+the fallback at both doors: it resolves a candidate exactly as
+the count walk's enumeration resolves it and returns the
+enumeration's own identity (`DirKey`: directory start, end,
+zip64 record position) plus walkability. The fallback loop
+dedupes on that identity — a directory tried in the first pass
+(the enumeration's keys are carried into the fallback) or
+earlier in the fallback is never opened again under another
+candidate's name — and never on declared fields. `DeclaredKey`
+survives only as a memo key: identical declared fields resolve
+identically, so a resolution is computed once per declared
+description (the 2,900-signature bodies stay cheap); it decides
+what a resolution costs, never what counts as a repeat.
+
+**R11-3 — the dead zone closes.** (a) `FALLBACK_SEARCH_BOUND`
+is gone: both of the resolution's searches (the zip64 record,
+the first central header) run over the whole span the candidate
+leaves, matching the enumeration's unbounded resolution, so
+`fallback_walkable(honest)` is true on the gapped file exactly
+as on the ungapped one — pinned directly in the new test.
+(b) The reader gate no longer asks whether anything opened, or
+whether the reader's chosen candidate was already tried: the
+attempt runs whenever no candidate has yielded a document and
+the chosen candidate's directory walks (the small-count
+damaged-words branch is unchanged). Its cost is the one
+walkable directory the walk check just resolved.
+
+**Fixture pins.** `r11_the_fallback_dedupes_by_the_resolved_directory_not_the_declared_fields`:
+the RT11-1 shapes (shared 8,191-entry directory, 300
+candidates, per-candidate `total16` variation and the
+`cd_size32` twin) refuse with the control's no-bulletin
+sentence at both doors, inside the r10 pin's budget shape
+(control × 20 + 10 s). `r11_a_shifted_honest_directory_loads_behind_walkable_fakes`:
+every row of the RT11-2 construction table at both doors —
+honest alone; stub with end record in window; no-gap + junk +
+65 fakes; gap + junk with no fakes / 65 fakes / 3 fakes / 1
+junk-document fake; no-gap + junk + junk-document fake — loads
+the honest bulletin/sheet. `r11_a_file_with_no_bulletin_anywhere_refuses_with_the_first_error`:
+in the dead-zone shapes with no bulletin anywhere, the refusal
+is the junk-document fake's JSON error ("key must be a
+string…") where a document error exists, else the no-bulletin
+sentence.
+
+**Measured timings** (temporary probe in the same style as the
+lane's, run once and removed; this machine, load average ≈3.3
+during the probe — loader timings here are load-sensitive):
+one-candidate control over the 8,191-entry directory **131
+ms**; declared-varied 300-candidate files — `total16`: load
+**354 ms**, load_insert **363 ms**; `cd_size32`: load **375
+ms**, load_insert **400 ms** — ≈2.7–3× the one-candidate
+control, the control's time class, against the red team's
+pre-fix 14,517 / 13,821 ms vs a 318 ms control (≈45×) on their
+machine. Regression classes hold: the 2,900 timing-signature
+nodoc file refuses in **45 ms**; the dead-zone gap + junk +
+65-fake file loads in **11 ms**.
+
+**FORMAT.md.** The loading-rules bullet now states that the
+fallback dedupes by the same resolved identity (never the
+declared fields), that a directory is resolved the same way
+in both enumerations however far prepended bytes shifted it,
+and that the reader attempt is gated on its chosen directory
+walking rather than on whether an earlier candidate opened.
 
 ## Shipped addendum, R11-C
 

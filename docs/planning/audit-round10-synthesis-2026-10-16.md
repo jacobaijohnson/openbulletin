@@ -466,4 +466,162 @@ unchanged.
 
 ## Shipped addendum, R10-C
 
-_(appended by the R10-C builder with real numbers and flagged pin changes)_
+Shipped 2026-10-17 on top of `22e42fb` (R10-B). R10-2 is fixed in
+`crates/ob-model/src/lib.rs` (one new judgment step,
+`credit_paired_attribution_license`, called first by the one final
+judgment both routes share), R10-8 in the same file's
+`serving_pairing`, R10-9 in the three test harnesses that write and
+then exec a helper script (`crates/ob-extract/src/helper.rs`,
+`crates/ob-music/src/render.rs`, `crates/ob-clips/src/lib.rs` — test
+modules only), and R10-11 in `docs/FORMAT.md`. Suite: **651 passed /
+0 failed** unpiped (baseline 645 + 6 new pins: ob-model 105 → 107,
+ob-extract +1, ob-music +1, ob-clips +1, ob-app +1), clippy exit 0
+with no warnings. The ETXTBSY flake did not fire in this batch's
+runs. Four pre-existing tests were changed, all flagged below, plus
+harness plumbing in the fake-helper tests whose expectations are
+unchanged.
+
+**R10-2 — the license that travels with the credit that stands
+wins, on both routes.** `judged_composed_license` now opens with the
+credit-paired step: when the standing license is not itself held
+together with the standing credit by any record in the composition,
+but another attribution license is, that license stands. Where no
+attribution license is vouched by the standing credit, the judgment
+is exactly as before. Measured on the round-10 lane's own census
+harness (baseline run on the pre-batch tree reproduces the lane's
+published numbers exactly; the repo-side sweep in the new pin
+reproduces the post-fix totals independently):
+
+| Measure (lengths ≤ 4 unless noted) | Before | After |
+|---|---|---|
+| Fold vs single-merge triple divergences | 23,823 / 346,176 | 16,553 / 346,176 |
+| R10-2 rule violations at either route's judgment point (repo sweep, lengths 2–4) | — | **0 / 346,176** |
+| Paired family (8 archetypes, lengths 2–4): full triple agreement | — | **4,672 / 4,672** |
+| Length-2 sequences, full pool: full triple agreement | — | **576 / 576** |
+| Fold invariants over 8,308,800 sequences (lengths 2–5): unvouched license beside children + empty credit / manufactured credit / manufactured license / orphan assertions | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+| Permutation flip groups (lengths 2–5) | 93,634 | 78,137 |
+| Children-varying flip groups | 0 | 0 |
+
+Census classes (the lane harness's classification over all groups):
+two-vouched flips 84,523 → 67,290; true/false crossings 3,864 →
+1,105; vouched-vs-Unknown 503 → 503 (the report's K3, unchanged);
+unvouched-license flips 1,470 → 1,470; credit-only flips 3,274 →
+7,769. The credit-only growth is reclassification, not new
+order-dependence: the set of standing credits across a group's
+permutations is untouched by this fix (no credit fill or fence
+changed), so every group counted there already flipped at baseline
+on license, credit, or both — curing its license flip leaves its
+pre-existing credit flip standing alone. No previously
+order-invariant group flips: the flip total fell by 15,497.
+
+The residual 16,553 divergences all stand where the disposition's
+own rule does not reach: no attribution license is vouched by the
+standing credit on the disagreeing route. They are the R8-9
+deferral shapes — a credit arriving after the license's pairwise
+judgment, traveling with no attribution license, where fold and
+single-merge outcomes are pinned to differ by
+`r8_fold_judges_the_composed_rule_once_at_the_end` — and the
+fence-timing credit shapes of the same family. **Deviation,
+stated plainly:** the disposition's hope that the harness assert
+agreement "for every sequence in the pool" is met for the paired
+family and at length 2 pool-wide, and the rule itself is asserted
+at every judgment point pool-wide (lengths 2–3 in the shipped pin,
+2–4 in this lane's sweep); pool-wide triple agreement over
+arbitrary sequences is precluded by the standing R8-9 pin, which
+this batch does not change. Shipped pin:
+`r10_fold_and_single_merge_routes_agree_over_the_pool` (the lane's
+24 archetypes; rule conclusion on both routes plus the round-9
+invariants over lengths 2–3, full agreement over the paired
+family at lengths 2–4 and over the full pool at length 2, and the
+named two-licenses-plus-credit witness in both orders).
+
+**R10-8 — kinds claim only what the pairing establishes; mirrors
+read identically.** The partner reservoir in `serving_pairing` is
+now counted by name anywhere in the list, in both directions: a
+surplus left after the crossing answers removal-only names
+wherever they stand (not only in the trailing segment), and a
+deficit left after the crossing answers addition-only names the
+same way. `removed` is asserted only for removal-only names past
+every partner's need or a deficit still standing after the
+reservoir; `added` only for addition-only names past a deficit's
+need or a surplus still standing; either reservoir use joins
+`moved`. The middle-segment witness and both trailing mirrors now
+read the crossed kinds {renamed, moved}, and in the app all three
+read the canonical crossed-renames sentence word for word. The
+certain shapes read verbatim as before, all pinned in the new
+`r10_kinds_claim_only_what_the_pairing_establishes`: surplus 1 or
+2 against three trailing old names ({renamed, removed, moved} —
+one or two partners used, the rest removals), a first-segment
+surplus with a trailing partner plus an additional bounded removal
+({renamed, removed, moved}), and a standing removal no surplus can
+absorb (the D8 shape, {renamed, removed}, no move). The refusal to
+auto-apply is untouched. The lane's probe shapes re-read on the
+shipped code: surplus + middle removal-only → {renamed, moved};
+deficit + middle addition-only → {renamed, moved}; both trailing
+mirrors → {renamed, moved}; surplus 1 + trailing ×3 and surplus 2
++ trailing ×3 → {renamed, removed, moved}.
+
+**Flagged pre-existing test changes (R10-8, four).**
+(1) `r9_kinds_come_from_each_segments_own_outcome` (ob-model):
+three assertions changed. The review lane's K1 shape (deficit plus
+a trailing addition-only segment) expected {renamed, removed,
+added, moved: false} and now expects {renamed, moved} — it is the
+trailing mirror of the canonical crossed renames, the R10-8 (b)
+witness itself. The RT9-14 witness (surplus plus a removal-only
+segment between anchors) expected {renamed, removed, added,
+moved: false} and now expects {renamed, moved} — the R10-8 (a)
+witness: a standing surplus can absorb that segment's name by
+count, so the removal is no longer asserted as plain. The same
+shape plus a trailing addition now expects {renamed, added,
+moved} (the surplus is spent on the bounded segment's name; the
+trailing addition still stands). Reasons are recorded in comments
+at each assertion. (2)
+`ambiguous_kinds_count_only_segments_the_pairing_could_not_resolve`
+(ob-model): the S-C assertion changed from {renamed, removed,
+added, moved: false} to {renamed, removed, moved} — S-C's deficit
+segment's unpaired name can answer its trailing addition across
+the anchor (the mirror of (1)'s middle witness); its clean
+removal, which no surplus can absorb, still stands. (3)
+`the_ambiguous_refusal_sentence_for_resolved_segments_names_no_move`
+(ob-app): the S-C sentence changed from "renamed, removed and
+added … Rename, remove or add one line at a time" to "renamed,
+removed and moved … Rename or remove one line at a time",
+following (2); the test's D8 half is unchanged and still names no
+move. (4) The four fake-helper tests in `helper.rs`, the three in
+`render.rs`, and the prompt-converter test in ob-clips had their
+call sites routed through the R10-9 harness retries; no
+expectation in any of them changed.
+
+**R10-9 — test-harness-only bounded ETXTBSY retry.** Each of the
+three write-then-exec harnesses gained a test-support retry: up to
+6 attempts, 10 ms apart, only on the busy failure (ob-extract:
+the error text contains "Text file busy"; ob-music: the run
+reports the just-written helper unavailable; ob-clips: a
+just-written exit-0 converter reporting failure). Production
+spawn paths gained NO retry, verified at the diff level:
+`crates/ob-extract/src/runner.rs` is untouched (zero diff), and
+every R10-9 hunk in the three harness files sits inside its
+`#[cfg(test)]` module; the boundary is also stated in each retry
+helper's comment. Pins (the busy window is a race and cannot be
+scheduled, so the retries are pinned on the error values
+directly): `the_fake_helper_retry_answers_only_a_busy_spawn`
+(busy twice then an answer stands on the third attempt; busy
+forever fails after exactly 6 attempts; any other failure is
+returned on the first attempt),
+`the_fake_render_retry_answers_only_an_unavailable_spawn` (same
+shape), and `the_fresh_converter_retry_is_bounded` (a just-written
+exit-0 script answers true through the retry; a missing program
+answers false and the attempts end).
+
+**R10-11 — FORMAT.md discloses the standing-wins order
+dependence.** The merge account in `docs/FORMAT.md` now states it
+where record composition is described: when two records in one
+composition each carry a vouched claim to be the record's license,
+the claim that stands is the one already standing when they meet;
+every claim a composition can produce is vouched; and the
+children's-photos answer never depends on order. The same
+paragraph also gained one sentence for R10-2: where the credit
+line that stands arrived with a different attribution license
+from the one standing, the license that traveled with that credit
+is the one that stands, on the fold route and on a single merge
+alike.

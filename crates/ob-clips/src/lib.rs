@@ -552,6 +552,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// TEST SUPPORT ONLY (round 10, R10-9): run a
+    /// converter script this test itself just wrote,
+    /// retrying a small bounded number of times
+    /// until it reports success. A just-written
+    /// script can refuse to start for a moment
+    /// (ETXTBSY, the write-to-exec race), and the
+    /// production runner folds that spawn failure
+    /// into its plain `false`, so for a script whose
+    /// own words are "exit 0" a `false` inside the
+    /// window can only be the fixture's timing, not
+    /// the converter's answer. The retry lives HERE,
+    /// in the test harness, and nowhere else:
+    /// `run_converter_with_deadline` gains no retry,
+    /// so a real converter that cannot start on a
+    /// user's machine still reports failure at once.
+    #[cfg(unix)]
+    fn run_fresh_converter(script: &Path, timeout: std::time::Duration) -> bool {
+        for _ in 0..6 {
+            let mut cmd = std::process::Command::new(script);
+            if run_converter_with_deadline(&mut cmd, timeout) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_prompt_converter_reports_its_own_result() {
@@ -563,14 +590,50 @@ mod tests {
             std::fs::write(&script, format!("#!/bin/sh\nexit {code}\n")).expect("script");
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod");
-            let mut cmd = std::process::Command::new(&script);
-            let ok = run_converter_with_deadline(&mut cmd, std::time::Duration::from_secs(5));
+            // The exit-0 script's success is read
+            // through the harness retry above (R10-9);
+            // the exit-3 script's failure is its own
+            // answer on the first attempt either way.
+            let ok = if want {
+                run_fresh_converter(&script, std::time::Duration::from_secs(5))
+            } else {
+                let mut cmd = std::process::Command::new(&script);
+                run_converter_with_deadline(&mut cmd, std::time::Duration::from_secs(5))
+            };
             assert_eq!(ok, want, "exit {code}");
         }
         // A program that does not exist is a quiet false.
         let mut cmd = std::process::Command::new(dir.join("no-such-program"));
         assert!(!run_converter_with_deadline(
             &mut cmd,
+            std::time::Duration::from_secs(1)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_fresh_converter_retry_is_bounded() {
+        // Round 10 (R10-9): the harness retry's
+        // behavior on values a test can state
+        // directly (the busy window itself is a race
+        // and cannot be scheduled): a just-written
+        // exit-0 script answers true through the
+        // retry helper, and a program that is not
+        // there answers false — the bounded attempts
+        // end and the failure stands.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("retry");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let script = dir.join("conv-ok.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert!(run_fresh_converter(
+            &script,
+            std::time::Duration::from_secs(5)
+        ));
+        assert!(!run_fresh_converter(
+            &dir.join("no-such-program"),
             std::time::Duration::from_secs(1)
         ));
         let _ = std::fs::remove_dir_all(&dir);

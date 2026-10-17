@@ -19664,11 +19664,22 @@ mod settings_tests {
         );
         assert!(migration.ambiguous);
         let kinds = migration.ambiguous_kinds.expect("kinds on a refusal");
+        // FLAGGED, round 10 (R10-8): this sentence
+        // used to read "renamed, removed and added".
+        // The deficit segment's unpaired old name can
+        // answer the trailing addition across the
+        // anchor — the mirror of the surplus reading
+        // the kinds have always given — so the
+        // account now names the move and not the
+        // addition; the clean removal in its own
+        // segment still stands. (The D8 sentence
+        // below is unchanged: its shape has no such
+        // partner anywhere, and names no move.)
         assert_eq!(
             ambiguous_serving_lines_sentence(&kinds),
-            "Serving lines not saved: lines were renamed, removed and added at once, \
+            "Serving lines not saved: lines were renamed, removed and moved at once, \
              and the app cannot tell which names belong to which line. The lines \
-             were left as they were. Rename, remove or add one line at a time, then \
+             were left as they were. Rename or remove one line at a time, then \
              save again."
         );
         let d8_old = lines(&["Alpha", "Choir", "Bells", "Beta", "Solo"]);
@@ -19688,6 +19699,54 @@ mod settings_tests {
              were left as they were. Rename or remove one line at a time, then \
              save again."
         );
+    }
+
+    #[test]
+    fn r10_the_mirror_geometries_read_the_same_sentence() {
+        // Round 10 (R10-8): the trailing mirrors —
+        // surplus plus a trailing removal-only
+        // segment, deficit plus a trailing
+        // addition-only segment — and the
+        // middle-segment witness all carry the
+        // crossed kinds, so all three read the
+        // canonical crossed-renames sentence, word
+        // for word. Before this round the deficit
+        // mirror read "renamed, removed and added"
+        // for the same geometry.
+        let mut participants: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let mut aliases: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let lines =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        let canonical = "Serving lines not saved: several lines were renamed and moved \
+             at once, and the app cannot tell which names belong to which \
+             line. The lines were left as they were. Rename one line at a \
+             time, then save again.";
+        for (old, new) in [
+            (
+                lines(&["Alpha", "X1", "Beta", "Gone"]),
+                lines(&["Alpha", "Y1", "Y2", "Beta"]),
+            ),
+            (
+                lines(&["Alpha", "X1", "X2", "Beta"]),
+                lines(&["Alpha", "Y1", "Beta", "Fresh"]),
+            ),
+            (
+                lines(&["Alpha", "X1", "Beta", "Gone", "Gamma"]),
+                lines(&["Alpha", "Y1", "Y2", "Beta", "Gamma"]),
+            ),
+        ] {
+            let migration = ob_model::migrate_serving_line_renames_detailed(
+                &old,
+                &new,
+                &mut participants,
+                &mut aliases,
+            );
+            assert!(migration.ambiguous);
+            let kinds = migration.ambiguous_kinds.expect("kinds on a refusal");
+            assert_eq!(ambiguous_serving_lines_sentence(&kinds), canonical);
+        }
     }
 
     #[test]

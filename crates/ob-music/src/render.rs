@@ -378,6 +378,37 @@ mod tests {
         path
     }
 
+    /// TEST SUPPORT ONLY (round 10, R10-9): run one
+    /// of this module's fake-helper calls, retrying a
+    /// small bounded number of times when the run
+    /// reports the helper unavailable — in these
+    /// tests the only candidate is the fake the test
+    /// itself just wrote, so "not available" is the
+    /// write-to-exec race (ETXTBSY) wearing the
+    /// production words, a property of the fixture,
+    /// not of the code under test. The retry lives
+    /// HERE, in the test harness, and nowhere else:
+    /// `render_with_candidates` gains no retry, so a
+    /// real helper that cannot start still says so
+    /// at once. Any other failure is returned on the
+    /// first attempt, and a helper that never becomes
+    /// runnable still fails the test loudly.
+    #[cfg(unix)]
+    fn run_fake_render<T>(
+        mut attempt: impl FnMut() -> Result<T, RenderError>,
+    ) -> Result<T, RenderError> {
+        let mut tries = 0usize;
+        loop {
+            tries += 1;
+            match attempt() {
+                Err(RenderError::NotAvailable(_)) if tries < 6 => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => return other,
+            }
+        }
+    }
+
     #[cfg(unix)]
     fn fake_answer(protocol: u32) -> String {
         format!(
@@ -392,13 +423,15 @@ mod tests {
     #[test]
     fn a_good_fake_helper_renders_through_the_new_runner() {
         let helper = fake_helper("good", &fake_answer(PROTOCOL));
-        let out = render_with_candidates(
-            "<score-partwise/>",
-            120.0,
-            TARGET_STAFF_MM,
-            &[helper],
-            std::time::Duration::from_secs(10),
-        )
+        let out = run_fake_render(|| {
+            render_with_candidates(
+                "<score-partwise/>",
+                120.0,
+                TARGET_STAFF_MM,
+                std::slice::from_ref(&helper),
+                std::time::Duration::from_secs(10),
+            )
+        })
         .expect("a matching answer renders");
         assert_eq!(out.systems.len(), 1);
         assert_eq!(out.noteheads(), 3);
@@ -411,13 +444,15 @@ mod tests {
         // protocol 999, ok true, a floor-passing system.
         // It used to be accepted as a genuine render.
         let helper = fake_helper("future", &fake_answer(999));
-        let err = render_with_candidates(
-            "<score-partwise/>",
-            120.0,
-            TARGET_STAFF_MM,
-            &[helper],
-            std::time::Duration::from_secs(10),
-        )
+        let err = run_fake_render(|| {
+            render_with_candidates(
+                "<score-partwise/>",
+                120.0,
+                TARGET_STAFF_MM,
+                std::slice::from_ref(&helper),
+                std::time::Duration::from_secs(10),
+            )
+        })
         .expect_err("protocol 999 is not a render");
         match err {
             RenderError::Failed(why) => {
@@ -432,13 +467,15 @@ mod tests {
     fn a_sleeping_helper_meets_the_deadline() {
         let helper = fake_helper("sleepy", "#!/bin/sh\ncat > /dev/null\nsleep 30\n");
         let start = std::time::Instant::now();
-        let err = render_with_candidates(
-            "<score-partwise/>",
-            120.0,
-            TARGET_STAFF_MM,
-            &[helper],
-            std::time::Duration::from_secs(1),
-        )
+        let err = run_fake_render(|| {
+            render_with_candidates(
+                "<score-partwise/>",
+                120.0,
+                TARGET_STAFF_MM,
+                std::slice::from_ref(&helper),
+                std::time::Duration::from_secs(1),
+            )
+        })
         .expect_err("a sleeping helper cannot render");
         match err {
             RenderError::Failed(why) => {
@@ -450,6 +487,50 @@ mod tests {
             start.elapsed() < std::time::Duration::from_secs(15),
             "the deadline, not the sleep, ends the wait"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_fake_render_retry_answers_only_an_unavailable_spawn() {
+        // Round 10 (R10-9): the harness retry's
+        // behavior, pinned on the error value itself
+        // (the busy window is a race; a test cannot
+        // schedule it, so the retry is fed the words
+        // a busy spawn produces here). Unavailable
+        // twice, then an answer: the answer stands,
+        // on the third attempt.
+        let attempts = std::cell::Cell::new(0usize);
+        let out = run_fake_render(|| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() < 3 {
+                Err(RenderError::NotAvailable("busy".to_string()))
+            } else {
+                Ok(7)
+            }
+        })
+        .expect("the busy window closes");
+        assert_eq!(out, 7);
+        assert_eq!(attempts.get(), 3);
+        // Unavailable forever: the error still
+        // surfaces, after exactly the bounded number
+        // of attempts.
+        let attempts = std::cell::Cell::new(0usize);
+        let err = run_fake_render(|| {
+            attempts.set(attempts.get() + 1);
+            Err::<i32, RenderError>(RenderError::NotAvailable("busy".to_string()))
+        })
+        .expect_err("a helper that never starts still fails");
+        assert!(matches!(err, RenderError::NotAvailable(_)), "{err:?}");
+        assert_eq!(attempts.get(), 6);
+        // A plain failure: no retry at all.
+        let attempts = std::cell::Cell::new(0usize);
+        let err = run_fake_render(|| {
+            attempts.set(attempts.get() + 1);
+            Err::<i32, RenderError>(RenderError::Failed("no".to_string()))
+        })
+        .expect_err("a plain failure is a failure");
+        assert!(matches!(err, RenderError::Failed(_)), "{err:?}");
+        assert_eq!(attempts.get(), 1);
     }
 
     #[test]

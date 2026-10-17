@@ -366,7 +366,12 @@ only credit was refused by the fence above. Either
 way, no composed record that notes children claims
 an attribution license with an empty credit line,
 and a record whose own credit line stands keeps
-its license. One final judgment then runs on
+its license. Where the credit line that stands
+arrived with a different attribution license from
+the one standing, the license that traveled with
+that credit is the one that stands, on the fold
+route and on a single merge alike (round 10,
+R10-2). One final judgment then runs on
 every composed record, whatever path composed it
 (round 9, R9-1): if the composed record notes
 children and its credit line is empty and it
@@ -398,6 +403,15 @@ then re-judged against what finally stands: it
 stays only when a rights fill from its own record
 stands there (round 9, R9-5). Single merges
 outside a fold judge each pair as before.
+Composition is not quite order-free: when two
+records in one composition each carry a vouched
+claim to be the record's license, the claim that
+stands is the one already standing when they meet
+(round 9, R9-1). Every claim a composition can
+produce is vouched, and the children's-photos
+answer — the children note itself, and whether a
+permission stands beside it — never depends on
+the order the records arrived in.
 
 ### Loading rules
 

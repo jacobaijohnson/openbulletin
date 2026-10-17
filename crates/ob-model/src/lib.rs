@@ -1331,6 +1331,46 @@ fn fallback_license(standing_credit: &str, sources: &[&RightsRecord]) -> Option<
     best.map(|(_, _, license)| license)
 }
 
+/// The attribution license that travels with the
+/// standing credit (round 10, R10-2): a license some
+/// record in the composition held together with the
+/// very credit line that stands in the composed
+/// record. Returns that license when the standing
+/// license is NOT itself vouched in this paired way
+/// (no record in the composition held the standing
+/// license together with the standing credit) and
+/// another attribution license in the composition
+/// is so vouched; the first such license in the
+/// composition is the one. Where the standing
+/// license is itself the credit-paired one, or no
+/// attribution license is vouched by the standing
+/// credit, there is nothing to answer with and the
+/// rest of the judgment runs unchanged.
+fn credit_paired_attribution_license(
+    license: &LicenseKind,
+    standing_credit: &str,
+    sources: &[&RightsRecord],
+) -> Option<LicenseKind> {
+    if standing_credit.trim().is_empty() {
+        return None;
+    }
+    let standing_paired = *license != LicenseKind::Unknown
+        && sources
+            .iter()
+            .any(|r| r.license == *license && r.credit_text == standing_credit);
+    if standing_paired {
+        return None;
+    }
+    sources
+        .iter()
+        .find(|r| {
+            r.credit_text == standing_credit
+                && matches!(r.license, LicenseKind::CcBy(_) | LicenseKind::CcBySa(_))
+                && r.license != *license
+        })
+        .map(|r| r.license.clone())
+}
+
 /// The ONE final judgment on a composed record
 /// (round 9, R9-1): if the composed record notes
 /// children and its credit line is empty and it
@@ -1345,12 +1385,31 @@ fn fallback_license(standing_credit: &str, sources: &[&RightsRecord]) -> Option<
 /// judged the permission-satisfying fields on their
 /// own provenance, and a standing credit vouches
 /// through the bearer rule by construction.
+///
+/// One step runs before all of that (round 10,
+/// R10-2): the license that travels with the credit
+/// that stands wins, on the fold route and on a
+/// single merge alike. The two routes used to pick
+/// different licenses for the same records — the
+/// fold kept the first license standing, a chain of
+/// single merges ended with the credit record's
+/// license, because each pairwise judgment dropped
+/// or replaced the standing license before the
+/// credit arrived. Now, when the standing license
+/// is not the one vouched by the standing credit
+/// but another attribution license in the
+/// composition is (see
+/// `credit_paired_attribution_license`), the
+/// credit-paired license stands.
 fn judged_composed_license(
     license: &LicenseKind,
     children_present: Option<bool>,
     credit_text: &str,
     sources: &[&RightsRecord],
 ) -> LicenseKind {
+    if let Some(paired) = credit_paired_attribution_license(license, credit_text, sources) {
+        return paired;
+    }
     if children_present != Some(true) {
         return license.clone();
     }
@@ -2403,21 +2462,24 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
     let mut segment_runs: Vec<(Vec<String>, Vec<String>)> = Vec::new();
     // The segment tallies the ambiguous kinds are
     // read from (round 7, R7-10; round 8, R8-10;
-    // round 9, R9-14): each segment contributes the
-    // kinds its own evidence shows, tallied here —
-    // the surplus and deficit an unresolved segment
-    // was left holding, the names a removal-only
-    // segment resolved (kept apart for the segment
-    // after the last anchor, the trailing segment,
-    // whose names are the one place a surplus new
-    // name's partner can sit), and whether an
-    // addition-only segment stood anywhere.
+    // round 9, R9-14; round 10, R10-8): each segment
+    // contributes the kinds its own evidence shows,
+    // tallied here — the surplus and deficit an
+    // unresolved segment was left holding, the names
+    // a removal-only segment resolved (kept apart
+    // for the segment after the last anchor, the
+    // trailing segment, though since round 10 a
+    // surplus name's partner can sit in a removal-
+    // only segment anywhere in the list, not only
+    // there), and the names an addition-only segment
+    // stood holding anywhere (a deficit old name's
+    // possible partners, the mirror image).
     let mut leftover_segments = 0usize;
     let mut surplus_new_excess = 0usize;
     let mut deficit_old_excess = 0usize;
     let mut bounded_removal_names = 0usize;
     let mut trailing_removal_names = 0usize;
-    let mut addition_only_segments = 0usize;
+    let mut addition_only_names = 0usize;
     for (seg_index, ((o0, o1), (n0, n1))) in segments.iter().enumerate() {
         let seg_old: Vec<String> = old_trim[*o0..*o1]
             .iter()
@@ -2453,7 +2515,7 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
             removals.extend(seg_old);
         } else if seg_old.is_empty() {
             // Additions only: nothing to pair or clear.
-            addition_only_segments += 1;
+            addition_only_names += seg_new.len();
         } else {
             leftover_segments += 1;
             if seg_new.len() > seg_old.len() {
@@ -2482,28 +2544,44 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
         // segments are the same crossed renames, and
         // claim neither an addition nor a removal. A
         // surplus left over can still pair across an
-        // anchor with the trailing segment's old
-        // names (the canonical crossed renames), up
-        // to as many of those names as the surplus
-        // needs; any further surplus is an addition.
-        // A bounded removal-only segment — closed by
-        // anchors on both sides — is a removal the
-        // pairing resolved in place, never a partner
-        // reservoir; the trailing segment's old names
-        // past the surplus's need are removals, as is
-        // a deficit left over after the crossing.
+        // anchor with a removal-only segment's old
+        // names (the canonical crossed renames, whose
+        // home was the trailing segment), up to as
+        // many of those names as the surplus needs;
+        // any further surplus is an addition. Since
+        // round 10 (R10-8) the reservoir is counted
+        // by name ANYWHERE in the list, not only in
+        // the trailing segment, and it runs in both
+        // directions: a deficit left over can pair
+        // across an anchor with an addition-only
+        // segment's new names the same way. The
+        // round-9 account let a removal-only segment
+        // sitting between anchors assert a plain
+        // removal a standing surplus could have
+        // absorbed, and read the two trailing mirror
+        // geometries — surplus plus a trailing
+        // removal-only segment, deficit plus a
+        // trailing addition-only segment — by
+        // opposite rules; the kinds now claim only
+        // what the pairing establishes, and mirror
+        // geometries read identically. Removal-only
+        // names past every partner's need are
+        // removals, as are addition-only names past
+        // a deficit's need and a deficit left over
+        // after the crossing and the reservoir.
         let crossed_pairs = surplus_new_excess.min(deficit_old_excess);
         let surplus_after_cross = surplus_new_excess - crossed_pairs;
         let deficit_after_cross = deficit_old_excess - crossed_pairs;
-        let reservoir_used = trailing_removal_names.min(surplus_after_cross);
+        let removal_only_names = bounded_removal_names + trailing_removal_names;
+        let reservoir_used = removal_only_names.min(surplus_after_cross);
         let surplus_final = surplus_after_cross - reservoir_used;
+        let addition_reservoir_used = addition_only_names.min(deficit_after_cross);
+        let deficit_final = deficit_after_cross - addition_reservoir_used;
         let kinds = ServingLineEditKinds {
             renamed: true,
-            removed: bounded_removal_names > 0
-                || trailing_removal_names > reservoir_used
-                || deficit_after_cross > 0,
-            added: addition_only_segments > 0 || surplus_final > 0,
-            moved: leftover_segments >= 2 || reservoir_used > 0,
+            removed: removal_only_names > reservoir_used || deficit_final > 0,
+            added: addition_only_names > addition_reservoir_used || surplus_final > 0,
+            moved: leftover_segments >= 2 || reservoir_used > 0 || addition_reservoir_used > 0,
         };
         return ServingPairing {
             pairs,
@@ -4538,7 +4616,17 @@ mod tests {
         };
         // The red team's S-C: one rename segment, one
         // clean removal, one clean addition; nothing
-        // crossed an anchor.
+        // crossed an anchor. FLAGGED, round 10
+        // (R10-8): the rename segment is a deficit
+        // segment, and its unpaired old name's only
+        // possible partner is the trailing addition —
+        // the mirror of the middle-segment witness in
+        // `r9_kinds_come_from_each_segments_own_outcome`.
+        // The deficit now answers that addition
+        // across the anchor (a move, not an addition
+        // and a second removal); the clean removal in
+        // its own segment, which no surplus can
+        // absorb, still stands as a removal.
         assert_eq!(
             kinds_of(
                 &["Alpha", "Old One", "Old Two", "Beta", "Gone Line", "Gamma"],
@@ -4547,8 +4635,8 @@ mod tests {
             ServingLineEditKinds {
                 renamed: true,
                 removed: true,
-                added: true,
-                moved: false,
+                added: false,
+                moved: true,
             }
         );
         // The red team's S-D: rename segment plus a
@@ -4645,15 +4733,19 @@ mod tests {
         };
         // The review lane's K1: a deficit rename
         // segment (two old names against one new)
-        // plus an addition-only segment. The shipped
-        // kinds were {renamed, added}, matching no
-        // possible reading: the deficit segment's
-        // second old name was removed or renamed
-        // across the anchor, and the addition stands
-        // in its own segment. The segment-local
-        // reading — one rename, one removal in the
-        // segment, the addition in its own — is the
-        // pinned set.
+        // plus an addition-only segment. Round 9
+        // pinned the segment-local reading {renamed,
+        // removed, added}. FLAGGED, round 10 (R10-8):
+        // this shape is the trailing mirror of the
+        // canonical crossed renames below — a deficit
+        // plus a trailing addition-only segment —
+        // and the mirror reads {renamed, moved}
+        // there, so the two geometries disagreed
+        // about the same shape. The deficit now
+        // answers the addition-only segment's name
+        // across the anchor, as a surplus answers a
+        // removal-only segment's name, and both
+        // mirrors read {renamed, moved}.
         assert_eq!(
             kinds_of(
                 &["Alpha", "Old One", "Old Two", "Beta"],
@@ -4661,22 +4753,26 @@ mod tests {
             ),
             ServingLineEditKinds {
                 renamed: true,
-                removed: true,
-                added: true,
-                moved: false,
+                removed: false,
+                added: false,
+                moved: true,
             }
         );
         // The red team's RT9-14 witness: a surplus
         // rename segment plus a removal-only segment
-        // BETWEEN anchors. The shipped kinds were
-        // {renamed, moved} — claiming the one kind
-        // that may not have happened (the surplus name
-        // is indistinguishable from an addition) while
-        // denying the removal that stands resolved in
-        // its own bounded segment. Per-segment, the
-        // shape is two renames and a surplus addition
-        // in the first segment, a removal in the
-        // second, and no move.
+        // BETWEEN anchors. Round 9 pinned {renamed,
+        // removed, added}: the bounded segment's
+        // removal read as resolved in place.
+        // FLAGGED, round 10 (R10-8): a pure crossed
+        // reading exists here too (the bounded
+        // segment's name is the surplus name's
+        // partner, moved across the anchor), so the
+        // removal was asserted past what the pairing
+        // establishes. A standing surplus now
+        // absorbs a removal-only segment's names by
+        // count anywhere in the list, not only in
+        // the trailing segment, and the shape reads
+        // as the crossed renames it may be.
         assert_eq!(
             kinds_of(
                 &["Alpha", "X1", "X2", "Beta", "Gone", "Gamma"],
@@ -4684,13 +4780,15 @@ mod tests {
             ),
             ServingLineEditKinds {
                 renamed: true,
-                removed: true,
-                added: true,
-                moved: false,
+                removed: false,
+                added: false,
+                moved: true,
             }
         );
         // The same shape plus a clean addition-only
-        // segment: the removal still stands.
+        // segment: the surplus is spent on the
+        // bounded segment's name, so the trailing
+        // addition still stands as an addition.
         assert_eq!(
             kinds_of(
                 &["Alpha", "X1", "X2", "Beta", "Gone", "Gamma"],
@@ -4698,9 +4796,9 @@ mod tests {
             ),
             ServingLineEditKinds {
                 renamed: true,
-                removed: true,
+                removed: false,
                 added: true,
-                moved: false,
+                moved: true,
             }
         );
         // The mirror control (review K2): a surplus
@@ -4735,6 +4833,135 @@ mod tests {
                 renamed: true,
                 removed: false,
                 added: true,
+                moved: false,
+            }
+        );
+    }
+
+    #[test]
+    fn r10_kinds_claim_only_what_the_pairing_establishes() {
+        // Round 10 (R10-8, red team RT10-K1 + RT10-K2
+        // and the review lane's Q3 observation): the
+        // kinds asserted a plain removal (and a plain
+        // addition) where a standing surplus (or
+        // deficit) could have absorbed the partner
+        // segment's names across an anchor, and the
+        // two trailing mirror geometries read by
+        // opposite rules. The reservoir is now
+        // counted by name anywhere in the list, in
+        // both directions; mirror geometries produce
+        // the same kinds, and the shapes the stated
+        // rule names (both round-10 lanes re-derived
+        // them) read exactly as before.
+        let kinds_of = |old: &[&str], new: &[&str]| {
+            let old_lines: Vec<String> = old.iter().map(|n| n.to_string()).collect();
+            let new_lines: Vec<String> = new.iter().map(|n| n.to_string()).collect();
+            let mut participants: BTreeMap<String, String> = BTreeMap::new();
+            let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+            let migration = migrate_serving_line_renames_detailed(
+                &old_lines,
+                &new_lines,
+                &mut participants,
+                &mut aliases,
+            );
+            assert!(migration.ambiguous, "the refusal itself stands");
+            migration.ambiguous_kinds.expect("kinds on a refusal")
+        };
+        let crossed = ServingLineEditKinds {
+            renamed: true,
+            removed: false,
+            added: false,
+            moved: true,
+        };
+        // The middle-segment witness (RT10-K1): a
+        // surplus segment whose only possible partner
+        // sits in a MIDDLE removal-only segment. A
+        // pure crossed-rename reading exists, so no
+        // addition and no removal is asserted.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "X1", "Beta", "Gone", "Gamma"],
+                &["Alpha", "Y1", "Y2", "Beta", "Gamma"],
+            ),
+            crossed
+        );
+        // Its mirror: a deficit segment whose only
+        // possible partner sits in a MIDDLE
+        // addition-only segment. Identical kinds.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "X1", "X2", "Beta", "Gamma"],
+                &["Alpha", "Y1", "Beta", "Fresh", "Gamma"],
+            ),
+            crossed
+        );
+        // The trailing mirrors (RT10-K2): deficit
+        // plus a trailing addition-only segment, and
+        // surplus plus a trailing removal-only
+        // segment — the same geometry, and now the
+        // same account.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "X1", "X2", "Beta"],
+                &["Alpha", "Y1", "Beta", "Fresh"],
+            ),
+            crossed
+        );
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "X1", "Beta", "Gone"],
+                &["Alpha", "Y1", "Y2", "Beta"],
+            ),
+            crossed
+        );
+        // The certain shapes, verbatim: a surplus of
+        // one against three trailing old names — one
+        // partner used, two past the need are
+        // removals.
+        let one_partner_two_removals = ServingLineEditKinds {
+            renamed: true,
+            removed: true,
+            added: false,
+            moved: true,
+        };
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "X1", "Beta", "Gone1", "Gone2", "Gone3"],
+                &["Alpha", "Y1", "Y2", "Beta"],
+            ),
+            one_partner_two_removals
+        );
+        // A surplus of two against the same three.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "X1", "Beta", "Gone1", "Gone2", "Gone3"],
+                &["Alpha", "Y1", "Y2", "Y3", "Beta"],
+            ),
+            one_partner_two_removals
+        );
+        // A surplus in the FIRST segment, its partner
+        // in the trailing segment, and an additional
+        // bounded removal no surplus is left to
+        // absorb: the removal stands.
+        assert_eq!(
+            kinds_of(
+                &["X1", "Alpha", "Gone", "Beta", "Lost"],
+                &["Y1", "Y2", "Alpha", "Beta"],
+            ),
+            one_partner_two_removals
+        );
+        // A standing removal no surplus can absorb
+        // (there is no surplus at all) stays a
+        // removal, and no move is claimed.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "Choir", "Bells", "Beta", "Solo"],
+                &["Alpha", "Choir team", "Beta"],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: true,
+                added: false,
                 moved: false,
             }
         );
@@ -6392,6 +6619,279 @@ mod occasion_tests {
         assert_eq!(composed.credit_text, credit_text);
         assert_eq!(composed.asserted_by, asserter_name);
         assert_eq!(composed.asserted_at, asserter_date);
+    }
+
+    #[test]
+    fn r10_fold_and_single_merge_routes_agree_over_the_pool() {
+        // Round 10 (R10-2, red team RT10-R1): the
+        // fold route and the single-merge route used
+        // to pick different licenses for the same
+        // records — 23,823 of 346,176 sequences of
+        // length <= 4 over this pool in the round-10
+        // lane's brute force. Every sampled divergence
+        // had the same shape: a credit line standing
+        // in the composition, an attribution license
+        // traveling with that credit, and a different
+        // license standing. The license that travels
+        // with the credit that stands now wins on
+        // both routes (see
+        // `credit_paired_attribution_license`), and
+        // this pin holds the property in three parts
+        // over the lane's 24-archetype pool:
+        //
+        // (1) The rule itself, on both routes, over
+        // every sequence of lengths 2 and 3: judged
+        // against the sources each route's final
+        // judgment sees (the fold: the whole
+        // sequence; a single merge: its last pair),
+        // whenever an attribution license in the
+        // composition is vouched by the standing
+        // credit and the standing license is not, the
+        // vouched license stands.
+        //
+        // (2) Full (children, license, credit)
+        // agreement between the routes: over every
+        // length-2 sequence in the pool, and over
+        // every sequence of lengths 2 to 4 in the
+        // paired family below — the archetypes
+        // whose credit lines travel with an
+        // attribution license, or carry no credit at
+        // all, which is the family the finding lived
+        // in. Outside that family the routes are
+        // still pinned to differ, by design, where a
+        // credit arrives only after the license's
+        // pairwise judgment and travels with no
+        // attribution license (round 8, R8-9, pinned
+        // in
+        // `r8_fold_judges_the_composed_rule_once_at_the_end`):
+        // there no attribution license is vouched by
+        // the standing credit, and the R10-2 rule
+        // leaves today's judgment unchanged.
+        //
+        // (3) The round-9 brute-force invariants on
+        // every folded record: no unvouched license
+        // beside children with an empty credit line,
+        // no manufactured credit or license, no
+        // orphan assertion.
+        fn arch(children: Option<bool>, license: LicenseKind, credit: &str) -> RightsRecord {
+            RightsRecord {
+                children_present: children,
+                license,
+                credit_text: credit.into(),
+                ..Default::default()
+            }
+        }
+        let ccby = || LicenseKind::CcBy("4.0".into());
+        let ccbysa = || LicenseKind::CcBySa("4.0".into());
+        let mut pool: Vec<RightsRecord> = vec![
+            arch(None, LicenseKind::Unknown, ""),
+            arch(Some(true), LicenseKind::Unknown, ""),
+            arch(Some(true), ccby(), ""),
+            arch(Some(true), ccby(), "Photo by A"),
+            arch(None, ccby(), ""),
+            arch(None, ccby(), "Photo by B"),
+            arch(Some(true), LicenseKind::Unknown, "Photo by C"),
+            arch(None, LicenseKind::Unknown, "Photo by D"),
+            arch(Some(true), LicenseKind::Cc0, ""),
+            arch(None, LicenseKind::Cc0, ""),
+            arch(Some(true), LicenseKind::PublicDomain, ""),
+            arch(None, LicenseKind::PublicDomain, ""),
+            arch(Some(true), LicenseKind::ChurchOwned, ""),
+            arch(None, LicenseKind::ChurchOwned, ""),
+            arch(Some(true), LicenseKind::LicensedReprint, ""),
+            arch(None, LicenseKind::LicensedReprint, ""),
+            arch(Some(true), ccbysa(), ""),
+            arch(None, ccbysa(), "Photo by E"),
+            arch(Some(false), ccby(), "Photo by F"),
+            arch(Some(true), ccbysa(), "Photo by G"),
+            arch(Some(false), LicenseKind::Cc0, ""),
+            arch(Some(true), LicenseKind::LicensedReprint, "Photo by H"),
+        ];
+        pool.push(RightsRecord {
+            title: "Harvest supper".into(),
+            ..Default::default()
+        });
+        pool.push(RightsRecord {
+            asserted_by: "Mallory".into(),
+            asserted_at: "2026-01-01".into(),
+            ..arch(Some(true), ccby(), "")
+        });
+        let fold_route = |seq: &[RightsRecord]| -> RightsRecord {
+            let hash = sha256_hex(b"R10ROUTES");
+            let mut assets: Vec<Asset> = seq
+                .iter()
+                .cloned()
+                .map(|rights| Asset {
+                    sha256: hash.clone(),
+                    kind: AssetKind::Picture,
+                    media_type: "image/png".into(),
+                    rights,
+                })
+                .collect();
+            fold_duplicate_asset_records(&mut assets);
+            assert_eq!(assets.len(), 1);
+            assets[0].rights.clone()
+        };
+        // The single-merge route: the public
+        // pairwise merge, in the same order, starting
+        // from the first record — and the record
+        // standing before its last merge, whose pair
+        // is what its final judgment sees.
+        let single_route = |seq: &[RightsRecord]| -> (RightsRecord, RightsRecord) {
+            let mut acc = seq[0].clone();
+            let mut before_last = seq[0].clone();
+            for (i, next) in seq.iter().enumerate().skip(1) {
+                if i + 1 == seq.len() {
+                    before_last = acc.clone();
+                }
+                acc = merge_rights_records(&acc, next);
+            }
+            (acc, before_last)
+        };
+        let triple =
+            |r: &RightsRecord| (r.children_present, r.license.clone(), r.credit_text.clone());
+        // The R10-2 rule, stated as a check on one
+        // route's outcome against the sources its
+        // final judgment saw.
+        let rule_holds = |out: &RightsRecord, sources: &[&RightsRecord]| -> bool {
+            if out.credit_text.trim().is_empty() {
+                return true;
+            }
+            let paired: Vec<&LicenseKind> = sources
+                .iter()
+                .filter(|r| {
+                    r.credit_text == out.credit_text
+                        && matches!(r.license, LicenseKind::CcBy(_) | LicenseKind::CcBySa(_))
+                })
+                .map(|r| &r.license)
+                .collect();
+            if paired.is_empty() {
+                return true;
+            }
+            let standing_paired = out.license != LicenseKind::Unknown
+                && sources
+                    .iter()
+                    .any(|r| r.license == out.license && r.credit_text == out.credit_text);
+            standing_paired || paired.iter().any(|p| **p == out.license)
+        };
+        let check_seq = |seq: &[RightsRecord], agree: bool| {
+            let folded = fold_route(seq);
+            let (merged, before_last) = single_route(seq);
+            if agree {
+                assert_eq!(
+                    triple(&folded),
+                    triple(&merged),
+                    "routes disagree on {seq:?}"
+                );
+            }
+            let fold_sources: Vec<&RightsRecord> = seq.iter().collect();
+            assert!(
+                rule_holds(&folded, &fold_sources),
+                "the credit-paired license does not stand on the fold route: {seq:?} -> {folded:?}"
+            );
+            let last = seq.last().expect("a sequence of two or more");
+            let single_sources: [&RightsRecord; 2] = [&before_last, last];
+            assert!(
+                rule_holds(&merged, &single_sources),
+                "the credit-paired license does not stand on the single-merge route: {seq:?} -> {merged:?}"
+            );
+            // The round-9 invariants on the folded
+            // record (where the routes agree, they
+            // hold for the merged record too).
+            let sources = &fold_sources;
+            if folded.children_present == Some(true) {
+                if folded.credit_text.trim().is_empty() && folded.license != LicenseKind::Unknown {
+                    assert!(
+                        license_vouched(&folded.license, &folded.credit_text, sources),
+                        "unvouched license stands beside children: {seq:?} -> {folded:?}"
+                    );
+                }
+                let bearer = sources
+                    .iter()
+                    .any(|r| r.children_present == Some(true) && rights_permission_noted(r));
+                if !folded.credit_text.trim().is_empty() {
+                    let credit_from_kids = sources.iter().any(|r| {
+                        r.credit_text == folded.credit_text && r.children_present == Some(true)
+                    });
+                    assert!(
+                        credit_from_kids || bearer,
+                        "manufactured credit: {seq:?} -> {folded:?}"
+                    );
+                }
+                if matches!(
+                    folded.license,
+                    LicenseKind::ChurchOwned | LicenseKind::PublicDomain | LicenseKind::Cc0
+                ) {
+                    let license_from_kids = sources
+                        .iter()
+                        .any(|r| r.license == folded.license && r.children_present == Some(true));
+                    assert!(
+                        license_from_kids || bearer,
+                        "manufactured license: {seq:?} -> {folded:?}"
+                    );
+                }
+            }
+            if !folded.asserted_by.trim().is_empty() || !folded.asserted_at.trim().is_empty() {
+                let supplier_stands = sources.iter().any(|r| {
+                    !r.asserted_by.trim().is_empty()
+                        && r.asserted_by == folded.asserted_by
+                        && (r.license == folded.license
+                            || (!r.credit_text.trim().is_empty()
+                                && r.credit_text == folded.credit_text))
+                });
+                assert!(supplier_stands, "orphan assertion: {seq:?} -> {folded:?}");
+            }
+        };
+        let sequences_over = |pool: &[RightsRecord], len: usize| -> Vec<Vec<RightsRecord>> {
+            let n = pool.len() as u64;
+            let count = n.pow(len as u32);
+            let mut out = Vec::with_capacity(count as usize);
+            for mut code in 0..count {
+                let mut seq: Vec<RightsRecord> = Vec::with_capacity(len);
+                for _ in 0..len {
+                    seq.push(pool[(code % n) as usize].clone());
+                    code /= n;
+                }
+                out.push(seq);
+            }
+            out
+        };
+        // (1) and (3) over the full pool, lengths 2
+        // and 3; (2) in full at length 2.
+        for len in 2usize..=3 {
+            for seq in sequences_over(&pool, len) {
+                check_seq(&seq, len == 2);
+            }
+        }
+        // (2) over the paired family, lengths 2 to
+        // 4: the kids record, the attribution
+        // licenses with and without their credits,
+        // and the paired credit records.
+        let family: Vec<RightsRecord> = [1usize, 2, 3, 4, 5, 16, 17, 19]
+            .iter()
+            .map(|&i| pool[i].clone())
+            .collect();
+        for len in 2usize..=4 {
+            for seq in sequences_over(&family, len) {
+                check_seq(&seq, true);
+            }
+        }
+        // The lane's named shape as a readable
+        // witness beside the brute force: two
+        // attribution licenses and the credit record
+        // — the credit record's license stands on
+        // both routes, in both orders.
+        let first_license = arch(Some(true), ccbysa(), "");
+        let credit_record = arch(Some(true), ccby(), "Photo by A");
+        for seq in [
+            vec![first_license.clone(), credit_record.clone()],
+            vec![credit_record.clone(), first_license.clone()],
+        ] {
+            let expected = (Some(true), ccby(), "Photo by A".to_string());
+            assert_eq!(triple(&fold_route(&seq)), expected, "fold witness {seq:?}");
+            let (merged, _) = single_route(&seq);
+            assert_eq!(triple(&merged), expected, "single witness {seq:?}");
+        }
     }
 
     #[test]

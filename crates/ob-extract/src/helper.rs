@@ -173,6 +173,38 @@ mod tests {
         }
     }
 
+    /// TEST SUPPORT ONLY (round 10, R10-9): run one
+    /// of this module's fake-helper calls, retrying a
+    /// small bounded number of times when the failure
+    /// is the write-to-exec race — the script this
+    /// test itself just wrote is momentarily busy
+    /// (ETXTBSY, "Text file busy (os error 26)"), a
+    /// property of the fixture, not of the code under
+    /// test (round-10 review, Q2: unique paths did
+    /// not cure it; a bounded retry took the probe to
+    /// 0 in 1600). The retry lives HERE, in the test
+    /// harness, and nowhere else: the production
+    /// spawn path (`run_helper` and everything above
+    /// it) gains no retry, so a real helper that
+    /// cannot start on a user's machine still says so
+    /// at once, in words. Any failure that is not the
+    /// busy window is returned on the first attempt,
+    /// and a helper that never becomes runnable still
+    /// fails the test loudly.
+    #[cfg(unix)]
+    fn run_fake_helper<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+        let mut tries = 0usize;
+        loop {
+            tries += 1;
+            match attempt() {
+                Err(err) if err.contains("Text file busy") && tries < 6 => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                other => return other,
+            }
+        }
+    }
+
     const GOOD_DUMP: &str = "{\"schema_version\":2,\"source_kind\":\"pdf\",\
         \"source_name\":\"fake.pdf\",\"source_bytes\":3,\"extractor\":\"fake\",\
         \"pages\":[],\"spans\":[]}";
@@ -181,7 +213,8 @@ mod tests {
     #[test]
     fn a_good_fake_helper_still_answers_through_the_new_runner() {
         let helper = fake_helper("good", &format!("#!/bin/sh\nprintf '%s' '{GOOD_DUMP}'\n"));
-        let dump = dump_pdf(&helper, Path::new("whatever.pdf")).expect("the dump parses");
+        let dump = run_fake_helper(|| dump_pdf(&helper, Path::new("whatever.pdf")))
+            .expect("the dump parses");
         assert_eq!(dump.schema_version, 2);
         assert!(dump.pages.is_empty());
         clean_up(&helper);
@@ -192,8 +225,10 @@ mod tests {
     fn a_sleeping_helper_meets_the_deadline() {
         let helper = fake_helper("sleepy", "#!/bin/sh\nsleep 30\n");
         let start = Instant::now();
-        let err = run_helper_with_timeout(&helper, &["x.pdf"], Duration::from_secs(1))
-            .expect_err("a sleeping helper cannot succeed");
+        let err = run_fake_helper(|| {
+            run_helper_with_timeout(&helper, &["x.pdf"], Duration::from_secs(1))
+        })
+        .expect_err("a sleeping helper cannot succeed");
         assert!(err.contains("did not answer in 1 seconds"), "{err}");
         assert!(
             start.elapsed() < Duration::from_secs(15),
@@ -211,8 +246,8 @@ mod tests {
         // at the version check inside from_json.
         let body = GOOD_DUMP.replace("\"schema_version\":2", "\"schema_version\":999");
         let helper = fake_helper("future", &format!("#!/bin/sh\nprintf '%s' '{body}'\n"));
-        let err =
-            dump_pdf(&helper, Path::new("whatever.pdf")).expect_err("version 999 is not readable");
+        let err = run_fake_helper(|| dump_pdf(&helper, Path::new("whatever.pdf")))
+            .expect_err("version 999 is not readable");
         assert!(err.contains("newer format (version 999)"), "{err}");
         clean_up(&helper);
     }
@@ -229,7 +264,8 @@ mod tests {
             "#!/bin/sh\necho '{shout}' >&2\necho 'second line junk' >&2\necho 'third line' >&2\nexit 3\n"
         );
         let helper = fake_helper("noisy", &script);
-        let err = run_helper(&helper, &["x.pdf"]).expect_err("exit 3 is a failure");
+        let err =
+            run_fake_helper(|| run_helper(&helper, &["x.pdf"])).expect_err("exit 3 is a failure");
         assert!(
             err.starts_with("the PDF reader could not read that file: z"),
             "{err}"
@@ -237,5 +273,52 @@ mod tests {
         assert!(!err.contains("second line junk"), "{err}");
         assert!(err.chars().count() <= 245, "the quote is capped: {err}");
         clean_up(&helper);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_fake_helper_retry_answers_only_a_busy_spawn() {
+        // Round 10 (R10-9): the harness retry's
+        // behavior, pinned on the error value itself
+        // (the busy window is a race; a test cannot
+        // schedule it, so the retry is fed the words
+        // a busy spawn produces). A busy failure
+        // twice, then an answer: the answer stands,
+        // on the third attempt.
+        let busy = "the PDF reader is here but could not start: \
+                    Text file busy (os error 26)"
+            .to_string();
+        let attempts = std::cell::Cell::new(0usize);
+        let out = run_fake_helper(|| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() < 3 {
+                Err(busy.clone())
+            } else {
+                Ok(7)
+            }
+        })
+        .expect("the busy window closes");
+        assert_eq!(out, 7);
+        assert_eq!(attempts.get(), 3);
+        // A busy failure that never closes: the
+        // error still surfaces, after exactly the
+        // bounded number of attempts.
+        let attempts = std::cell::Cell::new(0usize);
+        let err = run_fake_helper(|| {
+            attempts.set(attempts.get() + 1);
+            Err::<i32, String>(busy.clone())
+        })
+        .expect_err("a helper that never starts still fails");
+        assert!(err.contains("Text file busy"), "{err}");
+        assert_eq!(attempts.get(), 6);
+        // Any other failure: no retry at all.
+        let attempts = std::cell::Cell::new(0usize);
+        let err = run_fake_helper(|| {
+            attempts.set(attempts.get() + 1);
+            Err::<i32, String>("the PDF reader could not read that file".to_string())
+        })
+        .expect_err("a plain failure is a failure");
+        assert_eq!(err, "the PDF reader could not read that file");
+        assert_eq!(attempts.get(), 1);
     }
 }

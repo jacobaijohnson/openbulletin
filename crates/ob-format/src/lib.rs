@@ -1338,6 +1338,60 @@ mod tests {
     }
 
     #[test]
+    fn r8_fold_orders_compose_identically_on_load() {
+        // Round 8 (R8-9 / R8-R6): a real .obd whose
+        // document.json carries three records for one
+        // picture — A {children, CC BY, no credit},
+        // T {title only}, C {children, credit} — in
+        // both orders. The load fold judges the
+        // composed rule once, on the folded record, so
+        // both orders load as CC BY + credit + title.
+        let bytes: &[u8] = b"picture bytes the r8 fold orders share";
+        let hash = ob_model::sha256_hex(bytes);
+        let credit_text = "Photo by Alice".to_string();
+        let title_text = "Harvest supper".to_string();
+        let a = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::CcBy("4.0".into()),
+            ..Default::default()
+        };
+        let t = RightsRecord {
+            title: title_text.clone(),
+            ..Default::default()
+        };
+        let c = RightsRecord {
+            children_present: Some(true),
+            credit_text: credit_text.clone(),
+            ..Default::default()
+        };
+        let asset = |rights: RightsRecord| Asset {
+            sha256: hash.clone(),
+            kind: AssetKind::Picture,
+            media_type: "image/png".into(),
+            rights,
+        };
+        let dir = scratch("dup-r8-fold");
+        for (tag, records) in [
+            ("a-t-c", vec![a.clone(), t.clone(), c.clone()]),
+            ("a-c-t", vec![a.clone(), c.clone(), t.clone()]),
+        ] {
+            let mut doc = test_doc();
+            doc.assets = records.into_iter().map(asset).collect();
+            doc.asset_bytes.insert(hash.clone(), bytes.to_vec());
+            let file = dir.join(format!("{tag}.obd"));
+            save(&doc, &file).expect("the file saves");
+            let loaded = load(&file).expect("the file loads");
+            assert_eq!(loaded.assets.len(), 1, "{tag}: one record after the fold");
+            let rights = &loaded.assets[0].rights;
+            assert_eq!(rights.children_present, Some(true), "{tag}");
+            assert_eq!(rights.license, LicenseKind::CcBy("4.0".into()), "{tag}");
+            assert_eq!(rights.credit_text, credit_text, "{tag}");
+            assert_eq!(rights.title, title_text, "{tag}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn r5_duplicate_records_fold_in_a_sheet_file_too() {
         // Round 5 (RT5-1): the same fold in an .obdi.
         // The host holds two records for the sheet's

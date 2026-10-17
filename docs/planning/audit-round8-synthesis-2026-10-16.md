@@ -381,3 +381,73 @@ full suite + clippy unpiped before accepting. Round
 9 (verify / review / red team over the new HEAD)
 follows R8-D. The Tier-2 final gate runs only after
 a Wonder round returns zero BLOCKER + zero MAJOR.
+
+## Shipped addendum, R8-A (2026-10-16)
+
+R8-3 + R8-9 shipped in one batch, in
+`crates/ob-model/src/lib.rs`, with the load-fold pin
+in `crates/ob-format` and the merge wording in
+`docs/FORMAT.md` updated in the same commit.
+
+- R8-3: the composed rule's fallback arms are
+  uniform. `LicensedReprint` now stands as a
+  fallback only under the condition the
+  Cc0/PublicDomain/ChurchOwned arm already applied —
+  its own source record notes children, or a
+  children-bearing record noted a permission — and
+  an unvouched LicensedReprint falls to Unknown.
+  The review probe verbatim (standing {children,
+  CC BY 4.0, no credit} merged with {LicensedReprint
+  only}) now composes to Unknown, at merge level
+  and through a fold
+  (`r8_unvouched_licensed_reprint_fallback_falls`,
+  which also pins the vouched control: a
+  LicensedReprint from a children-bearing source
+  stands). The cleared controls are pinned in
+  `r8_fallback_controls_from_the_cleared_shapes`:
+  ChurchOwned from a non-children source falls, a
+  CC BY-SA "other" license falls, and the mirror
+  direction (standing LicensedReprint, incoming
+  CC BY with a fence-refused credit) leaves the
+  standing license and refuses the credit. The
+  vouched-CC0 fallback and the own-credit control
+  were already pinned by the R7-A tests and pass
+  unchanged.
+- R8-9: `fold_duplicate_asset_records` runs its
+  merges with the composed togetherness step
+  deferred (`merge_rights_records_inner` with the
+  defer flag; fills, fence reversions, the incoming
+  pairing, and the assertion rule run per merge as
+  before) and judges that step once, at the fold's
+  end, on each record a merge actually composed
+  (`judge_folded_composed_license`): an attribution
+  license beside a children note with an empty
+  credit falls — to a license one of the fold's own
+  records carried that stands under the uniform
+  fallback condition above (the fallback a single
+  merge would have chosen for a two-record fold),
+  and otherwise to Unknown. A record no duplicate
+  folded into is untouched. Single merges outside a
+  fold (including `add_asset`) call the undeferred
+  merge and keep the R7-A behavior byte-for-byte.
+  Pins: `r8_fold_judges_the_composed_rule_once_at_the_end`
+  (both fold orders compose to CC BY + credit +
+  title; the same [A, T, C] sequence through
+  `add_asset` keeps the pairwise outcome, license
+  Unknown with the credit standing) and
+  `r8_fold_orders_compose_identically_on_load` in
+  ob-format (both orders through a real .obd save
+  and load fold). The R7-A three-record fold pin
+  `r7_three_record_fold_drops_the_orphaned_license`
+  passes unchanged: its credit is fence-refused, so
+  the final judging still drops that license.
+- Changed pre-existing tests: none. Every R7-A pin,
+  and every other pre-existing test, passes
+  unmodified.
+- Numbers: full workspace suite 594 passed /
+  0 failed (baseline 590 / 0; +4 new tests: 3 in
+  ob-model, 1 in ob-format), cargo's own exit code
+  0, read unpiped. Clippy (`cargo clippy
+  --workspace --all-targets`) clean, exit 0, no
+  warnings. `cargo fmt --all` run before the final
+  run.

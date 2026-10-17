@@ -1,0 +1,232 @@
+# Round 6 audit synthesis, 2026-10-16
+
+Over HEAD `012ffdc` (round 5 fixes closed). Three blind
+Wonder lanes: verify, review, red team. Reports:
+`~/workspace/openbulletin-audit-wave3/round6-{verify,review,redteam}.md`.
+
+**Verdict: 2 BLOCKER, 10 MAJOR, ~9 MINOR. The exit bar
+(zero BLOCKER, zero MAJOR) is NOT met.** Round 7 follows
+the fixes.
+
+VERIFY: 28/28 round-5 claims VERIFIED, zero FAILED
+(R5-A 7/7, R5-B 8/8, R5-C 6/6, R5-D 7/7). Full suite
+532 passed, 0 failed. Booklet bytes exact (31,717 /
+34,977). Music live through the real helper: 237
+noteheads, staves 6.4-6.6 mm. The verify lane also
+filed the probe note that became R6-1: the merge fence
+is directional.
+
+Process note: the Windows bundle from `012ffdc` (run
+38993904354) completed successfully, gate included.
+
+## The BLOCKERs (both in rights composition)
+
+**R6-1 / RT6-1. The fence faces one way.** The R5-A
+fence checks only the EXISTING record ("into a record
+noting children with no permission noted, the
+dangerous fills do not go"). Compose in the other
+order, a credit-bearing record first and the
+children-noted record second, and the children note
+fills in by OR beside a permission no source record
+ever claimed for a children picture. All three lanes
+found it (verify probe note; review BLOCKER; red team
+BLOCKER, end to end through load and the real
+`export_html`: the picture publishes, pictures=1,
+where the children-first order holds it back,
+children_left_out=1). Every composition path inherits
+it: load fold, sheet attach, add_asset, sidecar
+absorb. Fix in R6-A: the fence becomes a property of
+the COMPOSED record. After any merge, if the result
+notes children and notes a permission, some single
+source record must have carried both the children
+note and that permission together; if none did, the
+permission-satisfying fields that arrived from a
+record without the children note do not stand
+(credit_text reverts to the children-bearing side's,
+a permission license likewise). All orders and
+three-record folds are the test.
+
+**RT6-2. The fence splits a license from its credit.**
+Into a children-noted record, the fence blocks the
+incoming credit line but lets its CC BY license
+through (CC BY is not a permission license, so it was
+never fenced). The composed record then claims a CC
+BY license whose required attribution was discarded,
+and fold-on-load saves that state onward permanently.
+Fix in R6-A: a license and the credit line that
+belongs to it travel together or not at all. When a
+merge would take an incoming license but the fence
+(or anything else) refuses that same record's credit
+line, the license does not fill either. Applies to
+every merge, fenced or not: no path may hold a
+license while dropping the credit that came with it.
+
+## The MAJORs
+
+**Presence, as one system (R6-B).** Round 5 judged
+presence doc-wide; four findings are that choice
+surfacing in different rooms, and the fix is one:
+presence is judged against where the part would
+land.
+
+- R6-2: a loose-sheet part's words never enter
+  `doc.stories`, so a contribution carrying one
+  reopens as RecordedButWordsGone forever, under a
+  plan line in the same window saying the sheet is
+  kept safe. A loose part's landing IS its filing:
+  the claim must judge loose parts by the record and
+  story parts by presence, and a loose-only
+  contribution is AlreadyIn exactly when recorded.
+- R6-3 + RT6-4: hymn presence matches the composed
+  value anywhere in any story: an announcement
+  mentioning ELW 500, or the template's own standing
+  432 line, makes a music slip "already in" and the
+  named line never gets its hymn. Presence for a
+  hymn line is a hymn line: in the service story,
+  carrying the composed value, and when the slip
+  names a line, on a line with that name (or an
+  appended Hymn line). Nothing outside the service
+  story's hymn lines counts.
+- RT6-4 (second half): an announcement assembled
+  from standing fragments in three different stories
+  reads AlreadyIn and can never be applied as a
+  unit. With target-aware presence (the story the
+  part would land in), scattered fragments no longer
+  swear the part is in.
+- RT6-3: Accept of a partly present part re-appends
+  every paragraph, printing the present ones twice
+  (the longer re-send and the one-word-changed
+  re-send both demonstrated). Landing becomes
+  per-paragraph: paragraphs already in the target
+  story are skipped, the missing ones land, and a
+  part whose paragraphs all end up in its target is
+  complete for the record.
+- Review MINOR folded in: the review's first line
+  and the per-part plan lines can contradict (a
+  RecordedButWordsGone headline over plan lines
+  saying "already in"). One presence notion, used by
+  the claim, the plan, and the apply alike, ends
+  the contradiction by construction.
+
+**Serving lines (R6-C).**
+
+- RT6-5: `participant_value`'s rename bridge is
+  positional; a rename plus a front insertion crosses
+  built-in tokens ({Sunday.readers} printing another
+  line's names). The bridge must stop guessing.
+  Pairings are KNOWN at save time (R5-C computes
+  them): record them. The profile gains an alias
+  record (old slug to current slug, written when a
+  pairing is made), the token lookup consults it,
+  and the positional bridge is deleted. An in-place
+  rename keeps its old token working through the
+  alias (the R3-C pin), and a token that cannot
+  resolve by slug or alias resolves empty, never to
+  another line's names.
+- R6-4: the slug guard's "line itself" test matches
+  display names and ignores rename history, both
+  ways: Ushers renamed to "Children's message" passes
+  while the built-in lives as "Kids message" (the
+  token then prints the ushers' names), and the
+  renamed built-in itself is refused its own name
+  back. Claimed-ness is a question about resolution,
+  not spelling: a built-in's canonical slug is
+  claimed by the line its token currently resolves
+  to (by slug or by the new alias record), and only
+  that line may take a name deriving it.
+- R6-5 + RT6-6: the unfollowed machinery strands
+  people. Two in-place renames plus one ADDED line
+  read as ambiguous (nothing moved) because the
+  pairing test compares raw lists; a line DELETED in
+  the same save as a rename is reported "unfollowed"
+  instead of removed, its names lingering in the map
+  to reattach later; and the status sentence's cure
+  ("rename one line at a time") cannot reach values
+  stranded under a dead name. The rework: pairing
+  anchors on the names present in both lists, so
+  additions and removals elsewhere do not create
+  ambiguity; a rename that still cannot pair is NOT
+  TAKEN (the saved list keeps the old name, the
+  values stay attached to a living line, and the
+  status names the lines and the remedy, which now
+  works); a name gone with no rename candidate is a
+  removal, cleared and named as removed, in the same
+  save as any renames.
+
+**Dates and counts (R6-D).**
+
+- R6-6 + RT6-8/9: date framing gaps. "on Monday,
+  October 25, 2026" drops its weekday silently (no
+  mismatch, no warning). "Sunday after October 25,
+  2026 (Monday)", and even "(Sunday)", collapse to
+  NoSundayNamed with no mismatch and no arm, on both
+  lines; "the Sunday after next Sunday" likewise.
+  Framing grows: an optional "on" before a framing
+  weekday; the Sunday-after form composes with the
+  trailing-weekday check (the weekday describes the
+  date it follows, so an agreeing one resolves and a
+  disagreeing one records the mismatch) and with a
+  relative-Sunday base (the shape is remembered and
+  the verdict resolves and arms it like any named
+  Sunday).
+- RT6-7: `raw_entry_count` trusts the central
+  directory's declared size fields; lying fields
+  (plain EOCD and zip64) let 9,001 and 200,001
+  entries load. The count must be walked, not read:
+  count the directory records themselves up to the
+  end record's position, with the same junk/shift
+  tolerance the zip reader itself applies (review
+  MINOR: prepended and trailing junk), refusing
+  past the cap as soon as the walk passes it.
+
+## MINORs (all to R6-D unless noted)
+
+- SundayInWords accepts never arm, and its sentence
+  says "Sunday" even for a non-Sunday occasion: give
+  it the two-click arm with its reading stated, and
+  use the occasion's own word where the machinery
+  has it.
+- The wanted-font Check note names one substitute
+  when matching styles resolve to different tiers;
+  name what the worst style resolves to (the R5-D
+  oracle already computes it).
+- The profile save's "nothing else was changed"
+  sentence overclaims in a multi-field edit pass;
+  scope it to what it covers.
+- The fake-helper ETXTBSY flake fired repeatedly
+  through rounds 5 and 6 verification. Cure it in
+  the test harness: each fake-helper test gets its
+  own script file, so parallel tests stop racing on
+  one path. (Test infrastructure only; the flake was
+  never a product defect.)
+- Identical line under two headings in one
+  contribution: DISPOSITIONED by the R6-B design.
+  Landing skip is target-scoped, so the second
+  heading's copy lands in its own target; the claim
+  stays per part against its target.
+
+## Held and accepted (do not re-report in round 7)
+
+Everything on the round-5 held list stands. The
+R5-C swapped-pair residual stands as recorded, and
+the review lane's extension is noted without
+changing its disposition: the blind spot covers any
+rename-only cycle, for the same reason (no
+list-only signal separates a cycle from in-place
+renames); the alias record in R6-C does not cure
+it, because the pairing that would be recorded is
+the ambiguous one. Its cure remains row identity in
+the editor phase.
+
+## Fix batches (one writer at a time, in order)
+
+- **R6-A** rights composition integrity: R6-1, RT6-2.
+- **R6-B** target-aware presence: R6-2, R6-3, RT6-3,
+  RT6-4 (presence half).
+- **R6-C** serving-line identity, second pass: RT6-5,
+  R6-4, R6-5, RT6-6.
+- **R6-D** dates, counts, small print: R6-6,
+  RT6-8/9, RT6-7, the MINORs above, the fake-helper
+  script cure.
+
+Baseline entering the fixes: 532 tests, clippy clean.

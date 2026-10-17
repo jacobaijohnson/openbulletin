@@ -404,3 +404,23 @@ and `crates/ob-format/src/lib.rs` (R13-8, test-only).
   other removed lines are the production code this batch rewrote
   (`plain_multi_date_reading`'s framed-run scan, the pairs loop's
   event recording in the migration) and their comments.
+
+## Coordinator close (2026-10-17)
+
+All three batches shipped and were independently re-verified by the
+coordinator (full unpiped suite + clippy -D warnings at each step): R13-A
+`cd531ce` (677 tests; governor classes completed structurally, unspent
+governors survive clause breaks; zero changed pins), R13-B `ac08ea2` (681
+tests; chain indexed once per walk — 200k fakes 6.80 s → 152.9 ms — and
+twin-keyed dedupe with a total-driven walkable test; zero changed pins),
+R13-C `046ebf7` (685 tests; mixed plain signals, same-target suppression
+with segment-order events; one flagged change by disposition, the timing
+hang guard). Between R13-A and R13-B the V3b app icon Jacob chose was
+adopted (`63f1468`: full set in crates/ob-app/assets/icon/, master in
+icon.png, openbulletin.ico in the Windows bundle, transparent glyph in
+docs/assets/ and the README header; .icns noted as later work). Round 14
+audits these fixes; its briefs re-probe the wider governor net R13-A left
+outside its attested set (put off, postponed, delay, omit, disregard,
+forget, nope; trailing cancellation verbs in governed_after; hyphenated
+compounds) so each gets a disposition. The Tier-2 final gate runs only
+after a round returns zero BLOCKER + zero MAJOR.

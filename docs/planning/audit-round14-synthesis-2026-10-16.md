@@ -291,3 +291,21 @@ final tree with the same totals). Clippy
 clean (exit 0). Neither the fake-helper ETXTBSY flake
 nor a timing-pin contention failure fired in either
 full run, so no solo-rerun adjudication was needed.
+
+## Coordinator close (2026-10-17)
+
+Both batches shipped and were independently re-verified by the
+coordinator (full unpiped suite + clippy -D warnings at each step):
+R14-A `737cd68` (690 tests; verb set completed, stem morphology,
+governed_after parity, nope, hyphen-split tests, possessive wont,
+multi-clause filler reach-back; zero changed pins; noun derivations
+pinned as non-governing; called off / put back / reschedule / move
+recorded as outside the disposition's set for round-15 grading),
+R14-B `585b084` (693 tests; mixed-signal relatives anchor at the
+file's modification date when the parse carries one, future/invalid
+fall back to today, same-week parses field-for-field identical; the
+r13b flat caps became the 300 s hang guard, one flagged change by
+disposition). Round 15 audits these fixes and dispositions the
+remaining verb family (called off, put back, push back, reschedule,
+move) plus stem-morphology edges. The Tier-2 final gate runs only
+after a round returns zero BLOCKER + zero MAJOR.

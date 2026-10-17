@@ -1872,6 +1872,20 @@ fn today_simple() -> ob_model::SimpleDate {
     }
 }
 
+/// A file's modification time (seconds since the
+/// epoch, as the inbox scan records it) as a calendar
+/// date in local time — the anchor a contribution
+/// file's mixed-signal relative phrases resolve
+/// against (round 14, R14-6). Zero or unconvertible
+/// times carry no date: the parse falls back to today.
+fn file_date_of(modified_secs: u64) -> Option<ob_model::SimpleDate> {
+    if modified_secs == 0 {
+        return None;
+    }
+    let utc = chrono::DateTime::from_timestamp(modified_secs as i64, 0)?;
+    Some(simple_of(utc.with_timezone(&chrono::Local).date_naive()))
+}
+
 /// A chrono date in the model's own date type.
 fn simple_of(d: chrono::NaiveDate) -> ob_model::SimpleDate {
     use chrono::Datelike;
@@ -5470,7 +5484,9 @@ fn scan_contribution_folder(
             Ok(bytes) => {
                 let fp = content_fingerprint(&bytes);
                 let text = String::from_utf8_lossy(&bytes).into_owned();
-                let parsed = ob_extract::contribution::parse_contribution(&text, today);
+                let file_date = file_date_of(modified_secs);
+                let parsed =
+                    ob_extract::contribution::parse_contribution_anchored(&text, today, file_date);
                 (fp, text, parsed)
             }
             Err(reason) => (String::new(), String::new(), Err(reason)),
@@ -20896,6 +20912,65 @@ mod settings_tests {
         );
         assert!(dir.join("sue.md").exists(), "reading never moves a file");
         assert!(dir.join("empty.md").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r14b_inbox_scan_anchors_mixed_relatives_at_the_file_mtime() {
+        // Round 14 (R14-6): the scan threads each
+        // file's modification date into its parse, so
+        // a mixed line in a file dated Friday,
+        // October 16, 2026 — scanned a week late,
+        // today October 23 — resolves its relative
+        // phrase as written: "next Sunday" is
+        // October 25, the framed date it restates,
+        // and the line reads plainly for October 25.
+        let dir =
+            std::env::temp_dir().join(format!("openbulletin-r14b-inbox-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("sue.md");
+        std::fs::write(
+            &path,
+            "From: Sue\nFor Sunday: next Sunday and October 25, 2026\n\n## Announcement\n\nHi.\n",
+        )
+        .expect("write");
+        let noon = chrono::NaiveDate::from_ymd_opt(2026, 10, 16)
+            .expect("date")
+            .and_hms_opt(12, 0, 0)
+            .expect("noon");
+        let stamp = <chrono::Local as chrono::TimeZone>::from_local_datetime(&chrono::Local, &noon)
+            .single()
+            .expect("local noon is unambiguous")
+            .timestamp();
+        let file = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open written file");
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(stamp as u64))
+            .expect("set the file's mtime to October 16");
+        let late = ob_model::SimpleDate {
+            year: 2026,
+            month: 10,
+            day: 23,
+        };
+        let items = scan_contribution_folder(&dir, late, false);
+        assert_eq!(items.len(), 1, "the one part is listed");
+        let parsed = items[0].parsed.as_ref().expect("the part parses");
+        assert_eq!(
+            parsed.for_date,
+            Some(ob_model::SimpleDate {
+                year: 2026,
+                month: 10,
+                day: 25,
+            }),
+            "the file's date anchors the mixed line, not scan day"
+        );
+        assert_eq!(
+            parsed.for_sunday_second_dates,
+            Vec::<ob_model::SimpleDate>::new(),
+            "the signals agree at the file's date — nothing is noted"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

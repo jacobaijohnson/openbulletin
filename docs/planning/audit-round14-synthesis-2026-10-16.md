@@ -192,3 +192,102 @@ same totals). Clippy `cargo clippy --workspace --all-targets
 -- -D warnings` clean (exit 0). Neither the fake-helper
 ETXTBSY flake nor a timing-pin contention failure fired in
 either full run, so no solo-rerun adjudication was needed.
+
+## Shipped addendum, R14-B — 2026-10-17
+
+Batch R14-B (anchor + timing) shipped: R14-6 and R14-7.
+R14-A (governors) is not in this batch.
+
+**R14-6 — the anchor rule, exactly.** A new parse entry,
+`parse_contribution_anchored(text, today, file_date)`
+in `crates/ob-extract/src/contribution.rs`, takes the
+contribution file's modification date when the caller
+has one; `parse_contribution(text, today)` keeps its
+signature and passes None. The effective anchor is the
+file date when it is a real calendar date and is not
+after `today`, and `today` in every other case — no
+file date, an invalid date, or a file date in the
+future: the anchor never stands in the future beyond
+today. The anchor reaches only
+`plain_multi_date_reading`, and there it re-resolves
+a relative signal only when the line proves truly
+mixed — at least one framed signal standing beside at
+least one pure relative signal ("next Sunday",
+"this Sunday", a bare "Sunday", "the Sunday after
+next/this Sunday"). Framed signals still read as
+written against `today`, a Sunday-after phrase over a
+framed base still resolves off that base, the
+relative-only readings (restated phrases, the bare
+in-words line, differing relatives) are unchanged
+against `today`, and the standing in-words reading —
+anchored on the open bulletin at verdict time — is
+untouched. When the file date and today agree, the
+parse is field-for-field identical to the standing
+parse (pinned across the round-13 family, below).
+
+In the app, the one file-reading flow threads it:
+`scan_contribution_folder` (`crates/ob-app/src/main.rs`)
+already read each file's mtime as `modified_secs` for
+version ordering; it now converts that same value to
+a local calendar date (`file_date_of`: zero or
+unconvertible carries None) and passes it to the
+anchored parse. The paste path and the review's edit
+re-parse carry no file and keep the standing
+`parse_contribution` at today.
+
+Pinned witnesses (file date Friday, October 16, 2026;
+today Friday, October 23, 2026): "next Sunday and
+October 25, 2026" reads for **October 25 with nothing
+noted** — at the file's date the relative phrase
+restates the framed date — where the unanchored
+control reads November 1 with October 25 demoted to
+the note; the reversed order likewise (anchored, the
+spurious November 1 note the late parse manufactures
+is gone). The distinct-signal witnesses keep their
+notes at the anchor: "next Sunday and November 1,
+2026" reads for **October 25 with November 1 noted**,
+in either order and on the Keep-through line. "The
+Sunday after next Sunday and November 1, 2026" reads
+November 1 plainly, where the unanchored control read
+November 8 over it. Future, invalid, and missing file
+dates all fall back to the today reading (pinned).
+
+**R14-7 — timing, test-only.** In
+`crates/ob-format/src/lib.rs`, the pin
+`r13b_chain_cost_no_longer_scales_with_chain_length`
+(**FLAGGED pre-existing test change, by disposition —
+the only one in this batch**) had its two flat
+`Duration::from_secs(5)` caps (the chain8000-40k row
+and the chain8000-200k row) become a 300 s hang guard,
+exactly as R13-8 treated the r10 pin: the cap now
+catches a hung or runaway load only. Its outcome
+assertions (the honest bulletin loads in every row)
+and its relative time-class budget (the long-chain
+row against the short-chain row) are unchanged in
+strength and stay primary. A comment at the site
+records why: in round 14 the 5 s caps failed under
+contention in two lanes at 5.27–5.82 s under loads
+~11–15, outcomes passing. The other r13b pins carry
+no wall-clock budgets, so no other budget moved; the
+r12b pins' budgets — relative and absolute alike —
+stand untouched, as they have not failed.
+
+Tests: three new pins — `r14b_mixed_relatives_anchor_at_the_file_date`
+and `r14b_same_week_file_date_is_identical` in
+`contribution.rs`, and
+`r14b_inbox_scan_anchors_mixed_relatives_at_the_file_mtime`
+in `ob-app` (a file whose mtime is set to October 16,
+scanned with today October 23, reads its mixed line
+for October 25). **One flagged pre-existing test
+change** (the r13b budget above, by disposition); the
+r13c pins pass unmoved, as does every other
+pre-existing test.
+
+Numbers: baseline 690 tests passing (HEAD `737cd68`);
+after R14-B, **693 passed / 0 failed** (`cargo test
+--workspace`, unpiped, cargo exit 0, run twice on the
+final tree with the same totals). Clippy
+`cargo clippy --workspace --all-targets -- -D warnings`
+clean (exit 0). Neither the fake-helper ETXTBSY flake
+nor a timing-pin contention failure fired in either
+full run, so no solo-rerun adjudication was needed.

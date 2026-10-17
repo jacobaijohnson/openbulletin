@@ -2202,9 +2202,27 @@ fn relative_sunday_date(next: bool, today: SimpleDate) -> SimpleDate {
 /// phrases naming DIFFERENT Sundays is not this
 /// shape: a bare relative line keeps its standing
 /// in-words reading, anchored on the bulletin.
+///
+/// Round 14 (R14-6): a MIXED line's relative
+/// phrases resolve against `anchor` — the
+/// contribution file's own date, when the parse
+/// carries one, else `today` (the caller has
+/// already clamped it: never after `today`, and
+/// `today` itself when no usable file date
+/// stands). The anchor applies ONLY here and
+/// ONLY when the line is truly mixed (at least
+/// one framed signal and at least one pure
+/// relative signal): framed signals still read
+/// as written against `today`, a Sunday-after
+/// phrase over a framed base still resolves off
+/// that base, and a line with no framed signal
+/// keeps its standing relative-only reading
+/// against `today`. When anchor and today agree
+/// the reading is identical to the round-13 one.
 fn plain_multi_date_reading(
     core: &str,
     today: SimpleDate,
+    anchor: SimpleDate,
     alternatives: &[SimpleDate],
 ) -> Option<DateLineReading> {
     fn clean(t: &str) -> String {
@@ -2220,6 +2238,14 @@ fn plain_multi_date_reading(
     struct Signal {
         date: SimpleDate,
         framed: bool,
+        // A pure relative phrase's resolution
+        // against `anchor`, when this signal is
+        // one; None for a framed signal and for
+        // a Sunday-after phrase over a framed
+        // base (its date does not turn on any
+        // anchor). Used only when the line
+        // proves mixed, after the scan.
+        anchored: Option<SimpleDate>,
     }
     let mut signals: Vec<Signal> = Vec::new();
     // The token index just past the last signal,
@@ -2250,9 +2276,12 @@ fn plain_multi_date_reading(
             if (which == Some("next") || which == Some("this")) && base_day == Some("sunday") {
                 let base = relative_sunday_date(which == Some("next"), today);
                 let date = first_sunday_after(base);
+                let anchored_base = relative_sunday_date(which == Some("next"), anchor);
+                let anchored = first_sunday_after(anchored_base);
                 signals.push(Signal {
                     date,
                     framed: false,
+                    anchored: Some(anchored),
                 });
                 last_end = i + used;
                 last_framed_sunday = false;
@@ -2264,6 +2293,7 @@ fn plain_multi_date_reading(
                 signals.push(Signal {
                     date,
                     framed: false,
+                    anchored: None,
                 });
                 last_end = end.max(i + 1);
                 last_framed_sunday = false;
@@ -2278,9 +2308,11 @@ fn plain_multi_date_reading(
             && cleaned.get(i + 1).map(String::as_str) == Some("sunday")
         {
             let date = relative_sunday_date(cleaned[i] == "next", today);
+            let anchored = relative_sunday_date(cleaned[i] == "next", anchor);
             signals.push(Signal {
                 date,
                 framed: false,
+                anchored: Some(anchored),
             });
             last_end = i + 2;
             last_framed_sunday = false;
@@ -2292,6 +2324,7 @@ fn plain_multi_date_reading(
                 signals.push(Signal {
                     date: d,
                     framed: true,
+                    anchored: None,
                 });
                 last_end = i + used.max(1);
                 last_framed_sunday = d.weekday() == 0;
@@ -2307,9 +2340,11 @@ fn plain_multi_date_reading(
                 // weekday garnish it is.
                 if cleaned[i] == "sunday" && !(i == last_end && last_framed_sunday) {
                     let date = relative_sunday_date(false, today);
+                    let anchored = relative_sunday_date(false, anchor);
                     signals.push(Signal {
                         date,
                         framed: false,
+                        anchored: Some(anchored),
                     });
                     last_end = i + 1;
                     last_framed_sunday = false;
@@ -2320,6 +2355,20 @@ fn plain_multi_date_reading(
     }
     if signals.len() < 2 {
         return None;
+    }
+    // Round 14 (R14-6): only a truly mixed line —
+    // a framed signal standing beside a pure
+    // relative signal — re-resolves its relative
+    // signals against the anchor. Every other
+    // shape keeps the `today` resolutions the
+    // scan computed.
+    let is_mixed = signals.iter().any(|s| s.framed) && signals.iter().any(|s| s.anchored.is_some());
+    if is_mixed {
+        for s in &mut signals {
+            if let Some(anchored) = s.anchored {
+                s.date = anchored;
+            }
+        }
     }
     let framed_count = signals.iter().filter(|s| s.framed).count();
     if framed_count == 0 {
@@ -2394,7 +2443,7 @@ fn plain_multi_date_reading(
 ///   date, the rest noted (round 12, R12-6);
 ///   NoSundayNamed is reserved for lines naming no
 ///   date.
-fn date_line(raw: &Option<String>, today: SimpleDate) -> DateLineReading {
+fn date_line(raw: &Option<String>, today: SimpleDate, anchor: SimpleDate) -> DateLineReading {
     let (date, weekday_mismatch) = date_line_inner(raw, today);
     let none_reading = DateLineReading {
         date: None,
@@ -2478,7 +2527,7 @@ fn date_line(raw: &Option<String>, today: SimpleDate) -> DateLineReading {
         // Round 12 (R12-6): a plain line naming two
         // framed dates reads its first, the rest
         // noted — it does not read as naming none.
-        if let Some(reading) = plain_multi_date_reading(core, today, &alternatives) {
+        if let Some(reading) = plain_multi_date_reading(core, today, anchor, &alternatives) {
             return reading;
         }
         return DateLineReading {
@@ -2511,7 +2560,8 @@ fn date_line(raw: &Option<String>, today: SimpleDate) -> DateLineReading {
             // primacy on the de-grouped core, with
             // the trailing groups still compared as
             // garnish against the date it reads.
-            if let Some(mut reading) = plain_multi_date_reading(core, today, &alternatives) {
+            if let Some(mut reading) = plain_multi_date_reading(core, today, anchor, &alternatives)
+            {
                 let read = reading.date.expect("the multi-date reading reads");
                 reading.parenthesized_mismatch = mismatch_from_groups(&groups, read, false);
                 return reading;
@@ -2671,6 +2721,28 @@ pub fn split_contribution(text: &str) -> RawContribution {
 /// guess. A contribution with no readable words anywhere
 /// is refused in plain words, like every other importer.
 pub fn parse_contribution(text: &str, today: SimpleDate) -> Result<Contribution, String> {
+    parse_contribution_anchored(text, today, None)
+}
+
+/// Read a contribution whose file's own date is known
+/// (round 14, R14-6): `file_date` — the contribution
+/// file's modification date, when the caller has one —
+/// anchors ONLY the mixed-signal relative resolutions
+/// in `plain_multi_date_reading`. A file date that is
+/// missing, not a real calendar date, or after `today`
+/// falls back to `today`: the anchor never stands in
+/// the future beyond today. Every other reading in
+/// the parse — framed, relative-only, and the standing
+/// in-words memory — is anchored exactly as before.
+pub fn parse_contribution_anchored(
+    text: &str,
+    today: SimpleDate,
+    file_date: Option<SimpleDate>,
+) -> Result<Contribution, String> {
+    let anchor = match file_date {
+        Some(d) if d.is_valid() && d <= today => d,
+        _ => today,
+    };
     let raw = split_contribution(text);
     let styles = default_styles();
     let mut parts: Vec<Part> = Vec::new();
@@ -2692,10 +2764,10 @@ pub fn parse_contribution(text: &str, today: SimpleDate) -> Result<Contribution,
     if parts.is_empty() {
         return Err("This file has no words we can read.".to_string());
     }
-    let for_reading = date_line(&raw.for_sunday, today);
+    let for_reading = date_line(&raw.for_sunday, today, anchor);
     let for_date = for_reading.date;
     let named_weekday_mismatch = for_reading.weekday_mismatch;
-    let kt_reading = date_line(&raw.keep_through, today);
+    let kt_reading = date_line(&raw.keep_through, today, anchor);
     let mut keep_through = kt_reading.date;
     let keep_through_weekday_mismatch = kt_reading.weekday_mismatch;
     let mut keep_through_parenthesized_mismatch = kt_reading.parenthesized_mismatch;
@@ -6445,6 +6517,173 @@ Youth group meets Wednesday at 6 PM.
         let c = parse_contribution(text, today()).expect("parses");
         assert_eq!(c.for_date, None);
         assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+    }
+
+    #[test]
+    fn r14b_mixed_relatives_anchor_at_the_file_date() {
+        // Round 14 (R14-6, review R14-6 + red team
+        // RT14-5): a mixed line's relative phrases
+        // used to resolve against parse day alone.
+        // Parsed a week late — today Friday, October
+        // 23, 2026, for a file dated Friday, October
+        // 16 — "next Sunday and October 25, 2026"
+        // read for November 1, the sender's own
+        // restated explicit date demoted to the
+        // second-date note. Anchored at the file's
+        // date, the relative phrase resolves as it
+        // did when written: against October 16,
+        // "next Sunday" IS October 25, the signals
+        // agree, and the line reads plainly.
+        let late = oct(23);
+        let file_day = oct(16);
+        let text = "For Sunday: next Sunday and October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, late).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "the unanchored control: a week late, the relative phrase wins"
+        );
+        assert_eq!(c.for_sunday_second_dates, vec![oct(25)]);
+        let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(oct(25)),
+            "anchored: the sender's restated date wins"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "the signals agree at the file's date — nothing is noted"
+        );
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        // The reversed order likewise: anchored, the
+        // framed date reads and the relative phrase
+        // restates it, so the spurious November 1
+        // note the late parse manufactures is gone.
+        let text = "For Sunday: October 25, 2026 and next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, late).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "the unanchored control: the late resolution is noted"
+        );
+        let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+        // Distinct signals stay distinct at the
+        // anchor: the relative phrase reads for
+        // October 25 with November 1 noted, in
+        // either order, on both date lines.
+        let text = "For Sunday: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+        let text = "For Sunday: November 1, 2026 and next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)));
+        assert_eq!(c.for_sunday_second_dates, vec![oct(25)]);
+        let text = "Keep-through: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+        assert_eq!(c.keep_through, Some(oct(25)));
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+        // The Sunday-after witness (RT14-5's second
+        // line): anchored, its resolution is the
+        // explicit November 1 it stands beside;
+        // unanchored a week late it read November 8
+        // over that date.
+        let text =
+            "For Sunday: the Sunday after next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, late).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "the unanchored control");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+        let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)));
+        assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+        // A file date in the future, a file date
+        // that is no calendar date, and no file
+        // date at all all fall back to today: the
+        // anchor never stands in the future.
+        let text = "For Sunday: next Sunday and October 25, 2026\n\n## Announcement\n\nHi.\n";
+        for bad in [
+            Some(oct(30)),
+            Some(SimpleDate {
+                year: 2026,
+                month: 2,
+                day: 31,
+            }),
+            None,
+        ] {
+            let c = parse_contribution_anchored(text, late, bad).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{bad:?}: falls back to the today reading"
+            );
+            assert_eq!(c.for_sunday_second_dates, vec![oct(25)], "{bad:?}");
+        }
+        // Held lines: the anchor touches mixed
+        // lines only. A relative-only line keeps
+        // its standing reading against today — the
+        // restated relative phrase resolves to
+        // November 1, the coming "next Sunday" at
+        // parse day — a bare relative line still
+        // reads in words alone, and differing
+        // relatives with no framed signal still
+        // name no Sunday.
+        let text = "For Sunday: next Sunday and next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "relative-only readings are unchanged by the anchor"
+        );
+        let text = "For Sunday: next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+        assert_eq!(c.for_date, None);
+        assert_eq!(c.for_sunday_in_words.as_deref(), Some("next Sunday"));
+        let text = "For Sunday: this Sunday and next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+        assert_eq!(c.for_date, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+        // A framed-only line is unchanged too.
+        let text = "For Sunday: October 25, 2026 and November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    }
+
+    #[test]
+    fn r14b_same_week_file_date_is_identical() {
+        // Round 14 (R14-6): when the file's date IS
+        // today — the normal same-week case — the
+        // anchored parse is the standing parse,
+        // field for field, across the round-13
+        // mixed-signal family and its held lines.
+        for line in [
+            "November 1, 2026 and next Sunday",
+            "October 25, 2026 and this Sunday",
+            "next Sunday and November 1, 2026",
+            "this Sunday and November 1, 2026",
+            "October 25, 2026 and the Sunday after next Sunday",
+            "the Sunday after next Sunday and October 25, 2026",
+            "October 25, 2026 and next Sunday",
+            "next Sunday and October 25, 2026",
+            "next Sunday and next Sunday",
+            "October 25, 2026 and November 1, 2026",
+            "next Sunday",
+            "this Sunday and next Sunday",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let plain = parse_contribution(&text, today()).expect("parses");
+            let anchored =
+                parse_contribution_anchored(&text, today(), Some(today())).expect("parses");
+            assert_eq!(plain, anchored, "{line}: mtime == today changes nothing");
+        }
+        let text = "Keep-through: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let plain = parse_contribution(text, today()).expect("parses");
+        let anchored = parse_contribution_anchored(text, today(), Some(today())).expect("parses");
+        assert_eq!(plain, anchored, "the Keep-through mirror too");
     }
 
     #[test]

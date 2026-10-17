@@ -334,7 +334,146 @@ states the reason. No other pre-existing test changed.
 
 ## Shipped addendum, R12-B
 
-_(appended by the R12-B builder with real numbers and flagged pin changes)_
+Shipped 2026-10-17. One code file changed:
+`crates/ob-format/src/lib.rs`, plus the loading-rules
+bullet in `docs/FORMAT.md` (updated to the identity /
+resolution account below; no rule's substance changed
+beyond what the findings state). Tests: **667 → 672
+passing** (workspace, unpiped, exit 0; final run's log
+read back complete: 28 result lines, 672 / 0), clippy
+`--workspace --all-targets -D warnings` exit 0,
+`cargo fmt --all` applied. Five new pins, all `r12b_*`
+in the ob-format tests (46 → 51 in that crate); one
+flagged pre-existing pin change (below). All timings
+are from the debug test build on this shared machine
+and are load-sensitive, as the standing measurement
+note says; machine load is noted beside each set.
+
+What shipped, per finding:
+
+- **R12-3.** `DirKey`'s second component is no longer
+  the candidate's own end offset. Candidate identity
+  is now the directory described — (resolved
+  directory start, declared directory size — the
+  zip64 record's size where the candidate resolves
+  through one, else the plain record's size field —
+  zip64 record position where present, declared
+  total only when no start resolved) — in the
+  enumeration and in the fallback alike, so two
+  plain end records at different positions
+  declaring one directory share a key. The
+  enumeration's walks are shared one step further:
+  one record-chain walk per distinct directory
+  START (replacing the per-key `count_directory_records`
+  walk), out to the farthest end any candidate
+  naming that start describes, each candidate's
+  count read off the one chain. Measured
+  (standalone pin run, load ≈1.4–3.0): plain-300
+  refuses in **641 ms** (bulletin door) / **236 ms**
+  (sheet door) against controls of 305 ms / 385 ms;
+  plain-2,900 in **893 ms** / **636 ms** — the
+  control's time class at both counts and both
+  doors, against the pre-fix 113.0 s at 2,900 the
+  red team measured. The zip64-shared, declared-
+  varied, signature-storm, and body-signature
+  families keep their outcomes and classes (the
+  full regression suite below).
+- **R12-4 + R12-5 (one mechanism, as the
+  dispositions anticipated).** The `DeclaredKey`
+  memo is **deleted** — the type, the key function,
+  and both memo tables — and with it the question
+  of what a memo may serve: nothing is served
+  across candidates, by construction. In its place
+  the fallback resolves every candidate in the
+  file **once, in one shared pass**
+  (`candidate_resolutions_in`): each candidate's
+  zip64 and directory-start searches become
+  queries answered by one scan per signature over
+  the span all windows cover, and the record
+  chains are walked once per distinct directory
+  start, every candidate reading its resolution —
+  computed from its **own** position — off the
+  shared results. Total resolution cost is
+  O(span + candidates), independent of declared-
+  field variation. The memo-witness construction
+  (honest bulletin + 70,000 bytes of junk carrying
+  100 fakes) now loads the honest bulletin in all
+  three arrangements — no decoy, one-byte-varied
+  decoy, identical-fields decoy — at both doors.
+  The distinct-key cost fixtures land in the
+  identical-key class (same standalone run):
+  1 MB identical **99 ms** / distinct **136 ms**;
+  2 MB **436 ms** / **430 ms**; 4 MB **827 ms** /
+  **501 ms** (pre-fix, the review lane's release
+  build: 6.5–42 ms identical against 0.79 s /
+  2.47 s / 10.95 s distinct).
+- **R12-10.** A resolution now also records
+  whether the candidate **reads** the way the zip
+  reader reads: its records chaining exactly
+  across the declared directory size (the reader's
+  size-bounded reading tolerates bytes standing
+  after the directory). The reader gate is
+  revisited on the shared resolutions: the attempt
+  runs when the chosen candidate walks or reads,
+  under the standing small-count clause, or when
+  an untried directory that walks or reads stands
+  anywhere in the file; the fallback likewise
+  opens a candidate that walks **or reads** (its
+  directory is the reader's own first choice in
+  its trimmed stream, so the opening costs one
+  read, not a retry storm — the storm pins hold:
+  the 2,900-comment-signature sheet-door pin and
+  every signature family pass unchanged). The
+  lane's construction — an honest file with a
+  16-byte gap after its directory, plus 100 fake
+  end records — loads at both doors.
+- **R12-9(b).** Where a candidate resolves through
+  a zip64 record and its directory's exact walked
+  count is known, the loaders' opens present that
+  count to the reader in place of the record's two
+  entry-total fields — patched only in the trimmed
+  stream (`TrimmedReader`) or the trimmed copy,
+  never in the file — so a lying zip64 total is
+  tolerated the way the count walk tolerates it.
+  An honest total equals the walked count, so the
+  patch is a no-op for honest files. The pinned
+  shape (totals lying up at 999,999 and down at 1
+  against two real records; offsets and size
+  honest) loads at both doors, and the walk still
+  counts its two records.
+- **R12-8 (test-only, FLAGGED).**
+  `r10_candidates_sharing_one_directory_pay_for_it_once`'s
+  two budget computations (the candidate loop and
+  the bad-document phase) now use
+  `shared_directory_budget`: `max(control × 20,
+  control + 15 ms × candidates)` — the fixed floor
+  scaled to the candidate count the disposition
+  names (the 2,900 budget becomes control + 43.5 s,
+  clear of the 23–30 s contention failures both
+  round-12 lanes recorded, while a true
+  multiplication — ≈39 ms of walk per candidate,
+  100 s and more at these counts — still fails).
+  The pin's outcome assertions are unchanged; no
+  other pre-existing test changed. (The round-11
+  fallback-dedupe pin's similar budget is a
+  different pin and was not touched.)
+
+Regression, as pinned by the suite: all round-9/10/11
+fixture families pass unchanged — signature storms
+in comments and bodies, zip64-shared directories,
+declared-varied candidates, fake-shadow and
+dead-zone tables at both doors, the lying-size and
+lying-count cap families — and first-error
+precedence is unchanged (the all-junk and dead-zone
+refusal pins hold verbatim). Two internal helpers
+moved with the mechanism, no test outcome attached:
+`candidate_resolution_in` and `fallback_walkable`
+are now `#[cfg(test)]` (their only callers are the
+direct walk pins; the loaders consult the shared
+pass), and `count_directory_records` is replaced by
+the shared chain walk (`walk_chain_file` /
+`walk_chain_bytes` + `chain_count`) its logic moved
+into.
 
 ## Shipped addendum, R12-C
 

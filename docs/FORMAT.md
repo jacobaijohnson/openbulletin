@@ -462,34 +462,49 @@ can produce is vouched.
   shared pass, and any candidate whose walk passes
   the cap refuses the file in the cap's words
   (round 9, R9-2). Candidates that resolve to the
-  same directory — its offset, its size, and the
-  zip64 record it resolves through where one
-  stands — are one directory, not several: it is
-  walked and opened at most once per load, however
-  many candidates point at it (round 10, R10-1).
-  The whole-file fallback enumeration below dedupes
-  by that same resolved identity, never by the
-  fields a candidate declares, which the sender
-  controls (round 11, R11-2); and a candidate's
-  directory is resolved the same way in both
-  enumerations, however far prepended bytes have
-  shifted it (round 11, R11-3). When several
+  same directory — its start, its declared size,
+  and the zip64 record it resolves through where
+  one stands — are one directory, not several: it
+  is walked and opened at most once per load,
+  however many end records describe it and
+  wherever those end records stand (round 10,
+  R10-1; round 12, R12-3). The whole-file fallback
+  enumeration below dedupes by that same resolved
+  identity, never by the fields a candidate
+  declares, which the sender controls (round 11,
+  R11-2); a candidate's directory is resolved the
+  same way in both enumerations, however far
+  prepended bytes have shifted it (round 11,
+  R11-3), and the fallback resolves every
+  candidate in one shared pass over the file,
+  each at its own position — a resolution is
+  never carried from one candidate to another
+  (round 12, R12-4/R12-5). A zip64 record whose
+  entry totals lie is read by the records the
+  walk counted: an open presents the walked count
+  to the reader in place of the record's totals,
+  so the lie is tolerated the way the walk
+  tolerates it (round 12, R12-9b). When several
   candidates stand, their directories are tried
   latest first; a directory holding no document
   steps aside, and so does one whose document
   fails to read — bad JSON, a newer version, a
   lying fingerprint or size. When no candidate
   yields a document, the reader's own path runs —
-  its chosen directory first (the attempt is
-  gated on that directory walking, not on whether
+  its chosen directory first (the attempt runs
+  when that directory walks, or reads by its
+  declared size as the reader reads it, or when
+  an untried directory that walks or reads stands
+  anywhere in the file — never merely on whether
   an earlier candidate opened), then every
   enumerated candidate's, each directory once —
   because a candidate that merely opens is not
   evidence the file holds nothing (round 10,
-  R10-3; round 11, R11-3); and only when nothing
-  anywhere yields a document does the load
-  refuse, with the first candidate's error where
-  one exists (round 9, R9-6).
+  R10-3; round 11, R11-3; round 12, R12-10); and
+  only when nothing anywhere yields a document
+  does the load refuse, with the first
+  candidate's error where one exists (round 9,
+  R9-6).
 - Saves are atomic (temp file + rename) and always write
   v1. The GUI keeps an autosave journal (the current work,
   rewritten as you edit, in this same format) beside its

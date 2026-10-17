@@ -202,40 +202,107 @@ fn resolve_first_hits(file: &mut std::fs::File, queries: &mut [FirstHit]) {
     }
 }
 
-/// Count the directory records in front of one end
-/// record: walk from the directory's first record
-/// at `cd_start`, each record measured by its own
-/// name, extra, and comment lengths, until the end
-/// structures begin at `dir_end`. The walk stops as
-/// soon as the count passes `cap`. None when the
-/// records do not chain exactly to `dir_end`.
-fn count_directory_records(
-    file: &mut std::fs::File,
-    cd_start: u64,
-    dir_end: u64,
-    cap: usize,
-) -> Option<usize> {
+/// One directory's record chain, walked once from
+/// its first record: every offset the chain reaches
+/// (the start itself, then the end of each record,
+/// each measured by its own name, extra, and
+/// comment lengths), plus the offset where the
+/// walk passed `cap`, when it did. Every candidate
+/// naming this directory reads its count off the
+/// one chain (round 12, R12-3/R12-5): a candidate
+/// counts exactly when the chain reaches its own
+/// end — or passes the cap before reaching it, the
+/// standing early stop — and candidates whose end
+/// the chain never reaches do not count at all.
+struct ChainWalk {
+    positions: Vec<u64>,
+    capped_at: Option<u64>,
+}
+
+/// Walk the record chain from `cd_start` out to
+/// `extent` (the farthest end any candidate naming
+/// this start describes), stopping early as soon
+/// as the count passes `cap` or the records stop
+/// chaining.
+fn walk_chain_file(file: &mut std::fs::File, cd_start: u64, extent: u64, cap: usize) -> ChainWalk {
+    let mut positions: Vec<u64> = vec![cd_start];
+    let mut capped_at = None;
     let mut count = 0usize;
     let mut at = cd_start;
-    while at < dir_end {
+    while at < extent {
         if count > cap {
-            return Some(count);
+            capped_at = Some(at);
+            break;
         }
         let mut header = [0u8; 46];
-        read_at(file, at, &mut header)?;
+        if read_at(file, at, &mut header).is_none() {
+            break;
+        }
         if !header.starts_with(b"PK\x01\x02") {
-            return None;
+            break;
         }
         let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
         let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
         let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
         count += 1;
         at += 46 + name_len + extra_len + comment_len;
+        positions.push(at);
     }
-    if at == dir_end {
-        Some(count)
-    } else {
-        None
+    ChainWalk {
+        positions,
+        capped_at,
+    }
+}
+
+/// The count one candidate reads off a shared
+/// chain: the number of records chaining exactly
+/// to its `dir_end`, or `cap + 1` when the walk
+/// passed the cap at or before that end. None when
+/// the chain never reaches the end — the records
+/// broke, or stopped short of it.
+fn chain_count(chain: &ChainWalk, dir_end: u64, cap: usize) -> Option<usize> {
+    if let Some(index) = chain.positions.iter().position(|&p| p == dir_end) {
+        return Some(index);
+    }
+    if let Some(capped_at) = chain.capped_at {
+        if dir_end >= capped_at {
+            return Some(cap + 1);
+        }
+    }
+    None
+}
+
+/// The same count read off a chain walked over
+/// in-memory bytes: the records chaining exactly
+/// to `dir_end` in the byte chain starting at
+/// `cd_start`, with the same cap stop. The shared
+/// fallback resolution builds these chains over
+/// `bytes` (round 12, R12-5).
+fn walk_chain_bytes(bytes: &[u8], cd_start: u64, extent: u64, cap: usize) -> ChainWalk {
+    let mut positions: Vec<u64> = vec![cd_start];
+    let mut capped_at = None;
+    let mut count = 0usize;
+    let mut at = cd_start;
+    while at < extent {
+        if count > cap {
+            capped_at = Some(at);
+            break;
+        }
+        let start = at as usize;
+        if start + 46 > bytes.len() || !bytes[start..].starts_with(b"PK\x01\x02") {
+            break;
+        }
+        let header = &bytes[start..start + 46];
+        let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
+        count += 1;
+        at += 46 + name_len + extra_len + comment_len;
+        positions.push(at);
+    }
+    ChainWalk {
+        positions,
+        capped_at,
     }
 }
 
@@ -248,17 +315,26 @@ fn count_directory_records(
 const TAIL_WINDOW: u64 = 65_535 + 22 + 20 + 56;
 
 /// The directory one candidate resolves to, named
-/// by the parts that decide what opening it would
-/// read: the resolved directory start (None when no
-/// central header stands in its window), the offset
-/// the directory ends at, the zip64 record it
+/// by the directory it DESCRIBES, never by where
+/// its own end record stands (round 12, R12-3):
+/// the resolved directory start (None when no
+/// central header stands in its window), the
+/// directory's size as the resolving record
+/// declares it (the zip64 record's size where the
+/// candidate resolves through one, else the plain
+/// record's size field), the zip64 record it
 /// resolves through where one stands, and — only
 /// when no directory start resolved, where the
 /// declared total is all that separates an honestly
 /// empty candidate from an unwalkable one — that
-/// total. Two candidates carrying the same key read
-/// the same directory, so the second is a repeat,
-/// not another directory (round 10, R10-1).
+/// total. Two candidates carrying the same key
+/// describe the same directory, so the second is a
+/// repeat, not another directory (round 10, R10-1):
+/// two plain end records at different positions
+/// declaring one directory share a key now, where
+/// the old key's end offset was each plain
+/// candidate's own position and no two plain
+/// candidates ever shared one.
 type DirKey = (Option<u64>, u64, Option<u64>, u64);
 
 /// Every end-record candidate in a file whose
@@ -332,6 +408,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
     struct Candidate {
         at: u64,
         total16: u16,
+        cd_size32: u32,
         cd_offset32: u32,
         zip64_query: Option<usize>,
         locator_at: Option<u64>,
@@ -344,6 +421,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
             continue;
         }
         let total16 = u16::from_le_bytes([eocd[10], eocd[11]]);
+        let cd_size32 = u32::from_le_bytes(eocd[12..16].try_into().unwrap_or([0; 4]));
         let cd_offset32 = u32::from_le_bytes(eocd[16..20].try_into().unwrap_or([0; 4]));
         let mut zip64_query = None;
         let mut locator_at = None;
@@ -369,6 +447,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
         candidates.push(Candidate {
             at,
             total16,
+            cd_size32,
             cd_offset32,
             zip64_query,
             locator_at,
@@ -393,6 +472,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
         at: u64,
         dir_end: u64,
         declared_total: u64,
+        declared_size: u64,
         cd_query: Option<usize>,
         zip64_at: Option<u64>,
     }
@@ -402,6 +482,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
         let mut dir_end = cand.at;
         let mut declared_offset = u64::from(cand.cd_offset32);
         let mut declared_total = u64::from(cand.total16);
+        let mut declared_size = u64::from(cand.cd_size32);
         let mut zip64_at = None;
         if let (Some(qi), Some(_)) = (cand.zip64_query, cand.locator_at) {
             if let Some(record_at) = queries[qi].answer {
@@ -413,6 +494,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
                     zip64_at = Some(record_at);
                     declared_total =
                         u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
+                    declared_size = u64::from_le_bytes(record[40..48].try_into().unwrap_or([0; 8]));
                     declared_offset =
                         u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
                 }
@@ -434,6 +516,7 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
             at: cand.at,
             dir_end,
             declared_total,
+            declared_size,
             cd_query,
             zip64_at,
         });
@@ -441,19 +524,40 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
     if !cd_queries.is_empty() {
         resolve_first_hits(&mut file, &mut cd_queries);
     }
-    // Stage 3: walk each DISTINCT directory once.
-    // Candidates that resolve to a directory already
-    // walked are repeats of it (round 10, R10-1) and
-    // are not walked, counted, or returned again:
-    // the loaders below open each returned candidate,
-    // so a repeat returned here would be opened again
-    // there too.
-    let mut seen: HashSet<DirKey> = HashSet::new();
+    // Stage 3: walk each DISTINCT directory once
+    // (round 12, R12-3). The walk itself is shared
+    // further than the key: every candidate resolving
+    // to one directory START pays for one chain walk
+    // from that start, out to the farthest end any of
+    // them names, and each candidate's count is read
+    // off the chain — a candidate counts exactly when
+    // the chain reaches its own end, or passes the
+    // cap trying. Candidates carrying one key are
+    // repeats of one described directory: the first
+    // of them (latest first) that the chain counts is
+    // the one returned, and the rest are not walked,
+    // counted, or returned again — the loaders below
+    // open each returned candidate, so a repeat
+    // returned here would be opened again there too.
+    let mut extents: HashMap<u64, u64> = HashMap::new();
+    for win in &windows {
+        if let Some(cd_start) = win.cd_query.and_then(|qi| cd_queries[qi].answer) {
+            let extent = extents.entry(cd_start).or_insert(0);
+            *extent = (*extent).max(win.dir_end);
+        }
+    }
+    let mut chains: HashMap<u64, ChainWalk> = HashMap::new();
+    for (cd_start, extent) in &extents {
+        let chain = walk_chain_file(&mut file, *cd_start, *extent, cap);
+        chains.insert(*cd_start, chain);
+    }
+    let mut order: Vec<DirKey> = Vec::new();
+    let mut best: HashMap<DirKey, Option<(u64, usize)>> = HashMap::new();
     for win in &windows {
         let cd_start = win.cd_query.and_then(|qi| cd_queries[qi].answer);
         let key: DirKey = (
             cd_start,
-            win.dir_end,
+            win.declared_size,
             win.zip64_at,
             if cd_start.is_none() {
                 win.declared_total
@@ -461,11 +565,14 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
                 0
             },
         );
-        if !seen.insert(key) {
-            continue;
+        if let std::collections::hash_map::Entry::Vacant(slot) = best.entry(key) {
+            order.push(key);
+            slot.insert(None);
         }
         let count = match cd_start {
-            Some(cd_start) => count_directory_records(&mut file, cd_start, win.dir_end, cap),
+            Some(cd_start) => chains
+                .get(&cd_start)
+                .and_then(|chain| chain_count(chain, win.dir_end, cap)),
             None => {
                 // No directory records in front of the
                 // end record: an honestly empty archive
@@ -479,7 +586,15 @@ fn directory_candidates(path: &Path, cap: usize) -> Vec<(u64, usize, DirKey)> {
             }
         };
         if let Some(count) = count {
-            out.push((win.at, count, key));
+            let slot = best.get_mut(&key).expect("the key was just inserted");
+            if slot.is_none() {
+                *slot = Some((win.at, count));
+            }
+        }
+    }
+    for key in order {
+        if let Some((at, count)) = best[&key] {
+            out.push((at, count, key));
         }
     }
     out
@@ -586,163 +701,379 @@ fn end_record_positions_in(bytes: &[u8]) -> Vec<usize> {
     out
 }
 
-/// The directory description one end-record
-/// candidate in `bytes` carries, in its own
-/// declared fields: the total, size, and offset of
-/// its end record, plus the zip64 record position
-/// its locator names where the plain fields are
-/// sentinels. This key is read straight off the
-/// candidate in O(1), and the loaders' fallback
-/// uses it ONLY as a memo key (round 11, R11-2):
-/// candidates carrying identical declared fields
-/// resolve identically, so the resolution is
-/// computed once per description. It is never the
-/// dedupe identity — the declared fields are the
-/// sender's to vary, so deduping by them let one
-/// varying free field reopen a shared directory
-/// once per candidate (round 11, RT11-1). The
-/// dedupe keys on the RESOLVED directory instead
-/// ([`candidate_resolution_in`]'s [`DirKey`]), the
-/// same identity the count walk's enumeration
-/// dedupes by.
-type DeclaredKey = (u16, u32, u32, Option<u64>);
-
-/// The declared-fields key of the candidate at
-/// `at` in `bytes`; None when `at` does not stand
-/// on an end record.
-fn candidate_declared_key_in(bytes: &[u8], at: usize) -> Option<DeclaredKey> {
-    if at + 22 > bytes.len() || !bytes[at..].starts_with(b"PK\x05\x06") {
-        return None;
-    }
-    let total16 = u16::from_le_bytes([bytes[at + 10], bytes[at + 11]]);
-    let cd_size32 = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().ok()?);
-    let cd_offset32 = u32::from_le_bytes(bytes[at + 16..at + 20].try_into().ok()?);
-    let mut zip64_declared = None;
-    if (total16 == u16::MAX || cd_size32 == u32::MAX || cd_offset32 == u32::MAX) && at >= 20 {
-        let locator = &bytes[at - 20..at];
-        if locator.starts_with(b"PK\x06\x07") {
-            zip64_declared = Some(u64::from_le_bytes(locator[8..16].try_into().ok()?));
+/// Resolve every query in `queries` with ONE pass
+/// over the in-memory region the queries span: the
+/// slice twin of [`resolve_first_hits`] (round 12,
+/// R12-5). The region is scanned once per signature
+/// the queries carry, every occurrence position is
+/// collected in that one scan, and each query is
+/// answered by the first occurrence at or after its
+/// own start that ends inside its own window —
+/// exactly what a search of its own window would
+/// answer, at a total cost of O(span + candidates).
+fn resolve_first_hits_in(bytes: &[u8], queries: &mut [FirstHit]) {
+    let mut sigs: Vec<[u8; 4]> = Vec::new();
+    for query in queries.iter() {
+        if query.from < query.to && !sigs.contains(&query.sig) {
+            sigs.push(query.sig);
         }
     }
-    Some((total16, cd_size32, cd_offset32, zip64_declared))
-}
-
-/// Resolve the end-record candidate at `at` in
-/// `bytes` the way the count walk's enumeration
-/// resolves it: through its zip64 record where the
-/// plain fields are sentinels, then the first
-/// central header at or after the declared offset,
-/// then the records chaining exactly to the
-/// directory's end. Returns the resolved
-/// directory's identity — the enumeration's own
-/// [`DirKey`] — and whether the directory walks.
-/// Both searches run over the whole span the
-/// candidate leaves, exactly as the enumeration's
-/// shared pass runs them (round 11, R11-3): the
-/// fallback's resolution used to stop each search
-/// 65,633 bytes past the declared offset, so an
-/// honest directory shifted further than that by a
-/// stub entry at the file's head resolved here to
-/// nothing while the enumeration's resolution and
-/// the archive reader both found it. The loaders'
-/// fallback resolves every candidate it considers
-/// through this one function, so the fallback sees
-/// the same directories the enumeration sees,
-/// under the same identity — and dedupes by that
-/// identity, never by the declared fields the
-/// sender controls (round 11, R11-2).
-fn candidate_resolution_in(bytes: &[u8], at: usize) -> (DirKey, bool) {
-    let unresolved: DirKey = (None, at as u64, None, 0);
-    if at + 22 > bytes.len() || !bytes[at..].starts_with(b"PK\x05\x06") {
-        return (unresolved, false);
-    }
-    let total16 = u16::from_le_bytes([bytes[at + 10], bytes[at + 11]]);
-    let cd_offset32 = u32::from_le_bytes(bytes[at + 16..at + 20].try_into().unwrap_or([0; 4]));
-    let mut dir_end = at as u64;
-    let mut declared_offset = u64::from(cd_offset32);
-    let mut declared_total = u64::from(total16);
-    let mut zip64_at = None;
-    if (total16 == u16::MAX || cd_offset32 == u32::MAX) && at >= 20 {
-        let lat = at - 20;
-        let locator = &bytes[lat..at];
-        if locator.starts_with(b"PK\x06\x07") {
-            let record_declared = u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
-            if record_declared < lat as u64 {
-                let from = record_declared as usize;
-                if let Some(found) = bytes[from..lat].windows(4).position(|w| w == b"PK\x06\x06") {
-                    let record_at = from + found;
-                    if record_at + 56 <= bytes.len() {
-                        let record = &bytes[record_at..record_at + 56];
-                        dir_end = record_at as u64;
-                        zip64_at = Some(record_at as u64);
-                        declared_total =
-                            u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
-                        declared_offset =
-                            u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
-                    }
+    for sig in sigs {
+        let scan_start = queries
+            .iter()
+            .filter(|q| q.sig == sig && q.from < q.to)
+            .map(|q| q.from)
+            .min()
+            .unwrap_or(0);
+        let scan_end = queries
+            .iter()
+            .filter(|q| q.sig == sig && q.from < q.to)
+            .map(|q| q.to)
+            .max()
+            .unwrap_or(0);
+        if scan_start >= scan_end || scan_end as usize > bytes.len() {
+            continue;
+        }
+        let mut hits: Vec<u64> = Vec::new();
+        let mut pos = scan_start as usize;
+        let last_start = (scan_end as usize).saturating_sub(4);
+        while pos <= last_start {
+            if bytes[pos..].starts_with(&sig[..]) {
+                hits.push(pos as u64);
+            }
+            pos += 1;
+        }
+        for query in queries.iter_mut() {
+            if query.sig != sig || query.from >= query.to {
+                continue;
+            }
+            let index = hits.partition_point(|&hit| hit < query.from);
+            if let Some(&hit) = hits.get(index) {
+                if hit + 4 <= query.to {
+                    query.answer = Some(hit);
                 }
             }
         }
     }
-    if declared_offset >= dir_end {
-        // No directory window at all: an honestly
-        // empty archive counts zero; anything else
-        // does not walk.
-        let key: DirKey = (None, dir_end, zip64_at, declared_total);
-        return (key, declared_total == 0);
+}
+
+/// One candidate's resolution, computed by the
+/// shared pass ([`candidate_resolutions_in`]): the
+/// resolved directory's identity — the enumeration's
+/// own [`DirKey`] — whether its records chain
+/// exactly to the directory's end (`walkable`, the
+/// count walk's rule), whether the archive reader
+/// itself would read it (`reader_walkable`: the
+/// records chain exactly across the directory's
+/// declared size, the size-bounded reading the
+/// reader performs, which tolerates bytes standing
+/// after the directory — a gap, junk, further end
+/// records), and the directory's exact record count
+/// when a chain reaches the end it was measured to.
+struct CandidateResolution {
+    key: DirKey,
+    walkable: bool,
+    reader_walkable: bool,
+    exact_count: Option<usize>,
+}
+
+/// Resolve EVERY end-record candidate in
+/// `positions` in one shared pass (round 12,
+/// R12-5), the way the count walk's enumeration
+/// resolves its candidates: through each one's
+/// zip64 record where the plain fields are
+/// sentinels, then the first central header at or
+/// after its declared offset, then its records
+/// chaining toward the directory's end. The two
+/// signature searches are one pass each over the
+/// span all the candidates' windows cover
+/// ([`resolve_first_hits_in`]), and the record
+/// chains are walked once per distinct directory
+/// START, every candidate naming that start
+/// reading its walk off the one chain
+/// ([`walk_chain_bytes`]) — so total resolution
+/// cost is O(span + candidates), however the
+/// candidates' declared fields vary.
+///
+/// There is no memo and no cross-candidate service
+/// of any kind (round 12, R12-4): each candidate's
+/// resolution is computed from its own position —
+/// resolution depends on that position, so
+/// identical declared fields do NOT resolve
+/// identically, and the round-11 memo, which keyed
+/// resolutions by declared fields alone, could hand
+/// one candidate another's failed resolution and
+/// refuse an honest file standing behind an
+/// identical-fields decoy. Both searches run over
+/// the whole span each candidate leaves, exactly
+/// as the enumeration's shared pass runs them
+/// (round 11, R11-3). The fallback sees the same
+/// directories the enumeration sees, under the
+/// same identity — and dedupes by that identity,
+/// never by the declared fields the sender
+/// controls (round 11, R11-2).
+fn candidate_resolutions_in(bytes: &[u8], positions: &[usize]) -> Vec<CandidateResolution> {
+    // Stage 1: parse each candidate's end record and
+    // collect its zip64-record search as a query.
+    struct Parsed {
+        at: usize,
+        live: bool,
+        dir_end: u64,
+        declared_offset: u64,
+        declared_total: u64,
+        declared_size: u64,
+        zip64_query: Option<usize>,
+        zip64_at: Option<u64>,
+        cd_query: Option<usize>,
     }
-    let from = declared_offset as usize;
-    let to = dir_end as usize;
-    let Some(found) = bytes[from..to].windows(4).position(|w| w == b"PK\x01\x02") else {
-        let key: DirKey = (None, dir_end, zip64_at, declared_total);
-        return (key, false);
-    };
-    let cd_start = (from + found) as u64;
-    // Walk the records, measured by their own
-    // lengths, until the directory's end — the
-    // count walk's rule, stopping just past the
-    // cap (a directory past the cap walks; the
-    // archive read refuses it in the cap's words).
-    let mut count = 0usize;
-    let mut pos = cd_start;
-    let walkable = loop {
-        if pos >= dir_end {
-            break pos == dir_end;
+    let mut parsed: Vec<Parsed> = Vec::with_capacity(positions.len());
+    let mut queries: Vec<FirstHit> = Vec::new();
+    for &at in positions {
+        if at + 22 > bytes.len() || !bytes[at..].starts_with(b"PK\x05\x06") {
+            // Not an end record at all: the slot
+            // resolves to the unresolved key at
+            // stage 4, marked by `live`.
+            parsed.push(Parsed {
+                at,
+                live: false,
+                dir_end: at as u64,
+                declared_offset: 0,
+                declared_total: 0,
+                declared_size: 0,
+                zip64_query: None,
+                zip64_at: None,
+                cd_query: None,
+            });
+            continue;
         }
-        if count > MAX_ENTRIES {
-            break true;
+        let total16 = u16::from_le_bytes([bytes[at + 10], bytes[at + 11]]);
+        let cd_size32 = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().unwrap_or([0; 4]));
+        let cd_offset32 = u32::from_le_bytes(bytes[at + 16..at + 20].try_into().unwrap_or([0; 4]));
+        let mut zip64_query = None;
+        if (total16 == u16::MAX || cd_offset32 == u32::MAX) && at >= 20 {
+            let lat = at - 20;
+            let locator = &bytes[lat..at];
+            if locator.starts_with(b"PK\x06\x07") {
+                let record_declared =
+                    u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
+                if record_declared < lat as u64 {
+                    zip64_query = Some(queries.len());
+                    queries.push(FirstHit {
+                        sig: *b"PK\x06\x06",
+                        from: record_declared,
+                        to: lat as u64,
+                        answer: None,
+                    });
+                }
+            }
         }
-        let start = pos as usize;
-        if start + 46 > bytes.len() || !bytes[start..].starts_with(b"PK\x01\x02") {
-            break false;
+        parsed.push(Parsed {
+            at,
+            live: true,
+            dir_end: at as u64,
+            declared_offset: u64::from(cd_offset32),
+            declared_total: u64::from(total16),
+            declared_size: u64::from(cd_size32),
+            zip64_query,
+            zip64_at: None,
+            cd_query: None,
+        });
+    }
+    if !queries.is_empty() {
+        resolve_first_hits_in(bytes, &mut queries);
+    }
+    // Stage 2: a found zip64 record retargets its
+    // candidate's window and replaces the sentinel
+    // fields, exactly as in the enumeration; then
+    // every candidate's directory-start search is a
+    // query for the second shared pass.
+    let mut cd_queries: Vec<FirstHit> = Vec::new();
+    for cand in parsed.iter_mut() {
+        if let Some(qi) = cand.zip64_query {
+            if let Some(record_at) = queries[qi].answer {
+                let record_at = record_at as usize;
+                if record_at + 56 <= bytes.len() {
+                    let record = &bytes[record_at..record_at + 56];
+                    cand.dir_end = record_at as u64;
+                    cand.zip64_at = Some(record_at as u64);
+                    cand.declared_total =
+                        u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
+                    cand.declared_size =
+                        u64::from_le_bytes(record[40..48].try_into().unwrap_or([0; 8]));
+                    cand.declared_offset =
+                        u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+                }
+            }
         }
-        let header = &bytes[start..start + 46];
-        let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
-        let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
-        let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
-        count += 1;
-        pos += 46 + name_len + extra_len + comment_len;
-    };
-    let key: DirKey = (Some(cd_start), dir_end, zip64_at, 0);
-    (key, walkable)
+        if cand.live && cand.declared_offset < cand.dir_end {
+            cand.cd_query = Some(cd_queries.len());
+            cd_queries.push(FirstHit {
+                sig: *b"PK\x01\x02",
+                from: cand.declared_offset,
+                to: cand.dir_end,
+                answer: None,
+            });
+        }
+    }
+    if !cd_queries.is_empty() {
+        resolve_first_hits_in(bytes, &mut cd_queries);
+    }
+    // Stage 3: one chain walk per distinct directory
+    // start, out to the farthest end — or declared-
+    // size target — any candidate naming it needs.
+    let mut extents: HashMap<u64, u64> = HashMap::new();
+    for cand in &parsed {
+        if let Some(cd_start) = cand.cd_query.and_then(|qi| cd_queries[qi].answer) {
+            let extent = extents.entry(cd_start).or_insert(0);
+            *extent = (*extent).max(cand.dir_end);
+            if cand.declared_size > 0 {
+                if let Some(size_end) = cd_start.checked_add(cand.declared_size) {
+                    *extent = (*extent).max(size_end);
+                }
+            }
+        }
+    }
+    let mut chains: HashMap<u64, ChainWalk> = HashMap::new();
+    for (cd_start, extent) in &extents {
+        let chain = walk_chain_bytes(bytes, *cd_start, *extent, MAX_ENTRIES);
+        chains.insert(*cd_start, chain);
+    }
+    // Stage 4: read each candidate's resolution off
+    // its chain (or its empty window).
+    let mut out: Vec<CandidateResolution> = Vec::with_capacity(parsed.len());
+    for cand in &parsed {
+        if !cand.live {
+            let key: DirKey = (None, cand.at as u64, None, 0);
+            out.push(CandidateResolution {
+                key,
+                walkable: false,
+                reader_walkable: false,
+                exact_count: None,
+            });
+            continue;
+        }
+        let cd_start = cand.cd_query.and_then(|qi| cd_queries[qi].answer);
+        let key: DirKey = (
+            cd_start,
+            cand.declared_size,
+            cand.zip64_at,
+            if cd_start.is_none() {
+                cand.declared_total
+            } else {
+                0
+            },
+        );
+        if cand.declared_offset >= cand.dir_end {
+            // No directory window at all: an honestly
+            // empty archive counts zero; anything else
+            // does not walk.
+            let empty = cand.declared_total == 0;
+            out.push(CandidateResolution {
+                key,
+                walkable: empty,
+                reader_walkable: empty,
+                exact_count: if empty { Some(0) } else { None },
+            });
+            continue;
+        }
+        let Some(cd_start) = cd_start else {
+            out.push(CandidateResolution {
+                key,
+                walkable: false,
+                reader_walkable: false,
+                exact_count: None,
+            });
+            continue;
+        };
+        let chain = chains.get(&cd_start).expect("a chain per start");
+        let walked = chain_count(chain, cand.dir_end, MAX_ENTRIES);
+        // A directory past the cap walks (the archive
+        // read refuses it in the cap's words), but its
+        // count is the cap stop's, not an exact count.
+        let walkable = walked.is_some();
+        let mut exact_count = match walked {
+            Some(count) if count <= MAX_ENTRIES => {
+                let reached = chain.positions.contains(&cand.dir_end);
+                if reached {
+                    Some(count)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        // The reader's own reading is size-bounded:
+        // the records chaining exactly across the
+        // declared size are the directory it reads,
+        // wherever the end structures stand after it
+        // (round 12, R12-10).
+        let mut reader_walkable = walkable;
+        if !reader_walkable && cand.declared_size > 0 {
+            if let Some(size_end) = cd_start.checked_add(cand.declared_size) {
+                if let Some(count) = chain_count(chain, size_end, MAX_ENTRIES) {
+                    reader_walkable = true;
+                    if chain.positions.contains(&size_end) {
+                        exact_count = Some(count);
+                    }
+                }
+            }
+        }
+        out.push(CandidateResolution {
+            key,
+            walkable,
+            reader_walkable,
+            exact_count,
+        });
+    }
+    out
+}
+
+/// Resolve the one end-record candidate at `at` in
+/// `bytes`, through the shared pass run on that
+/// candidate alone. Test-only: the walk gate's
+/// direct pins use this; the loaders' fallback
+/// always resolves the whole position list at once
+/// ([`candidate_resolutions_in`]).
+#[cfg(test)]
+fn candidate_resolution_in(bytes: &[u8], at: usize) -> (DirKey, bool) {
+    let mut resolutions = candidate_resolutions_in(bytes, &[at]);
+    let resolution = resolutions.pop().expect("one candidate, one resolution");
+    (resolution.key, resolution.walkable)
 }
 
 /// Whether the end-record candidate at `at` in
 /// `bytes` names a directory that walks, under the
 /// shared resolution ([`candidate_resolution_in`]).
-/// The fallback gates its opens on this (round 10,
-/// R10-1/R10-3): handing the archive reader a
-/// candidate whose directory does not walk makes
-/// the reader retry every earlier end record in
-/// the stream itself, so thousands of fake
-/// signatures in a comment or a file body cost
-/// seconds EACH — a candidate that cannot walk is
-/// not opened at all, and one that can walk is the
-/// reader's own first choice in its stream, which
-/// the reader opens at once.
+/// Test-only, pinning the walk half of the gate
+/// the fallback applies (round 10, R10-1/R10-3):
+/// handing the archive reader a candidate whose
+/// directory does not walk makes the reader retry
+/// every earlier end record in the stream itself,
+/// so thousands of fake signatures in a comment or
+/// a file body cost seconds EACH — a candidate
+/// that cannot walk is not opened at all, and one
+/// that can walk is the reader's own first choice
+/// in its stream, which the reader opens at once.
+#[cfg(test)]
 fn fallback_walkable(bytes: &[u8], at: usize) -> bool {
     candidate_resolution_in(bytes, at).1
 }
+
+/// The zip64 patch a candidate's open carries
+/// where it resolves through a zip64 record: the
+/// record's position and the directory's exact
+/// walked record count. The archive reader checks
+/// the zip64 record's entry totals against the
+/// records it parses and refuses a record whose
+/// total lies, while the count walk simply never
+/// consults those totals (round 12, R12-9b): the
+/// open rewrites both total fields to the walked
+/// count — in the trimmed copy or stream only,
+/// never in the file — so the reader path tolerates
+/// the lie the way the walk does. An honest total
+/// already equals the count, so the patch is a
+/// no-op for honest files.
+type Zip64TotalPatch = (u64, u64);
 
 /// Open the archive ONE end-record candidate
 /// describes: the file's bytes up to that record,
@@ -754,6 +1085,7 @@ fn fallback_walkable(bytes: &[u8], at: usize) -> bool {
 fn archive_from_candidate(
     bytes: &[u8],
     at: usize,
+    zip64_patch: Option<Zip64TotalPatch>,
 ) -> Option<zip::ZipArchive<std::io::Cursor<Vec<u8>>>> {
     let end = at.checked_add(22)?;
     if end > bytes.len() {
@@ -762,6 +1094,13 @@ fn archive_from_candidate(
     let mut trimmed = bytes[..end].to_vec();
     trimmed[at + 20] = 0;
     trimmed[at + 21] = 0;
+    if let Some((record_at, count)) = zip64_patch {
+        let record_at = record_at as usize;
+        if record_at + 40 <= trimmed.len() {
+            trimmed[record_at + 24..record_at + 32].copy_from_slice(&count.to_le_bytes());
+            trimmed[record_at + 32..record_at + 40].copy_from_slice(&count.to_le_bytes());
+        }
+    }
     zip::ZipArchive::new(std::io::Cursor::new(trimmed)).ok()
 }
 
@@ -783,6 +1122,11 @@ struct TrimmedReader {
     /// The two comment-length bytes of the
     /// candidate's end record read as zero.
     zero_at: u64,
+    /// Eight-byte fields read as a fixed value
+    /// instead of the file's bytes: a lying zip64
+    /// record's two total fields, read as the
+    /// directory's walked count ([`Zip64TotalPatch`]).
+    patches: Vec<(u64, u64)>,
     pos: u64,
     /// Where the file's own cursor stands: a read
     /// that starts there needs no seek first. The
@@ -807,6 +1151,11 @@ impl Read for TrimmedReader {
             let at = self.pos + i as u64;
             if at == self.zero_at || at == self.zero_at + 1 {
                 *byte = 0;
+            }
+            for &(start, value) in &self.patches {
+                if at >= start && at < start + 8 {
+                    *byte = (value >> ((at - start) * 8)) as u8;
+                }
             }
         }
         self.pos += n as u64;
@@ -838,13 +1187,22 @@ impl Seek for TrimmedReader {
 /// to that record through a [`TrimmedReader`]. None
 /// when that candidate's directory cannot be opened
 /// at all.
-fn archive_from_candidate_file(path: &Path, at: u64) -> Option<zip::ZipArchive<TrimmedReader>> {
+fn archive_from_candidate_file(
+    path: &Path,
+    at: u64,
+    zip64_patch: Option<Zip64TotalPatch>,
+) -> Option<zip::ZipArchive<TrimmedReader>> {
     let end = at.checked_add(22)?;
     let file = std::fs::File::open(path).ok()?;
+    let patches: Vec<(u64, u64)> = match zip64_patch {
+        Some((record_at, count)) => vec![(record_at + 24, count), (record_at + 32, count)],
+        None => Vec::new(),
+    };
     let reader = TrimmedReader {
         file,
         end,
         zero_at: at + 20,
+        patches,
         pos: 0,
         file_at: 0,
     };
@@ -989,10 +1347,11 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     // again there under another candidate's name
     // (round 11, R11-2).
     let mut tried_resolved: HashSet<DirKey> = HashSet::new();
-    for (at, _, key) in directory_candidates(path, MAX_ENTRIES) {
+    for (at, count, key) in directory_candidates(path, MAX_ENTRIES) {
         tried_positions.insert(at);
         tried_resolved.insert(key);
-        let Some(mut zip) = archive_from_candidate_file(path, at) else {
+        let zip64_patch = key.2.map(|record_at| (record_at, count as u64));
+        let Some(mut zip) = archive_from_candidate_file(path, at, zip64_patch) else {
             continue;
         };
         opened_any = true;
@@ -1020,38 +1379,66 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     // aside: its chosen directory first, then every
     // enumerated candidate's — each directory once,
     // the ones already tried above skipped, and no
-    // candidate whose directory does not walk opened
-    // at all (the walk gate in `fallback_walkable`:
-    // the reader retries every earlier end record in
+    // candidate whose directory neither walks nor
+    // reads opened at all (the walk gate below: the
+    // reader retries every earlier end record in
     // a stream whose chosen candidate fails, so an
     // unwalkable fake at the head of thousands of
     // signatures costs seconds per retry if it is
     // handed over).
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let positions = end_record_positions_in(&bytes);
+    // Every candidate in the file is resolved ONCE,
+    // in one shared pass over the span (round 12,
+    // R12-5), before either the gate or the fallback
+    // loop below consults a resolution: no candidate
+    // is ever resolved twice in a load, and no
+    // resolution is ever served across candidates
+    // (round 12, R12-4).
+    let resolutions = candidate_resolutions_in(&bytes, &positions);
     // The reader's chosen directory is the one its
     // backward search lands on — the latest candidate
     // in the file. That attempt runs when there is
     // no candidate at all (the reader's damaged
     // words are the answer then), when its chosen
-    // candidate's directory walks, or when no
+    // candidate's directory walks or reads, when no
     // candidate above could even be opened and the
     // candidate count is small (the reader's damaged
     // words are the informative answer for a corrupt
     // file, and a handful of candidates cannot
-    // storm). Whether a candidate above already
+    // storm), or when a directory that walks or
+    // reads stands anywhere in the file untried —
+    // the enumeration above never saw it, or saw it
+    // and could not count it (a gap standing after
+    // its directory, which the reader tolerates,
+    // breaks the chain-exact count while the
+    // directory itself stands whole: round 12,
+    // R12-10). Whether a candidate above already
     // opened — or this very candidate was already
     // tried — never closes the attempt (round 11,
     // R11-3): a candidate that opens but yields no
     // bulletin is not evidence the file holds
     // nothing, and the attempt's cost is the one
-    // walkable directory the walk check just
-    // resolved. Otherwise — a chosen candidate that
-    // does not walk, among many — the reader has
+    // directory the resolution just measured.
+    // Otherwise — no directory anywhere walks or
+    // reads untried, among many — the reader has
     // nothing the enumeration below does not cover.
-    let reader_gate_open = match positions.first() {
+    let any_untried_readable = positions
+        .iter()
+        .zip(resolutions.iter())
+        .any(|(at, resolution)| {
+            (resolution.walkable || resolution.reader_walkable)
+                && !tried_positions.contains(&(*at as u64))
+                && !tried_resolved.contains(&resolution.key)
+        });
+    let reader_gate_open = match resolutions.first() {
         None => true,
-        Some(first) => fallback_walkable(&bytes, *first) || (!opened_any && positions.len() <= 64),
+        Some(first) => {
+            first.walkable
+                || first.reader_walkable
+                || (!opened_any && positions.len() <= 64)
+                || any_untried_readable
+        }
     };
     let mut damaged: Option<String> = None;
     if reader_gate_open {
@@ -1074,48 +1461,44 @@ fn load_v1(path: &Path) -> Result<Document, String> {
             }
         }
     }
-    // Every candidate in the file is resolved once
-    // here, and the dedupe is by the RESOLVED
+    // The fallback loop proper, over the resolutions
+    // the shared pass already computed — it resolves
+    // nothing itself. The dedupe is by the RESOLVED
     // directory (round 11, R11-2): candidates whose
     // declared fields differ but which resolve to
-    // the same directory — its start, its end, the
+    // the same directory — its start, its size, the
     // zip64 record it resolves through — open it
     // once, and a directory already tried above
     // (its identity stands in `tried_resolved`) is
     // not opened again under another candidate's
-    // name. Resolutions are memoized under the
-    // declared description ([`DeclaredKey`]):
-    // identical declared fields resolve identically,
-    // so a body carrying thousands of identical fake
-    // signatures pays for one resolution, not one
-    // per signature; the memo never decides the
-    // dedupe, only what a resolution costs.
-    let mut resolutions: HashMap<DeclaredKey, (DirKey, bool)> = HashMap::new();
-    for at in &positions {
+    // name.
+    for (at, resolution) in positions.iter().zip(resolutions.iter()) {
         let at = *at;
         // A candidate already tried above is not
         // opened again (round 10, R10-1); a candidate
-        // whose directory does not walk is not opened
-        // either (the walk gate, round 10, R10-3);
-        // and a candidate resolving to a directory
-        // already tried is a repeat of it, not
-        // another directory (round 11, R11-2).
+        // whose directory neither walks nor reads is
+        // not opened either (the walk gate, round 10,
+        // R10-3 — a directory whose records chain
+        // across its declared size IS the reader's
+        // own first choice in its trimmed stream, so
+        // opening it costs the one read, never a
+        // retry storm); and a candidate resolving to
+        // a directory already tried is a repeat of
+        // it, not another directory (round 11, R11-2).
         if tried_positions.contains(&(at as u64)) {
             continue;
         }
-        let (dir_key, walkable) = match candidate_declared_key_in(&bytes, at) {
-            Some(declared) => *resolutions
-                .entry(declared)
-                .or_insert_with(|| candidate_resolution_in(&bytes, at)),
-            None => candidate_resolution_in(&bytes, at),
+        if !resolution.walkable && !resolution.reader_walkable {
+            continue;
+        }
+        if !tried_resolved.insert(resolution.key) {
+            continue;
+        }
+        let zip64_patch = match (resolution.key.2, resolution.exact_count) {
+            (Some(record_at), Some(count)) => Some((record_at, count as u64)),
+            _ => None,
         };
-        if !walkable {
-            continue;
-        }
-        if !tried_resolved.insert(dir_key) {
-            continue;
-        }
-        let Some(mut zip) = archive_from_candidate(&bytes, at) else {
+        let Some(mut zip) = archive_from_candidate(&bytes, at, zip64_patch) else {
             continue;
         };
         if !zip.file_names().any(|n| n == "document.json") {
@@ -1312,10 +1695,11 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     // the fallback below dedupes against it
     // (round 11, R11-2).
     let mut tried_resolved: HashSet<DirKey> = HashSet::new();
-    for (at, _, key) in directory_candidates(path, MAX_ENTRIES) {
+    for (at, count, key) in directory_candidates(path, MAX_ENTRIES) {
         tried_positions.insert(at);
         tried_resolved.insert(key);
-        let Some(mut zip) = archive_from_candidate_file(path, at) else {
+        let zip64_patch = key.2.map(|record_at| (record_at, count as u64));
+        let Some(mut zip) = archive_from_candidate_file(path, at, zip64_patch) else {
             continue;
         };
         opened_any = true;
@@ -1333,19 +1717,36 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     }
     // The reader's own path, gated exactly as at
     // the bulletin door (round 10, R10-3; round 11,
-    // R11-3): its chosen directory first when that
-    // candidate's directory walks — a candidate
-    // that opened above but yielded no sheet never
-    // closes the attempt — then every enumerated
+    // R11-3; round 12, R12-5/R12-10): one shared
+    // resolution of every candidate first, then its
+    // chosen directory first when that candidate's
+    // directory walks or reads — a candidate that
+    // opened above but yielded no sheet never closes
+    // the attempt — then every enumerated
     // candidate's, each directory once under its
     // resolved identity, the ones already tried
     // above skipped, and no candidate whose
-    // directory does not walk opened at all.
+    // directory neither walks nor reads opened at
+    // all.
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let positions = end_record_positions_in(&bytes);
-    let reader_gate_open = match positions.first() {
+    let resolutions = candidate_resolutions_in(&bytes, &positions);
+    let any_untried_readable = positions
+        .iter()
+        .zip(resolutions.iter())
+        .any(|(at, resolution)| {
+            (resolution.walkable || resolution.reader_walkable)
+                && !tried_positions.contains(&(*at as u64))
+                && !tried_resolved.contains(&resolution.key)
+        });
+    let reader_gate_open = match resolutions.first() {
         None => true,
-        Some(first) => fallback_walkable(&bytes, *first) || (!opened_any && positions.len() <= 64),
+        Some(first) => {
+            first.walkable
+                || first.reader_walkable
+                || (!opened_any && positions.len() <= 64)
+                || any_untried_readable
+        }
     };
     let mut damaged: Option<String> = None;
     if reader_gate_open {
@@ -1369,36 +1770,34 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
         }
     }
     // The fallback enumeration, exactly as at the
-    // bulletin door: every candidate resolved once,
-    // deduped by the RESOLVED directory against
-    // `tried_resolved`, resolutions memoized under
-    // the declared description (round 11, R11-2).
-    let mut resolutions: HashMap<DeclaredKey, (DirKey, bool)> = HashMap::new();
-    for at in &positions {
+    // bulletin door: every candidate resolved once
+    // by the shared pass above, deduped by the
+    // RESOLVED directory against `tried_resolved`,
+    // no resolution served across candidates
+    // (round 12, R12-4/R12-5).
+    for (at, resolution) in positions.iter().zip(resolutions.iter()) {
         let at = *at;
         // A candidate already tried above is not
         // opened again (round 10, R10-1); a candidate
-        // whose directory does not walk is not opened
-        // either (the walk gate, round 10, R10-3);
-        // and a candidate resolving to a directory
-        // already tried is a repeat of it, not
-        // another directory (round 11, R11-2).
+        // whose directory neither walks nor reads is
+        // not opened either (the walk gate, round 10,
+        // R10-3); and a candidate resolving to a
+        // directory already tried is a repeat of it,
+        // not another directory (round 11, R11-2).
         if tried_positions.contains(&(at as u64)) {
             continue;
         }
-        let (dir_key, walkable) = match candidate_declared_key_in(&bytes, at) {
-            Some(declared) => *resolutions
-                .entry(declared)
-                .or_insert_with(|| candidate_resolution_in(&bytes, at)),
-            None => candidate_resolution_in(&bytes, at),
+        if !resolution.walkable && !resolution.reader_walkable {
+            continue;
+        }
+        if !tried_resolved.insert(resolution.key) {
+            continue;
+        }
+        let zip64_patch = match (resolution.key.2, resolution.exact_count) {
+            (Some(record_at), Some(count)) => Some((record_at, count as u64)),
+            _ => None,
         };
-        if !walkable {
-            continue;
-        }
-        if !tried_resolved.insert(dir_key) {
-            continue;
-        }
-        let Some(mut zip) = archive_from_candidate(&bytes, at) else {
+        let Some(mut zip) = archive_from_candidate(&bytes, at, zip64_patch) else {
             continue;
         };
         if !zip.file_names().any(|n| n == "insert.json") {
@@ -4081,6 +4480,30 @@ mod tests {
         out
     }
 
+    /// The shared-directory timing budget (round 12,
+    /// R12-8): the wider of a control multiple and
+    /// the control plus a fixed floor scaled to the
+    /// candidate count — 15 ms per candidate. The
+    /// old budget was the multiple alone (plus a
+    /// flat ten seconds), derived entirely from a
+    /// control measured under the same contention it
+    /// was meant to absorb, and two round-12 lanes
+    /// watched it fail under machine load 8.4–13
+    /// with every outcome passing (the 2,900 phase
+    /// at 23–30 s against a ~20–27 s budget). The
+    /// floor puts the 2,900 budget past 43 s, clear
+    /// of that contention, while a true per-candidate
+    /// multiplication — ≈39 ms of walk per candidate
+    /// for this directory, 100 s and more at these
+    /// counts — still fails it.
+    fn shared_directory_budget(
+        control: std::time::Duration,
+        candidates: usize,
+    ) -> std::time::Duration {
+        let floor = std::time::Duration::from_millis(15) * (candidates as u32);
+        std::cmp::max(control * 20, control + floor)
+    }
+
     #[test]
     fn r10_candidates_sharing_one_directory_pay_for_it_once() {
         // Round 10 (R10-1, red team RT10-T1): many
@@ -4132,8 +4555,12 @@ mod tests {
             // this shape cost ≈0.33 s PER CANDIDATE —
             // the 300-candidate file took 100.5 s on
             // the red team's machine and the 2,900 one
-            // did not finish in 100 s.
-            let budget = control_elapsed * 20 + std::time::Duration::from_secs(10);
+            // did not finish in 100 s. The budget is
+            // `shared_directory_budget` (FLAGGED,
+            // round 12 R12-8: the old control-multiple
+            // budget failed under contention alone;
+            // the outcome assertions are unchanged).
+            let budget = shared_directory_budget(control_elapsed, candidates);
             assert!(
                 elapsed < budget,
                 "{tag} candidates: {elapsed:?} must land in the control's \
@@ -4167,7 +4594,7 @@ mod tests {
             err.contains("checksum"),
             "the first candidate's error stands: {err}"
         );
-        let budget = control_elapsed * 20 + std::time::Duration::from_secs(10);
+        let budget = shared_directory_budget(control_elapsed, 300);
         assert!(
             elapsed < budget,
             "bad-document 300: {elapsed:?} within budget {budget:?}"
@@ -4586,6 +5013,396 @@ mod tests {
             err, "that file has no bulletin inside it (no document.json)",
             "no document error anywhere: the no-bulletin sentence"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shared-directory shape with PLAIN end
+    /// records (round 12, RT12-3): one local header
+    /// and one central directory — the head of the
+    /// zip64 shared builder, up to its zip64 record —
+    /// then `candidates` plain end records, every one
+    /// declaring that same directory (same offset,
+    /// same size, same total). No zip64 structure
+    /// stands anywhere in the file.
+    fn shared_directory_plain(candidates: usize, entries: usize) -> Vec<u8> {
+        let full = shared_directory_zip(1, entries, None);
+        let z64_at = full.len() - 56 - 20 - 22;
+        let cd_offset = u64::from_le_bytes(
+            full[z64_at + 48..z64_at + 56]
+                .try_into()
+                .expect("offset field"),
+        );
+        let cd_size = (z64_at as u64 - cd_offset) as u32;
+        let mut out = full[..z64_at].to_vec();
+        for _ in 0..candidates {
+            let mut eocd = Vec::new();
+            eocd.extend_from_slice(b"PK\x05\x06");
+            eocd.extend_from_slice(&0u16.to_le_bytes());
+            eocd.extend_from_slice(&0u16.to_le_bytes());
+            eocd.extend_from_slice(&(entries as u16).to_le_bytes());
+            eocd.extend_from_slice(&(entries as u16).to_le_bytes());
+            eocd.extend_from_slice(&cd_size.to_le_bytes());
+            eocd.extend_from_slice(&(cd_offset as u32).to_le_bytes());
+            eocd.extend_from_slice(&0u16.to_le_bytes());
+            assert_eq!(eocd.len(), 22);
+            out.extend_from_slice(&eocd);
+        }
+        out
+    }
+
+    #[test]
+    fn r12b_plain_candidates_sharing_one_directory_pay_for_it_once() {
+        // Round 12 (R12-3, red team RT12-3): the
+        // shared-directory dedupe keyed a candidate by
+        // its own end record's position, and a PLAIN
+        // candidate's end is its own position — so
+        // plain candidates never deduped, and 2,900
+        // plain end records naming one 8,191-entry
+        // directory took 113.0 s to refuse against a
+        // 228 ms control (300: ~10 s), where the zip64
+        // shape landed in class because its candidates
+        // share one zip64 record. Candidate identity
+        // is the directory described now — its start,
+        // its size, the zip64 record where one stands —
+        // so the plain shape enumerates once and both
+        // doors land in the control's time class.
+        let dir = scratch("r12b-plain-shared");
+        let entries = MAX_ENTRIES - 1;
+        let control_path = dir.join("control.obd");
+        std::fs::write(&control_path, shared_directory_control(entries)).expect("write control");
+        let control_start = std::time::Instant::now();
+        let control_err = load(&control_path).expect_err("the control holds no bulletin");
+        let control_elapsed = control_start.elapsed();
+        assert_eq!(
+            control_err, "that file has no bulletin inside it (no document.json)",
+            "the control's refusal"
+        );
+        let sheet_start = std::time::Instant::now();
+        let sheet_err = load_insert(&control_path).expect_err("the control holds no sheet");
+        let sheet_elapsed = sheet_start.elapsed();
+        assert_eq!(
+            sheet_err, "that file has no loose sheet inside it (no insert.json)",
+            "the control's sheet refusal"
+        );
+        for (tag, candidates) in [("300", 300usize), ("2900", 2900)] {
+            let path = dir.join(format!("plain-{tag}.obd"));
+            std::fs::write(&path, shared_directory_plain(candidates, entries))
+                .expect("write plain shared copy");
+            assert_eq!(
+                directory_candidates(&path, MAX_ENTRIES).len(),
+                1,
+                "{tag} plain candidates: the shared directory is enumerated once"
+            );
+            let start = std::time::Instant::now();
+            let err = load(&path).expect_err("the shared directory holds no bulletin");
+            let elapsed = start.elapsed();
+            assert_eq!(
+                err, "that file has no bulletin inside it (no document.json)",
+                "{tag} plain candidates: the refusal is the control's"
+            );
+            println!("r12b plain-{tag} bulletin door: {elapsed:?} (control {control_elapsed:?})");
+            let budget = shared_directory_budget(control_elapsed, candidates);
+            assert!(
+                elapsed < budget,
+                "{tag} plain candidates: {elapsed:?} must land in the control's \
+                 time class (control {control_elapsed:?}, budget {budget:?})"
+            );
+            let start = std::time::Instant::now();
+            let err = load_insert(&path).expect_err("the shared directory holds no sheet");
+            let elapsed = start.elapsed();
+            assert_eq!(
+                err, "that file has no loose sheet inside it (no insert.json)",
+                "{tag} plain candidates at the sheet door"
+            );
+            println!("r12b plain-{tag} sheet door: {elapsed:?} (control {sheet_elapsed:?})");
+            let budget = shared_directory_budget(sheet_elapsed, candidates);
+            assert!(
+                elapsed < budget,
+                "{tag} plain candidates at the sheet door: {elapsed:?} must land \
+                 in the control's time class (control {sheet_elapsed:?}, budget {budget:?})"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 70,000 bytes of signature-free junk carrying
+    /// 100 fake end records (the round-12 review
+    /// lane's memo-witness filler): each fake stands
+    /// 700 bytes after the last, declares a distinct
+    /// total and an offset far past the file, and so
+    /// fails its own resolution at once — while the
+    /// file's candidate count passes 64.
+    fn junk_with_fake_end_records() -> Vec<u8> {
+        let mut out = Vec::new();
+        for i in 0..100u32 {
+            let mut fake = Vec::new();
+            fake.extend_from_slice(b"PK\x05\x06");
+            fake.extend_from_slice(&0u16.to_le_bytes());
+            fake.extend_from_slice(&0u16.to_le_bytes());
+            fake.extend_from_slice(&(1000u16 + i as u16).to_le_bytes());
+            fake.extend_from_slice(&(1000u16 + i as u16).to_le_bytes());
+            fake.extend_from_slice(&0u32.to_le_bytes());
+            fake.extend_from_slice(&0x00FF_FFF0u32.to_le_bytes());
+            fake.extend_from_slice(&0u16.to_le_bytes());
+            assert_eq!(fake.len(), 22);
+            out.extend_from_slice(&fake);
+            out.extend(vec![b'J'; 678]);
+        }
+        assert_eq!(out.len(), 70_000);
+        out
+    }
+
+    #[test]
+    fn r12b_an_identical_fields_decoy_never_poisons_the_honest_candidate() {
+        // Round 12 (R12-4, review R12-1): the fallback
+        // memoized resolutions under the DECLARED
+        // fields alone, but resolution depends on the
+        // candidate's own position — an exact copy of
+        // the honest end record, appended after 70,000
+        // bytes of junk carrying 100 fakes, resolves
+        // at ITS position to a walk that fails across
+        // the junk, and the memo then handed that
+        // failure to the honest candidate standing
+        // earlier, which was never resolved at all:
+        // the file was refused. The same file with no
+        // decoy loaded, and with a decoy varied by one
+        // byte in its size field loaded (a fresh memo
+        // key). There is no memo now: every candidate
+        // is resolved at its own position in the one
+        // shared pass, and all three arrangements load
+        // the honest file, at both doors.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        let dir = scratch("r12b-memo-decoy");
+        for (json_name, json, ext, honest_title) in [
+            ("document.json", doc_json.as_str(), "obd", "Roundtrip"),
+            ("insert.json", sheet_json.as_str(), "obdi", "sheet-lying"),
+        ] {
+            let honest = zip_with_fillers(json_name, json, 1);
+            let eocd_at = find_eocd(&honest);
+            let eocd = honest[eocd_at..].to_vec();
+            let mut base = honest.clone();
+            base.extend_from_slice(&junk_with_fake_end_records());
+            let mut varied = eocd.clone();
+            let size = u32::from_le_bytes(varied[12..16].try_into().expect("size field"));
+            varied[12..16].copy_from_slice(&(size + 1).to_le_bytes());
+            let mut with_varied = base.clone();
+            with_varied.extend_from_slice(&varied);
+            let mut with_identical = base.clone();
+            with_identical.extend_from_slice(&eocd);
+            for (tag, bytes) in [
+                ("no-decoy", base),
+                ("varied-decoy", with_varied),
+                ("identical-decoy", with_identical),
+            ] {
+                let path = dir.join(format!("{tag}.{ext}"));
+                std::fs::write(&path, &bytes).expect("write decoy copy");
+                if ext == "obd" {
+                    let loaded = load(&path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(loaded.title, honest_title, "{ext} {tag}");
+                } else {
+                    let (insert, _, _) = load_insert(&path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(insert.id, honest_title, "{ext} {tag}");
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One cost-fixture file (the round-12 review
+    /// lane's shape): `total` bytes of filler with a
+    /// zip head and a fake end record every 512
+    /// bytes, each declaring offset zero and no
+    /// directory anywhere. `vary` gives each record a
+    /// distinct total — a distinct declared
+    /// description — where the identical shape gives
+    /// every record the same one.
+    fn cost_fixture(total: usize, vary: bool) -> Vec<u8> {
+        let mut out = vec![b'J'; total];
+        out[0..4].copy_from_slice(b"PK\x03\x04");
+        let mut i = 0u16;
+        let mut at = 512usize;
+        while at + 22 <= total {
+            for byte in &mut out[at..at + 22] {
+                *byte = 0;
+            }
+            out[at..at + 4].copy_from_slice(b"PK\x05\x06");
+            let total16: u16 = if vary { i } else { 7 };
+            out[at + 10..at + 12].copy_from_slice(&total16.to_le_bytes());
+            i += 1;
+            at += 512;
+        }
+        out
+    }
+
+    #[test]
+    fn r12b_distinct_declared_fields_pay_one_shared_resolution() {
+        // Round 12 (R12-5, review R12-2): with the
+        // per-candidate search bound deleted, each
+        // DISTINCT declared description paid a
+        // whole-span resolution search of its own —
+        // 0.79 s / 2.47 s / 10.95 s at 1 / 2 / 4 MB in
+        // the lane's release build against 6.5–42 ms
+        // for identical descriptions. Resolution is
+        // one shared pass over the span now, computing
+        // every candidate's resolution positionally,
+        // so the distinct files land in the identical
+        // files' time class at every size.
+        let dir = scratch("r12b-distinct-cost");
+        for total in [1_000_000usize, 2_000_000, 4_000_000] {
+            let identical_path = dir.join(format!("identical-{total}.obd"));
+            std::fs::write(&identical_path, cost_fixture(total, false))
+                .expect("write identical copy");
+            let start = std::time::Instant::now();
+            let err = load(&identical_path).expect_err("no candidate yields a bulletin");
+            let identical_elapsed = start.elapsed();
+            assert_eq!(
+                err, "that file has no bulletin inside it (no document.json)",
+                "identical {total}: the plain refusal"
+            );
+            let distinct_path = dir.join(format!("distinct-{total}.obd"));
+            std::fs::write(&distinct_path, cost_fixture(total, true)).expect("write distinct copy");
+            let start = std::time::Instant::now();
+            let err = load(&distinct_path).expect_err("no candidate yields a bulletin");
+            let distinct_elapsed = start.elapsed();
+            assert_eq!(
+                err, "that file has no bulletin inside it (no document.json)",
+                "distinct {total}: the plain refusal"
+            );
+            println!(
+                "r12b cost {total}: identical {identical_elapsed:?}, distinct {distinct_elapsed:?}"
+            );
+            let budget = std::cmp::max(
+                identical_elapsed * 20,
+                identical_elapsed + std::time::Duration::from_secs(2),
+            );
+            assert!(
+                distinct_elapsed < budget,
+                "distinct {total}: {distinct_elapsed:?} must land in the identical \
+                 files' time class (identical {identical_elapsed:?}, budget {budget:?})"
+            );
+            assert!(
+                distinct_elapsed < std::time::Duration::from_secs(5),
+                "distinct {total}: {distinct_elapsed:?} is no shared-pass time at all"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r12b_a_gap_after_the_directory_loads_behind_many_fakes() {
+        // Round 12 (R12-10, review R12-6): an honest
+        // file with 16 bytes standing between its
+        // directory's end and its end record loads
+        // alone — the zip reader reads the directory
+        // by its declared offset and size and tolerates
+        // the gap, and the reader gate's small-count
+        // clause lets the attempt run. Appending 100
+        // fake end records closed that clause (more
+        // than 64 candidates), the latest fake did not
+        // walk, and the chain-exact walk rejects the
+        // honest candidate at the gap: refused. The
+        // honest directory's records chain exactly
+        // across its declared size, so it stands as a
+        // readable directory the walk can name, the
+        // reader attempt is reachable while it stands
+        // untried, and the fallback can open it at its
+        // own end record — the construction loads, at
+        // both doors.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        let dir = scratch("r12b-gap-after-directory");
+        for (json_name, json, ext, honest_title) in [
+            ("document.json", doc_json.as_str(), "obd", "Roundtrip"),
+            ("insert.json", sheet_json.as_str(), "obdi", "sheet-lying"),
+        ] {
+            let honest = zip_with_fillers(json_name, json, 1);
+            let eocd = find_eocd(&honest);
+            let mut gapped = honest[..eocd].to_vec();
+            gapped.extend_from_slice(b"GGGGGGGGGGGGGGGG");
+            gapped.extend_from_slice(&honest[eocd..]);
+            let mut with_fakes = gapped.clone();
+            for i in 0..100u32 {
+                let mut fake = Vec::new();
+                fake.extend_from_slice(b"PK\x05\x06");
+                fake.extend_from_slice(&0u16.to_le_bytes());
+                fake.extend_from_slice(&0u16.to_le_bytes());
+                fake.extend_from_slice(&(2000u16 + i as u16).to_le_bytes());
+                fake.extend_from_slice(&(2000u16 + i as u16).to_le_bytes());
+                fake.extend_from_slice(&0u32.to_le_bytes());
+                fake.extend_from_slice(&0x00FF_FFF0u32.to_le_bytes());
+                fake.extend_from_slice(&0u16.to_le_bytes());
+                assert_eq!(fake.len(), 22);
+                with_fakes.extend_from_slice(&fake);
+            }
+            for (tag, bytes) in [("gapped-alone", gapped), ("gapped-100-fakes", with_fakes)] {
+                let path = dir.join(format!("{tag}.{ext}"));
+                std::fs::write(&path, &bytes).expect("write gapped copy");
+                if ext == "obd" {
+                    let loaded = load(&path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(loaded.title, honest_title, "{ext} {tag}");
+                } else {
+                    let (insert, _, _) = load_insert(&path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(insert.id, honest_title, "{ext} {tag}");
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r12b_a_lying_zip64_total_loads() {
+        // Round 12 (R12-9b, red team RT12-7): a plain
+        // honest bulletin spliced with a zip64 record
+        // whose total lies — 999,999, or 1, against two
+        // real records; offsets and size honest — was
+        // REFUSED with the reader's "inconsistent
+        // number of files", while the count walk counts
+        // its two records without complaint: the walk
+        // never consults the total, and the reader
+        // checks it against the records it parses. The
+        // loaders' opens now rewrite the record's two
+        // total fields to the walked count in the
+        // trimmed stream or copy they hand the reader
+        // (never in the file), so the reader path
+        // tolerates the lie the way the walk does and
+        // the bulletin loads, at both doors.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        let dir = scratch("r12b-lying-zip64-total");
+        for (json_name, json, ext, honest_title) in [
+            ("document.json", doc_json.as_str(), "obd", "Roundtrip"),
+            ("insert.json", sheet_json.as_str(), "obdi", "sheet-lying"),
+        ] {
+            let small = zip_with_fillers(json_name, json, 1);
+            let eocd = find_eocd(&small);
+            let honest_size = u64::from(u32::from_le_bytes(
+                small[eocd + 12..eocd + 16].try_into().expect("size field"),
+            ));
+            for (tag, lying_total) in [("lie-up", 999_999u64), ("lie-down", 1)] {
+                let bytes = splice_zip64(&small, lying_total, honest_size);
+                let path = dir.join(format!("{tag}.{ext}"));
+                std::fs::write(&path, &bytes).expect("write lying-total copy");
+                assert_eq!(
+                    raw_entry_count(&path, MAX_ENTRIES),
+                    Some(2),
+                    "{ext} {tag}: the walk counts the two records, total or no total"
+                );
+                if ext == "obd" {
+                    let loaded = load(&path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(loaded.title, honest_title, "{ext} {tag}");
+                } else {
+                    let (insert, _, _) = load_insert(&path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(insert.id, honest_title, "{ext} {tag}");
+                }
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

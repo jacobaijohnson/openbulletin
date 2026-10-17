@@ -3716,6 +3716,47 @@ fn split_present_paragraphs(
     (to_land, skipped)
 }
 
+/// Split an under-heading part's paragraphs against its
+/// own heading's section of the weekly story (round 7,
+/// R7-B): the paragraphs still missing FROM THAT
+/// SECTION, and the section they are missing from.
+/// Words standing elsewhere in the story do not skip a
+/// paragraph here — the part's landing is its placement
+/// under its heading, so a paragraph that stands only
+/// elsewhere lands again, under the heading. When the
+/// heading stands nowhere in the story there is no
+/// section: every paragraph is to land, under a heading
+/// the apply adds.
+fn split_present_paragraphs_under_heading(
+    doc: &Document,
+    wid: &str,
+    heading: &str,
+    part: &ob_extract::contribution::Part,
+) -> (Vec<ob_model::Paragraph>, usize, Option<(usize, usize)>) {
+    let sections = heading_sections(doc, wid, heading);
+    let Some(section) = sections.first().copied() else {
+        let all = part.paragraphs.clone();
+        return (all, 0, None);
+    };
+    let mut spent: Vec<usize> = Vec::new();
+    let mut to_land: Vec<ob_model::Paragraph> = Vec::new();
+    let mut skipped = 0usize;
+    for p in &part.paragraphs {
+        if normalized_words(&p.text()).is_empty() {
+            to_land.push(p.clone());
+            continue;
+        }
+        match story_paragraph_index_in_range(doc, wid, &p.text(), &spent, section) {
+            Some(i) => {
+                spent.push(i);
+                skipped += 1;
+            }
+            None => to_land.push(p.clone()),
+        }
+    }
+    (to_land, skipped, Some(section))
+}
+
 /// Put one part into the document, per its plan. The
 /// plan is decided against the document as it stands
 /// when the part lands, so an apply walks the same
@@ -3863,25 +3904,60 @@ fn apply_part(
                 counts.unplaced += part.paragraphs.len();
                 return false;
             }
-            // Presence is scoped to the weekly story the
-            // part lands in; the heading paragraph is
-            // added only when at least one paragraph
-            // actually lands under it.
-            let (to_land, skipped) = split_present_paragraphs(doc, wid, part);
+            // Round 7 (R7-B): presence and landing are
+            // scoped to the part's own heading section of
+            // the weekly story. Paragraphs already under
+            // the heading are skipped; the missing ones
+            // land under the heading even when the same
+            // words stand elsewhere in the story. When
+            // the heading already stands, the missing
+            // paragraphs go in at the end of its section;
+            // when it stands nowhere, the heading is
+            // added (only when a paragraph actually lands
+            // under it, or the part carries no words at
+            // all) with the paragraphs after it.
+            let (to_land, skipped, section) =
+                split_present_paragraphs_under_heading(doc, wid, heading, part);
             let landed = to_land.len();
-            if landed > 0 {
-                let head = heading_paragraph(doc, heading);
-                if let Some(story) = doc.story_mut(wid) {
-                    story.paragraphs.push(head);
-                    story.paragraphs.extend(to_land);
+            match section {
+                Some(section) => {
+                    if landed > 0 {
+                        if let Some(story) = doc.story_mut(wid) {
+                            let at = section.1.min(story.paragraphs.len());
+                            for (n, p) in to_land.into_iter().enumerate() {
+                                story.paragraphs.insert(at + n, p);
+                            }
+                        }
+                        counts.under_headings += landed;
+                        if let Some(kt) = c.keep_through {
+                            apply_keep_through(doc, wid, kt);
+                        }
+                    }
                 }
-                counts.under_headings += landed;
-                if let Some(kt) = c.keep_through {
-                    apply_keep_through(doc, wid, kt);
+                None => {
+                    if landed > 0 || part.paragraphs.is_empty() {
+                        let head = heading_paragraph(doc, heading);
+                        if let Some(story) = doc.story_mut(wid) {
+                            story.paragraphs.push(head);
+                            story.paragraphs.extend(to_land);
+                        }
+                        counts.under_headings += landed;
+                        if landed > 0 {
+                            if let Some(kt) = c.keep_through {
+                                apply_keep_through(doc, wid, kt);
+                            }
+                        }
+                    }
                 }
             }
             counts.already += skipped;
-            true
+            // The part counts as landed only when its
+            // heading and its words both stand, judged
+            // with the one presence notion.
+            match target_checker(doc, part, &plan.target) {
+                Some(mut checker) => checker.part_present(part),
+                None => false,
+            }
         }
         // A loose sheet lands by being kept with the
         // part, exactly as its plan said: complete.
@@ -4495,6 +4571,78 @@ fn story_paragraph_index(doc: &Document, sid: &str, text: &str, spent: &[usize])
         .map(|(i, _)| i)
 }
 
+/// Whether a paragraph reads as a heading in a story
+/// (round 7, R7-B): it wears a heading style, or it is
+/// the bold body paragraph `heading_paragraph` falls
+/// back to when the document has no heading style.
+fn is_heading_paragraph(p: &ob_model::Paragraph) -> bool {
+    if p.style == "heading" || p.style == "subheading" {
+        return true;
+    }
+    !p.runs.is_empty()
+        && !normalized_words(&p.text()).is_empty()
+        && p.runs.iter().all(|r| r.bold == Some(true))
+}
+
+/// The sections of story `sid` that stand under a
+/// heading with these words (round 7, R7-B): each
+/// section is the paragraph range (start, end) after
+/// one heading paragraph and before the next heading
+/// paragraph of any words. An under-heading part's
+/// words count as present only inside one of its own
+/// heading's sections: the same words standing
+/// elsewhere in the story — before the heading, or
+/// under another heading — are not its presence.
+fn heading_sections(doc: &Document, sid: &str, heading: &str) -> Vec<(usize, usize)> {
+    let Some(story) = doc.story(sid) else {
+        return Vec::new();
+    };
+    let want = normalized_words(heading);
+    let paras = &story.paragraphs;
+    let mut sections = Vec::new();
+    let mut i = 0usize;
+    while i < paras.len() {
+        if is_heading_paragraph(&paras[i]) && normalized_words(&paras[i].text()) == want {
+            let start = i + 1;
+            let mut end = start;
+            while end < paras.len() && !is_heading_paragraph(&paras[end]) {
+                end += 1;
+            }
+            sections.push((start, end));
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    sections
+}
+
+/// `story_paragraph_index` restricted to one paragraph
+/// range of the story (round 7, R7-B): the search an
+/// under-heading part's presence and landing share, so
+/// both judge the same section the same way.
+fn story_paragraph_index_in_range(
+    doc: &Document,
+    sid: &str,
+    text: &str,
+    spent: &[usize],
+    range: (usize, usize),
+) -> Option<usize> {
+    let needle = normalized_words(text);
+    if needle.is_empty() {
+        return None;
+    }
+    let story = doc.story(sid)?;
+    story
+        .paragraphs
+        .iter()
+        .enumerate()
+        .skip(range.0)
+        .take(range.1.saturating_sub(range.0))
+        .find(|(i, p)| !spent.contains(i) && contains_words(&normalized_words(&p.text()), &needle))
+        .map(|(i, _)| i)
+}
+
 /// The paragraph index of the service-story hymn line
 /// carrying a hymn paragraph's composed value, when
 /// the paragraph counts as present (round 6, R6-B,
@@ -4543,10 +4691,25 @@ struct TargetPresence<'a> {
     sid: Option<String>,
     hymn_mode: bool,
     spent: Vec<usize>,
+    /// Round 7 (R7-B): for an under-heading part, the
+    /// one section of the target story the part's words
+    /// must stand in (see `heading_sections`). None
+    /// searches the whole story, as a plain story part
+    /// always has.
+    range: Option<(usize, usize)>,
+    /// Round 7 (R7-B): the placement itself does not
+    /// stand — an under-heading part whose heading is
+    /// nowhere in the target story. Nothing is present
+    /// for such a part, however its words stand
+    /// elsewhere in the story.
+    absent: bool,
 }
 
 impl TargetPresence<'_> {
     fn paragraph_present(&mut self, text: &str) -> bool {
+        if self.absent {
+            return false;
+        }
         if normalized_words(text).is_empty() {
             return true;
         }
@@ -4562,7 +4725,11 @@ impl TargetPresence<'_> {
         let Some(sid) = self.sid.clone() else {
             return false;
         };
-        match story_paragraph_index(self.doc, &sid, text, &self.spent) {
+        let found = match self.range {
+            Some(range) => story_paragraph_index_in_range(self.doc, &sid, text, &self.spent, range),
+            None => story_paragraph_index(self.doc, &sid, text, &self.spent),
+        };
+        match found {
             Some(i) => {
                 self.spent.push(i);
                 true
@@ -4572,6 +4739,9 @@ impl TargetPresence<'_> {
     }
 
     fn part_present(&mut self, part: &ob_extract::contribution::Part) -> bool {
+        if self.absent {
+            return false;
+        }
         part.paragraphs
             .iter()
             .all(|p| self.paragraph_present(&p.text()))
@@ -4597,14 +4767,58 @@ fn target_checker<'a>(
                 sid: Some(sid.clone()),
                 hymn_mode,
                 spent: Vec::new(),
+                range: None,
+                absent: false,
             })
         }
-        SlotTarget::AnnouncementsUnderHeading(_) => {
-            weekly_story_id(doc).map(|wid| TargetPresence {
+        SlotTarget::AnnouncementsUnderHeading(heading) => {
+            // Round 7 (R7-B): an under-heading part is
+            // present only under its own heading. The
+            // checker searches one section of the weekly
+            // story — the first section that holds the
+            // part's whole words, or the first section
+            // when none does (so the judgment fails
+            // there, exactly as the landing will read
+            // it). No section at all: the placement is
+            // absent, and the part is not present
+            // however its words stand elsewhere.
+            let wid = weekly_story_id(doc)?;
+            let sections = heading_sections(doc, &wid, heading);
+            let (range, absent) = match sections.first() {
+                None => (Some((0, 0)), true),
+                Some(first) => {
+                    let chosen = sections
+                        .iter()
+                        .copied()
+                        .find(|range| {
+                            let mut spent: Vec<usize> = Vec::new();
+                            part.paragraphs.iter().all(|p| {
+                                let text = p.text();
+                                if normalized_words(&text).is_empty() {
+                                    return true;
+                                }
+                                match story_paragraph_index_in_range(
+                                    doc, &wid, &text, &spent, *range,
+                                ) {
+                                    Some(i) => {
+                                        spent.push(i);
+                                        true
+                                    }
+                                    None => false,
+                                }
+                            })
+                        })
+                        .unwrap_or(*first);
+                    (Some(chosen), false)
+                }
+            };
+            Some(TargetPresence {
                 doc,
                 sid: Some(wid),
                 hymn_mode: false,
                 spent: Vec::new(),
+                range,
+                absent,
             })
         }
         _ => None,
@@ -4623,8 +4837,13 @@ fn part_has_no_words(part: &ob_extract::contribution::Part) -> bool {
 }
 
 /// Whether every one of a part's paragraphs is present
-/// in the story the part would land in (round 6,
-/// R6-B). A part is more than its first line: one
+/// in the story the part would land in, the way a
+/// complete landing would leave them (round 6, R6-B;
+/// round 7, R7-B: for an under-heading part, present
+/// means standing under its own heading — the same
+/// words elsewhere in the story are not its presence,
+/// and a missing heading means the part is not
+/// present). A part is more than its first line: one
 /// shared boilerplate line cannot make a part "already
 /// in" while the rest of its words are missing, and
 /// words standing in another story cannot make it
@@ -4649,69 +4868,27 @@ fn part_words_present(
     }
 }
 
-/// Find (or make) the shared checker for one target
-/// key, so a whole contribution's parts spend a target
-/// story's paragraphs between them.
-fn checker_index<'a>(
-    checkers: &mut Vec<(String, TargetPresence<'a>)>,
-    doc: &'a Document,
-    key: &str,
-    sid: Option<String>,
-    hymn_mode: bool,
-) -> usize {
-    if let Some(i) = checkers.iter().position(|(k, _)| k == key) {
-        return i;
-    }
-    let spent: Vec<usize> = Vec::new();
-    let checker = TargetPresence {
-        doc,
-        sid,
-        hymn_mode,
-        spent,
-    };
-    checkers.push((key.to_string(), checker));
-    checkers.len() - 1
-}
-
 /// Whether every story-landing part of a contribution
-/// has all its words present in its own target story,
-/// the parts sharing each story's paragraphs between
-/// them. Loose-sheet parts are not judged here at all:
-/// their words never enter a story, so their presence
-/// is the applied record's business (see
-/// `applied_claim`).
+/// has all its words present in its own target, judged
+/// part by part with the very judgment the plan uses
+/// (`part_words_present`), so the claim and the plan
+/// lines can never disagree (round 7, R7-B). Each part
+/// gets a fresh checker: one standing copy placed as a
+/// landing places it satisfies every part that asked
+/// for exactly that placement, so a paragraph repeated
+/// across two parts settles instead of demanding the
+/// words stand twice. Loose-sheet parts are not judged
+/// here at all: their words never enter a story, so
+/// their presence is the applied record's business
+/// (see `applied_claim`).
 fn contribution_words_present(doc: &Document, c: &ob_extract::contribution::Contribution) -> bool {
-    use ob_extract::contribution::PartKind;
-    let mut checkers: Vec<(String, TargetPresence)> = Vec::new();
     for part in &c.parts {
         let plan = planned_part_plan(doc, c, part);
         match &plan.target {
             SlotTarget::LooseSheet => continue,
-            SlotTarget::KeptWithPart => {
-                if !part_has_no_words(part) {
-                    return false;
-                }
-            }
             SlotTarget::AlreadyThere => continue,
-            SlotTarget::Story(sid) => {
-                let hymn_mode = part.kind == PartKind::Service
-                    && service_story_id(doc).as_deref() == Some(sid.as_str());
-                let key = format!("story:{sid}:{hymn_mode}");
-                let idx = checker_index(&mut checkers, doc, &key, Some(sid.clone()), hymn_mode);
-                if !checkers[idx].1.part_present(part) {
-                    return false;
-                }
-            }
-            SlotTarget::AnnouncementsUnderHeading(_) => {
-                let Some(wid) = weekly_story_id(doc) else {
-                    if part_has_no_words(part) {
-                        continue;
-                    }
-                    return false;
-                };
-                let key = format!("heading:{wid}");
-                let idx = checker_index(&mut checkers, doc, &key, Some(wid), false);
-                if !checkers[idx].1.part_present(part) {
+            _ => {
+                if !part_words_present(doc, c, part) {
                     return false;
                 }
             }
@@ -20537,10 +20714,20 @@ mod settings_tests {
     }
 
     #[test]
-    fn r6b_an_under_heading_part_lands_only_its_missing_paragraphs() {
-        // Round 6 (R6-B, rule 5): the under-heading arm
-        // lands per paragraph too, and adds its heading
-        // only because a paragraph actually lands.
+    fn r7b_an_under_heading_part_lands_its_words_under_its_own_heading() {
+        // FLAGGED, renamed in round 7 (R7-B) from
+        // `r6b_an_under_heading_part_lands_only_its_missing_paragraphs`:
+        // that test pinned the round-6 whole-story scope
+        // — a line standing anywhere in the weekly story
+        // was skipped for an under-heading part. Round 7
+        // (review M1, verify B3+S1) showed that scope
+        // silently loses the part's heading, so presence
+        // and landing are now scoped to the part's own
+        // heading section. Here the line stands in the
+        // weekly story but NOT under a Sunday school
+        // heading (there is none), so the heading lands
+        // and both paragraphs land under it; the standing
+        // copy elsewhere stays where it was.
         let mut doc = r1_template();
         let wid = weekly_story_id(&doc).expect("weekly story");
         doc.story_mut(&wid)
@@ -20566,8 +20753,272 @@ mod settings_tests {
                 .count()
         };
         assert_eq!(count("Sunday school"), 1, "the heading lands once");
-        assert_eq!(count("Classes meet at 9 AM."), 1);
+        assert_eq!(
+            count("Classes meet at 9 AM."),
+            2,
+            "once standing elsewhere, once under its own heading"
+        );
         assert_eq!(count("Bring a friend to class."), 1);
+        // Both landed copies of the first line: the
+        // second stands after the Sunday school heading.
+        let texts: Vec<String> = weekly.paragraphs.iter().map(|p| p.text()).collect();
+        let head_at = texts
+            .iter()
+            .position(|t| t == "Sunday school")
+            .expect("heading stands");
+        assert_eq!(texts[head_at + 1], "Classes meet at 9 AM.");
+        assert_eq!(texts[head_at + 2], "Bring a friend to class.");
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("Added 2 lines") && s.contains("under their headings")),
+            "{:?}",
+            outcome.lines
+        );
+        assert!(
+            !outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("already in the bulletin")),
+            "no paragraph was already under the heading: {:?}",
+            outcome.lines
+        );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r7b_two_announcement_parts_sharing_a_paragraph_settle_already_in() {
+        // Round 7 (R7-B, red team RT7-2 verbatim): two
+        // ## Announcement parts carrying the same
+        // paragraph. Accept lands it once and records
+        // the contribution; on re-review the claim must
+        // read AlreadyIn and every plan line must agree,
+        // because one standing copy placed as the
+        // landing places it satisfies each part that
+        // asked for exactly that placement. Before the
+        // fix the claim's checker spent the copy across
+        // both parts while the plan judged each part
+        // fresh, so the headline read
+        // RecordedButWordsGone forever.
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let mut doc = r1_template();
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert_eq!(c.parts.len(), 2);
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::NotApplied);
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        assert!(part_already_applied(&doc, text));
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        let count = |doc: &Document| {
+            doc.story(&wid)
+                .expect("story")
+                .paragraphs
+                .iter()
+                .filter(|p| p.text() == "The bake sale is Friday.")
+                .count()
+        };
+        assert_eq!(count(&doc), 1, "the words stand once");
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+        let plans = plan_parts(&doc, &c);
+        assert!(
+            plans.iter().all(|p| p.target == SlotTarget::AlreadyThere),
+            "every plan line agrees with the headline: {plans:?}"
+        );
+        // Re-accept changes nothing and the claim holds.
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        assert_eq!(count(&doc), 1);
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r7b_a_shared_line_between_two_parts_of_one_contribution_settles() {
+        // Round 7 (R7-B, review M2's probe shape): the
+        // first Announcement part carries two paragraphs,
+        // the second carries the first one's line alone.
+        // One standing copy of the shared line satisfies
+        // both parts, and the contribution settles.
+        let text = "From: Sue\n\n## Announcement\n\nClasses meet at 9 AM.\n\nBring a chair.\n\n## Announcement\n\nClasses meet at 9 AM.\n";
+        let mut doc = r1_template();
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        let weekly = doc.story(&wid).expect("story");
+        for needle in ["Classes meet at 9 AM.", "Bring a chair."] {
+            assert_eq!(
+                weekly
+                    .paragraphs
+                    .iter()
+                    .filter(|p| p.text() == needle)
+                    .count(),
+                1,
+                "{needle} stands once"
+            );
+        }
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+        let plans = plan_parts(&doc, &c);
+        assert!(
+            plans.iter().all(|p| p.target == SlotTarget::AlreadyThere),
+            "{plans:?}"
+        );
+    }
+
+    #[test]
+    fn r7b_the_same_line_under_two_headings_lands_under_both() {
+        // Round 7 (R7-B, verify S1 verbatim): the same
+        // line under ## Sunday school and ## Youth, both
+        // sharing the weekly-story target. Both headings
+        // land, each with the line under it, and the
+        // contribution settles. Before the fix the plan
+        // simulation landed the first part, called the
+        // second AlreadyThere, and the Youth heading
+        // never appeared at all.
+        let text = "From: Sue\n\n## Sunday school\n\nJoint picnic on Saturday.\n\n## Youth\n\nJoint picnic on Saturday.\n";
+        let mut doc = r1_template();
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let plans = plan_parts(&doc, &c);
+        assert_eq!(
+            plans[0].target,
+            SlotTarget::AnnouncementsUnderHeading("Sunday school")
+        );
+        assert_eq!(
+            plans[1].target,
+            SlotTarget::AnnouncementsUnderHeading("Youth"),
+            "the second heading's part plans its own landing: {plans:?}"
+        );
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        let weekly = doc.story(&wid).expect("story");
+        let texts: Vec<String> = weekly.paragraphs.iter().map(|p| p.text()).collect();
+        for heading in ["Sunday school", "Youth"] {
+            assert_eq!(
+                texts.iter().filter(|t| *t == heading).count(),
+                1,
+                "the {heading} heading stands once: {texts:?}"
+            );
+            let at = texts
+                .iter()
+                .position(|t| t == heading)
+                .expect("heading stands");
+            assert_eq!(
+                texts[at + 1],
+                "Joint picnic on Saturday.",
+                "the line stands under the {heading} heading: {texts:?}"
+            );
+        }
+        assert_eq!(
+            texts
+                .iter()
+                .filter(|t| *t == "Joint picnic on Saturday.")
+                .count(),
+            2,
+            "once under each heading: {texts:?}"
+        );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+        let plans = plan_parts(&doc, &c);
+        assert!(
+            plans.iter().all(|p| p.target == SlotTarget::AlreadyThere),
+            "{plans:?}"
+        );
+    }
+
+    #[test]
+    fn r7b_a_heading_part_sharing_a_line_with_an_announcement_keeps_its_heading() {
+        // Round 7 (R7-B, review M1 verbatim): an
+        // ## Announcement part and a ## Sunday school
+        // part carrying the same line. The announcement
+        // lands in the weekly story; the Sunday school
+        // heading still lands, with its own copy of the
+        // line under it.
+        let text = "From: Sue\n\n## Announcement\n\nClasses meet at 9 AM.\n\n## Sunday school\n\nClasses meet at 9 AM.\n";
+        let mut doc = r1_template();
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let plans = plan_parts(&doc, &c);
+        assert_eq!(
+            plans[1].target,
+            SlotTarget::AnnouncementsUnderHeading("Sunday school"),
+            "{plans:?}"
+        );
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        let weekly = doc.story(&wid).expect("story");
+        let texts: Vec<String> = weekly.paragraphs.iter().map(|p| p.text()).collect();
+        assert_eq!(
+            texts.iter().filter(|t| *t == "Sunday school").count(),
+            1,
+            "the Sunday school heading lands: {texts:?}"
+        );
+        let at = texts
+            .iter()
+            .position(|t| t == "Sunday school")
+            .expect("heading stands");
+        assert_eq!(texts[at + 1], "Classes meet at 9 AM.", "{texts:?}");
+        assert_eq!(
+            texts
+                .iter()
+                .filter(|t| *t == "Classes meet at 9 AM.")
+                .count(),
+            2,
+            "once as the announcement, once under the heading: {texts:?}"
+        );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+        let plans = plan_parts(&doc, &c);
+        assert!(
+            plans.iter().all(|p| p.target == SlotTarget::AlreadyThere),
+            "{plans:?}"
+        );
+    }
+
+    #[test]
+    fn r7b_a_line_already_under_its_own_heading_is_not_printed_twice() {
+        // Round 7 (R7-B): the round-6 no-double-print
+        // pin, in the scope it now names. A paragraph
+        // already standing under its OWN heading is
+        // skipped; only the missing paragraph lands,
+        // inside the same section.
+        let mut doc = r1_template();
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        {
+            let story = doc.story_mut(&wid).expect("story");
+            story
+                .paragraphs
+                .push(ob_model::Paragraph::plain("subheading", "Sunday school"));
+            story
+                .paragraphs
+                .push(ob_model::Paragraph::plain("body", "Classes meet at 9 AM."));
+        }
+        let text =
+            "From: Sue\n\n## Sunday school\n\nClasses meet at 9 AM.\n\nBring a friend to class.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let weekly = doc.story(&wid).expect("story");
+        let texts: Vec<String> = weekly.paragraphs.iter().map(|p| p.text()).collect();
+        for needle in [
+            "Sunday school",
+            "Classes meet at 9 AM.",
+            "Bring a friend to class.",
+        ] {
+            assert_eq!(
+                texts.iter().filter(|t| *t == needle).count(),
+                1,
+                "{needle} stands once: {texts:?}"
+            );
+        }
+        let at = texts
+            .iter()
+            .position(|t| t == "Sunday school")
+            .expect("heading stands");
+        assert_eq!(texts[at + 1], "Classes meet at 9 AM.", "{texts:?}");
+        assert_eq!(
+            texts[at + 2],
+            "Bring a friend to class.",
+            "the missing paragraph lands inside the section: {texts:?}"
+        );
         assert!(
             outcome
                 .lines
@@ -20584,6 +21035,96 @@ mod settings_tests {
             "{:?}",
             outcome.lines
         );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r7b_the_same_paragraph_twice_in_one_part_still_settles() {
+        // Round 7 (R7-B, control): the red team's P2
+        // control keeps settling. Within ONE part the
+        // checker still spends the story's paragraphs
+        // one by one, so a paragraph the part carries
+        // twice lands twice and reads present.
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n\nThe bake sale is Friday.\n";
+        let mut doc = r1_template();
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert_eq!(c.parts.len(), 1);
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        assert_eq!(
+            doc.story(&wid)
+                .expect("story")
+                .paragraphs
+                .iter()
+                .filter(|p| p.text() == "The bake sale is Friday.")
+                .count(),
+            2
+        );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r7b_the_same_hymn_line_twice_in_one_service_part_still_settles() {
+        // Round 7 (R7-B, control): the red team's P9
+        // control keeps settling. Hymn presence is
+        // untouched: a hymn line in the service story,
+        // judged per paragraph within the part.
+        let text = "From: Music director\n\n## For the service\n\nHymn of Praise\t433\n\nHymn of Praise\t433\n";
+        let mut doc = r1_template();
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+        let sid = service_story_id(&doc).expect("service story");
+        let before = doc.story(&sid).expect("story").paragraphs.len();
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        assert_eq!(
+            doc.story(&sid).expect("story").paragraphs.len(),
+            before,
+            "a second apply adds no third hymn line"
+        );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r7b_words_removed_by_hand_after_a_shared_apply_still_read_words_gone() {
+        // Round 7 (R7-B): the round-5 honest sentence
+        // survives the unified notion. The two-part
+        // contribution settles, the office deletes the
+        // standing paragraph by hand, and the claim
+        // reads RecordedButWordsGone again — the record
+        // stands, the words do not. Re-applying lands
+        // the words once and the contribution settles.
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let mut doc = r1_template();
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        doc.story_mut(&wid)
+            .expect("story")
+            .paragraphs
+            .retain(|p| !p.text().contains("bake sale"));
+        assert!(part_already_applied(&doc, text), "the record survives");
+        assert_eq!(
+            applied_claim(&doc, &c, text),
+            AppliedClaim::RecordedButWordsGone
+        );
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        assert_eq!(
+            doc.story(&wid)
+                .expect("story")
+                .paragraphs
+                .iter()
+                .filter(|p| p.text() == "The bake sale is Friday.")
+                .count(),
+            1
+        );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
     }
 
     #[test]

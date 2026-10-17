@@ -426,3 +426,121 @@ the exact composed state RT7-1 demonstrated as the
 BLOCKER and the fourth asserted the title-carries-
 assertion reading R7-8 closes. Each carries a
 FLAGGED comment in its own source saying so.
+
+## Shipped addendum, R7-B (2026-10-16)
+
+Presence, one notion, shipped over HEAD `610effa`.
+The claim, the plan, and the apply now use literally
+one presence notion, judged per part, heading-aware:
+
+- The claim (`contribution_words_present`) no longer
+  shares one spent-set checker across a contribution's
+  parts. It judges every story-landing part with
+  `part_words_present` itself — the very judgment the
+  plan uses — each part with a fresh checker, loose
+  parts still skipped and judged by the record alone.
+  One standing copy placed as a landing places it
+  satisfies every part that asked for exactly that
+  placement, so two `## Announcement` parts carrying
+  the same paragraph settle: apply lands the words
+  once, records the contribution, and reopening reads
+  AlreadyIn with every plan line AlreadyThere
+  (RT7-2 / review M2). Within one part the checker
+  still spends the story's paragraphs one by one, so
+  the controls keep settling: the same paragraph
+  twice in one part lands twice, and the same hymn
+  line twice in one service part settles on its hymn
+  lines (hymn presence itself is untouched: a hymn
+  line in the service story).
+- An under-heading part is present only under its own
+  heading. `heading_sections` finds the sections of
+  the weekly story standing under a heading paragraph
+  (a heading-styled paragraph, or the bold body
+  paragraph the heading fallback writes): the range
+  after the heading and before the next heading of
+  any words. The checker searches one section — the
+  first that holds the part's whole words — and a
+  part whose heading stands nowhere in the story is
+  not present however its words stand elsewhere in
+  it. The landing matches: `split_present_paragraphs_under_heading`
+  splits against that section, so paragraphs already
+  under the part's own heading are skipped (no
+  double-print in that scope, the R6-B pin kept where
+  it belongs) and the missing ones land inside the
+  section, or, when the heading stands nowhere, under
+  a heading the apply adds — even when the same words
+  already stand elsewhere in the story (verify B3+S1,
+  review M1, in both the two-heading and the
+  single-part forms). The under-heading arm counts
+  the part landed only when the one presence notion,
+  re-run after the landing, finds its heading and its
+  words both standing.
+- Headline and plan can no longer disagree, because
+  both read the same per-part judgment; words removed
+  by hand after a recorded apply still read
+  RecordedButWordsGone under the pinned sentence, and
+  re-applying lands them once and settles.
+
+FORMAT.md is unchanged: its applied-record wording
+(the record is a note; the words themselves are
+checked before the review says a part is already in)
+stays true as written.
+
+Tests: 573 → 581 passing, 0 failed (full workspace,
+unpiped, `--no-fail-fast`, all 28 suite results ok,
+exit 0); clippy `--workspace --all-targets --
+-D warnings` exit 0. Eight new tests, all in ob-app:
+RT7-2 verbatim (two Announcement parts, same
+paragraph → apply complete → AlreadyIn, plan lines
+agree, words stand once, re-accept changes nothing);
+review M2's probe shape (a two-paragraph part and a
+second part carrying its first line alone); verify
+S1 verbatim (the same line under ## Sunday school +
+## Youth → both headings land, each with the line
+under it, reopen AlreadyIn); review M1 verbatim
+(## Announcement + ## Sunday school sharing a line →
+the Sunday school heading lands with its line); a
+line already under its OWN heading is skipped, not
+printed twice, and the missing paragraph lands
+inside the section; the two controls (same paragraph
+twice in one part; same hymn line twice in one
+service part, no third line on re-apply); and words
+removed by hand after the shared-paragraph apply
+reading RecordedButWordsGone, then landing once more
+and settling. The fake-helper ETXTBSY flake did not
+fire.
+
+Pre-existing tests changed — one, flagged by name,
+none buried:
+
+- `r6b_an_under_heading_part_lands_only_its_missing_paragraphs`
+  (ob-app) — RENAMED to
+  `r7b_an_under_heading_part_lands_its_words_under_its_own_heading`,
+  disposition changed. It pinned the round-6
+  whole-story scope: a Sunday school part whose first
+  line already stood anywhere in the weekly story
+  skipped that line, landed only the missing one,
+  and counted one already-there line. That scope is
+  the R7-2 root (it is what silently lost the second
+  heading in M1/S1), so the same fixture now pins
+  the heading-aware reading: no Sunday school heading
+  stands, so the heading lands and both paragraphs
+  land under it — the line now stands twice (once
+  where it was, once under its own heading), the
+  summary reports 2 added lines and no already-there
+  line, and the claim reads AlreadyIn. The test
+  carries a FLAGGED comment in its own source saying
+  so. No other pre-existing test was changed: every
+  other R6-B pin (per-paragraph landing for story
+  parts, the hymn-line rule, loose-by-record, the
+  scattered-fragments and re-send shapes) holds under
+  the unified notion exactly as written.
+
+One scope note, stated plainly: a heading is
+recognized by its style (heading / subheading) or by
+the bold-body fallback `heading_paragraph` writes. A
+heading typed by hand as plain body text is not
+recognized as one, so an under-heading part for it
+lands its heading and words again under a real
+heading paragraph; the failure direction is a
+repeated placement, never a lost heading.

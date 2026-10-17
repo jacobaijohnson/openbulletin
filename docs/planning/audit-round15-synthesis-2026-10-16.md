@@ -249,3 +249,19 @@ anchor resolution as disposed, and no witness reading
 changed beyond what the R15-4 disposition orders — a file
 date more than 28 days old now reads at today instead of at
 the file date.
+
+## Coordinator close (2026-10-17)
+
+Both batches shipped and were independently re-verified by the
+coordinator (full unpiped suite + clippy -D warnings at each step):
+R15-A `28289e9` (698 tests; displacement verbs + phrasal pairs with
+the to-target rule, -s forms and forgot/forgotten, stacked
+cancellations spending together, "of" filler with the genitive
+rule, trailing clause scope with the governed second date named;
+zero changed pins; one disclosed judgment call - the auxiliary-spent
+rule for "(it was moved, November 1)", which round 16 is briefed to
+probe), R15-B `8d77f60` (700 tests; the file-date anchor stands only
+within 28 days before today, boundary pinned at 28/29 days;
+different-day same-week identity pinned whole-struct; zero changed
+pins). Round 16 audits these fixes. The Tier-2 final gate runs only
+after a round returns zero BLOCKER + zero MAJOR.

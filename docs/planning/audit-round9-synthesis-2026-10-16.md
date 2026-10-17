@@ -458,3 +458,96 @@ read unpiped from cargo's own output.
   old suite pinned, as the disposition expected.
   The full suite went 614 → 619 with additions
   only.
+
+## Shipped addendum, R9-B (2026-10-17)
+
+Presence, scope and suffixes: R9-3 (MAJOR) + R9-7 +
+R9-8, in `crates/ob-app/src/main.rs` and in
+`part_heading` in
+`crates/ob-extract/src/contribution.rs`. Full suite
+**626 passed / 0 failed** (baseline 619; +7 new
+pins: 6 in ob-app, 1 in ob-extract), clippy clean,
+exit codes read unpiped from cargo's own output.
+The fake-helper ETXTBSY flake did not fire.
+
+- R9-3: the judged set is scoped per story.
+  `judged_headings` now returns `JudgedHeading`
+  pairs — a part heading's normalized words paired
+  with the story that part targets (its named story,
+  or the weekly story for a part landing under a
+  heading there; a part landing in no story judges
+  nothing) — and `heading_sections` filters the set
+  to its own story before judging boundaries. A part
+  targeting a named story never redraws another
+  story's boundaries. Pin
+  (`r9b_a_part_targeting_another_story_does_not_redraw_this_storys_sections`):
+  the RT9-3 A/B verbatim. Control B1 (Sunday school
+  part alone, bold "Youth" label inside its section)
+  reads AlreadyIn; B2 (the same, plus a ## Youth
+  part targeting a standing named "youth" story)
+  changes nothing for the Sunday school part — its
+  section is (1, 4), running past the bold label,
+  the plan reads AlreadyThere, the claim reads
+  AlreadyIn, apply lands nothing and "Bring a
+  friend to class." stands once. The R8-7 converse
+  pin (a bold line carrying the heading of a part
+  that DOES target this story still delimits) and
+  every R8-B pin pass unmodified, so plan and apply
+  agree in both directions.
+- R9-7: one matching helper, `heading_words_match`,
+  serves styled and bold-fallback headings alike:
+  the heading's words exactly, or plus a
+  parenthesized suffix, with trailing punctuation
+  (a final period) stripped before the match.
+  `is_section_boundary` and
+  `is_target_heading_paragraph` both read through
+  it; the old styled-only suffix arm is gone. Pins:
+  `r9b_a_bold_fallback_heading_with_a_room_suffix_counts_as_its_section`
+  (RT9-7 D4: the bold "Sunday school (Room 2)"
+  section is found, the standing line is not
+  duplicated, the missing line lands inside it),
+  `r9b_a_suffix_heading_with_a_trailing_period_counts_for_either_kind`
+  (RT9-7 D6, the styled "Sunday school (Room 2).",
+  plus the bold exact-words "Sunday school."), and
+  `r9b_a_bold_longer_heading_still_does_not_count_as_the_parts_heading`
+  (a bold "Sunday school teachers" still does not
+  match; the styled form was already pinned by
+  R8-B).
+- R9-8: part headings match document headings
+  symmetrically. `part_heading` (ob-extract) reads
+  a heading line by the same shape — exact words
+  (`part_kind_for_words`), or the words plus a
+  parenthesized suffix, trailing period aside — so
+  "## Sunday school (Room 2)" is the Sunday school
+  part. Because the part's kind carries the base
+  heading, it plans as an under-heading part for
+  "Sunday school" and no suffixed heading is ever
+  written. Pins:
+  `a_part_heading_with_a_parenthesized_suffix_is_that_headings_part`
+  in ob-extract (the witness parse, the
+  second-part-after-Announcement shape, and "Sunday
+  school teachers" staying body text),
+  `r9b_a_suffixed_part_heading_plans_and_lands_under_the_base_heading`
+  (plans as Sunday school under-heading, lands
+  under the standing "Sunday school" heading, no
+  "(Room 2)" text written, claim settles), and
+  `r9b_a_suffixed_part_heading_with_no_standing_heading_writes_the_base_heading`
+  (against a document with no such heading, the
+  BASE heading "Sunday school" is written, not the
+  suffixed one — shipped as the disposition
+  directs; the sender's room note is a qualifier on
+  the part, preserved in the filed contribution
+  text, not a heading the bulletin prints).
+- **Changed pre-existing tests: one, mechanical.**
+  ob-app
+  `r8b_a_subheading_style_with_a_non_literal_id_is_recognized`:
+  its one setup line changed from
+  `judged_headings(&c, None)` to
+  `judged_headings(&doc, &c)` — the function now
+  takes the document so it can scope each heading
+  to its part's target story, and its unused
+  target argument is gone. Every assertion in the
+  test is unchanged, and it passes in its original
+  expectation. No other pre-existing test changed;
+  every R7-B / R8-B presence pin passes in its
+  original expectation.

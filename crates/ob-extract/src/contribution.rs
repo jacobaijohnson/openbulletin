@@ -832,9 +832,32 @@ pub struct RawContribution {
     pub parts: Vec<(PartKind, String)>,
 }
 
+/// The part kind a set of heading words names exactly,
+/// if it names one.
+fn part_kind_for_words(w: &str) -> Option<PartKind> {
+    Some(match w {
+        "for the service" => PartKind::Service,
+        "announcement" | "announcements" => PartKind::Announcement,
+        "insert" => PartKind::Insert,
+        "sunday school" => PartKind::SundaySchool,
+        "youth" => PartKind::Youth,
+        _ => return None,
+    })
+}
+
 /// The part kind a heading line names, if it names one.
 /// Any `#` line whose words are not a part name is ordinary
 /// body text (a heading inside a part), never a part break.
+/// Round 9 (R9-8): part headings match document headings
+/// symmetrically — the same rule the bulletin side applies
+/// (`heading_words_match` in ob-app). A part heading whose
+/// words are a heading's words plus a parenthesized suffix
+/// ("## Sunday school (Room 2)") is THAT heading's part:
+/// it plans under the base heading, and the suffixed
+/// heading itself is never written to the bulletin.
+/// Trailing punctuation — a final period — does not
+/// defeat the match either; a longer heading ("Sunday
+/// school teachers") still does not match.
 fn part_heading(line: &str) -> Option<PartKind> {
     let t = line.trim();
     if !t.starts_with('#') {
@@ -846,14 +869,24 @@ fn part_heading(line: &str) -> Option<PartKind> {
         .trim_end_matches(':')
         .trim();
     let w = words.to_ascii_lowercase();
-    Some(match w.as_str() {
-        "for the service" => PartKind::Service,
-        "announcement" | "announcements" => PartKind::Announcement,
-        "insert" => PartKind::Insert,
-        "sunday school" => PartKind::SundaySchool,
-        "youth" => PartKind::Youth,
-        _ => return None,
-    })
+    let core = w.trim_end_matches('.');
+    if let Some(kind) = part_kind_for_words(core) {
+        return Some(kind);
+    }
+    for want in [
+        "for the service",
+        "announcement",
+        "announcements",
+        "insert",
+        "sunday school",
+        "youth",
+    ] {
+        let prefix = format!("{want} (");
+        if core.starts_with(&prefix) && core.ends_with(')') {
+            return part_kind_for_words(want);
+        }
+    }
+    None
 }
 
 /// One header line's (key, value), when the line is one:
@@ -1216,6 +1249,41 @@ Youth group meets Wednesday at 6 PM.
         let c = parse_contribution(text, today()).expect("parses");
         let kinds: Vec<PartKind> = c.parts.iter().map(|p| p.kind).collect();
         assert_eq!(kinds, vec![PartKind::Announcement, PartKind::SundaySchool]);
+    }
+
+    #[test]
+    fn a_part_heading_with_a_parenthesized_suffix_is_that_headings_part() {
+        // Round 9 (R9-8, red team RT9-8 verbatim): a
+        // sender writes "## Sunday school (Room 2)" —
+        // the very words the bulletin prints for that
+        // section. The part is the Sunday school part,
+        // not a plain announcement, and its heading line
+        // is not swallowed: the part carries its lines
+        // under the base heading. The same holds as a
+        // second part, after an announcement.
+        let text =
+            "## Sunday school (Room 2)\n\nClasses meet at 9 AM.\n\nBring a friend to class.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.parts.len(), 1);
+        assert_eq!(c.parts[0].kind, PartKind::SundaySchool);
+        let lines: Vec<String> = c.parts[0].paragraphs.iter().map(|p| p.text()).collect();
+        assert_eq!(
+            lines,
+            vec![
+                "Classes meet at 9 AM.".to_string(),
+                "Bring a friend to class.".to_string()
+            ]
+        );
+        let text = "## Announcement\n\nThe bake sale is Friday.\n\n## Sunday school (Room 2)\n\nClasses meet at 9 AM.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        let kinds: Vec<PartKind> = c.parts.iter().map(|p| p.kind).collect();
+        assert_eq!(kinds, vec![PartKind::Announcement, PartKind::SundaySchool]);
+        // A longer heading is not a suffixed one: it
+        // stays ordinary body text, never a part break.
+        let text = "## Sunday school teachers\n\nOne.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.parts.len(), 1);
+        assert_eq!(c.parts[0].kind, PartKind::Announcement);
     }
 
     #[test]

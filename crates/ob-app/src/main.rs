@@ -16860,6 +16860,18 @@ mod settings_tests {
         // The folded record notes the children and no
         // permission (a CC BY license is not one), so
         // the web page holds the picture back.
+        // FLAGGED, round 7 (R7-1): this test used to
+        // pin the folded record's CC BY license
+        // standing. The noting record carries no credit
+        // line at all, so the folded record claimed a
+        // CC BY license beside a children note with an
+        // empty credit line — the composed state
+        // RT7-1 graded BLOCKER. The license assertion
+        // below therefore changed from CcBy("4.0") to
+        // Unknown in R7-A; every other assertion (one
+        // folded record, children note, title, creator,
+        // source, the picture held back) stands
+        // unchanged.
         let bytes: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 5 L9 5 L5 9 Z"/></svg>"#;
         let hash = ob_model::sha256_hex(bytes);
         let weak = ob_model::RightsRecord {
@@ -16908,11 +16920,7 @@ mod settings_tests {
             assert_eq!(stored.len(), 1, "{tag}: the pair folds into one record");
             let rights = &stored[0].rights;
             assert_eq!(rights.children_present, Some(true), "{tag}");
-            assert_eq!(
-                rights.license,
-                ob_model::LicenseKind::CcBy("4.0".into()),
-                "{tag}"
-            );
+            assert_eq!(rights.license, ob_model::LicenseKind::Unknown, "{tag}");
             assert_eq!(rights.title, "Harvest supper", "{tag}");
             assert_eq!(rights.creator, "Jane Doe", "{tag}");
             assert_eq!(rights.source, "a plainer copy", "{tag}");
@@ -17052,6 +17060,70 @@ mod settings_tests {
         let (_html_bytes, report) =
             ob_extract::html_export::export_html(&app.doc).expect("the web page");
         assert_eq!(report.children_left_out, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r7_sheet_attach_in_the_mirror_order_drops_the_license() {
+        // Round 7 (R7-1 / RT7-1): the sheet-attach path
+        // in the mirror order. The bulletin holds the
+        // picture as children-noted with a CC BY license
+        // already standing; the sheet's record carries
+        // only the credit line. The fence refuses the
+        // credit in the attach merge, and the composed
+        // record must not go on claiming the license
+        // whose attribution was refused in the same
+        // merge: the license falls, the children note
+        // and the bulletin's other fields stand.
+        let bytes: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 5 L9 5 L5 9 Z"/></svg>"#;
+        let hash = ob_model::sha256_hex(bytes);
+        let in_bulletin = ob_model::RightsRecord {
+            source: "the church camera".into(),
+            license: ob_model::LicenseKind::CcBy("4.0".into()),
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let in_sheet = ob_model::RightsRecord {
+            credit_text: "Photo by Alice, CC BY 4.0".into(),
+            ..Default::default()
+        };
+        let asset = |rights: ob_model::RightsRecord| ob_model::Asset {
+            sha256: hash.clone(),
+            kind: ob_model::AssetKind::Picture,
+            media_type: "image/svg+xml".into(),
+            rights,
+        };
+        let mut ins = new_insert("sheet-10", "Photo sheet");
+        let (mut frame, mut placement) =
+            picture_frame(216_000, 144_000, ob_model::PictureFit::ShowWhole);
+        placement.asset = hash.clone();
+        frame.picture = Some(placement);
+        ins.panels[0].frames.push(frame);
+        let mut host = doc_with_sheet();
+        host.assets.push(asset(in_sheet));
+        host.asset_bytes.insert(hash.clone(), bytes.to_vec());
+        let dir = std::env::temp_dir().join(format!("openbulletin-r7-obdi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("photo-sheet.obdi");
+        ob_format::save_insert(&ins, &host, &file).expect("the sheet saves");
+        let mut app = App {
+            doc: doc_with_sheet(),
+            ..Default::default()
+        };
+        app.doc.assets.push(asset(in_bulletin));
+        app.doc.asset_bytes.insert(hash.clone(), bytes.to_vec());
+        app.add_insert_from_library(&file);
+        let stored = app
+            .doc
+            .assets
+            .iter()
+            .find(|a| a.sha256 == hash)
+            .expect("the picture stays");
+        assert_eq!(stored.rights.children_present, Some(true));
+        assert_eq!(stored.rights.credit_text, "");
+        assert_eq!(stored.rights.license, ob_model::LicenseKind::Unknown);
+        assert_eq!(stored.rights.source, "the church camera");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

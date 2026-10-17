@@ -317,3 +317,112 @@ full suite + clippy unpiped before accepting. Round 8
 (verify / review / red team over the new HEAD) follows
 R7-D. The Tier-2 final gate runs only after a Wonder
 round returns zero BLOCKER + zero MAJOR.
+
+## Shipped addendum, R7-A (2026-10-16)
+
+Rights, second direction, shipped over HEAD
+`f40a905`. Both findings are fixed inside
+`merge_rights_records` (ob-model), the single funnel
+every composition path runs through (load fold for
+.obd and .obdi, sheet attach, `add_asset`, sidecar
+absorb), so every path inherits both fixes:
+
+- R7-1 (BLOCKER): the togetherness rule now judges
+  the composed record, not the direction. After all
+  fills and reversions, if the composed record notes
+  children, carries an attribution-requiring license
+  (CC BY / CC BY-SA), and its credit line is empty,
+  the license does not stand — whichever side it
+  came from. It reverts to what the merge holds
+  without it: the other record's license when that
+  license itself stands under the publish fence and
+  this same rule (a children-bearing record's CC0
+  vouched beside a dropped CC BY is the shape), and
+  Unknown where nothing else vouches a license. A
+  children-bearing record whose own credit stands
+  keeps its license, and licenses requiring no
+  attribution (CC0, public domain, the church's own
+  work) are untouched by the rule.
+- R7-8 (MINOR): `asserted_by` / `asserted_at` now
+  stand only when a substantive rights fill from the
+  same incoming record itself stands in the final
+  composed record — its credit line, or its license.
+  The old gate (any change to the composed record)
+  let an assertion ride in on an unrelated title or
+  source_url fill beside a credit the fence refused
+  in the same merge; that ride is closed. The R5-A
+  control (incoming carrying only a refused credit
+  plus the assertion changes nothing) stays held,
+  and an assertion still stands when the same
+  record's credit or license genuinely stands.
+
+FORMAT.md's merge wording was updated from the
+one-direction travel-together sentence to the
+composed rule, mirror case included.
+
+Tests: 566 → 573 passing, 0 failed (full workspace,
+unpiped, `--no-fail-fast`, all 28 suite results ok,
+exit 0); clippy `--workspace --all-targets --
+-D warnings` exit 0. Seven new tests: ob-model 5 (the
+RT7-1 probe verbatim for CC BY and CC BY-SA,
+asserting the license falls and the children note
+stands, with the own-credit control and a
+no-attribution-license control in the same test; the
+fallback shape — a children-bearing record's vouched
+CC0 standing where the dropped CC BY stood; the
+three-record fold [children+CC BY, title, credit]
+yielding license Unknown, credit "", title standing;
+`add_asset` in the mirror order; the R7-8 assertion
+shapes — title-only and source_url-only fills beside
+a refused credit carry no assertion, the
+refused-credit-only control changes nothing, and the
+assertion stands when the same record's credit or
+license stands), ob-format 1 (the mirror pair folding
+on a real .obd load), ob-app 1 (sheet attach in the
+mirror order: license falls, credit refused, children
+note and source stand). The fake-helper ETXTBSY
+flake did not fire.
+
+Pre-existing tests changed — four, each flagged by
+name, none buried:
+
+- `r5_merge_never_manufactures_a_web_permission`
+  (ob-model) — the `sheet_fuller` pin (a CC BY
+  license filling into a children-noted record with
+  no credit anywhere) asserted the license standing.
+  That composed record is the R7-1 BLOCKER state, so
+  its license assertion changed from CcBy("4.0") to
+  Unknown; the title fill beside it still lands, and
+  every other assertion in the test is unchanged.
+- `r5_duplicate_asset_records_fold_on_load`
+  (ob-format) and
+  `r5_duplicate_records_in_a_file_fold_and_hold_the_picture_back`
+  (ob-app) — both pin the same fold: a weak record
+  and a record noting children with a CC BY license
+  and no credit line, in either order. Both asserted
+  the folded license standing; that is again the
+  R7-1 BLOCKER state, so both license assertions
+  changed from CcBy("4.0") to Unknown. Every other
+  assertion in both tests stands unchanged (one
+  folded record, children note, title, creator,
+  source, and — in the ob-app test — the picture
+  still held back from the web page).
+- `r5_merge_assertion_fields_ride_only_with_a_real_fill`
+  (ob-model) — its substantive fill was a title,
+  which R7-8's redefinition (substantive means
+  rights-bearing) removes as an assertion carrier.
+  The fill in the test is now a credit line; the
+  test's assertions (the assertion stands with a
+  substantive fill from the same record, and an
+  assertion alone changes nothing) are unchanged in
+  substance, and the title-only shape is pinned
+  directly by the new R7-8 test above.
+
+No other pre-existing test was changed. One
+deviation from the brief's expectation, stated
+plainly: the brief expected few or no changed pins;
+four changed, because three shipped pins asserted
+the exact composed state RT7-1 demonstrated as the
+BLOCKER and the fourth asserted the title-carries-
+assertion reading R7-8 closes. Each carries a
+FLAGGED comment in its own source saying so.

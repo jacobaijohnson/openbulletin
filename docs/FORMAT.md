@@ -319,12 +319,21 @@ from itself notes the children, or a children-bearing
 record already noted a permission on its own fields
 before the merge. Otherwise the field reverts to the
 children-bearing record's value for it. A license and
-its credit also travel together (round 6, RT6-2):
-when a merge takes a record's license but that same
-record's credit line does not stand in the composed
-record, the license does not fill either, so no
-composed record claims a license whose required
-credit was dropped in the merge.
+its credit also travel together (round 6, RT6-2;
+round 7, R7-1): when a merge takes a record's license
+but that same record's credit line does not stand in
+the composed record, the license does not fill
+either — and the rule judges the composed record,
+not the direction, so a license that requires
+attribution (CC BY, CC BY-SA) already standing on
+the record likewise does not stand when the
+composed record notes children and its credit line
+is empty — the mirror case being a merge whose
+only credit was refused by the fence above. Either
+way, no composed record that notes children claims
+an attribution license with an empty credit line,
+and a record whose own credit line stands keeps
+its license.
 
 ### Loading rules
 

@@ -1152,6 +1152,18 @@ mod tests {
         // disarmed the children note and dropped the
         // license. The load folds the pair into one
         // composed record, in either order.
+        // FLAGGED, round 7 (R7-1): this test used to
+        // pin the folded record's CC BY license
+        // standing. The noting record carries no credit
+        // line at all, so the folded record claimed a
+        // CC BY license beside a children note with an
+        // empty credit line — the composed state
+        // RT7-1 graded BLOCKER. The license assertion
+        // below therefore changed from CcBy("4.0") to
+        // Unknown in R7-A; every other assertion (one
+        // folded record, children note, title, source)
+        // stands unchanged, and the fold's
+        // anti-shadowing point stands with them.
         let bytes: &[u8] = b"picture bytes whose fingerprint both records share";
         let hash = ob_model::sha256_hex(bytes);
         let weak = RightsRecord {
@@ -1190,7 +1202,7 @@ mod tests {
             assert_eq!(loaded.assets.len(), 1, "{tag}: one record after the fold");
             let rights = &loaded.assets[0].rights;
             assert_eq!(rights.children_present, Some(true), "{tag}");
-            assert_eq!(rights.license, LicenseKind::CcBy("4.0".into()), "{tag}");
+            assert_eq!(rights.license, LicenseKind::Unknown, "{tag}");
             assert_eq!(rights.title, "Harvest supper", "{tag}");
             assert_eq!(rights.source, "a plainer copy", "{tag}");
         }
@@ -1244,6 +1256,55 @@ mod tests {
             assert_eq!(rights.credit_text, "", "{tag}");
             assert_eq!(rights.license, LicenseKind::Unknown, "{tag}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r7_mirror_pair_folds_on_load_without_its_license() {
+        // Round 7 (R7-1 / RT7-1): an .obd whose
+        // document.json carries the mirror pair — a
+        // record noting children with a CC BY license
+        // already standing, and a second record holding
+        // only the credit. The credit is refused in the
+        // fold, and the composed record must not keep
+        // claiming the license whose attribution the
+        // fold discarded.
+        // FLAGGED, round 7: the older round-5 fold test
+        // `r5_duplicate_asset_records_fold_on_load`
+        // pins this same composed state (children
+        // noted, CC BY standing, no credit anywhere)
+        // with its license standing; that assertion is
+        // corrected there, as the state is the R7-1
+        // BLOCKER state.
+        let bytes: &[u8] = b"picture bytes the mirror pair shares";
+        let hash = ob_model::sha256_hex(bytes);
+        let noting = RightsRecord {
+            license: LicenseKind::CcBy("4.0".into()),
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let credit = RightsRecord {
+            credit_text: "Photo by Alice, CC BY 4.0".into(),
+            ..Default::default()
+        };
+        let asset = |rights: RightsRecord| Asset {
+            sha256: hash.clone(),
+            kind: AssetKind::Picture,
+            media_type: "image/png".into(),
+            rights,
+        };
+        let dir = scratch("dup-r7-fold");
+        let mut doc = test_doc();
+        doc.assets = vec![asset(noting), asset(credit)];
+        doc.asset_bytes.insert(hash.clone(), bytes.to_vec());
+        let file = dir.join("mirror.obd");
+        save(&doc, &file).expect("the file saves");
+        let loaded = load(&file).expect("the file loads");
+        assert_eq!(loaded.assets.len(), 1, "one record after the fold");
+        let rights = &loaded.assets[0].rights;
+        assert_eq!(rights.children_present, Some(true));
+        assert_eq!(rights.credit_text, "");
+        assert_eq!(rights.license, LicenseKind::Unknown);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

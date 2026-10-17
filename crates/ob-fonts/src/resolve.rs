@@ -448,6 +448,20 @@ pub fn wanted_font_words(name: &str, substituted_by: &str) -> String {
     )
 }
 
+/// The Check step's words when a wanted font's styles
+/// do not all resolve to the same stand-in (round 6,
+/// R6-9): the whole-bulletin claim would be false for
+/// every style but one, so the claim is scoped to SOME
+/// of the words, and the stand-in named is the worst
+/// style's — the one the finding is about.
+pub fn wanted_font_words_some(name: &str, substituted_by: &str) -> String {
+    format!(
+        "This bulletin was made in {name}. We do not have that font, \
+         so some of its words are shown in {substituted_by} for now. If you add \
+         {name} in Fonts, this bulletin will use it by itself."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

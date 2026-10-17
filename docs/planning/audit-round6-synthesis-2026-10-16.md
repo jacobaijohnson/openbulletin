@@ -567,3 +567,145 @@ Pre-existing tests changed, each flagged by name:
   no assertion in them changed, and all stay green —
   including the R5-C refusal pins and the swap /
   reorder byte-identical pin.
+
+## Shipped addendum, R6-D (2026-10-16)
+
+Dates, counts, small print, shipped over HEAD
+`4b04aaf`. Calendar facts verified with `date -d`
+before pinning: October 25, 2026 is a Sunday, and
+November 1, 2026 is the Sunday after it.
+
+- R6-6: a framing weekday may wear the filler word
+  "on" ("on Monday, October 25, 2026").
+  `named_weekday_mismatch` accepts an optional
+  leading "on" when the weekday still stands
+  directly before the date, and records the mismatch
+  exactly as the bare leading form does, on both
+  date lines (the shared `date_line` helper). A
+  weekday with other words between it and the date
+  stays ordinary text; R5-D's rule stands.
+- RT6-8: "Sunday after [date]" composes with a
+  trailing weekday (`sunday_after_outcome`). The
+  trailing weekday describes the base date it
+  follows: an agreeing one resolves (Sunday after
+  October 25, 2026 is November 1, 2026), and a
+  disagreeing one records the weekday mismatch
+  against the base date and yields no date, exactly
+  as the plain trailing form has since R4-D. Both
+  lines.
+- RT6-9: "the Sunday after next Sunday" (and "this
+  Sunday" as the base) is remembered as a shape in
+  the new `Contribution.for_sunday_after_in_words`
+  field. The verdict resolves it against the open
+  bulletin — the relative Sunday reads as the
+  bulletin's date, as a bare relative Sunday does,
+  and the named Sunday is the first Sunday strictly
+  after it — so it comes back DifferentSunday and
+  arms like any named Sunday that differs. With no
+  bulletin date, the review's NoSundayNamed branch
+  admits the file named a Sunday in words after
+  another Sunday, in the sender's own phrase. A bare
+  relative Sunday's R5-D SundayInWords behavior is
+  unchanged, and no absolute date line resolves
+  differently. Scope note, plainly: the shape is
+  recorded on the For Sunday line, whose verdict
+  machinery is the anchor; a Keep-through line has
+  no such anchor (a bare relative Keep-through
+  phrase has none either), while the RT6-8 trailing
+  composition applies to Keep-through in full.
+- RT6-7: `raw_entry_count` walks, never reads. The
+  end record is located the way the zip reader
+  locates it — candidates tried latest first, the
+  relaxed comment rule (a comment may end before the
+  file does, which is what trailing junk means), a
+  zip64 record found by forward signature search
+  from the locator's declared offset, and the
+  directory's real start taken as the first central
+  header at or after the declared offset, so
+  prepended bytes shift every offset and the walk
+  still lands on the real directory. From there the
+  records are counted one by one, each measured by
+  its own variable lengths, until the end structures
+  begin, stopping as soon as the count passes the
+  cap. No declared total is consulted anywhere:
+  count and size fields, plain and zip64, lying in
+  either direction, are ignored. Tests pin: a
+  9,001-entry flood with a size lie or a count lie,
+  plain and zip64, refused in both loaders; a
+  declared-huge size with two real entries loading,
+  plain and zip64; and junk around the archive —
+  the walk counts exactly under prepended and
+  trailing junk, trailing junk loads, and a
+  prepended file is pinned as the shipped reader
+  actually treats it: the loaders refuse it at
+  their head check (the round-6 probe's Z3 refusal),
+  while `check_entry_cap` itself counts the shifted
+  flood and refuses it in the cap's own words.
+- MINOR (SundayInWords): the verdict now arms with
+  the two-click pattern. The review sentence reads
+  "read as this bulletin's date, [weekday], [date]"
+  with the weekday derived from the bulletin's date
+  (`format_date_long`), never the hardcoded word
+  Sunday for a date that is not one; the armed line
+  and the "Click again to use these words" button
+  follow the DifferentSunday shape.
+- MINOR (wanted fonts): when a wanted font's
+  matching styles resolve to different stand-in
+  families, the Check note names the worst style's
+  stand-in and scopes its claim ("some of its words
+  are shown in …", new `wanted_font_words_some` in
+  ob-fonts). A single stand-in — one style, or
+  several resolving alike — keeps the round-3
+  wording unchanged.
+- MINOR (profile save): the slug-conflict
+  sentence's closing claim "Nothing else was
+  changed." is replaced in both branches by "The
+  serving lines were left as they were." — the parts
+  of the save that stand, and no claim about the
+  profile's other fields, which save on their own.
+- The fake-helper flake is cured in the test
+  harness (no product code under this item): each
+  fake-helper call in ob-extract's helper tests now
+  builds its script in its own folder, the path
+  carrying a per-call counter from an atomic in
+  addition to the process id and test name, and
+  each test removes its folder when done (the
+  `remove_dir_all` idiom the other harnesses use).
+  A reader can confirm the paths no longer collide
+  by grepping `openbulletin-helper-test` in
+  `crates/ob-extract/src/helper.rs`: the one path
+  construction carries the `{unique}` component,
+  and every fake-helper test calls `clean_up`.
+  The helper tests' assertions are unchanged.
+
+FORMAT.md is unchanged: it does not describe the
+entry cap (the cap's words live in ob-format's own
+comments, rewritten with the walk).
+
+Tests: 558 → 566 passing, 0 failed (full workspace,
+unpiped, `--no-fail-fast`, all 28 suite results ok,
+exit 0); clippy `--workspace --all-targets --
+-D warnings` exit 0. Eight new tests: ob-extract 3
+(the "on" framing mismatch on both lines; the
+Sunday-after trailing weekday on both lines; the
+relative-base shape remembered and resolved by the
+verdict), ob-format 4 (plain lying size and count;
+zip64 lying size and count; declared-huge with few
+real entries loads; junk around the archive),
+ob-app 1 (the wanted-font note naming the worst
+stand-in with the scoped claim, and the
+single-style wording unchanged). The fake-helper
+ETXTBSY flake did not fire.
+
+One pre-existing test changed, flagged by name:
+`ambiguous_and_refused_serving_lines_are_named_in_the_status_words`
+(ob-app) — its two `serving_line_conflict_sentence`
+pins now end "The serving lines were left as they
+were." instead of "Nothing else was changed."
+(item 6); the ambiguous-refusal pin and every
+other assertion in it are unchanged. No other
+pre-existing test's assertions changed: the R5-D
+worst-style wanted-font test's contains-assertions
+subsume the new scoped wording and stand as
+written, and the four fake-helper tests gained
+only their cleanup calls.

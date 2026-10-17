@@ -98,104 +98,198 @@ fn read_entry_text_capped(
 /// zip crate keeps entries in a map keyed by name, so
 /// its count is the number of distinct names, and a
 /// file of half a million entries all named the same
-/// reported a count of two. The count here walks the
-/// central directory records themselves, the archive's
-/// own structure; no entry's payload is read, and the
-/// walk stops as soon as the count passes `cap`, so a
-/// flood is refused after reading only the first
-/// `cap + 1` small directory records. None when the
-/// directory cannot be walked: a damaged file is the
-/// archive reader's error to report, in its own words.
+/// reported a count of two.
+///
+/// The count is WALKED, never read from the
+/// directory's own declared totals (round 6, RT6-7):
+/// the end record's count fields and the directory's
+/// declared size can both lie, in either direction,
+/// in the plain record and the zip64 record alike,
+/// and a walk that trusted either let floods through.
+/// The end record is located the way the zip reader
+/// itself locates it, tolerance included: candidates
+/// are tried latest first, a comment that ends before
+/// the end of the file is accepted (trailing junk),
+/// and the directory's real start is the first central
+/// header at or after the declared offset, so bytes
+/// prepended to the archive shift every offset and
+/// the count still lands on the real directory. From
+/// there the records are counted one by one, each
+/// measured by its own name, extra, and comment
+/// lengths, until the end structures begin; no
+/// entry's payload is read, and the walk stops as
+/// soon as the count passes `cap`, so a flood is
+/// refused after reading only the first `cap + 1`
+/// small directory records. None when the directory
+/// cannot be walked: a damaged file is the archive
+/// reader's error to report, in its own words.
 fn raw_entry_count(path: &Path, cap: usize) -> Option<usize> {
     use std::io::{Read, Seek, SeekFrom};
+    fn read_at(file: &mut std::fs::File, at: u64, buf: &mut [u8]) -> Option<()> {
+        file.seek(SeekFrom::Start(at)).ok()?;
+        file.read_exact(buf).ok()?;
+        Some(())
+    }
+    /// The first place `sig` occurs in `[from, to)`,
+    /// read in chunks so a directory of any size is
+    /// scanned without holding it.
+    fn find_signature(file: &mut std::fs::File, from: u64, to: u64, sig: &[u8]) -> Option<u64> {
+        let mut carry: Vec<u8> = Vec::new();
+        let mut pos = from;
+        while pos < to {
+            let want = ((to - pos).min(65_536)) as usize;
+            let mut buf = vec![0u8; want];
+            read_at(file, pos, &mut buf)?;
+            let base = pos - carry.len() as u64;
+            let mut hay = std::mem::take(&mut carry);
+            hay.extend_from_slice(&buf);
+            if let Some(found) = hay
+                .windows(sig.len())
+                .position(|w| w == sig)
+                .map(|i| base + i as u64)
+                .filter(|at| *at >= from && at + sig.len() as u64 <= to)
+            {
+                return Some(found);
+            }
+            let keep = (sig.len() - 1).min(hay.len());
+            carry = hay[hay.len() - keep..].to_vec();
+            pos += want as u64;
+        }
+        None
+    }
+    /// The end record's candidate positions, latest
+    /// first: every "PK\x05\x06" whose comment length
+    /// fits before the end of the file (the reader's
+    /// relaxed rule: the comment may end early, which
+    /// is what trailing junk means).
+    fn end_record_candidates(file: &mut std::fs::File, file_len: u64) -> Vec<u64> {
+        let mut out = Vec::new();
+        let mut carry: Vec<u8> = Vec::new();
+        let mut end = file_len;
+        while end > 0 {
+            let start = end.saturating_sub(1 << 20);
+            let want = (end - start) as usize;
+            let mut buf = vec![0u8; want];
+            if read_at(file, start, &mut buf).is_none() {
+                return out;
+            }
+            let mut hay = buf;
+            hay.extend_from_slice(&carry);
+            for pos in (0..hay.len().saturating_sub(21)).rev() {
+                if !hay[pos..].starts_with(b"PK\x05\x06") {
+                    continue;
+                }
+                let at = start + pos as u64;
+                let comment_len = u64::from(u16::from_le_bytes([hay[pos + 20], hay[pos + 21]]));
+                if at + 22 + comment_len <= file_len {
+                    out.push(at);
+                    if out.len() >= 16 {
+                        return out;
+                    }
+                }
+            }
+            let keep = 21.min(hay.len());
+            carry = hay[..keep].to_vec();
+            end = start;
+        }
+        out
+    }
+    /// Count the directory records in front of one end
+    /// record candidate: None when this candidate's
+    /// directory cannot be walked, so the caller can
+    /// try an earlier candidate.
+    fn count_from_end_record(file: &mut std::fs::File, eocd_at: u64, cap: usize) -> Option<usize> {
+        let mut eocd = [0u8; 22];
+        read_at(file, eocd_at, &mut eocd)?;
+        if !eocd.starts_with(b"PK\x05\x06") {
+            return None;
+        }
+        let total16 = u16::from_le_bytes([eocd[10], eocd[11]]);
+        let cd_offset32 = u32::from_le_bytes(eocd[16..20].try_into().ok()?);
+        let mut dir_end = eocd_at;
+        let mut declared_offset = u64::from(cd_offset32);
+        let mut declared_total = u64::from(total16);
+        // A zip64 locator in front of the record points
+        // at the zip64 record, which carries the
+        // directory's real offset when the plain fields
+        // are too small to hold it (its total-entries
+        // field sits at byte 32, its offset at 48). The
+        // reader finds that record by searching forward
+        // from the locator's declared offset; its real
+        // position is where the directory ends.
+        if (total16 == u16::MAX || cd_offset32 == u32::MAX) && eocd_at >= 20 {
+            let locator_at = eocd_at - 20;
+            let mut locator = [0u8; 20];
+            if read_at(file, locator_at, &mut locator).is_some()
+                && locator.starts_with(b"PK\x06\x07")
+            {
+                let record_declared = u64::from_le_bytes(locator[8..16].try_into().ok()?);
+                if record_declared < locator_at {
+                    if let Some(record_at) =
+                        find_signature(file, record_declared, locator_at, b"PK\x06\x06")
+                    {
+                        let mut record = [0u8; 56];
+                        if read_at(file, record_at, &mut record).is_some()
+                            && record.starts_with(b"PK\x06\x06")
+                        {
+                            dir_end = record_at;
+                            declared_total = u64::from_le_bytes(record[32..40].try_into().ok()?);
+                            declared_offset = u64::from_le_bytes(record[48..56].try_into().ok()?);
+                        }
+                    }
+                }
+            }
+        }
+        // The directory's real start is the first
+        // central header at or after the declared
+        // offset: prepended bytes shift it forward, and
+        // the declared totals (either field, either
+        // record) are never consulted again.
+        let Some(cd_start) = find_signature(file, declared_offset, dir_end, b"PK\x01\x02") else {
+            // No directory records in front of the end
+            // record: an honestly empty archive counts
+            // zero; anything else is the reader's error
+            // to report.
+            return if declared_total == 0 { Some(0) } else { None };
+        };
+        // Walk the records: a fixed 46-byte header, then
+        // the name, extra field, and comment its header
+        // measures, until the end structures begin.
+        let mut count = 0usize;
+        let mut at = cd_start;
+        while at < dir_end {
+            if count > cap {
+                return Some(count);
+            }
+            let mut header = [0u8; 46];
+            read_at(file, at, &mut header)?;
+            if !header.starts_with(b"PK\x01\x02") {
+                return None;
+            }
+            let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
+            let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
+            let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
+            count += 1;
+            at += 46 + name_len + extra_len + comment_len;
+        }
+        if at == dir_end {
+            Some(count)
+        } else {
+            None
+        }
+    }
+
     let mut file = std::fs::File::open(path).ok()?;
     let file_len = file.metadata().ok()?.len();
     if file_len < 22 {
         return None;
     }
-    // The end-of-directory record sits in the last
-    // 22 + 65,535 bytes (its comment may be that long);
-    // the zip64 locator, when one exists, sits right in
-    // front of it, so the tail read covers both.
-    let tail_len = file_len.min(65_577);
-    let tail_start = file_len - tail_len;
-    let mut tail = vec![0u8; tail_len as usize];
-    file.seek(SeekFrom::Start(tail_start)).ok()?;
-    file.read_exact(&mut tail).ok()?;
-    // The record is the last well-formed one in the
-    // tail: its comment length must land exactly on the
-    // end of the file.
-    let mut eocd: Option<usize> = None;
-    for pos in (0..tail.len().saturating_sub(21)).rev() {
-        if tail[pos..].starts_with(b"PK\x05\x06") {
-            let comment_len = u16::from_le_bytes([tail[pos + 20], tail[pos + 21]]) as u64;
-            if tail_start + pos as u64 + 22 + comment_len == file_len {
-                eocd = Some(pos);
-                break;
-            }
-        }
-    }
-    let eocd = eocd?;
-    let eocd_at = tail_start + eocd as u64;
-    let cd_size_at = eocd + 12;
-    let cd_offset_at = eocd + 16;
-    let mut cd_size = u64::from(u32::from_le_bytes(
-        tail[cd_size_at..cd_size_at + 4].try_into().ok()?,
-    ));
-    let mut cd_offset = u64::from(u32::from_le_bytes(
-        tail[cd_offset_at..cd_offset_at + 4].try_into().ok()?,
-    ));
-    // A zip64 locator in front of the record points at
-    // the zip64 record, which carries the directory's
-    // real size and offset when the plain fields are
-    // too small to hold them (its total-entries field
-    // sits at byte 32, its size at 40, its offset at
-    // 48).
-    if eocd_at >= 20 {
-        let mut locator = [0u8; 20];
-        file.seek(SeekFrom::Start(eocd_at - 20)).ok()?;
-        file.read_exact(&mut locator).ok()?;
-        if locator.starts_with(b"PK\x06\x07") {
-            let record_at = u64::from_le_bytes(locator[8..16].try_into().ok()?);
-            let mut record = [0u8; 56];
-            file.seek(SeekFrom::Start(record_at)).ok()?;
-            file.read_exact(&mut record).ok()?;
-            if !record.starts_with(b"PK\x06\x06") {
-                return None;
-            }
-            cd_size = u64::from_le_bytes(record[40..48].try_into().ok()?);
-            cd_offset = u64::from_le_bytes(record[48..56].try_into().ok()?);
-        }
-    }
-    if cd_offset == u64::from(u32::MAX) || cd_size == u64::from(u32::MAX) {
-        return None;
-    }
-    let cd_end = cd_offset.checked_add(cd_size)?;
-    if cd_end > file_len {
-        return None;
-    }
-    // Walk the records: a fixed 46-byte header, then
-    // the name, extra field, and comment its header
-    // measures.
-    let mut count = 0usize;
-    let mut at = cd_offset;
-    while at < cd_end {
-        if count > cap {
+    for eocd_at in end_record_candidates(&mut file, file_len) {
+        if let Some(count) = count_from_end_record(&mut file, eocd_at, cap) {
             return Some(count);
         }
-        let mut header = [0u8; 46];
-        file.seek(SeekFrom::Start(at)).ok()?;
-        file.read_exact(&mut header).ok()?;
-        if !header.starts_with(b"PK\x01\x02") {
-            return None;
-        }
-        let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
-        let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
-        let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
-        count += 1;
-        at += 46 + name_len + extra_len + comment_len;
     }
-    Some(count)
+    None
 }
 
 /// Refuse a container whose raw entry count passes the
@@ -1772,6 +1866,302 @@ mod tests {
         )
         .expect("write at");
         load_insert(&at).expect("a sheet at the raw cap still opens");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The end-of-directory record's position in a zip
+    /// built by the writer helpers: the last PK\x05\x06
+    /// whose comment lands on the end of the file.
+    fn find_eocd(zip_bytes: &[u8]) -> usize {
+        let mut found = None;
+        let mut from = 0;
+        while let Some(hit) = find_bytes(&zip_bytes[from..], b"PK\x05\x06") {
+            let at = from + hit;
+            if at + 22 <= zip_bytes.len() {
+                let comment = u16::from_le_bytes([zip_bytes[at + 20], zip_bytes[at + 21]]) as usize;
+                if at + 22 + comment == zip_bytes.len() {
+                    found = Some(at);
+                }
+            }
+            from = at + 1;
+        }
+        found.expect("an end record")
+    }
+
+    /// Splice a zip64 end record and locator in front
+    /// of a plain zip's end record, the plain fields
+    /// turned to their sentinels: the shape the round-6
+    /// red team's zip64 fixtures took. The zip64
+    /// record's own total-count and directory-size
+    /// fields are the caller's to set — honest, or
+    /// lying in either direction.
+    fn splice_zip64(zip_bytes: &[u8], total: u64, cd_size: u64) -> Vec<u8> {
+        let eocd = find_eocd(zip_bytes);
+        let cd_offset = u64::from(u32::from_le_bytes(
+            zip_bytes[eocd + 16..eocd + 20]
+                .try_into()
+                .expect("offset field"),
+        ));
+        let mut out = zip_bytes[..eocd].to_vec();
+        let mut record = Vec::new();
+        record.extend_from_slice(b"PK\x06\x06");
+        record.extend_from_slice(&44u64.to_le_bytes());
+        record.extend_from_slice(&45u16.to_le_bytes());
+        record.extend_from_slice(&45u16.to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&total.to_le_bytes());
+        record.extend_from_slice(&total.to_le_bytes());
+        record.extend_from_slice(&cd_size.to_le_bytes());
+        record.extend_from_slice(&cd_offset.to_le_bytes());
+        assert_eq!(record.len(), 56);
+        out.extend_from_slice(&record);
+        let mut locator = Vec::new();
+        locator.extend_from_slice(b"PK\x06\x07");
+        locator.extend_from_slice(&0u32.to_le_bytes());
+        locator.extend_from_slice(&(eocd as u64).to_le_bytes());
+        locator.extend_from_slice(&1u32.to_le_bytes());
+        assert_eq!(locator.len(), 20);
+        out.extend_from_slice(&locator);
+        let mut tail = zip_bytes[eocd..].to_vec();
+        tail[8..10].copy_from_slice(&u16::MAX.to_le_bytes());
+        tail[10..12].copy_from_slice(&u16::MAX.to_le_bytes());
+        tail[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        tail[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&tail);
+        out
+    }
+
+    /// One loose-sheet package's JSON, for the lying
+    /// directory tests at the sheet door.
+    fn lying_sheet_json() -> String {
+        let package = InsertPackage {
+            insert: Insert {
+                id: "sheet-lying".into(),
+                name: "Lying directory".into(),
+                life: ob_model::InsertLife::ThisWeekOnly,
+                keep_through: None,
+                panels: vec![],
+                stories: vec![],
+                styles: default_styles(),
+                sheet: ob_model::InsertSheet {
+                    preset: "half-letter".into(),
+                    copies: 1,
+                    paper_note: String::new(),
+                },
+            },
+            assets: vec![],
+        };
+        serde_json::to_string(&package).expect("json")
+    }
+
+    #[test]
+    fn a_lying_directory_size_or_count_does_not_hide_entries_past_the_cap() {
+        // Round 6 (RT6-7): the count walk used to follow
+        // the directory's declared SIZE, so patching it
+        // down to the first record let 9,001 entries
+        // load. The count is walked from the records
+        // themselves now: declared fields are ignored in
+        // either direction — a size shrunk to one record
+        // or a count field claiming two both still count
+        // 9,001, and both loaders refuse.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        for (json_name, json, ext) in [
+            ("document.json", doc_json.as_str(), "obd"),
+            ("insert.json", sheet_json.as_str(), "obdi"),
+        ] {
+            let dir = scratch(&format!("lying-dir-{ext}"));
+            let honest = zip_with_same_name_fillers(json_name, json, 9_000);
+            let eocd = find_eocd(&honest);
+            // The size lie: the directory claims to cover
+            // only its first record.
+            let first_record = 46 + json_name.len() as u32;
+            let mut size_lie = honest.clone();
+            size_lie[eocd + 12..eocd + 16].copy_from_slice(&first_record.to_le_bytes());
+            // The count lie: both count fields claim two.
+            let mut count_lie = honest;
+            count_lie[eocd + 8..eocd + 10].copy_from_slice(&2u16.to_le_bytes());
+            count_lie[eocd + 10..eocd + 12].copy_from_slice(&2u16.to_le_bytes());
+            for (tag, bytes) in [("size", size_lie), ("count", count_lie)] {
+                let path = dir.join(format!("{tag}-lie.{ext}"));
+                std::fs::write(&path, &bytes).expect("write lying copy");
+                assert_eq!(
+                    raw_entry_count(&path, MAX_ENTRIES),
+                    Some(MAX_ENTRIES + 1),
+                    "{ext} {tag} lie: the walk counts records until it passes \
+                     the cap; the declared fields play no part"
+                );
+                let err = if ext == "obd" {
+                    load(&path).expect_err("the flood refuses at the bulletin door")
+                } else {
+                    load_insert(&path).expect_err("the flood refuses at the sheet door")
+                };
+                assert_eq!(err, TOO_MANY_PARTS, "{ext} {tag} lie");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_lying_zip64_directory_is_counted_by_its_records() {
+        // Round 6 (RT6-7): the same lies in a spliced
+        // zip64 end record — its size field shrunk, or
+        // its count field claiming two — fooled the old
+        // walk the same way. Both loaders refuse: the
+        // walk counts the 9,001 records in front of the
+        // zip64 record and never consults its totals.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        for (json_name, json, ext) in [
+            ("document.json", doc_json.as_str(), "obd"),
+            ("insert.json", sheet_json.as_str(), "obdi"),
+        ] {
+            let dir = scratch(&format!("lying-zip64-{ext}"));
+            let honest = zip_with_same_name_fillers(json_name, json, 9_000);
+            let eocd = find_eocd(&honest);
+            let honest_size = u64::from(u32::from_le_bytes(
+                honest[eocd + 12..eocd + 16].try_into().expect("size field"),
+            ));
+            let first_record = 46 + json_name.len() as u64;
+            for (tag, bytes) in [
+                ("size", splice_zip64(&honest, 9_001, first_record)),
+                ("count", splice_zip64(&honest, 2, honest_size)),
+            ] {
+                let path = dir.join(format!("{tag}-lie.{ext}"));
+                std::fs::write(&path, &bytes).expect("write lying copy");
+                assert_eq!(
+                    raw_entry_count(&path, MAX_ENTRIES),
+                    Some(MAX_ENTRIES + 1),
+                    "{ext} zip64 {tag} lie: the walk counts records until it \
+                     passes the cap; the zip64 totals play no part"
+                );
+                let err = if ext == "obd" {
+                    load(&path).expect_err("the flood refuses at the bulletin door")
+                } else {
+                    load_insert(&path).expect_err("the flood refuses at the sheet door")
+                };
+                assert_eq!(err, TOO_MANY_PARTS, "{ext} zip64 {tag} lie");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_declared_huge_size_with_few_real_entries_still_loads() {
+        // Round 6 (RT6-7), the other direction: a
+        // directory size claiming far more than the file
+        // holds, with two real entries in it. The
+        // declared size is ignored, the two records are
+        // counted, and the file loads — plain and zip64.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        for (json_name, json, ext) in [
+            ("document.json", doc_json.as_str(), "obd"),
+            ("insert.json", sheet_json.as_str(), "obdi"),
+        ] {
+            let dir = scratch(&format!("huge-size-{ext}"));
+            let small = zip_with_fillers(json_name, json, 1);
+            let eocd = find_eocd(&small);
+            let mut plain = small.clone();
+            plain[eocd + 12..eocd + 16].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+            let zip64 = splice_zip64(&small, 2, 0xFFFF_FFFF_FFFF);
+            for (tag, bytes) in [("plain", plain), ("zip64", zip64)] {
+                let path = dir.join(format!("{tag}-huge.{ext}"));
+                std::fs::write(&path, &bytes).expect("write copy");
+                assert_eq!(
+                    raw_entry_count(&path, MAX_ENTRIES),
+                    Some(2),
+                    "{ext} {tag}: two records, whatever the size claims"
+                );
+                if ext == "obd" {
+                    load(&path).expect("a huge declared size with few entries loads");
+                } else {
+                    load_insert(&path).expect("a huge declared size with few entries loads");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn junk_around_the_archive_shifts_the_count_but_not_the_answer() {
+        // Round 6 (R6-10 in the review lane, RT6-7's
+        // tolerance half): bytes prepended to an archive
+        // shift every offset the directory declares, and
+        // bytes after the end record push it off the end
+        // of the file. The count walk now locates the
+        // end record and the directory the reader's way,
+        // so the count is exact under either kind of
+        // junk. What the LOADERS then do with a junked
+        // file is pinned as it actually stands (this
+        // test IS the pin): trailing junk loads, and a
+        // prepended file is refused at the loaders' head
+        // check — while the cap check itself counts the
+        // shifted flood and refuses it.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let junk: Vec<u8> = b"self-extracting stub bytes, no signatures here ".repeat(13);
+        let dir = scratch("junk-around");
+        let small = zip_with_fillers("document.json", &doc_json, 1);
+        // Prepended: the WALK counts the shifted archive
+        // exactly (2), but the loaders never reach the
+        // archive: both dispatch on the file's first
+        // four bytes, which are junk here, not the zip
+        // signature. That is what the shipped reader
+        // does with a prepended file today (the round-6
+        // probe's Z3 recorded the same refusal), and
+        // this test pins it rather than wishing it
+        // otherwise.
+        let mut prepended = junk.clone();
+        prepended.extend_from_slice(&small);
+        let prepended_path = dir.join("prepended.obd");
+        std::fs::write(&prepended_path, &prepended).expect("write prepended");
+        assert_eq!(raw_entry_count(&prepended_path, MAX_ENTRIES), Some(2));
+        let err = load(&prepended_path).expect_err("a prepended file is refused at the door");
+        assert!(err.contains("UTF-8"), "the v0 words, as probed: {err}");
+        // Trailing junk is different: the head is a real
+        // signature, the reader tolerates the end record
+        // sitting off the end of the file, and the file
+        // loads.
+        let mut trailed = small;
+        trailed.extend_from_slice(&junk);
+        let trailed_path = dir.join("trailed.obd");
+        std::fs::write(&trailed_path, &trailed).expect("write trailed");
+        assert_eq!(raw_entry_count(&trailed_path, MAX_ENTRIES), Some(2));
+        load(&trailed_path).expect("the reader loads a trailed archive, and so do we");
+        // Over the cap, with the same junk in front: the
+        // count itself passes the cap (the cap check
+        // refuses it in the cap's own words), and the
+        // loaders refuse the file as well — at their
+        // head check, before the archive is opened.
+        let sheet_json = lying_sheet_json();
+        for (json_name, json, ext) in [
+            ("document.json", doc_json.as_str(), "obd"),
+            ("insert.json", sheet_json.as_str(), "obdi"),
+        ] {
+            let big = zip_with_same_name_fillers(json_name, json, 9_000);
+            let mut shifted = junk.clone();
+            shifted.extend_from_slice(&big);
+            let path = dir.join(format!("shifted-over.{ext}"));
+            std::fs::write(&path, &shifted).expect("write shifted flood");
+            assert_eq!(
+                raw_entry_count(&path, MAX_ENTRIES),
+                Some(MAX_ENTRIES + 1),
+                "{ext}: the walk stops just past the cap, junk or not"
+            );
+            assert_eq!(
+                check_entry_cap(&path),
+                Err(TOO_MANY_PARTS.to_string()),
+                "{ext}: the cap itself refuses the shifted flood"
+            );
+            if ext == "obd" {
+                load(&path).expect_err("a shifted flood is refused at the bulletin door");
+            } else {
+                let err =
+                    load_insert(&path).expect_err("a shifted flood is refused at the sheet door");
+                assert_eq!(err, "that file is not a loose sheet file (.obdi)");
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

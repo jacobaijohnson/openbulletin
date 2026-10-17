@@ -134,11 +134,26 @@ mod tests {
     /// A fake helper: a small shell script in a scratch
     /// folder, executable. The red team's method (audit
     /// M9/M10) turned into regression tests.
+    ///
+    /// Round 6 (R6-D): every call gets its OWN folder
+    /// and script file. The old path — process id plus
+    /// the test's short name — was shared closely
+    /// enough that parallel test runs raced on it and a
+    /// write could land while another run's copy of the
+    /// script was still executing: ETXTBSY ("Text file
+    /// busy"), the flake adjudicated in every round
+    /// since 4. A per-call counter makes each path
+    /// unique within the process (and the name keeps it
+    /// unique across the tests that share one), and
+    /// each test removes its folder when it is done,
+    /// the way the other test harnesses here clean up.
     #[cfg(unix)]
     fn fake_helper(name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "openbulletin-helper-test-{}-{name}",
+            "openbulletin-helper-test-{}-{name}-{unique}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).expect("scratch dir");
@@ -147,6 +162,15 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("make it executable");
         path
+    }
+
+    /// Remove a fake helper's scratch folder, the
+    /// harness's usual cleanup.
+    #[cfg(unix)]
+    fn clean_up(helper: &Path) {
+        if let Some(dir) = helper.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     const GOOD_DUMP: &str = "{\"schema_version\":2,\"source_kind\":\"pdf\",\
@@ -160,6 +184,7 @@ mod tests {
         let dump = dump_pdf(&helper, Path::new("whatever.pdf")).expect("the dump parses");
         assert_eq!(dump.schema_version, 2);
         assert!(dump.pages.is_empty());
+        clean_up(&helper);
     }
 
     #[cfg(unix)]
@@ -174,6 +199,7 @@ mod tests {
             start.elapsed() < Duration::from_secs(15),
             "the deadline, not the sleep, ends the wait"
         );
+        clean_up(&helper);
     }
 
     #[cfg(unix)]
@@ -188,6 +214,7 @@ mod tests {
         let err =
             dump_pdf(&helper, Path::new("whatever.pdf")).expect_err("version 999 is not readable");
         assert!(err.contains("newer format (version 999)"), "{err}");
+        clean_up(&helper);
     }
 
     #[cfg(unix)]
@@ -209,5 +236,6 @@ mod tests {
         );
         assert!(!err.contains("second line junk"), "{err}");
         assert!(err.chars().count() <= 245, "the quote is capped: {err}");
+        clean_up(&helper);
     }
 }

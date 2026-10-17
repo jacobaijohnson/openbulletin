@@ -1234,11 +1234,21 @@ fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<CheckNote> {
         // finding reflects the worst resolution among
         // them.
         let mut worst: Option<ob_fonts::resolve::Resolution> = None;
+        // Whether the matching styles resolve to more
+        // than one stand-in family (round 6, R6-9): the
+        // note's claim is scoped when they do.
+        let mut first_family: Option<String> = None;
+        let mut stand_ins_differ = false;
         for family in used.iter().filter(|family| {
             family.eq_ignore_ascii_case(&w.name)
                 || ob_fonts::resolve::display_name_for(family).eq_ignore_ascii_case(&w.name)
         }) {
             let r = ob_fonts::resolve::resolve_family(family, available);
+            match &first_family {
+                None => first_family = Some(r.family.clone()),
+                Some(first) if *first != r.family => stand_ins_differ = true,
+                _ => {}
+            }
             let is_worse = match &worst {
                 None => true,
                 Some(worst_so_far) => tier_rank(r.tier) > tier_rank(worst_so_far.tier),
@@ -1251,10 +1261,19 @@ fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<CheckNote> {
             continue;
         };
         if r.tier != ob_fonts::resolve::SubstituteTier::Exact {
-            out.push(CheckNote::to_fonts(format!(
-                "Check: {}",
+            // The stand-in named is the worst style's
+            // (the one the finding is about); when the
+            // styles resolve to different stand-ins, the
+            // sentence says SOME of its words, because
+            // the whole-bulletin wording would be false
+            // for every other style (round 6, R6-9).
+            // A single stand-in keeps the round-3 words.
+            let words = if stand_ins_differ {
+                ob_fonts::resolve::wanted_font_words_some(&w.name, &r.family)
+            } else {
                 ob_fonts::resolve::wanted_font_words(&w.name, &r.family)
-            )));
+            };
+            out.push(CheckNote::to_fonts(format!("Check: {words}")));
         }
     }
     out
@@ -1955,6 +1974,12 @@ fn ambiguous_serving_lines_sentence() -> String {
 /// save does not apply, the typed lines stay in the
 /// editor for correction, and the sentence names
 /// both lines so the office can find the clash.
+/// Round 6 (R6-11): the closing words claim only
+/// what this refusal covers — the serving lines were
+/// left as they were. The profile's other fields
+/// save on their own as they are edited, so a wider
+/// "nothing else was changed" could be false of the
+/// editing pass the person is in the middle of.
 fn serving_line_conflict_sentence(conflict: &ob_model::ServingLineSlugConflict) -> String {
     let first = format!("'{}'", conflict.first);
     let second = format!("'{}'", conflict.second);
@@ -1963,14 +1988,14 @@ fn serving_line_conflict_sentence(conflict: &ob_model::ServingLineSlugConflict) 
             "Serving lines not saved: {first} would take the place of the \
              built-in line {second}, so the line's row and the names the \
              bulletin prints could name different people. Rename {first}, \
-             then save again. Nothing else was changed."
+             then save again. The serving lines were left as they were."
         )
     } else {
         format!(
             "Serving lines not saved: {first} and {second} would be stored \
              as the same line, so typing names for one would change the \
-             other. Rename one of them, then save again. Nothing else was \
-             changed."
+             other. Rename one of them, then save again. The serving \
+             lines were left as they were."
         )
     }
 }
@@ -3619,6 +3644,7 @@ fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec
             named_weekday_mismatch: c.named_weekday_mismatch.clone(),
             keep_through_weekday_mismatch: c.keep_through_weekday_mismatch.clone(),
             for_sunday_in_words: c.for_sunday_in_words.clone(),
+            for_sunday_after_in_words: c.for_sunday_after_in_words.clone(),
         };
         apply_contribution(&mut sim, &single);
     }
@@ -12075,9 +12101,7 @@ impl App {
         if self.contribution_review.is_none() {
             return;
         }
-        use ob_extract::contribution::{
-            format_date_long, format_date_short, week_verdict, WeekVerdict,
-        };
+        use ob_extract::contribution::{format_date_long, week_verdict, WeekVerdict};
         let bulletin_date = self
             .doc
             .fields
@@ -12230,17 +12254,22 @@ impl App {
                             // named its Sunday in relative
                             // words only. The sentence says
                             // the words were read against
-                            // this bulletin's Sunday, in the
-                            // sender's own phrasing.
+                            // this bulletin's date, in the
+                            // sender's own phrasing. Round 6
+                            // (R6-8): the day is named by
+                            // the weekday the bulletin's
+                            // date actually falls on, never
+                            // the word Sunday for a date
+                            // that is not one.
                             let phrase = review
                                 .contribution
                                 .for_sunday_in_words
                                 .as_deref()
                                 .unwrap_or("a Sunday");
-                            let read_as = format_date_short(open);
+                            let read_as = format_date_long(open);
                             ui.label(format!(
                                 "These words name {phrase} in words; \
-                                 read as this bulletin's Sunday, {read_as}."
+                                 read as this bulletin's date, {read_as}."
                             ));
                         }
                         WeekVerdict::NoSundayNamed => {
@@ -12257,6 +12286,21 @@ impl App {
                                 // words against, the sentence
                                 // still admits the file named
                                 // a Sunday in words.
+                                ui.label(format!(
+                                    "These words name {phrase} in words, but this \
+                                     bulletin does not say which Sunday it is for."
+                                ));
+                            } else if let Some(phrase) =
+                                &review.contribution.for_sunday_after_in_words
+                            {
+                                // Round 6 (RT6-9): the file
+                                // named a Sunday in words
+                                // after another Sunday; with
+                                // no bulletin date to read
+                                // the words against, the
+                                // sentence admits that too,
+                                // rather than claiming no
+                                // Sunday was named.
                                 ui.label(format!(
                                     "These words name {phrase} in words, but this \
                                      bulletin does not say which Sunday it is for."
@@ -12301,19 +12345,32 @@ impl App {
                     });
                 ui.separator();
                 let different = matches!(verdict, WeekVerdict::DifferentSunday(_));
+                // Round 6 (R6-8): a Sunday named only in
+                // relative words arms too — its reading
+                // depends entirely on which bulletin is
+                // open, so the first click shows the
+                // reading (the first line above) and the
+                // second confirms, like DifferentSunday.
+                let in_words = matches!(verdict, WeekVerdict::SundayInWords(_));
+                let guarded = different || in_words;
                 if different && review.armed {
                     ui.label("One more click, and the words go into this Sunday's bulletin, not the Sunday they name.");
+                }
+                if in_words && review.armed {
+                    ui.label("One more click, and the words go into this bulletin, read as the date above.");
                 }
                 ui.horizontal(|ui| {
                     let accept_label = if different && !review.armed {
                         "Use it for this Sunday anyway"
                     } else if different {
                         "Click again to use it for this Sunday"
+                    } else if in_words && review.armed {
+                        "Click again to use these words"
                     } else {
                         "Use these words"
                     };
                     if ui.button(accept_label).clicked() {
-                        if different && !review.armed {
+                        if guarded && !review.armed {
                             review.armed = true;
                         } else {
                             accept = true;
@@ -15883,7 +15940,8 @@ struct ContributionReview {
     /// changes it.
     text: String,
     /// Wrong-week guard: the first click on Accept only
-    /// arms when the words name a different Sunday.
+    /// arms when the words name a different Sunday, or
+    /// a Sunday in relative words alone (round 6, R6-8).
     armed: bool,
     editing: bool,
     edit_from: String,
@@ -17206,6 +17264,80 @@ mod settings_tests {
                 notes[0].text
             );
         }
+    }
+
+    #[test]
+    fn a_wanted_font_note_names_the_worst_stand_in_and_scopes_its_claim() {
+        // Round 6 (R6-9): two styles share the record's
+        // name, "Gill Sans MT". The library holds the
+        // first spelling exactly and nothing else: that
+        // style prints in the real font, the other falls
+        // to the house default. The note names the worst
+        // style's stand-in (Liberation Sans), and its
+        // claim is scoped — SOME of its words — because
+        // the whole-bulletin wording would be false for
+        // the style that prints in the real font.
+        let style_in = |id: &str, family: &str| ob_model::ParagraphStyle {
+            id: id.into(),
+            name: "Body".into(),
+            font_size: 11_000,
+            bold: false,
+            italic: false,
+            align: ob_model::Align::Left,
+            space_after: 4_000,
+            color: ob_model::Rgb::BLACK,
+            font_family: family.into(),
+            font_sha256: None,
+        };
+        let doc = Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "T".into(),
+            profile: ChurchProfile::default(),
+            fields: Default::default(),
+            styles: vec![
+                style_in("exact", "GillSansMT"),
+                style_in("fallback", "Gill Sans MT"),
+            ],
+            stories: vec![],
+            panels: vec![],
+            sheet: ob_model::SheetSpec {
+                preset: "letter-portrait".into(),
+                size: ob_model::Size::new(612_000, 792_000),
+            },
+            no_announcements: false,
+            assets: vec![],
+            asset_bytes: Default::default(),
+            occasion_time: None,
+            wanted_fonts: vec![ob_model::WantedFont {
+                name: "Gill Sans MT".into(),
+                substituted_by: "Cabin".into(),
+            }],
+            participants: Default::default(),
+            inserts: Default::default(),
+            applied_contributions: Vec::new(),
+        };
+        let available = vec!["GillSansMT".to_string()];
+        let notes = wanted_font_notes(&doc, &available);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0]
+                .text
+                .contains("some of its words are shown in Liberation Sans"),
+            "the worst style's stand-in, scoped: {}",
+            notes[0].text
+        );
+        // One style alone keeps the unscoped words.
+        let mut single = doc.clone();
+        single.styles = vec![style_in("fallback", "Gill Sans MT")];
+        let notes = wanted_font_notes(&single, &available);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0]
+                .text
+                .contains("so its words are shown in Liberation Sans for now"),
+            "the single-style wording is unchanged: {}",
+            notes[0].text
+        );
     }
 
     #[test]
@@ -18666,7 +18798,12 @@ mod settings_tests {
         // are gone): the whole lines change is
         // refused, the lines are left as they were,
         // and a slug refusal names both lines in the
-        // clash.
+        // clash. Round 6 (R6-11) scoped the slug
+        // refusal's closing words: "Nothing else was
+        // changed" overclaimed in a multi-field edit
+        // pass (the profile's other fields save on
+        // their own), so both pins now end with what
+        // the refusal itself covers.
         assert_eq!(
             ambiguous_serving_lines_sentence(),
             "Serving lines not saved: several lines were renamed and moved \
@@ -18687,8 +18824,8 @@ mod settings_tests {
             serving_line_conflict_sentence(&twins),
             "Serving lines not saved: 'Prayer Team' and 'Prayer-Team' would be \
              stored as the same line, so typing names for one would change \
-             the other. Rename one of them, then save again. Nothing else \
-             was changed."
+             the other. Rename one of them, then save again. The serving \
+             lines were left as they were."
         );
         let first = "Childrens Message".to_string();
         let second = "Children's message".to_string();
@@ -18704,8 +18841,8 @@ mod settings_tests {
             "Serving lines not saved: 'Childrens Message' would take the \
              place of the built-in line 'Children's message', so the line's \
              row and the names the bulletin prints could name different \
-             people. Rename 'Childrens Message', then save again. Nothing \
-             else was changed."
+             people. Rename 'Childrens Message', then save again. The \
+             serving lines were left as they were."
         );
     }
 

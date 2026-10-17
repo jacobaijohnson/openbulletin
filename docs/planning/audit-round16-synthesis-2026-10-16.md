@@ -229,3 +229,64 @@ What shipped, per finding:
   possessive "wont") resolves the ambiguity toward the noun.
   Bare -s forms keep governing, pinned ("(ticket drops, …)",
   "(choir cancels …)").
+
+## Shipped addendum, R16-B — 2026-10-17
+
+Batch R16-B (filed-copy Sunday trust) shipped in
+`crates/ob-app/src/main.rs`: R16-6. Two new pin tests, both
+`r16b_*`. **Tests: 707 → 709 passed, 0 failed** (full
+workspace suite run unpiped twice on the final code, cargo
+exit 0 both times; ob-app 175 → 177). **Clippy: clean**
+(`--workspace --all-targets`, exit 0, zero warnings).
+Neither the fake-helper ETXTBSY flake nor timing contention
+fired in any run.
+
+**Changed pre-existing tests: none.** No test body was
+removed or altered; the round-3 still-waiting pins
+(`still_waiting_counts_only_this_sundays_arrivals`,
+`r3_still_waiting_needs_the_same_name_not_a_near_one`,
+`r3_an_undated_filed_part_counts_only_for_its_filing_sunday`)
+stand at their shipped expectations and pass unchanged.
+
+What was wired, stated exactly: no new filename decoding
+was needed — the filing side already encodes the Sunday
+(`file_contribution` writes `filed_file_name(from,
+for_date.or(filing_sunday), fingerprint)`), and the filed
+scan already read it back (`filed_sunday_from_name` →
+`InboxItem.filed_for`, round 3, R3-10). The defect was
+only in `still_waiting`'s filed branch, which consulted
+`filed_for` solely when the re-parse named no date. The
+branch now matches on `filed_for` first: when the name
+carries a Sunday, that Sunday alone decides (it counts
+iff it equals the open bulletin's Sunday; with no bulletin
+open it counts, as before), and the re-parsed `for_date`
+is never consulted. When the name carries no date (the
+older "no Sunday named" filings), the branch falls back
+to exactly the previous re-parse arms, with the undated
+case's old outcome (`*filed_for == Some(b)`, false when
+`filed_for` is None) spelled out as `false`. The
+`InboxItem` and `still_waiting` comments now state the
+rule for every filed part, not only undated ones. Sibling
+check: `still_waiting` was the only logic asking which
+Sunday a filed copy is for — `group_inbox` runs only on
+the inbox scan, and the applied-part record is
+date-independent (R16-5's own tracing) — so no sibling
+needed the same change. Unfiled/Inbox copies are
+unaffected: they carry no filed Sunday and the parse
+rules stand, pinned both at the `still_waiting` level and
+through a scan of the same folder as the inbox.
+
+The pins: `r16b_a_filed_part_counts_for_its_filename_sunday_not_its_reparse`
+(a contribution re-reading to November 22, 2026 under a
+name filed for October 25 counts for October 25 and not
+for November 22; an ordinary filed copy whose re-parse
+agrees with its name is unchanged; a no-date name falls
+back to the re-parse; the same words in the inbox count
+for the Sunday they name) and
+`r16b_a_filed_copy_counts_for_its_sunday_after_the_bound_crosses`
+(the lane's construction end to end: the mixed line
+"next Sunday and October 25, 2026" in a file dated
+October 16, 2026, filed under an October 25 name, scanned
+November 14 — past the 28-day bound — re-parses to
+November 22 in the scan itself, yet still counts for
+October 25 and not for November 22).

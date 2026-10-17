@@ -5392,9 +5392,10 @@ struct InboxItem {
     parsed: Result<ob_extract::contribution::Contribution, String>,
     /// Filed items only: the Sunday the filed name
     /// carries (round 3, R3-10), read back out of the
-    /// name file_contribution wrote. For an undated part
-    /// that is the Sunday it was filed for; the
-    /// still-waiting count trusts it and nothing else.
+    /// name file_contribution wrote. That is the
+    /// Sunday the part was filed for, whatever its
+    /// words name; the still-waiting count trusts it
+    /// and nothing else (round 16, R16-6).
     filed_for: Option<ob_model::SimpleDate>,
 }
 
@@ -5556,13 +5557,20 @@ fn group_inbox(items: &[InboxItem]) -> Vec<InboxGroup> {
 /// spaces at the ends (round 3, R3-10): "Lee" is not
 /// satisfied by Leanne's part, however close the names
 /// sit; the old substring match let exactly that
-/// happen. Dating: a part that names a Sunday counts
-/// only for that Sunday, in either folder. An undated
-/// part still sitting in the inbox counts (it is
-/// waiting to be reviewed, for the open Sunday by
-/// default); an undated part that was FILED counts
-/// only for the Sunday it was filed for, which the
-/// filed scan read back out of its name.
+/// happen. Dating: an inbox part that names a Sunday
+/// counts only for that Sunday. An undated part still
+/// sitting in the inbox counts (it is waiting to be
+/// reviewed, for the open Sunday by default). A FILED
+/// part counts only for the Sunday in its filed name
+/// (round 16, R16-6): the name is the record of the
+/// Sunday it was filed for, and a re-parse of its
+/// words — which anchors relatives at the file's date
+/// bounded by scan day, so the same copy can re-read
+/// to a different Sunday as days pass — may not
+/// override it. Only a filed name carrying no date
+/// (the older filings) falls back to the re-parsed
+/// date, and an undated part under such a name counts
+/// for no Sunday.
 fn still_waiting(
     expected: &[String],
     inbox: &[ob_extract::contribution::Contribution],
@@ -5587,11 +5595,22 @@ fn still_waiting(
             });
             let in_filed = filed.iter().any(|(c, filed_for)| {
                 same_sender(c.from.as_deref().unwrap_or(""), want)
-                    && match (c.for_date, bulletin) {
-                        (Some(d), Some(b)) => d == b,
-                        (Some(_), None) => true,
-                        (None, Some(b)) => *filed_for == Some(b),
-                        (None, None) => true,
+                    && match filed_for {
+                        // The filed name is the record
+                        // (round 16, R16-6): the
+                        // re-parsed date may not override
+                        // the Sunday the part was filed
+                        // for.
+                        Some(f) => match bulletin {
+                            Some(b) => *f == b,
+                            None => true,
+                        },
+                        None => match (c.for_date, bulletin) {
+                            (Some(d), Some(b)) => d == b,
+                            (Some(_), None) => true,
+                            (None, Some(_)) => false,
+                            (None, None) => true,
+                        },
                     }
             });
             !(in_inbox || in_filed)
@@ -21122,6 +21141,167 @@ mod settings_tests {
         assert_eq!(filed_sunday_from_name(&name), Some(day(10, 25)));
         let nameless = filed_file_name(Some("Sue"), None, "abcd1234");
         assert_eq!(filed_sunday_from_name(&nameless), None);
+    }
+
+    #[test]
+    fn r16b_a_filed_part_counts_for_its_filename_sunday_not_its_reparse() {
+        // Round 16 (R16-6): for a filed copy the
+        // filename's Sunday is the record. A re-parse
+        // of the filed words can read a different
+        // Sunday than the one the part was filed for
+        // (its relatives anchor at the file's date,
+        // bounded by scan day), and that re-read may
+        // not move the part to another Sunday.
+        let parse =
+            |t: &str| ob_extract::contribution::parse_contribution(t, r1_today()).expect("parses");
+        let day = |month: u32, day: u32| ob_model::SimpleDate {
+            year: 2026,
+            month,
+            day,
+        };
+        let expected = vec!["Sue".to_string()];
+        // The re-parse reads November 22; the name
+        // says the part was filed for October 25.
+        let flipped =
+            parse("From: Sue\nFor Sunday: November 22, 2026\n\n## Announcement\n\nWords.\n");
+        assert_eq!(flipped.for_date, Some(day(11, 22)));
+        let filed = vec![(&flipped, Some(day(10, 25)))];
+        assert!(
+            still_waiting(&expected, &[], &filed, Some(day(10, 25))).is_empty(),
+            "the filed part counts for its filename Sunday"
+        );
+        assert_eq!(
+            still_waiting(&expected, &[], &filed, Some(day(11, 22))),
+            vec!["Sue".to_string()],
+            "and not for the Sunday its re-parse reads"
+        );
+        assert!(
+            still_waiting(&expected, &[], &filed, None).is_empty(),
+            "with no bulletin open, a filed part counts as before"
+        );
+        // An ordinary filed copy, whose re-parse agrees
+        // with its name, behaves exactly as before.
+        let ordinary =
+            parse("From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nWords.\n");
+        let filed_ordinary = vec![(&ordinary, Some(day(10, 25)))];
+        assert!(still_waiting(&expected, &[], &filed_ordinary, Some(day(10, 25))).is_empty());
+        assert_eq!(
+            still_waiting(&expected, &[], &filed_ordinary, Some(day(11, 22))),
+            vec!["Sue".to_string()]
+        );
+        // A filed name carrying no date (the older
+        // filings) still falls back to the re-parse.
+        let filed_nameless = vec![(&ordinary, None)];
+        assert!(still_waiting(&expected, &[], &filed_nameless, Some(day(10, 25))).is_empty());
+        assert_eq!(
+            still_waiting(&expected, &[], &filed_nameless, Some(day(11, 22))),
+            vec!["Sue".to_string()]
+        );
+        // The inbox path is unchanged: the same words,
+        // unfiled, count for the Sunday they name.
+        assert!(still_waiting(
+            &expected,
+            std::slice::from_ref(&flipped),
+            &[],
+            Some(day(11, 22))
+        )
+        .is_empty());
+        assert_eq!(
+            still_waiting(
+                &expected,
+                std::slice::from_ref(&flipped),
+                &[],
+                Some(day(10, 25))
+            ),
+            vec!["Sue".to_string()]
+        );
+    }
+
+    #[test]
+    fn r16b_a_filed_copy_counts_for_its_sunday_after_the_bound_crosses() {
+        // Round 16 (R16-6), the review lane's
+        // construction end to end: a mixed relative
+        // line in a file dated Friday, October 16,
+        // 2026, filed for October 25. Scanned on
+        // November 14 — one day past the 28-day bound
+        // (October 16 + 28 days is November 13) — the
+        // re-parse falls back to the scan-day anchor
+        // and reads November 22, but the filed copy
+        // still counts for October 25, the Sunday in
+        // its name.
+        let dir =
+            std::env::temp_dir().join(format!("openbulletin-r16b-filed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let day = |month: u32, day: u32| ob_model::SimpleDate {
+            year: 2026,
+            month,
+            day,
+        };
+        let name = filed_file_name(Some("Sue"), Some(day(10, 25)), "abcd1234");
+        let path = dir.join(&name);
+        std::fs::write(
+            &path,
+            "From: Sue\nFor Sunday: next Sunday and October 25, 2026\n\n## Announcement\n\nHi.\n",
+        )
+        .expect("write");
+        let noon = chrono::NaiveDate::from_ymd_opt(2026, 10, 16)
+            .expect("date")
+            .and_hms_opt(12, 0, 0)
+            .expect("noon");
+        let stamp = <chrono::Local as chrono::TimeZone>::from_local_datetime(&chrono::Local, &noon)
+            .single()
+            .expect("local noon is unambiguous")
+            .timestamp();
+        let file = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open written file");
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(stamp as u64))
+            .expect("set the file's mtime to October 16");
+        let late = day(11, 14);
+        let items = scan_contribution_folder(&dir, late, true);
+        assert_eq!(items.len(), 1, "the one filed part is listed");
+        assert_eq!(
+            items[0].filed_for,
+            Some(day(10, 25)),
+            "the scan reads the Sunday back out of the filed name"
+        );
+        let parsed = items[0].parsed.as_ref().expect("the part parses");
+        assert_eq!(
+            parsed.for_date,
+            Some(day(11, 22)),
+            "past the bound, the re-parse reads November 22"
+        );
+        let expected = vec!["Sue".to_string()];
+        let filed = vec![(parsed, items[0].filed_for)];
+        assert!(
+            still_waiting(&expected, &[], &filed, Some(day(10, 25))).is_empty(),
+            "the filed copy still counts for October 25"
+        );
+        assert_eq!(
+            still_waiting(&expected, &[], &filed, Some(day(11, 22))),
+            vec!["Sue".to_string()],
+            "and not for the Sunday its re-parse flipped to"
+        );
+        // The same folder scanned as the inbox (no
+        // filed Sunday) keeps the standing parse
+        // rules: the words count for November 22.
+        let inbox_items = scan_contribution_folder(&dir, late, false);
+        assert_eq!(inbox_items.len(), 1);
+        assert_eq!(inbox_items[0].filed_for, None);
+        let inbox_parsed = inbox_items[0].parsed.as_ref().expect("the part parses");
+        assert!(
+            still_waiting(
+                &expected,
+                std::slice::from_ref(inbox_parsed),
+                &[],
+                Some(day(11, 22))
+            )
+            .is_empty(),
+            "the unfiled path is unchanged"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

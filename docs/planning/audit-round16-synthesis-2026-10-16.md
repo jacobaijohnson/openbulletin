@@ -114,3 +114,118 @@ after application).
 
 Round 17 audits the fixes. The Tier-2 final gate runs only after
 a round returns zero BLOCKER + zero MAJOR.
+
+## Shipped addendum, R16-A — 2026-10-17
+
+Batch R16-A (governors) shipped in `crates/ob-extract/src/
+contribution.rs`: R16-1, R16-2, R16-3, R16-4, R16-5, R16-7,
+RT16-6. Seven new pin tests, all `r16a_*`, one per finding.
+**Tests: 700 → 707 passed, 0 failed** (full workspace suite run
+unpiped twice on the final code, cargo exit 0 both times;
+ob-extract 189 → 196). **Clippy: clean** (`--workspace
+--all-targets`, exit 0, zero warnings). Neither the fake-helper
+ETXTBSY flake nor timing contention fired in any run.
+
+**Changed pre-existing tests: none.** No test body was removed
+or altered; every round 11–16 held shape stands at its shipped
+expectation, including "(it was moved, November 1)", the
+pure-run pins, the run-after-the-second-date naming, and the
+defensible silence of "(November 1, cancelled, November 8,
+drop it)". In particular, the symmetric-spent widening (R16-3)
+moved no pin: no pre-existing test asserted that an
+auxiliary + cancellation participle governs, so the change the
+batch brief braced for did not exist in the tree. Readings that
+changed are exactly the dispositions' witnesses, all pinned
+new in the `r16a_*` tests.
+
+What shipped, per finding:
+
+- **R16-1 — target rule at group level** (`target_claim`,
+  `governed_before_target`). Scope, stated exactly: the group
+  contains a displacement phrase (single displacement verb or
+  put/push-back pair) or a form of "postpone", and a "to" or
+  "until" whose next date — determiners only between — is the
+  claimed target. Between phrase and "to" at most four words,
+  none of them a governor, a cancellation verb form, an
+  auxiliary, or a weekday (the object noun phrase / "back"
+  fence). The claim zone extends back from the phrase over
+  its auxiliaries and one tolerated adverb, so the passive's
+  "was" is part of the construction and does not govern the
+  target. A governor standing before the zone still governs
+  ("(not moved to November 8)" pins None), and "delayed until"
+  claims no target — "delay" is outside the disposition's
+  phrase family, as written. Any other distinct date in a
+  claimed group is the phrase's from-date: governed and named,
+  wherever it stands ("(it was moved to November 8,
+  November 1)" asserts November 8 and names November 1).
+- **R16-2 — run composition** (`is_prospective_only_clause`,
+  `is_governor_family_clause`). Between-dates clauses with no
+  date of their own spend together on the first date across
+  cancellation, prospective, and filler families, in both the
+  window walk and `governed_after`. Judgment call, stated
+  plainly: a prospective phrase spends on the first date only
+  when it stands as its own COMPLETE clause (a clause break
+  closes it inside the segment); a prospective word in the
+  second date's own clause still governs that date, so
+  "(November 1, postponed, not November 8)" keeps its held
+  silence and "(November 1, postponed, use November 8)" keeps
+  asserting — both pinned.
+- **R16-3 — auxiliary class, symmetric spent**
+  (`AUXILIARY_WORDS`, `is_spent_predicate`). The spent rule
+  covers every cancellation phrase (displacement included,
+  single and phrasal) standing as an auxiliary's predicate.
+  The auxiliary set is the disposition's: be-forms (am, is,
+  are, was, were, be, been, being), have-forms (has, had,
+  have), get-forms (get, gets, got, getting) — "am" and "get"
+  included as their families' base forms. The one-adverb
+  tolerance set, stated plainly: any -ly adverb, plus just,
+  already, still, also, even, now, soon, often; the backward
+  scan crosses any number of auxiliaries with at most one
+  adverb in total ("it has just been moved" spends; "just
+  moved" with no auxiliary does not). The no-clause-break
+  parity is held and pinned for both families.
+- **R16-4 — plain-line parity** (`plain_composition`, called
+  from `plain_multi_date_reading`). Each framed signal is
+  judged with the group's own machinery (window, run
+  spending, target claim, trailing governors, split phrasal,
+  weekday contradiction). Scope: lines whose signals are ALL
+  framed. A mixed line (framed beside relative) keeps the
+  standing first-signal reading — a relative phrase has no
+  token span for the composition to judge; single-date plain
+  lines never reach the reading and are unchanged. When some
+  signal is governed, the first UNGOVERNED signal reads and
+  every other distinct date is named; when all are governed
+  the line reads no date, the group's silence.
+- **R16-5 — naming between dates.** The governed-date naming
+  now collects: a date governed after with a later date
+  standing, a date governed before by a governor standing
+  after a previous date, and a target-disqualified date.
+  Stated limits: a group-initial before-governor keeps the
+  standing silence ("(not November 1, November 8)" names
+  nothing, as before), and a group where every date is
+  governed names nothing (the defensible-silence held line).
+  "(November 1, cancelled, November 8)" now names November 1
+  beside November 8's assertion — the disposition's "whatever
+  family governed it", pinned.
+- **R16-7 — genitive across clauses** (`genitive_completion`,
+  `clause_span`). When the prior clause is filler ending in
+  "of", the reach-back crosses ONE following determiner-headed
+  clause (determiner + nouns only; "verb-form" is judged by
+  the machinery's own stem families, the only verb notion the
+  fence has). A following clause carrying a stem verb-form
+  ("the moved service") still stops the reach-back, pinned.
+- **RT16-6 — determiner-headed -s nouns**
+  (`determiner_headed_s_form`). Applied in `phrase_governs`,
+  `governed_after`, and `is_cancellation_only_clause`, so
+  before, trailing, and run positions read alike. The
+  determiner is found by walking back over at most three
+  noun-like words (not verb forms, governors, auxiliaries, or
+  weekdays), which is what covers "(the cough drops, …)" as
+  the lane graded it, not only "(the drops, …)". Accepted
+  cost, stated plainly: the same walk reads a determiner +
+  subject-noun + -s verb ("the choir cancels") as
+  noun-headed too; the two shapes are indistinguishable to
+  this machinery, and the lane's fence precedent (the
+  possessive "wont") resolves the ambiguity toward the noun.
+  Bare -s forms keep governing, pinned ("(ticket drops, …)",
+  "(choir cancels …)").

@@ -183,7 +183,15 @@ spoken-only flags already carry.)
 A document may carry `applied_contributions` (round 4,
 R4-4): the content fingerprints of contributions
 already applied to this document, recorded at the
-moment the words land. The record lives in the
+moment the words land, and only when every part of
+the contribution landed completely (round 5, R5-B):
+a part that landed partly or not at all leaves no
+record, so it can be offered again. The record is a
+note, not the words: before the review says a part
+is already in the bulletin, it checks the words
+themselves are still in the document, and a record
+whose words were deleted by hand offers the part
+again instead of blocking it. The record lives in the
 document, not in the app's memory, so it survives a
 save that failed, a save done by hand, and a crash
 the recovery journal restores from; Undo removes a

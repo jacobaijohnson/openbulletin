@@ -222,3 +222,56 @@ ETXTBSY flake did not fire).
   check held: no credit-fill case there carries a
   children note, and the attach test's bulletin
   record already notes its permission.
+
+## Shipped addendum, R5-B (2026-10-16)
+
+R5-B landed: 513 to 520 tests, all passing, clippy
+clean (full workspace runs, unpiped). Flake
+statement, exactly: the fake-helper ETXTBSY flake
+fired once, in the first final run
+(`a_good_fake_helper_still_answers_through_the_new_runner`,
+"text file busy", os error 26); it passed solo in
+0.01 s and the confirming full run was clean.
+
+- F1: the applied record is written only when every
+  part landed completely. `apply_part` now answers
+  per part (all its words placed, already there, or
+  kept as a loose sheet is kept), and Accept goes
+  through `apply_contribution_recording`, which
+  records only on a complete landing. A part that
+  landed partly or not at all is named in the apply
+  summary with its reason ("The Announcement words
+  are not in the bulletin: there is no announcements
+  box in it yet..."); the words that did land stay
+  landed. Tests: nowhere-to-land and partly-landed
+  contributions leave `applied_contributions` empty
+  and read NotApplied to the review.
+- RT5-3: the claim is presence-verified. A new
+  `applied_claim` decides what the review may say:
+  AlreadyIn only when the part's words are found in
+  the document; RecordedButWordsGone when the record
+  stands but the words are gone, which shows the new
+  pinned sentence ("Our note says these words were
+  added to this bulletin before, but they are not in
+  it now, so you can add them again.") over an
+  ordinary Accept; NotApplied otherwise. Presence
+  is per paragraph, over the document's stories,
+  whitespace- and case-normalized, word-boundary
+  matched, each found paragraph spent once, so one
+  shared boilerplate line cannot make a part
+  "already in" and a re-sent part with new spacing
+  is caught by its words despite its new
+  fingerprint. A hymn line, which lands composed
+  rather than copied, is judged by its composed
+  form. `plan_part` plans a present part as
+  `SlotTarget::AlreadyThere`, so the review's
+  sentence and a second apply agree: nothing is
+  added twice. Tests cover the deleted-words
+  record, the re-send, the shared first line, the
+  hymn line, and the never-twice road.
+- Changed pre-existing tests: NONE. The full 513
+  baseline passed unchanged with the new behavior
+  in place before the new tests were written.
+- FORMAT.md: the `applied_contributions` paragraph
+  now states the complete-landing rule and the
+  presence check.

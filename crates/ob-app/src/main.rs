@@ -3095,6 +3095,13 @@ enum SlotTarget {
     /// when it is filed, and the plan says exactly that
     /// instead of promising a box that is not there.
     KeptWithPart,
+    /// The part's words are already in the bulletin
+    /// (round 5, R5-B): the presence check found every
+    /// one of its paragraphs in the document's stories,
+    /// so applying it again would print the words twice.
+    /// The apply step leaves the document untouched and
+    /// counts the part as landed: it is where it belongs.
+    AlreadyThere,
 }
 
 /// One part's slot, with the sentence the review shows.
@@ -3410,6 +3417,18 @@ fn plan_part(
     part: &ob_extract::contribution::Part,
 ) -> PartPlan {
     use ob_extract::contribution::PartKind;
+    // Round 5 (R5-B): a part whose words are already in
+    // the bulletin is planned as already there, whatever
+    // box it would otherwise have gone into, so the
+    // review's sentence and the apply step agree that
+    // nothing is added.
+    if part_words_present(doc, part) {
+        return PartPlan {
+            target: SlotTarget::AlreadyThere,
+            line: "These words are already in the bulletin, so they are not added again."
+                .to_string(),
+        };
+    }
     let service = service_story_id(doc);
     let weekly = weekly_story_id(doc);
     match part.kind {
@@ -3548,19 +3567,27 @@ struct ApplyCounts {
     under_headings: usize,
     loose: usize,
     unplaced: usize,
+    already: usize,
 }
 
 /// Put one part into the document, per its plan. The
 /// plan is decided against the document as it stands
 /// when the part lands, so an apply walks the same
-/// ground the review's simulation walked.
+/// ground the review's simulation walked. Answers
+/// whether the part landed COMPLETELY (round 5, R5-B):
+/// every one of its words placed, or already there, or
+/// kept as a loose sheet is meant to be kept. The
+/// applied record is written only for contributions
+/// whose every part answers true, so a part that
+/// landed partly or not at all is never remembered as
+/// applied.
 fn apply_part(
     doc: &mut Document,
     c: &ob_extract::contribution::Contribution,
     part: &ob_extract::contribution::Part,
     plan: &PartPlan,
     counts: &mut ApplyCounts,
-) {
+) -> bool {
     use ob_extract::contribution::PartKind;
     // The music slip (R-2a): a service part aimed at
     // the service story slots its hymn lines into the
@@ -3601,7 +3628,7 @@ fn apply_part(
                         apply_keep_through(doc, sid, kt);
                     }
                 }
-                return;
+                return placed == part.paragraphs.len();
             }
         }
     }
@@ -3626,6 +3653,7 @@ fn apply_part(
             } else {
                 counts.unplaced += part.paragraphs.len();
             }
+            placed
         }
         SlotTarget::AnnouncementsUnderHeading(heading) => {
             let head = heading_paragraph(doc, heading);
@@ -3646,9 +3674,53 @@ fn apply_part(
             } else {
                 counts.unplaced += part.paragraphs.len();
             }
+            placed
         }
-        SlotTarget::LooseSheet => counts.loose += 1,
-        SlotTarget::KeptWithPart => counts.unplaced += part.paragraphs.len(),
+        // A loose sheet lands by being kept with the
+        // part, exactly as its plan said: complete.
+        SlotTarget::LooseSheet => {
+            counts.loose += 1;
+            true
+        }
+        SlotTarget::KeptWithPart => {
+            counts.unplaced += part.paragraphs.len();
+            // Nothing landed, unless the part carried no
+            // words at all: then there was nothing to lose.
+            part.paragraphs.is_empty()
+        }
+        SlotTarget::AlreadyThere => {
+            counts.already += part.paragraphs.len();
+            true
+        }
+    }
+}
+
+/// What one apply did, in full: the summary lines
+/// Accept reports, and whether every part landed
+/// completely (round 5, R5-B). The applied record is
+/// written only when `all_landed` is true.
+struct ApplyOutcome {
+    lines: Vec<String>,
+    all_landed: bool,
+}
+
+/// The sentence that names a part whose words did not
+/// all land, and says why in the office's words. The
+/// words themselves stay with the part when it is
+/// filed, as the plan already promised.
+fn unlanded_sentence(part: &ob_extract::contribution::Part, plan: &PartPlan) -> String {
+    let kind = part.kind.heading();
+    match &plan.target {
+        SlotTarget::KeptWithPart => format!(
+            "The {kind} words are not in the bulletin: there is no \
+             announcements box in it yet, so the words stay with \
+             the part when it is filed."
+        ),
+        _ => format!(
+            "The {kind} words are not all in the bulletin: the box \
+             they belong in could not be found in it, so the words \
+             stay with the part when it is filed."
+        ),
     }
 }
 
@@ -3656,16 +3728,22 @@ fn apply_part(
 /// each planned against the document the parts before
 /// it left behind, exactly as the review's plan was
 /// simulated. Returns the summary lines Accept reports:
-/// counts per part, and the loose sheet's fate said out
-/// loud.
-fn apply_contribution(
+/// counts per part, the loose sheet's fate said out
+/// loud, and a naming sentence for every part whose
+/// words did not all land.
+fn apply_contribution_outcome(
     doc: &mut Document,
     c: &ob_extract::contribution::Contribution,
-) -> Vec<String> {
+) -> ApplyOutcome {
     let mut counts = ApplyCounts::default();
+    let mut all_landed = true;
+    let mut unlanded: Vec<String> = Vec::new();
     for part in &c.parts {
         let plan = plan_part(doc, c, part);
-        apply_part(doc, c, part, &plan, &mut counts);
+        if !apply_part(doc, c, part, &plan, &mut counts) {
+            all_landed = false;
+            unlanded.push(unlanded_sentence(part, &plan));
+        }
     }
     let ApplyCounts {
         service_lines,
@@ -3674,6 +3752,7 @@ fn apply_contribution(
         under_headings,
         loose,
         unplaced,
+        already,
     } = counts;
     if announcements + under_headings > 0 {
         // Words arrived: the office is no longer saying
@@ -3714,7 +3793,49 @@ fn apply_contribution(
             if unplaced == 1 { "" } else { "s" }
         ));
     }
-    out
+    if already > 0 {
+        out.push(if already == 1 {
+            "1 line was already in the bulletin, so it was not added again.".to_string()
+        } else {
+            format!("{already} lines were already in the bulletin, so they were not added again.")
+        });
+    }
+    out.extend(unlanded);
+    ApplyOutcome {
+        lines: out,
+        all_landed,
+    }
+}
+
+/// Apply a contribution and report only the summary
+/// lines: the shape the review's plan simulation and
+/// the older tests use. Accept itself goes through
+/// `apply_contribution_recording`, which also knows
+/// whether the words may be remembered as applied.
+fn apply_contribution(
+    doc: &mut Document,
+    c: &ob_extract::contribution::Contribution,
+) -> Vec<String> {
+    apply_contribution_outcome(doc, c).lines
+}
+
+/// Apply a reviewed contribution the way Accept does,
+/// and record it in the document when, and only when,
+/// every part landed completely (round 5, R5-B). A
+/// part that landed partly or not at all leaves no
+/// record behind, so the review can offer its words
+/// again honestly instead of swearing they are in the
+/// bulletin when they are not.
+fn apply_contribution_recording(
+    doc: &mut Document,
+    c: &ob_extract::contribution::Contribution,
+    text: &str,
+) -> ApplyOutcome {
+    let outcome = apply_contribution_outcome(doc, c);
+    if outcome.all_landed {
+        record_applied_fingerprint(doc, text);
+    }
+    outcome
 }
 
 /// One file-name piece made safe for any folder: letters,
@@ -4098,6 +4219,162 @@ fn insert_findings(doc: &Document) -> Vec<CheckNote> {
     out
 }
 
+/// Words compared as words (round 5, R5-B): case
+/// folded and every run of whitespace, tabs included,
+/// read as one space. Presence is a question about the
+/// words, not about the bytes they arrived in, so a
+/// part re-sent with different spacing is still the
+/// same words.
+fn normalized_words(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Whether `needle` appears in `entry` as whole words:
+/// the whole entry, or fenced by spaces on the side it
+/// does not run off. Both sides are normalized first,
+/// so a short line cannot claim presence by hiding
+/// inside a longer word.
+fn contains_words(entry: &str, needle: &str) -> bool {
+    !needle.is_empty()
+        && (entry == needle
+            || entry.starts_with(&format!("{needle} "))
+            || entry.ends_with(&format!(" {needle}"))
+            || entry.contains(&format!(" {needle} ")))
+}
+
+/// The composed value a service part's hymn line lands
+/// as, when the line is a hymn entry: the same test
+/// `hymn_slots` slots by (a number, and a hymn label
+/// or a named hymnal). A hymn line is not copied into
+/// the bulletin word for word; it is composed into
+/// the bulletin's own hymn line, so its presence is
+/// judged by the composed form.
+fn hymn_composed_form(text: &str) -> Option<String> {
+    use ob_model::hymns::{compose_hymn_value, is_hymn_label, parse_hymn_value};
+    let (label, value) = part_line_label(text);
+    let entry = parse_hymn_value(&value);
+    let hymn_labelled = label.as_deref().map(is_hymn_label).unwrap_or(false);
+    if !text.trim().is_empty()
+        && entry.number.is_some()
+        && (hymn_labelled || entry.hymnal.is_some())
+    {
+        Some(compose_hymn_value(&entry))
+    } else {
+        None
+    }
+}
+
+/// Whether one paragraph's words are in the bulletin,
+/// against the haystack of the document's paragraph
+/// words. A match spends its haystack entry, so a line
+/// the part carries twice needs the bulletin to carry
+/// it twice. A hymn line may match by its composed
+/// form instead of its sent form (see above).
+fn paragraph_words_present(haystack: &mut Vec<String>, text: &str) -> bool {
+    let needle = normalized_words(text);
+    if needle.is_empty() {
+        return true;
+    }
+    if let Some(i) = haystack.iter().position(|e| contains_words(e, &needle)) {
+        haystack.remove(i);
+        return true;
+    }
+    if let Some(composed) = hymn_composed_form(text) {
+        let composed = normalized_words(&composed);
+        if let Some(i) = haystack.iter().position(|e| contains_words(e, &composed)) {
+            haystack.remove(i);
+            return true;
+        }
+    }
+    false
+}
+
+/// The words of every paragraph in the document's
+/// stories, normalized: the haystack presence is
+/// checked against. Loose sheets are not in it;
+/// contribution words never land on a sheet.
+fn document_paragraph_words(doc: &Document) -> Vec<String> {
+    doc.stories
+        .iter()
+        .flat_map(|s| s.paragraphs.iter())
+        .map(|p| normalized_words(&p.text()))
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Whether every one of a part's paragraphs is in the
+/// bulletin. A part is more than its first line: one
+/// shared boilerplate line cannot make a part
+/// "already in" while the rest of its words are
+/// missing. A part carrying no words is present
+/// trivially: there is nothing that could be missing.
+fn part_words_present(doc: &Document, part: &ob_extract::contribution::Part) -> bool {
+    part_words_present_in(&mut document_paragraph_words(doc), part)
+}
+
+/// `part_words_present` against a shared haystack, so
+/// a whole contribution's parts spend the bulletin's
+/// paragraphs between them.
+fn part_words_present_in(
+    haystack: &mut Vec<String>,
+    part: &ob_extract::contribution::Part,
+) -> bool {
+    part.paragraphs
+        .iter()
+        .all(|p| paragraph_words_present(haystack, &p.text()))
+}
+
+/// Whether every part of a contribution has all its
+/// words in the bulletin.
+fn contribution_words_present(doc: &Document, c: &ob_extract::contribution::Contribution) -> bool {
+    let mut haystack = document_paragraph_words(doc);
+    c.parts
+        .iter()
+        .all(|part| part_words_present_in(&mut haystack, part))
+}
+
+/// What the review may honestly say about a part and
+/// this bulletin (round 5, R5-B). The applied record
+/// alone never swears the words are in: the claim of
+/// "already in" is made only when the words themselves
+/// are found in the document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppliedClaim {
+    /// The words are in the bulletin (with or without
+    /// a record: a re-sent part whose bytes differ
+    /// still lands on its words). File it; applying
+    /// again would print the words twice.
+    AlreadyIn,
+    /// The document's record says the words were
+    /// applied, but they are not in it now (deleted by
+    /// hand after a failed save, the road round 5's
+    /// RT5-3 walked). Accept is offered again, under a
+    /// sentence that says exactly this.
+    RecordedButWordsGone,
+    /// Neither a record nor the words: an ordinary
+    /// review, with an ordinary Accept.
+    NotApplied,
+}
+
+/// The claim for one reviewed contribution against
+/// this document.
+fn applied_claim(
+    doc: &Document,
+    c: &ob_extract::contribution::Contribution,
+    text: &str,
+) -> AppliedClaim {
+    if contribution_words_present(doc, c) {
+        AppliedClaim::AlreadyIn
+    } else if part_already_applied(doc, text) {
+        AppliedClaim::RecordedButWordsGone
+    } else {
+        AppliedClaim::NotApplied
+    }
+}
+
 /// A short content fingerprint: the first eight letters
 /// of the content hash. Two versions of a part with the
 /// same fingerprint are the same words.
@@ -4108,19 +4385,36 @@ fn content_fingerprint(bytes: &[u8]) -> String {
 /// The review's first line when the part under review
 /// was already applied to the bulletin on screen in
 /// this session (round 3, R3-5): said once, in these
-/// words, and pinned by a test.
+/// words, and pinned by a test. Round 5 (R5-B): the
+/// line is earned by the claim in `applied_claim`,
+/// which finds the words themselves in the bulletin;
+/// the record alone no longer swears it.
 const APPLIED_PART_FIRST_LINE: &str = "These words are already in the bulletin on screen. \
     Saving the bulletin finishes this part; there is nothing more to add.";
 
-/// Whether these exact words were already applied to
-/// this document. The record lives in the document
-/// itself (round 4, R4-4/R4-6), so it survives a save
-/// that failed, a save done by hand, and a crash the
-/// journal recovers from; Undo takes it away with the
-/// words, and Next Sunday starts the new week without
-/// it. The fingerprint is the same one the filed name
-/// carries, so the file a failed save left in the
-/// inbox and the words on screen compare equal.
+/// The review's first line when the document's record
+/// says a part was applied but its words are not in
+/// the bulletin now (round 5, R5-B): the record is a
+/// note, not the words, and the office is told the
+/// words can simply be added again.
+const APPLIED_RECORD_MISSING_LINE: &str = "Our note says these words were added to this \
+    bulletin before, but they are not in it now, so you can add them again.";
+
+/// Whether the document's record says these exact
+/// words were applied to it. The record lives in the
+/// document itself (round 4, R4-4/R4-6), so it survives
+/// a save that failed, a save done by hand, and a
+/// crash the journal recovers from; Undo takes it away
+/// with the words, and Next Sunday starts the new week
+/// without it. The fingerprint is the same one the
+/// filed name carries, so the file a failed save left
+/// in the inbox and the words on screen compare equal.
+/// Round 5 (R5-B): this is the record half of the
+/// story only. What the review may claim is decided
+/// by `applied_claim`, which also looks for the words
+/// themselves: a record whose words were deleted by
+/// hand no longer blocks Accept, and a re-sent part
+/// whose bytes changed is still caught by its words.
 fn part_already_applied(doc: &Document, text: &str) -> bool {
     doc.applied_contributions
         .iter()
@@ -11256,27 +11550,36 @@ impl App {
         let Some(review) = self.contribution_review.take() else {
             return;
         };
-        // A part this document already carries is filed,
-        // never applied twice (round 3, R3-5; the record
-        // moved into the document in round 4, R4-4). The
-        // review normally routes these to "File it"; this
-        // keeps every other path to Accept honest too.
-        if part_already_applied(&self.doc, &review.text) {
+        // A part whose words are in this document is
+        // filed, never applied twice (round 3, R3-5; the
+        // record moved into the document in round 4,
+        // R4-4). The claim is presence-verified (round
+        // 5, R5-B): the words themselves are looked for,
+        // so a record whose words were deleted by hand
+        // does not block this path, and a re-sent part
+        // with changed bytes is still caught. The review
+        // normally routes these to "File it"; this keeps
+        // every other path to Accept honest too.
+        if applied_claim(&self.doc, &review.contribution, &review.text) == AppliedClaim::AlreadyIn {
             let filed = self.file_contribution(&review);
             self.note(filed);
             self.inbox_dirty = true;
             return;
         }
         let before = snapshot(&self.doc);
-        let summary = apply_contribution(&mut self.doc, &review.contribution);
-        // The words have landed: the document itself
-        // remembers them, from this moment, before any
-        // save is attempted (round 4, R4-4). A save that
-        // fails, a save done by hand, and a crash the
-        // journal recovers from all meet the same record,
-        // so the copy still sitting in the inbox can only
-        // ever be filed from here on, not applied again.
-        record_applied_fingerprint(&mut self.doc, &review.text);
+        // The words land, and the document itself
+        // remembers them from this moment, before any
+        // save is attempted (round 4, R4-4) — but only
+        // when every part landed completely (round 5,
+        // R5-B). A save that fails, a save done by hand,
+        // and a crash the journal recovers from all meet
+        // the same record; a part that landed partly or
+        // not at all leaves no record, so the copy still
+        // sitting in the inbox can be offered its words
+        // again instead of being sworn in.
+        let outcome =
+            apply_contribution_recording(&mut self.doc, &review.contribution, &review.text);
+        let summary = outcome.lines;
         if before != snapshot(&self.doc) {
             self.record_undo(before);
         }
@@ -11459,12 +11762,16 @@ impl App {
                     });
                     return;
                 }
-                if part_already_applied(&self.doc, &review.text) {
+                let claim = applied_claim(&self.doc, &review.contribution, &review.text);
+                if claim == AppliedClaim::AlreadyIn {
                     // Round 3 (R3-5): these words are
                     // already in this bulletin. The first
                     // line says so, and the only answer
                     // left is to file the part: applying
                     // it again would print the words twice.
+                    // Round 5 (R5-B): the claim is earned
+                    // by the words being found in the
+                    // bulletin, not by the record alone.
                     ui.label(egui::RichText::new(APPLIED_PART_FIRST_LINE).strong());
                     let sender = match (&review.contribution.from, &review.source) {
                         (Some(f), _) => format!("From: {f}"),
@@ -11487,6 +11794,19 @@ impl App {
                         }
                     });
                     return;
+                }
+                if claim == AppliedClaim::RecordedButWordsGone {
+                    // Round 5 (R5-B): the document's note
+                    // says these words were added before,
+                    // but they are not in the bulletin now.
+                    // The first line says so plainly, and
+                    // the ordinary review below offers
+                    // Accept: the words can be added again.
+                    ui.label(
+                        egui::RichText::new(APPLIED_RECORD_MISSING_LINE)
+                            .color(self.theme.warn)
+                            .strong(),
+                    );
                 }
                 let verdict = week_verdict(&review.contribution, bulletin_date);
                 if let Some(mismatch) = &review.contribution.named_weekday_mismatch {
@@ -18707,6 +19027,239 @@ mod settings_tests {
         let (next, _report) = ob_layout::next_sunday_report(&doc).expect("next week");
         assert!(next.applied_contributions.is_empty());
         assert!(!part_already_applied(&next, text));
+    }
+
+    #[test]
+    fn r5_a_part_with_nowhere_to_land_is_not_recorded() {
+        // Round 5 (R5-B, F1): an announcement for a
+        // bulletin with no announcements box lands
+        // nothing. The record must not be written, the
+        // apply must name the part and the reason, and
+        // the review must offer Accept again: the claim
+        // is NotApplied, not "already in".
+        let mut doc = r1_template();
+        for panel in &mut doc.panels {
+            for frame in &mut panel.frames {
+                if frame.role == ob_model::ContentRole::Weekly {
+                    frame.role = ob_model::ContentRole::Standing;
+                }
+            }
+        }
+        assert!(weekly_story_id(&doc).is_none());
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(!outcome.all_landed);
+        assert!(
+            doc.applied_contributions.is_empty(),
+            "a part that landed nothing leaves no record"
+        );
+        assert!(!part_already_applied(&doc, text));
+        assert!(
+            outcome.lines.iter().any(|s| {
+                s.contains("The Announcement words are not in the bulletin")
+                    && s.contains("no announcements box")
+            }),
+            "{:?}",
+            outcome.lines
+        );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::NotApplied);
+    }
+
+    #[test]
+    fn r5_a_partly_landed_contribution_is_not_recorded() {
+        // Round 5 (R5-B, F1): one part lands, another
+        // has nowhere to go. The landed words stay
+        // landed; the contribution is still not
+        // recorded, and the naming sentence names the
+        // part that did not land, not the one that did.
+        let mut doc = r1_template();
+        for panel in &mut doc.panels {
+            for frame in &mut panel.frames {
+                if frame.role == ob_model::ContentRole::Weekly {
+                    frame.role = ob_model::ContentRole::Standing;
+                }
+            }
+        }
+        let text = "From: Sue\n\n## For the service\n\nThe choir warms up at 9:10 this week.\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(!outcome.all_landed);
+        assert!(doc.applied_contributions.is_empty());
+        let sid = service_story_id(&doc).expect("service story");
+        assert!(
+            doc.story(&sid)
+                .expect("story")
+                .paragraphs
+                .iter()
+                .any(|p| p.text() == "The choir warms up at 9:10 this week."),
+            "the service words landed and stay landed"
+        );
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("The Announcement words are not in the bulletin")),
+            "{:?}",
+            outcome.lines
+        );
+        assert!(
+            !outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("The For the service words are not")),
+            "{:?}",
+            outcome.lines
+        );
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::NotApplied);
+    }
+
+    #[test]
+    fn r5_a_record_whose_words_were_deleted_offers_accept_again() {
+        // Round 5 (R5-B, RT5-3): apply, the save fails,
+        // the office deletes the words by hand (not
+        // Undo, the one road that takes the record
+        // away). The record survives, but it no longer
+        // swears the words are in: the claim is
+        // RecordedButWordsGone, Accept is offered, and
+        // applying lands the words again, exactly once.
+        let text = "From: Sue\n\n## Announcement\n\nChoir rehearsal moved to Thursday.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let mut doc = r1_template();
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed);
+        assert!(part_already_applied(&doc, text));
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+        // The honest sentence, pinned word for word
+        // like the first line it stands beside.
+        assert_eq!(
+            APPLIED_RECORD_MISSING_LINE,
+            "Our note says these words were added to this bulletin before, but they are not in it now, so you can add them again."
+        );
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        doc.story_mut(&wid)
+            .expect("story")
+            .paragraphs
+            .retain(|p| !p.text().contains("Choir rehearsal"));
+        assert!(
+            part_already_applied(&doc, text),
+            "the record survives the hand delete"
+        );
+        assert_eq!(
+            applied_claim(&doc, &c, text),
+            AppliedClaim::RecordedButWordsGone
+        );
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed);
+        let count = doc
+            .story(&wid)
+            .expect("story")
+            .paragraphs
+            .iter()
+            .filter(|p| p.text().contains("Choir rehearsal"))
+            .count();
+        assert_eq!(count, 1, "the words land again, once");
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r5_words_present_stays_already_in_and_never_lands_twice() {
+        // Round 5 (R5-B): the ordinary road is
+        // unchanged. Words present and recorded: the
+        // claim stands at AlreadyIn, and any second
+        // apply adds nothing.
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let mut doc = r1_template();
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed);
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        let count = |doc: &Document| {
+            doc.story(&wid)
+                .expect("story")
+                .paragraphs
+                .iter()
+                .filter(|p| p.text() == "The bake sale is Friday.")
+                .count()
+        };
+        assert_eq!(count(&doc), 1);
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed);
+        assert_eq!(count(&doc), 1, "the words are never added twice");
+        assert!(
+            outcome
+                .lines
+                .iter()
+                .any(|s| s.contains("was already in the bulletin")),
+            "{:?}",
+            outcome.lines
+        );
+    }
+
+    #[test]
+    fn r5_a_resent_part_with_new_spacing_is_caught_by_its_words() {
+        // Round 5 (R5-B): the same words re-sent with
+        // different spacing are a different fingerprint
+        // and carry no record of their own, yet the
+        // review still says the words are already in:
+        // presence is judged on the words, not the
+        // bytes they arrived in.
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let mut doc = r1_template();
+        apply_contribution_recording(&mut doc, &c, text);
+        let resent = "From:  Sue\n\n## Announcement\n\nThe bake sale  is Friday.  \n";
+        assert_ne!(
+            content_fingerprint(resent.as_bytes()),
+            content_fingerprint(text.as_bytes())
+        );
+        let c2 = ob_extract::contribution::parse_contribution(resent, r1_today()).expect("parses");
+        assert!(!part_already_applied(&doc, resent));
+        assert_eq!(applied_claim(&doc, &c2, resent), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r5_one_shared_line_does_not_make_a_part_already_in() {
+        // Round 5 (R5-B): presence is the part's whole
+        // words, not its first line. A longer part that
+        // opens with a line already in the bulletin is
+        // not "already in" while the rest of it is
+        // missing.
+        let mut doc = r1_template();
+        let first = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let c1 = ob_extract::contribution::parse_contribution(first, r1_today()).expect("parses");
+        apply_contribution_recording(&mut doc, &c1, first);
+        let longer = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n\nBring a chair and a friend.\n";
+        let c2 = ob_extract::contribution::parse_contribution(longer, r1_today()).expect("parses");
+        assert!(!contribution_words_present(&doc, &c2));
+        assert_eq!(applied_claim(&doc, &c2, longer), AppliedClaim::NotApplied);
+    }
+
+    #[test]
+    fn r5_a_hymn_line_is_present_by_its_composed_form() {
+        // Round 5 (R5-B): a music slip's hymn line is
+        // composed into the bulletin's own hymn line,
+        // not copied word for word, so its sent form
+        // never appears in the document. Presence is
+        // judged by the composed form, and the applied
+        // part is AlreadyIn on reopen, not offered for
+        // a second landing.
+        let mut doc = r1_template();
+        let text = "From: Music director\n\n## For the service\n\nOpening hymn: ELW 500\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed, "{:?}", outcome.lines);
+        assert!(contribution_words_present(&doc, &c));
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+        // And a second apply adds no second hymn line.
+        let sid = service_story_id(&doc).expect("service story");
+        let lines_before = doc.story(&sid).expect("story").paragraphs.len();
+        apply_contribution_recording(&mut doc, &c, text);
+        assert_eq!(
+            doc.story(&sid).expect("story").paragraphs.len(),
+            lines_before
+        );
     }
 
     #[test]

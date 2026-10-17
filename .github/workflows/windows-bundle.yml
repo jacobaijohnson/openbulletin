@@ -82,6 +82,7 @@ jobs:
           Copy-Item target/release/ob-pdfium-helper.exe bundle/
           Copy-Item target/release/ob-verovio-helper.exe bundle/
           Copy-Item crates/ob-app/assets/icon.png bundle/
+          Copy-Item crates/ob-app/assets/icon/openbulletin.ico bundle/
           Copy-Item bin/pdfium.dll bundle/
           # The PDFium license ships inside the PDFium tarball
           # itself, as the LICENSE file at its root (extracted
@@ -100,7 +101,10 @@ jobs:
           ob-verovio-helper.exe is the door to the music
           engraver. Keep them beside openbulletin.exe. The
           icon.png file is the program's picture, the same one
-          the window wears; it does not need to stay.
+          the window wears; it does not need to stay. The
+          openbulletin.ico file is the same picture for a
+          shortcut: if you make a shortcut to openbulletin.exe,
+          you can point its icon at that file.
 
           Music files (MusicXML) open through the same door, but
           their notes are drawn by a music engraver program
@@ -127,7 +131,8 @@ jobs:
             'pdfium.dll',
             'PDFium-LICENSE.txt',
             'README.txt',
-            'icon.png'
+            'icon.png',
+            'openbulletin.ico'
           )
           foreach ($name in $required) {
             $file = Get-Item "bundle/$name"

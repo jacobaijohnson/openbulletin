@@ -1,5 +1,7 @@
 # OpenBulletin
 
+<img src="docs/assets/openbulletin-icon-transparent.png" width="128" alt="The OpenBulletin icon: an open bulletin with a picture box and text lines on the left page, text lines and a short music staff on the right">
+
 **Page layout for churches, in Rust. Last week's bulletin, safely turned into
 this week's bulletin.**
 

@@ -16241,8 +16241,9 @@ fn app_style(settings: &Settings) -> egui::Style {
     style
 }
 
-/// The window icon: the same folded-bulletin glyph the bundle
-/// ships as icon.png, decoded with the image crate the app
+/// The window icon: the app icon the bundle ships as icon.png
+/// (the master of the adopted set in assets/icon/ — an open
+/// bulletin on sage), decoded with the image crate the app
 /// already depends on. A decode failure must never stop the
 /// app, so it falls back to no icon.
 fn app_icon() -> Option<egui::IconData> {

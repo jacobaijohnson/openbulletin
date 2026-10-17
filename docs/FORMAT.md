@@ -480,14 +480,25 @@ can produce is vouched.
   same directory — its start, its declared size,
   and the zip64 record it resolves through where
   one stands — are one directory, not several: it
-  is walked and opened at most once per load,
-  however many end records describe it and
-  wherever those end records stand (round 10,
-  R10-1; round 12, R12-3). The whole-file fallback
-  enumeration below dedupes by that same resolved
-  identity, never by the fields a candidate
-  declares, which the sender controls (round 11,
-  R11-2); a candidate's directory is resolved the
+  is walked at most once per enumeration, however
+  many end records describe it and wherever those
+  end records stand, and every candidate's count
+  is read off the one chain's position index,
+  built when the chain is walked — never by
+  scanning the chain again per candidate (round
+  10, R10-1; round 12, R12-3; round 13, R13-3). The
+  whole-file fallback enumeration below dedupes
+  by that same resolved identity together with
+  the total each candidate declares: the reader's
+  reading of one directory is driven by its
+  total, so twins under one identity carrying
+  different totals are different readings of it,
+  each opened at most once, and a twin is tried
+  when the identity's representative yielded
+  nothing (round 13, R13-4); it never dedupes by
+  the remaining fields a candidate declares,
+  which the sender controls (round 11, R11-2); a
+  candidate's directory is resolved the
   same way in both enumerations, however far
   prepended bytes have shifted it (round 11,
   R11-3), and the fallback resolves every
@@ -507,8 +518,11 @@ can produce is vouched.
   lying fingerprint or size. When no candidate
   yields a document, the reader's own path runs —
   its chosen directory first (the attempt runs
-  when that directory walks, or reads by its
-  declared size as the reader reads it, or when
+  when that directory walks, or reads as the
+  reader reads it — the chain from its start
+  parsing exactly its declared total of records,
+  the count the reader itself checks, its declared
+  size never consulted (round 13, R13-4) — or when
   an untried directory that walks or reads stands
   anywhere in the file — never merely on whether
   an earlier candidate opened), then every

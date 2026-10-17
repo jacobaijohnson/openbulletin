@@ -214,9 +214,56 @@ fn resolve_first_hits(file: &mut std::fs::File, queries: &mut [FirstHit]) {
 /// end — or passes the cap before reaching it, the
 /// standing early stop — and candidates whose end
 /// the chain never reaches do not count at all.
+/// The walk also builds the chain's position index
+/// once — offset to the count of records chained
+/// at that offset — so reading one candidate's
+/// count off the chain is a lookup, never another
+/// scan of the chain (round 13, R13-3): with the
+/// scan, every candidate paid the chain's full
+/// length again, and the shared pass cost
+/// O(candidates × chain length) instead of
+/// O(span + distinct chains + candidates).
 struct ChainWalk {
     positions: Vec<u64>,
+    index: HashMap<u64, usize>,
     capped_at: Option<u64>,
+}
+
+impl ChainWalk {
+    fn new(positions: Vec<u64>, capped_at: Option<u64>) -> ChainWalk {
+        let index: HashMap<u64, usize> = positions
+            .iter()
+            .enumerate()
+            .map(|(count, &at)| (at, count))
+            .collect();
+        ChainWalk {
+            positions,
+            index,
+            capped_at,
+        }
+    }
+
+    /// The count of records chained at `at`, when
+    /// the chain reaches that offset at all.
+    fn count_at(&self, at: u64) -> Option<usize> {
+        self.index.get(&at).copied()
+    }
+
+    /// Whether the chain reaches `at` at all.
+    fn reaches(&self, at: u64) -> bool {
+        self.index.contains_key(&at)
+    }
+
+    /// Whether the chain parses exactly `total`
+    /// records from its start — the reader's own
+    /// condition (round 13, R13-4): `positions[k]`
+    /// stands exactly when the first `k` records
+    /// chained, capped walks included, because a
+    /// walk that passed the cap walked `cap + 1`
+    /// records to get there.
+    fn parses_total(&self, total: u64) -> bool {
+        total < self.positions.len() as u64
+    }
 }
 
 /// Walk the record chain from `cd_start` out to
@@ -248,10 +295,7 @@ fn walk_chain_file(file: &mut std::fs::File, cd_start: u64, extent: u64, cap: us
         at += 46 + name_len + extra_len + comment_len;
         positions.push(at);
     }
-    ChainWalk {
-        positions,
-        capped_at,
-    }
+    ChainWalk::new(positions, capped_at)
 }
 
 /// The count one candidate reads off a shared
@@ -259,10 +303,13 @@ fn walk_chain_file(file: &mut std::fs::File, cd_start: u64, extent: u64, cap: us
 /// to its `dir_end`, or `cap + 1` when the walk
 /// passed the cap at or before that end. None when
 /// the chain never reaches the end — the records
-/// broke, or stopped short of it.
+/// broke, or stopped short of it. The count is a
+/// lookup in the chain's position index, built
+/// once when the chain was walked (round 13,
+/// R13-3), never a scan of the chain per candidate.
 fn chain_count(chain: &ChainWalk, dir_end: u64, cap: usize) -> Option<usize> {
-    if let Some(index) = chain.positions.iter().position(|&p| p == dir_end) {
-        return Some(index);
+    if let Some(count) = chain.count_at(dir_end) {
+        return Some(count);
     }
     if let Some(capped_at) = chain.capped_at {
         if dir_end >= capped_at {
@@ -300,10 +347,7 @@ fn walk_chain_bytes(bytes: &[u8], cd_start: u64, extent: u64, cap: usize) -> Cha
         at += 46 + name_len + extra_len + comment_len;
         positions.push(at);
     }
-    ChainWalk {
-        positions,
-        capped_at,
-    }
+    ChainWalk::new(positions, capped_at)
 }
 
 /// The tail window where end records can live: the
@@ -336,6 +380,21 @@ const TAIL_WINDOW: u64 = 65_535 + 22 + 20 + 56;
 /// candidate's own position and no two plain
 /// candidates ever shared one.
 type DirKey = (Option<u64>, u64, Option<u64>, u64);
+
+/// One TWIN's reading of a directory: its resolved
+/// key plus the total it declares (round 13,
+/// R13-4). The key deliberately drops the declared
+/// total — identity is the directory described —
+/// but the reader's reading of that directory is
+/// driven by the total, so two candidates under one
+/// key with different totals are different readings:
+/// a zero-total twin reads the directory as empty
+/// where its honest twin reads it whole. The
+/// loaders' dedupe is by twin, not by key alone: a
+/// key whose representative yields nothing has its
+/// other twins tried, each distinct total once,
+/// before the load refuses.
+type TwinKey = (DirKey, u64);
 
 /// Every end-record candidate in a file whose
 /// directory can be walked, latest first, as
@@ -764,16 +823,27 @@ fn resolve_first_hits_in(bytes: &[u8], queries: &mut [FirstHit]) {
 /// exactly to the directory's end (`walkable`, the
 /// count walk's rule), whether the archive reader
 /// itself would read it (`reader_walkable`: the
-/// records chain exactly across the directory's
-/// declared size, the size-bounded reading the
-/// reader performs, which tolerates bytes standing
-/// after the directory — a gap, junk, further end
-/// records), and the directory's exact record count
-/// when a chain reaches the end it was measured to.
+/// chain parses exactly the candidate's declared
+/// total of records from the resolved start, the
+/// count the reader itself checks — it derives the
+/// start the same way and parses that many central
+/// headers in sequence, never consulting the
+/// declared size, so a size lying by a few bytes
+/// no longer closes the gate on a directory the
+/// reader reads whole, bytes standing after the
+/// directory — a gap, junk, further end records —
+/// notwithstanding; round 13, R13-4), the total the
+/// candidate declares (post-zip64-retarget, the
+/// total its own open would present — the field
+/// that separates one twin's reading from
+/// another's under a shared key), and the
+/// directory's exact record count when a chain
+/// reaches the end it was measured to.
 struct CandidateResolution {
     key: DirKey,
     walkable: bool,
     reader_walkable: bool,
+    declared_total: u64,
     exact_count: Option<usize>,
 }
 
@@ -919,18 +989,18 @@ fn candidate_resolutions_in(bytes: &[u8], positions: &[usize]) -> Vec<CandidateR
         resolve_first_hits_in(bytes, &mut cd_queries);
     }
     // Stage 3: one chain walk per distinct directory
-    // start, out to the farthest end — or declared-
-    // size target — any candidate naming it needs.
+    // start, out to the farthest end any candidate
+    // naming it needs. No declared-size target joins
+    // the extent (round 13, R13-4): the reader's own
+    // condition is its declared total's records
+    // chaining from the start, and those records
+    // stand before the directory's end, inside the
+    // extent the ends already give.
     let mut extents: HashMap<u64, u64> = HashMap::new();
     for cand in &parsed {
         if let Some(cd_start) = cand.cd_query.and_then(|qi| cd_queries[qi].answer) {
             let extent = extents.entry(cd_start).or_insert(0);
             *extent = (*extent).max(cand.dir_end);
-            if cand.declared_size > 0 {
-                if let Some(size_end) = cd_start.checked_add(cand.declared_size) {
-                    *extent = (*extent).max(size_end);
-                }
-            }
         }
     }
     let mut chains: HashMap<u64, ChainWalk> = HashMap::new();
@@ -948,6 +1018,7 @@ fn candidate_resolutions_in(bytes: &[u8], positions: &[usize]) -> Vec<CandidateR
                 key,
                 walkable: false,
                 reader_walkable: false,
+                declared_total: 0,
                 exact_count: None,
             });
             continue;
@@ -972,6 +1043,7 @@ fn candidate_resolutions_in(bytes: &[u8], positions: &[usize]) -> Vec<CandidateR
                 key,
                 walkable: empty,
                 reader_walkable: empty,
+                declared_total: cand.declared_total,
                 exact_count: if empty { Some(0) } else { None },
             });
             continue;
@@ -981,6 +1053,7 @@ fn candidate_resolutions_in(bytes: &[u8], positions: &[usize]) -> Vec<CandidateR
                 key,
                 walkable: false,
                 reader_walkable: false,
+                declared_total: cand.declared_total,
                 exact_count: None,
             });
             continue;
@@ -993,8 +1066,7 @@ fn candidate_resolutions_in(bytes: &[u8], positions: &[usize]) -> Vec<CandidateR
         let walkable = walked.is_some();
         let mut exact_count = match walked {
             Some(count) if count <= MAX_ENTRIES => {
-                let reached = chain.positions.contains(&cand.dir_end);
-                if reached {
+                if chain.reaches(cand.dir_end) {
                     Some(count)
                 } else {
                     None
@@ -1002,26 +1074,33 @@ fn candidate_resolutions_in(bytes: &[u8], positions: &[usize]) -> Vec<CandidateR
             }
             _ => None,
         };
-        // The reader's own reading is size-bounded:
-        // the records chaining exactly across the
-        // declared size are the directory it reads,
-        // wherever the end structures stand after it
-        // (round 12, R12-10).
+        // The reader's own reading is total-driven:
+        // it derives the directory's start the way
+        // this pass does and parses exactly the
+        // declared total of central headers in
+        // sequence, wherever the end structures stand
+        // after them and whatever the declared size
+        // claims (round 12, R12-10's shape; round 13,
+        // R13-4: the size-bounded reading this code
+        // used to mirror is not the reader's — a size
+        // lying by a few bytes closed the gate on a
+        // directory the reader reads whole). The
+        // count the reader will parse is the total
+        // itself, so a zip64 candidate standing only
+        // by this reading still presents an exact
+        // count for its total patch.
         let mut reader_walkable = walkable;
-        if !reader_walkable && cand.declared_size > 0 {
-            if let Some(size_end) = cd_start.checked_add(cand.declared_size) {
-                if let Some(count) = chain_count(chain, size_end, MAX_ENTRIES) {
-                    reader_walkable = true;
-                    if chain.positions.contains(&size_end) {
-                        exact_count = Some(count);
-                    }
-                }
+        if !reader_walkable && chain.parses_total(cand.declared_total) {
+            reader_walkable = true;
+            if cand.declared_total <= MAX_ENTRIES as u64 {
+                exact_count = Some(cand.declared_total as usize);
             }
         }
         out.push(CandidateResolution {
             key,
             walkable,
             reader_walkable,
+            declared_total: cand.declared_total,
             exact_count,
         });
     }
@@ -1345,11 +1424,16 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     // own key: the fallback below dedupes against
     // it, so a directory tried here is not opened
     // again there under another candidate's name
-    // (round 11, R11-2).
-    let mut tried_resolved: HashSet<DirKey> = HashSet::new();
+    // (round 11, R11-2) — by TWIN, key plus declared
+    // total, so a twin whose total differs from the
+    // tried one's is not a repeat: its reading of
+    // the same directory can differ (round 13,
+    // R13-4). The set is filled from the shared
+    // resolutions below, where each tried position's
+    // total is known.
+    let mut tried_resolved: HashSet<TwinKey> = HashSet::new();
     for (at, count, key) in directory_candidates(path, MAX_ENTRIES) {
         tried_positions.insert(at);
-        tried_resolved.insert(key);
         let zip64_patch = key.2.map(|record_at| (record_at, count as u64));
         let Some(mut zip) = archive_from_candidate_file(path, at, zip64_patch) else {
             continue;
@@ -1396,6 +1480,16 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     // resolution is ever served across candidates
     // (round 12, R12-4).
     let resolutions = candidate_resolutions_in(&bytes, &positions);
+    // Name the twins the enumeration above tried,
+    // by key plus declared total, from those same
+    // resolutions (round 13, R13-4): a directory
+    // tried under one total stands tried; the same
+    // directory under another total does not.
+    for (at, resolution) in positions.iter().zip(resolutions.iter()) {
+        if tried_positions.contains(&(*at as u64)) {
+            tried_resolved.insert((resolution.key, resolution.declared_total));
+        }
+    }
     // The reader's chosen directory is the one its
     // backward search lands on — the latest candidate
     // in the file. That attempt runs when there is
@@ -1413,7 +1507,11 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     // its directory, which the reader tolerates,
     // breaks the chain-exact count while the
     // directory itself stands whole: round 12,
-    // R12-10). Whether a candidate above already
+    // R12-10) — where untried is by TWIN: a twin
+    // whose declared total differs from the tried
+    // twin's is an untried reading of a tried
+    // directory, and it leaves the attempt open
+    // (round 13, R13-4). Whether a candidate above already
     // opened — or this very candidate was already
     // tried — never closes the attempt (round 11,
     // R11-3): a candidate that opens but yields no
@@ -1429,7 +1527,7 @@ fn load_v1(path: &Path) -> Result<Document, String> {
         .any(|(at, resolution)| {
             (resolution.walkable || resolution.reader_walkable)
                 && !tried_positions.contains(&(*at as u64))
-                && !tried_resolved.contains(&resolution.key)
+                && !tried_resolved.contains(&(resolution.key, resolution.declared_total))
         });
     let reader_gate_open = match resolutions.first() {
         None => true,
@@ -1471,7 +1569,14 @@ fn load_v1(path: &Path) -> Result<Document, String> {
     // once, and a directory already tried above
     // (its identity stands in `tried_resolved`) is
     // not opened again under another candidate's
-    // name.
+    // name. The dedupe unit is the TWIN — that
+    // identity plus the declared total (round 13,
+    // R13-4): the reader's reading of one directory
+    // is driven by the total, so a twin declaring
+    // another total is another reading of the
+    // directory, tried once under its own total
+    // when the key's representative yielded
+    // nothing, never a repeat of the tried twin.
     for (at, resolution) in positions.iter().zip(resolutions.iter()) {
         let at = *at;
         // A candidate already tried above is not
@@ -1479,19 +1584,20 @@ fn load_v1(path: &Path) -> Result<Document, String> {
         // whose directory neither walks nor reads is
         // not opened either (the walk gate, round 10,
         // R10-3 — a directory whose records chain
-        // across its declared size IS the reader's
+        // exactly the declared total IS the reader's
         // own first choice in its trimmed stream, so
         // opening it costs the one read, never a
         // retry storm); and a candidate resolving to
-        // a directory already tried is a repeat of
-        // it, not another directory (round 11, R11-2).
+        // a twin already tried is a repeat of it, not
+        // another reading (round 11, R11-2; round 13,
+        // R13-4).
         if tried_positions.contains(&(at as u64)) {
             continue;
         }
         if !resolution.walkable && !resolution.reader_walkable {
             continue;
         }
-        if !tried_resolved.insert(resolution.key) {
+        if !tried_resolved.insert((resolution.key, resolution.declared_total)) {
             continue;
         }
         let zip64_patch = match (resolution.key.2, resolution.exact_count) {
@@ -1693,11 +1799,12 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     // The resolved identity of every directory
     // tried in this pass, as at the bulletin door:
     // the fallback below dedupes against it
-    // (round 11, R11-2).
-    let mut tried_resolved: HashSet<DirKey> = HashSet::new();
+    // (round 11, R11-2), by twin — key plus declared
+    // total (round 13, R13-4). The set is filled
+    // from the shared resolutions below.
+    let mut tried_resolved: HashSet<TwinKey> = HashSet::new();
     for (at, count, key) in directory_candidates(path, MAX_ENTRIES) {
         tried_positions.insert(at);
-        tried_resolved.insert(key);
         let zip64_patch = key.2.map(|record_at| (record_at, count as u64));
         let Some(mut zip) = archive_from_candidate_file(path, at, zip64_patch) else {
             continue;
@@ -1731,13 +1838,20 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let positions = end_record_positions_in(&bytes);
     let resolutions = candidate_resolutions_in(&bytes, &positions);
+    // The twins the enumeration above tried, named
+    // as at the bulletin door (round 13, R13-4).
+    for (at, resolution) in positions.iter().zip(resolutions.iter()) {
+        if tried_positions.contains(&(*at as u64)) {
+            tried_resolved.insert((resolution.key, resolution.declared_total));
+        }
+    }
     let any_untried_readable = positions
         .iter()
         .zip(resolutions.iter())
         .any(|(at, resolution)| {
             (resolution.walkable || resolution.reader_walkable)
                 && !tried_positions.contains(&(*at as u64))
-                && !tried_resolved.contains(&resolution.key)
+                && !tried_resolved.contains(&(resolution.key, resolution.declared_total))
         });
     let reader_gate_open = match resolutions.first() {
         None => true,
@@ -1772,9 +1886,10 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     // The fallback enumeration, exactly as at the
     // bulletin door: every candidate resolved once
     // by the shared pass above, deduped by the
-    // RESOLVED directory against `tried_resolved`,
-    // no resolution served across candidates
-    // (round 12, R12-4/R12-5).
+    // RESOLVED directory against `tried_resolved` —
+    // by twin, key plus declared total (round 13,
+    // R13-4) — no resolution served across
+    // candidates (round 12, R12-4/R12-5).
     for (at, resolution) in positions.iter().zip(resolutions.iter()) {
         let at = *at;
         // A candidate already tried above is not
@@ -1782,15 +1897,16 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
         // whose directory neither walks nor reads is
         // not opened either (the walk gate, round 10,
         // R10-3); and a candidate resolving to a
-        // directory already tried is a repeat of it,
-        // not another directory (round 11, R11-2).
+        // twin already tried is a repeat of it, not
+        // another reading (round 11, R11-2; round 13,
+        // R13-4).
         if tried_positions.contains(&(at as u64)) {
             continue;
         }
         if !resolution.walkable && !resolution.reader_walkable {
             continue;
         }
-        if !tried_resolved.insert(resolution.key) {
+        if !tried_resolved.insert((resolution.key, resolution.declared_total)) {
             continue;
         }
         let zip64_patch = match (resolution.key.2, resolution.exact_count) {
@@ -5392,6 +5508,361 @@ mod tests {
                     Some(2),
                     "{ext} {tag}: the walk counts the two records, total or no total"
                 );
+                if ext == "obd" {
+                    let loaded = load(&path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(loaded.title, honest_title, "{ext} {tag}");
+                } else {
+                    let (insert, _, _) = load_insert(&path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(insert.id, honest_title, "{ext} {tag}");
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One fake end record with caller-set fields
+    /// (round 13's builders): both total fields carry
+    /// `total`, the size and offset fields carry the
+    /// caller's values, the comment is empty.
+    fn fake_end_record(total: u16, size: u32, offset: u32) -> Vec<u8> {
+        let mut eocd = Vec::new();
+        eocd.extend_from_slice(b"PK\x05\x06");
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&total.to_le_bytes());
+        eocd.extend_from_slice(&total.to_le_bytes());
+        eocd.extend_from_slice(&size.to_le_bytes());
+        eocd.extend_from_slice(&offset.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        assert_eq!(eocd.len(), 22);
+        eocd
+    }
+
+    /// The round-13 chain-cost file (red team
+    /// RT13-2): a gap-standing honest two-record zip
+    /// first (fallback-only, like the R12-10 shape),
+    /// then one documentless directory of
+    /// `chain_entries` records, then `fakes` fake
+    /// end records naming that directory — every
+    /// fake resolves to the one long chain, so a
+    /// per-candidate chain scan pays the chain's
+    /// length per fake.
+    fn chain_cost_file(json_name: &str, json: &str, chain_entries: usize, fakes: usize) -> Vec<u8> {
+        let honest = zip_with_fillers(json_name, json, 1);
+        let eocd = find_eocd(&honest);
+        let mut out = honest[..eocd].to_vec();
+        out.extend_from_slice(b"GGGGGGGGGGGGGGGG");
+        out.extend_from_slice(&honest[eocd..]);
+        let chain_start = out.len();
+        let mut chain_len = 0usize;
+        for i in 0..chain_entries {
+            let name = format!("f{i:05}");
+            let record = shared_central_record(&name, 0, 0, 0);
+            chain_len += record.len();
+            out.extend_from_slice(&record);
+        }
+        for _ in 0..fakes {
+            out.extend_from_slice(&fake_end_record(
+                chain_entries as u16,
+                chain_len as u32,
+                chain_start as u32,
+            ));
+        }
+        out
+    }
+
+    #[test]
+    fn r13b_chain_cost_no_longer_scales_with_chain_length() {
+        // Round 13 (R13-3, red team RT13-2): the
+        // shared resolution pass read each candidate's
+        // count off the shared chain with a LINEAR
+        // scan, so cost was O(candidates × chain
+        // length), not the O(span + candidates) the
+        // R12-B account claimed — 40k body signatures
+        // cost 26–71 ms at a 2-record chain but
+        // 1.32–1.60 s at an 8,000-record chain, and
+        // 200k fakes on a 5.2 MB file cost 6.80 s in
+        // the lane's release build. Counts are read
+        // off the chain's position index now, built
+        // once per chain when it is walked, so the
+        // long-chain rows land in the short-chain
+        // row's time class and the 200k row lands in
+        // the sub-second class. The honest bulletin
+        // loads in every row.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let dir = scratch("r13b-chain-cost");
+        let mut elapsed_rows: Vec<std::time::Duration> = Vec::new();
+        for (tag, chain_entries, fakes) in [
+            ("chain2-40k", 2usize, 40_000usize),
+            ("chain8000-40k", 8_000, 40_000),
+            ("chain8000-200k", 8_000, 200_000),
+        ] {
+            let bytes = chain_cost_file("document.json", &doc_json, chain_entries, fakes);
+            let path = dir.join(format!("{tag}.obd"));
+            std::fs::write(&path, &bytes).expect("write chain-cost copy");
+            let start = std::time::Instant::now();
+            let loaded = load(&path).unwrap_or_else(|e| panic!("{tag}: honest loads, got {e}"));
+            let elapsed = start.elapsed();
+            assert_eq!(loaded.title, "Roundtrip", "{tag}");
+            println!("r13b {tag}: {elapsed:?} ({} bytes)", bytes.len());
+            elapsed_rows.push(elapsed);
+        }
+        let short = elapsed_rows[0];
+        let long = elapsed_rows[1];
+        let budget = std::cmp::max(short * 20, short + std::time::Duration::from_secs(2));
+        assert!(
+            long < budget,
+            "chain8000-40k: {long:?} must land in the chain2-40k time class \
+             (chain2-40k {short:?}, budget {budget:?})"
+        );
+        assert!(
+            long < std::time::Duration::from_secs(5),
+            "chain8000-40k: {long:?} is no shared-pass time at all"
+        );
+        assert!(
+            elapsed_rows[2] < std::time::Duration::from_secs(5),
+            "chain8000-200k: {:?} is no shared-pass time at all",
+            elapsed_rows[2]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r13b_a_gap_directory_with_a_lying_size_loads_behind_many_fakes() {
+        // Round 13 (R13-4a, review R13-3): the R12-10
+        // gap shape with the end record's declared
+        // SIZE patched by −7 (lands mid-record) or +1
+        // (lands in the gap), behind 100 fakes, was
+        // REFUSED although the reader reads the
+        // directory whole: `reader_walkable` chained
+        // records across the declared size, while the
+        // reader (zip 2.4.2) parses exactly its
+        // declared TOTAL of records and never consults
+        // the size. The walkable test mirrors the
+        // reader now — the chain parses the declared
+        // total — so both deltas load, at both doors.
+        // The premises are asserted in-test: the
+        // resolution walks not at all and reads by
+        // the reader's rule, and the trimmed reader
+        // stream reads the document entry.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        let dir = scratch("r13b-lying-size-gap");
+        for (json_name, json, ext, honest_title) in [
+            ("document.json", doc_json.as_str(), "obd", "Roundtrip"),
+            ("insert.json", sheet_json.as_str(), "obdi", "sheet-lying"),
+        ] {
+            let honest = zip_with_fillers(json_name, json, 1);
+            let eocd = find_eocd(&honest);
+            let honest_size =
+                u32::from_le_bytes(honest[eocd + 12..eocd + 16].try_into().expect("size field"));
+            for (tag, delta) in [("minus-seven", -7i64), ("plus-one", 1i64)] {
+                let mut gapped = honest[..eocd].to_vec();
+                gapped.extend_from_slice(b"GGGGGGGGGGGGGGGG");
+                gapped.extend_from_slice(&honest[eocd..]);
+                let gapped_eocd = eocd + 16;
+                let lying_size = (i64::from(honest_size) + delta) as u32;
+                gapped[gapped_eocd + 12..gapped_eocd + 16]
+                    .copy_from_slice(&lying_size.to_le_bytes());
+                let resolutions = candidate_resolutions_in(&gapped, &[gapped_eocd]);
+                let resolution = &resolutions[0];
+                assert!(
+                    !resolution.walkable,
+                    "{ext} {tag}: the gap breaks the chain-exact walk"
+                );
+                assert!(
+                    resolution.reader_walkable,
+                    "{ext} {tag}: the reader's total-driven reading stands"
+                );
+                let trimmed = archive_from_candidate(&gapped, gapped_eocd, None)
+                    .expect("the reader reads the trimmed stream");
+                assert!(
+                    trimmed.file_names().any(|n| n == json_name),
+                    "{ext} {tag}: the reader reads the document entry"
+                );
+                let mut bytes = gapped.clone();
+                for i in 0..100u32 {
+                    bytes.extend_from_slice(&fake_end_record((2000 + i) as u16, 0, 0x00FF_FFF0));
+                }
+                let path = dir.join(format!("{tag}.{ext}"));
+                std::fs::write(&path, &bytes).expect("write lying-size copy");
+                if ext == "obd" {
+                    let loaded = load(&path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(loaded.title, honest_title, "{ext} {tag}");
+                } else {
+                    let (insert, _, _) = load_insert(&path)
+                        .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));
+                    assert_eq!(insert.id, honest_title, "{ext} {tag}");
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r13b_a_zero_total_later_twin_does_not_skip_the_honest_twin() {
+        // Round 13 (R13-4b, review R13-4): two plain
+        // end records describing the same directory —
+        // one DirKey — the LATER twin declaring total
+        // 0, the earlier one honest (total 2), a gap
+        // before the earlier so neither chain-counts.
+        // The whole-file reader stops at the later
+        // twin and reads an empty archive (a successful
+        // open); the fallback then opened that empty
+        // twin, marked the shared key tried, and
+        // skipped the honest one: refused. The dedupe
+        // unit is the twin — key plus declared total —
+        // now, so the honest twin is tried under its
+        // own total and the file loads, at both doors.
+        // Premises asserted in-test: one key, totals
+        // 0 and 2; the whole-file reader reads empty;
+        // the honest twin's trimmed stream reads the
+        // document.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        let dir = scratch("r13b-zero-total-twin");
+        for (json_name, json, ext, honest_title) in [
+            ("document.json", doc_json.as_str(), "obd", "Roundtrip"),
+            ("insert.json", sheet_json.as_str(), "obdi", "sheet-lying"),
+        ] {
+            let honest = zip_with_fillers(json_name, json, 1);
+            let eocd = find_eocd(&honest);
+            let mut bytes = honest[..eocd].to_vec();
+            bytes.extend_from_slice(b"GGGGGGGGGGGGGGGG");
+            let honest_twin_at = bytes.len();
+            bytes.extend_from_slice(&honest[eocd..]);
+            let mut zero_twin = honest[eocd..].to_vec();
+            zero_twin[8..10].copy_from_slice(&0u16.to_le_bytes());
+            zero_twin[10..12].copy_from_slice(&0u16.to_le_bytes());
+            let zero_twin_at = bytes.len();
+            bytes.extend_from_slice(&zero_twin);
+            let resolutions = candidate_resolutions_in(&bytes, &[zero_twin_at, honest_twin_at]);
+            assert_eq!(
+                resolutions[0].key, resolutions[1].key,
+                "{ext}: the twins share one resolved directory"
+            );
+            assert_eq!(
+                resolutions[0].declared_total, 0,
+                "{ext}: the later twin's total"
+            );
+            assert_eq!(
+                resolutions[1].declared_total, 2,
+                "{ext}: the honest twin's total"
+            );
+            let whole = zip::ZipArchive::new(std::io::Cursor::new(bytes.clone()))
+                .expect("the reader opens the zero twin");
+            assert_eq!(
+                whole.len(),
+                0,
+                "{ext}: the reader's chosen twin reads empty"
+            );
+            let trimmed = archive_from_candidate(&bytes, honest_twin_at, None)
+                .expect("the honest twin's stream opens");
+            assert!(
+                trimmed.file_names().any(|n| n == json_name),
+                "{ext}: the honest twin's stream reads the document entry"
+            );
+            let path = dir.join(format!("twins.{ext}"));
+            std::fs::write(&path, &bytes).expect("write twin copy");
+            if ext == "obd" {
+                let loaded = load(&path).unwrap_or_else(|e| panic!("{ext}: honest loads, got {e}"));
+                assert_eq!(loaded.title, honest_title, "{ext}");
+            } else {
+                let (insert, _, _) =
+                    load_insert(&path).unwrap_or_else(|e| panic!("{ext}: honest loads, got {e}"));
+                assert_eq!(insert.id, honest_title, "{ext}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r13b_a_lying_total_twin_does_not_close_the_honest_twin_out() {
+        // Round 13 (R13-4c, red team RT13-3): one
+        // honest 2-record directory (junk.txt first,
+        // the document second). Candidate F stands AT
+        // the directory's end with its total lying —
+        // 1 (reads only junk.txt) or 5000 (does not
+        // open at all); candidate H stands after a
+        // 16-byte gap with honest fields, under the
+        // SAME DirKey (the key drops the total once a
+        // start resolves); 70 unwalkable fakes stand
+        // last. The load refused at both doors: F's
+        // key in the tried set made H untried-readable
+        // nowhere and a repeat in the fallback,
+        // although reader-alone controls load the
+        // file. Per key, the representative is now the
+        // best reading any twin achieves — the dedupe
+        // is by twin, key plus total — so H is tried
+        // under its own total and the file loads, at
+        // both doors, for both lies. Premises asserted
+        // in-test: one key, the two totals; F's own
+        // stream yields junk only or nothing; H's
+        // stream reads the document.
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        let dir = scratch("r13b-lying-total-twin");
+        for (json_name, json, ext, honest_title) in [
+            ("document.json", doc_json.as_str(), "obd", "Roundtrip"),
+            ("insert.json", sheet_json.as_str(), "obdi", "sheet-lying"),
+        ] {
+            // The document stands SECOND, so a total
+            // of 1 reads only the junk entry.
+            let honest = stored_zip(&[("junk.txt", b"x".as_slice()), (json_name, json.as_bytes())]);
+            let eocd = find_eocd(&honest);
+            for (tag, lying_total) in [("total-one", 1u16), ("total-5000", 5000u16)] {
+                let mut bytes = honest[..eocd].to_vec();
+                let mut lying_twin = honest[eocd..].to_vec();
+                lying_twin[8..10].copy_from_slice(&lying_total.to_le_bytes());
+                lying_twin[10..12].copy_from_slice(&lying_total.to_le_bytes());
+                let lying_twin_at = bytes.len();
+                bytes.extend_from_slice(&lying_twin);
+                bytes.extend_from_slice(b"GGGGGGGGGGGGGGGG");
+                let honest_twin_at = bytes.len();
+                bytes.extend_from_slice(&honest[eocd..]);
+                for i in 0..70u32 {
+                    bytes.extend_from_slice(&fake_end_record((3000 + i) as u16, 0, 0x00FF_FFF0));
+                }
+                let resolutions =
+                    candidate_resolutions_in(&bytes, &[lying_twin_at, honest_twin_at]);
+                assert_eq!(
+                    resolutions[0].key, resolutions[1].key,
+                    "{ext} {tag}: the twins share one resolved directory"
+                );
+                assert_eq!(
+                    resolutions[0].declared_total,
+                    u64::from(lying_total),
+                    "{ext} {tag}: the lying twin's total"
+                );
+                assert_eq!(
+                    resolutions[1].declared_total, 2,
+                    "{ext} {tag}: the honest total"
+                );
+                match archive_from_candidate(&bytes, lying_twin_at, None) {
+                    Some(archive) => {
+                        assert!(
+                            !archive.file_names().any(|n| n == json_name),
+                            "{ext} {tag}: the lying twin's stream holds no document"
+                        );
+                    }
+                    None => {
+                        assert_eq!(
+                            tag, "total-5000",
+                            "{ext}: only the 5000 twin fails to open at all"
+                        );
+                    }
+                }
+                let trimmed = archive_from_candidate(&bytes, honest_twin_at, None)
+                    .expect("the honest twin's stream opens");
+                assert!(
+                    trimmed.file_names().any(|n| n == json_name),
+                    "{ext} {tag}: the honest twin's stream reads the document entry"
+                );
+                let path = dir.join(format!("{tag}.{ext}"));
+                std::fs::write(&path, &bytes).expect("write lying-total copy");
                 if ext == "obd" {
                     let loaded = load(&path)
                         .unwrap_or_else(|e| panic!("{ext} {tag}: honest loads, got {e}"));

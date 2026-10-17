@@ -236,7 +236,79 @@ the one group analysis every consuming path reads.
 
 ## Shipped addendum, R13-B
 
-_(appended by the R13-B builder with real numbers and flagged pin changes)_
+Shipped 2026-10-17 on top of `63f1468`. **681 tests passing / 0 failed**
+(full unpiped `cargo test --workspace`, cargo exit 0; baseline 677),
+**clippy clean** (`cargo clippy --workspace --all-targets -- -D warnings`,
+exit 0). All changes are in `crates/ob-format/src/lib.rs`, plus the
+FORMAT.md wording corrections named below.
+
+- **R13-3.** `ChainWalk` now carries a position index — offset to the
+  count of records chained there — built once when the chain is
+  walked. `chain_count` and every reachability read are index lookups,
+  in both passes (the enumeration's file chains in
+  `directory_candidates` and the fallback's byte chains in
+  `candidate_resolutions_in`); no candidate rescans a chain, and a
+  chain is walked once per distinct directory start in each pass, so
+  total resolution cost is O(span + distinct chains + candidates).
+  The R12-B account's "one chain walk per distinct start" wording is
+  now actually true of the count reads as well as the walks.
+  Measured on the new pin's fixtures (release build, machine load
+  average ~3.9–5.5 during the run; the pre-fix column is RT13-2's
+  release measurements): chain of 2 records with 40k fakes (883 KB):
+  26–71 ms before, **22.9 ms** after. Chain of 8,000 records with
+  40k fakes (1.30 MB): 1.32–1.60 s before, **92.8 ms** after. Chain
+  of 8,000 records with 200k fakes (4.82 MB): 6.80 s before,
+  **152.9 ms** after — the sub-second class. The residual long-chain
+  constant is one chain walk plus one reader parse of that directory
+  per load; it does not scale with the candidate count (×5 candidates
+  at the 8,000 chain: 92.8 → 152.9 ms). In the debug suite build
+  under the same load the three rows measured 143 / 274 / 752 ms.
+  The honest bulletin loads in every row.
+- **R13-4.** `reader_walkable` mirrors the reader: the chain parses
+  exactly the candidate's declared total of records from the resolved
+  start (`ChainWalk::parses_total`) — the count zip 2.4.2 itself
+  checks. The declared size is no longer consulted anywhere in the
+  resolution: the stage-3 extent drops its size target, and a
+  candidate standing only by the total reading presents the total as
+  its exact count for the zip64 patch. The loaders' dedupe unit is
+  the TWIN (`TwinKey`: the resolved `DirKey` plus the declared
+  total, post-zip64-retarget, carried on `CandidateResolution`): the
+  tried set is seeded from the shared resolutions at the positions
+  the enumeration tried, the reader gate's untried test is by twin,
+  and the fallback inserts by twin — so a key whose representative
+  yields nothing has each distinct-total twin tried once before the
+  load refuses, at both doors. First-error precedence is unchanged.
+  The R11 declared-variants family still dedupes to one open: its
+  candidates resolve through one zip64 record, whose retarget makes
+  their totals identical, so varied plain fields remain one twin.
+- **Pins.** Four new `r13b_*` pins, all in ob-format (51 → 55 in that
+  crate): `r13b_chain_cost_no_longer_scales_with_chain_length` (the
+  three RT13-2 rows, outcomes plus time-class budgets),
+  `r13b_a_gap_directory_with_a_lying_size_loads_behind_many_fakes`
+  (size −7 and +1 behind 100 fakes, both doors, premises asserted:
+  the resolution does not walk, does read, and the trimmed reader
+  reads the document), `r13b_a_zero_total_later_twin_does_not_skip_the_honest_twin`
+  (premises: one key, totals 0 and 2, the whole-file reader reads
+  the zero twin empty, the honest twin's stream reads the document),
+  and `r13b_a_lying_total_twin_does_not_close_the_honest_twin_out`
+  (totals 1 and 5000 at the directory's end, honest twin behind a
+  gap, 70 fakes, both doors, premises asserted per twin).
+  Regression families unchanged: the full workspace suite passes
+  with the storm, dead-zone, shared-directory (plain and zip64),
+  declared-varied, gap, and lying-zip64-total pins at their original
+  expectations.
+- **Pre-existing test changes: none.** No pre-existing test line is
+  removed or altered; the diff's removed lines are the production
+  functions and comments this batch rewrote (`chain_count`, the
+  size-bounded `reader_walkable` branch, the stage-3 size extent,
+  the loaders' key-only dedupe) and the two FORMAT.md passages below.
+- **FORMAT.md.** The guards bullet now states the count reads come
+  off the one chain's position index (R13-3) and that the fallback
+  dedupes by resolved identity plus declared total, each distinct
+  total opened at most once (R13-4) — the earlier "walked and opened
+  at most once per load" overstated the twin case. The reader-path
+  sentence's "reads by its declared size" is corrected to the
+  total-driven reading (R13-4).
 
 ## Shipped addendum, R13-C
 

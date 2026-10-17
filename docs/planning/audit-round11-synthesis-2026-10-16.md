@@ -652,6 +652,73 @@ pre-existing test changed: the R9/R10 stacked-group, verdict-
 contract, restatement, and second-date families pass with their
 original expectations in the full run.
 
-## Shipped addendum, R11-D
+## Shipped addendum, R11-D (2026-10-17)
 
-_(appended by the R11-D builder with real numbers and flagged pin changes)_
+The finding landed in `crates/ob-model/src/lib.rs`, in
+`serving_pairing`'s ambiguous-kinds accounting and in
+`migrate_serving_line_renames_detailed`; no sentence in
+`crates/ob-app/src/main.rs` changed. Local totals: before
+660 passed / 0 failed; after **662 passed / 0 failed**,
+full unpiped `cargo test --workspace` exit 0; `cargo clippy
+--workspace --all-targets -- -D warnings` exit 0; `cargo
+fmt --all -- --check` exit 0. Two new tests (below); **no
+pre-existing test changed** — the R9-D / R10-8 witness
+families (`r9_kinds_come_from_each_segments_own_outcome`,
+`r10_kinds_claim_only_what_the_pairing_establishes`,
+`ambiguous_kinds_count_only_segments_the_pairing_could_not_resolve`,
+the canonical crossed renames and both trailing mirrors,
+surplus-past-need removals) pass with their original
+expectations in the full run.
+
+**R11-10 — the accounting is per occurrence.** Two halves.
+(a) The reservoir: the removal-only and addition-only
+segment tallies now keep their names instead of bare
+counts, and reservoir absorption spends only unspent
+occurrences — an occurrence whose name a pairing already
+spent (on the old side for the removal reservoir, on the
+new side for the addition reservoir) is not the
+reservoir's to absorb, because the name's stored names
+sit under one slug and its alias under one key, so the
+name can be spent only once. In the RT11-8 witness (Papa
+paired Papa→Quebec in one segment, removal-only in
+another, Uniform's segment holding the surplus) the kinds
+now read {renamed, removed, added, moved: false}: the
+second Papa's removal stands, the unabsorbed surplus
+reads as an addition, and no phantom move is claimed. The
+deficit-side mirror (duplicate new names) reads
+identically. With unique names no removal-only or
+addition-only name is ever a paired name, so the
+certain-shape families are untouched, and the refusal to
+auto-apply in ambiguous shapes is unchanged. (b) The
+migration: each old name is spent once, in segment
+order. The first pairing of a name is the pairing
+actually made — it moves the stored names and records
+the alias; a later pairing of the same old name is not
+followed (it would move nothing, the source being spent,
+yet overwrite the recorded alias), and a removal of a
+name a pairing already spent is not followed either (it
+would clear the alias and names the pairing just made).
+The recorded aliases correspond one-to-one with the
+pairings actually made: in the pair-plus-removal shape
+(Xray paired to Yankee in one segment, removed in
+another) the people land on Yankee, the alias Xray→Yankee
+survives, and nothing is reported removed; in the
+double-pairing shape (Xray paired to Yankee and to Zulu)
+the people land on Yankee and the surviving alias points
+at Yankee, not Zulu. Duplicates on the new side (two
+distinct old names paired to one duplicated new name)
+follow both pairings, record both aliases, and keep the
+standing target-conflict rule — the first value lands,
+the second stays where it was.
+
+**Tests.** Two new pins, both in `crates/ob-model`:
+`r11d_duplicate_names_spend_each_occurrence_once_in_the_kinds`
+(the RT11-8 ambiguous witness and its deficit-side
+mirror, both now {renamed, removed, added} with no moved,
+plus the unique-name control — the same geometry with a
+unique removal-only name still reads as the canonical
+crossed renames {renamed, moved}), and
+`r11d_duplicate_pairings_keep_participants_and_aliases_in_step`
+(the pair-plus-removal shape, the double-pairing shape,
+and the duplicate-new-name shape, asserting participants
+and aliases together in each).

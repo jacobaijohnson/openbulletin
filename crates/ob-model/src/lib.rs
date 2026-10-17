@@ -2781,7 +2781,15 @@ struct ServingPairing {
 /// crossed renames); that segment's names past the
 /// need are removals. A surplus with no partner
 /// segment to sit in is an addition, and a deficit
-/// left over after any crossing is a removal.
+/// left over after any crossing is a removal. The
+/// accounting is per occurrence (round 11,
+/// R11-D): an occurrence whose name a pairing
+/// already spent cannot also feed the reservoir —
+/// reservoir absorption consumes unspent
+/// occurrences only, so a duplicate name paired
+/// in one segment and standing removal-only or
+/// addition-only in another still shows its
+/// removal or addition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ServingLineEditKinds {
     /// At least one line was renamed.
@@ -2880,9 +2888,15 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
     let mut leftover_segments = 0usize;
     let mut surplus_new_excess = 0usize;
     let mut deficit_old_excess = 0usize;
-    let mut bounded_removal_names = 0usize;
-    let mut trailing_removal_names = 0usize;
-    let mut addition_only_names = 0usize;
+    // The removal-only and addition-only tallies
+    // keep their NAMES (round 11, R11-D): the
+    // reservoir below spends occurrences, and an
+    // occurrence whose name a pairing already spent
+    // cannot be spent again by the reservoir, so a
+    // bare count is not enough to judge eligibility.
+    let mut bounded_removal_names: Vec<String> = Vec::new();
+    let mut trailing_removal_names: Vec<String> = Vec::new();
+    let mut addition_only_names: Vec<String> = Vec::new();
     for (seg_index, ((o0, o1), (n0, n1))) in segments.iter().enumerate() {
         let seg_old: Vec<String> = old_trim[*o0..*o1]
             .iter()
@@ -2910,15 +2924,15 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
         } else if seg_new.is_empty() {
             if !seg_old.is_empty() {
                 if seg_index + 1 == segments.len() {
-                    trailing_removal_names += seg_old.len();
+                    trailing_removal_names.extend(seg_old.iter().cloned());
                 } else {
-                    bounded_removal_names += seg_old.len();
+                    bounded_removal_names.extend(seg_old.iter().cloned());
                 }
             }
             removals.extend(seg_old);
         } else if seg_old.is_empty() {
             // Additions only: nothing to pair or clear.
-            addition_only_names += seg_new.len();
+            addition_only_names.extend(seg_new);
         } else {
             leftover_segments += 1;
             if seg_new.len() > seg_old.len() {
@@ -2975,15 +2989,43 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
         let crossed_pairs = surplus_new_excess.min(deficit_old_excess);
         let surplus_after_cross = surplus_new_excess - crossed_pairs;
         let deficit_after_cross = deficit_old_excess - crossed_pairs;
-        let removal_only_names = bounded_removal_names + trailing_removal_names;
-        let reservoir_used = removal_only_names.min(surplus_after_cross);
+        // Per-occurrence accounting (round 11,
+        // R11-D): the reservoir absorbs only
+        // occurrences no pairing already spent. A
+        // serving list can carry the same name in
+        // two segments — one occurrence paired in
+        // its segment, another standing removal-only
+        // or addition-only in a different segment.
+        // The paired occurrence and the reservoir
+        // candidate share one name, and the name's
+        // stored names and alias can be spent only
+        // once, so an occurrence whose name a
+        // pairing already spent (on the old side for
+        // the removal reservoir, on the new side
+        // for the addition reservoir) is not the
+        // reservoir's to absorb: it stands as the
+        // removal or addition it is. With unique
+        // names no removal-only or addition-only
+        // name is ever a paired name, so every
+        // stated-rule shape reads exactly as before.
+        let removal_only_total = bounded_removal_names.len() + trailing_removal_names.len();
+        let unspent_removal_names = bounded_removal_names
+            .iter()
+            .chain(trailing_removal_names.iter())
+            .filter(|name| !pairs.iter().any(|(old_name, _)| old_name == *name))
+            .count();
+        let unspent_addition_names = addition_only_names
+            .iter()
+            .filter(|name| !pairs.iter().any(|(_, new_name)| new_name == *name))
+            .count();
+        let reservoir_used = unspent_removal_names.min(surplus_after_cross);
         let surplus_final = surplus_after_cross - reservoir_used;
-        let addition_reservoir_used = addition_only_names.min(deficit_after_cross);
+        let addition_reservoir_used = unspent_addition_names.min(deficit_after_cross);
         let deficit_final = deficit_after_cross - addition_reservoir_used;
         let kinds = ServingLineEditKinds {
             renamed: true,
-            removed: removal_only_names > reservoir_used || deficit_final > 0,
-            added: addition_only_names > addition_reservoir_used || surplus_final > 0,
+            removed: removal_only_total > reservoir_used || deficit_final > 0,
+            added: addition_only_names.len() > addition_reservoir_used || surplus_final > 0,
             moved: leftover_segments >= 2 || reservoir_used > 0 || addition_reservoir_used > 0,
         };
         return ServingPairing {
@@ -3088,7 +3130,31 @@ pub fn migrate_serving_line_renames_detailed(
             ambiguous_kinds: pairing.ambiguous_kinds,
         };
     }
+    // Per-occurrence accounting (round 11,
+    // R11-D): a name standing in two segments can
+    // be paired twice, or paired in one segment
+    // and removal-only in another, but its stored
+    // names sit under one slug and its alias under
+    // one key, so the name can be spent only once.
+    // The first pairing in segment order is the
+    // pairing actually made: it moves the stored
+    // names and records the alias. A later pairing
+    // of the same old name is not followed — it
+    // would move nothing (the source is spent) yet
+    // overwrite the recorded alias, leaving the
+    // participant map and the alias record
+    // disagreeing about where the name went — and
+    // a removal of the same name is not followed
+    // either: it would clear the alias and the
+    // names the pairing just made. The recorded
+    // aliases correspond one-to-one with the
+    // pairings actually made.
+    let mut spent_old_names: Vec<&str> = Vec::new();
     for (old_name, new_name) in &pairing.pairs {
+        if spent_old_names.contains(&old_name.as_str()) {
+            continue;
+        }
+        spent_old_names.push(old_name.as_str());
         move_participant_value(old_name, new_name, participants);
         let old_key = serving_line_key(old_name);
         let new_slug = serving_slug(new_name);
@@ -3098,6 +3164,9 @@ pub fn migrate_serving_line_renames_detailed(
     }
     let mut migration = ServingLineMigration::default();
     for old_name in &pairing.removals {
+        if spent_old_names.contains(&old_name.as_str()) {
+            continue;
+        }
         let keys = serving_participant_keys(old_name);
         let mut held = false;
         for k in &keys {
@@ -5368,6 +5437,178 @@ mod tests {
                 moved: false,
             }
         );
+    }
+
+    #[test]
+    fn r11d_duplicate_names_spend_each_occurrence_once_in_the_kinds() {
+        // Round 11 (R11-D, red team RT11-8): the
+        // reservoir accounting keyed on names, so a
+        // name standing in two segments was spent
+        // twice — paired in one segment and absorbed
+        // by the reservoir from another — and a real
+        // removal was hidden behind a phantom move.
+        // The accounting is per occurrence now: an
+        // occurrence whose name a pairing already
+        // spent cannot also feed the reservoir.
+        let kinds_of = |old: &[&str], new: &[&str]| {
+            let old_lines: Vec<String> = old.iter().map(|n| n.to_string()).collect();
+            let new_lines: Vec<String> = new.iter().map(|n| n.to_string()).collect();
+            let mut participants: BTreeMap<String, String> = BTreeMap::new();
+            let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+            let migration = migrate_serving_line_renames_detailed(
+                &old_lines,
+                &new_lines,
+                &mut participants,
+                &mut aliases,
+            );
+            assert!(migration.ambiguous, "the refusal itself stands");
+            migration.ambiguous_kinds.expect("kinds on a refusal")
+        };
+        // The RT11-8 witness: Papa is paired
+        // Papa→Quebec in the first segment and
+        // removal-only in the second; Uniform's
+        // segment holds the surplus. The second
+        // Papa's removal was absorbed as the
+        // surplus's cross-anchor partner and the
+        // kinds read {renamed, moved}. The removal
+        // now stands, the surplus the reservoir
+        // could not spend reads as an addition, and
+        // no move is claimed.
+        let duplicate_kinds = ServingLineEditKinds {
+            renamed: true,
+            removed: true,
+            added: true,
+            moved: false,
+        };
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "Papa", "Beta", "Papa", "Gamma", "Uniform", "Delta"],
+                &["Alpha", "Quebec", "Beta", "Gamma", "Victor", "Whiskey", "Delta"],
+            ),
+            duplicate_kinds
+        );
+        // The deficit-side mirror (duplicate NEW
+        // names): Papa is the first segment's rename
+        // target and addition-only in the second;
+        // the deficit segment's leftover old name
+        // could previously pair across the anchor
+        // with that already-spent Papa. Identical
+        // kinds.
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "Quebec", "Beta", "Gamma", "Victor", "Whiskey", "Delta"],
+                &["Alpha", "Papa", "Beta", "Papa", "Gamma", "Uniform", "Delta"],
+            ),
+            duplicate_kinds
+        );
+        // Control: the same geometry with a UNIQUE
+        // removal-only name still reads as the
+        // canonical crossed renames — the reservoir
+        // absorbs the unspent occurrence exactly as
+        // before (the R10-8 middle-segment witness).
+        assert_eq!(
+            kinds_of(
+                &["Alpha", "Papa", "Beta", "Gone", "Gamma", "Uniform", "Delta"],
+                &["Alpha", "Quebec", "Beta", "Gamma", "Victor", "Whiskey", "Delta"],
+            ),
+            ServingLineEditKinds {
+                renamed: true,
+                removed: false,
+                added: false,
+                moved: true,
+            }
+        );
+    }
+
+    #[test]
+    fn r11d_duplicate_pairings_keep_participants_and_aliases_in_step() {
+        // Round 11 (R11-D, red team RT11-8): with a
+        // duplicate name, the migration followed
+        // every pairing and removal the segments
+        // computed, but the stored names sit under
+        // one slug and the alias under one key, so
+        // the follow-through desynced: a paired
+        // name's removal occurrence erased the alias
+        // the pairing had just written, and a double
+        // pairing left the people on the first target
+        // while the surviving alias pointed at the
+        // second. Each old name is now spent once:
+        // the first pairing in segment order is the
+        // pairing actually made, and the recorded
+        // aliases correspond one-to-one with it.
+        let lines =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        // Paired in one segment, removal-only in
+        // another: the people move with the pairing,
+        // the alias the pairing wrote survives, and
+        // nothing is reported removed — the name's
+        // stored value was renamed, not removed.
+        let old_lines = lines(&["Alpha", "Xray", "Beta", "Xray", "Gamma"]);
+        let new_lines = lines(&["Alpha", "Yankee", "Beta", "Gamma"]);
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        let migration = migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        assert!(migration.removed.is_empty());
+        assert_eq!(participants.get("yankee").map(String::as_str), Some("Ann"));
+        assert!(!participants.contains_key("xray"));
+        assert_eq!(aliases.get("xray").map(String::as_str), Some("yankee"));
+        assert_eq!(aliases.len(), 1);
+        // Paired twice, to two different targets:
+        // the people land on the first target and
+        // the surviving alias points at that same
+        // target — one pairing made, one alias
+        // recorded, in step.
+        let new_lines = lines(&["Alpha", "Yankee", "Beta", "Zulu", "Gamma"]);
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        let migration = migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        assert!(migration.removed.is_empty());
+        assert_eq!(participants.get("yankee").map(String::as_str), Some("Ann"));
+        assert!(!participants.contains_key("zulu"));
+        assert!(!participants.contains_key("xray"));
+        assert_eq!(aliases.get("xray").map(String::as_str), Some("yankee"));
+        assert_eq!(aliases.len(), 1);
+        // Duplicates on the NEW side: two different
+        // old names paired to the same duplicated
+        // new name. Both pairings are made (their
+        // old names are distinct), both aliases are
+        // recorded, and the target-conflict rule
+        // holds — the first value lands, the second
+        // stays where it was rather than being
+        // discarded.
+        let old_lines = lines(&["Alpha", "Xray", "Beta", "Zulu", "Gamma"]);
+        let new_lines = lines(&["Alpha", "Yankee", "Beta", "Yankee", "Gamma"]);
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        participants.insert("xray".to_string(), "Ann".to_string());
+        participants.insert("zulu".to_string(), "Zoe".to_string());
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        let migration = migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(!migration.ambiguous);
+        assert!(migration.removed.is_empty());
+        assert_eq!(participants.get("yankee").map(String::as_str), Some("Ann"));
+        assert_eq!(participants.get("zulu").map(String::as_str), Some("Zoe"));
+        assert_eq!(aliases.get("xray").map(String::as_str), Some("yankee"));
+        assert_eq!(aliases.get("zulu").map(String::as_str), Some("yankee"));
+        assert_eq!(aliases.len(), 2);
     }
 
     #[test]

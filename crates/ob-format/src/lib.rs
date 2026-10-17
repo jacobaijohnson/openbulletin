@@ -41,8 +41,10 @@ const TOTAL_TOO_LARGE: &str = "That file's insides are too large to read safely.
 /// 100,001 tiny assets sat under every byte cap and
 /// still took minutes to open. A real bulletin or
 /// sheet holds a handful of parts; 8,192 is far past
-/// generous, and the count is read from the archive's
-/// entry list before any payload is read.
+/// generous, and the count is the archive's raw entry
+/// count, entries that share a name included (round 5,
+/// RT5-5), read from its central directory before any
+/// payload is read.
 const MAX_ENTRIES: usize = 8_192;
 
 /// The words for a container holding more parts than
@@ -87,6 +89,124 @@ fn read_entry_text_capped(
 ) -> Result<String, String> {
     let bytes = read_entry_capped(entry, cap, too_large)?;
     String::from_utf8(bytes).map_err(|_| "that file does not hold text we can read".to_string())
+}
+
+/// How many entries a container's central directory
+/// lists, counting every record as written: two entries
+/// that share a name count twice (round 5, RT5-5).
+/// `ZipArchive::len` cannot answer this, because the
+/// zip crate keeps entries in a map keyed by name, so
+/// its count is the number of distinct names, and a
+/// file of half a million entries all named the same
+/// reported a count of two. The count here walks the
+/// central directory records themselves, the archive's
+/// own structure; no entry's payload is read, and the
+/// walk stops as soon as the count passes `cap`, so a
+/// flood is refused after reading only the first
+/// `cap + 1` small directory records. None when the
+/// directory cannot be walked: a damaged file is the
+/// archive reader's error to report, in its own words.
+fn raw_entry_count(path: &Path, cap: usize) -> Option<usize> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    if file_len < 22 {
+        return None;
+    }
+    // The end-of-directory record sits in the last
+    // 22 + 65,535 bytes (its comment may be that long);
+    // the zip64 locator, when one exists, sits right in
+    // front of it, so the tail read covers both.
+    let tail_len = file_len.min(65_577);
+    let tail_start = file_len - tail_len;
+    let mut tail = vec![0u8; tail_len as usize];
+    file.seek(SeekFrom::Start(tail_start)).ok()?;
+    file.read_exact(&mut tail).ok()?;
+    // The record is the last well-formed one in the
+    // tail: its comment length must land exactly on the
+    // end of the file.
+    let mut eocd: Option<usize> = None;
+    for pos in (0..tail.len().saturating_sub(21)).rev() {
+        if tail[pos..].starts_with(b"PK\x05\x06") {
+            let comment_len = u16::from_le_bytes([tail[pos + 20], tail[pos + 21]]) as u64;
+            if tail_start + pos as u64 + 22 + comment_len == file_len {
+                eocd = Some(pos);
+                break;
+            }
+        }
+    }
+    let eocd = eocd?;
+    let eocd_at = tail_start + eocd as u64;
+    let cd_size_at = eocd + 12;
+    let cd_offset_at = eocd + 16;
+    let mut cd_size = u64::from(u32::from_le_bytes(
+        tail[cd_size_at..cd_size_at + 4].try_into().ok()?,
+    ));
+    let mut cd_offset = u64::from(u32::from_le_bytes(
+        tail[cd_offset_at..cd_offset_at + 4].try_into().ok()?,
+    ));
+    // A zip64 locator in front of the record points at
+    // the zip64 record, which carries the directory's
+    // real size and offset when the plain fields are
+    // too small to hold them (its total-entries field
+    // sits at byte 32, its size at 40, its offset at
+    // 48).
+    if eocd_at >= 20 {
+        let mut locator = [0u8; 20];
+        file.seek(SeekFrom::Start(eocd_at - 20)).ok()?;
+        file.read_exact(&mut locator).ok()?;
+        if locator.starts_with(b"PK\x06\x07") {
+            let record_at = u64::from_le_bytes(locator[8..16].try_into().ok()?);
+            let mut record = [0u8; 56];
+            file.seek(SeekFrom::Start(record_at)).ok()?;
+            file.read_exact(&mut record).ok()?;
+            if !record.starts_with(b"PK\x06\x06") {
+                return None;
+            }
+            cd_size = u64::from_le_bytes(record[40..48].try_into().ok()?);
+            cd_offset = u64::from_le_bytes(record[48..56].try_into().ok()?);
+        }
+    }
+    if cd_offset == u64::from(u32::MAX) || cd_size == u64::from(u32::MAX) {
+        return None;
+    }
+    let cd_end = cd_offset.checked_add(cd_size)?;
+    if cd_end > file_len {
+        return None;
+    }
+    // Walk the records: a fixed 46-byte header, then
+    // the name, extra field, and comment its header
+    // measures.
+    let mut count = 0usize;
+    let mut at = cd_offset;
+    while at < cd_end {
+        if count > cap {
+            return Some(count);
+        }
+        let mut header = [0u8; 46];
+        file.seek(SeekFrom::Start(at)).ok()?;
+        file.read_exact(&mut header).ok()?;
+        if !header.starts_with(b"PK\x01\x02") {
+            return None;
+        }
+        let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
+        count += 1;
+        at += 46 + name_len + extra_len + comment_len;
+    }
+    Some(count)
+}
+
+/// Refuse a container whose raw entry count passes the
+/// cap, in the cap's own words. A count that cannot be
+/// walked leaves the file to the archive reader, whose
+/// distinct-name count still applies there.
+fn check_entry_cap(path: &Path) -> Result<(), String> {
+    match raw_entry_count(path, MAX_ENTRIES) {
+        Some(n) if n > MAX_ENTRIES => Err(TOO_MANY_PARTS.to_string()),
+        _ => Ok(()),
+    }
 }
 
 pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
@@ -186,6 +306,11 @@ fn load_v0_json(path: &Path) -> Result<Document, String> {
 /// match its fingerprint is refused in plain words, never
 /// silently used.
 fn load_v1(path: &Path) -> Result<Document, String> {
+    // The raw entry count is checked before the archive
+    // is opened at all, so a flood of same-name entries
+    // is refused from the directory alone (round 5,
+    // RT5-5).
+    check_entry_cap(path)?;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip =
         zip::ZipArchive::new(file).map_err(|e| format!("that file's container is damaged: {e}"))?;
@@ -330,6 +455,10 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
     if head != ZIP_MAGIC {
         return Err("that file is not a loose sheet file (.obdi)".to_string());
     }
+    // The same raw entry count as the bulletin door,
+    // checked before the archive is opened (round 5,
+    // RT5-5).
+    check_entry_cap(path)?;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip =
         zip::ZipArchive::new(file).map_err(|e| format!("that file's container is damaged: {e}"))?;
@@ -1409,6 +1538,126 @@ mod tests {
         std::fs::write(&at, zip_with_fillers("insert.json", &json, MAX_ENTRIES - 1))
             .expect("write at");
         load_insert(&at).expect("a file at the cap still opens");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rewrite every filler name in a zip built by
+    /// `zip_with_fillers`-style code to one shared name,
+    /// in a single pass: the digits after "dup/" become
+    /// "shared" in the local header and the central
+    /// directory alike (the header guards keep payload
+    /// bytes from being mistaken for a name).
+    fn patch_all_filler_names(zip_bytes: &mut [u8]) {
+        let mut patched = 0;
+        let mut from = 0;
+        while let Some(found) = find_bytes(&zip_bytes[from..], b"dup/") {
+            let at = from + found;
+            let guarded = (at >= 30 && &zip_bytes[at - 30..at - 26] == b"PK\x03\x04")
+                || (at >= 46 && &zip_bytes[at - 46..at - 42] == b"PK\x01\x02");
+            if guarded {
+                zip_bytes[at + 4..at + 10].copy_from_slice(b"shared");
+                patched += 1;
+            }
+            from = at + 1;
+        }
+        assert!(patched >= 2, "the fillers' names were patched");
+    }
+
+    /// A zip holding one JSON entry plus `fillers`
+    /// one-byte stored entries that ALL share one name:
+    /// the shape that walked past the old cap, which
+    /// counted distinct names (round 5, RT5-5). The
+    /// writer refuses a duplicate name outright, so the
+    /// fillers are written under stand-in names of the
+    /// same length and patched to the shared one.
+    fn zip_with_same_name_fillers(json_name: &str, json: &str, fillers: usize) -> Vec<u8> {
+        let stored = || {
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+        };
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            zip.start_file(json_name, stored()).expect("json entry");
+            zip.write_all(json.as_bytes()).expect("json bytes");
+            for i in 0..fillers {
+                zip.start_file(format!("dup/{i:06}"), stored())
+                    .expect("filler entry");
+                zip.write_all(b"x").expect("filler bytes");
+            }
+            zip.finish().expect("finish");
+        }
+        patch_all_filler_names(&mut buf);
+        buf
+    }
+
+    #[test]
+    fn same_name_entries_count_against_the_cap_in_a_bulletin() {
+        // Round 5, RT5-5: the cap counts entries as
+        // written, not distinct names. A file whose
+        // 8,192 fillers all share one name holds 8,193
+        // entries and is refused in the cap's own words,
+        // while the same shape one entry under the cap
+        // (8,192 raw entries, only two distinct names)
+        // still opens.
+        let json = serde_json::to_string(&test_doc()).expect("json");
+        let dir = scratch("dup-parts-obd");
+        let over = dir.join("over.obd");
+        std::fs::write(
+            &over,
+            zip_with_same_name_fillers("document.json", &json, MAX_ENTRIES),
+        )
+        .expect("write over");
+        let err = load(&over).expect_err("same-name entries past the cap refuse");
+        assert_eq!(err, TOO_MANY_PARTS);
+        let at = dir.join("at.obd");
+        std::fs::write(
+            &at,
+            zip_with_same_name_fillers("document.json", &json, MAX_ENTRIES - 1),
+        )
+        .expect("write at");
+        load(&at).expect("a file at the raw cap still opens");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_name_entries_count_against_the_cap_in_a_loose_sheet() {
+        // The same raw count at the sheet door (round 5,
+        // RT5-5).
+        let package = InsertPackage {
+            insert: Insert {
+                id: "sheet-dup".into(),
+                name: "Same names".into(),
+                life: ob_model::InsertLife::ThisWeekOnly,
+                keep_through: None,
+                panels: vec![],
+                stories: vec![],
+                styles: default_styles(),
+                sheet: ob_model::InsertSheet {
+                    preset: "half-letter".into(),
+                    copies: 1,
+                    paper_note: String::new(),
+                },
+            },
+            assets: vec![],
+        };
+        let json = serde_json::to_string(&package).expect("json");
+        let dir = scratch("dup-parts-obdi");
+        let over = dir.join("over.obdi");
+        std::fs::write(
+            &over,
+            zip_with_same_name_fillers("insert.json", &json, MAX_ENTRIES),
+        )
+        .expect("write over");
+        let err = load_insert(&over).expect_err("same-name entries past the cap refuse");
+        assert_eq!(err, TOO_MANY_PARTS);
+        let at = dir.join("at.obdi");
+        std::fs::write(
+            &at,
+            zip_with_same_name_fillers("insert.json", &json, MAX_ENTRIES - 1),
+        )
+        .expect("write at");
+        load_insert(&at).expect("a sheet at the raw cap still opens");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

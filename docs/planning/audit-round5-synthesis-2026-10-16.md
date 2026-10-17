@@ -338,3 +338,116 @@ did not fire.
   states the unambiguous-pairing rule, the
   kept-under-the-old-name outcome, and the slug
   refusal with the line-itself definition.
+
+## Coordinator adjudication, R5-C residual (2026-10-16)
+
+Two renames that also swap exactly each other's
+positions, with every other line unmoved, are
+indistinguishable from two in-place renames using
+the saved lists alone; no list-only rule can both
+pair the in-place case (which the office does
+often) and refuse the swapped case. The shipped
+rule pairs them, so that one shape can still
+cross. The cure is row identity in the profile
+editor (the editor is a comma-joined text field
+today), recorded for the editor phase; round 6
+lanes should test what the synthesis claims, not
+this residual.
+
+## Shipped addendum, R5-D (2026-10-16)
+
+R5-D landed: 526 to 532 tests, all passing, clippy
+clean (full workspace runs, unpiped). Flake
+statement, exactly: the fake-helper ETXTBSY flake
+fired twice in this batch's runs, both times in
+ob-extract helper tests with "text file busy"
+(os error 26): once in a crate-level run
+(`a_helper_from_the_future_is_refused_in_words`)
+and once in the first final full run
+(`a_good_fake_helper_still_answers_through_the_new_runner`).
+Each passed solo in 0.01 s, and the confirming
+full run was clean: 532 passed, 0 failed.
+
+- RT5-5: the entry cap counts raw entries now.
+  `raw_entry_count` (ob-format) walks the zip's
+  central directory records themselves — duplicates
+  included, zip64 directories included — and stops
+  as soon as the count passes the cap, so a
+  same-name flood is refused from the directory
+  alone, before the archive is opened and before
+  any payload is read. Both loaders check it; the
+  refusal is the shipped sentence ("That file has
+  too many parts inside to read safely."). The old
+  `zip.len()` checks stay as a distinct-name
+  backstop. Tests: 8,193 entries all sharing one
+  name are refused in both the .obd and .obdi
+  loaders; exactly 8,192 raw entries (two distinct
+  names) still load in both; the pre-existing
+  distinct-name at-cap tests stand unchanged.
+- RT5-6 (a): "Sunday after [date]" reads in
+  `date_line` (ob-extract): the named date may use
+  any form the date reader accepts, and the answer
+  is the first Sunday STRICTLY after it — a named
+  date that is itself a Sunday (October 25, 2026)
+  names November 1, 2026. The read date goes
+  through the ordinary verdict machinery (it arms
+  against a different open Sunday). Tests at
+  parser level, including the numeric form. The
+  shared `date_line` helper gives the Keep-through
+  line the same reading.
+- RT5-6 (b): a For Sunday line that is only a
+  relative Sunday ("next Sunday", "this Sunday",
+  "on Sunday", a bare "Sunday") is remembered on
+  the parse as `for_sunday_in_words`, the sender's
+  words as written. `week_verdict` answers the new
+  `SundayInWords(open)` when a bulletin date is
+  open, and the review's first line says what
+  happened: "These words name next Sunday in
+  words; read as this bulletin's Sunday,
+  October 25, 2026." With no bulletin date to read
+  against, the verdict stays NoSundayNamed and the
+  sentence admits the file named a Sunday in words
+  instead of claiming it named none. No readable
+  absolute date resolves differently than before,
+  and a wrong-weekday line behaves exactly as
+  R4-D left it. Tests at parser level (the marker
+  and its absence) and verdict level (both with
+  and without a bulletin date).
+- Check wanted-font oracle (review M3):
+  `wanted_font_notes` (ob-app) now resolves EVERY
+  style whose family matches a wanted-font record
+  through the one resolve chain and reports the
+  worst tier among them (Exact, then MetricTwin,
+  then Lookalike, then HouseDefault) in the
+  existing words. Test: two styles sharing the
+  record's display name, the first resolving Exact
+  and the second only to the lookalike, earn the
+  lookalike finding in either style order.
+- Trailing-weekday tightening (review M4):
+  `date_line`'s trailing scan now speaks only when
+  the weekday word is the line's last word, right
+  after the date (punctuation and parentheses may
+  wrap it). A weekday word elsewhere is ordinary
+  text. Two behavior changes, flagged: a weekday
+  buried inside the date's own tokens ("October
+  Monday 25, 2026") records no mismatch now, where
+  R4-D recorded one (the line still yields no
+  date); and a weekday standing directly in front
+  of a date that ends the line, with other words
+  before it ("bring a friend Friday, October 25,
+  2026" — the Friday is about the friend), no
+  longer blocks the date: the date reads, with no
+  mismatch, on both the For Sunday and
+  Keep-through lines. The genuinely adjacent cases
+  from R4-D (leading "Friday, October 25, 2026";
+  trailing "October 25, 2026 (Monday)") still
+  produce their mismatches on both lines, all
+  pinned by tests.
+- Changed pre-existing tests: NONE. All 526
+  baseline tests pass unchanged; the six new tests
+  are two in ob-format, three in ob-extract, and
+  one in ob-app.
+- FORMAT.md and TEMPLATE-ANALYZER.md: untouched.
+  Neither describes the entry cap, the
+  contribution date lines, or the Check oracle, so
+  nothing they say changed truth.

@@ -1206,6 +1206,18 @@ fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<CheckNote> {
                 .flat_map(|ins| ins.styles.iter().map(|s| s.font_family.clone())),
         )
         .collect();
+    // How far from Exact a resolution landed, worst
+    // last: the finding a style earns is the worst one
+    // among the styles that use its family (round 5,
+    // R5-D).
+    fn tier_rank(tier: ob_fonts::resolve::SubstituteTier) -> u8 {
+        match tier {
+            ob_fonts::resolve::SubstituteTier::Exact => 0,
+            ob_fonts::resolve::SubstituteTier::MetricTwin => 1,
+            ob_fonts::resolve::SubstituteTier::Lookalike => 2,
+            ob_fonts::resolve::SubstituteTier::HouseDefault => 3,
+        }
+    }
     for w in &doc.wanted_fonts {
         // The record names the family in display form;
         // the styles that still use it carry the full
@@ -1214,14 +1226,30 @@ fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<CheckNote> {
         // can differ ("Verdana-Bold" on the style,
         // "Verdana" on the record), and what prints is
         // decided by the name on the style.
-        let used_as = used.iter().find(|family| {
+        // EVERY style whose family matches the record is
+        // examined (round 5, R5-D): two source families
+        // can share one display name, and resolving only
+        // the first let an Exact first style certify a
+        // second style that prints in a stand-in. The
+        // finding reflects the worst resolution among
+        // them.
+        let mut worst: Option<ob_fonts::resolve::Resolution> = None;
+        for family in used.iter().filter(|family| {
             family.eq_ignore_ascii_case(&w.name)
                 || ob_fonts::resolve::display_name_for(family).eq_ignore_ascii_case(&w.name)
-        });
-        let Some(used_as) = used_as else {
+        }) {
+            let r = ob_fonts::resolve::resolve_family(family, available);
+            let is_worse = match &worst {
+                None => true,
+                Some(worst_so_far) => tier_rank(r.tier) > tier_rank(worst_so_far.tier),
+            };
+            if is_worse {
+                worst = Some(r);
+            }
+        }
+        let Some(r) = worst else {
             continue;
         };
-        let r = ob_fonts::resolve::resolve_family(used_as, available);
         if r.tier != ob_fonts::resolve::SubstituteTier::Exact {
             out.push(CheckNote::to_fonts(format!(
                 "Check: {}",
@@ -3583,6 +3611,7 @@ fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec
             parts: vec![part.clone()],
             named_weekday_mismatch: c.named_weekday_mismatch.clone(),
             keep_through_weekday_mismatch: c.keep_through_weekday_mismatch.clone(),
+            for_sunday_in_words: c.for_sunday_in_words.clone(),
         };
         apply_contribution(&mut sim, &single);
     }
@@ -11747,7 +11776,9 @@ impl App {
         if self.contribution_review.is_none() {
             return;
         }
-        use ob_extract::contribution::{format_date_long, week_verdict, WeekVerdict};
+        use ob_extract::contribution::{
+            format_date_long, format_date_short, week_verdict, WeekVerdict,
+        };
         let bulletin_date = self
             .doc
             .fields
@@ -11895,11 +11926,41 @@ impl App {
                                 format_date_long(d)
                             ));
                         }
+                        WeekVerdict::SundayInWords(open) => {
+                            // Round 5 (RT5-6): the file
+                            // named its Sunday in relative
+                            // words only. The sentence says
+                            // the words were read against
+                            // this bulletin's Sunday, in the
+                            // sender's own phrasing.
+                            let phrase = review
+                                .contribution
+                                .for_sunday_in_words
+                                .as_deref()
+                                .unwrap_or("a Sunday");
+                            let read_as = format_date_short(open);
+                            ui.label(format!(
+                                "These words name {phrase} in words; \
+                                 read as this bulletin's Sunday, {read_as}."
+                            ));
+                        }
                         WeekVerdict::NoSundayNamed => {
                             if let Some(d) = review.contribution.for_date {
                                 ui.label(format!(
                                     "These words say they are for {}.",
                                     format_date_long(d)
+                                ));
+                            } else if let Some(phrase) =
+                                &review.contribution.for_sunday_in_words
+                            {
+                                // Round 5 (RT5-6): with no
+                                // bulletin Sunday to read the
+                                // words against, the sentence
+                                // still admits the file named
+                                // a Sunday in words.
+                                ui.label(format!(
+                                    "These words name {phrase} in words, but this \
+                                     bulletin does not say which Sunday it is for."
                                 ));
                             } else {
                                 ui.label("These words do not say which Sunday they are for.");
@@ -16635,6 +16696,78 @@ mod settings_tests {
         // The real font added: no finding at all.
         let notes = wanted_font_notes(&doc, &["Gill Sans MT".to_string()]);
         assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    #[test]
+    fn a_wanted_font_finding_reflects_the_worst_style_that_uses_it() {
+        // Round 5 (R5-D, review M3): two source families
+        // share the record's display name, "Gill Sans
+        // MT": the style set in "GillSansMT" and the one
+        // set in "Gill Sans MT". The library holds the
+        // first spelling exactly, plus Cabin, the
+        // lookalike. Resolving only the FIRST matching
+        // style certified the bulletin on the Exact one
+        // while the other style printed in Cabin. The
+        // oracle now examines every matching style, and
+        // the finding is the worse one's, in either
+        // style order.
+        let style_in = |id: &str, family: &str| ob_model::ParagraphStyle {
+            id: id.into(),
+            name: "Body".into(),
+            font_size: 11_000,
+            bold: false,
+            italic: false,
+            align: ob_model::Align::Left,
+            space_after: 4_000,
+            color: ob_model::Rgb::BLACK,
+            font_family: family.into(),
+            font_sha256: None,
+        };
+        let doc_with_styles = |styles: Vec<ob_model::ParagraphStyle>| Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "T".into(),
+            profile: ChurchProfile::default(),
+            fields: Default::default(),
+            styles,
+            stories: vec![],
+            panels: vec![],
+            sheet: ob_model::SheetSpec {
+                preset: "letter-portrait".into(),
+                size: ob_model::Size::new(612_000, 792_000),
+            },
+            no_announcements: false,
+            assets: vec![],
+            asset_bytes: Default::default(),
+            occasion_time: None,
+            wanted_fonts: vec![ob_model::WantedFont {
+                name: "Gill Sans MT".into(),
+                substituted_by: "Cabin".into(),
+            }],
+            participants: Default::default(),
+            inserts: Default::default(),
+            applied_contributions: Vec::new(),
+        };
+        let exact_style = style_in("exact", "GillSansMT");
+        let lookalike_style = style_in("lookalike", "Gill Sans MT");
+        let available = vec!["GillSansMT".to_string(), "Cabin".to_string()];
+        for styles in [
+            vec![exact_style.clone(), lookalike_style.clone()],
+            vec![lookalike_style, exact_style],
+        ] {
+            let doc = doc_with_styles(styles);
+            let notes = wanted_font_notes(&doc, &available);
+            assert_eq!(notes.len(), 1, "{notes:?}");
+            assert!(
+                notes[0].text.contains("made in Gill Sans MT"),
+                "{}",
+                notes[0].text
+            );
+            assert!(
+                notes[0].text.contains("shown in Cabin"),
+                "the worse style's stand-in is named: {}",
+                notes[0].text
+            );
+        }
     }
 
     #[test]

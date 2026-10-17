@@ -91,3 +91,104 @@ showing of harm beyond a date unread from a parenthetical.
 
 Round 15 audits the fixes. The Tier-2 final gate runs only after a
 round returns zero BLOCKER + zero MAJOR.
+
+## Shipped addendum, R14-A — 2026-10-17
+
+Batch R14-A (governors) shipped: R14-1, R14-2, R14-3, R14-4,
+R14-5, RT14-4, all in `crates/ob-extract/src/contribution.rs`
+(the one governor machinery every consuming path reads through
+`analyze_group`). R14-B (R14-6 anchor, R14-7 timing) is not in
+this batch.
+
+What landed, by disposition:
+
+- **R14-1(a)** the verb set is completed in the before position:
+  "put off" (pair, plus the split form "(put November 1 off)",
+  read as "put" last in the window with "off" first after the
+  date), delay, omit, disregard, forget, and the pair "forget
+  about" — on the relative, paren-only, and Keep-through paths.
+  A bare "put" with no "off" governs nothing (pinned).
+- **R14-1(b)** morphology: the cancellation verbs (cancel,
+  scratch, drop, postpone, remove, delay, omit, disregard,
+  forget) match by stem — a stem rule beside the contraction
+  class, not a longer literal list. Base, -ed, and -ing forms
+  govern, including doubled-consonant spellings (dropping,
+  omitting, cancelling) and e-drop spellings (canceling,
+  postponing, removing; postponed/removed via the bare-d past).
+  All attested literals keep working through the same rule.
+- **R14-2** `governed_after` parity: the trailing position now
+  draws from the same family definition. A cancellation phrase
+  after a date cancels it wherever it stands (verb stem forms,
+  "hold off" / "put off", "never mind", "forget about", and
+  verb+object "drop it" / "scratch that" / "cancel it"); the
+  prospective rest of the family falls back on the date it
+  follows only when no later date is left for it to govern —
+  the standing "not" / "no longer" scoping, generalized, so
+  "(November 1, not November 8)" still asserts November 1. The
+  spent exception in the reach-back now covers the whole
+  cancellation family, so "(November 1, postponed, November 8)"
+  and "(November 1, drop it, November 8)" assert November 8
+  exactly as "(November 1, cancelled, November 8)" always has.
+- **R14-3** "nope" joins the negation family (before position;
+  its trailing form disqualifies under the last-date fallback).
+- **R14-4** hyphenated compounds: a token is split on hyphens
+  for the governor test only — a part that governs, or parts
+  forming a governor phrase ("do-not-use", "no-longer",
+  "hold-off", "never-mind", "scratch-that", "don't-use"),
+  governs. Date reading and group tokenization are otherwise
+  unchanged; a compound with no governor part ("follow-up")
+  governs nothing (pinned).
+- **R14-5** "wont" does not govern when immediately preceded
+  by a possessive determiner (his, her, their, my, our, your,
+  its): "(his wont, November 1)" now NAMES its date on the
+  relative, paren-only, and Keep-through paths. The "won't"
+  contraction is unaffected, including after a possessive.
+- **RT14-4** the unspent-governor reach-back crosses
+  consecutive intervening clauses while each consists solely
+  of filler words (the, a, an, date, it, note, notes — a clause
+  of those words holds no date token): "(ignore, the date,
+  November 1)" and "(ignore, notes, November 1)" disqualify.
+  An intervening clause with real content ("choir notes",
+  "notes from the pastor") still stops the reach-back
+  (pinned as controls).
+
+Judgment calls, stated plainly:
+
+- **Noun derivations do not govern.** The stem rule matches
+  verb inflections only: "cancellation" and "postponement"
+  govern nothing, so "(cancellation policy, November 1)" and
+  "(postponement notice, November 1)" NAME their dates
+  (pinned). "dropped" in a serving note is a governor by
+  design (it is the verb's past form); the noun forms were
+  the line drawn.
+- **"called off" / "put back" / "push back" / "reschedule" /
+  "move"** were recorded by the review lane as contributing
+  but were not in the disposition's verb set; they are NOT
+  taken here.
+- RT14-6 stands as recorded in the synthesis (no code change):
+  "drop"/"scratch" as titles still suppress — accepted, not
+  revisited.
+
+Tests: five new pins, all `r14a_*` in `contribution.rs` —
+`r14a_wider_verb_set_governs_before_the_date`,
+`r14a_cancellation_verbs_govern_by_stem` (twelve morphology
+forms incl. one doubled-consonant and one e-drop family,
+plus the noun/near-miss controls),
+`r14a_trailing_position_draws_from_the_same_family`
+(before/after symmetry pairs, the spent-trailing held lines,
+the scoped "not"), `r14a_nope_hyphenated_compounds_and_possessed_wont`,
+`r14a_reach_back_crosses_filler_only_clauses` (both RT14-4
+witnesses plus a two-filler-clause chain and content-clause
+controls). **No pre-existing test changed** — the full suite
+ran green on the production changes before the new pins were
+added, and every round 11–14 held shape stands at its shipped
+expectation (garnish, between-two-dates, per-occurrence
+scoping, title false-governors).
+
+Numbers: baseline 685 tests passing (HEAD `81c1a91`); after
+R14-A, **690 passed / 0 failed** (`cargo test --workspace`,
+unpiped, cargo exit 0, run twice on the final tree with the
+same totals). Clippy `cargo clippy --workspace --all-targets
+-- -D warnings` clean (exit 0). Neither the fake-helper
+ETXTBSY flake nor a timing-pin contention failure fired in
+either full run, so no solo-rerun adjudication was needed.

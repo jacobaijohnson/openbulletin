@@ -451,3 +451,97 @@ in `crates/ob-format` and the merge wording in
   --workspace --all-targets`) clean, exit 0, no
   warnings. `cargo fmt --all` run before the final
   run.
+
+## Shipped addendum, R8-B (2026-10-16)
+
+R8-2 (MAJOR) + R8-7 + R8-8 shipped in one batch, all
+in `crates/ob-app/src/main.rs`. Checker, plan, and
+landing now share one section judgment:
+`heading_sections` computes every section standing
+under the part's heading, and the checker
+(`TargetPresence`), the plan (through the same
+checker), and the landing split all search that same
+set of sections.
+
+- R8-2: `split_present_paragraphs_under_heading` no
+  longer splits against `sections.first()` only. A
+  paragraph standing under the part's heading in ANY
+  of its sections is skipped (spending is shared
+  across the sections, so a paragraph the part
+  carries twice still needs two standing copies);
+  the paragraphs still missing land in the FIRST
+  section. The checker makes the same judgment over
+  the same sections: the whole part is present when
+  every one of its paragraphs stands under the
+  heading in one of its sections, and no paragraph
+  standing only outside them counts. Pins:
+  `r8b_a_line_in_the_second_section_is_not_landed_again`
+  (the review scenario verbatim — only the new line
+  lands, into the first section; the standing line
+  stands once; the claim reads AlreadyIn and a
+  re-apply changes nothing),
+  `r8b_an_empty_first_section_takes_the_missing_line`
+  (the red team's empty-first-section shape),
+  `r8b_the_whole_part_in_the_second_section_is_already_there`
+  (the masked whole-in-second-section shape stays
+  AlreadyThere, nothing lands), and
+  `r8b_words_split_across_two_sections_of_one_heading_are_present`.
+- R8-7: a bold-fallback paragraph delimits sections
+  only when its normalized words are a heading the
+  app is judging in this story — the target heading,
+  or another part heading of the contribution being
+  planned/applied (`judged_headings`, threaded
+  through the checker, the split, the apply loop,
+  and the plan simulation, whose per-part slices keep
+  the whole contribution's context). Other bold
+  paragraphs are content; heading-styled paragraphs
+  always delimit, as before. Pins:
+  `r8b_a_bold_emphasis_line_does_not_end_a_section`
+  (the review scenario verbatim — present, nothing
+  lands, nothing moves) and the converse,
+  `r8b_a_bold_paragraph_carrying_another_parts_heading_still_delimits`
+  (a bold "Youth" heading still starts the Youth
+  section for a contribution carrying both parts;
+  the R7-B pins exercise the same rule and pass).
+- R8-8: (a) a heading-styled paragraph whose
+  normalized words are the part's heading words plus
+  a parenthesized suffix counts as that heading's
+  section; a longer heading does not. Pins:
+  `r8b_a_styled_heading_with_a_room_suffix_counts_as_its_section`
+  and `r8b_a_room_suffix_section_takes_the_missing_line`
+  ("Sunday school (Room 2)" matches, nothing
+  duplicates, a missing line lands inside it), and
+  `r8b_a_longer_heading_does_not_count_as_the_parts_heading`
+  ("Sunday school teachers" does not match; the part
+  lands its own heading as before). (b) One shared
+  name-or-id recognition (`style_is_named` /
+  `is_heading_style`) now serves both the heading
+  writer (`heading_paragraph`) and the recognizer, so
+  a subheading style whose id is not literally
+  "subheading" is written and read back by the same
+  rule. Pin:
+  `r8b_a_subheading_style_with_a_non_literal_id_is_recognized`
+  (hand-built style table with id "sub-2", name
+  "Subheading": the writer writes in that id, the
+  section is found, the part lands and settles).
+- Supersession note: the R7-B addendum's scope note
+  (round-7 synthesis) described heading recognition
+  as "its style (heading / subheading) or the
+  bold-body fallback", and its landing paragraph as
+  splitting "against that section" (the one section
+  the checker chose). Both are superseded by this
+  batch, in the two respects above: the bold fallback
+  delimits only for a judged heading, and checker
+  and landing both judge all of the heading's
+  sections. The round-7 text stands as history; this
+  note is the current scope.
+- Changed pre-existing tests: none. Every R7-B and
+  R6-B presence pin passes unmodified, in its
+  original expectation.
+- Numbers: full workspace suite 604 passed /
+  0 failed (baseline 594 / 0; +10 new tests, all in
+  ob-app), cargo's own exit code 0, read unpiped.
+  Clippy (`cargo clippy --workspace --all-targets`)
+  clean, exit 0, no warnings. `cargo fmt --all` run
+  before the final run. The fake-helper ETXTBSY flake
+  did not fire.

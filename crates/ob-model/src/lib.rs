@@ -2011,8 +2011,8 @@ fn serving_participant_keys(name: &str) -> Vec<String> {
 /// After segment pairing, if unpaired old-only AND
 /// new-only names both remain — a rename crossed an
 /// anchor, so its partner sits in another segment —
-/// the pairing is AMBIGUOUS and nothing pairs at
-/// all: guessing is how two lines' names crossed in
+/// the pairing is AMBIGUOUS and nothing is followed
+/// at all: guessing is how two lines' names crossed in
 /// the round-5 F3 probe. The save is refused as a
 /// whole (see [`migrate_serving_line_renames_detailed`]).
 /// Pure reorder or swap has no old-only or new-only
@@ -2022,6 +2022,15 @@ fn serving_participant_keys(name: &str) -> Vec<String> {
 /// order like in-place renames; the lists alone
 /// cannot tell it apart from them, and its cure is
 /// row identity in the editor phase.
+///
+/// An ambiguous pairing still RECORDS what it
+/// computed before refusing — the segment pairs and
+/// the unpaired names on both sides — because two
+/// readers need the intent even though nothing may
+/// be followed: the slug-conflict check excuses a
+/// line renaming itself out of those names (round 7,
+/// R7-9), and the migration reports the kinds of
+/// change the pairing saw (round 7, R7-10).
 struct ServingPairing {
     /// (old name, new name) rename pairs to follow.
     pairs: Vec<(String, String)>,
@@ -2031,14 +2040,51 @@ struct ServingPairing {
     /// True when old-only and new-only names both
     /// remain unpaired: the change is refused whole.
     ambiguous: bool,
+    /// Old-only names the segment pairing left
+    /// unpaired, kept on an ambiguous pairing as the
+    /// rename intent the pairing computed (round 7,
+    /// R7-9). Empty on an unambiguous pairing, whose
+    /// unpaired old names are folded into `removals`.
+    unpaired_old: Vec<String>,
+    /// New-only names the segment pairing left
+    /// unpaired, the other half of that intent.
+    unpaired_new: Vec<String>,
+    /// On an ambiguous pairing, the kinds of change
+    /// the pairing saw; None otherwise.
+    ambiguous_kinds: Option<ServingLineEditKinds>,
+}
+
+/// The kinds of change one serving-line edit
+/// contains, as the pairing saw them (round 7,
+/// R7-10): the refusal sentence for an ambiguous
+/// edit names only the kinds that are present, so a
+/// rename-plus-removal refusal no longer claims a
+/// move that never happened. `moved` is the pairing's
+/// own crossing signal: unpaired names spread over
+/// more than one segment, so a partner must sit in
+/// another segment than its line. A rename, a
+/// removal, or an addition the counts cannot account
+/// for the other way is read off the two lists'
+/// old-only and new-only totals: more old-only names
+/// than new-only means a line was removed, more
+/// new-only than old-only means a line was added,
+/// and unpaired names on both sides mean at least
+/// one rename is among the changes the pairing
+/// could not resolve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ServingLineEditKinds {
+    /// At least one line was renamed.
+    pub renamed: bool,
+    /// At least one line was removed.
+    pub removed: bool,
+    /// At least one line was added.
+    pub added: bool,
+    /// At least one line's partner sits in another
+    /// segment: the change crossed an anchor.
+    pub moved: bool,
 }
 
 fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing {
-    let refused = ServingPairing {
-        pairs: Vec::new(),
-        removals: Vec::new(),
-        ambiguous: true,
-    };
     let old_only = serving_names_only_in(old_lines, new_lines);
     let new_only = serving_names_only_in(new_lines, old_lines);
     if old_only.is_empty() && new_only.is_empty() {
@@ -2046,6 +2092,9 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
             pairs: Vec::new(),
             removals: Vec::new(),
             ambiguous: false,
+            unpaired_old: Vec::new(),
+            unpaired_new: Vec::new(),
+            ambiguous_kinds: None,
         };
     }
     if old_only.len() == 1 && new_only.len() == 1 {
@@ -2054,6 +2103,9 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
             pairs: vec![pair],
             removals: Vec::new(),
             ambiguous: false,
+            unpaired_old: Vec::new(),
+            unpaired_new: Vec::new(),
+            ambiguous_kinds: None,
         };
     }
     // Anchors: names present in both lists, matched
@@ -2097,6 +2149,11 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
     let mut removals: Vec<String> = Vec::new();
     let mut leftover_old: Vec<String> = Vec::new();
     let mut leftover_new: Vec<String> = Vec::new();
+    // Segments that hold names the pairing could not
+    // pair in place (round 7, R7-10): unpaired names
+    // in more than one segment mean a partner sits in
+    // another segment — the change crossed an anchor.
+    let mut unpaired_segments = 0usize;
     for ((o0, o1), (n0, n1)) in &segments {
         let seg_old: Vec<String> = old_trim[*o0..*o1]
             .iter()
@@ -2113,22 +2170,48 @@ fn serving_pairing(old_lines: &[String], new_lines: &[String]) -> ServingPairing
                 pairs.push((o.clone(), n.clone()));
             }
         } else if seg_new.is_empty() {
+            if !seg_old.is_empty() {
+                unpaired_segments += 1;
+            }
             removals.extend(seg_old);
         } else if seg_old.is_empty() {
             // Additions only: nothing to pair or clear.
+            unpaired_segments += 1;
         } else {
+            unpaired_segments += 1;
             leftover_old.extend(seg_old);
             leftover_new.extend(seg_new);
         }
     }
     if !leftover_old.is_empty() && !leftover_new.is_empty() {
-        return refused;
+        // Refused whole — but the computed pairs and
+        // the unpaired names are kept on the pairing,
+        // as the record of the intent the pairing saw
+        // (round 7, R7-9, R7-10). Nothing follows
+        // them: the migration checks `ambiguous` first.
+        let kinds = ServingLineEditKinds {
+            renamed: true,
+            removed: old_only.len() > new_only.len(),
+            added: new_only.len() > old_only.len(),
+            moved: unpaired_segments >= 2,
+        };
+        return ServingPairing {
+            pairs,
+            removals,
+            ambiguous: true,
+            unpaired_old: leftover_old,
+            unpaired_new: leftover_new,
+            ambiguous_kinds: Some(kinds),
+        };
     }
     removals.extend(leftover_old);
     ServingPairing {
         pairs,
         removals,
         ambiguous: false,
+        unpaired_old: Vec::new(),
+        unpaired_new: Vec::new(),
+        ambiguous_kinds: None,
     }
 }
 
@@ -2147,6 +2230,12 @@ pub struct ServingLineMigration {
     /// serving-lines change as a whole, leaving the
     /// saved list exactly as it was.
     pub ambiguous: bool,
+    /// When `ambiguous` is true, the kinds of change
+    /// the pairing saw in the refused edit (round 7,
+    /// R7-10), so the app's refusal sentence can name
+    /// only what actually happened. None on a pairing
+    /// that was followed.
+    pub ambiguous_kinds: Option<ServingLineEditKinds>,
 }
 
 /// Move stored serving names across a profile edit
@@ -2203,6 +2292,7 @@ pub fn migrate_serving_line_renames_detailed(
         return ServingLineMigration {
             removed: Vec::new(),
             ambiguous: true,
+            ambiguous_kinds: pairing.ambiguous_kinds,
         };
     }
     for (old_name, new_name) in &pairing.pairs {
@@ -2356,6 +2446,25 @@ pub fn serving_line_slug_conflict(
                 .iter()
                 .any(|(o, n)| o == claimant && n == name.trim());
             if paired_from_claimant {
+                continue;
+            }
+            // ...or the claimant renaming to this
+            // name inside an edit the pairing refused
+            // as ambiguous (round 7, R7-9): the refused
+            // pairing keeps the unpaired names it
+            // computed, and a claimant standing among
+            // the old unpaired names with this name
+            // among the new unpaired ones is renaming
+            // itself, never hijacking itself. The
+            // excuse changes only WHICH refusal the
+            // save meets — the migration still refuses
+            // the ambiguous edit whole — so the
+            // claimant is never reported as conflicting
+            // with itself.
+            let intent_from_claimant = pairing.ambiguous
+                && pairing.unpaired_old.iter().any(|o| o == claimant)
+                && pairing.unpaired_new.iter().any(|n| n == name.trim());
+            if intent_from_claimant {
                 continue;
             }
             let conflict = ServingLineSlugConflict {
@@ -3887,6 +3996,95 @@ mod tests {
             serving_line_slug_conflict(&old_lines, &default_serving_lines(), &BTreeMap::new()),
             None
         );
+    }
+
+    #[test]
+    fn a_claimant_renaming_back_inside_an_ambiguous_edit_is_not_its_own_conflict() {
+        // Round 7 (review m1, R7-9): the old list's
+        // "Kids message" claims childrens_message
+        // through the recorded alias. The new list
+        // renames it back to "Children's message" and
+        // also renames and moves Readers and Acolytes
+        // across anchors, so the pairing is ambiguous
+        // and its pairs are discarded. The conflict
+        // check used to lose the claimant's self-excuse
+        // with those pairs and report the line as
+        // conflicting with itself ("'Children's
+        // message' would take the place of the built-in
+        // line 'Children's message'..."). The verdict
+        // for this edit is now NOT a conflict at all:
+        // the save is still refused, by the ambiguous
+        // path, whose kinds name the renames and the
+        // crossing that actually block it.
+        let old_lines: Vec<String> = [
+            "Readers",
+            "Ushers",
+            "Greeters",
+            "Communion assistants",
+            "Kids message",
+            "Acolytes",
+        ]
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+        aliases.insert("childrens_message".to_string(), "kids_message".to_string());
+        let new_lines: Vec<String> = [
+            "Candle lighters",
+            "Lectors",
+            "Ushers",
+            "Greeters",
+            "Communion assistants",
+            "Children's message",
+        ]
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+        assert_eq!(
+            serving_line_slug_conflict(&old_lines, &new_lines, &aliases),
+            None,
+            "the claimant renaming back to its built-in name is not a self-conflict"
+        );
+        let mut participants: BTreeMap<String, String> = BTreeMap::new();
+        let mut alias_record = aliases.clone();
+        let migration = migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut alias_record,
+        );
+        assert!(
+            migration.ambiguous,
+            "the save is still refused, as ambiguous"
+        );
+        assert_eq!(
+            migration.ambiguous_kinds,
+            Some(ServingLineEditKinds {
+                renamed: true,
+                removed: false,
+                added: false,
+                moved: true,
+            })
+        );
+        // The standing pin beside it: a DIFFERENT line
+        // taking the built-in's name in the same kind
+        // of edit is still a hijack and still fires.
+        let hijack: Vec<String> = [
+            "Lectors",
+            "Ushers",
+            "Greeters",
+            "Communion assistants",
+            "Kids message",
+            "Children's message",
+        ]
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+        let conflict = serving_line_slug_conflict(&old_lines, &hijack, &aliases)
+            .expect("a different line taking the name still conflicts");
+        assert!(conflict.builtin);
+        assert_eq!(conflict.first, "Children's message");
+        assert_eq!(conflict.slug, "children_s_message");
     }
 
     #[test]

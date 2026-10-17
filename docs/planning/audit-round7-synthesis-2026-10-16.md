@@ -658,3 +658,129 @@ not among R7-5's dispositioned shapes, and it still
 reads as naming no Sunday; the trailing garnish this
 batch composes is the weekday, as RT6-8 established
 and R7-5 dispositioned.
+
+## Shipped addendum, R7-D (2026-10-16)
+
+Counts and small print, shipped over HEAD `251642c`.
+All four findings are fixed:
+
+- R7-6 (MAJOR): the entry cap now judges the file,
+  not the directory the reader happens to use.
+  `raw_entry_count` (ob-format) examines every
+  end-record candidate its enumeration presents
+  (latest first, as before), counts each candidate
+  directory with the same cap early-stop, and a
+  count past the cap from ANY candidate is the
+  answer — so a fake 2-record directory in trailing
+  junk no longer hides the real 9,001-entry
+  directory behind it. When no candidate passes the
+  cap, the answer is still the first walkable
+  (latest) candidate's count, so the loaders keep
+  reading by the format's latest-directory
+  semantics and every held shape stands: honest
+  trailing junk with no second directory loads
+  exactly as before; signature-in-comment,
+  EOCD-in-comment, truncated directory, and the
+  17-fake-EOCD shapes are untouched (their
+  candidates walk to None or to the real count, as
+  before); the 8,192/8,193 boundary stays exact on
+  both loaders; the declared-total lies (plain and
+  zip64, both directions) stay refused as R6-D
+  pinned. One scope note, stated plainly: the
+  candidate enumeration itself is unchanged from
+  R6-D (latest first, same bound on how many
+  candidates are collected); what changed is that
+  every enumerated candidate is now counted, not
+  just the first that walks.
+- R7-9 (MINOR): an ambiguous pairing no longer
+  discards what it computed. `serving_pairing`
+  keeps its segment pairs and the unpaired names on
+  both sides, and `serving_line_slug_conflict`
+  excuses the claimant when it stands among the old
+  unpaired names with the contested name among the
+  new unpaired ones — the claimant is never
+  reported as conflicting with itself. The excuse
+  changes only which refusal the save meets: the
+  migration still refuses the ambiguous edit
+  whole, so the save lands on the ambiguous-refusal
+  sentence, as the disposition requires. A genuine
+  hijack by a different line still fires, pinned in
+  the same new test.
+- R7-10 (MINOR): the ambiguous-refusal sentence
+  now takes its account from the edit kinds the
+  pairing actually saw, reported on the migration
+  as `ambiguous_kinds` (`ServingLineEditKinds`:
+  renamed / removed / added / moved, in ob-model).
+  Removed and added are read off the old-only /
+  new-only totals; moved is the pairing's own
+  crossing signal — unpaired names spread over
+  more than one segment. The rename-plus-removal
+  shape (old [Choir, Bells] -> [Choir team] between
+  two anchors) now reads "lines were renamed and
+  removed at once", with the remedy "Rename or
+  remove one line at a time, then save again." —
+  the deletion can be made separately, as the
+  remedy requires. The refusal behavior is
+  unchanged everywhere. The canonical crossed-
+  renames shape keeps the round-6 sentence word
+  for word (see the flagged pin below).
+- R7-11 (MINOR, docs): docs/FORMAT.md's slug-
+  refusal sentence no longer says "nothing else
+  changed"; it says the save leaves "the typed
+  lines in place and the serving lines as they
+  were", with a parenthetical recording that the
+  refusal covers the serving lines only, since the
+  profile's other fields save during the same edit
+  pass — the shipped status words' own scope.
+
+Tests: 587 -> 590 passing, 0 failed (full
+workspace, unpiped, `--no-fail-fast`, all 28 suite
+results ok, exit 0, run on the final code after
+the fmt and clippy passes); clippy `--workspace
+--all-targets -- -D warnings` exit 0. Three new
+tests: ob-format 1 (the f1a/f1b shapes rebuilt —
+a real saved bulletin or sheet archive of 9,001
+same-name entries plus trailing junk holding a
+fake 2-record directory, with and without the
+document record in it — refused with the cap
+sentence on BOTH `load` and `load_insert`, the
+raw count answering 8,193, plus the held shape
+beside it: trailing junk whose only directory is
+honest and small still loads and counts 2);
+ob-model 1 (review m1's probe verbatim — "Kids
+message" claiming `childrens_message` by alias
+renames back to "Children's message" inside a
+crossed, ambiguous edit: the conflict verdict is
+None, not a self-conflict; the migration still
+refuses as ambiguous, with kinds renamed + moved;
+and a different line taking the same name in the
+same kind of edit still conflicts); ob-app 1
+(review m3's probe verbatim through the migration
+— kinds renamed + removed, sentence naming
+exactly those, remedy covering the removal — the
+canonical crossed shape keeping its round-6 words
+through the same pipeline, and a rename-plus-
+addition shape naming the addition only). The
+fake-helper ETXTBSY flake did not fire.
+
+Pre-existing tests changed — one, flagged here
+loudly as R7-10's disposition required:
+
+- `ambiguous_and_refused_serving_lines_are_named_in_the_status_words`
+  (ob-app) — CHANGED, mechanically: its call to
+  `ambiguous_serving_lines_sentence()` now passes
+  the crossed-renames edit kinds explicitly,
+  because the sentence is built from the kinds the
+  pairing saw. Its asserted wording for that shape
+  is NOT changed: the round-6 sentence ("several
+  lines were renamed and moved at once... Rename
+  one line at a time, then save again.") stands
+  word for word for the renamed + moved shape, as
+  the batch brief allowed. What changed in
+  substance is the sentence for OTHER shapes
+  (rename + removal, rename + addition), which no
+  pre-existing test pinned: the only pin of the old
+  universal wording was this test's canonical
+  shape, and it holds. The test carries a FLAGGED
+  comment in its own source saying so. No other
+  pre-existing test was changed.

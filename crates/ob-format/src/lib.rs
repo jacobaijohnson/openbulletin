@@ -123,6 +123,22 @@ fn read_entry_text_capped(
 /// small directory records. None when the directory
 /// cannot be walked: a damaged file is the archive
 /// reader's error to report, in its own words.
+///
+/// The cap judges the FILE, not the directory the
+/// reader happens to use (round 7, RT7-5): trailing
+/// junk can hold a second, fake directory and a fake
+/// end record, and the reader's latest-first rule
+/// reads the fake one, so a count that stopped at the
+/// first walkable candidate counted the attacker's
+/// directory and let a flood through. Every candidate
+/// the file presents is counted here, each with the
+/// same early stop, and a count past the cap from ANY
+/// candidate is the answer. When no candidate passes
+/// the cap, the answer is still the first (latest)
+/// walkable candidate's count, exactly as the reader
+/// itself would choose, so honest files with trailing
+/// junk but no second directory count as they always
+/// have.
 fn raw_entry_count(path: &Path, cap: usize) -> Option<usize> {
     use std::io::{Read, Seek, SeekFrom};
     fn read_at(file: &mut std::fs::File, at: u64, buf: &mut [u8]) -> Option<()> {
@@ -284,12 +300,25 @@ fn raw_entry_count(path: &Path, cap: usize) -> Option<usize> {
     if file_len < 22 {
         return None;
     }
+    // Every candidate is examined (round 7, RT7-5):
+    // a count past the cap from any one of them
+    // refuses the file, whichever directory the
+    // reader would have used. Otherwise the first
+    // walkable candidate's count stands — the latest
+    // directory, the reader's own choice.
+    let mut first_count: Option<usize> = None;
     for eocd_at in end_record_candidates(&mut file, file_len) {
-        if let Some(count) = count_from_end_record(&mut file, eocd_at, cap) {
+        let Some(count) = count_from_end_record(&mut file, eocd_at, cap) else {
+            continue;
+        };
+        if count > cap {
             return Some(count);
         }
+        if first_count.is_none() {
+            first_count = Some(count);
+        }
     }
-    None
+    first_count
 }
 
 /// Refuse a container whose raw entry count passes the
@@ -2224,6 +2253,125 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bytes of the `index`-th central directory
+    /// record in a zip built by the writer helpers,
+    /// measured by its own header lengths, the walk's
+    /// own measure.
+    fn central_record(zip_bytes: &[u8], index: usize) -> Vec<u8> {
+        let eocd = find_eocd(zip_bytes);
+        let mut at = u32::from_le_bytes(
+            zip_bytes[eocd + 16..eocd + 20]
+                .try_into()
+                .expect("offset field"),
+        ) as usize;
+        // Advance to the requested record, then take it.
+        for _ in 0..index {
+            let name_len = u16::from_le_bytes([zip_bytes[at + 28], zip_bytes[at + 29]]) as usize;
+            let extra_len = u16::from_le_bytes([zip_bytes[at + 30], zip_bytes[at + 31]]) as usize;
+            let comment_len = u16::from_le_bytes([zip_bytes[at + 32], zip_bytes[at + 33]]) as usize;
+            at += 46 + name_len + extra_len + comment_len;
+        }
+        let name_len = u16::from_le_bytes([zip_bytes[at + 28], zip_bytes[at + 29]]) as usize;
+        let extra_len = u16::from_le_bytes([zip_bytes[at + 30], zip_bytes[at + 31]]) as usize;
+        let comment_len = u16::from_le_bytes([zip_bytes[at + 32], zip_bytes[at + 33]]) as usize;
+        zip_bytes[at..at + 46 + name_len + extra_len + comment_len].to_vec()
+    }
+
+    /// Append trailing junk holding a FAKE central
+    /// directory — two copies of `record` — and a fake
+    /// end record claiming those two entries: the
+    /// round-7 red team's f1 shape. The reader's
+    /// latest-first rule reads the fake directory; a
+    /// copied document record still points at the real
+    /// local header, so the fake directory even serves
+    /// the real bulletin.
+    fn append_fake_directory(base: &[u8], record: &[u8]) -> Vec<u8> {
+        let mut out = base.to_vec();
+        let cd_offset = out.len() as u32;
+        out.extend_from_slice(record);
+        out.extend_from_slice(record);
+        let cd_size = (record.len() * 2) as u32;
+        let mut eocd = Vec::new();
+        eocd.extend_from_slice(b"PK\x05\x06");
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        eocd.extend_from_slice(&2u16.to_le_bytes());
+        eocd.extend_from_slice(&2u16.to_le_bytes());
+        eocd.extend_from_slice(&cd_size.to_le_bytes());
+        eocd.extend_from_slice(&cd_offset.to_le_bytes());
+        eocd.extend_from_slice(&0u16.to_le_bytes());
+        assert_eq!(eocd.len(), 22);
+        out.extend_from_slice(&eocd);
+        out
+    }
+
+    #[test]
+    fn a_fake_directory_in_trailing_junk_does_not_hide_a_flood() {
+        // Round 7 (RT7-5): a 9,001-entry archive plus
+        // appended trailing junk holding a fake
+        // 2-record central directory and a fake end
+        // record loaded as an ordinary bulletin on
+        // both loaders: the walk located the end record
+        // latest-first, exactly like the shipped
+        // reader, so both counted and read the
+        // attacker's fake directory. The cap judges
+        // the file now: every end-record candidate is
+        // counted, and the real directory's 9,001
+        // entries refuse the file in the cap's own
+        // words, at both doors, whether the fake
+        // directory carries the document record (f1b)
+        // or not (f1a).
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let sheet_json = lying_sheet_json();
+        for (json_name, json, ext) in [
+            ("document.json", doc_json.as_str(), "obd"),
+            ("insert.json", sheet_json.as_str(), "obdi"),
+        ] {
+            let dir = scratch(&format!("fake-dir-{ext}"));
+            let flood = zip_with_same_name_fillers(json_name, json, 9_000);
+            let doc_record = central_record(&flood, 0);
+            let filler_record = central_record(&flood, 1);
+            for (tag, record) in [
+                ("f1b-with-doc", &doc_record),
+                ("f1a-no-doc", &filler_record),
+            ] {
+                let bytes = append_fake_directory(&flood, record);
+                let path = dir.join(format!("{tag}.{ext}"));
+                std::fs::write(&path, &bytes).expect("write fake-directory copy");
+                assert_eq!(
+                    raw_entry_count(&path, MAX_ENTRIES),
+                    Some(MAX_ENTRIES + 1),
+                    "{ext} {tag}: some candidate directory holds the flood; \
+                     the fake one's count of two must not be the answer"
+                );
+                assert_eq!(
+                    check_entry_cap(&path),
+                    Err(TOO_MANY_PARTS.to_string()),
+                    "{ext} {tag}: the cap itself refuses"
+                );
+                let err = load(&path).expect_err("the flood refuses at the bulletin door");
+                assert_eq!(err, TOO_MANY_PARTS, "{ext} {tag} at the bulletin door");
+                let err = load_insert(&path).expect_err("the flood refuses at the sheet door");
+                assert_eq!(err, TOO_MANY_PARTS, "{ext} {tag} at the sheet door");
+            }
+            // The held shape beside it: trailing junk
+            // whose only directory is honest and small
+            // still loads, and counts as it always has.
+            let mut trailed = zip_with_fillers(json_name, json, 1);
+            let junk: Vec<u8> = b"trailing bytes, no signatures here ".repeat(7);
+            trailed.extend_from_slice(&junk);
+            let trailed_path = dir.join(format!("trailed.{ext}"));
+            std::fs::write(&trailed_path, &trailed).expect("write trailed copy");
+            assert_eq!(raw_entry_count(&trailed_path, MAX_ENTRIES), Some(2));
+            if ext == "obd" {
+                load(&trailed_path).expect("honest trailing junk still loads");
+            } else {
+                load_insert(&trailed_path).expect("honest trailing junk still loads");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Rename one entry everywhere its name is

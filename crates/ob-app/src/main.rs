@@ -1957,16 +1957,87 @@ fn removed_serving_lines_sentence(removed: &[String]) -> String {
 
 /// The profile save's words when a serving-lines
 /// change is refused as a whole (round 6, R6-C):
-/// several lines were renamed and moved at once, so
 /// the app cannot tell which names belong to which
 /// line; the lines were left as they were, and the
-/// remedy — rename one line at a time — now works,
-/// because nothing half-applied.
-fn ambiguous_serving_lines_sentence() -> String {
-    "Serving lines not saved: several lines were renamed and moved at once, \
-     and the app cannot tell which names belong to which line. The lines \
-     were left as they were. Rename one line at a time, then save again."
-        .to_string()
+/// remedy — one line at a time — now works, because
+/// nothing half-applied. Round 7 (R7-10): the
+/// account names only the kinds of change the
+/// pairing actually saw, so a rename-plus-removal
+/// refusal no longer claims a move that never
+/// happened; the round-6 wording stands exactly as
+/// written for the shape it was written for —
+/// renames that crossed anchors, with nothing
+/// removed or added.
+fn ambiguous_serving_lines_sentence(kinds: &ob_model::ServingLineEditKinds) -> String {
+    let canonical = ob_model::ServingLineEditKinds {
+        renamed: true,
+        removed: false,
+        added: false,
+        moved: true,
+    };
+    if *kinds == canonical {
+        return "Serving lines not saved: several lines were renamed and moved at once, \
+             and the app cannot tell which names belong to which line. The lines \
+             were left as they were. Rename one line at a time, then save again."
+            .to_string();
+    }
+    // Join a short word list the plain way: "a and
+    // b", or "a, b and c" — with `last` before the
+    // final word.
+    let join_words = |words: &[&str], last: &str| -> String {
+        match words.len() {
+            0 => String::new(),
+            1 => words[0].to_string(),
+            2 => format!("{} {last} {}", words[0], words[1]),
+            _ => {
+                let head = words[..words.len() - 1].join(", ");
+                format!("{head} {last} {}", words[words.len() - 1])
+            }
+        }
+    };
+    let mut seen: Vec<&str> = Vec::new();
+    if kinds.renamed {
+        seen.push("renamed");
+    }
+    if kinds.removed {
+        seen.push("removed");
+    }
+    if kinds.added {
+        seen.push("added");
+    }
+    if kinds.moved {
+        seen.push("moved");
+    }
+    if seen.is_empty() {
+        seen.push("changed");
+    }
+    let account = join_words(&seen, "and");
+    // The remedy names the worker's own actions the
+    // same way: make each rename, removal, or
+    // addition on its own, then save again.
+    let mut verbs: Vec<&str> = Vec::new();
+    if kinds.renamed {
+        verbs.push("rename");
+    }
+    if kinds.removed {
+        verbs.push("remove");
+    }
+    if kinds.added {
+        verbs.push("add");
+    }
+    if verbs.is_empty() {
+        verbs.push("rename");
+    }
+    let remedy_joined = join_words(&verbs, "or");
+    let mut remedy = remedy_joined;
+    if let Some(first) = remedy.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    format!(
+        "Serving lines not saved: lines were {account} at once, \
+         and the app cannot tell which names belong to which line. The lines \
+         were left as they were. {remedy} one line at a time, then save again."
+    )
 }
 
 /// The profile save's words when serving lines are
@@ -14849,7 +14920,20 @@ impl eframe::App for App {
                                         );
                                     if migration.ambiguous {
                                         self.doc.profile.serving_lines = old_lines;
-                                        let sentence = ambiguous_serving_lines_sentence();
+                                        // The refusal's words
+                                        // name the kinds of
+                                        // change the pairing
+                                        // actually saw (round
+                                        // 7, R7-10).
+                                        let kinds = migration.ambiguous_kinds.unwrap_or(
+                                            ob_model::ServingLineEditKinds {
+                                                renamed: true,
+                                                removed: false,
+                                                added: false,
+                                                moved: true,
+                                            },
+                                        );
+                                        let sentence = ambiguous_serving_lines_sentence(&kinds);
                                         self.fail(sentence);
                                     } else {
                                         self.doc.profile.serving_lines = parsed;
@@ -19053,8 +19137,19 @@ mod settings_tests {
         // pass (the profile's other fields save on
         // their own), so both pins now end with what
         // the refusal itself covers.
+        // Round 7 (R7-10, FLAGGED): the sentence now
+        // takes the edit kinds the pairing saw, so
+        // this call passes the crossed-renames kinds
+        // explicitly. The asserted words are the
+        // round-6 pin, unchanged for that shape.
+        let crossed_kinds = ob_model::ServingLineEditKinds {
+            renamed: true,
+            removed: false,
+            added: false,
+            moved: true,
+        };
         assert_eq!(
-            ambiguous_serving_lines_sentence(),
+            ambiguous_serving_lines_sentence(&crossed_kinds),
             "Serving lines not saved: several lines were renamed and moved \
              at once, and the app cannot tell which names belong to which \
              line. The lines were left as they were. Rename one line at a \
@@ -19092,6 +19187,122 @@ mod settings_tests {
              row and the names the bulletin prints could name different \
              people. Rename 'Childrens Message', then save again. The \
              serving lines were left as they were."
+        );
+    }
+
+    #[test]
+    fn the_ambiguous_refusal_sentence_names_only_the_changes_the_pairing_saw() {
+        // Round 7 (review m3, R7-10): between two
+        // anchors, old [Choir, Bells] becomes [Choir
+        // team] — one rename plus one removal, nothing
+        // moved anywhere. The refusal is right (the
+        // lists cannot say whether "Choir team" is
+        // Choir renamed or Bells renamed), but the
+        // round-6 sentence claimed the lines "were
+        // renamed and moved at once". The sentence now
+        // takes its account from the pairing's own
+        // kinds, and its remedy covers the removal:
+        // make the deletion separately.
+        let old_lines: Vec<String> = ["Readers", "Choir", "Bells", "Ushers"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        let new_lines: Vec<String> = ["Readers", "Choir team", "Ushers"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        let mut participants: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let mut aliases: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &old_lines,
+            &new_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(migration.ambiguous, "the refusal itself stands");
+        let kinds = migration.ambiguous_kinds.expect("kinds on a refusal");
+        assert_eq!(
+            kinds,
+            ob_model::ServingLineEditKinds {
+                renamed: true,
+                removed: true,
+                added: false,
+                moved: false,
+            }
+        );
+        assert_eq!(
+            ambiguous_serving_lines_sentence(&kinds),
+            "Serving lines not saved: lines were renamed and removed at once, \
+             and the app cannot tell which names belong to which line. The lines \
+             were left as they were. Rename or remove one line at a time, then \
+             save again."
+        );
+        // The shape the round-6 sentence was written
+        // for — two renames crossing anchors, nothing
+        // removed or added — keeps its exact words,
+        // through the same pipeline.
+        let old_lines = ob_model::default_serving_lines();
+        let crossed: Vec<String> = [
+            "Candle lighters",
+            "Lectors",
+            "Ushers",
+            "Greeters",
+            "Communion assistants",
+            "Children's message",
+        ]
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &old_lines,
+            &crossed,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(migration.ambiguous);
+        let kinds = migration.ambiguous_kinds.expect("kinds on a refusal");
+        assert_eq!(
+            ambiguous_serving_lines_sentence(&kinds),
+            "Serving lines not saved: several lines were renamed and moved \
+             at once, and the app cannot tell which names belong to which \
+             line. The lines were left as they were. Rename one line at a \
+             time, then save again."
+        );
+        // And a rename-plus-addition refusal names
+        // the addition and not a removal or a move.
+        let added_lines: Vec<String> = ["Readers", "Choir team", "Bells team", "Extra", "Ushers"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        let old_pair: Vec<String> = ["Readers", "Choir", "Bells", "Ushers"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        let migration = ob_model::migrate_serving_line_renames_detailed(
+            &old_pair,
+            &added_lines,
+            &mut participants,
+            &mut aliases,
+        );
+        assert!(migration.ambiguous);
+        let kinds = migration.ambiguous_kinds.expect("kinds on a refusal");
+        assert_eq!(
+            kinds,
+            ob_model::ServingLineEditKinds {
+                renamed: true,
+                removed: false,
+                added: true,
+                moved: false,
+            }
+        );
+        assert_eq!(
+            ambiguous_serving_lines_sentence(&kinds),
+            "Serving lines not saved: lines were renamed and added at once, \
+             and the app cannot tell which names belong to which line. The lines \
+             were left as they were. Rename or add one line at a time, then \
+             save again."
         );
     }
 

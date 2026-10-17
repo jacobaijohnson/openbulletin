@@ -157,10 +157,14 @@ silently (round 4, RT-6b/c). A new line later
 taking a removed line's exact name starts fresh and
 inherits no alias. The slug is many-to-one, so the
 save is also refused, leaving the typed lines in
-place and nothing else changed, when two names in
-the new list derive the same slug or a name derives
-a built-in line's canonical (or shown-name) slug
-without being the line that CLAIMS that slug.
+place and the serving lines as they were, when two
+names in the new list derive the same slug or a
+name derives a built-in line's canonical (or
+shown-name) slug without being the line that
+CLAIMS that slug. (The refusal covers the serving
+lines only: the profile's other fields save on
+their own during the same edit pass, the scope the
+status sentence itself states — round 7, R7-11.)
 Claimed-ness follows resolution, not spelling: a
 built-in's canonical slug is claimed by the
 old-list line its token currently resolves to (the

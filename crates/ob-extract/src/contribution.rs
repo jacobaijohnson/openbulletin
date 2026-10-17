@@ -176,6 +176,15 @@ pub struct Contribution {
     pub for_sunday_second_date: Option<SimpleDate>,
     /// The same note for the Keep-through line.
     pub keep_through_second_date: Option<SimpleDate>,
+    /// Every distinct second date standing in the For
+    /// Sunday line, in written order (round 10, R10-4 /
+    /// R10-6): the scan reads the whole line, before
+    /// the read date as well as after it, and the
+    /// review's note names each one. `for_sunday_second_date`
+    /// above stays the first of these.
+    pub for_sunday_second_dates: Vec<SimpleDate>,
+    /// The same list for the Keep-through line.
+    pub keep_through_second_dates: Vec<SimpleDate>,
 }
 
 /// A date line whose trailing parenthesized date
@@ -186,33 +195,147 @@ pub struct Contribution {
 /// instead of dropping the parenthesis in silence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParenthesizedDateMismatch {
-    /// The date the parenthesis names.
+    /// The first disagreeing date a parenthesis names,
+    /// in written order.
     pub named: SimpleDate,
+    /// Every other distinct disagreeing date a
+    /// parenthesis names, in written order (round 10,
+    /// R10-6): stacked groups are all named in the
+    /// review's sentence, not only the first.
+    pub also_named: Vec<SimpleDate>,
     /// The date the line itself read (on a Sunday-after
     /// line, the resolution it names).
     pub read: SimpleDate,
+    /// The read date itself came from a parenthesized
+    /// group (round 10, R10-6): the standing date on a
+    /// Keep-through line whose own words yielded no
+    /// date, or a line that is only parenthesized
+    /// groups. The sentences then say the dates in
+    /// parentheses disagree with each other, instead of
+    /// framing a plain reading against a parenthesis
+    /// that never stood.
+    pub read_from_parentheses: bool,
 }
 
 impl ParenthesizedDateMismatch {
+    /// Every distinct disagreeing date, in written
+    /// order: `named` first, then `also_named`.
+    fn named_dates(&self) -> Vec<SimpleDate> {
+        let mut out: Vec<SimpleDate> = vec![self.named];
+        for d in &self.also_named {
+            if !out.contains(d) {
+                out.push(*d);
+            }
+        }
+        out
+    }
+
     /// The review's line for the For Sunday shape.
     pub fn sentence(&self) -> String {
+        if self.read_from_parentheses {
+            let mut all = self.named_dates();
+            if !all.contains(&self.read) {
+                all.push(self.read);
+            }
+            let listed = all
+                .iter()
+                .map(|d| format_date_short(*d))
+                .collect::<Vec<String>>()
+                .join(" and ");
+            let read = format_date_short(self.read);
+            return format!(
+                "The dates in parentheses do not agree with each other: {listed}. \
+                 This part is read as naming {read}. \
+                 Check the date with the sender."
+            );
+        }
+        if self.also_named.is_empty() {
+            let read = format_date_short(self.read);
+            let named = format_date_short(self.named);
+            return format!(
+                "This part names {read}, but the date in parentheses is {named}. \
+                 Check the date with the sender."
+            );
+        }
+        let read = format_date_short(self.read);
+        let listed = self
+            .named_dates()
+            .iter()
+            .map(|d| format_date_short(*d))
+            .collect::<Vec<String>>()
+            .join(" and ");
         format!(
-            "This part names {}, but the date in parentheses is {}. \
-             Check the date with the sender.",
-            format_date_short(self.read),
-            format_date_short(self.named)
+            "This part names {read}, but the dates in parentheses are {listed}. \
+             Check the date with the sender."
         )
     }
 
     /// The same sentence for the Keep-through line.
     pub fn keep_through_sentence(&self) -> String {
+        if self.read_from_parentheses {
+            let mut all = self.named_dates();
+            if !all.contains(&self.read) {
+                all.push(self.read);
+            }
+            let listed = all
+                .iter()
+                .map(|d| format_date_short(*d))
+                .collect::<Vec<String>>()
+                .join(" and ");
+            let read = format_date_short(self.read);
+            return format!(
+                "The dates in parentheses do not agree with each other: {listed}. \
+                 This part is read as keep through {read}. \
+                 Check the date with the sender."
+            );
+        }
+        if self.also_named.is_empty() {
+            let read = format_date_short(self.read);
+            let named = format_date_short(self.named);
+            return format!(
+                "This part says keep through {read}, but the date in parentheses is {named}. \
+                 Check the date with the sender."
+            );
+        }
+        let read = format_date_short(self.read);
+        let listed = self
+            .named_dates()
+            .iter()
+            .map(|d| format_date_short(*d))
+            .collect::<Vec<String>>()
+            .join(" and ");
         format!(
-            "This part says keep through {}, but the date in parentheses is {}. \
-             Check the date with the sender.",
-            format_date_short(self.read),
-            format_date_short(self.named)
+            "This part says keep through {read}, but the dates in parentheses are {listed}. \
+             Check the date with the sender."
         )
     }
+}
+
+/// The mismatch record for a set of parenthesized
+/// groups standing against a read date (round 10,
+/// R10-6): every distinct group date that disagrees
+/// with the read date is kept, in written order; no
+/// record stands when every group agrees.
+fn mismatch_from_groups(
+    groups: &[SimpleDate],
+    read: SimpleDate,
+    read_from_parentheses: bool,
+) -> Option<ParenthesizedDateMismatch> {
+    let mut disagreeing: Vec<SimpleDate> = Vec::new();
+    for g in groups {
+        if *g != read && !disagreeing.contains(g) {
+            disagreeing.push(*g);
+        }
+    }
+    let mut it = disagreeing.into_iter();
+    let named = it.next()?;
+    let also_named: Vec<SimpleDate> = it.collect();
+    Some(ParenthesizedDateMismatch {
+        named,
+        also_named,
+        read,
+        read_from_parentheses,
+    })
 }
 
 /// The review's note when a For Sunday line named a
@@ -220,18 +343,47 @@ impl ParenthesizedDateMismatch {
 /// (round 9, R9-13): the read date governs, and the
 /// note changes no verdict.
 pub fn second_date_sentence(second: SimpleDate) -> String {
-    format!(
-        "This file named another date too: {}. Check which date was meant.",
-        format_date_long(second)
-    )
+    second_dates_sentence(&[second])
+}
+
+/// The note when a For Sunday line named second dates
+/// (round 10, R10-6): every distinct one is named.
+pub fn second_dates_sentence(seconds: &[SimpleDate]) -> String {
+    if seconds.len() == 1 {
+        let second = format_date_long(seconds[0]);
+        return format!("This file named another date too: {second}. Check which date was meant.");
+    }
+    let listed = seconds
+        .iter()
+        .map(|d| format_date_long(*d))
+        .collect::<Vec<String>>()
+        .join(" and ");
+    format!("This file named other dates too: {listed}. Check which date was meant.")
 }
 
 /// The same note for the Keep-through line.
 pub fn keep_through_second_date_sentence(second: SimpleDate) -> String {
+    keep_through_second_dates_sentence(&[second])
+}
+
+/// The Keep-through note naming every distinct second
+/// date (round 10, R10-6).
+pub fn keep_through_second_dates_sentence(seconds: &[SimpleDate]) -> String {
+    if seconds.len() == 1 {
+        let second = format_date_long(seconds[0]);
+        return format!(
+            "The Keep-through line named another date too: {second}. \
+             Check which date was meant."
+        );
+    }
+    let listed = seconds
+        .iter()
+        .map(|d| format_date_long(*d))
+        .collect::<Vec<String>>()
+        .join(" and ");
     format!(
-        "The Keep-through line named another date too: {}. \
-         Check which date was meant.",
-        format_date_long(second)
+        "The Keep-through line named other dates too: {listed}. \
+         Check which date was meant."
     )
 }
 
@@ -562,6 +714,47 @@ fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> bool {
 /// date is the remembered one. A group that does not
 /// read as a date at all — a weekday garnish like
 /// "(Monday)" — is garnish, not memory.
+/// The absolute dates standing inside a parenthesized
+/// group's words, distinct and in written order: the
+/// line's own prefix reader tried at each word, the
+/// same reader the second-date scan uses.
+fn dates_inside_group(inner: &str, today: SimpleDate) -> Vec<SimpleDate> {
+    let tokens: Vec<&str> = inner.split_whitespace().collect();
+    let mut out: Vec<SimpleDate> = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        match parse_date_prefix(&tokens[i..], today) {
+            Some((d, used)) => {
+                if !out.contains(&d) {
+                    out.push(d);
+                }
+                i += used.max(1);
+            }
+            None => i += 1,
+        }
+    }
+    out
+}
+
+/// The date one parenthesized group contributes
+/// (round 10, R10-5): a group that is itself a bare
+/// date contributes that date, as it always has; a
+/// group with words around a date contributes the
+/// date it contains when it contains exactly one —
+/// "correction: November 1", "use November 1 instead"
+/// — and a group containing no date, or several,
+/// contributes nothing, as today.
+fn group_date(inner: &str, today: SimpleDate) -> Option<SimpleDate> {
+    if let Some(d) = parse_flexible_date(inner.trim(), today) {
+        return Some(d);
+    }
+    let inside = dates_inside_group(inner, today);
+    if inside.len() == 1 {
+        return Some(inside[0]);
+    }
+    None
+}
+
 fn trailing_parenthesized_date(text: &str, today: SimpleDate) -> Option<SimpleDate> {
     let mut rest = text.trim_end_matches(['.', ',']);
     while rest.ends_with(')') {
@@ -570,7 +763,7 @@ fn trailing_parenthesized_date(text: &str, today: SimpleDate) -> Option<SimpleDa
         if inner.contains(['(', ')']) {
             return None;
         }
-        if let Some(d) = parse_flexible_date(inner.trim(), today) {
+        if let Some(d) = group_date(inner, today) {
             return Some(d);
         }
         rest = rest[..open].trim_end().trim_end_matches(['.', ',']);
@@ -595,7 +788,7 @@ fn trailing_parenthesized_dates(text: &str, today: SimpleDate) -> Vec<SimpleDate
         if inner.contains(['(', ')']) {
             break;
         }
-        if let Some(d) = parse_flexible_date(inner.trim(), today) {
+        if let Some(d) = group_date(inner, today) {
             found.push(d);
         }
         rest = rest[..open].trim_end().trim_end_matches(['.', ',']);
@@ -953,39 +1146,119 @@ struct DateLineReading {
     date: Option<SimpleDate>,
     weekday_mismatch: Option<WeekdayMismatch>,
     parenthesized_mismatch: Option<ParenthesizedDateMismatch>,
-    second_date: Option<SimpleDate>,
+    second_dates: Vec<SimpleDate>,
 }
 
-/// A second parseable absolute date standing in a
-/// date line AFTER the date that was read (round 9,
-/// R9-13): the first date-shaped run in the line that
-/// is the read date itself — or, on a Sunday-after
-/// line, the base the read date resolves from — is the
-/// anchor; the first later run naming a different date
-/// is the second date. Trailing parenthesized groups
-/// are garnish, remembered on their own records, and
-/// are not scanned here.
-fn second_date_in_line(text: &str, today: SimpleDate, read: SimpleDate) -> Option<SimpleDate> {
+/// The parenthesized groups standing in `text`, as
+/// (start, end) byte spans, end past the closing
+/// parenthesis: flat groups only, in written order.
+fn parenthesized_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    let mut from = 0;
+    while let Some(rel_open) = text[from..].find('(') {
+        let open = from + rel_open;
+        let Some(rel_close) = text[open + 1..].find(')') else {
+            break;
+        };
+        let close = open + 1 + rel_close;
+        let inner = &text[open + 1..close];
+        if !inner.contains('(') {
+            out.push((open, close + 1));
+        }
+        from = close + 1;
+    }
+    out
+}
+
+/// A parenthesized group standing between a month-day
+/// and its year does not poison the plain date (round
+/// 10, R10-10b): "October 25 (November 1), 2026" reads
+/// October 25, 2026, with the November 1 group
+/// compared as garnish. The shape is pinned by what
+/// follows the group — a comma and a year — and by the
+/// line reading as a date once the group is taken out;
+/// a group anywhere else is not tried here.
+fn mid_date_group_reading(
+    text: &str,
+    today: SimpleDate,
+    trailing_groups: &[SimpleDate],
+) -> Option<DateLineReading> {
+    for (start, end) in parenthesized_spans(text) {
+        let after = text[end..].trim_start();
+        let Some(after_comma) = after.strip_prefix(',') else {
+            continue;
+        };
+        let Some(year_token) = after_comma.split_whitespace().next() else {
+            continue;
+        };
+        let year_clean = year_token.trim_matches(['.', ',']);
+        if !(year_clean.len() == 2 || year_clean.len() == 4)
+            || !year_clean.chars().all(|c| c.is_ascii_digit())
+        {
+            continue;
+        }
+        let mut candidate = String::with_capacity(text.len());
+        candidate.push_str(&text[..start]);
+        candidate.push_str(&text[end..]);
+        let candidate_raw = Some(candidate.clone());
+        let (cand_date, _) = date_line_inner(&candidate_raw, today);
+        let Some(read) = cand_date else {
+            continue;
+        };
+        let inner = &text[start + 1..end - 1];
+        let mut all_groups: Vec<SimpleDate> = Vec::new();
+        if let Some(d) = group_date(inner, today) {
+            all_groups.push(d);
+        }
+        for g in trailing_groups {
+            if !all_groups.contains(g) {
+                all_groups.push(*g);
+            }
+        }
+        let parenthesized_mismatch = mismatch_from_groups(&all_groups, read, false);
+        let second_dates = second_dates_in_line(&candidate, today, read);
+        return Some(DateLineReading {
+            date: Some(read),
+            weekday_mismatch: None,
+            parenthesized_mismatch,
+            second_dates,
+        });
+    }
+    None
+}
+
+/// Every distinct second parseable absolute date
+/// standing in a date line (round 9, R9-13; round 10,
+/// R10-4/R10-6): the scan reads the WHOLE line, before
+/// the read date as well as after it. The first
+/// date-shaped run in the line that is the read date
+/// itself — or, on a Sunday-after line, the base the
+/// read date resolves from — is the anchor and is
+/// never a second date; every other distinct date the
+/// line names, on either side of the anchor, is a
+/// second date, in written order. Trailing
+/// parenthesized groups are garnish, remembered on
+/// their own records, and are not scanned here.
+fn second_dates_in_line(text: &str, today: SimpleDate, read: SimpleDate) -> Vec<SimpleDate> {
     let core = strip_all_trailing_parenthesized(text.trim());
     let tokens: Vec<&str> = core.split_whitespace().collect();
     let mut anchored = false;
+    let mut out: Vec<SimpleDate> = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
         match parse_date_prefix(&tokens[i..], today) {
             Some((d, used)) => {
-                if !anchored {
-                    if d == read || first_sunday_after(d) == read {
-                        anchored = true;
-                    }
-                } else if d != read {
-                    return Some(d);
+                if !anchored && (d == read || first_sunday_after(d) == read) {
+                    anchored = true;
+                } else if d != read && !out.contains(&d) {
+                    out.push(d);
                 }
                 i += used.max(1);
             }
             None => i += 1,
         }
     }
-    None
+    out
 }
 
 /// Read one date line with its round-9 records: the
@@ -1004,74 +1277,104 @@ fn second_date_in_line(text: &str, today: SimpleDate, read: SimpleDate) -> Optio
 ///   groups off, and the same comparison runs. The
 ///   parenthesis never silently kills the plain
 ///   reading.
-/// - A second absolute date later in the line is
-///   noted, never substituted.
+/// - A line that is only parenthesized groups reads
+///   the last group's date (round 10, R10-10a), and a
+///   group standing between a month-day and its year
+///   is compared as garnish without poisoning the
+///   plain date (R10-10b).
+/// - Every distinct second absolute date in the
+///   line, before the read date or after it, is
+///   noted, never substituted (round 10, R10-4).
 fn date_line(raw: &Option<String>, today: SimpleDate) -> DateLineReading {
     let (date, weekday_mismatch) = date_line_inner(raw, today);
     let none_reading = DateLineReading {
         date: None,
         weekday_mismatch: None,
         parenthesized_mismatch: None,
-        second_date: None,
+        second_dates: Vec::new(),
     };
     let Some(text) = raw.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         return none_reading;
     };
     let groups = trailing_parenthesized_dates(text, today);
     if let Some(read) = date {
-        let parenthesized_mismatch = groups
-            .iter()
-            .find(|g| **g != read)
-            .map(|g| ParenthesizedDateMismatch { named: *g, read });
-        let second_date = second_date_in_line(text, today, read);
+        let parenthesized_mismatch = mismatch_from_groups(&groups, read, false);
+        let second_dates = second_dates_in_line(text, today, read);
         return DateLineReading {
             date: Some(read),
             weekday_mismatch,
             parenthesized_mismatch,
-            second_date,
+            second_dates,
         };
     }
-    if weekday_mismatch.is_some() || groups.is_empty() {
+    if weekday_mismatch.is_some() {
         return DateLineReading {
             date: None,
             weekday_mismatch,
             parenthesized_mismatch: None,
-            second_date: None,
+            second_dates: Vec::new(),
+        };
+    }
+    // Round 10 (R10-10b): a group standing between a
+    // month-day and its year does not poison the plain
+    // date; the group is compared as garnish.
+    if let Some(reading) = mid_date_group_reading(text, today, &groups) {
+        return reading;
+    }
+    if groups.is_empty() {
+        return DateLineReading {
+            date: None,
+            weekday_mismatch,
+            parenthesized_mismatch: None,
+            second_dates: Vec::new(),
         };
     }
     // Nothing read and a trailing parenthesized date
     // stands: the core may still carry the plain
     // reading the parenthesis poisoned.
     let core = strip_all_trailing_parenthesized(text);
+    if core.trim().is_empty() {
+        // Round 10 (R10-10a): a line that is only
+        // parenthesized groups reads its date exactly
+        // as the Keep-through line has since round 9 —
+        // the last group stands, and an earlier group
+        // naming a different date is recorded against
+        // it, its source stated as the parentheses.
+        let read = *groups.last().expect("a group stands");
+        let parenthesized_mismatch = mismatch_from_groups(&groups, read, true);
+        return DateLineReading {
+            date: Some(read),
+            weekday_mismatch: None,
+            parenthesized_mismatch,
+            second_dates: Vec::new(),
+        };
+    }
     if core == text {
         return DateLineReading {
             date: None,
             weekday_mismatch,
             parenthesized_mismatch: None,
-            second_date: None,
+            second_dates: Vec::new(),
         };
     }
     let core_raw = Some(core.to_string());
     let (core_date, core_mismatch) = date_line_inner(&core_raw, today);
     match core_date {
         Some(read) => {
-            let parenthesized_mismatch = groups
-                .iter()
-                .find(|g| **g != read)
-                .map(|g| ParenthesizedDateMismatch { named: *g, read });
-            let second_date = second_date_in_line(core, today, read);
+            let parenthesized_mismatch = mismatch_from_groups(&groups, read, false);
+            let second_dates = second_dates_in_line(core, today, read);
             DateLineReading {
                 date: Some(read),
                 weekday_mismatch: None,
                 parenthesized_mismatch,
-                second_date,
+                second_dates,
             }
         }
         None => DateLineReading {
             date: None,
             weekday_mismatch: core_mismatch,
             parenthesized_mismatch: None,
-            second_date: None,
+            second_dates: Vec::new(),
         },
     }
 }
@@ -1266,13 +1569,11 @@ pub fn parse_contribution(text: &str, today: SimpleDate) -> Result<Contribution,
             let groups = trailing_parenthesized_dates(kt_text, today);
             if let Some(chosen) = groups.last().copied() {
                 keep_through = Some(chosen);
-                if let Some(other) = groups.iter().find(|g| **g != chosen) {
-                    let named = *other;
-                    keep_through_parenthesized_mismatch = Some(ParenthesizedDateMismatch {
-                        named,
-                        read: chosen,
-                    });
-                }
+                // Round 10 (R10-6): every distinct
+                // disagreeing group is recorded, and
+                // the record says the kept date came
+                // from a parenthesized group.
+                keep_through_parenthesized_mismatch = mismatch_from_groups(&groups, chosen, true);
             }
         }
     }
@@ -1324,8 +1625,10 @@ pub fn parse_contribution(text: &str, today: SimpleDate) -> Result<Contribution,
         } else {
             Vec::new()
         };
-    let for_sunday_second_date = for_reading.second_date;
-    let keep_through_second_date = kt_reading.second_date;
+    let for_sunday_second_dates = for_reading.second_dates.clone();
+    let keep_through_second_dates = kt_reading.second_dates.clone();
+    let for_sunday_second_date = for_reading.second_dates.first().copied();
+    let keep_through_second_date = kt_reading.second_dates.first().copied();
     Ok(Contribution {
         from: raw.from.filter(|s| !s.trim().is_empty()),
         for_date,
@@ -1341,6 +1644,8 @@ pub fn parse_contribution(text: &str, today: SimpleDate) -> Result<Contribution,
         keep_through_parenthesized_mismatch,
         for_sunday_second_date,
         keep_through_second_date,
+        for_sunday_second_dates,
+        keep_through_second_dates,
     })
 }
 
@@ -1438,15 +1743,39 @@ impl Contribution {
     pub fn parenthesized_same_sunday_sentence(&self, bulletin: SimpleDate) -> Option<String> {
         self.for_sunday_after_in_words.as_ref()?;
         let dates = distinct_parenthesized_dates(self);
-        if dates != [bulletin] {
+        if dates == [bulletin] {
+            let said = format_date_long(bulletin);
+            let resolved = format_date_long(first_sunday_after(bulletin));
+            return Some(format!(
+                "These words say they are for {said}, the date written in \
+                 parentheses. The words also name a Sunday in relative words \
+                 that would be {resolved}."
+            ));
+        }
+        // Round 10 (R10-7): stacked groups whose first
+        // disagreement with the resolution IS the open
+        // bulletin's date read SameSunday on that
+        // bulletin-equal parenthesis — a DifferentSunday
+        // verdict never carries the bulletin's own
+        // date — and the note names every group, the
+        // disagreeing garnish included.
+        let resolved_date = first_sunday_after(bulletin);
+        let first_disagreeing = dates.iter().find(|d| **d != resolved_date);
+        if first_disagreeing != Some(&bulletin) {
             return None;
         }
         let said = format_date_long(bulletin);
-        let resolved = format_date_long(first_sunday_after(bulletin));
+        let resolved = format_date_long(resolved_date);
+        let listed = dates
+            .iter()
+            .map(|d| format_date_long(*d))
+            .collect::<Vec<String>>()
+            .join(" and ");
         Some(format!(
             "These words say they are for {said}, the date written in \
              parentheses. The words also name a Sunday in relative words \
-             that would be {resolved}."
+             that would be {resolved}. The dates in parentheses do not \
+             agree with each other: {listed}."
         ))
     }
 
@@ -1459,7 +1788,31 @@ impl Contribution {
     /// sides. None when that is not the shape; the
     /// ordinary DifferentSunday sentence then stands.
     pub fn parenthesized_different_sentence(&self, bulletin: SimpleDate) -> Option<String> {
-        self.for_sunday_after_in_words.as_ref()?;
+        if self.for_sunday_after_in_words.is_none() {
+            // Round 10 (R10-6): the bare relative shape
+            // gains the listing sentence — with more
+            // than one distinct parenthesized date, the
+            // armed line names every group and the
+            // bulletin, not only the first disagreeing
+            // group. A single group keeps the ordinary
+            // armed sentence.
+            self.for_sunday_in_words.as_ref()?;
+            let dates = distinct_parenthesized_dates(self);
+            if dates.len() < 2 || dates.iter().all(|d| *d == bulletin) {
+                return None;
+            }
+            let open = format_date_long(bulletin);
+            let listed = dates
+                .iter()
+                .map(|d| format_date_long(*d))
+                .collect::<Vec<String>>()
+                .join(" and ");
+            return Some(format!(
+                "These words name a Sunday in relative words that would be \
+                 {open}. The dates in parentheses do not agree with \
+                 each other: {listed}. The bulletin open is for {open}."
+            ));
+        }
         let dates = distinct_parenthesized_dates(self);
         if dates.is_empty() {
             return None;
@@ -1542,8 +1895,16 @@ pub fn week_verdict(c: &Contribution, bulletin: Option<SimpleDate>) -> WeekVerdi
             // Round 9 (R9-10): stacked groups are each
             // compared; any disagreement with the
             // resolution arms and names the disagreeing
-            // date.
+            // date. Round 10 (R10-7): a DifferentSunday
+            // verdict never carries the open bulletin's
+            // own date — where the first disagreeing
+            // group IS the bulletin's date, the outcome
+            // is the SameSunday-with-note composition
+            // (the bulletin-equal parenthesis is
+            // agreement evidence, as in R9-11), and the
+            // note names the disagreeing garnish.
             match dates.iter().find(|d| **d != resolved) {
+                Some(said) if *said == open => WeekVerdict::SameSunday,
                 Some(said) => WeekVerdict::DifferentSunday(*said),
                 None => WeekVerdict::DifferentSunday(resolved),
             }
@@ -2901,25 +3262,33 @@ Youth group meets Wednesday at 6 PM.
         // The Sunday-after mirror (RT9-10): "(October 25)
         // (November 1)" — the last group is the resolution
         // (November 1) and read clean, while the earlier
-        // group disagreed with it. It now arms, naming
-        // the disagreeing date, and the review's sentence
-        // names the resolution and both groups.
+        // group disagreed with it.
+        // CHANGED in round 10 (R10-7, flagged): this shape
+        // used to expect DifferentSunday(October 25) —
+        // a verdict carrying the open bulletin's own
+        // date, the contract wart review MINOR-2 named.
+        // The verdict is now SameSunday on the
+        // bulletin-equal parenthesis, and the note (the
+        // same-Sunday sentence, not the armed one) names
+        // the resolution and both groups.
         let text = "For Sunday: the Sunday after next Sunday (October 25) (November 1)\n\n## Announcement\n\nHi.\n";
         let c = parse_contribution(text, today()).expect("parses");
         assert_eq!(c.for_sunday_parenthesized_dates, vec![oct(25), nov(1)]);
         assert_eq!(
             week_verdict(&c, Some(oct(25))),
-            WeekVerdict::DifferentSunday(oct(25))
+            WeekVerdict::SameSunday,
+            "a DifferentSunday verdict never carries the bulletin's date"
         );
         let sentence = c
-            .parenthesized_different_sentence(oct(25))
-            .expect("the stacked sentence stands in for the armed line");
+            .parenthesized_same_sunday_sentence(oct(25))
+            .expect("the SameSunday note names the disagreeing garnish");
         assert_eq!(
             sentence,
-            "These words name a Sunday in relative words that would be \
-             Sunday, November 1, 2026. The dates in parentheses do not agree \
-             with each other: Sunday, October 25, 2026 and Sunday, November 1, \
-             2026. The bulletin open is for Sunday, October 25, 2026."
+            "These words say they are for Sunday, October 25, 2026, the date \
+             written in parentheses. The words also name a Sunday in relative \
+             words that would be Sunday, November 1, 2026. The dates in \
+             parentheses do not agree with each other: Sunday, October 25, \
+             2026 and Sunday, November 1, 2026."
         );
         // Both groups agreeing with the resolution reads
         // exactly as the single agreeing group does.
@@ -3157,5 +3526,390 @@ Youth group meets Wednesday at 6 PM.
         let c = parse_contribution(text, today()).expect("parses");
         assert_eq!(c.for_date, Some(oct(25)));
         assert_eq!(c.for_sunday_second_date, None);
+    }
+
+    #[test]
+    fn r10b_a_second_date_before_the_read_date_is_noted() {
+        // Round 10 (R10-4, red team RT10-D1 verbatim):
+        // "Use November 1, not Sunday, October 25, 2026"
+        // read October 25 with the November 1 standing
+        // BEFORE it invisible — the second-date scan only
+        // looked after the read date. The scan now reads
+        // the whole line: the before-the-date correction
+        // earns the same note, and the same arming, as
+        // the after-the-date case pinned in round 9
+        // (the read date governs; the verdict stays
+        // SameSunday, unarmed, beside the note).
+        let text =
+            "For Sunday: Use November 1, not Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "the framed date still governs");
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SameSunday,
+            "armed exactly as the after-the-date case: not at all"
+        );
+        assert_eq!(c.for_sunday_second_date, Some(nov(1)));
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+        assert_eq!(
+            second_dates_sentence(&c.for_sunday_second_dates),
+            "This file named another date too: Sunday, November 1, 2026. \
+             Check which date was meant."
+        );
+        // The Keep-through mirror.
+        let text =
+            "Keep-through: Use November 1, not Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(oct(25)));
+        assert_eq!(c.keep_through_second_date, Some(nov(1)));
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+        // Its twin is indistinguishable to the machinery,
+        // as the red team recorded: the framed date is
+        // followed and the other date is noted either way.
+        let text = "For Sunday: The fair moved from November 1 to Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    }
+
+    #[test]
+    fn r10b_a_wordy_trailing_group_contributes_its_date() {
+        // Round 10 (R10-5, red team RT10-D2 verbatim): a
+        // trailing group with words in it used to poison
+        // the whole line — no date read at all. A group
+        // containing exactly one absolute date now
+        // contributes it as a parenthesized date for the
+        // existing composition.
+        for line in [
+            "October 25, 2026 (correction: November 1)",
+            "October 25, 2026 (use November 1 instead)",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(oct(25)), "{line}: the line date reads");
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::SameSunday,
+                "{line}"
+            );
+            let m = c
+                .for_sunday_parenthesized_mismatch
+                .expect("the contained date is named as a parenthesized mismatch");
+            assert_eq!(m.read, oct(25), "{line}");
+            assert_eq!(m.named, nov(1), "{line}");
+            assert_eq!(
+                m.sentence(),
+                "This part names October 25, 2026, but the date in parentheses is \
+                 November 1, 2026. Check the date with the sender.",
+                "{line}: named exactly as a bare-date group is"
+            );
+            assert_eq!(
+                c.for_sunday_second_date, None,
+                "{line}: the garnish is not double-counted as a second date"
+            );
+        }
+        // The Keep-through mirror of the correction shape.
+        let text =
+            "Keep-through: October 25, 2026 (correction: November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(oct(25)));
+        let m = c
+            .keep_through_parenthesized_mismatch
+            .expect("the keep-through mirror records it too");
+        assert_eq!(m.named, nov(1));
+        // A trailing group with no date in it contributes
+        // nothing, as today: the existing verdict stands.
+        let text = "For Sunday: October 25, 2026 (Room 2)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "preserved: no date is read");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+        // A trailing group with two dates in it
+        // contributes nothing either, as today.
+        let text =
+            "For Sunday: October 25, 2026 (November 1 and November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "preserved: no date is read");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+    }
+
+    #[test]
+    fn r10b_every_disagreeing_date_is_named_on_every_shape() {
+        // Round 10 (R10-6, review MINOR-1 + red team
+        // RT10-D3): outside the Sunday-after shape only
+        // one disagreeing date was ever named, and the
+        // Keep-through stacked sentence misdescribed
+        // where the kept date came from.
+        // Keep-through relative with three groups: the
+        // last stands, and BOTH earlier disagreeing
+        // groups are named; the sentence says the kept
+        // date came from the parentheses.
+        let text =
+            "Keep-through: next Sunday (November 1) (November 8) (November 15)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(15)));
+        let m = c
+            .keep_through_parenthesized_mismatch
+            .expect("the stacked disagreement is recorded");
+        assert_eq!(m.read, nov(15));
+        assert_eq!(m.named, nov(1));
+        assert_eq!(m.also_named, vec![nov(8)], "November 8 is named too");
+        assert_eq!(
+            m.keep_through_sentence(),
+            "The dates in parentheses do not agree with each other: \
+             November 1, 2026 and November 8, 2026 and November 15, 2026. \
+             This part is read as keep through November 15, 2026. \
+             Check the date with the sender."
+        );
+        // The review lane's MINOR-1 witness: both dates
+        // were in parentheses, and the sentence now says
+        // so instead of framing one as a plain reading.
+        let text =
+            "Keep-through: next Sunday (November 1) (November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)));
+        let m = c
+            .keep_through_parenthesized_mismatch
+            .expect("the stacked disagreement is recorded");
+        assert_eq!(
+            m.keep_through_sentence(),
+            "The dates in parentheses do not agree with each other: \
+             November 1, 2026 and November 8, 2026. \
+             This part is read as keep through November 8, 2026. \
+             Check the date with the sender."
+        );
+        // Absolute Keep-through lines with two groups,
+        // both orders: every disagreeing group is named.
+        let text =
+            "Keep-through: November 8, 2026 (November 1) (November 15)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)));
+        let m = c
+            .keep_through_parenthesized_mismatch
+            .expect("both disagreeing groups are recorded");
+        assert_eq!(m.named, nov(1));
+        assert_eq!(m.also_named, vec![nov(15)]);
+        assert_eq!(
+            m.keep_through_sentence(),
+            "This part says keep through November 8, 2026, but the dates in \
+             parentheses are November 1, 2026 and November 15, 2026. \
+             Check the date with the sender."
+        );
+        let text =
+            "Keep-through: November 8, 2026 (November 15) (November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        let m = c
+            .keep_through_parenthesized_mismatch
+            .expect("both disagreeing groups are recorded, in written order");
+        assert_eq!(m.named, nov(15));
+        assert_eq!(m.also_named, vec![nov(1)]);
+        // Absolute For Sunday line with two groups.
+        let text =
+            "For Sunday: October 25, 2026 (November 1) (November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("both disagreeing groups are recorded");
+        assert_eq!(m.named, nov(1));
+        assert_eq!(m.also_named, vec![nov(8)]);
+        assert_eq!(
+            m.sentence(),
+            "This part names October 25, 2026, but the dates in parentheses are \
+             November 1, 2026 and November 8, 2026. \
+             Check the date with the sender."
+        );
+        // A middle group that agrees with the standing
+        // date does not hide the disagreeing groups
+        // around it: every distinct disagreeing date is
+        // still named.
+        let text = "For Sunday: October 25, 2026 (November 1) (October 25) (November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the disagreeing groups are recorded");
+        assert_eq!(m.named, nov(1));
+        assert_eq!(m.also_named, vec![nov(8)]);
+        // The bare relative shape gains the listing
+        // sentence: every group is named, and the
+        // bulletin is named.
+        let text =
+            "For Sunday: next Sunday (November 8) (November 15) (October 25)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::DifferentSunday(nov(8))
+        );
+        let sentence = c
+            .parenthesized_different_sentence(oct(25))
+            .expect("the bare shape gains the listing sentence");
+        assert_eq!(
+            sentence,
+            "These words name a Sunday in relative words that would be \
+             Sunday, October 25, 2026. The dates in parentheses do not agree \
+             with each other: Sunday, November 8, 2026 and Sunday, November 15, \
+             2026 and Sunday, October 25, 2026. The bulletin open is for \
+             Sunday, October 25, 2026."
+        );
+        // Two second dates: the note names both.
+        let line = "on Sunday, October 25, 2026 was when the fair was supposed to be, use November 1 instead, or November 8 instead";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(c.for_sunday_second_date, Some(nov(1)));
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+        assert_eq!(
+            second_dates_sentence(&c.for_sunday_second_dates),
+            "This file named other dates too: Sunday, November 1, 2026 and \
+             Sunday, November 8, 2026. Check which date was meant."
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SameSunday,
+            "the note still changes no verdict"
+        );
+    }
+
+    #[test]
+    fn r10b_a_different_sunday_verdict_never_carries_the_bulletins_date() {
+        // Round 10 (R10-7, review MINOR-2): under
+        // stacked-parenthesis composition week_verdict
+        // could return DifferentSunday(d) where d IS
+        // the open bulletin's date. The contract is
+        // pinned over the stacked shapes wholesale:
+        // for every witness, DifferentSunday(d) implies
+        // d != the bulletin's date.
+        // The review lane's witness reads SameSunday
+        // with a note naming the disagreeing garnish.
+        let text = "For Sunday: the Sunday after next Sunday (October 25) (November 8)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        let sentence = c
+            .parenthesized_same_sunday_sentence(oct(25))
+            .expect("the SameSunday note stands");
+        assert!(
+            sentence.contains("Sunday, November 8, 2026"),
+            "the disagreeing garnish is named in the note: {sentence}"
+        );
+        // The wholesale pin over the stacked shapes,
+        // both group orders and both bulletins.
+        let shapes: [(&str, SimpleDate); 10] = [
+            (
+                "the Sunday after next Sunday (October 25) (November 8)",
+                oct(25),
+            ),
+            (
+                "the Sunday after next Sunday (October 25) (November 1)",
+                oct(25),
+            ),
+            (
+                "the Sunday after next Sunday (November 8) (October 25)",
+                oct(25),
+            ),
+            (
+                "the Sunday after next Sunday (November 1) (November 8)",
+                oct(25),
+            ),
+            ("the Sunday after next Sunday (October 25)", oct(25)),
+            ("the Sunday after next Sunday (November 8)", oct(25)),
+            (
+                "the Sunday after next Sunday (November 1) (November 8)",
+                nov(1),
+            ),
+            ("next Sunday (November 1) (October 25)", oct(25)),
+            ("next Sunday (October 25) (November 1)", oct(25)),
+            ("next Sunday (November 8) (November 15)", oct(25)),
+        ];
+        for (line, bulletin) in shapes {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            if let WeekVerdict::DifferentSunday(d) = week_verdict(&c, Some(bulletin)) {
+                assert_ne!(
+                    d,
+                    bulletin,
+                    "{line} against {}: DifferentSunday never carries the bulletin's date",
+                    format_date_long(bulletin)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn r10b_paren_only_for_sunday_parity_and_a_mid_date_group() {
+        // Round 10 (R10-10, red team RT10-D4): a
+        // paren-only For Sunday line read NoSundayNamed
+        // against every bulletin while the identical
+        // Keep-through line read its date fine.
+        let text = "For Sunday: (October 25)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "the paren-only date reads");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SameSunday,
+            "composed by the existing rules, as Keep-through is"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::DifferentSunday(oct(25))
+        );
+        let text = "Keep-through: (October 25)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(oct(25)), "the parity shape itself");
+        assert_eq!(c.keep_through_parenthesized_mismatch, None);
+        // Stacked paren-only groups: the last stands and
+        // the earlier disagreement is recorded, its
+        // source stated as the parentheses.
+        let text = "For Sunday: (October 25) (November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)));
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the stacked paren-only disagreement is recorded");
+        assert_eq!(m.read, nov(1));
+        assert_eq!(m.named, oct(25));
+        assert_eq!(
+            m.sentence(),
+            "The dates in parentheses do not agree with each other: \
+             October 25, 2026 and November 1, 2026. \
+             This part is read as naming November 1, 2026. \
+             Check the date with the sender."
+        );
+        // A group standing between a month-day and its
+        // year does not poison the plain date: it reads
+        // October 25, 2026 with the November 1 group
+        // compared as garnish, on both lines.
+        let text = "For Sunday: October 25 (November 1), 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)));
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the mid-date group is compared as garnish");
+        assert_eq!(m.read, oct(25));
+        assert_eq!(m.named, nov(1));
+        assert_eq!(
+            c.for_sunday_second_date, None,
+            "the garnish is not double-counted as a second date"
+        );
+        let text = "Keep-through: October 25 (November 1), 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(oct(25)));
+        let m = c
+            .keep_through_parenthesized_mismatch
+            .expect("the keep-through mirror compares it too");
+        assert_eq!(m.named, nov(1));
+        // The accepted boundary stands (R10-10c): a
+        // group followed by other words, or standing
+        // before the phrase, stays unread.
+        let text = "For Sunday: next Sunday (October 25) please\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+        let text = "For Sunday: (October 25) next Sunday\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.for_date, None);
+        assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
     }
 }

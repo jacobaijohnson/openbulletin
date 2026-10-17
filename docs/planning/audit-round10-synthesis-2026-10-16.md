@@ -374,7 +374,95 @@ longer seeks before a read that starts where the file's cursor already stands
 
 ## Shipped addendum, R10-B
 
-_(appended by the R10-B builder with real numbers and flagged pin changes)_
+Shipped 2026-10-17 on top of `73f7362` (R10-A). All five findings are fixed in
+`crates/ob-extract/src/contribution.rs`, with the review window's second-date
+notes in `crates/ob-app/src/main.rs` switched to the plural forms. Suite:
+**645 passed / 0 failed** unpiped (baseline 640 + 5 new pins, all in
+ob-extract's contribution tests, 36 → 41 there; ob-extract 156 → 161),
+clippy exit 0 with no warnings. The fake-helper ETXTBSY flake did not fire
+in this batch's runs. One pre-existing test was changed, flagged below.
+
+**R10-4 — the second-date scan reads the whole line.** `second_dates_in_line`
+(replacing `second_date_in_line`) scans every date-shaped run in the line,
+before the read date as well as after it; the read date itself — or, on a
+Sunday-after line, its base — is the anchor and never a second date, and
+every other distinct date is collected in written order into the new
+`for_sunday_second_dates` / `keep_through_second_dates` lists (the round-9
+single fields stay, as the first entry). "Use November 1, not Sunday,
+October 25, 2026" now notes November 1 with the verdict exactly as the
+after-the-date case: SameSunday, unarmed, the framed date governing. The
+framed-prose correction that already fired (5d1) is unchanged, sentence
+included.
+
+**R10-5 — a trailing group contributes the date it contains.** A shared
+`group_date` reader serves both trailing-group walks: a bare-date group
+contributes its date as before; a group with words contributes the one
+absolute date found inside it by the line's own prefix reader, and a group
+containing none or several contributes nothing, as today — the no-date and
+two-date witnesses keep their existing verdicts (no date read) verbatim.
+"October 25, 2026 (correction: November 1)" and "(use November 1 instead)"
+read October 25 with November 1 recorded as the parenthesized mismatch,
+named exactly as a bare-date group is, and not double-counted as a second
+date.
+
+**R10-6 — every distinct disagreeing date is named, and the governing
+date's source is described as it actually was.** `ParenthesizedDateMismatch`
+now carries every distinct disagreeing group date (`named` plus
+`also_named`, written order) and a `read_from_parentheses` flag. The
+mismatch sentences list all of them on the absolute For Sunday and
+Keep-through shapes; when the kept date itself came from a parenthesized
+group (stacked groups on a relative Keep-through line, or a paren-only
+line), the Keep-through sentence states that instead of framing a plain
+reading against a parenthesis: "The dates in parentheses do not agree with
+each other: … This part is read as keep through …". The bare relative shape
+gains the Sunday-after listing sentence (every group named, the bulletin
+named) via `parenthesized_different_sentence`, and the second-date notes
+gain plural forms (`second_dates_sentence`,
+`keep_through_second_dates_sentence`) naming every distinct second date;
+the single-date sentences are byte-for-byte as before. Witnesses pinned:
+Keep-through relative with three groups keeps November 15 and names
+November 1 and November 8; absolute lines with two groups name both, in
+either order; a middle group agreeing with the standing date hides
+nothing.
+
+**R10-7 — a DifferentSunday verdict never carries the bulletin's date.**
+In the Sunday-after stacked arm of `week_verdict`, where the first group
+disagreeing with the resolution IS the open bulletin's date, the outcome
+is now SameSunday, and `parenthesized_same_sunday_sentence` extends to
+that shape: it names the bulletin date as the parenthesized standing date,
+the relative resolution, and every group, the disagreeing garnish
+included. A wholesale pin asserts the contract over ten stacked witness
+shapes in both group orders against both bulletins: for every witness,
+DifferentSunday(d) implies d ≠ the bulletin's date.
+
+**R10-10 — paren-only For Sunday parity, and a mid-date group does not
+poison.** (a) `date_line` reads a line that is only parenthesized groups
+exactly as Keep-through has since round 9: the last group stands, an
+earlier disagreeing group is recorded against it with its source stated
+as the parentheses — "(October 25)" is SameSunday against the October 25
+bulletin, DifferentSunday(October 25) against November 1. (b) A group
+standing between a month-day and its year (pinned by the comma-and-year
+that follows it, and by the line reading as a date once the group is
+taken out) is compared as garnish: "October 25 (November 1), 2026" reads
+October 25, 2026 with November 1 as the mismatch, on both lines, and the
+garnish is not double-counted as a second date. (c) The accepted boundary
+stands, pinned in the new test: "next Sunday (October 25) please" and
+"(October 25) next Sunday" still read nothing.
+
+**Flagged pre-existing test change (1).**
+`r9c_stacked_parentheses_are_all_compared`: only its Sunday-after mirror
+block changed. It expected `DifferentSunday(October 25)` against the
+October 25 bulletin for "the Sunday after next Sunday (October 25)
+(November 1)" — the exact R10-7 contract violation (a DifferentSunday
+carrying the bulletin's own date). It now expects SameSunday, and its
+sentence assertion moved from `parenthesized_different_sentence` to the
+extended `parenthesized_same_sunday_sentence`, whose text names the
+standing date, the resolution, and both groups. The change and its reason
+are also recorded in a comment in the test. Every other assertion in that
+test, and every other pre-existing test in the suite, stands in its
+original expectation; all other sentence pins in this family (single
+mismatch, single second date, plain-read Keep-through provenance) are
+unchanged.
 
 ## Shipped addendum, R10-C
 

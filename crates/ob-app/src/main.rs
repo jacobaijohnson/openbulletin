@@ -3754,6 +3754,8 @@ fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec
             keep_through_parenthesized_mismatch: c.keep_through_parenthesized_mismatch.clone(),
             for_sunday_second_date: c.for_sunday_second_date,
             keep_through_second_date: c.keep_through_second_date,
+            for_sunday_second_dates: c.for_sunday_second_dates.clone(),
+            keep_through_second_dates: c.keep_through_second_dates.clone(),
         };
         apply_contribution_judged(&mut sim, &single, &judged);
     }
@@ -12589,7 +12591,8 @@ impl App {
             return;
         }
         use ob_extract::contribution::{
-            format_date_long, keep_through_second_date_sentence, second_date_sentence,
+            format_date_long, keep_through_second_date_sentence,
+            keep_through_second_dates_sentence, second_date_sentence, second_dates_sentence,
             week_verdict, WeekVerdict,
         };
         let bulletin_date = self
@@ -12869,18 +12872,29 @@ impl App {
                             .color(self.theme.warn),
                     );
                 }
-                if let Some(second) = review.contribution.for_sunday_second_date {
-                    // Round 9 (R9-13): the For Sunday line
-                    // named another absolute date after the
-                    // one that was read. The read date still
-                    // governs; the note only says the other
-                    // date stands in the file.
+                if !review.contribution.for_sunday_second_dates.is_empty() {
+                    // Round 9 (R9-13) / round 10 (R10-4,
+                    // R10-6): the For Sunday line named
+                    // other absolute dates, before the read
+                    // date or after it. The read date still
+                    // governs; the note names every distinct
+                    // other date in the file.
+                    let sentence =
+                        second_dates_sentence(&review.contribution.for_sunday_second_dates);
+                    ui.label(egui::RichText::new(sentence).color(self.theme.warn));
+                } else if let Some(second) = review.contribution.for_sunday_second_date {
                     let sentence = second_date_sentence(second);
                     ui.label(egui::RichText::new(sentence).color(self.theme.warn));
                 }
-                if let Some(second) = review.contribution.keep_through_second_date {
-                    // Round 9 (R9-13): the same note for
-                    // the Keep-through line.
+                if !review.contribution.keep_through_second_dates.is_empty() {
+                    // Round 10 (R10-4, R10-6): the same
+                    // note for the Keep-through line,
+                    // naming every distinct second date.
+                    let sentence = keep_through_second_dates_sentence(
+                        &review.contribution.keep_through_second_dates,
+                    );
+                    ui.label(egui::RichText::new(sentence).color(self.theme.warn));
+                } else if let Some(second) = review.contribution.keep_through_second_date {
                     let sentence = keep_through_second_date_sentence(second);
                     ui.label(egui::RichText::new(sentence).color(self.theme.warn));
                 }

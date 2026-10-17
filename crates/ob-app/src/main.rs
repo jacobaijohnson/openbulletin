@@ -16560,6 +16560,138 @@ mod settings_tests {
     }
 
     #[test]
+    fn r6_credit_first_records_in_a_file_fold_and_hold_the_picture_back() {
+        // Round 6 (R6-1 / RT6-1): a hand-built bulletin
+        // file whose document.json carries two records
+        // for one picture: one holding only a credit line
+        // and one noting only the children. Standing the
+        // credit record first used to fold into a record
+        // noting children WITH a permission, and the web
+        // page published the picture. Both orders now
+        // fold to a record noting the children and no
+        // permission, and the page holds the picture back.
+        let bytes: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 5 L9 5 L5 9 Z"/></svg>"#;
+        let hash = ob_model::sha256_hex(bytes);
+        let credit = ob_model::RightsRecord {
+            credit_text: "Photo by Lee".into(),
+            ..Default::default()
+        };
+        let children = ob_model::RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let asset = |rights: ob_model::RightsRecord| ob_model::Asset {
+            sha256: hash.clone(),
+            kind: ob_model::AssetKind::Picture,
+            media_type: "image/svg+xml".into(),
+            rights,
+        };
+        let dir = std::env::temp_dir().join(format!("openbulletin-r6-obd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        for (tag, records) in [
+            (
+                "credit-first",
+                vec![asset(credit.clone()), asset(children.clone())],
+            ),
+            (
+                "children-first",
+                vec![asset(children.clone()), asset(credit.clone())],
+            ),
+        ] {
+            let mut doc = doc_with_sheet();
+            doc.assets.extend(records);
+            doc.asset_bytes.insert(hash.clone(), bytes.to_vec());
+            let (mut frame, mut placement) =
+                picture_frame(216_000, 144_000, ob_model::PictureFit::ShowWhole);
+            placement.asset = hash.clone();
+            frame.picture = Some(placement);
+            doc.panels[0].frames.push(frame);
+            let file = dir.join(format!("dup-{tag}.obd"));
+            ob_format::save(&doc, &file).expect("the file saves");
+            let loaded = ob_format::load(&file).expect("the file loads");
+            let stored: Vec<&ob_model::Asset> =
+                loaded.assets.iter().filter(|a| a.sha256 == hash).collect();
+            assert_eq!(stored.len(), 1, "{tag}: the pair folds into one record");
+            let rights = &stored[0].rights;
+            assert_eq!(rights.children_present, Some(true), "{tag}");
+            assert_eq!(rights.credit_text, "", "{tag}");
+            let (_html_bytes, report) =
+                ob_extract::html_export::export_html(&loaded).expect("the web page");
+            assert_eq!(report.children_left_out, 1, "{tag}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r6_sheet_attach_with_credit_on_the_bulletin_side_holds_the_picture_back() {
+        // Round 6 (R6-1 / RT6-1): no duplicates needed.
+        // The bulletin holds a picture with only a credit
+        // line; an ordinary sheet noting only children in
+        // the same picture attaches, and the composed
+        // record used to note a permission neither side
+        // claimed for a children picture. The attach now
+        // composes no permission, and the web page holds
+        // the picture back.
+        let bytes: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 5 L9 5 L5 9 Z"/></svg>"#;
+        let hash = ob_model::sha256_hex(bytes);
+        let in_bulletin = ob_model::RightsRecord {
+            source: "the church camera".into(),
+            credit_text: "Photo by Jane Doe".into(),
+            ..Default::default()
+        };
+        let in_sheet = ob_model::RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let asset = |rights: ob_model::RightsRecord| ob_model::Asset {
+            sha256: hash.clone(),
+            kind: ob_model::AssetKind::Picture,
+            media_type: "image/svg+xml".into(),
+            rights,
+        };
+        let mut ins = new_insert("sheet-9", "Photo sheet");
+        let (mut frame, mut placement) =
+            picture_frame(216_000, 144_000, ob_model::PictureFit::ShowWhole);
+        placement.asset = hash.clone();
+        frame.picture = Some(placement);
+        ins.panels[0].frames.push(frame);
+        let mut host = doc_with_sheet();
+        host.assets.push(asset(in_sheet));
+        host.asset_bytes.insert(hash.clone(), bytes.to_vec());
+        let dir = std::env::temp_dir().join(format!("openbulletin-r6-obdi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("photo-sheet.obdi");
+        ob_format::save_insert(&ins, &host, &file).expect("the sheet saves");
+        let mut app = App {
+            doc: doc_with_sheet(),
+            ..Default::default()
+        };
+        app.doc.assets.push(asset(in_bulletin));
+        app.doc.asset_bytes.insert(hash.clone(), bytes.to_vec());
+        app.add_insert_from_library(&file);
+        let stored = app
+            .doc
+            .assets
+            .iter()
+            .find(|a| a.sha256 == hash)
+            .expect("the picture stays");
+        assert_eq!(stored.rights.children_present, Some(true));
+        assert_eq!(stored.rights.credit_text, "");
+        assert_eq!(stored.rights.source, "the church camera");
+        let (mut placed, mut placed_at) =
+            picture_frame(216_000, 144_000, ob_model::PictureFit::ShowWhole);
+        placed_at.asset = hash.clone();
+        placed.picture = Some(placed_at);
+        app.doc.panels[0].frames.push(placed);
+        let (_html_bytes, report) =
+            ob_extract::html_export::export_html(&app.doc).expect("the web page");
+        assert_eq!(report.children_left_out, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn insert_findings_name_empty_and_out_of_date_sheets() {
         let mut doc = doc_with_sheet();
         // The fresh sheet has one empty paragraph: no words.

@@ -736,7 +736,8 @@ const WEB_PPI: f64 = 150.0;
 /// the office's own note, read at face value, not a
 /// proof that a permission exists. The same test lives
 /// in ob-model (`rights_permission_noted`), where the
-/// rights merge fences its fills by it (round 5, F2);
+/// rights merge enforces its no-manufactured-permission
+/// property by it (round 5, F2; round 6, R6-1);
 /// the two copies are one rule and must stay one rule.
 fn permission_noted(rights: &ob_model::RightsRecord) -> bool {
     !rights.credit_text.trim().is_empty()
@@ -1303,6 +1304,54 @@ mod tests {
             "A picture with children in it belongs here; it is in the printed bulletin."
         ));
         assert_eq!(report.children_left_out, 1);
+    }
+
+    #[test]
+    fn a_permission_composed_in_either_order_does_not_unlock_a_picture_of_children() {
+        // Round 6 (R6-1 / RT6-1): the same pair composed
+        // in the other order — the credit line (or a CC0
+        // license) standing first, the children note
+        // arriving second — published the picture through
+        // this export. Both orders, for both permission
+        // shapes, now hold the picture back.
+        let credit = RightsRecord {
+            title: "Church picnic".into(),
+            credit_text: "Photo by Lee".into(),
+            ..Default::default()
+        };
+        let cc0 = RightsRecord {
+            title: "Church picnic".into(),
+            license: LicenseKind::Cc0,
+            ..Default::default()
+        };
+        let children = RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let merged_records = [
+            ob_model::merge_rights_records(&credit, &children),
+            ob_model::merge_rights_records(&children, &credit),
+            ob_model::merge_rights_records(&cc0, &children),
+            ob_model::merge_rights_records(&children, &cc0),
+        ];
+        for merged in merged_records {
+            assert_eq!(merged.children_present, Some(true));
+            assert!(!permission_noted(&merged), "{merged:?}");
+            let mut doc = sample_doc();
+            let asset = doc
+                .assets
+                .iter_mut()
+                .find(|a| a.rights.title == "Church picnic")
+                .expect("the sample photo");
+            asset.rights = merged;
+            let (bytes, report) = export_html(&doc).expect("export");
+            let html = String::from_utf8(bytes).expect("utf8");
+            assert!(
+                !html.contains("alt=\"Church picnic\""),
+                "a permission composed across two records unlocked a picture of children"
+            );
+            assert_eq!(report.children_left_out, 1);
+        }
     }
 
     /// The standard sample: the LetterBifold template for

@@ -988,8 +988,9 @@ pub struct Asset {
 /// needs no one's permission (the church's own work,
 /// public domain, CC0). The two copies are one rule
 /// and must stay one rule: the export holds pictures
-/// back by it, and the merge below fences its fills
-/// by it (round 5, F2).
+/// back by it, and the merge below enforces its
+/// no-manufactured-permission property by it (round 5,
+/// F2; round 6, R6-1).
 fn rights_permission_noted(rights: &RightsRecord) -> bool {
     !rights.credit_text.trim().is_empty()
         || matches!(
@@ -1009,23 +1010,42 @@ fn rights_permission_noted(rights: &RightsRecord) -> bool {
 /// because the web page's hold-back is only as strong
 /// as the strongest note.
 ///
-/// One fill is fenced (round 5, F2): when the existing
-/// record notes children in the picture and no
-/// permission is noted on it yet, the incoming
-/// record's credit line does not fill, and neither
-/// does a license that itself counts as a noted
-/// permission (the church's own work, public domain,
-/// CC0). A permission for the web page is noted on
-/// the picture's own record by someone looking at
-/// that record; it is never manufactured by
-/// completing the pair across two records. Every
-/// other fill proceeds as usual.
+/// No merge manufactures a permission, in any order
+/// (round 5, F2, as a directional fence; round 6,
+/// R6-1, as a property of the composed record). After
+/// the fills, if the composed record notes children
+/// and notes a permission, that permission must be
+/// vouched for: a permission-satisfying field (the
+/// credit line; a license that itself counts as a
+/// noted permission, the church's own work, public
+/// domain, CC0) stands only when the record it came
+/// from itself notes children, or a children-bearing
+/// record already noted a permission on its own
+/// fields before this merge. Otherwise the field
+/// reverts to the children-bearing record's value for
+/// that field. The fill-only merge knows which side
+/// supplied each field, so the check is on provenance,
+/// not on which record happened to stand first, and
+/// a fold of three or more records holds by
+/// composition: every single merge leaves the
+/// invariant standing.
+///
+/// A license and its credit travel together (round 6,
+/// RT6-2): when a merge takes the incoming record's
+/// license but the composed record ends up holding
+/// that license with an empty credit line, although
+/// the incoming record carried a credit line that did
+/// not stand (refused above, or otherwise not
+/// filled), the license does not fill either. No
+/// merge leaves a record claiming a license whose
+/// required attribution was dropped in the same merge.
 ///
 /// The assertion fields (asserted_by, asserted_at)
 /// fill only when a substantive field filled from
 /// the same incoming record in the same merge (round
 /// 5): an assertion vouches for a fill and never
-/// rides in alone. The caller compares the result
+/// rides in alone, and a fill refused above never
+/// counts as one. The caller compares the result
 /// with the existing record to know whether anything
 /// was filled in.
 pub fn merge_rights_records(existing: &RightsRecord, incoming: &RightsRecord) -> RightsRecord {
@@ -1036,33 +1056,81 @@ pub fn merge_rights_records(existing: &RightsRecord, incoming: &RightsRecord) ->
             existing.to_string()
         }
     }
-    let fenced = existing.children_present == Some(true) && !rights_permission_noted(existing);
+    // Provenance for the two permission-satisfying
+    // fields: which side supplied the composed value.
+    let credit_from_incoming =
+        existing.credit_text.trim().is_empty() && !incoming.credit_text.trim().is_empty();
+    let license_from_incoming =
+        existing.license == LicenseKind::Unknown && incoming.license != LicenseKind::Unknown;
     let mut out = existing.clone();
     out.source = fill(&existing.source, &incoming.source);
     if existing.source_url.is_none() {
         out.source_url = incoming.source_url.clone();
     }
     if existing.license == LicenseKind::Unknown {
-        let permission_license = matches!(
-            incoming.license,
-            LicenseKind::ChurchOwned | LicenseKind::PublicDomain | LicenseKind::Cc0
-        );
-        if !(fenced && permission_license) {
-            out.license = incoming.license.clone();
-        }
+        out.license = incoming.license.clone();
     }
     out.title = fill(&existing.title, &incoming.title);
     out.creator = fill(&existing.creator, &incoming.creator);
     out.copyright_line = fill(&existing.copyright_line, &incoming.copyright_line);
-    if !fenced {
-        out.credit_text = fill(&existing.credit_text, &incoming.credit_text);
-    }
+    out.credit_text = fill(&existing.credit_text, &incoming.credit_text);
     out.licensor_ref = fill(&existing.licensor_ref, &incoming.licensor_ref);
-    out.children_present = match (existing.children_present, incoming.children_present) {
+    let children_present = match (existing.children_present, incoming.children_present) {
         (Some(true), _) | (_, Some(true)) => Some(true),
         (Some(false), _) | (_, Some(false)) => Some(false),
         _ => None,
     };
+    if children_present == Some(true) {
+        // The record (or records) bearing the children
+        // note, and whether any of them already noted a
+        // permission on its own fields before this merge.
+        let bearer = if existing.children_present == Some(true) {
+            existing
+        } else {
+            incoming
+        };
+        let bearer_noted_permission = [existing, incoming]
+            .iter()
+            .any(|r| r.children_present == Some(true) && rights_permission_noted(r));
+        if !out.credit_text.trim().is_empty() {
+            let credit_source = if credit_from_incoming {
+                incoming
+            } else {
+                existing
+            };
+            if credit_source.children_present != Some(true) && !bearer_noted_permission {
+                let reverted_credit = bearer.credit_text.clone();
+                out.credit_text = reverted_credit;
+            }
+        }
+        if matches!(
+            out.license,
+            LicenseKind::ChurchOwned | LicenseKind::PublicDomain | LicenseKind::Cc0
+        ) {
+            let license_source = if license_from_incoming {
+                incoming
+            } else {
+                existing
+            };
+            if license_source.children_present != Some(true) && !bearer_noted_permission {
+                let reverted_license = bearer.license.clone();
+                out.license = reverted_license;
+            }
+        }
+    }
+    // A license and its credit travel together: the
+    // incoming license does not stand over an empty
+    // credit line when the incoming record's own credit
+    // line did not stand in this merge.
+    if license_from_incoming
+        && out.license == incoming.license
+        && !incoming.credit_text.trim().is_empty()
+        && out.credit_text.trim().is_empty()
+    {
+        let standing_license = existing.license.clone();
+        out.license = standing_license;
+    }
+    out.children_present = children_present;
     if out != *existing {
         out.asserted_by = fill(&existing.asserted_by, &incoming.asserted_by);
         out.asserted_at = fill(&existing.asserted_at, &incoming.asserted_at);
@@ -3713,6 +3781,209 @@ mod occasion_tests {
         assert_eq!(merged.title, "Harvest supper");
         assert_eq!(merged.asserted_by, "Sam");
         assert_eq!(merged.asserted_at, "2026-10-16");
+    }
+
+    #[test]
+    fn r6_merge_never_manufactures_a_permission_in_either_order() {
+        // Round 6 (R6-1 / RT6-1): the round-5 fence faced
+        // one way. A credit-bearing record standing first
+        // and a children-noted record second composed a
+        // permission no single record ever claimed. The
+        // property is on the composed record now, so both
+        // orders end the same way.
+        let credit = RightsRecord {
+            credit_text: "Photo by Lee".into(),
+            ..Default::default()
+        };
+        let children = RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        for merged in [
+            merge_rights_records(&credit, &children),
+            merge_rights_records(&children, &credit),
+        ] {
+            assert_eq!(merged.children_present, Some(true));
+            assert_eq!(merged.credit_text, "");
+            assert!(!rights_permission_noted(&merged));
+        }
+        // A permission license standing first is fenced
+        // the same way, in either order.
+        let cc0 = RightsRecord {
+            license: LicenseKind::Cc0,
+            ..Default::default()
+        };
+        let church_owned = RightsRecord {
+            license: LicenseKind::ChurchOwned,
+            ..Default::default()
+        };
+        for merged in [
+            merge_rights_records(&cc0, &children),
+            merge_rights_records(&children, &cc0),
+            merge_rights_records(&church_owned, &children),
+            merge_rights_records(&children, &church_owned),
+        ] {
+            assert_eq!(merged.children_present, Some(true));
+            assert_eq!(merged.license, LicenseKind::Unknown);
+            assert!(!rights_permission_noted(&merged));
+        }
+        // A credit arriving on a record that itself notes
+        // children may stand: that record carried both.
+        let children_with_credit = RightsRecord {
+            credit_text: "Photo by Lee, used with parent permission.".into(),
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&children, &children_with_credit);
+        assert_eq!(
+            merged.credit_text,
+            "Photo by Lee, used with parent permission."
+        );
+        assert!(rights_permission_noted(&merged));
+        // A children record that noted its own permission
+        // keeps it and accepts other fills.
+        let fuller = RightsRecord {
+            title: "Harvest supper".into(),
+            license: LicenseKind::Cc0,
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&children_with_credit, &fuller);
+        assert_eq!(merged.title, "Harvest supper");
+        assert_eq!(merged.license, LicenseKind::Cc0);
+        assert_eq!(
+            merged.credit_text,
+            "Photo by Lee, used with parent permission."
+        );
+        // With no children note anywhere, the ordinary
+        // split-strength merge (round 4, R4-5) still
+        // carries both halves.
+        let license_only = RightsRecord {
+            license: LicenseKind::CcBy("4.0".into()),
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&credit, &license_only);
+        assert_eq!(merged.credit_text, "Photo by Lee");
+        assert_eq!(merged.license, LicenseKind::CcBy("4.0".into()));
+        assert_eq!(merged.children_present, None);
+    }
+
+    #[test]
+    fn r6_three_record_fold_never_composes_a_permission() {
+        // Round 6 (R6-1): a fold of three records (a
+        // credit record, a children record, a neutral
+        // record) in mixed orders never composes a
+        // permission, and the neutral fills still land.
+        let hash = sha256_hex(b"R6FOLD");
+        let credit = RightsRecord {
+            credit_text: "Photo by Lee".into(),
+            ..Default::default()
+        };
+        let children = RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let neutral = RightsRecord {
+            title: "Harvest supper".into(),
+            ..Default::default()
+        };
+        let asset = |rights: RightsRecord| Asset {
+            sha256: hash.clone(),
+            kind: AssetKind::Picture,
+            media_type: "image/png".into(),
+            rights,
+        };
+        for records in [
+            vec![credit.clone(), children.clone(), neutral.clone()],
+            vec![credit.clone(), neutral.clone(), children.clone()],
+            vec![children.clone(), neutral.clone(), credit.clone()],
+            vec![neutral.clone(), credit.clone(), children.clone()],
+        ] {
+            let mut assets: Vec<Asset> = records.into_iter().map(asset).collect();
+            fold_duplicate_asset_records(&mut assets);
+            assert_eq!(assets.len(), 1);
+            let rights = &assets[0].rights;
+            assert_eq!(rights.children_present, Some(true));
+            assert_eq!(rights.title, "Harvest supper");
+            assert!(!rights_permission_noted(rights), "{rights:?}");
+        }
+    }
+
+    #[test]
+    fn r6_merge_license_and_its_credit_travel_together() {
+        // Round 6 (RT6-2): into a children-noted record,
+        // the old fence blocked the incoming credit line
+        // but let its CC BY license through, claiming a
+        // license whose required attribution was dropped.
+        // The pair travels together or not at all, while
+        // fills that say nothing about the pair still land.
+        let existing = RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let incoming = RightsRecord {
+            title: "Church picnic".into(),
+            creator: "Alice".into(),
+            license: LicenseKind::CcBy("4.0".into()),
+            credit_text: "Photo by Alice, CC BY 4.0".into(),
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&existing, &incoming);
+        assert_eq!(merged.children_present, Some(true));
+        assert_eq!(merged.credit_text, "");
+        assert_eq!(merged.license, LicenseKind::Unknown);
+        assert_eq!(merged.title, "Church picnic");
+        assert_eq!(merged.creator, "Alice");
+        // The refused pair counts as no fill at all: with
+        // nothing else in the incoming record, the merge
+        // changes nothing and no assertion rides in.
+        let pair_only = RightsRecord {
+            license: LicenseKind::CcBy("4.0".into()),
+            credit_text: "Photo by Alice, CC BY 4.0".into(),
+            asserted_by: "Sam".into(),
+            asserted_at: "2026-10-16".into(),
+            ..Default::default()
+        };
+        assert_eq!(merge_rights_records(&existing, &pair_only), existing);
+        // When a credit line already stands on the
+        // existing record, the license may fill: a credit
+        // stands, which is not the harm above.
+        let credited = RightsRecord {
+            credit_text: "Photo by Alice, used with permission.".into(),
+            ..Default::default()
+        };
+        let merged = merge_rights_records(&credited, &incoming);
+        assert_eq!(merged.license, LicenseKind::CcBy("4.0".into()));
+        assert_eq!(merged.credit_text, "Photo by Alice, used with permission.");
+    }
+
+    #[test]
+    fn r6_add_asset_never_manufactures_a_permission() {
+        // Round 6 (R6-1): add_asset composes through the
+        // same merge. Bytes first held with a credit line
+        // and later given a children note (and the other
+        // order) never end up noting a permission.
+        for first_credit in [true, false] {
+            let mut doc = bare_doc();
+            let credit = RightsRecord {
+                credit_text: "Photo by Lee".into(),
+                ..Default::default()
+            };
+            let children = RightsRecord {
+                children_present: Some(true),
+                ..Default::default()
+            };
+            let (first, second) = if first_credit {
+                (credit, children)
+            } else {
+                (children, credit)
+            };
+            doc.add_asset(b"R6PIC", AssetKind::Picture, "image/png", first);
+            doc.add_asset(b"R6PIC", AssetKind::Picture, "image/png", second);
+            assert_eq!(doc.assets.len(), 1);
+            let rights = &doc.assets[0].rights;
+            assert_eq!(rights.children_present, Some(true));
+            assert!(!rights_permission_noted(rights), "{rights:?}");
+        }
     }
 
     #[test]

@@ -266,12 +266,23 @@ carries two records for the same asset hash loads with
 one composed record, merged field by field by the same
 rule, the children note included. No reader ever sees
 the shadow copy, and a copy saved onward carries the
-one folded record. One fence rides with the merge: a
-record that notes children in the picture, with no
-permission noted on it yet, does not gain a noted
-permission by filling (round 5, F2): the incoming
-record's credit line, and a license that itself counts
-as a noted permission, stay unfilled into it.
+one folded record. One property rides with the merge,
+in any order (round 5, F2; round 6, R6-1): no merge
+manufactures a permission. If the composed record
+notes children in the picture and notes a permission
+(a credit line, or a license that itself counts as
+one), that permission must be vouched for: the field
+that satisfies it stands only when the record it came
+from itself notes the children, or a children-bearing
+record already noted a permission on its own fields
+before the merge. Otherwise the field reverts to the
+children-bearing record's value for it. A license and
+its credit also travel together (round 6, RT6-2):
+when a merge takes a record's license but that same
+record's credit line does not stand in the composed
+record, the license does not fill either, so no
+composed record claims a license whose required
+credit was dropped in the merge.
 
 ### Loading rules
 

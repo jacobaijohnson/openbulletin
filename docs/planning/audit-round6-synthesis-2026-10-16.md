@@ -230,3 +230,72 @@ the editor phase.
   script cure.
 
 Baseline entering the fixes: 532 tests, clippy clean.
+
+## Shipped addendum, R6-A (2026-10-16)
+
+Rights composition integrity, shipped over HEAD
+`9ca9cd7`. `merge_rights_records` (ob-model) is still
+the single funnel every composition path runs
+through (load fold for .obd and .obdi, sheet attach,
+`add_asset`, sidecar absorb), and the two BLOCKERs
+are now properties of the composed record there, not
+a fence on the existing record:
+
+- R6-1 / RT6-1: after the fills, when the composed
+  record notes children, each permission-satisfying
+  field (credit line; ChurchOwned / PublicDomain /
+  CC0 license) stands only when the record it came
+  from itself notes children, or a children-bearing
+  record already noted a permission on its own fields
+  before the merge; otherwise the field reverts to
+  the children-bearing record's value. Provenance is
+  two booleans computed from the fill conditions
+  before any fill lands (`credit_from_incoming`,
+  `license_from_incoming`), so the check follows the
+  supplying side, not file order, and three-record
+  folds hold by composition.
+- RT6-2: when a merge takes the incoming record's
+  license but the composed record holds that license
+  with an empty credit line while the incoming record
+  carried a credit line that did not stand, the
+  license does not fill either. A credit already
+  standing on the existing record lets the license
+  fill. Refused fills still count as no fill (the
+  assertion pairing and the attach count read the
+  final composed record).
+
+FORMAT.md's merge wording was rewritten from the
+directional fence to the composed property, license
+and credit travelling together included.
+
+Tests: 532 → 541 passing, 0 failed (full workspace,
+unpiped, exit 0); clippy `--workspace --all-targets
+-- -D warnings` exit 0. Nine new tests: ob-model 4
+(either-order merge for credit, CC0, and ChurchOwned;
+three-record fold in four orders; license-and-credit
+together, including the refused pair counting as no
+fill and the standing-credit case; `add_asset` in
+both orders), ob-format 2 (the credit-first pair
+folding on load for .obd and for .obdi, both orders),
+ob-extract 1 (direct merge in both orders for credit
+and CC0 through the real `export_html`: picture held
+back), ob-app 2 (.obd load fold plus the real export
+holding the picture back in both orders; sheet
+attach with the credit on the bulletin side and the
+children note on the sheet side holding the picture
+back). The fake-helper ETXTBSY flake did not fire.
+
+One pre-existing test changed, flagged by name:
+`r5_duplicate_records_fold_in_a_sheet_file_too`
+(ob-format). Its scenario is a ChurchOwned record
+(no children note) standing first and a
+children-noted record second, and it pinned the
+ChurchOwned license standing in the folded record —
+exactly the manufactured permission RT6-1
+demonstrated, since no single record carried the
+license together with the children note. Its license
+assertion changed from ChurchOwned to Unknown; its
+other assertions (one folded record, source, title,
+children note) stand unchanged, and the test carries
+a comment saying so. No other pre-existing test was
+changed.

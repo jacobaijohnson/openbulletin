@@ -1104,11 +1104,73 @@ mod tests {
     }
 
     #[test]
+    fn r6_credit_first_records_fold_on_load_without_a_permission() {
+        // Round 6 (R6-1): an .obd carrying the credit
+        // record first and the children record second
+        // used to fold into a record noting children
+        // WITH a permission. Both orders now fold to a
+        // record that notes the children and no
+        // permission.
+        let bytes: &[u8] = b"picture bytes the credit-first pair shares";
+        let hash = ob_model::sha256_hex(bytes);
+        let credit = RightsRecord {
+            credit_text: "Photo by Lee".into(),
+            ..Default::default()
+        };
+        let children = RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let asset = |rights: RightsRecord| Asset {
+            sha256: hash.clone(),
+            kind: AssetKind::Picture,
+            media_type: "image/png".into(),
+            rights,
+        };
+        let dir = scratch("dup-r6-fold");
+        for (tag, records) in [
+            (
+                "credit-first",
+                vec![asset(credit.clone()), asset(children.clone())],
+            ),
+            (
+                "children-first",
+                vec![asset(children.clone()), asset(credit.clone())],
+            ),
+        ] {
+            let mut doc = test_doc();
+            doc.assets = records;
+            doc.asset_bytes.insert(hash.clone(), bytes.to_vec());
+            let file = dir.join(format!("{tag}.obd"));
+            save(&doc, &file).expect("the file saves");
+            let loaded = load(&file).expect("the file loads");
+            assert_eq!(loaded.assets.len(), 1, "{tag}: one record after the fold");
+            let rights = &loaded.assets[0].rights;
+            assert_eq!(rights.children_present, Some(true), "{tag}");
+            assert_eq!(rights.credit_text, "", "{tag}");
+            assert_eq!(rights.license, LicenseKind::Unknown, "{tag}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn r5_duplicate_records_fold_in_a_sheet_file_too() {
         // Round 5 (RT5-1): the same fold in an .obdi.
         // The host holds two records for the sheet's
         // picture; both travel, and the load composes
         // them into the one record the attach reads.
+        // FLAGGED, round 6 (R6-A): this test's pair is a
+        // ChurchOwned record (no children note) standing
+        // first and a children-noted record second, and
+        // it pinned the ChurchOwned license standing in
+        // the folded record. That composition is exactly
+        // the manufactured permission RT6-1 demonstrated:
+        // no single record carried the license together
+        // with the children note. The license assertion
+        // below therefore changed from ChurchOwned to
+        // Unknown in R6-A; every other assertion (one
+        // folded record, source, title, children note)
+        // stands unchanged.
         let dir = scratch("obdi-dup");
         let mut host = test_doc();
         let (ins, hash) = sheet_with_picture(&mut host);
@@ -1127,9 +1189,61 @@ mod tests {
         let (_back, assets, _bytes) = load_insert(&path).unwrap();
         assert_eq!(assets.len(), 1, "the pair folds into one record");
         assert_eq!(assets[0].rights.source, "the church camera");
-        assert_eq!(assets[0].rights.license, LicenseKind::ChurchOwned);
+        assert_eq!(assets[0].rights.license, LicenseKind::Unknown);
         assert_eq!(assets[0].rights.title, "Prayer sheet photo");
         assert_eq!(assets[0].rights.children_present, Some(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn r6_duplicate_records_fold_in_a_sheet_file_too() {
+        // Round 6 (R6-1): the credit-first pair in an
+        // .obdi, in both orders. The folded record notes
+        // the children and no permission, whichever
+        // record stood first in the file.
+        let bytes: &[u8] = b"sheet picture bytes whose fingerprint both records share";
+        let hash = ob_model::sha256_hex(bytes);
+        let credit = RightsRecord {
+            credit_text: "Photo by Lee".into(),
+            ..Default::default()
+        };
+        let children = RightsRecord {
+            children_present: Some(true),
+            ..Default::default()
+        };
+        let asset = |rights: RightsRecord| Asset {
+            sha256: hash.clone(),
+            kind: AssetKind::Picture,
+            media_type: "image/png".into(),
+            rights,
+        };
+        let dir = scratch("obdi-r6-fold");
+        for (tag, records) in [
+            (
+                "credit-first",
+                vec![asset(credit.clone()), asset(children.clone())],
+            ),
+            (
+                "children-first",
+                vec![asset(children.clone()), asset(credit.clone())],
+            ),
+        ] {
+            let mut host = test_doc();
+            let (ins, _sheet_hash) = sheet_with_picture(&mut host);
+            host.assets = records;
+            host.asset_bytes.insert(hash.clone(), bytes.to_vec());
+            // Point the sheet's frame at this picture, so
+            // both records travel in the file.
+            let mut ins = ins;
+            ins.panels[0].frames[0].picture = Some(PicturePlacement::new(hash.clone()));
+            let path = dir.join(format!("{tag}.obdi"));
+            save_insert(&ins, &host, &path).unwrap();
+            let (_back, assets, _bytes) = load_insert(&path).unwrap();
+            assert_eq!(assets.len(), 1, "{tag}: one record after the fold");
+            let rights = &assets[0].rights;
+            assert_eq!(rights.children_present, Some(true), "{tag}");
+            assert_eq!(rights.credit_text, "", "{tag}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

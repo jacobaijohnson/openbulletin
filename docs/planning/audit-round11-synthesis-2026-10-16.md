@@ -298,9 +298,62 @@ changes across R10-A/B/C verified honest; no unflagged pin moved.
 Each batch appends its dated Shipped addendum here with real numbers. Round
 12 audits the fixes; the exit bar is unchanged.
 
-## Shipped addendum, R11-0
+## Shipped addendum, R11-0 (2026-10-17)
 
-_(appended by the R11-0 builder with real numbers and the CI run outcome)_
+Both named defects fixed, plus one defect of the same class that the
+first fix unmasked; CI acceptance met on the final run below.
+
+**Defect 1 — `env!("HOME")` (commits `18c445e`).** The three
+spike-fixture test paths (`crates/ob-extract/src/html_export.rs`,
+`crates/ob-music/src/parse.rs`, `crates/ob-music/src/render.rs`) now
+resolve the home directory at runtime — `std::env::var_os("HOME")`,
+falling back to `USERPROFILE` — and join the fixture path onto it.
+Skip-when-absent is preserved exactly: with neither variable set the
+path is empty and the fixture read fails, so the test skips as it did
+for an absent fixture (verified locally both ways: fixtures present,
+the Bach counts run and pass; HOME and USERPROFILE unset, the test
+prints its skip line and passes).
+
+**Defect 2 — detached grandchild (commit `18c445e`).** The detached
+shape of `a_pipe_holding_grandchild_cannot_hold_the_caller`
+(`crates/ob-extract/src/runner.rs`) now detaches through the system
+perl's `POSIX::setsid` — `perl -e 'use POSIX qw(setsid); setsid() or
+die …; exec "sleep", "7" …' & exec true` — present on stock macOS and
+on Linux, where stock macOS ships no `setsid` command. The holder
+lands in its own session, keeps the inherited stdout pipe for the
+full sleep, and the parent shell exits at once, as the `setsid` shape
+did. Both shapes stay under `#[cfg(unix)]`; the bounds (elapsed ≥ 5 s
+and < 7 s) and the `TimedOut` fault are unchanged. Local solo run:
+both shapes pass, 11.02 s total (≈5.5 s each: 0.5 s deadline + 5 s
+grace).
+
+**Unmasked follow-up (commit `379feff`), recorded as a scope note.**
+With the lib-test target compiling on Windows for the first time,
+the Windows job reached clippy and failed there (run 39037987472):
+in `crates/ob-extract/src/helper.rs` the test module's `use
+super::*;`, `use std::time::{Duration, Instant};`, and `const
+GOOD_DUMP` were dead on Windows — every test and helper they serve
+is a shell-script fake already gated `#[cfg(unix)]`, so the module
+is empty off Unix — and `-D warnings` made the three lints errors.
+The two imports and the const now carry the same `#[cfg(unix)]` gate
+as everything they serve; on Unix nothing changes. This was a third
+platform defect in test code, hidden behind defect 1; the batch's
+acceptance (all three OS jobs green) could not be met without it.
+
+**Local totals.** Before: 651 passed / 0 failed (the round-11
+baseline). After `18c445e`: full unpiped `cargo test --workspace`
+651 passed / 0 failed, exit 0; `cargo clippy --workspace
+--all-targets -- -D warnings` exit 0; `cargo fmt --all -- --check`
+exit 0. After `379feff`: the same three gates re-run, same numbers
+(651 / 0, clippy 0, fmt 0).
+
+**CI outcome.** Run 39037987472 (push of `18c445e`): macOS ✓,
+ubuntu ✓, Windows — Engine tests ✓ (defect 1 gone), Clippy ✗ (the
+unmasked helper.rs lints above), run failed. Run **39038915426**
+(push of `379feff`): **all three OS jobs green** — ubuntu-latest
+10m42s, windows-latest 12m44s (every step, including Clippy and
+Build desktop app), macos-latest 8m44s. The R11-0 acceptance bar is
+met.
 
 ## Shipped addendum, R11-A
 

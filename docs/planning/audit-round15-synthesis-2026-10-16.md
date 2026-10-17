@@ -193,3 +193,59 @@ Judgment calls, stated plainly:
 3. RT15-4's innocent-suppression family (drop-off, forget-me-nots,
    weather delay, and the rest) was not touched, per the standing
    R13-6/RT14-6 acceptance.
+
+## Shipped addendum, R15-B — 2026-10-17
+
+Batch R15-B (anchor bound + pin coverage) shipped in
+`crates/ob-extract/src/contribution.rs` only: **698 → 700 tests
+passing, 0 failed** (full workspace suite run unpiped on the
+final tree, cargo exit code 0 read from a file; run twice, same
+totals), **clippy clean** (`--workspace --all-targets -- -D
+warnings`, exit 0). Two new pins, both `r15b_*`. **No
+pre-existing test was changed** — the r14b pins use file dates
+within days of their todays (7 days for the mixed pin, same-day
+for the same-week pin), so none falls outside the new bound, and
+every round 13–15 held shape stands at its shipped expectation.
+Neither the fake-helper ETXTBSY flake nor timing contention
+fired in either full run.
+
+What landed, per disposition:
+
+- **R15-4.** The anchor resolution in
+  `parse_contribution_anchored` — the one site every caller
+  inherits, so the app scan needed no change — gains the
+  plausibility bound: the file date anchors only when it is
+  valid, not after today, and at most 28 days before today
+  (`add_days(d, 28) >= today`); an older file date falls back
+  to today exactly like missing/invalid. The reason stands in
+  a comment at the site: four weeks covers the late-file harm
+  (the R14-6 file one to two weeks late stays anchored);
+  beyond it a preserved timestamp is more likely than a
+  month-old contribution. Pinned by
+  `r15b_file_date_plausibility_bound`, scanned Friday,
+  October 23, 2026 on the review lane's witness line "next
+  Sunday and October 25, 2026": a file date of Friday,
+  September 25 (exactly 28 days before) anchors — "next
+  Sunday" reads October 4 with October 25 noted; September 24
+  (29 days before) falls back, field-for-field identical to
+  the unanchored parse (November 1, October 25 noted); and
+  the old-September witness September 20 (33 days before)
+  likewise reads as the unanchored parse does. The
+  Keep-through mirror is pinned both ways through the same
+  resolution.
+- **R15-5 (test-only).** The existing r14b same-week pin
+  stands intact (anchor == today). Its new sibling
+  `r15b_different_day_same_week_file_date_is_identical` runs
+  the same 12-line round-13 family plus the Keep-through
+  mirror under four different-day same-week anchors —
+  Monday, October 12 through Thursday, October 15, 2026,
+  against today Friday, October 16 — asserting whole-struct
+  identity (`assert_eq!` on the whole `Contribution`) with
+  the unanchored parse for every anchor, as the review
+  lane's probe verified (0/14 diffs).
+
+No judgment calls were needed: the bound sits inside the
+anchor resolution as disposed, and no witness reading
+changed beyond what the R15-4 disposition orders — a file
+date more than 28 days old now reads at today instead of at
+the file date.

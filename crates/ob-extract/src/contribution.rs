@@ -3032,16 +3032,28 @@ pub fn parse_contribution(text: &str, today: SimpleDate) -> Result<Contribution,
 /// in `plain_multi_date_reading`. A file date that is
 /// missing, not a real calendar date, or after `today`
 /// falls back to `today`: the anchor never stands in
-/// the future beyond today. Every other reading in
-/// the parse — framed, relative-only, and the standing
-/// in-words memory — is anchored exactly as before.
+/// the future beyond today. Round 15 (R15-4) adds a
+/// plausibility bound on the other side: a file date
+/// more than 28 days before `today` also falls back
+/// to `today`. Every other reading in the parse —
+/// framed, relative-only, and the standing in-words
+/// memory — is anchored exactly as before.
 pub fn parse_contribution_anchored(
     text: &str,
     today: SimpleDate,
     file_date: Option<SimpleDate>,
 ) -> Result<Contribution, String> {
+    // The 28-day plausibility bound (round 15,
+    // R15-4): four weeks covers the late-file harm
+    // this anchor exists for (a file one to two
+    // weeks late); beyond it, a preserved timestamp
+    // from a zip/rsync/sync copy keeping an old
+    // mtime is more likely than a month-old
+    // contribution, and anchoring at such a date
+    // resolves relatives into a week the sender
+    // never meant — a worse read than today's.
     let anchor = match file_date {
-        Some(d) if d.is_valid() && d <= today => d,
+        Some(d) if d.is_valid() && d <= today && add_days(d, 28) >= today => d,
         _ => today,
     };
     let raw = split_contribution(text);
@@ -3469,6 +3481,14 @@ mod tests {
         SimpleDate {
             year: 2026,
             month: 10,
+            day,
+        }
+    }
+
+    fn sep(day: u32) -> SimpleDate {
+        SimpleDate {
+            year: 2026,
+            month: 9,
             day,
         }
     }
@@ -7317,6 +7337,66 @@ Youth group meets Wednesday at 6 PM.
     }
 
     #[test]
+    fn r15b_file_date_plausibility_bound() {
+        // Round 15 (R15-4): a preserved timestamp
+        // (a zip/rsync/sync copy keeping an old
+        // mtime) can make the file-date anchor WORSE
+        // than today — the review lane's witness
+        // family, scanned Friday, October 23, 2026,
+        // read an unnamed Sunday in the past under
+        // old-September anchors. The bound: the file
+        // date anchors only when it is at most 28
+        // days before today; older falls back to
+        // today, exactly like missing/invalid.
+        let late = oct(23);
+        let text = "For Sunday: next Sunday and October 25, 2026\n\n## Announcement\n\nHi.\n";
+        let plain = parse_contribution(text, late).expect("parses");
+        assert_eq!(plain.for_date, Some(nov(1)), "the unanchored control");
+        assert_eq!(plain.for_sunday_second_dates, vec![oct(25)]);
+        // Exactly 28 days before today — Friday,
+        // September 25, 2026 — anchors: at that
+        // date "next Sunday" is October 4, and the
+        // sender's explicit October 25 is noted.
+        let c = parse_contribution_anchored(text, late, Some(sep(25))).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(oct(4)),
+            "a file date exactly 28 days before today anchors"
+        );
+        assert_eq!(c.for_sunday_second_dates, vec![oct(25)]);
+        // 29 days before today — September 24 —
+        // falls back: the parse is the unanchored
+        // parse, field for field.
+        let c = parse_contribution_anchored(text, late, Some(sep(24))).expect("parses");
+        assert_eq!(
+            c, plain,
+            "a file date 29 days before today falls back to today"
+        );
+        assert_eq!(c.for_date, Some(nov(1)));
+        // The witness family itself: an
+        // old-September file date (September 20,
+        // 33 days before the October scan) reads
+        // exactly as the unanchored parse does.
+        let c = parse_contribution_anchored(text, late, Some(sep(20))).expect("parses");
+        assert_eq!(c, plain, "the old-September witness falls back to today");
+        // The Keep-through mirror shares the bound
+        // through the same anchor resolution.
+        let kt_text = "Keep-through: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let kt_plain = parse_contribution(kt_text, late).expect("parses");
+        assert_eq!(kt_plain.keep_through, Some(nov(1)));
+        assert_eq!(kt_plain.keep_through_second_dates, Vec::<SimpleDate>::new());
+        let c = parse_contribution_anchored(kt_text, late, Some(sep(25))).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(oct(4)),
+            "28 days before anchors here too"
+        );
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+        let c = parse_contribution_anchored(kt_text, late, Some(sep(24))).expect("parses");
+        assert_eq!(c, kt_plain, "29 days before falls back here too");
+    }
+
+    #[test]
     fn r14b_same_week_file_date_is_identical() {
         // Round 14 (R14-6): when the file's date IS
         // today — the normal same-week case — the
@@ -7347,6 +7427,55 @@ Youth group meets Wednesday at 6 PM.
         let plain = parse_contribution(text, today()).expect("parses");
         let anchored = parse_contribution_anchored(text, today(), Some(today())).expect("parses");
         assert_eq!(plain, anchored, "the Keep-through mirror too");
+    }
+
+    #[test]
+    fn r15b_different_day_same_week_file_date_is_identical() {
+        // Round 15 (R15-5): the r14b pin above
+        // exercises only anchor == today, where
+        // identity holds by construction. A
+        // DIFFERENT-day same-week anchor — file
+        // dates Monday, October 12 through
+        // Thursday, October 15, 2026, against
+        // today Friday, October 16 — parses
+        // field-for-field identically too, over
+        // the same round-13 family, because
+        // relative resolutions are constant
+        // within a relative week (the review
+        // lane's probe verified 0/14 diffs).
+        for file_day in [oct(12), oct(13), oct(14), oct(15)] {
+            for line in [
+                "November 1, 2026 and next Sunday",
+                "October 25, 2026 and this Sunday",
+                "next Sunday and November 1, 2026",
+                "this Sunday and November 1, 2026",
+                "October 25, 2026 and the Sunday after next Sunday",
+                "the Sunday after next Sunday and October 25, 2026",
+                "October 25, 2026 and next Sunday",
+                "next Sunday and October 25, 2026",
+                "next Sunday and next Sunday",
+                "October 25, 2026 and November 1, 2026",
+                "next Sunday",
+                "this Sunday and next Sunday",
+            ] {
+                let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+                let plain = parse_contribution(&text, today()).expect("parses");
+                let anchored =
+                    parse_contribution_anchored(&text, today(), Some(file_day)).expect("parses");
+                assert_eq!(
+                    plain, anchored,
+                    "{line}: a same-week file date ({file_day:?}) changes nothing"
+                );
+            }
+            let text = "Keep-through: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+            let plain = parse_contribution(text, today()).expect("parses");
+            let anchored =
+                parse_contribution_anchored(text, today(), Some(file_day)).expect("parses");
+            assert_eq!(
+                plain, anchored,
+                "the Keep-through mirror too ({file_day:?})"
+            );
+        }
     }
 
     #[test]

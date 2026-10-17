@@ -544,3 +544,117 @@ recognized as one, so an under-heading part for it
 lands its heading and words again under a real
 heading paragraph; the failure direction is a
 repeated placement, never a lost heading.
+
+## Shipped addendum, R7-C (2026-10-16)
+
+Date composition, shipped over HEAD `fe01627`. All
+four findings are fixed inside
+`crates/ob-extract/src/contribution.rs`, the one
+parser both date lines share (`date_line`), so the
+For Sunday and Keep-through lines inherit every fix
+together; the in-words memory stays a For Sunday
+matter, as shipped.
+
+- R7-3 (MAJOR): a new composed reading,
+  `framed_date_outcome`, runs before the plainer
+  readings in `date_line`. A weekday wearing "on"
+  directly in front of a date frames that date
+  wherever it stands in the line: "use on Monday,
+  October 25, 2026" now records the Monday mismatch
+  and yields no date (the unarmed SameSunday against
+  the October 25 bulletin is gone), and an agreeing
+  mid-sentence "on" weekday reads clean. The R5-D
+  rule stands untouched where there is no "on": "bring
+  a friend Friday, October 25, 2026" still reads
+  clean, and red team's D5b ("please note Monday,
+  October 25, 2026", no "on") is unchanged — it reads
+  the date clean with no mismatch, pinned as standing
+  in the new test for round 8 to re-probe, exactly as
+  the disposition recorded it.
+- R7-4 (MAJOR): `sunday_after_outcome` now composes
+  its base's pieces instead of giving up on them:
+  after the whole-base reading fails it takes an
+  optional trailing weekday out, reads the core, then
+  strips the base's own leading weekday (and a filler
+  "on" in front of it) and reads the date that
+  remains. A base weekday that disagrees records the
+  mismatch against the base date and yields NO date
+  — "Sunday after Tuesday, October 26, 2026" records
+  Tuesday/October 26 on both lines — and because
+  `date_line` returns that record before any other
+  reading runs, no salvage path can resurrect the
+  base date as the line's own date. The agreeing
+  control ("Sunday after Monday, October 26, 2026"
+  → November 1) keeps resolving.
+- R7-5 (MAJOR): the Sunday-after reader strips its
+  leading garnishes in a loop — an optional "on"
+  and/or "the", in either order — so "on Sunday
+  after October 25, 2026" and "on the Sunday after
+  October 25, 2026" resolve to November 1, 2026 and
+  arm like any named Sunday, on both lines, and the
+  trailing weekday still composes against the base
+  under the garnishes (agreeing resolves, disagreeing
+  records the mismatch against the base). The
+  relative readers (`sunday_after_relative_phrase`,
+  `relative_sunday_phrase`) compose the same way:
+  leading "on"/"the" garnishes, a "the" worn by the
+  relative base itself, and an optional trailing
+  weekday stripped for the shape match but kept in
+  the sender's remembered words — "the Sunday after
+  next Sunday (Monday)" is remembered in
+  `for_sunday_after_in_words` with the garnish
+  attached and resolves DifferentSunday against the
+  open bulletin, and "next Sunday (Monday)" is
+  remembered in `for_sunday_in_words` and reads
+  SundayInWords, exactly as the ungarnished shapes
+  behave. No composed shape falls through to a
+  silent NoSundayNamed.
+- R7-7 (MINOR): the same `framed_date_outcome`
+  checks each framing when a leading and a trailing
+  weekday frame one date: the disagreeing one —
+  leading ("on Monday, October 25, 2026 (Sunday)") or
+  trailing ("on Sunday, October 25, 2026 (Monday)") —
+  records its mismatch and no date results, on both
+  lines; both agreeing reads the date clean.
+
+Tests: 581 → 587 passing, 0 failed (full workspace,
+unpiped, `--no-fail-fast`, all 28 suite results ok,
+exit 0, re-run on the final code after the fmt and
+clippy passes); clippy `--workspace --all-targets --
+-D warnings` exit 0. Six new tests, all in
+ob-extract's contribution module, each probe verbatim
+with parse-level fields and `week_verdict` where the
+red team probed the verdict: the mid-sentence "on"
+mismatch on both lines plus its agreeing form and
+the D5b standing pin (R7-3); the failed Sunday-after
+base on both lines, plain and "the"-led (R7-4); the
+composed "on"/"on the" Sunday-after shapes resolving
+and arming to November 1, Keep-through included,
+plus the trailing weekday under the garnishes
+(R7-5); the relative shapes with garnish attached —
+the trailing weekday, a leading "on the", a "the"
+before the relative base — remembered and resolved
+(R7-5); the combined leading + trailing shapes, both
+mirrors and Keep-through, plus the both-agreeing
+control (R7-7); and a controls test pinning the bare
+"Sunday after October 25, 2026", the agreeing-base
+"Sunday after Monday, October 26, 2026", and "bring
+a friend Friday, ..." as still standing (the
+ungarnished relative controls stand in the
+pre-existing RT6-9 / RT5-6 tests, unchanged and
+green). The fake-helper ETXTBSY flake did not fire.
+
+Pre-existing tests changed — none. Every round-3
+through round-6 date pin (leading "on", trailing
+weekday, Sunday-after trailing composition, relative
+shapes, ordinary text) holds exactly as written
+under the composed readings.
+
+One scope note, stated plainly: review M3's probe
+list also carried "the Sunday after next Sunday
+(October 25)" — a trailing absolute date in
+parentheses, not a weekday garnish. That shape is
+not among R7-5's dispositioned shapes, and it still
+reads as naming no Sunday; the trailing garnish this
+batch composes is the weekday, as RT6-8 established
+and R7-5 dispositioned.

@@ -232,7 +232,105 @@ Each batch appends its dated Shipped addendum here with real numbers. Round
 
 ## Shipped addendum, R12-A
 
-_(appended by the R12-A builder with real numbers and flagged pin changes)_
+Shipped 2026-10-17. One file changed:
+`crates/ob-extract/src/contribution.rs`. No `ob-app` sentence
+changed — with the line's date read again (R12-6), the review's
+first line follows the standing verdict sentences, and the
+NoSundayNamed arm's own guard already speaks the read date
+when one stands. Tests: **662 → 667 passing** (workspace,
+unpiped, exit 0), clippy `--workspace --all-targets -D warnings`
+exit 0, `cargo fmt --all` applied. Five new pins, all `r12a_*`
+in the contribution tests; one flagged pre-existing pin change
+(below).
+
+What shipped, per finding:
+
+- **R12-1.** The governor families are completed behind the
+  one group analysis: negation/cancellation adds skip, except,
+  rather than, instead of, cancelled/canceled, bare no,
+  isn't/aren't/wasn't/weren't (with unpunctuated twins), and
+  never mind beside the R11 set; origin/past adds previously,
+  formerly, used to be, was, and old date. The full set is
+  pinned on the relative path, and every phrasing is also
+  pinned paren-only, on the Keep-through trailing path, on
+  the Keep-through fallback, and in absolute composition.
+  Two review-probed phrasings stay outside the disposition's
+  set and outside the families — "(won't be November 1)" and
+  "(wrong: November 1)" still contribute — the word list's
+  known limit, recorded here so round 13 does not rediscover
+  it as a regression.
+- **R12-2.** Qualification is per date occurrence (the
+  positional scan no longer dedupes by value), and a
+  governor's window is the tokens after the previous
+  occurrence's end and after the last clause break before
+  the date: a governor is spent on the one date in its own
+  clause. "(ignore November 1, use November 8)",
+  "(not November 1, November 8)", and "(moved from
+  November 1 to November 8)" all read November 8 as the
+  group's date on the relative, paren-only, and
+  Keep-through paths; "(not November 1, November 1)" reads
+  November 1 by its ungoverned second standing. The same
+  clause rule frees the dates a governor never reached:
+  "(notes from the pastor, November 1)" now names
+  November 1 as garnish instead of dropping it in silence,
+  and the common-word care is pinned — "(choir was
+  singing, November 1)", "(no rehearsal, November 1)",
+  and "(it was moved, November 1)" all still contribute
+  November 1, while "(ignore it: November 1)" still
+  governs. "(moved to …)" and "(correction: …)" are
+  untouched and still contribute.
+- **R12-6.** A plain line naming two or more framed dates
+  and reading in no other way now reads by first-date
+  primacy (`plain_multi_date_reading` in `date_line`, on
+  the bare line and on the de-grouped core): "October 25,
+  2026 and November 1, 2026" (and the "/" and mid-group
+  "(Room 2)" forms) reads October 25 with November 1 on
+  the second-date note, armed against a November 1
+  bulletin; the same date written twice reads as that
+  date plainly, nothing noted. A line naming a single
+  passing date ("October 25, 2026 please") keeps its
+  standing no-read, and NoSundayNamed is again reserved
+  for lines naming no date.
+- **R12-7.** (a) A trailing governor disqualifies the
+  date it follows: cancelled/canceled anywhere in the
+  words after a date (up to the next date) cancels it,
+  and not / no longer after the group's last date —
+  with no later date to govern — falls back on the date
+  before it. "(November 1, cancelled)" contributes
+  nothing on every path; the held "(November 1, not
+  October 25)" still reads November 1, the trailing
+  "not" governing the date after it; "(November 1,
+  cancelled, November 8)" reads November 8. (b)
+  `analyze_group` unwraps inner parentheses before
+  reading, so "((November 1))" reads its date on the
+  paren-only, relative, and Keep-through paths, and a
+  nested governor ("(note (not November 1))") still
+  governs through them.
+- **R12-9(a).** `second_dates_in_line` collects
+  Sunday-after phrase runs wherever they stand: a
+  phrase run's value is its resolution and its base is
+  consumed with it. "Sunday after October 18, 2026 and
+  Sunday after October 25, 2026" reads October 25 and
+  now notes November 1 (the second phrase's
+  resolution); a plain run equal to the standing base
+  is a restatement and is never noted — the
+  October 20 restatement witness notes nothing, and
+  the same phrase twice notes nothing. The round-11
+  held controls (two plain runs after a phrase; a base
+  standing after a plainly read date) stand unchanged.
+
+Flagged pre-existing pin change (one):
+`r11c_non_contributing_groups_name_alternatives_and_never_poison`,
+its nested-group block. It expected "next Sunday (note
+(November 1))" to resolve as SundayInWords with the
+nested date invisible — the R12-7(b) defect itself
+(RT12-5: the flat "(note: November 1)" control has always
+contributed). The block now expects the through-parentheses
+reading: November 1 remembered as the group's date,
+DifferentSunday(November 1) against the October 25
+bulletin, and the same date recorded as garnish mismatch
+on the absolute line; a FLAGGED comment in the test body
+states the reason. No other pre-existing test changed.
 
 ## Shipped addendum, R12-B
 

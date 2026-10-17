@@ -128,7 +128,16 @@ pub fn render_pdf(helper: &Path, pdf: &Path, out_dir: &Path) -> Result<(), Strin
 
 #[cfg(test)]
 mod tests {
+    // Every test and helper below is #[cfg(unix)] (the
+    // fake helpers are shell scripts), so the imports
+    // and GOOD_DUMP carry the same gate: on Windows the
+    // module is empty, and the ungated forms were dead
+    // there — invisible until the lib-test target
+    // compiled on Windows at all (R11-0), when clippy's
+    // -D warnings made them errors.
+    #[cfg(unix)]
     use super::*;
+    #[cfg(unix)]
     use std::time::{Duration, Instant};
 
     /// A fake helper: a small shell script in a scratch
@@ -205,6 +214,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     const GOOD_DUMP: &str = "{\"schema_version\":2,\"source_kind\":\"pdf\",\
         \"source_name\":\"fake.pdf\",\"source_bytes\":3,\"extractor\":\"fake\",\
         \"pages\":[],\"spans\":[]}";

@@ -316,10 +316,19 @@ mod tests {
                 }
             }
         }
-        let path = concat!(
-            env!("HOME"),
-            "/workspace/openbulletin-fixtures/music-spike/ein-feste-burg.musicxml"
-        );
+        // Runtime home lookup, not compile-time env!:
+        // HOME is not set on Windows runners (USERPROFILE
+        // is), so the old form did not compile there. With
+        // neither variable set the path is empty and the
+        // read below fails, skipping exactly as an absent
+        // fixture does.
+        let path = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(|home| {
+                std::path::PathBuf::from(home)
+                    .join("workspace/openbulletin-fixtures/music-spike/ein-feste-burg.musicxml")
+            })
+            .unwrap_or_default();
         let Ok(bytes) = std::fs::read(path) else {
             eprintln!("spike fixture absent; skipping");
             return;

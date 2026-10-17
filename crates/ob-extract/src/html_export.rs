@@ -1795,10 +1795,19 @@ mod tests {
         // The real thing, when the spike fixtures are on
         // this machine (they never enter the repo): every
         // glyph path of a Bach system must come through.
-        let path = concat!(
-            env!("HOME"),
-            "/workspace/openbulletin-fixtures/music-spike/renders/fidelity-6.5-p1.svg"
-        );
+        // Runtime home lookup, not compile-time env!:
+        // HOME is not set on Windows runners (USERPROFILE
+        // is), so the old form did not compile there. With
+        // neither variable set the path is empty and the
+        // read below fails, skipping exactly as an absent
+        // fixture does.
+        let path = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(|home| {
+                std::path::PathBuf::from(home)
+                    .join("workspace/openbulletin-fixtures/music-spike/renders/fidelity-6.5-p1.svg")
+            })
+            .unwrap_or_default();
         if let Ok(real) = std::fs::read_to_string(path) {
             let out = sanitize_svg(&real);
             assert!(out.contains("<use"), "the glyphs are instanced");

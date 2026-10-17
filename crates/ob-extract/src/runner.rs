@@ -390,9 +390,19 @@ mod tests {
         // the deadline (0.5 s) plus the grace (5 s),
         // while the holder is still alive. Both shapes:
         // a same-group grandchild, and one detached into
-        // its own session with setsid (outside the reach
-        // of the group kill).
-        for script in ["sleep 7 & exec true", "setsid sleep 7 & exec true"] {
+        // its own session (outside the reach of the group
+        // kill). Stock macOS ships no `setsid` command, so
+        // the detached shape detaches through the system
+        // perl's POSIX::setsid — present on stock macOS
+        // and on Linux — which puts the holder in its own
+        // session before it becomes the sleep, holding the
+        // inherited stdout pipe for the sleep's full life
+        // while the parent shell exits at once, exactly as
+        // the setsid command's shape did.
+        let detached = "perl -e 'use POSIX qw(setsid); \
+                        setsid() or die \"setsid: $!\"; \
+                        exec \"sleep\", \"7\" or die \"exec: $!\"' & exec true";
+        for script in ["sleep 7 & exec true", detached] {
             let start = Instant::now();
             let fault = run_with_timeout(
                 Command::new("sh").arg("-c").arg(script),

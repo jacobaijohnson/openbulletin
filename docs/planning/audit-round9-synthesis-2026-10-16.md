@@ -551,3 +551,138 @@ The fake-helper ETXTBSY flake did not fire.
   expectation. No other pre-existing test changed;
   every R7-B / R8-B presence pin passes in its
   original expectation.
+
+## Shipped addendum, R9-C (2026-10-17)
+
+Parenthesized dates, everywhere: R9-9 + R9-10 +
+R9-11 + R9-12 + R9-13, in
+`crates/ob-extract/src/contribution.rs` with the
+review sentences wired in
+`crates/ob-app/src/main.rs`. Full suite
+**631 passed / 0 failed** (baseline 626; +5 new
+pins, all in ob-extract), clippy clean (exit 0, no
+warnings), exit codes read unpiped from files
+holding cargo's own output. The fake-helper ETXTBSY
+flake did not fire.
+
+- R9-9: a Keep-through line whose own words yield
+  no date now reads a trailing parenthesized
+  absolute date as the keep-through date (the last
+  group stands, as the For Sunday memory has always
+  taken it); when the line yields a date AND a
+  parenthesized date, they compose as garnish —
+  agreeing stands, disagreeing records the
+  keep-through mismatch
+  (`keep_through_parenthesized_mismatch`, naming
+  both dates), exactly as the dated garnish rules
+  do elsewhere; stacked groups on a relative
+  Keep-through line that disagree with each other
+  record the same mismatch against the group that
+  stands. **Standing, recorded as directed:
+  relative phrases on Keep-through otherwise remain
+  unread BY DESIGN — no anchor machinery, recorded
+  since R6-D; this batch built none.** Pin:
+  `r9c_keep_through_reads_a_trailing_parenthesized_date`
+  (the RT9-9 witness "the Sunday after next Sunday
+  (November 8)", the review lane's "next Sunday
+  (November 1, 2026)", the no-parenthesis relative
+  standing, and both garnish shapes).
+- R9-10: every trailing parenthesized date group
+  on a relative phrase is remembered, in written
+  order, in the new field
+  `for_sunday_parenthesized_dates` (the round-8
+  single field stays the last group).
+  `week_verdict` compares each distinct group: all
+  agreeing reads as today; ANY disagreement arms
+  and names the disagreeing date. Pin:
+  `r9c_stacked_parentheses_are_all_compared` —
+  the bare witness "(November 1) (October 25)"
+  against the October 25 bulletin now arms as
+  DifferentSunday(November 1) instead of reading
+  SundayInWords clean; the Sunday-after mirror
+  "(October 25) (November 1)" arms naming
+  October 25, and the review's sentence names the
+  resolution and both groups; both-agree shapes
+  read clean on both phrase shapes, and non-date
+  groups ("(Room 2)", "(Sunday)") are skipped in
+  both orders, as the round-8 probes held.
+- R9-11: the parenthesized date is the sender's
+  explicit date and the stronger signal. When it
+  equals the open bulletin's date, the verdict is
+  SameSunday (unarmed) and the review's first line
+  is: "These words say they are for Sunday,
+  October 25, 2026, the date written in
+  parentheses. The words also name a Sunday in
+  relative words that would be Sunday, November 1,
+  2026." When it matches neither the resolution
+  nor the bulletin, the armed sentence names the
+  resolution and the parenthesized date: "These
+  words name a Sunday in relative words that would
+  be Sunday, November 1, 2026. The date in
+  parentheses is Sunday, November 8, 2026. The
+  bulletin open is for Sunday, October 25, 2026."
+  Never one date on both sides. Pin:
+  `r9c_a_parenthesized_date_that_matches_the_bulletin_reads_same_sunday`.
+  The review's SameSunday arm no longer assumes
+  `for_date` is set (this shape reads no date from
+  the words alone).
+- R9-12: absolute lines compose a trailing
+  parenthesized absolute date as garnish, on both
+  lines where the machinery is shared
+  (`date_line`): the line's own date governs, a
+  disagreeing parenthesis records a
+  `ParenthesizedDateMismatch` (For Sunday:
+  `for_sunday_parenthesized_mismatch`; Keep-through:
+  the same record as R9-9's), agreeing stands
+  clean. On a Sunday-after line the comparison is
+  with the resolution. A plain date line the
+  parenthesis used to poison whole ("October 25,
+  2026 (November 1)" read as NO date) is re-read on
+  its core with the trailing groups off, so the
+  parenthesis never silently kills the plain
+  reading — that shape now yields October 25 with
+  the mismatch recorded. The trailing-weekday
+  parenthesis control ("(Monday)") stands as it
+  always has. Pin:
+  `r9c_absolute_lines_compose_a_parenthesized_date_as_garnish`
+  (both shapes, agreeing and disagreeing, both
+  lines).
+- R9-13: when a date line contains a second
+  parseable absolute date after the one that was
+  read (`for_sunday_second_date` /
+  `keep_through_second_date`), the review adds a
+  note in plain words — "This file named another
+  date too: Sunday, November 1, 2026. Check which
+  date was meant." (Keep-through: "The
+  Keep-through line named another date too: …") —
+  without changing which date governs. The
+  Sunday-after base is the anchor's source, not a
+  second date; a parenthesized garnish is
+  remembered on its own record, not double-counted;
+  the same date named twice is not another date.
+  Single-date lines' sentences are byte-identical
+  to before (the note renders only when a second
+  date stands). Pin:
+  `r9c_a_second_date_in_a_date_line_is_noted_not_substituted`
+  (the RT9-13 witness verbatim on both lines).
+- **Changed pre-existing tests: one, BY DESIGN
+  (flagged loudly).** ob-extract
+  `r8c_a_parenthesized_date_on_a_relative_sunday_is_remembered_and_compared`:
+  for "the Sunday after next Sunday (October 25)"
+  against the October 25 bulletin, it asserted
+  `WeekVerdict::DifferentSunday(oct(25))` — the
+  R9-11 witness shape, whose armed sentence named
+  October 25 on both sides. Under R9-11 that
+  assertion now expects `WeekVerdict::SameSunday`,
+  and the test carries a comment recording the
+  change and its reason. That is the fix, not a
+  regression: every other assertion in the test
+  (the anchored-agreeing DifferentSunday(October 25)
+  against October 18, the November 8 third-Sunday
+  shape, the no-anchor NoSundayNamed, the bare
+  relative shapes, and the unparseable-garnish
+  shapes) passes in its original expectation, as
+  does every other R8-C pin. No other pre-existing
+  test changed. The full suite went 626 → 631 with
+  that one expectation updated and additions
+  otherwise.

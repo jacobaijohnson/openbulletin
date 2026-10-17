@@ -3749,6 +3749,11 @@ fn plan_parts(doc: &Document, c: &ob_extract::contribution::Contribution) -> Vec
             for_sunday_in_words: c.for_sunday_in_words.clone(),
             for_sunday_after_in_words: c.for_sunday_after_in_words.clone(),
             for_sunday_parenthesized_date: c.for_sunday_parenthesized_date,
+            for_sunday_parenthesized_dates: c.for_sunday_parenthesized_dates.clone(),
+            for_sunday_parenthesized_mismatch: c.for_sunday_parenthesized_mismatch.clone(),
+            keep_through_parenthesized_mismatch: c.keep_through_parenthesized_mismatch.clone(),
+            for_sunday_second_date: c.for_sunday_second_date,
+            keep_through_second_date: c.keep_through_second_date,
         };
         apply_contribution_judged(&mut sim, &single, &judged);
     }
@@ -12583,7 +12588,10 @@ impl App {
         if self.contribution_review.is_none() {
             return;
         }
-        use ob_extract::contribution::{format_date_long, week_verdict, WeekVerdict};
+        use ob_extract::contribution::{
+            format_date_long, keep_through_second_date_sentence, second_date_sentence,
+            week_verdict, WeekVerdict,
+        };
         let bulletin_date = self
             .doc
             .fields
@@ -12714,22 +12722,58 @@ impl App {
                     match verdict {
                         WeekVerdict::DifferentSunday(said) => {
                             let open = bulletin_date.expect("verdict names both");
+                            // Round 9 (R9-11/R9-10): a
+                            // Sunday-after phrase whose
+                            // parenthesized date disagrees
+                            // with the relative resolution
+                            // names the resolution and the
+                            // parenthesized date, never one
+                            // date on both sides.
+                            let sentence = review
+                                .contribution
+                                .parenthesized_different_sentence(open)
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "These words say they are for {}. The bulletin open is for {}.",
+                                        format_date_long(said),
+                                        format_date_long(open)
+                                    )
+                                });
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "These words say they are for {}. The bulletin open is for {}.",
-                                    format_date_long(said),
-                                    format_date_long(open)
-                                ))
-                                .color(self.theme.warn)
-                                .strong(),
+                                egui::RichText::new(sentence)
+                                    .color(self.theme.warn)
+                                    .strong(),
                             );
                         }
                         WeekVerdict::SameSunday => {
-                            let d = review.contribution.for_date.expect("verdict");
-                            ui.label(format!(
-                                "These words say they are for {}.",
-                                format_date_long(d)
-                            ));
+                            // Round 9 (R9-11): a
+                            // Sunday-after phrase whose
+                            // parenthesized date is the
+                            // bulletin's own date reads
+                            // SameSunday on that explicit
+                            // date, with the relative words
+                            // noted beside it; no date was
+                            // read from the words alone, so
+                            // `for_date` may be None here.
+                            let sentence = match review.contribution.for_date {
+                                Some(d) => format!(
+                                    "These words say they are for {}.",
+                                    format_date_long(d)
+                                ),
+                                None => {
+                                    let open = bulletin_date.expect("verdict names both");
+                                    review
+                                        .contribution
+                                        .parenthesized_same_sunday_sentence(open)
+                                        .unwrap_or_else(|| {
+                                            format!(
+                                                "These words say they are for {}.",
+                                                format_date_long(open)
+                                            )
+                                        })
+                                }
+                            };
+                            ui.label(sentence);
                         }
                         WeekVerdict::SundayInWords(open) => {
                             // Round 5 (RT5-6): the file
@@ -12803,6 +12847,42 @@ impl App {
                         egui::RichText::new(mismatch.keep_through_sentence())
                             .color(self.theme.warn),
                     );
+                }
+                if let Some(mismatch) = &review.contribution.for_sunday_parenthesized_mismatch {
+                    // Round 9 (R9-12): a trailing
+                    // parenthesized date on the For Sunday
+                    // line disagreed with the date the line
+                    // read. The line's date governs, and
+                    // the office hears about the
+                    // disagreement.
+                    ui.label(
+                        egui::RichText::new(mismatch.sentence()).color(self.theme.warn),
+                    );
+                }
+                if let Some(mismatch) = &review.contribution.keep_through_parenthesized_mismatch {
+                    // Round 9 (R9-9/R9-12): the same
+                    // disagreement on the Keep-through
+                    // line, including stacked parenthesized
+                    // groups that disagree with each other.
+                    ui.label(
+                        egui::RichText::new(mismatch.keep_through_sentence())
+                            .color(self.theme.warn),
+                    );
+                }
+                if let Some(second) = review.contribution.for_sunday_second_date {
+                    // Round 9 (R9-13): the For Sunday line
+                    // named another absolute date after the
+                    // one that was read. The read date still
+                    // governs; the note only says the other
+                    // date stands in the file.
+                    let sentence = second_date_sentence(second);
+                    ui.label(egui::RichText::new(sentence).color(self.theme.warn));
+                }
+                if let Some(second) = review.contribution.keep_through_second_date {
+                    // Round 9 (R9-13): the same note for
+                    // the Keep-through line.
+                    let sentence = keep_through_second_date_sentence(second);
+                    ui.label(egui::RichText::new(sentence).color(self.theme.warn));
                 }
                 let sender = match (&review.contribution.from, &review.source) {
                     (Some(f), _) => format!("From: {f}"),

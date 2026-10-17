@@ -625,3 +625,28 @@ line that stands arrived with a different attribution license
 from the one standing, the license that traveled with that credit
 is the one that stands, on the fold route and on a single merge
 alike.
+
+## Coordinator close (2026-10-17)
+
+All three batches shipped and were independently re-verified by the
+coordinator (full unpiped suite + clippy at each step): R10-A `73f7362` (640
+tests; shared-300 35.3 s → 0.128 s, shared-2,900 unfinished → 4.05 s, fake
+shadow loads; zero changed pins; the storm-gated fallback accepted as
+disclosed), R10-B `22e42fb` (645 tests; one flagged pin change — the pin had
+asserted the R10-7 violation itself), R10-C `c45f287` (651 tests; four flagged
+pin changes, all R10-8 witness assertions and the S-C sentence).
+
+One builder deviation is adjudicated here. R10-C's disposition hoped for
+pool-wide fold/single-merge triple agreement; what shipped is agreement for
+the credit-paired family (4,672 / 4,672) and at length 2 pool-wide, with
+divergences down 23,823 → 16,553 of 346,176 and every safety invariant still
+zero. The residual sits entirely in the deferral class pinned by the standing
+R8-9 pin (`r8_fold_judges_the_composed_rule_once_at_the_end`), which pins the
+two routes to differ where a credit arrives after a license's pairwise
+judgment; the disposition's own "today's judgment is unchanged" clause governs
+that class, and the batch did not touch the pin. **Accepted**: the residual is
+bounded, disclosed, manufactures nothing, and never varies the children value.
+Round 11's review lane is asked the standing question explicitly: is the
+deferral-class route divergence acceptable as adjudicated, or should single
+merges gain the same end-state judgment the fold has (and if so, at what cost
+to the R8-9 pin)?

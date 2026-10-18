@@ -237,3 +237,159 @@ What shipped, per finding:
   the same. The composition-only fence is what keeps a
   Sunday-after line's restated base a restatement: the
   fallback's second dates are never merged.
+
+## Shipped addendum, R18-B — 2026-10-17
+
+Batch R18-B (claim/for/adverb edges) shipped in
+`crates/ob-extract/src/contribution.rs`: R18-4, R18-5,
+R18-8, R18-9, R18-10, R18-11. Six new pin tests, all
+`r18b_*`, one per finding. **Tests: 721 → 727 passed,
+0 failed** (full workspace suite run unpiped on the
+final code, cargo exit 0; ob-extract 208 → 214).
+**Clippy: clean** (`--workspace --all-targets -- -D
+warnings`, exit 0, zero warnings). Neither the
+fake-helper ETXTBSY flake nor timing contention fired
+in any run. Booklet bytes 31,717 / 34,977 exact, held
+by the full suite. Held lines stand: the claim/scope
+pins ("(not moved to November 8)" nothing, "delayed
+until" no claim, deadline-until unclaimed), the
+defensible-silence family, the R18-A family
+(governance by date, group relatives, naming), the
+anchor family, and the bare-parity pin ("(it was
+moved November 1)" governs; its active twin "(we
+moved it November 1)" governs too).
+
+**Changed pre-existing tests: none.** Every witness
+below is pinned as a new `r18b_*` expectation; no
+pre-existing pin moved, and the ob-extract suite
+passed 208/208 on the production changes before the
+new pins were added.
+
+What shipped, per finding:
+
+- **R18-4 — intervening date is a from-date.** In
+  `target_claim`, a clause break standing directly
+  before an intervening date is that object's list
+  comma in front of the date, exempt like the commas
+  inside the date's own span. "(moved the meeting,
+  November 1, 2026, and the dinner to November 8)"
+  now asserts November 8 with November 1 governed and
+  named, exactly as its comma-after-date twin did, on
+  the relative, paren-only, and Keep-through paths;
+  the plain-line twin (which asserted the from-date
+  itself, November 1, before) reads the same way.
+- **R18-8 — the reach ends at a real second clause.**
+  The rule, stated plainly: after an intervening
+  date's span, the reach continues only into the
+  target construction itself — the "to" directly,
+  its lead-ins "then to" / "and to" — or into an
+  object continuation of the phrase's own object
+  ("and the dinner to …", "the dinner to …"). A new
+  finite verb clause standing there ends the reach.
+  The distinguisher is the finite verb: object
+  continuations name things; a second clause does
+  something. The finite-verb test is a closed list
+  of common clause-verb stems plus their irregular
+  forms ("sang" the witness word), the regular -ed
+  form, and a determiner rule — a verb form standing
+  directly after a determiner is that noun phrase's
+  own material ("the meeting", "the baked beans"),
+  never its verb. Judgment call, stated plainly:
+  "(moved November 1, choir sang to November 8)" no
+  longer CLAIMS November 8 and no longer names
+  November 1 as a from-date (the note is empty);
+  November 8 still asserts, standing on its own as
+  the group's lone ungoverned date — the same
+  standing "(choir sang to November 8)" has always
+  had, pinned in the same test. The claim is what
+  died; the date's own standing was never the
+  claim's to give. The check judges only the words
+  after the intervening date's span, so a
+  verb-repeated target ("moved November 1, moved to
+  November 8") still claims: the repetition
+  re-anchors the phrase, and no intervening date
+  stands after the claiming phrase.
+- **R18-5 — the for-date enters composition.** Each
+  occurrence's for-standing is recorded from its own
+  window (a passive or active "for" zone ending it;
+  a prospective "use" standing as the window's last
+  word). In a group no target claim already orders,
+  a "use" date standing after a for-date asserts
+  with the for-date named, and otherwise the
+  for-date reads by primacy with the other noted:
+  "(it was scheduled for November 1 and November 8)"
+  asserts November 1, the reversed order asserts
+  November 8, "(it was moved for November 1, use
+  November 8)" asserts November 8 with November 1
+  named. The lone for-date forms keep contributing,
+  and a "then to …" chain still reads by its claim.
+  Judgment call: the plain-line twin of the "use"
+  witness is fixed by the same composition in
+  `plain_composition` ("it was moved for November 1,
+  2026, use November 8, 2026" asserts November 8);
+  the plain primacy half needed no new code, because
+  an ungoverned plain line already reads its first
+  signal and the for-date stands first in its
+  witness.
+- **R18-9 — active "for".** `active_for_zone_start`
+  mirrors the passive zone: the window ends in
+  "for", a displacement phrase stands before it,
+  and nothing stands between the phrase and the
+  "for" but the phrase's own object (object words
+  only — no second verb, governor, auxiliary, or
+  weekday). `governed_before` takes the earlier of
+  the passive and active zone starts. "(we moved it
+  for November 1)", "(moved it for November 1)",
+  "(she moved it for November 1)", the shifted /
+  bumped / rescheduled forms, and "(we moved the
+  meeting for November 1)" all contribute November
+  1. Scope fences pinned: the bare active parity
+  "(we moved it November 1)" still governs, and an
+  active cancellation "(we cancelled it for
+  November 1)" stays silent — the family is the
+  displacement family (move/shift/bump/reschedule
+  plus the phrasal pairs), as the disposition
+  scoped it. Beside a second date the active
+  for-date composes by R18-5 primacy: "(we moved it
+  for November 1, November 8)" asserts November 1
+  with November 8 named, where RT18-4 found the
+  for-date dropped off the note entirely.
+- **R18-10 — adverb tolerance.** The three tolerance
+  scans (`passive_for_zone_start`,
+  `is_spent_predicate`, the claim-zone extension in
+  `target_claim`) now cross up to TWO consecutive
+  listed adverbs, and the closed list gains then,
+  briefly, shortly, formally, unanimously, happily —
+  24 words in all. "(it was just recently moved,
+  November 1)" spends like its has-been twin, as do
+  the reversed stack, the "has been just recently"
+  position, and the for-form. The cap is pinned:
+  "(it was still just recently moved, November 1)"
+  and "(it was just recently finally moved,
+  November 1)" still govern, and an unlisted word
+  ("family") still does not spend.
+- **R18-11 — cross-group naming.** A new reading,
+  `chain_superseded_dates`, walks a line's trailing
+  groups in written order: when two or more groups
+  contribute dates, a target phrase with its
+  "to"/"until" stands in some contributing group,
+  and the last contributing group wears a
+  "to"/"until" link of its own (the phrase may
+  stand in the first group while the last is only
+  its continuation — "(moved to November 8) (then to
+  November 15)" is the witness shape), every earlier
+  contributing group's date is a superseded target.
+  Such dates join the line's second-date note on
+  the paren-only, Keep-through, relative, and
+  salvaged-absolute paths, and they leave the
+  parenthesized-mismatch comparison — a chain link
+  is not a garnish disagreement, so the split chain
+  now carries no mismatch, exactly like its
+  single-group twin. "(November 1, moved to
+  November 8) (then to November 15)" names both
+  November 1 and November 8; the three-link split
+  names both superseded targets. Held control: a
+  bare stack "(November 1) (November 8)" has no
+  target construction, keeps its garnish mismatch
+  (named November 1 against read November 8), and
+  names nothing on the note.

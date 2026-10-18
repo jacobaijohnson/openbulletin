@@ -253,3 +253,175 @@ splits by path ("November 1, 2026, cancelled
 (November 1)" reads nothing on For Sunday, asserts
 on Keep-through) — the core/group separation the
 R19-2 adjudication left standing.
+
+## Shipped addendum, R19-B — 2026-10-17
+
+Batch R19-B (R19-4 through R19-10) shipped in
+`crates/ob-extract/src/contribution.rs` only.
+Tests: 730 passing at baseline (HEAD `9c8d650`,
+the R19-A close) → **737 passing, 0 failed**,
+full workspace, unpiped, cargo exit 0; ob-extract
+217 → 224 (seven new `r19b_*` pins, one per
+disposition). Clippy (`cargo clippy --workspace
+--all-targets`): exit 0, zero warnings. Booklet
+bytes untouched (no layout code in this batch;
+the held 31,717 / 34,977 stand). The fake-helper
+ETXTBSY flake did not fire. Timing contention
+did fire, in the mild form: two directory-size
+refusal tests in another crate ran over 60
+seconds under sibling load in both full runs and
+passed; no run was discarded and no finding rests
+on a timing measurement. Every witness below was
+also probed against the pre-fix code in a scratch
+harness before the fix and re-probed after: the
+before/after diff of the full witness set is
+exactly the changes described and nothing else.
+
+**R19-4, the -ed test, in one sentence:** an -ed
+word whose only claim to being a finite verb is
+the generic -ed suffix counts as one in the claim
+reach only when no noun-like word stands
+immediately after it (else it is an adjective
+heading that noun phrase, determiner or none) and
+a noun-like subject stands before it in its
+segment; the listed stems and irregulars are
+unambiguous verb forms and are untouched by the
+tempering. "(moved the meeting, November 1, 2026,
+and baked beans to November 8)" — and the canned
+goods, sliced bread, and printed bulletins twins —
+now claim November 8 with November 1 named, on
+the relative, paren-only, and Keep-through paths,
+group and plain, as their determiner twins
+already did; the plain twin asserts November 8
+instead of filing for its from-date. Held inside
+the same pin: "(moved November 1, choir sang to
+November 8)" still claims nothing (sang, through
+the irregular list), and "(moved November 1, team
+played to November 8)" and "(… choir practiced
+…)" still end the reach — an -ed verb with its
+own subject standing before it is a verb.
+
+**R19-5.** `FINITE_VERB_STEMS` 46 → 50 (go, plan,
+rehearse, gather join) and `IRREGULAR_FINITE_FORMS`
+57 → 58 ("gone", the go family's participle the
+stem rules cannot build; "went" was already
+there, and "goes" is go's -es form). "(moved
+November 1, choir goes to November 8)", "(… team
+plans …)", "(… choir rehearses …)", "(…
+congregation gathers …)" end the reach like sang
+does: the claim dies, the note is empty, and
+November 8 keeps its own standing per the R18-8
+reading.
+
+**R19-6.** The active-for object scan gets its
+own verb test (`active_for_object_has_finite_verb`):
+a determiner or possessive standing anywhere
+before the verb-form word in the object protects
+it, so "(we moved the big meeting for November
+1)", "(we moved the church meeting for November
+1)", "(we moved the Johnson meeting for November
+1)", and "(we moved a big meeting for November
+1)" contribute November 1, as the bare heads
+already did. Judgment call, stated: the widening
+is scoped to this scan — the claim reach keeps
+the immediate-determiner rule, because there a
+determiner-headed subject plus its verb ("the
+choir sang") is a clause, not a noun phrase. The
+fences stand, pinned: bare active parity governs
+("(we moved the meeting November 1)" is silent),
+and active cancellation with "for" stays silent.
+
+**R19-7.** very, plain, and simply join
+`is_tolerated_adverb` — the closed list is 27
+words. "(it was just plain moved, November 1)",
+"(it was recently plain moved, November 1)",
+"(it was just simply moved, November 1)", "(it
+was very recently moved, November 1)", the
+has-been form, and the passive-for twins now
+spend in every scan; "(it was just plain moved
+to November 8)" claims its target (before this,
+the unlisted stack left "moved" outside its own
+claim zone, and the target was governed by it).
+The fronted position needed no scan change, and
+that is a judgment call stated plainly: judged
+against the machinery, all three scans traverse
+backward from the participle or phrase and cross
+the auxiliary first, so a listed stack standing
+before the auxiliary is crossed and tolerated
+exactly as one standing after it — the list was
+the only thing the fronted position was missing
+in the target-claim scan, and the pins now lock
+both positions in all three scans (spent
+predicate, passive-for, target claim), fronted
+whole-clause ("(just plain, it was moved,
+November 1)") and pre-auxiliary ("(it just plain
+was moved, November 1)") alike. Held: an unlisted
+word in the post-auxiliary slot still does not
+spend ("it was family moved"), and three stacked
+listed adverbs there still break the tolerance.
+
+**R19-8.** The R18-7 naming merge in `date_line`
+now filters the composition's named dates against
+`sunday_after_consumed_bases` — the bases of the
+core's Sunday-after phrase runs, read with the
+second-date scan's own run scan. "the Sunday
+after November 1, 2026, November 1, 2026,
+cancelled" asserts November 8 and names nothing,
+on both lines; the salvaged reading itself is
+unchanged. The merge still names what it exists
+to name: the R18-7 witness ("cancelled, next
+Sunday, November 1, 2026") still names October 25
+— a governed relative is no phrase's base.
+
+**R19-9.** `chain_superseded_dates` replaces its
+last-group bare-token test with
+`group_has_target_claim`: the last contributing
+group must carry an actual target claim for the
+read date — a `target_claim` judged inside the
+group, or the chain's continuation link standing
+in it (a "to"/"until" before the read occurrence
+with nothing between it and the date but
+determiners and the link's lead-ins "then"/"and",
+and no other date between). "(moved to November
+8) (November 15, note to self)" and "(… November
+15, back to church)" are garnish stacks again:
+November 15 asserts, nothing is named on the
+note, and the mismatch naming November 8 is no
+longer suppressed, on the For Sunday and
+Keep-through records alike. The true chain family
+still names its superseded targets, pinned in the
+"(then to …)", "(to …)", "(until …)", and "(moved
+to …)" last-group forms.
+
+**R19-10.** In the paren-only branch of
+`date_line`, a two-group reading names its loser
+on the note when at least one of the two groups
+carries a relative phrase (`group_inner_is_relative`):
+"(November 8) (next Sunday)" asserts October 25
+AND names November 8 on the note, the mismatch
+record standing as it did; the reversed order
+names October 25 beside November 8's assertion;
+the Keep-through mirror names the loser the same
+way. Scope, stated as a judgment call: the bare
+framed stack is not this shape — "(November 1)
+(November 8)" keeps the r18b pin's reading
+exactly (its loser named on the mismatch record
+alone, nothing on the note), because that pin is
+a held line and its naming channel already
+exists; what R19-10's witness lacked was any
+naming on the note for a mixed framed/relative
+pair, and the fix is scoped to that pair shape
+(exactly two contributing groups, one relative).
+
+**Changed pre-existing tests: none.** The full
+suite passes with zero modifications to any
+pre-existing test — verified in the diff (every
+removed line is production code or its comments)
+and by the unpiped workspace run (737 = 730
+baseline + 7 new). Held lines confirmed standing
+by the probe diff and the suite: R18-8's lone-date
+standing, the claim/scope pins ("(not moved to
+November 8)", "(delayed until November 8)"), the
+defensible-silence pins, the R19-A family, the
+determiner twins, and the bare-stack mismatch
+control.

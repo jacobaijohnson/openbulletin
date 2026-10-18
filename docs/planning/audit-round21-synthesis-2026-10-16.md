@@ -300,3 +300,130 @@ rights pin, loader pins, booklet bytes 31,717 / 34,977.
 Flag any changed pre-existing test loudly by name with its
 reason; the one expected move is the round-20 "sung hymns"
 pin under R21-6, reason stated there.
+
+## Shipped addendum, R21-B (2026-10-18)
+
+Shipped on top of R21-A (6417821). Workspace tests 752 →
+758 (ob-extract lib 239 → 245, six new `r21b_*` pins);
+clippy clean. All work in
+`crates/ob-extract/src/contribution.rs`.
+
+- **R21-6 (the verb test v2).** In one sentence: a
+  verb-form word in the claim reach is a finite verb when
+  a subject stands before it in its segment — a subject
+  being a run of determiner/modifier/noun-like words
+  ending at the verb — or when no subject stands before
+  it but the word cannot head a noun phrase there (an
+  irregular past form, or a form followed by a
+  determiner or an adverb); it reads as a modifier only
+  when a bare noun-like word follows it directly with no
+  subject before it; an auxiliary with a subject before
+  it in its segment is itself a finite verb. Every F3
+  subject shape ("the big choir sang", "choir members
+  sang", "the youth choir rang", "Pastor Lee sang",
+  "choir 2 sang", "the choir in the hall sang") now ends
+  the reach — November 8 stands alone, November 1 is not
+  named, on every path. The subjectless clause shapes
+  ("sang hymns", "folded the bulletins", "played
+  beautifully", "then sang") end the reach the same way,
+  and "(moved November 1, choir was singing to
+  November 8)" asserts November 8 instead of silencing
+  both dates. Held: "baked beans", "planned dinner",
+  "planning meeting" — and, by the same stated line,
+  "played hymns", a regular form followed by a bare
+  noun — continue the reach and claim.
+- **R21-7 (plain Sunday modifier).** The R20-6
+  weekday-modifier rule now applies in
+  `scan_plain_signals`: "Sunday school, November 8,
+  2026" asserts November 8 (was: a phantom October 18);
+  "Sunday bulletins, November 1, 2026" asserts
+  November 1; the R20-6 plain twin ("moved the meeting,
+  November 1, 2026, and printed Sunday bulletins to
+  November 8, 2026") asserts November 8, names
+  November 1, and names no October 18. One fence was
+  needed beyond the scan guard: a lone framed signal
+  had no reader on the plain path, so
+  `plain_multi_date_reading` now admits a single framed
+  signal when the line carries a weekday-modifier
+  phrase (weekday word directly before a noun-like
+  word); the composition still judges governance
+  before primacy, and lone content-headed lines
+  ("service November 8, 2026") still read nothing.
+  Held: "Sunday, November 8, 2026" framing, "next
+  Sunday" / "this Sunday" phrases, all standing.
+- **R21-8 (bare inventory completed).** `bare_filler_word`
+  gained the function-word classes: so, well, however;
+  only; until, before, after, through, circa, about,
+  around, near; mine, ours, yours, hers, theirs — and
+  "too" / "thanks" in the trailing slot (after the
+  date). The inventory comment now states the general
+  rule: function words (words that name no event) are
+  bare; content labels are not. Every RT21-5 witness
+  "(November 1, cancelled) (WORD November 1)" reads
+  nothing on every path, "(so please November 1)"
+  included, and the plain twins read nothing. Held,
+  not moved (R20-3 adjudication): the label heads
+  reminder, update, correction, attention, see, btw,
+  fyi — and "thanks" in head position — stay content
+  and assert; "(our choir November 1)" still asserts.
+- **R21-9 (fronted stack before an intervening date).**
+  The claim scan's fronted check now applies the shared
+  adverb walk to the clause one break before the
+  from-date's own fragment, same list, same two-word
+  cap: "(just really truly, November 1, moved to
+  November 8)" no longer spends — the claim dies and
+  the pair stands as alternatives, the standing landing
+  for an unclaimed pair with no governed date (F6's
+  note suggested November 1 asserting alone; the
+  disposition's own rule — a fronted three-stack does
+  not spend — was followed, and the graded harm, a
+  claim spending through the stack, is gone).
+  "(yesterday, November 1, moved to November 8)" does
+  not spend either; fronted listed one/two-stacks
+  ("(just, …)", "(just truly, …)") still spend.
+- **R21-10 (postposed exemption fenced).** The
+  postposed-modifier clause-break exemption now judges
+  the verb form its comma's continuation contains —
+  reached across the noun-like words of its own run —
+  and exempts the comma only when the one verb test
+  reads that form as a postposed modifier in its
+  segment. The RT21-8 witness "(moved the meeting,
+  November 1, 2026, and beans, choir baked to
+  November 8)" files November 8 with November 1 named
+  as the from-date on every path, group and plain
+  alike (was: alternatives in the group, the vacated
+  November 1 filed on the plain path). The same shape
+  in miniature, "(moved November 1, and beans, choir
+  baked to November 8)", claims by the same fence.
+  The fence's other side stands: without the
+  object-list conjunction ("(moved November 1, beans,
+  choir baked to November 8)") the segment is a clause
+  — "baked" has its subject run and is finite — and
+  the reach ends (the F43 bound). Held: "dinner rolls,
+  baked" and "(… beans, baked canned goods to
+  November 8)" keep claiming.
+
+Changed pre-existing tests — one test function,
+`r20b_one_verb_test_for_every_verb_form`, two pins
+moved within it, both now asserting the alternatives
+landing (nothing asserted, both dates offered) in a
+block that states the v2 reason:
+
+1. **"(moved the meeting, November 1, 2026, and sung
+   hymns to November 8)"** — the pre-authorized move:
+   "sung" is an irregular past form; it cannot head a
+   noun phrase, so under the v2 rule the reach ends at
+   it (R21-6's stated reason). November 1 is ungoverned
+   in the "moved the meeting" form, so with the claim
+   gone the standing two-date rule offers both dates.
+2. **"(moved the meeting, November 1, 2026, and left
+   luggage to November 8)"** — moved by the same rule
+   in the same test: "left" is the irregular past form
+   of "leave", as "sung" is of "sing". Not named in
+   the pre-authorization; flagged here and in the
+   batch report.
+
+No other pre-existing test changed. Held lines: the
+R19–R21-A families except the two moves above,
+defensible silence, claim/scope pins, rights pin,
+loader pins, booklet bytes 31,717 / 34,977 untouched.

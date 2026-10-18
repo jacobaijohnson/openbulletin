@@ -212,3 +212,20 @@ What shipped, per finding:
   always did — while the attested adverbs still spend,
   pinned with "recently", "just", "finally", and
   "originally".
+
+## Coordinator close (2026-10-17)
+
+R17-A `d816f46` shipped and was independently re-verified by the
+coordinator (full unpiped suite + clippy -D warnings): 716 tests,
+zero changed pins. The target rule takes the last target in a
+claim run on both surfaces; plain composition reaches mixed lines
+(governed signals yield named, relatives resolved as R13-C
+resolved them; governor-free mixed lines byte-for-byte the
+first-signal reading, r13c/r14b pins unmoved); "from" joins the
+target construction and its date is named; "for" + date after a
+passive participle names the occasion; the claim zone is clause-
+bounded (commas inside a date's own span are its punctuation);
+the genitive test is determiner-aware; the adverb tolerance is a
+closed 18-word list. Round 18 audits these fixes. The Tier-2
+final gate runs only after a round returns zero BLOCKER + zero
+MAJOR.

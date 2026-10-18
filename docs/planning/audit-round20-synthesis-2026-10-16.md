@@ -221,3 +221,142 @@ boundary is pinned: a content label still asserts —
 "(choir November 1)", "(meeting November 1)", and
 "(November 1 reminder)" beside a sibling cancellation
 assert per R19-1; function words bind, labels assert.
+
+## Shipped addendum, R20-B (2026-10-18)
+
+R20-4 through R20-10 shipped, all work in
+`crates/ob-extract/src/contribution.rs`. **740 → 747 tests
+passing (ob-extract 227 → 234), clippy clean, zero
+pre-existing tests changed.** Seven new pins:
+`r20b_one_verb_test_for_every_verb_form`,
+`r20b_adverb_tolerance_unified`,
+`r20b_weekday_modifier_in_a_group_is_not_a_signal`,
+`r20b_consumed_base_excluded_in_group_alternatives`,
+`r20b_chain_link_must_belong_to_a_target_construction`,
+`r20b_multi_group_losers_are_named`,
+`r20b_sunday_after_relative_base_salvages`. Held lines
+stand: the R19-A/R19-B/R20-A families, defensible silence,
+claim/scope pins, the rights brute-force pin, loader pins,
+booklet bytes 31,717 / 34,977 untouched.
+
+**R20-4 — one verb test for every verb-form word in the
+reach.** As implemented, in one sentence: a verb-form
+word (generic -ed, listed stem form, irregular, -ing
+form) counts as a finite verb only when a noun-like
+subject stands before it in its segment; otherwise, with
+a noun-like word after it (an adjective heading the noun
+phrase) or standing postposed after its noun, it reads
+as a modifier and the reach continues. The subject test
+(`segment_subject_before`): the subject is the segment's
+only noun-like, non-verb-form word before the verb form,
+with nothing but adverbs and auxiliaries between it and
+the verb form; a segment opening with a conjunction
+continues the target phrase's object list (the R18-4
+reading), so no subject stands in it; and two noun-like
+words before the verb form are the noun phrase it
+postposes. The F4 family claims on all paths (planned
+dinner, gathered supplies, sung hymns, left luggage,
+read books, planning meeting, meeting notes, singing
+lessons, gathering supplies; the plain twins assert the
+target instead of filing for the from-date); "choir
+folded bulletins", "team grilled chicken", and "ushers
+stacked chairs" end the reach like "choir sang hymns"
+(RT20-4); the postposed "(… and dinner rolls, baked to
+November 8)" claims with November 1 named (RT20-5). The
+postposed comma is the modifier phrase's own
+punctuation, so the reach's clause-boundary test exempts
+a break standing on a noun-like word directly before a
+verb form the test reads as a postposed modifier — one
+consequence, recorded deliberately: the comma variant of
+the stacked family ("and beans, baked canned goods to
+November 8", review probe S3o, previously collapsed
+through the clause-boundary rule as a standing
+mechanism) now claims like its comma-less twin. The
+R19-5 witnesses were checked against the unified rule
+before it landed: every pinned second clause carries its
+subject ("team plans", "choir rehearses", "congregation
+gathers", "choir goes"), so no held line conflicted and
+none was moved.
+
+**R20-5 — adverb tolerance unified.** really, actually,
+truly, quickly, definitely, probably, and carefully join
+the tolerated list (**27 → 34 words**). All three scans
+(target claim, passive spent, passive-for) now run the
+one backward walk (`aux_adverb_walk`): the same list and
+the same two-word cap in both positions — a stack split
+across the auxiliary spends its budget as one stack, a
+third listed adverb anywhere in the walk stops it, an
+unlisted adverb in the post-auxiliary, pre-auxiliary, or
+fronted slot does not spend, and a fronted stack
+standing in its own clause before the construction is
+judged by the same list and cap (counted against the
+walk's budget where the scan can see it). "(it was
+really moved to November 8)" and "(really, it was moved
+to November 8)" claim the target; RT20-7's
+single-unlisted witnesses now spend (all seven words are
+on the list); RT20-8's fronted three-word stack "(really
+truly actually, it was moved, November 1)" does NOT
+spend, matching the post-auxiliary cap, in all three
+scans. Pinned per scan per position.
+
+**R20-6 — a weekday modifier in a group is not a
+signal.** A weekday word followed by a noun-like word
+inside a group is a modifier, not a relative signal:
+"(… and printed Sunday bulletins to November 8)" asserts
+November 8, names November 1, and names NO October 18;
+the same reading in `target_claim`'s between-words test
+lets the reach cross the noun phrase. The lone-"(Sunday)"
+garnish fence stands, and true relative phrases in
+groups ("(next Sunday)", "(this Sunday)", "(the Sunday
+after November 1)") keep contributing as pinned.
+Observed, not fixed (out of the disposition's group
+scope): the plain-line twin still names October 18
+through `scan_plain_signals`' bare-Sunday branch — the
+same mechanism on the plain surface, recorded here for
+a future round to take deliberately.
+
+**R20-7 — consumed-base exclusion in group
+alternatives.** The R19-8 exclusion now applies
+wherever second dates are named from a Sunday-after
+phrase: `analyze_group` computes its own consumed bases
+with the standing phrase-run scan and filters them out
+of every `trailing_named` fold into alternatives.
+"(the Sunday after November 1, November 1, cancelled)"
+asserts November 8 and names nothing for its base, on
+the group path as on the plain path; the asserted
+reading is unchanged.
+
+**R20-8 — the continuation link must belong to a
+target construction.** `group_has_target_claim`'s link
+counts only when a displacement/postpone phrase in the
+group governs the link (a target phrase before the "to"
+with nothing between it and the "to" but its object
+words), or the link directly continues one (nothing
+before the "to" but the link's own lead-ins: "(then to
+November 15)", "(to November 15)"). Garnish fragments —
+"(back to November 15)", "(note to November 15)",
+"(return to November 15)" — never classify a chain:
+November 8 stands on the garnish mismatch, the note
+names nothing, and November 15 asserts as before. The
+r19b R19-9 witnesses stand both ways.
+
+**R20-9 — loser naming generalized.** The two-group
+rule now reads "at least two groups, at least one
+relative": "(November 8) (next Sunday) (November 15)"
+asserts November 15 and names November 8 and October 25
+on the note, the mismatch record standing as it did.
+The generalization applies on the governed-core
+composition path as on the paren-only path. The bare
+framed stack keeps mismatch-only naming (the r18b pin).
+
+**R20-10 — Sunday-after salvage parity.** A
+Sunday-after phrase signal is never bound by date value
+in `analyze_group` or `plain_composition`: an
+ungoverned phrase salvages by its own resolution
+whatever its base's form — "the Sunday after next
+Sunday, November 1, 2026, cancelled" asserts November 1
+with nothing named, its this-Sunday twin asserts
+October 25, and the group twin asserts November 1. A
+phrase governed in its own span still dies ("the Sunday
+after next Sunday, cancelled, November 1, 2026" reads
+nothing), and the framed-base witnesses are unchanged.

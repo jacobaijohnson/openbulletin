@@ -353,3 +353,77 @@ lane's two fuzz-shaped sample lines pinned for
 panic-freedom. No witness reads differently after the fix
 than the controls' pattern predicts; **no flagged items**.
 Suite: 799 tests (798 + 1 new), clippy clean.
+
+## Shipped addendum, R26-B (2026-10-18)
+
+Inventory ring II is shipped, as dispositioned. All
+additions land in `crates/ob-extract/src/contribution.rs`
+(the bare test's battleground); the mirror held for every
+class (a content label standing with a new word — "(above
+choir November 1)" and kin — still asserts, pinned per
+class). **F3:** the eleven spatial prepositions join
+`bare_filler_word`. **F4:** the 52 resurrecting units of
+RT26-3's sweep join `BARE_PHRASE_UNITS` (the 25 office-core
+units, the 26 discourse/idiom-tail units, and "thanks
+to"), and two further units join under F7 below, bringing
+`BARE_PHRASE_UNITS` from **63 to 117**. "thanks to" pins
+exactly as the machinery does it: the unit matches as a
+unit in head position and the head witness governs on
+every path; the trailing witness also governs, as it
+already did word by word before this batch (trailing
+"thanks" bare by the R20-3 rule, "to" bare), so the unit
+changes nothing there — and a lone head "thanks" still
+asserts, the R20-3 adjudication untouched. No surprise was
+found. **F5:** the general adverb class joins the bare
+inventory, exactly the lane's 47 words; the aux-slot
+tolerated-adverb list is NOT widened. **F6:** the
+do-paradigm (do / does / did / done / doing) joins the
+auxiliary class as carried for the bare test
+(`bare_filler_word`); the claim machinery's own auxiliary
+walks are a different surface and were not widened. The
+do columns of the lane's 736-cell matrix now govern, with
+"(we do November 1)" and "(they did November 1)" pinned
+plus matrix spot-cells in and outside the do columns.
+**F7 (in part):** the six singleton words (ago / out / up /
+down / away / home) join; representative pairs and
+triples partition word by word, pinned. The "… ago"
+phrases partition through M5's number words, the
+time-unit words that join with them (day / days / week /
+weeks / month / months / year / years / hour / hours /
+time, each pinned on its own), and two phrase units —
+"long time ago" and "bit ago" — chosen so "long" and
+"bit" standing alone keep their readings ("(long
+November 1)" still asserts, its R25-A pin unmoved).
+"away from home" / "working from home" still hold by
+from-governance, pinned. The verb + home family is NOT
+added, per adjudication: "(come home November 1)" and
+"(went home November 1)" still assert, now pinned as
+recorded-not-fixed. **M4:** the reflexive remainder
+(myself / yourself / ourselves / yourselves / oneself /
+whatsoever / whosoever) and "nor" join. **M5:** plenty /
+various / numerous / countless / fewer / lots / lot and
+first / second / third / two / three / four join. **M6:**
+the twelve determiner-adjectives join. A claim-zone spot
+check pins real claims wearing new words still claiming:
+"given the whole choir moved November 1, 2026 to November
+8, 2026" asserts November 8 naming November 1, and
+"(moved November 1, choir sang hymns round the hall to
+November 8)" asserts November 8. **Pins:** nine new tests
+(`r26b_spatial_prepositions`, `r26b_phrase_units_ring2`,
+`r26b_general_adverb_class`, `r26b_do_paradigm`,
+`r26b_singletons_and_ago_phrases`, `r26b_reflexives_and_nor`,
+`r26b_quantifier_number_remainder`,
+`r26b_determiner_adjectives`,
+`r26b_claim_zone_spot_checks`) — head + trailing slots on
+group surfaces, relative path, plain twins where the
+lanes probed, a mirror per class. **Flagged change (one,
+loud):** `r25a_bare_phrase_units_round25` — its
+"recorded singletons still assert" block pinned "(ago
+November 1)", "(away November 1)", and "(home November 1)"
+as asserting; F7 joins those words, so the three shapes
+now govern and moved to `r26b_singletons_and_ago_phrases`;
+the block's other lone members (seeing / long / case /
+spite / behalf) are unchanged. The mid-run failure list
+named this test alone. Suite: **808 tests (799 + 9 new),
+0 failed**, full unpiped `cargo test --workspace
+--no-fail-fast` exit 0; clippy `-D warnings` clean.

@@ -4813,6 +4813,38 @@ fn governed_before_target(window: &[String], window_start: usize, claim: &Target
 /// "we sang" — still carries the verb as content,
 /// and a content label standing with any of these
 /// words still asserts).
+///
+/// Round 26 (R26-B): inventory ring II, on the same
+/// rule. F3: the spatial-preposition remainder
+/// ("above", "below", "inside", "outside",
+/// "beneath", "underneath", "throughout",
+/// "opposite", "alongside", "round",
+/// "notwithstanding"). F5: the general adverb class
+/// (47 words — frequency / office, formal
+/// connectives, locative / directional, ordinal;
+/// the bare inventory only, the aux-slot tolerated
+/// list unwidened). F6: the do-paradigm ("do",
+/// "does", "did", "done", "doing") joins the
+/// auxiliary class as carried for this test. F7
+/// (in part): the six recorded singletons ("ago",
+/// "out", "up", "down", "away", "home") — pairs and
+/// triples then partition word by word; the verb +
+/// home phrases stay content by adjudication. M4:
+/// the reflexive remainder ("myself", "yourself",
+/// "ourselves", "yourselves", "oneself",
+/// "whatsoever", "whosoever") and "nor". M5: the
+/// quantifier / determiner remainder ("plenty",
+/// "various", "numerous", "countless", "fewer",
+/// "lots", "lot") and the number / ordinal words
+/// ("first", "second", "third", "two", "three",
+/// "four"), with the time-unit words the "… ago"
+/// phrases carry ("day", "days", "week", "weeks",
+/// "month", "months", "year", "years", "hour",
+/// "hours", "time"). M6: the determiner-adjectives
+/// ("whole", "entire", "certain", "particular",
+/// "specific", "additional", "extra", "further",
+/// "single", "sole", "half", "double"). The mirror
+/// held for every class.
 fn bare_filler_word(w: &str) -> bool {
     weekday_word(w).is_some()
         || AUXILIARY_WORDS.contains(&w)
@@ -5151,6 +5183,161 @@ fn bare_filler_word(w: &str) -> bool {
                 | "br"
                 | "sr"
                 | "jr"
+                // Round 26 (R26-B, F3 = RT26-2): the
+                // spatial-preposition remainder — the
+                // core spatial prepositions whose
+                // neighbours were all already in.
+                | "above"
+                | "below"
+                | "inside"
+                | "outside"
+                | "beneath"
+                | "underneath"
+                | "throughout"
+                | "opposite"
+                | "alongside"
+                | "round"
+                | "notwithstanding"
+                // Round 26 (R26-B, F5 = RT26-4): the
+                // general adverb class joins the bare
+                // inventory — membership exactly the
+                // lane's 47-word sweep. Bare inventory
+                // only: the aux-slot tolerated-adverb
+                // list is a different surface and is
+                // NOT widened.
+                | "usually"
+                | "generally"
+                | "typically"
+                | "frequently"
+                | "sometimes"
+                | "sometime"
+                | "seldom"
+                | "rarely"
+                | "daily"
+                | "weekly"
+                | "monthly"
+                | "annually"
+                | "lately"
+                | "presently"
+                | "momentarily"
+                | "instantly"
+                | "directly"
+                | "altogether"
+                | "somehow"
+                | "henceforth"
+                | "forthwith"
+                | "heretofore"
+                | "thereby"
+                | "hereby"
+                | "wherein"
+                | "thereafter"
+                | "somewhere"
+                | "anywhere"
+                | "everywhere"
+                | "nowhere"
+                | "indoors"
+                | "outdoors"
+                | "upstairs"
+                | "downstairs"
+                | "aboard"
+                | "abroad"
+                | "ahead"
+                | "aside"
+                | "apart"
+                | "overnight"
+                | "underway"
+                | "backwards"
+                | "forwards"
+                | "firstly"
+                | "secondly"
+                | "thirdly"
+                | "lastly"
+                // Round 26 (R26-B, F6 = RT26-5): the
+                // do-paradigm joins the auxiliary class
+                // as carried for the bare test (the
+                // be / have / get paradigms reach this
+                // test through `AUXILIARY_WORDS` above;
+                // the claim machinery's own auxiliary
+                // walks are a different surface and are
+                // not widened).
+                | "do"
+                | "does"
+                | "did"
+                | "done"
+                | "doing"
+                // Round 26 (R26-B, F7 in part = RT26-6):
+                // the six recorded singleton words join
+                // — pairs and triples then partition
+                // word by word. The verb + home phrase
+                // family is recorded-NOT-fixed by
+                // adjudication and does NOT join.
+                | "ago"
+                | "out"
+                | "up"
+                | "down"
+                | "away"
+                | "home"
+                // Round 26 (R26-B, M4 = RT26-8): the
+                // reflexive remainder and "nor" join
+                // (himself / herself / itself /
+                // themselves already shipped).
+                | "myself"
+                | "yourself"
+                | "ourselves"
+                | "yourselves"
+                | "oneself"
+                | "whatsoever"
+                | "whosoever"
+                | "nor"
+                // Round 26 (R26-B, M5 = RT26-9): the
+                // quantifier / determiner remainder and
+                // the number / ordinal words join.
+                | "plenty"
+                | "various"
+                | "numerous"
+                | "countless"
+                | "fewer"
+                | "lots"
+                | "lot"
+                | "first"
+                | "second"
+                | "third"
+                | "two"
+                | "three"
+                | "four"
+                // Round 26 (R26-B, M5 serving F7): the
+                // time-unit words the "… ago" phrases
+                // carry — day / days / week / weeks /
+                // month / months / year / years /
+                // hour / hours / time ("while" is
+                // already in; "long time ago" and
+                // "a bit ago" partition through the
+                // phrase units added with F4 / F7).
+                | "day"
+                | "days"
+                | "week"
+                | "weeks"
+                | "month"
+                | "months"
+                | "year"
+                | "years"
+                | "hour"
+                | "hours"
+                | "time"
+                // Round 26 (R26-B, M6 = RT26-10): the
+                // determiner-adjectives join.
+                | "whole"
+                | "entire"
+                | "certain"
+                | "particular"
+                | "specific"
+                | "additional"
+                | "extra"
+                | "further"
+                | "single"
+                | "sole"
+                | "half"
+                | "double"
         )
 }
 
@@ -5316,6 +5503,79 @@ const BARE_PHRASE_UNITS: &[&[&str]] = &[
     &["given", "that"],
     &["seeing", "that"],
     &["save", "that"],
+    // Round 26 (R26-B, F4 = RT26-3): the complex-
+    // preposition phrase ring, second turn — the
+    // resurrecting units of the lane's sweep join,
+    // membership exactly as swept (bare26, mirror-
+    // checked). "thanks to" joins for the head slot
+    // it resurrected in; its trailing behaviour is
+    // unchanged (trailing "thanks" was already bare
+    // by the R20-3 rule, "to" already bare, and a
+    // lone head "thanks" still asserts).
+    &["in", "addition", "to"],
+    &["in", "addition"],
+    &["in", "accordance", "with"],
+    &["in", "connection", "with"],
+    &["in", "relation", "to"],
+    &["with", "respect", "to"],
+    &["in", "respect", "to"],
+    &["in", "response", "to"],
+    &["in", "reference", "to"],
+    &["by", "means", "of"],
+    &["in", "exchange", "for"],
+    &["in", "place", "of"],
+    &["in", "favor", "of"],
+    &["in", "favour", "of"],
+    &["on", "account", "of"],
+    &["by", "reason", "of"],
+    &["as", "a", "result", "of"],
+    &["in", "the", "event", "of"],
+    &["due", "to"],
+    &["owing", "to"],
+    &["thanks", "to"],
+    &["prior", "to"],
+    &["subsequent", "to"],
+    &["contrary", "to"],
+    &["as", "opposed", "to"],
+    &["close", "to"],
+    // Round 26 (R26-B, F4): the discourse / idiom
+    // tail of the same sweep.
+    &["at", "best"],
+    &["at", "worst"],
+    &["at", "first"],
+    &["at", "present"],
+    &["for", "good"],
+    &["so", "far"],
+    &["up", "until"],
+    &["up", "till"],
+    &["down", "to"],
+    &["day", "after", "day"],
+    &["week", "by", "week"],
+    &["month", "by", "month"],
+    &["year", "by", "year"],
+    &["one", "at", "a", "time"],
+    &["two", "by", "two"],
+    &["first", "of", "all"],
+    &["last", "of", "all"],
+    &["above", "all"],
+    &["in", "the", "end"],
+    &["at", "the", "end"],
+    &["in", "the", "meantime"],
+    &["for", "the", "time", "being"],
+    &["at", "the", "time"],
+    &["at", "times"],
+    &["in", "good", "time"],
+    &["in", "the", "long", "run"],
+    // Round 26 (R26-B, F7 in part): "long time ago"
+    // joins as a unit so the "… ago" family
+    // partitions ("two days ago", "a week ago", …)
+    // once the number / time words below join —
+    // "long" standing alone keeps its R25-A reading.
+    &["long", "time", "ago"],
+    // Round 26 (R26-B, F7 in part): "bit ago" joins
+    // as a unit for "a bit ago" — "bit" standing
+    // alone keeps its reading.
+    &["bit", "ago"],
 ];
 
 /// The token span of a listed phrase unit standing
@@ -21040,19 +21300,20 @@ Youth group meets Wednesday at 6 PM.
             assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
         }
         // Held (R24-2's rule): a unit's member
-        // standing alone keeps its reading — and
-        // the recorded singleton fragments the
-        // synthesis did not add ("ago", "away",
-        // "home" as sole companions) still assert.
+        // standing alone keeps its reading.
+        // FLAGGED CHANGE (R26-B, F7 = RT26-6): the
+        // recorded singletons "ago", "away", "home"
+        // were pinned here as still asserting; they
+        // JOIN the inventory in R26-B, so their lone
+        // shapes now govern and move to
+        // `r26b_singletons_and_ago_phrases`. The
+        // remaining lone members below are unchanged.
         for groups in [
             "(November 1, cancelled) (seeing November 1)",
             "(November 1, cancelled) (long November 1)",
             "(November 1, cancelled) (case November 1)",
             "(November 1, cancelled) (spite November 1)",
             "(November 1, cancelled) (behalf November 1)",
-            "(November 1, cancelled) (ago November 1)",
-            "(November 1, cancelled) (away November 1)",
-            "(November 1, cancelled) (home November 1)",
         ] {
             let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
             let c = parse_contribution(&text, today()).expect("parses");
@@ -23060,6 +23321,818 @@ Youth group meets Wednesday at 6 PM.
             let _ = parse_contribution(&text, today()).expect("parses without panicking");
             let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
             let _ = parse_contribution(&text, today()).expect("parses without panicking");
+        }
+    }
+
+    #[test]
+    fn r26b_spatial_prepositions() {
+        // Round 26 (R26-B, F3 = RT26-2): the spatial-
+        // preposition remainder joins the bare
+        // inventory — 11 words, 22 of 22 lane slots
+        // resurrected, mirrors asserting (bare26x).
+        // Every witness reads nothing on every path;
+        // the mirror held.
+        for word in [
+            "above",
+            "below",
+            "inside",
+            "outside",
+            "beneath",
+            "underneath",
+            "throughout",
+            "opposite",
+            "alongside",
+            "round",
+            "notwithstanding",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // The plain twins, head and trailing.
+            for line in [
+                format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+                format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+            ] {
+                let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+            }
+            // Held (the mirror): a content label
+            // standing with the word still asserts.
+            for groups in [
+                format!("(November 1, cancelled) ({word} choir November 1)"),
+                format!("(November 1, cancelled) ({word} service November 1)"),
+            ] {
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_date,
+                    Some(nov(1)),
+                    "{groups}: content asserts beside a sibling cancellation"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn r26b_phrase_units_ring2() {
+        // Round 26 (R26-B, F4 = RT26-3): the complex-
+        // preposition phrase ring, second turn — the
+        // resurrecting units of the lane's sweep join
+        // BARE_PHRASE_UNITS (51 units in both slots;
+        // "thanks to" head-only, pinned separately
+        // below). Every unit witness reads nothing on
+        // every path, head and trailing alike.
+        for unit in [
+            "in addition to",
+            "in addition",
+            "in accordance with",
+            "in connection with",
+            "in relation to",
+            "with respect to",
+            "in respect to",
+            "in response to",
+            "in reference to",
+            "by means of",
+            "in exchange for",
+            "in place of",
+            "in favor of",
+            "in favour of",
+            "on account of",
+            "by reason of",
+            "as a result of",
+            "in the event of",
+            "due to",
+            "owing to",
+            "prior to",
+            "subsequent to",
+            "contrary to",
+            "as opposed to",
+            "close to",
+            "at best",
+            "at worst",
+            "at first",
+            "at present",
+            "for good",
+            "so far",
+            "up until",
+            "up till",
+            "down to",
+            "day after day",
+            "week by week",
+            "month by month",
+            "year by year",
+            "one at a time",
+            "two by two",
+            "first of all",
+            "last of all",
+            "above all",
+            "in the end",
+            "at the end",
+            "in the meantime",
+            "for the time being",
+            "at the time",
+            "at times",
+            "in good time",
+            "in the long run",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({unit} November 1)"),
+                format!("(November 1, cancelled) (November 1 {unit})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+        }
+        // The plain twins of the lead units (the two
+        // largest composition drivers of the round:
+        // "due to" 979, "in addition to" 950).
+        for line in [
+            "November 1, 2026, cancelled, due to November 1, 2026",
+            "November 1, 2026, cancelled, in addition to November 1, 2026",
+            "November 1, 2026, cancelled, prior to November 1, 2026",
+            "November 1, 2026, cancelled, November 1, 2026 in the end",
+            "November 1, 2026, cancelled, November 1, 2026 on account of",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+        }
+        // Held (the mirror): a content label standing
+        // with a unit still asserts, and a content
+        // word standing INSIDE a unit's span breaks
+        // the partition exactly as for the round-25
+        // units (RT26-11's D5 shape).
+        for groups in [
+            "(November 1, cancelled) (due to choir November 1)",
+            "(November 1, cancelled) (in addition to choir November 1)",
+            "(November 1, cancelled) (prior to service November 1)",
+            "(November 1, cancelled) (in addition to the choir November 1)",
+            "(November 1, cancelled) (due to the choir November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // "thanks to" (F4, head slot only): the unit
+        // matches as a unit in head position, so the
+        // head witness governs on every path. The
+        // trailing witness also governs — it already
+        // did before this batch, word by word
+        // (trailing "thanks" is bare by the R20-3
+        // rule and "to" is bare); the unit changes
+        // nothing there. What the R20-3 adjudication
+        // still governs: a LONE head "thanks" is a
+        // content label and still asserts.
+        for groups in [
+            "(November 1, cancelled) (thanks to November 1)",
+            "(November 1, cancelled) (November 1 thanks to)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        let groups = "(November 1, cancelled) (thanks November 1)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a lone head thanks still asserts (R20-3)"
+        );
+        // Held: a unit's member standing alone keeps
+        // its reading.
+        for groups in [
+            "(November 1, cancelled) (addition November 1)",
+            "(November 1, cancelled) (accordance November 1)",
+            "(November 1, cancelled) (meantime November 1)",
+            "(November 1, cancelled) (favour November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: a lone member still asserts"
+            );
+        }
+    }
+
+    #[test]
+    fn r26b_general_adverb_class() {
+        // Round 26 (R26-B, F5 = RT26-4): the general
+        // adverb class joins the bare inventory — 47
+        // words, 94 of 94 lane slots resurrected
+        // (bare26; bare26x re-verifies "usually" and
+        // "sometimes"). Bare inventory only: the
+        // aux-slot tolerated list is not widened.
+        for word in [
+            "usually",
+            "generally",
+            "typically",
+            "frequently",
+            "sometimes",
+            "sometime",
+            "seldom",
+            "rarely",
+            "daily",
+            "weekly",
+            "monthly",
+            "annually",
+            "lately",
+            "presently",
+            "momentarily",
+            "instantly",
+            "directly",
+            "altogether",
+            "somehow",
+            "henceforth",
+            "forthwith",
+            "heretofore",
+            "thereby",
+            "hereby",
+            "wherein",
+            "thereafter",
+            "somewhere",
+            "anywhere",
+            "everywhere",
+            "nowhere",
+            "indoors",
+            "outdoors",
+            "upstairs",
+            "downstairs",
+            "aboard",
+            "abroad",
+            "ahead",
+            "aside",
+            "apart",
+            "overnight",
+            "underway",
+            "backwards",
+            "forwards",
+            "firstly",
+            "secondly",
+            "thirdly",
+            "lastly",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror): a content label
+            // standing with the word still asserts.
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // The plain twins of the class
+        // representatives.
+        for line in [
+            "November 1, 2026, cancelled, usually November 1, 2026",
+            "November 1, 2026, cancelled, sometimes November 1, 2026",
+            "November 1, 2026, cancelled, November 1, 2026 directly",
+            "November 1, 2026, cancelled, November 1, 2026 somewhere",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        }
+    }
+
+    #[test]
+    fn r26b_do_paradigm() {
+        // Round 26 (R26-B, F6 = RT26-5): the
+        // do-paradigm joins the auxiliary class for
+        // the bare test — 10 of 10 lane slots
+        // resurrected, and the lane's 736-cell
+        // pronoun × modal/auxiliary matrix
+        // resurrected in exactly the do / does / did
+        // columns (96 cells); every other cell holds
+        // then as now (spot cells pinned below).
+        for word in ["do", "does", "did", "done", "doing"] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror).
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // The matrix's do columns, governed after the
+        // fix (bare26x witnesses first), head and
+        // trailing — and the held cells outside the
+        // do columns, exactly as today.
+        for groups in [
+            "(November 1, cancelled) (we do November 1)",
+            "(November 1, cancelled) (they did November 1)",
+            "(November 1, cancelled) (she does November 1)",
+            "(November 1, cancelled) (one does November 1)",
+            "(November 1, cancelled) (it did November 1)",
+            "(November 1, cancelled) (November 1 we do)",
+            "(November 1, cancelled) (November 1 they did)",
+            "(November 1, cancelled) (we will be November 1)",
+            "(November 1, cancelled) (one is November 1)",
+            "(November 1, cancelled) (they have November 1)",
+            "(November 1, cancelled) (will have November 1)",
+            "(November 1, cancelled) (we are November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: the cell stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{groups}: keep-through cell");
+        }
+        // The plain twins of the lane witnesses.
+        for line in [
+            "November 1, 2026, cancelled, do November 1, 2026",
+            "November 1, 2026, cancelled, did November 1, 2026",
+            "November 1, 2026, cancelled, we do November 1, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        }
+        // Held (the mirror, with a verb): a pronoun
+        // and do-auxiliary with their verb carry
+        // content and assert.
+        for groups in [
+            "(November 1, cancelled) (we do sing November 1)",
+            "(November 1, cancelled) (they did sing November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: the verb still asserts");
+        }
+    }
+
+    #[test]
+    fn r26b_singletons_and_ago_phrases() {
+        // Round 26 (R26-B, F7 in part = RT26-6): the
+        // six recorded singleton words join the
+        // inventory — the lane's pairs resurrected
+        // 60 of 60 and triples 120 of 120; pairs and
+        // triples now partition word by word
+        // (representatives pinned). The "… ago"
+        // family (22 of 22 lane slots) partitions
+        // through M5's number / time words and the
+        // "long time ago" / "bit ago" phrase units.
+        for word in ["ago", "out", "up", "down", "away", "home"] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror).
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // Representative pairs and triples, head and
+        // trailing (the lane's bare26x witnesses
+        // first).
+        for groups in [
+            "(November 1, cancelled) (ago out November 1)",
+            "(November 1, cancelled) (up away November 1)",
+            "(November 1, cancelled) (home away November 1)",
+            "(November 1, cancelled) (out down November 1)",
+            "(November 1, cancelled) (November 1 ago out)",
+            "(November 1, cancelled) (November 1 up away)",
+            "(November 1, cancelled) (up down away November 1)",
+            "(November 1, cancelled) (ago out home November 1)",
+            "(November 1, cancelled) (November 1 up down away)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: the combination stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{groups}: keep-through combination");
+        }
+        // The time-unit words M5 adds for the ago
+        // phrases, each pinned on its own.
+        for word in [
+            "day", "days", "week", "weeks", "month", "months", "year", "years", "hour", "hours",
+            "time",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // The "… ago" phrase family beside a
+        // cancelled sibling, head and trailing.
+        for phrase in [
+            "two days ago",
+            "three days ago",
+            "four hours ago",
+            "a week ago",
+            "a day ago",
+            "long time ago",
+            "a long time ago",
+            "years ago",
+            "months ago",
+            "weeks ago",
+            "days ago",
+            "hours ago",
+            "a while ago",
+            "a bit ago",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({phrase} November 1)"),
+                format!("(November 1, cancelled) (November 1 {phrase})"),
+            ] {
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+        }
+        // The plain twin of the lead ago witness.
+        let line = "November 1, 2026, cancelled, two days ago November 1, 2026";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        // Held before this batch and still held:
+        // "away from home" / "working from home"
+        // govern by from-governance.
+        for groups in [
+            "(November 1, cancelled) (away from home November 1)",
+            "(November 1, cancelled) (working from home November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: from-governance holds");
+        }
+        // Recorded, NOT fixed (coordinator
+        // adjudication on RT26-6): the verb + home
+        // family is a content clause fragment — the
+        // phrases do NOT join, and these shapes still
+        // assert, as the lane recorded.
+        for groups in [
+            "(November 1, cancelled) (come home November 1)",
+            "(November 1, cancelled) (went home November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: verb + home still asserts (recorded, not fixed)"
+            );
+        }
+    }
+
+    #[test]
+    fn r26b_reflexives_and_nor() {
+        // Round 26 (R26-B, M4 = RT26-8): the reflexive
+        // remainder and "nor" join — 14 of 28 lane
+        // slots resurrected for the reflexives, 2 of
+        // 2 for "nor"; the shipped reflexives
+        // (himself / herself / itself / themselves)
+        // already held and are not duplicated.
+        for word in [
+            "myself",
+            "yourself",
+            "ourselves",
+            "yourselves",
+            "oneself",
+            "whatsoever",
+            "whosoever",
+            "nor",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror).
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+    }
+
+    #[test]
+    fn r26b_quantifier_number_remainder() {
+        // Round 26 (R26-B, M5 = RT26-9): the
+        // quantifier / determiner remainder and the
+        // number / ordinal words join, both slots
+        // (bare26x re-verifies "various" and "first").
+        // The number words also serve F7's ago
+        // phrases (pinned in
+        // `r26b_singletons_and_ago_phrases`).
+        for word in [
+            "plenty",
+            "various",
+            "numerous",
+            "countless",
+            "fewer",
+            "lots",
+            "lot",
+            "first",
+            "second",
+            "third",
+            "two",
+            "three",
+            "four",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror).
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // The plain twins.
+        for line in [
+            "November 1, 2026, cancelled, various November 1, 2026",
+            "November 1, 2026, cancelled, November 1, 2026 first",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        }
+    }
+
+    #[test]
+    fn r26b_determiner_adjectives() {
+        // Round 26 (R26-B, M6 = RT26-10): the
+        // determiner-adjectives join — 24 of 24 lane
+        // slots resurrected, mirrors asserting.
+        for word in [
+            "whole",
+            "entire",
+            "certain",
+            "particular",
+            "specific",
+            "additional",
+            "extra",
+            "further",
+            "single",
+            "sole",
+            "half",
+            "double",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror): "(whole choir
+            // November 1)" and kin still assert.
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+    }
+
+    #[test]
+    fn r26b_claim_zone_spot_checks() {
+        // Round 26 (R26-B): the bare test governs
+        // restatement regions only — a real claim
+        // wearing a new inventory word still claims.
+        // The control is the over-consumption hunt's
+        // named family (RT26-3 Held): "given the
+        // choir moved …" asserts November 8 naming
+        // November 1; the worn variant wears M6's
+        // "whole" inside the claim's subject.
+        for line in [
+            "given the choir moved November 1, 2026 to November 8, 2026",
+            "given the whole choir moved November 1, 2026 to November 8, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{line}: the claim asserts its target"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1)],
+                "{line}: the claim names its source date"
+            );
+        }
+        // A group claim wearing F3's "round" as the
+        // preposition of its object continuation and
+        // M6's "whole" inside its subject: the claim
+        // still asserts its target (the standing
+        // "(moved November 1, choir sang to
+        // November 8)" reading asserts November 8;
+        // its governed source is not named on this
+        // surface, as the control shows).
+        for groups in [
+            "(moved November 1, choir sang to November 8)",
+            "(moved November 1, the whole choir sang to November 8)",
+            "(moved November 1, choir sang hymns round the hall to November 8)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{groups}: the claim asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{groups}: the governed source is not named"
+            );
         }
     }
 }

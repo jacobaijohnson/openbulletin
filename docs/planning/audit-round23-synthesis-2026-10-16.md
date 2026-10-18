@@ -361,3 +361,47 @@ was changed or removed. Every witness was probed
 before and after on the lanes' own paths (relative,
 paren-only, keep-through; plain twins where the
 findings carry them).
+
+## Coordinator close, round 23 (2026-10-18)
+
+Both batches independently verified by the coordinator on the exact
+committed trees (full unpiped suite + clippy `-D warnings` after
+each): R23-A `76f86a2` at 769 tests, R23-B `df44ffe` at **774 tests
+passing, 0 failed**, clippy clean at both steps. **Zero changed
+pre-existing tests in the whole round.** Booklet bytes untouched
+(31,717 / 34,977).
+
+All seven MAJORs and R23-8 closed: the deictic class and the
+lanes' enumerated remainders joined the bare inventory, whose
+comment now states the corrected claim (classes are the rule;
+lists are current membership) (R23-1/R23-2); one boundary
+classification at every site — and with it the governed-
+resurrection oracle over the red team's 92,032-line composition
+fuzz reads **0, down from 394** (R23-3); the auxiliary's slot
+holds two words in detection and spending alike (R23-4); subject
+runs cross PP stacks of any order, and subject-PP date objects
+are consumed after any preposition (R23-5); weekday + participle
+is a modifier phrase (R23-6); the lone-framed fence is inverted
+to a closed garnish-noun set {bulletins, school, morning}, the
+content-head list deleted — an unlisted noun now fails toward
+silence (R23-7); the past-only split scopes both shields
+(R23-8). R23-9 stands adjudicated (rights safety pair
+invariant; license-only residual, fourth round).
+
+One adjudication inside R23-B is recorded here as the standing
+reading: the fence's garnish set governs the bare weekday +
+noun shape; the verb-form adjective phrase ("Sunday left
+luggage", "Sunday baked beans") passes the fence by its phrase
+shape, per R23-6 — the two dispositions meet there and the
+builder's resolution is accepted.
+
+Recorded for round 24's lanes to grade: the stack phrases and
+ungraded subordinators R23-A left outside the lists ("care
+of", "back together", "gone tomorrow", yet/if/when/because) —
+graded under the corrected claim: a list gap, MAJOR only when
+the word is ordinary office vocabulary in a restatement that
+an office worker would plausibly write.
+
+The loop has not converged: round 23 returned findings, so the
+Tier-2 final gate stays queued behind a Wonder round with zero
+BLOCKER and zero MAJOR.

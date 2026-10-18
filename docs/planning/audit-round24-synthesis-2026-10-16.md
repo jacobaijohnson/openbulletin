@@ -318,3 +318,50 @@ changed.
   reads nothing — and conjoined garnish ("Sunday
   bulletins and Sunday school, November 8, 2026")
   stays silent, accepted and recorded, not changed.
+
+## Coordinator close, round 24 (2026-10-18)
+
+Both batches independently verified by the coordinator on the exact
+committed trees (full unpiped suite + clippy `-D warnings` after
+each): R24-A `b4bce44` at 778 tests, R24-B `7ac60d9` at **782 tests
+passing, 0 failed**, clippy clean at both steps. Booklet bytes
+untouched (31,717 / 34,977).
+
+All five MAJORs and the three fixable MINORs closed: the
+subordinator class and "than" joined the inventory (R24-1); the
+bare test matches phrase units as units, a closed list of 13
+(R24-2); the fence judges the weekday phrase's HEAD noun against
+the completed garnish set of 8 (R24-3); the boundary rule is a
+token rule — any standalone token with no letters or digits is a
+boundary at every site, bracketed tokens are garnish, brackets
+are not group delimiters (R24-4); weekday PP objects inside
+object continuations are consumed wholly (R24-5); the passive-for
+complement aligns with detection under a two-slot-word cap
+(R24-6); relative phrases as subject-PP objects are consumed and
+named like framed twins (R24-7); possessive-headed garnish passes
+the fence, conjoined garnish stays silent by acceptance (R24-8).
+R24-9 stands adjudicated (rights safety pair invariant;
+license-only residual, fifth round).
+
+Changed pre-existing tests in the round: exactly one —
+`r23b_aux_slot_holds_two_words`, where "(it was loudly moved for
+November 1)" moved from the held-silence list to the asserting
+list. The R24-6 disposition requires it (an unlisted adverb alone
+in the passive-for complement spends, as it always did in
+detection); the builder flagged it loudly with the supersession
+recorded in the test comment, and it is accepted here. One
+brief-wording correction is also recorded: the R24-B task's
+"moved the meeting" example string reads November 1 alone (its
+standing twins' reading), not nothing — the review F3 witness
+string itself reads nothing and names nothing on every path, as
+dispositioned.
+
+Recorded for round 25's lanes: the "-ly"-noun seam in the
+passive-for complement ("family", "kelly" now cross there as
+they already did in detection; R17-7's pin is the untouched
+comma surface), and the garnish set's deliberate exclusions
+("paper", "newsletters", "leaflets", "sheet" stay silent).
+
+The loop has not converged: round 24 returned findings, so the
+Tier-2 final gate stays queued behind a Wonder round with zero
+BLOCKER and zero MAJOR.

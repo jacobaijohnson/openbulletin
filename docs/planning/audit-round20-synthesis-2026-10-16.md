@@ -360,3 +360,41 @@ October 25, and the group twin asserts November 1. A
 phrase governed in its own span still dies ("the Sunday
 after next Sunday, cancelled, November 1, 2026" reads
 nothing), and the framed-base witnesses are unchanged.
+
+## Coordinator close, round 20 (2026-10-18)
+
+Both batches independently verified by the coordinator on the exact
+committed trees (full unpiped suite + clippy `-D warnings` after
+each): R20-A `3786ace` at 740 tests, R20-B `9fac3a8` at **747 tests
+passing, 0 failed**, clippy clean at both steps. **Zero changed
+pre-existing tests in the whole round.** Booklet bytes untouched.
+
+All five MAJORs closed: core + trailing groups now compose as one
+reading on both paths, with the core's governed values binding bare
+trailing restatements and the Keep fallback reading through the same
+governance (R20-1); passive predicates are not bare (R20-2); the
+bare inventory carries possessives, demonstratives, and the closed
+garnish list (R20-3); the claim reach has ONE verb test — a
+verb-form word is a finite verb only with a noun-like subject
+before it in its segment (R20-4); adverb tolerance is one list
+(34 words) and one two-word cap in both positions in all three
+scans (R20-5). The MINORs R20-6 through R20-10 closed in R20-B;
+RT20-3 stands adjudicated (safety pair invariant; license-only
+residual, census stands).
+
+Two consequences are recorded for round 21's lanes to grade, both
+disclosed by the R20-B builder and accepted provisionally here:
+(1) a subjectless listed verb in the reach ("(moved November 1,
+then played to November 8)") now continues the reach and names
+November 1 — the direct consequence of the subject requirement;
+(2) the postposed-modifier clause-break exemption makes the comma
+variant "(… and beans, baked canned goods to November 8)" claim
+like its comma-less twin. And one known leftover, also disclosed:
+the PLAIN-line twin of R20-6 ("printed Sunday bulletins" on a
+plain line) still names October 18 through the plain scan's
+bare-Sunday branch — R20-6 was scoped to groups; round 21 grades
+whether the plain surface takes the same rule.
+
+The loop has not converged: round 20 returned findings, so the
+Tier-2 final gate stays queued behind a Wonder round with zero
+BLOCKER and zero MAJOR.

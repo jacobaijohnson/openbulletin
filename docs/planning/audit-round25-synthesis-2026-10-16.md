@@ -503,3 +503,54 @@ out to be the full-clause shape in disguise: the pinned
 second-clause witnesses have their verb standing directly
 before the PP, which is exactly the discriminating structure
 F5a ships.
+
+## Coordinator close, round 25 (2026-10-18)
+
+Both fix batches shipped and were independently re-verified by the
+coordinator (full unpiped suite + clippy `-D warnings` on the exact
+committed trees, counts read from cargo's own output):
+
+- **R25-A `9c39abf`** — 782 → 790 tests. F1's ten words + `anyhow`, F2's
+  50 phrase units (`BARE_PHRASE_UNITS` counted in source at exactly 63,
+  `GARNISH_NOUNS` still 8), F3's pronoun (30) and modal (12) classes,
+  M1's interjection/address class, M5's abbreviation class, M6's Cf
+  stripping at the cleaning sites, M7's no-span unit matching, F4's
+  fence head test on the verb-form branch, M4 part 1 (single-character
+  and bracket-span garnish in the bare partition). Three flagged
+  pre-existing test changes, all pre-authorized by this synthesis: the
+  R24-A deferral pins for the ungraded sets, "Sunday left luggage"
+  under the F4 head rule, and the r23b verb-form test (its eight lines,
+  including the expected "Sunday baked beans", now silent; its core
+  no-phantom claim still pinned).
+- **R25-B `8f287ab`** — 790 → 798 tests, **zero changed pre-existing
+  tests**. F5's three mechanisms (full-clause consumption via the
+  object-material discriminator — a finite verb directly before the PP
+  still ends the walk, so the pinned second-clause readings stand;
+  relative PP objects consulted on both scans, relative targets read
+  by the forward arm; the trailing-PP arm on claim lines, claim-free
+  alternatives pin untouched), M8's shared slot walk in the claim
+  scan, M9's so/too intensifiers (cap untouched), M2's date-token
+  garnish class (stops at the two parens, the system's structural
+  delimiters — refined in-batch after five pre-existing tests showed
+  the full class broke group-edge parsing; the tests were not moved),
+  M3's bracketed-restatement binding, M4 part 2's digit-token boundary
+  alignment at the parse site.
+
+Round totals: 782 → **798 tests, all passing, clippy clean** at the
+close tree. Every MAJOR and every fix-graded MINOR in this synthesis
+is dispositioned and shipped; M10 (the "-ly" seam) stands as a
+documented limitation, M11 (the rights license-only residual) under
+its standing adjudication, M9's phrasal remainder (`at all`, `at
+once`, `in all`) recorded under the pinned slot cap.
+
+Carried to round 26, recorded: the singleton fragments (`ago`, `out`,
+`up`, `down`, `away`, `home` as sole companions — phrases covering
+them shipped in F2); the garnish set's twelve unlisted printed-matter
+candidates (silence direction); the F5 discriminator's edge (a finite
+verb directly before the PP ends the walk — the round-26 lanes should
+probe fuller shapes around it); bracket spans in composition beyond
+the restatement binding. The inventory-remainder pattern is now three
+rounds old: each round closed the class it aimed at and left the
+adjacent remainder standing. Round 26's briefs direct the lanes to
+sweep the next ring deliberately — candidate classes beyond the ones
+fixed here — rather than re-probing only the shipped lists.

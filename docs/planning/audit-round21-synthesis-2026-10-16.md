@@ -171,6 +171,128 @@ stays content, recorded.
 - **R21-B** (verb test v2 + Sunday + inventory): R21-6,
   R21-7, R21-8, R21-9, R21-10.
 
+## Shipped addendum, R21-A (2026-10-18)
+
+R21-1 through R21-5 shipped in one batch, all in
+`crates/ob-extract/src/contribution.rs`. Tests: **747 →
+752 passing** (ob-extract 234 → 239; five new `r21a_*`
+pins), clippy clean, **no pre-existing test changed**.
+
+The composition rule, in plain words: a date line is
+read as one line of segments in written order — the
+plain core (the line with every parenthesized group
+taken out, a group leaving a clause break behind it so
+its neighbours are judged as segments) and every group
+on the line, wherever it stands. Beside an asserting
+core, every group is garnish: named on the mismatch
+record when it disagrees, silent when it agrees, in
+front of the core exactly as behind it. Beside a
+governed core — an every-governed core, or a
+for-occasion core by its occasion date — the core's
+values bind any segment's bare restatement of the same
+value, and the surviving segments stand in written
+order: the last survivor is the line's date, earlier
+survivors are named on the mismatch record, and the
+core's values are named on the note. Every value the
+composition binds resolves its relative signals at the
+parse anchor. An occurrence's regions end at its
+neighbouring occurrences on every surface that judges
+bareness, so a passive "for" lead-in credits the date
+it names, not the restatement it follows. Both paths
+(For Sunday and Keep-through) read the same
+composition and agree field for field.
+
+Per item:
+
+- **R21-1 (leading groups).** "(November 15) November
+  15, 2026" asserts November 15, the agreeing group
+  silent; "(November 8) November 15, 2026" asserts
+  November 15 with November 8 on the mismatch;
+  "(November 8) November 1, 2026, cancelled" asserts
+  November 8 with November 1 named; two leading groups
+  compose in order beside asserting and governed cores
+  alike. Beside a relative core the leading group
+  composes in the standing relative-line form: a
+  DISAGREEING leading group ("(November 8) next
+  Sunday") is remembered with the phrase on the
+  parenthesized record (the phrase resolves to
+  October 25) and reads on the Keep-through line,
+  exactly as its trailing twin does — while the
+  R10-10c boundary stands for an AGREEING leading
+  group: "(October 25) next Sunday" still names no
+  Sunday anywhere, on both paths (pinned in
+  `r21a_leading_groups_compose`).
+- **R21-2 (content-headed and for-occasion cores).**
+  "service November 1, 2026 (November 8)" and the
+  choir twin assert November 1 on both paths with
+  November 8 on the mismatch. For-occasion cores
+  contribute their occasion date as the core value
+  for governance binding: "(November 1)" beside any
+  of the three for-cores binds and reads nothing on
+  both paths; "(November 8)" / "(next Sunday)" assert
+  with November 1 named; a labelled restatement
+  stands by its own clause. The for-core alone still
+  reads nothing, and a content-headed core alone
+  still reads nothing (both standing; the assertion
+  is beside groups — the red team's mechanism note
+  said a lone content core asserts today, and it
+  does not). Census: the lanes' 20-core ×
+  421-combination probe was re-run against this
+  build — **0 divergences for every core family**,
+  including service, choir, and all three
+  for-occasion cores (402/421 each before this
+  batch); the only remaining divergences are the
+  bare "next Sunday" / "this Sunday" cores at
+  402/421, the standing relative-line asymmetry
+  pinned since rounds 8/9, out of scope. A
+  miniature of the census (9 core families × 6
+  representative groups, field-for-field) is pinned
+  in `r21a_content_and_for_occasion_cores_compose`.
+- **R21-3 (post-group plain segments).** "November
+  1, 2026, cancelled (November 8) November 1, 2026"
+  asserts November 8 with November 1 named (the
+  post-group restatement binds); "…(November 8)
+  November 8, 2026" asserts November 8; "…(November
+  8) November 15, 2026" asserts November 15 with
+  November 8 on the mismatch and November 1 on the
+  note. The relative twin ("next Sunday, cancelled
+  (November 8) October 25, 2026") asserts November 8
+  with October 25 named. Controls stand: a
+  restatement inside a group stays governed, and
+  no-group restatement lines are unchanged.
+- **R21-4 (anchor parity).** Filed October 16,
+  scanned October 23: "next Sunday, cancelled
+  (October 25)" and "(next Sunday)" read nothing on
+  both paths and name no phantom November 1;
+  "(October 25) (November 8)" asserts November 8
+  with October 25 named.
+- **R21-5 (occurrence regions).** "November 1, 2026,
+  cancelled, November 1, 2026, it was moved for
+  November 8, 2026" asserts November 8 with
+  November 1 named, on both paths; the group
+  surface "(November 1, cancelled, November 1, it
+  was moved for November 8)" contributes November 8
+  the same way. Held: the comma twin and every
+  R20-2 witness stand — a predicate in an
+  occurrence's own region still makes it non-bare.
+
+Implementation notes, for the next round's lanes: the
+whole-line composition (`whole_line_composition` +
+`core_composition_profile`) is entered only for the
+shapes the standing readings did not compose — a
+group outside the trailing run, or a lone
+content-headed / for-occasion core beside its groups
+— and returns None everywhere else, so the standing
+readings (paren-only, relative in-words, mid-date
+group, framed/governed core beside trailing groups)
+are byte-for-byte what they were. The Keep-through
+fallback reads the same composition, which is what
+makes the paths agree. One mechanism worth knowing:
+the recombined core marks each removed group with a
+semicolon token — a comma token is absorbed into the
+next date's parse prefix and shifts its span, a
+semicolon is a clause break no date reader absorbs.
+
 Held lines: R19-1 event rule, "(for November 1)" bare, the
 "use" call, defensible silence, claim/scope pins, the
 standing relative-line For/Keep asymmetry (rounds 8/9),

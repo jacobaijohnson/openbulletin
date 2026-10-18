@@ -723,7 +723,12 @@ fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> bool {
         if shape(rest) {
             return true;
         }
-        match strip_trailing_parenthesized(rest) {
+        // Round 21 (R21-1): a LEADING group is garnish
+        // to the shape exactly as a trailing one is —
+        // "(November 8) next Sunday" names its Sunday
+        // in words the way "next Sunday (November 8)"
+        // does, the group's date remembered separately.
+        match strip_trailing_parenthesized(rest).or_else(|| strip_leading_parenthesized(rest)) {
             Some(stripped) => rest = stripped,
             None => return false,
         }
@@ -3097,6 +3102,51 @@ fn region_has_passive_predicate(words: &[String]) -> bool {
     })
 }
 
+/// Whether the AFTER side of an occurrence's region
+/// carries a passive predicate of the occurrence's
+/// OWN (round 21, R21-5): an occurrence's regions end
+/// at the neighbouring occurrences, so a passive
+/// "for" construction standing in the after-region
+/// whose occasion is the NEXT occurrence — the run
+/// is the next date's lead-in, "it was moved for"
+/// and then the next date stands — credits that next
+/// occurrence, not this one. Such a lead-in does not
+/// make this occurrence non-bare: "November 1, 2026,
+/// cancelled, November 1, 2026, it was moved for
+/// November 8, 2026" — the restated November 1 stays
+/// a bare restatement, bound by the cancellation,
+/// and November 8 asserts by its own construction.
+/// A predicate that completes inside the region (the
+/// comma form, "it was moved, November 8") is the
+/// occurrence's own, exactly as before.
+fn after_region_has_own_passive_predicate(words: &[String], has_next: bool) -> bool {
+    for i in 0..words.len() {
+        for len in 1..=3usize {
+            if words.get(i..i + len).is_none() || !is_spent_predicate(words, i, len) {
+                continue;
+            }
+            if has_next {
+                // The construction runs on into the
+                // next occurrence: everything after
+                // the participle phrase is joining
+                // words ending in the "for" that
+                // names the next date as its occasion.
+                let suffix = &words[i + len..];
+                let lead_in = !suffix.is_empty()
+                    && suffix.last().map(String::as_str) == Some("for")
+                    && suffix
+                        .iter()
+                        .all(|w| w.is_empty() || w.as_str() == "for" || bare_filler_word(w));
+                if lead_in {
+                    continue;
+                }
+            }
+            return true;
+        }
+    }
+    false
+}
+
 /// Whether the occurrence at `idx` in `positional`
 /// is a BARE restatement of its date (round 19,
 /// R19-1): the occurrence's own region of the line —
@@ -3146,7 +3196,15 @@ fn occurrence_is_bare(
     let before_words = &tokens[region_start..start.min(tokens.len())];
     let after = (start + used).min(tokens.len());
     let after_words = &tokens[after..region_end.min(tokens.len())];
-    if region_has_passive_predicate(before_words) || region_has_passive_predicate(after_words) {
+    // Round 21 (R21-5): the after side is judged by
+    // the bounded rule — a passive "for" lead-in to
+    // the next occurrence is that occurrence's
+    // construction, not this one's (see
+    // `after_region_has_own_passive_predicate`).
+    let has_next = idx + 1 < positional.len();
+    if region_has_passive_predicate(before_words)
+        || after_region_has_own_passive_predicate(after_words, has_next)
+    {
         return false;
     }
     let mut words: Vec<String> = Vec::new();
@@ -3727,6 +3785,16 @@ fn trailing_group_analyses(
         .iter()
         .map(|inner| analyze_group(inner, today, anchor))
         .collect();
+    apply_cross_group_governance(&mut analyses);
+    inners.into_iter().zip(analyses).collect()
+}
+
+/// The cross-group governance pass (round 19,
+/// R19-2), shared by every group list a line is read
+/// through: a group whose contribution stands only
+/// on bare restatements of a value a SIBLING group
+/// governs directly contributes nothing.
+fn apply_cross_group_governance(analyses: &mut [GroupAnalysis]) {
     for i in 0..analyses.len() {
         let Some(d) = analyses[i].contributed else {
             continue;
@@ -3742,7 +3810,55 @@ fn trailing_group_analyses(
             analyses[i].contributed = None;
         }
     }
+}
+
+/// Every parenthesized group standing in `text`, in
+/// written order, each with its analysis, under the
+/// same cross-group governance rule as the trailing
+/// groups (round 21, R21-1/R21-3): the whole-line
+/// composition reads a line's groups wherever they
+/// stand — leading, trailing, or between plain
+/// segments — so this is `trailing_group_analyses`
+/// over the balanced spans instead of only the
+/// trailing run.
+fn all_group_analyses(
+    text: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> Vec<(String, GroupAnalysis)> {
+    let inners: Vec<String> = balanced_spans(text)
+        .iter()
+        .map(|(start, end)| text[start + 1..end - 1].to_string())
+        .collect();
+    let mut analyses: Vec<GroupAnalysis> = inners
+        .iter()
+        .map(|inner| analyze_group(inner, today, anchor))
+        .collect();
+    apply_cross_group_governance(&mut analyses);
     inners.into_iter().zip(analyses).collect()
+}
+
+/// Every date a group standing anywhere in `text`
+/// contributes, in written order: the whole-line
+/// form of `trailing_parenthesized_dates`, for the
+/// readers that remember a line's parenthesized
+/// dates beside a relative phrase wherever the
+/// groups stand (round 21, R21-1).
+fn all_parenthesized_dates(text: &str, today: SimpleDate, anchor: SimpleDate) -> Vec<SimpleDate> {
+    all_group_analyses(text, today, anchor)
+        .iter()
+        .filter_map(|(_, a)| a.contributed)
+        .collect()
+}
+
+/// The last date a group standing anywhere in
+/// `text` contributes, if one does: the whole-line
+/// form of `trailing_parenthesized_date`.
+fn all_parenthesized_date(text: &str, today: SimpleDate, anchor: SimpleDate) -> Option<SimpleDate> {
+    all_group_analyses(text, today, anchor)
+        .iter()
+        .rev()
+        .find_map(|(_, a)| a.contributed)
 }
 
 fn trailing_parenthesized_date(
@@ -3921,6 +4037,24 @@ fn chain_superseded_dates(
         .into_iter()
         .map(|(inner, a)| (inner, a.contributed))
         .collect();
+    chain_superseded_from_entries(&entries, read, today, anchor)
+}
+
+/// The chain test over a list of (group words,
+/// contributed date) entries in written order —
+/// `chain_superseded_dates` over a line's trailing
+/// groups, and the whole-line composition (round 21)
+/// over a line's groups wherever they stand. The
+/// shape judged is the one stated there: a target
+/// phrase with its "to" / "until" in some
+/// contributing group, and an actual target claim
+/// for `read` in the last contributing group.
+fn chain_superseded_from_entries(
+    entries: &[(String, Option<SimpleDate>)],
+    read: SimpleDate,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> Vec<SimpleDate> {
     let contributing: Vec<usize> = entries
         .iter()
         .enumerate()
@@ -4008,13 +4142,78 @@ fn strip_all_trailing_parenthesized(text: &str) -> &str {
 /// relative Sunday — an absolute base is
 /// `sunday_after_outcome`'s shape, and anything more
 /// is not this shape either.
-fn sunday_after_relative_phrase(raw: &Option<String>) -> Option<String> {
+fn sunday_after_relative_phrase(raw: &Option<String>, today: SimpleDate) -> Option<String> {
     let text = raw.as_deref()?.trim();
-    if relative_shape_matches(text, sunday_after_relative_shape) {
-        Some(text.trim_end_matches(['.', ',']).to_string())
-    } else {
-        None
+    if !relative_shape_matches(text, sunday_after_relative_shape) {
+        return None;
     }
+    // Round 21 (R21-1), bounded by the R10-10c
+    // boundary: a leading group that merely restates
+    // the Sunday the phrase itself names stays
+    // unread, as a group standing before the phrase
+    // always has; a leading group naming a DIFFERENT
+    // Sunday is a segment asserting another date, and
+    // the phrase is remembered with it, the group
+    // named on the parenthesized record.
+    if text.trim_start().starts_with('(') {
+        let resolution = relative_phrase_resolution(text, today, true);
+        if !leading_group_disagrees(text, today, resolution) {
+            return None;
+        }
+    }
+    Some(text.trim_end_matches(['.', ',']).to_string())
+}
+
+/// The Sunday a relative phrase in `text` resolves
+/// to at parse time (round 21, R21-1): the groups at
+/// either end taken off, the remaining shape's
+/// "next" / "this" base resolved against `today`,
+/// and — for a Sunday-after phrase — the first
+/// Sunday after that base.
+fn relative_phrase_resolution(text: &str, today: SimpleDate, sunday_after: bool) -> SimpleDate {
+    let mut rest = text;
+    while let Some(stripped) =
+        strip_trailing_parenthesized(rest).or_else(|| strip_leading_parenthesized(rest))
+    {
+        rest = stripped;
+    }
+    let next = rest
+        .split_whitespace()
+        .map(group_token)
+        .any(|w| w == "next");
+    let base = relative_sunday_date(next, today);
+    if sunday_after {
+        first_sunday_after(base)
+    } else {
+        base
+    }
+}
+
+/// Whether a parenthesized group standing at the
+/// very start of `text` contributes a date other
+/// than `resolution` (round 21, R21-1): every leading
+/// group is read in written order, and the first
+/// disagreement answers. A group that contributes
+/// nothing, or restates the resolution, does not
+/// disagree.
+fn leading_group_disagrees(text: &str, today: SimpleDate, resolution: SimpleDate) -> bool {
+    let mut rest = text.trim_start();
+    while rest.starts_with('(') {
+        let Some((start, end)) = balanced_spans(rest).into_iter().next() else {
+            return false;
+        };
+        if start != 0 {
+            return false;
+        }
+        let inner = &rest[start + 1..end - 1];
+        if let Some(d) = group_date(inner, today, today) {
+            if d != resolution {
+                return true;
+            }
+        }
+        rest = rest[end..].trim_start();
+    }
+    false
 }
 
 /// Whether `text` is exactly the Sunday-after-a-
@@ -4072,13 +4271,23 @@ fn sunday_after_relative_shape(text: &str) -> bool {
 /// punctuation off) when that is ALL the line says, so
 /// the review can repeat the sender's own words; a
 /// line saying anything more is not this shape.
-fn relative_sunday_phrase(raw: &Option<String>) -> Option<String> {
+fn relative_sunday_phrase(raw: &Option<String>, today: SimpleDate) -> Option<String> {
     let text = raw.as_deref()?.trim();
-    if relative_shape_matches(text, relative_sunday_shape) {
-        Some(text.trim_end_matches(['.', ',']).to_string())
-    } else {
-        None
+    if !relative_shape_matches(text, relative_sunday_shape) {
+        return None;
     }
+    // Round 21 (R21-1), bounded by the R10-10c
+    // boundary, as in `sunday_after_relative_phrase`:
+    // a leading group restating the phrase's own
+    // Sunday stays unread; a leading group naming a
+    // different Sunday is remembered with the phrase.
+    if text.trim_start().starts_with('(') {
+        let resolution = relative_phrase_resolution(text, today, false);
+        if !leading_group_disagrees(text, today, resolution) {
+            return None;
+        }
+    }
+    Some(text.trim_end_matches(['.', ',']).to_string())
 }
 
 /// Whether `text` is exactly a bare relative Sunday,
@@ -4357,6 +4566,56 @@ fn parenthesized_spans(text: &str) -> Vec<(usize, usize)> {
         from = close + 1;
     }
     out
+}
+
+/// The top-level parenthesized spans of `text`, as
+/// (start, end) byte spans, end past the closing
+/// parenthesis, in written order (round 21, R21-1):
+/// found by balancing, so a nested group is one span
+/// ("(note (November 1))"), and a group standing
+/// anywhere in the line — leading, between plain
+/// segments, trailing — is seen. An unbalanced
+/// opening parenthesis forms no span.
+fn balanced_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut open = 0usize;
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => {
+                if depth == 0 {
+                    open = i;
+                }
+                depth += 1;
+            }
+            b')' if depth == 1 => {
+                depth = 0;
+                out.push((open, i + 1));
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `text` without its leading "(...)" group, when it
+/// begins with one (round 21, R21-1): the words after
+/// the group. Found by balancing, like
+/// `split_last_trailing_group` at the other end.
+fn strip_leading_parenthesized(text: &str) -> Option<&str> {
+    let text = text.trim_start();
+    if !text.starts_with('(') {
+        return None;
+    }
+    let (start, end) = balanced_spans(text).into_iter().next()?;
+    if start != 0 {
+        return None;
+    }
+    Some(text[end..].trim_start())
 }
 
 /// A parenthesized group standing between a month-day
@@ -5182,9 +5441,28 @@ fn every_governed_core_values(
 ) -> Vec<SimpleDate> {
     let tokens: Vec<&str> = core.split_whitespace().collect();
     let cleaned: Vec<String> = tokens.iter().map(|t| group_token(t)).collect();
-    let signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
+    let mut signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
     if signals.is_empty() {
         return Vec::new();
+    }
+    // Round 21 (R21-4): every value this composition
+    // binds resolves its relative signals at the parse
+    // anchor — the same anchor the groups use since
+    // R19-3. The plain scan re-resolves relatives at
+    // the anchor only on a MIXED line, so a governed
+    // core whose value is a relative phrase alone
+    // ("next Sunday, cancelled") kept its scan-day
+    // resolution (November 1 on an October 23 scan of
+    // an October 16 file) and never met the group
+    // restating its anchored value (October 25): the
+    // group asserted the cancelled date and the note
+    // named a Sunday nobody wrote. Here, where the
+    // values are read off for governance binding,
+    // the anchor applies to every relative signal.
+    for s in &mut signals {
+        if let Some(anchored) = s.anchored {
+            s.date = anchored;
+        }
     }
     let spans: Vec<(SimpleDate, usize, usize)> =
         signals.iter().map(|s| (s.date, s.start, s.end)).collect();
@@ -5337,6 +5615,364 @@ fn governed_core_group_reading(
     })
 }
 
+/// What a date line's plain core — the line with
+/// every parenthesized group taken out, wherever
+/// the groups stood — contributes to the whole-line
+/// composition (round 21, R21-1/R21-2/R21-3).
+enum CoreProfile {
+    /// The core asserts a date: by the inner readers
+    /// (a framed or Sunday-after core), by the plain
+    /// composition / first-signal primacy, or — a
+    /// single framed signal headed by its own words —
+    /// as a content-headed core ("service November 1,
+    /// 2026", "choir November 1, 2026"), whose date
+    /// round 20's composition never reached because
+    /// no plain reader asserts a lone content-headed
+    /// signal. `single_signal` marks that last family:
+    /// it is the family the composition extends to,
+    /// beside groups, for the first time.
+    Assert {
+        read: SimpleDate,
+        second_dates: Vec<SimpleDate>,
+        single_signal: bool,
+    },
+    /// The core asserts nothing and holds values the
+    /// composition binds by: an every-governed core's
+    /// governed values, or a for-occasion core's
+    /// occasion date ("it was scheduled for November
+    /// 1, 2026", "we moved the meeting for November 1,
+    /// 2026") — the occasion date is the core's value
+    /// for governance binding, while the core alone
+    /// keeps reading nothing, as it always has.
+    Governed {
+        values: Vec<SimpleDate>,
+        for_occasion: bool,
+    },
+}
+
+/// A plain core's composition profile, read with the
+/// standing readers in their standing order — the
+/// inner readers, the plain multi-date reading, the
+/// every-governed values — and, for a lone framed
+/// signal none of them asserts or governs, the
+/// signal's own standing: a for-occasion (its window
+/// ends in a passive or active "for" construction)
+/// contributes its occasion date as a governed
+/// value; any other lone framed signal is a
+/// content-headed core and asserts its date. A
+/// weekday mismatch on the core, a relative-only
+/// core, and a core no reader reaches have no
+/// profile: the whole-line composition does not
+/// touch them, and their standing readings stand.
+fn core_composition_profile(
+    core: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> Option<CoreProfile> {
+    let core_raw = Some(core.to_string());
+    let (inner_date, inner_mismatch) = date_line_inner(&core_raw, today);
+    if inner_mismatch.is_some() {
+        return None;
+    }
+    if let Some(read) = inner_date {
+        let mut second_dates = second_dates_in_line(core, today, read);
+        // Round 18 (R18-7)'s merge, as in `date_line`:
+        // the plain composition's naming joins the
+        // note when it reads the same date.
+        if let Some(plain) = plain_composition_reading(core, today, anchor, &[]) {
+            if plain.date == Some(read) {
+                let consumed_bases = sunday_after_consumed_bases(core, today);
+                for d in &plain.second_dates {
+                    if *d != read && !consumed_bases.contains(d) && !second_dates.contains(d) {
+                        second_dates.push(*d);
+                    }
+                }
+            }
+        }
+        let profile = CoreProfile::Assert {
+            read,
+            second_dates,
+            single_signal: false,
+        };
+        return Some(profile);
+    }
+    if let Some(reading) = plain_multi_date_reading(core, today, anchor, &[]) {
+        if let Some(read) = reading.date {
+            let profile = CoreProfile::Assert {
+                read,
+                second_dates: reading.second_dates,
+                single_signal: false,
+            };
+            return Some(profile);
+        }
+        // An every-signal-governed silence: its
+        // governed values are read off below.
+    }
+    let governed_values = every_governed_core_values(core, today, anchor);
+    if !governed_values.is_empty() {
+        let profile = CoreProfile::Governed {
+            values: governed_values,
+            for_occasion: false,
+        };
+        return Some(profile);
+    }
+    let tokens: Vec<&str> = core.split_whitespace().collect();
+    let cleaned: Vec<String> = tokens.iter().map(|t| group_token(t)).collect();
+    let signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
+    if signals.len() != 1 || !signals[0].framed {
+        return None;
+    }
+    let signal = &signals[0];
+    let window_start = governor_window_start(&tokens, &cleaned, 0, signal.start, false);
+    let window = &cleaned[window_start..signal.start.min(cleaned.len())];
+    let for_occasion = passive_for_zone_start(&cleaned[..window_start], window).is_some()
+        || active_for_zone_start(window).is_some();
+    if for_occasion {
+        let profile = CoreProfile::Governed {
+            values: vec![signal.date],
+            for_occasion: true,
+        };
+        return Some(profile);
+    }
+    let profile = CoreProfile::Assert {
+        read: signal.date,
+        second_dates: Vec::new(),
+        single_signal: true,
+    };
+    Some(profile)
+}
+
+/// The whole-line composition (round 21, R21-1 /
+/// R21-2 / R21-3): ONE composition for every segment
+/// of a date line, in written order — the R20-1
+/// composition, which covered a governed plain core
+/// and its TRAILING groups, extended to the whole
+/// line. The line's plain core is the line with
+/// every parenthesized group taken out, wherever
+/// the groups stood, and every group on the line —
+/// leading, trailing, or standing between plain
+/// segments — composes with that core by the same
+/// rules the trailing groups compose by:
+///
+/// - Beside an ASSERTING core, every group is
+///   garnish: a group that disagrees with the read
+///   date is named on the mismatch record, a group
+///   that agrees is silent — leading groups exactly
+///   as trailing ones ("(November 8) November 15,
+///   2026" asserts November 15 and names November 8;
+///   "(November 15) November 15, 2026" asserts
+///   November 15, silently). A plain segment after
+///   the last group is part of the core, so a
+///   post-group date is judged by the plain
+///   composition itself, never by a first-signal
+///   reading that displaces the groups.
+/// - Beside a GOVERNED core (an every-governed core,
+///   or a for-occasion core by its occasion date),
+///   the core's values bind a group's BARE
+///   restatement of the same value, wherever the
+///   group stands; a surviving group asserts by the
+///   paren-only primacy (the last surviving group
+///   stands, earlier survivors named on the mismatch
+///   record), and the core's values are named on the
+///   note beside the read date. When no group
+///   survives, the line reads nothing.
+///
+/// The composition is entered only for the shapes
+/// the standing readings do not already compose: a
+/// group standing anywhere but the trailing run, or
+/// a lone content-headed / for-occasion core beside
+/// its trailing groups. Every other shape — the
+/// paren-only line, the relative in-words line, the
+/// mid-date group, a framed or governed core beside
+/// trailing groups alone — keeps its standing
+/// reading byte for byte, and this returns None.
+fn whole_line_composition(
+    text: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> Option<DateLineReading> {
+    let spans = balanced_spans(text);
+    if spans.is_empty() {
+        return None;
+    }
+    // The mid-date group ("October 25 (November 1),
+    // 2026") is the mid-date reading's shape, not a
+    // segment boundary: a group followed by a comma
+    // and a year belongs to the date it stands in.
+    for (_, end) in &spans {
+        let after = text[*end..].trim_start();
+        if let Some(after_comma) = after.strip_prefix(',') {
+            let year_token = after_comma.split_whitespace().next().unwrap_or("");
+            let year_clean = year_token.trim_matches(['.', ',']);
+            if (year_clean.len() == 2 || year_clean.len() == 4)
+                && year_clean.chars().all(|c| c.is_ascii_digit())
+            {
+                return None;
+            }
+        }
+    }
+    // The trailing run: the groups the standing
+    // readings already compose with the core.
+    let mut trailing_run = 0usize;
+    {
+        let mut rest = text;
+        while let Some(stripped) = strip_trailing_parenthesized(rest) {
+            trailing_run += 1;
+            rest = stripped;
+        }
+    }
+    let has_non_trailing_group = spans.len() > trailing_run;
+    // The core: the line with every group taken out.
+    // A group leaves a clause break behind it — a
+    // semicolon token, which the date readers treat
+    // as a break and never absorb into a date run
+    // the way a comma token is absorbed: the group
+    // is a segment boundary, so a governor standing
+    // before it ("cancelled (November 8) November 8,
+    // 2026") is spent where it stood and does not
+    // reach across the group to govern the plain
+    // segment after it — that segment is judged on
+    // its own words, as a segment.
+    let mut core = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for (start, end) in &spans {
+        core.push_str(&text[at..*start]);
+        core.push(';');
+        at = *end;
+    }
+    core.push_str(&text[at..]);
+    let core = core.trim();
+    let profile = core_composition_profile(core, today, anchor)?;
+    // Enter only for the shapes named above: a group
+    // outside the trailing run, or the lone-signal
+    // families (a content-headed core asserting, a
+    // for-occasion core governing) beside any group.
+    let extends_core = match &profile {
+        CoreProfile::Assert { single_signal, .. } => *single_signal,
+        CoreProfile::Governed { for_occasion, .. } => *for_occasion,
+    };
+    if !has_non_trailing_group && !extends_core {
+        return None;
+    }
+    let entries = all_group_analyses(text, today, anchor);
+    let alternatives: Vec<SimpleDate> = {
+        let mut found: Vec<SimpleDate> = Vec::new();
+        for (_, a) in &entries {
+            for d in &a.alternatives {
+                if !found.contains(d) {
+                    found.push(*d);
+                }
+            }
+        }
+        found
+    };
+    let entry_dates: Vec<(String, Option<SimpleDate>)> = entries
+        .iter()
+        .map(|(inner, a)| (inner.clone(), a.contributed))
+        .collect();
+    match profile {
+        CoreProfile::Assert {
+            read, second_dates, ..
+        } => {
+            let superseded = chain_superseded_from_entries(&entry_dates, read, today, anchor);
+            let group_dates: Vec<SimpleDate> =
+                entries.iter().filter_map(|(_, a)| a.contributed).collect();
+            let remaining: Vec<SimpleDate> = group_dates
+                .iter()
+                .copied()
+                .filter(|d| !superseded.contains(d))
+                .collect();
+            let parenthesized_mismatch = mismatch_from_groups(&remaining, read, false);
+            let mut named: Vec<SimpleDate> = second_dates;
+            for d in &superseded {
+                if *d != read && !named.contains(d) {
+                    named.push(*d);
+                }
+            }
+            for d in &alternatives {
+                if *d != read && !named.contains(d) {
+                    named.push(*d);
+                }
+            }
+            Some(DateLineReading {
+                date: Some(read),
+                weekday_mismatch: None,
+                parenthesized_mismatch,
+                second_dates: named,
+            })
+        }
+        CoreProfile::Governed { values, .. } => {
+            let surviving: Vec<SimpleDate> = entries
+                .iter()
+                .filter_map(|(_, a)| {
+                    a.contributed
+                        .filter(|d| !(a.contributed_bare && values.contains(d)))
+                })
+                .collect();
+            let Some(read) = surviving.last().copied() else {
+                let mut named: Vec<SimpleDate> = Vec::new();
+                for d in &alternatives {
+                    if !named.contains(d) {
+                        named.push(*d);
+                    }
+                }
+                return Some(DateLineReading {
+                    date: None,
+                    weekday_mismatch: None,
+                    parenthesized_mismatch: None,
+                    second_dates: named,
+                });
+            };
+            let superseded: Vec<SimpleDate> =
+                chain_superseded_from_entries(&entry_dates, read, today, anchor)
+                    .into_iter()
+                    .filter(|d| surviving.contains(d))
+                    .collect();
+            let remaining: Vec<SimpleDate> = surviving
+                .iter()
+                .copied()
+                .filter(|d| !superseded.contains(d))
+                .collect();
+            let parenthesized_mismatch = mismatch_from_groups(&remaining, read, true);
+            let mut named: Vec<SimpleDate> = Vec::new();
+            for d in &values {
+                if *d != read && !named.contains(d) {
+                    named.push(*d);
+                }
+            }
+            for d in &alternatives {
+                if *d != read && !named.contains(d) {
+                    named.push(*d);
+                }
+            }
+            for d in &superseded {
+                if *d != read && !named.contains(d) {
+                    named.push(*d);
+                }
+            }
+            // Round 19 (R19-10)'s loser naming, as in
+            // `governed_core_group_reading`.
+            if surviving.len() >= 2
+                && entries
+                    .iter()
+                    .any(|(inner, _)| group_inner_is_relative(inner))
+            {
+                for d in &surviving {
+                    if *d != read && !named.contains(d) {
+                        named.push(*d);
+                    }
+                }
+            }
+            Some(DateLineReading {
+                date: Some(read),
+                weekday_mismatch: None,
+                parenthesized_mismatch,
+                second_dates: named,
+            })
+        }
+    }
+}
+
 /// The trailing groups' contributed dates after
 /// the core's governance has bound its bare
 /// restatements (round 20, R20-1): the list the
@@ -5347,17 +5983,59 @@ fn governed_core_group_reading(
 /// governed and the group only restated bare.
 /// Beside any other core the list is the standing
 /// trailing-group list unchanged.
+///
+/// Round 21 (R21-1/R21-2): the fallback reads the
+/// WHOLE line through the same composition — a line
+/// the whole-line composition reads contributes
+/// exactly its read date (or nothing, when the
+/// composition bound every group: a for-occasion
+/// core's bare restatement group must not become
+/// the keep-through date the For Sunday line
+/// refused), and beside a core the composition does
+/// not reach (a relative in-words core) the group
+/// list is every group on the line, leading groups
+/// included, against the core the groups leave
+/// behind — "(November 8) next Sunday" keeps
+/// through November 8 exactly as its trailing twin
+/// does.
 fn trailing_dates_after_core_governance(
     text: &str,
     today: SimpleDate,
     anchor: SimpleDate,
 ) -> Vec<SimpleDate> {
-    let core = strip_all_trailing_parenthesized(text.trim());
-    let governed_values = every_governed_core_values(core, today, anchor);
+    if let Some(reading) = whole_line_composition(text, today, anchor) {
+        return reading.date.into_iter().collect();
+    }
+    let spans = balanced_spans(text);
+    let mut core = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for (start, end) in &spans {
+        core.push_str(&text[at..*start]);
+        core.push(';');
+        at = *end;
+    }
+    core.push_str(&text[at..]);
+    let governed_values = every_governed_core_values(core.trim(), today, anchor);
     if governed_values.is_empty() {
+        // A leading group joins the fallback only
+        // beside a relative core it disagrees with
+        // (the R21-1 shape above): beside any other
+        // core a group standing before the words is
+        // not the fallback's to read — the R10-10c
+        // boundary — and the list is the standing
+        // trailing-group list.
+        let core_words = core.replace(';', " ");
+        let core_trim = core_words.trim();
+        let after_shape = sunday_after_relative_shape(core_trim);
+        if after_shape || relative_sunday_shape(core_trim) {
+            let resolution = relative_phrase_resolution(core_trim, today, after_shape);
+            if leading_group_disagrees(text, today, resolution) {
+                return all_parenthesized_dates(text, today, anchor);
+            }
+        }
         return trailing_parenthesized_dates(text, today, anchor);
     }
-    trailing_group_analyses(text, today, anchor)
+    all_group_analyses(text, today, anchor)
         .iter()
         .filter_map(|(_, a)| {
             a.contributed
@@ -5537,6 +6215,18 @@ fn date_line(raw: &Option<String>, today: SimpleDate, anchor: SimpleDate) -> Dat
             parenthesized_mismatch: None,
             second_dates: Vec::new(),
         };
+    }
+    // Round 21 (R21-1/R21-2/R21-3): the whole-line
+    // composition — a group standing anywhere but
+    // the trailing run, or a content-headed /
+    // for-occasion core beside its groups — is read
+    // here, after the standing weekday-mismatch
+    // return (a wrong weekday speaks first, as it
+    // always has) and before the standing readings
+    // below, which the composition leaves untouched
+    // for every other shape (it returns None there).
+    if let Some(reading) = whole_line_composition(text, today, anchor) {
+        return reading;
     }
     // Round 10 (R10-10b): a group standing between a
     // month-day and its year does not poison the plain
@@ -5971,7 +6661,7 @@ pub fn parse_contribution_anchored(
     // date and no mismatch, but it is not silence: the
     // words are remembered as written (round 5, RT5-6).
     let for_sunday_in_words = if for_date.is_none() && named_weekday_mismatch.is_none() {
-        relative_sunday_phrase(&raw.for_sunday)
+        relative_sunday_phrase(&raw.for_sunday, today)
     } else {
         None
     };
@@ -5985,7 +6675,7 @@ pub fn parse_contribution_anchored(
         && named_weekday_mismatch.is_none()
         && for_sunday_in_words.is_none()
     {
-        sunday_after_relative_phrase(&raw.for_sunday)
+        sunday_after_relative_phrase(&raw.for_sunday, today)
     } else {
         None
     };
@@ -5999,18 +6689,22 @@ pub fn parse_contribution_anchored(
         if for_sunday_in_words.is_some() || for_sunday_after_in_words.is_some() {
             raw.for_sunday
                 .as_deref()
-                .and_then(|t| trailing_parenthesized_date(t, today, anchor))
+                .and_then(|t| all_parenthesized_date(t, today, anchor))
         } else {
             None
         };
     // Round 9 (R9-10): every trailing parenthesized
     // date group on the relative phrase is remembered,
     // not only the last, so the verdict compares each.
+    // Round 21 (R21-1): the memory covers the line's
+    // groups wherever they stand — a leading group
+    // beside the phrase is remembered exactly as a
+    // trailing one is.
     let for_sunday_parenthesized_dates =
         if for_sunday_in_words.is_some() || for_sunday_after_in_words.is_some() {
             raw.for_sunday
                 .as_deref()
-                .map(|t| trailing_parenthesized_dates(t, today, anchor))
+                .map(|t| all_parenthesized_dates(t, today, anchor))
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -11233,6 +11927,631 @@ Youth group meets Wednesday at 6 PM.
             .keep_through_parenthesized_mismatch
             .expect("keep-through names the group too");
         assert_eq!(mismatch.named, nov(15), "{line}");
+    }
+
+    #[test]
+    fn r21a_leading_groups_compose() {
+        // Round 21 (R21-1, red team RT21-1): a group
+        // standing BEFORE the plain core composed with
+        // nothing at all — the line read nothing on
+        // both paths, silently, even when the group
+        // agreed with the core, even beside an
+        // asserting core. Leading groups now join the
+        // one composition in written order, by the
+        // trailing rules mirrored: beside an asserting
+        // core a leading group is garnish, named on
+        // the mismatch when it differs and silent when
+        // it agrees; beside a governed core a surviving
+        // leading group asserts as a surviving trailing
+        // group does, the governed value named on the
+        // note. Every witness is read on both lines and
+        // the two readings must agree field for field.
+        // (line, read date, second dates, mismatch named)
+        type LeadCase<'a> = (
+            &'a str,
+            Option<SimpleDate>,
+            &'a [SimpleDate],
+            Option<SimpleDate>,
+        );
+        let cases: [LeadCase<'_>; 8] = [
+            // The agreeing group is silent; the core
+            // asserts, on both paths.
+            ("(November 15) November 15, 2026", Some(nov(15)), &[], None),
+            (
+                "(November 15, 2026) November 15, 2026",
+                Some(nov(15)),
+                &[],
+                None,
+            ),
+            // A disagreeing leading group is garnish
+            // named on the mismatch, exactly as a
+            // trailing one is.
+            (
+                "(November 8) November 15, 2026",
+                Some(nov(15)),
+                &[],
+                Some(nov(8)),
+            ),
+            // Beside a governed core the surviving
+            // leading group asserts, the governed core
+            // value named on the note.
+            (
+                "(November 8) November 1, 2026, cancelled",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            // A bare leading restatement of the
+            // governed value binds: nothing reads.
+            ("(November 1) November 1, 2026, cancelled", None, &[], None),
+            // Two leading groups compose in order: the
+            // bare governed restatement binds and the
+            // surviving group asserts.
+            (
+                "(November 8) (November 1) November 1, 2026, cancelled",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            // A leading group beside a governed core
+            // AND a trailing group: written-order
+            // primacy among the survivors — the last
+            // stands, the earlier is named on the
+            // mismatch record, the governed value on
+            // the note.
+            (
+                "(November 8) November 1, 2026, cancelled (November 15)",
+                Some(nov(15)),
+                &[nov(1)],
+                Some(nov(8)),
+            ),
+            // A content-headed core reads with its
+            // leading group composed the same way.
+            (
+                "(November 8) service November 15, 2026",
+                Some(nov(15)),
+                &[],
+                Some(nov(8)),
+            ),
+        ];
+        for (line, want, want_second, want_mismatch) in cases {
+            let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let f = parse_contribution(&for_text, today()).expect("parses");
+            assert_eq!(f.for_date, want, "{line}: For Sunday");
+            assert_eq!(
+                f.for_sunday_second_dates,
+                want_second.to_vec(),
+                "{line}: For Sunday second dates"
+            );
+            let for_mismatch = f.for_sunday_parenthesized_mismatch.map(|m| m.named);
+            assert_eq!(for_mismatch, want_mismatch, "{line}: For Sunday mismatch");
+            let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let k = parse_contribution(&keep_text, today()).expect("parses");
+            assert_eq!(k.keep_through, want, "{line}: Keep-through agrees");
+            assert_eq!(
+                k.keep_through_second_dates,
+                want_second.to_vec(),
+                "{line}: Keep-through second dates agree"
+            );
+            let keep_mismatch = k.keep_through_parenthesized_mismatch.map(|m| m.named);
+            assert_eq!(
+                keep_mismatch, want_mismatch,
+                "{line}: Keep-through mismatch agrees"
+            );
+        }
+        // Two leading groups beside an asserting core
+        // are both named on the mismatch record, in
+        // written order.
+        let line = "(November 8) (November 22) November 15, 2026";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, Some(nov(15)), "{line}");
+        let mismatch = f
+            .for_sunday_parenthesized_mismatch
+            .expect("both leading groups are named");
+        assert_eq!(mismatch.named, nov(8), "{line}");
+        assert_eq!(mismatch.also_named, vec![nov(22)], "{line}");
+        assert!(!mismatch.read_from_parentheses, "{line}");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, Some(nov(15)), "{line}: keep-through");
+        let mismatch = k
+            .keep_through_parenthesized_mismatch
+            .expect("keep-through names both too");
+        assert_eq!(mismatch.named, nov(8), "{line}");
+        assert_eq!(mismatch.also_named, vec![nov(22)], "{line}");
+        // The relative core: "(November 8) next
+        // Sunday" reads as its trailing twin does —
+        // the For Sunday line remembers the words with
+        // the group's date on the parenthesized
+        // record (the phrase resolves to October 25),
+        // and the Keep-through line reads the group.
+        // The standing relative-line asymmetry is the
+        // shape of both twins, not a split this round
+        // closes.
+        let line = "(November 8) next Sunday";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, None, "{line}: the words carry the Sunday");
+        assert_eq!(f.for_sunday_in_words.as_deref(), Some(line), "{line}");
+        assert_eq!(f.for_sunday_parenthesized_date, Some(nov(8)), "{line}");
+        assert_eq!(f.for_sunday_parenthesized_dates, vec![nov(8)], "{line}");
+        assert_eq!(
+            week_verdict(&f, Some(oct(25))),
+            WeekVerdict::DifferentSunday(nov(8)),
+            "{line}: the named group date is compared with the resolution"
+        );
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, Some(nov(8)), "{line}: keep-through");
+        // Held boundary (round 10, R10-10c): a leading
+        // group that merely restates the phrase's own
+        // Sunday stays unread on both paths — "(October
+        // 25) next Sunday" names no Sunday anywhere.
+        let line = "(October 25) next Sunday";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, None, "{line}");
+        assert_eq!(f.for_sunday_in_words, None, "{line}: the boundary stands");
+        assert_eq!(f.for_sunday_parenthesized_date, None, "{line}");
+        assert_eq!(
+            week_verdict(&f, Some(oct(25))),
+            WeekVerdict::NoSundayNamed,
+            "{line}"
+        );
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, None, "{line}: keep-through boundary too");
+    }
+
+    #[test]
+    fn r21a_content_and_for_occasion_cores_compose() {
+        // Round 21 (R21-2, red team RT21-2): the R20-1
+        // composition keyed on the governed plain
+        // core, so a content-headed core ("service
+        // November 1, 2026") and the for-occasion
+        // cores ("it was scheduled for November 1,
+        // 2026", "it was moved for …", "we moved the
+        // meeting for …") beside a trailing group
+        // still split — For Sunday dropped the whole
+        // line silently while Keep-through asserted
+        // the last group blind (402 of the lanes' 421
+        // census combinations per core). The
+        // composition now keys on the core's VALUE,
+        // whatever head the core wears: a
+        // content-headed core asserts its date and its
+        // groups are garnish; a for-occasion core
+        // contributes its occasion date as the core
+        // value for governance binding — a bare
+        // trailing restatement of it binds and reads
+        // nothing extra, a different group asserts by
+        // the survivor rules with the occasion named
+        // on the note, a labelled restatement stands
+        // by its own clause — identically on both
+        // paths. The for-core alone keeps reading
+        // nothing, as it always has.
+        // (line, read date, second dates, mismatch named)
+        type CoreCase<'a> = (
+            &'a str,
+            Option<SimpleDate>,
+            &'a [SimpleDate],
+            Option<SimpleDate>,
+        );
+        let cases: [CoreCase<'_>; 13] = [
+            // Content-headed cores assert; the group
+            // is garnish named on the mismatch.
+            (
+                "service November 1, 2026 (November 8)",
+                Some(nov(1)),
+                &[],
+                Some(nov(8)),
+            ),
+            (
+                "choir November 1, 2026 (November 8)",
+                Some(nov(1)),
+                &[],
+                Some(nov(8)),
+            ),
+            (
+                "service November 1, 2026 (next Sunday)",
+                Some(nov(1)),
+                &[],
+                Some(oct(25)),
+            ),
+            // An agreeing group beside a content core
+            // is silent.
+            (
+                "service November 1, 2026 (November 1)",
+                Some(nov(1)),
+                &[],
+                None,
+            ),
+            // A bare trailing restatement of the
+            // occasion date binds on both paths: the
+            // line reads nothing extra — nothing.
+            (
+                "it was scheduled for November 1, 2026 (November 1)",
+                None,
+                &[],
+                None,
+            ),
+            (
+                "it was moved for November 1, 2026 (November 1)",
+                None,
+                &[],
+                None,
+            ),
+            (
+                "we moved the meeting for November 1, 2026 (November 1)",
+                None,
+                &[],
+                None,
+            ),
+            // A different group asserts, the occasion
+            // named on the note, on both paths.
+            (
+                "it was scheduled for November 1, 2026 (November 8)",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            (
+                "it was moved for November 1, 2026 (November 8)",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            (
+                "we moved the meeting for November 1, 2026 (next Sunday)",
+                Some(oct(25)),
+                &[nov(1)],
+                None,
+            ),
+            (
+                "it was scheduled for November 1, 2026 (service November 8)",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            // A labelled restatement of the occasion
+            // is no restatement: it stands by its own
+            // clause, as R19-1 requires everywhere.
+            (
+                "it was scheduled for November 1, 2026 (service November 1)",
+                Some(nov(1)),
+                &[],
+                None,
+            ),
+            // The for-core alone keeps reading
+            // nothing (standing), on both paths.
+            ("it was scheduled for November 1, 2026", None, &[], None),
+        ];
+        for (line, want, want_second, want_mismatch) in cases {
+            let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let f = parse_contribution(&for_text, today()).expect("parses");
+            assert_eq!(f.for_date, want, "{line}: For Sunday");
+            assert_eq!(
+                f.for_sunday_second_dates,
+                want_second.to_vec(),
+                "{line}: For Sunday second dates"
+            );
+            let for_mismatch = f.for_sunday_parenthesized_mismatch.map(|m| m.named);
+            assert_eq!(for_mismatch, want_mismatch, "{line}: For Sunday mismatch");
+            let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let k = parse_contribution(&keep_text, today()).expect("parses");
+            assert_eq!(k.keep_through, want, "{line}: Keep-through agrees");
+            assert_eq!(
+                k.keep_through_second_dates,
+                want_second.to_vec(),
+                "{line}: Keep-through second dates agree"
+            );
+            let keep_mismatch = k.keep_through_parenthesized_mismatch.map(|m| m.named);
+            assert_eq!(
+                keep_mismatch, want_mismatch,
+                "{line}: Keep-through mismatch agrees"
+            );
+        }
+        // The lanes' census, in miniature (the full
+        // 20-core × 421-combination census was re-run
+        // against this build as a probe: every family
+        // below at zero divergences; the bare relative
+        // cores remain the standing asymmetry, out of
+        // scope): for each core family — governed
+        // framed, content-headed, for-occasion ×3,
+        // claim, Sunday-after, salvaged — crossed with
+        // a representative group set (none, bare same,
+        // bare different, labelled, relative, claim),
+        // the For Sunday and Keep-through readings
+        // agree field for field.
+        let cores = [
+            "November 1, 2026, cancelled",
+            "service November 1, 2026",
+            "choir November 1, 2026",
+            "it was scheduled for November 1, 2026",
+            "it was moved for November 1, 2026",
+            "we moved the meeting for November 1, 2026",
+            "November 1, 2026, moved to November 8, 2026",
+            "the Sunday after November 1, 2026, cancelled",
+            "November 1, 2026, cancelled, November 8, 2026",
+        ];
+        let groups = [
+            "",
+            "(November 1)",
+            "(November 8)",
+            "(service November 1)",
+            "(next Sunday)",
+            "(moved to November 8)",
+        ];
+        for core in cores {
+            for group in groups {
+                let line = if group.is_empty() {
+                    core.to_string()
+                } else {
+                    format!("{core} {group}")
+                };
+                let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+                let f = parse_contribution(&for_text, today()).expect("parses");
+                let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+                let k = parse_contribution(&keep_text, today()).expect("parses");
+                assert_eq!(f.for_date, k.keep_through, "{line}: dates agree");
+                assert_eq!(
+                    f.for_sunday_second_dates, k.keep_through_second_dates,
+                    "{line}: second dates agree"
+                );
+                let fm = f
+                    .for_sunday_parenthesized_mismatch
+                    .map(|m| (m.named, m.also_named, m.read, m.read_from_parentheses));
+                let km = k
+                    .keep_through_parenthesized_mismatch
+                    .map(|m| (m.named, m.also_named, m.read, m.read_from_parentheses));
+                assert_eq!(fm, km, "{line}: mismatch records agree");
+            }
+        }
+    }
+
+    #[test]
+    fn r21a_post_group_plain_segments_compose() {
+        // Round 21 (R21-3, red team RT21-3): plain
+        // words standing after the last trailing group
+        // escaped the composition entirely — the first
+        // plain signal read the line and the governed
+        // core date resurrected on both paths, the
+        // surviving group named nowhere. A post-group
+        // plain segment is a segment of the
+        // composition now: the line's core is read
+        // with every group taken out (a group leaves a
+        // clause break behind it, so its neighbours
+        // are judged as segments), governance by date
+        // value binds a bare post-group restatement, a
+        // surviving post-group date stands by the
+        // composition, and a surviving group is never
+        // displaced silently.
+        // (line, read date, second dates, mismatch named)
+        type PostCase<'a> = (
+            &'a str,
+            Option<SimpleDate>,
+            &'a [SimpleDate],
+            Option<SimpleDate>,
+        );
+        let cases: [PostCase<'_>; 7] = [
+            // The bare post-group restatement of the
+            // governed value binds: the surviving
+            // group asserts, the governed value named.
+            (
+                "November 1, 2026, cancelled (November 8) November 1, 2026",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            // The no-year twin reads the same.
+            (
+                "November 1, 2026, cancelled (November 8) November 1",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            // The post-group date restates the
+            // surviving group's own value: it stands,
+            // the governed value named, no mismatch.
+            (
+                "November 1, 2026, cancelled (November 8) November 8, 2026",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            // Two surviving segments: written-order
+            // primacy — the later survivor (the
+            // post-group plain date) stands, the
+            // earlier survivor (the group) is named on
+            // the mismatch record, the governed value
+            // on the note.
+            (
+                "November 1, 2026, cancelled (November 8) November 15, 2026",
+                Some(nov(15)),
+                &[nov(1)],
+                Some(nov(8)),
+            ),
+            // The two-group twin: both groups stand
+            // between the governed core and the bound
+            // restatement — the last group asserts,
+            // the earlier is named on the mismatch.
+            (
+                "November 1, 2026, cancelled (November 8) (November 15) November 1, 2026",
+                Some(nov(15)),
+                &[nov(1)],
+                Some(nov(8)),
+            ),
+            // The relative twin: the post-group framed
+            // date restates the governed relative's
+            // resolution and binds — the group asserts,
+            // the resolution named on the note.
+            (
+                "next Sunday, cancelled (November 8) October 25, 2026",
+                Some(nov(8)),
+                &[oct(25)],
+                None,
+            ),
+            // Control, unchanged: the restatement
+            // inside a group stays governed.
+            (
+                "November 1, 2026, cancelled (November 8) (November 1)",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+        ];
+        for (line, want, want_second, want_mismatch) in cases {
+            let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let f = parse_contribution(&for_text, today()).expect("parses");
+            assert_eq!(f.for_date, want, "{line}: For Sunday");
+            assert_eq!(
+                f.for_sunday_second_dates,
+                want_second.to_vec(),
+                "{line}: For Sunday second dates"
+            );
+            let for_mismatch = f.for_sunday_parenthesized_mismatch.map(|m| m.named);
+            assert_eq!(for_mismatch, want_mismatch, "{line}: For Sunday mismatch");
+            let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let k = parse_contribution(&keep_text, today()).expect("parses");
+            assert_eq!(k.keep_through, want, "{line}: Keep-through agrees");
+            assert_eq!(
+                k.keep_through_second_dates,
+                want_second.to_vec(),
+                "{line}: Keep-through second dates agree"
+            );
+            let keep_mismatch = k.keep_through_parenthesized_mismatch.map(|m| m.named);
+            assert_eq!(
+                keep_mismatch, want_mismatch,
+                "{line}: Keep-through mismatch agrees"
+            );
+        }
+        // Control, unchanged: with no group at all the
+        // governed restatement stays governed.
+        let line = "November 1, 2026, cancelled, November 1, 2026";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, None, "{line}");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, None, "{line}: keep-through");
+    }
+
+    #[test]
+    fn r21a_anchor_parity_for_governed_values() {
+        // Round 21 (R21-4, review F1): a relative-
+        // governed core read its governed value at
+        // scan-day, not at the parse anchor — "next
+        // Sunday, cancelled (October 25)" filed
+        // October 16 and scanned October 23 asserted
+        // the very date the core cancelled and named a
+        // phantom November 1 (the scan-day resolution)
+        // on the note. Every value the composition
+        // binds now resolves its relative signals at
+        // the anchor, the anchor the groups have used
+        // since R19-3.
+        let scan_day = SimpleDate {
+            year: 2026,
+            month: 10,
+            day: 23,
+        };
+        let file_day = oct(16);
+        // (line, read date, second dates)
+        type AnchorCase<'a> = (&'a str, Option<SimpleDate>, &'a [SimpleDate]);
+        let cases: [AnchorCase<'_>; 3] = [
+            // October 25 is the governed value at the
+            // anchor: its bare restatement binds, and
+            // no phantom November 1 is named anywhere.
+            ("next Sunday, cancelled (October 25)", None, &[]),
+            ("next Sunday, cancelled (next Sunday)", None, &[]),
+            // The surviving group asserts, and the
+            // governed value it names is the anchored
+            // October 25.
+            (
+                "next Sunday, cancelled (October 25) (November 8)",
+                Some(nov(8)),
+                &[oct(25)],
+            ),
+        ];
+        for (line, want, want_second) in cases {
+            let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let f =
+                parse_contribution_anchored(&for_text, scan_day, Some(file_day)).expect("parses");
+            assert_eq!(f.for_date, want, "{line}: For Sunday at the anchor");
+            assert_eq!(
+                f.for_sunday_second_dates,
+                want_second.to_vec(),
+                "{line}: For Sunday names the anchored value"
+            );
+            assert_eq!(f.for_sunday_parenthesized_mismatch, None, "{line}");
+            let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let k =
+                parse_contribution_anchored(&keep_text, scan_day, Some(file_day)).expect("parses");
+            assert_eq!(k.keep_through, want, "{line}: Keep-through agrees");
+            assert_eq!(
+                k.keep_through_second_dates,
+                want_second.to_vec(),
+                "{line}: Keep-through names the same"
+            );
+            assert_eq!(k.keep_through_parenthesized_mismatch, None, "{line}");
+        }
+    }
+
+    #[test]
+    fn r21a_occurrence_regions_end_at_neighbours() {
+        // Round 21 (R21-5, review F5): the bare test's
+        // after-side sweep credited a bare restatement
+        // with the NEXT date's passive-for clause —
+        // "November 1, 2026, cancelled, November 1,
+        // 2026, it was moved for November 8, 2026"
+        // asserted the cancelled November 1, the
+        // moved-for construction minus its date being
+        // read as the restatement's own predicate. An
+        // occurrence's regions end at the neighbouring
+        // occurrences now, on every surface that
+        // judges bareness: a passive "for" lead-in in
+        // the after-region credits the next occurrence,
+        // not this one, so the restatement stays bare
+        // and bound, and November 8 asserts by its own
+        // construction with November 1 named.
+        let line =
+            "November 1, 2026, cancelled, November 1, 2026, it was moved for November 8, 2026";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, Some(nov(8)), "{line}: For Sunday");
+        assert_eq!(f.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, Some(nov(8)), "{line}: Keep-through agrees");
+        assert_eq!(k.keep_through_second_dates, vec![nov(1)], "{line}");
+        // The group surface judges bareness by the
+        // same bound: inside one group the restatement
+        // stays governed and the moved-for occasion
+        // contributes, where the group used to fence
+        // both dates into alternatives.
+        let line = "(November 1, cancelled, November 1, it was moved for November 8)";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, Some(nov(8)), "{line}: paren-only For Sunday");
+        assert_eq!(f.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(k.keep_through_second_dates, vec![nov(1)], "{line}");
+        // Held (round 20, R20-2): a predicate standing
+        // in an occurrence's OWN region still makes it
+        // non-bare — the comma twin, whose trailing
+        // clause is clause-complete, and the
+        // sibling-cancellation shapes pinned in
+        // `r20a_passive_predicate_is_not_bare` — and
+        // those readings stand unchanged.
+        let line = "November 1, 2026, cancelled, November 1, 2026, it was moved, November 8, 2026";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, Some(nov(8)), "{line}: the comma twin stands");
+        assert_eq!(f.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, Some(nov(8)), "{line}: keep-through");
     }
 
     #[test]

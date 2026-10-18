@@ -312,3 +312,44 @@ placement, plain-surface splits, and trailing slots.
   tokens at claim sites), M2 (unclosed bracket spans), M3
   (after-target second clause with object material). The
   pinned boundaries named in F2 stand.
+
+## Shipped addendum, R26-A (2026-10-18)
+
+F1 is fixed, alone, as dispositioned. **Bisect:** the lead
+witness (`service November 1, 2026 (November 1, cancelled)
+next Sunday`, fixture today 2026-10-16) reads November 1 at
+R25-A (`9c39abf`) and panics at R25-B (`8f287ab`) — the
+regression landed in **R25-B**, in its M3 change
+(`core_bracketed_bare_restatement`, new in that batch).
+**Root cause, in plain words:** that function built its
+occurrence spans as (date, start, *end*) — each signal's
+region end, i.e. the next signal's start or the line's
+length — and handed them to `occurrence_is_bare`, whose
+span convention is (date, start, *used*), a token count.
+The bare test therefore placed an occurrence's end at
+start + end, which runs past the next occurrence's start
+whenever the occurrence does not stand at token 0, and the
+after-region slice inverted and panicked. A content head
+before the framed date is what pushes the first occurrence
+off token 0, which is why every ingredient of the minimized
+shape was necessary. **Fix:** the spans now carry each
+signal's own token count (`s.end - s.start`), converted
+exactly as `plain_composition` converts its spans; the
+scan's signals are written-ordered and non-overlapping, so
+occurrence regions are well-ordered by construction (each
+occurrence ends no later than the next occurrence's start,
+the R21-5 bounding rule) — no clamp was added at the slice
+site. The span vector is local to this one function and
+feeds only this one `occurrence_is_bare` call; its
+neighbours — the M3 shapes the function exists for — are
+re-pinned in the new test and stand unchanged. **Pins:**
+one new test, `r26a_bare_restatement_spans_do_not_panic` —
+the eleven minimized witnesses (the ten November 1
+witnesses read November 1 naming the trailing signal; the
+November 8 witness reads November 8 naming October 18, its
+own pattern), the five controls (all read November 1, as
+the lane recorded), the two M3 neighbour shapes, and the
+lane's two fuzz-shaped sample lines pinned for
+panic-freedom. No witness reads differently after the fix
+than the controls' pattern predicts; **no flagged items**.
+Suite: 799 tests (798 + 1 new), clippy clean.

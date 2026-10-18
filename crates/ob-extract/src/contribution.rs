@@ -8549,16 +8549,30 @@ fn core_bracketed_bare_restatement(
     let raw_tokens: Vec<&str> = core.split_whitespace().collect();
     let cleaned: Vec<String> = raw_tokens.iter().map(|t| group_token(t)).collect();
     let signals = scan_plain_signals(&raw_tokens, &cleaned, today, anchor);
+    // Round 26 (R26-A, F1): the spans stand in
+    // `occurrence_is_bare`'s own convention — (date,
+    // start, USED), the occurrence's own token count,
+    // converted from the signal's end exactly as
+    // `plain_composition` converts them. As shipped
+    // (R25-B) this passed each signal's region END —
+    // the next signal's start, or the line's length —
+    // where the count belonged: the bare test then
+    // placed the occurrence's end at start + end,
+    // past the next occurrence's start whenever this
+    // occurrence did not stand at token 0, its
+    // after-region slice inverted, and the parse
+    // panicked on any governed line whose core
+    // carried two signals ("service November 1, 2026
+    // (November 1, cancelled) next Sunday"). The
+    // scan's signals are written-ordered and
+    // non-overlapping, so the true spans are
+    // well-ordered by construction: each occurrence
+    // ends at its own end, no later than the next
+    // occurrence's start — the R21-5 bounding rule
+    // the bare test assumes of every caller.
     let spans: Vec<(SimpleDate, usize, usize)> = signals
         .iter()
-        .enumerate()
-        .map(|(idx, s)| {
-            let end = signals
-                .get(idx + 1)
-                .map(|n| n.start)
-                .unwrap_or(raw_tokens.len());
-            (s.date, s.start, end)
-        })
+        .map(|s| (s.date, s.start, s.end - s.start))
         .collect();
     signals.iter().enumerate().any(|(idx, s)| {
         if s.date != read || !s.framed {
@@ -22884,6 +22898,168 @@ Youth group meets Wednesday at 6 PM.
             let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
             let c = parse_contribution(&text, today()).expect("parses");
             assert_eq!(c.keep_through, None, "{line}: Keep-through reads nothing");
+        }
+    }
+
+    #[test]
+    fn r26a_bare_restatement_spans_do_not_panic() {
+        // Round 26 (R26-A, F1 = red team RT26-1): the
+        // parser PANICKED on a content head + a framed
+        // date + a parenthesized same-date governor
+        // group + a trailing Sunday/date signal. Root
+        // cause (bisected to R25-B, M3):
+        // `core_bracketed_bare_restatement` built its
+        // spans as (date, start, END) — the next
+        // signal's start or the line's length — and
+        // passed them to `occurrence_is_bare`, whose
+        // convention is (date, start, USED); the bare
+        // test placed the occurrence's end at
+        // start + end, past the next occurrence's
+        // start whenever the occurrence did not stand
+        // at token 0, and the after-region slice
+        // inverted ("slice index starts at 6 but ends
+        // at 5"). The spans now carry the signal's own
+        // count, as every other caller passes. The
+        // eleven minimized witnesses read their framed
+        // date (the November 8 witness its own), the
+        // trailing signal named on the note; the five
+        // controls — each ingredient removed — keep
+        // the November 1 readings the lane recorded.
+        for (line, want, second) in [
+            (
+                "service November 1, 2026 (November 1, cancelled) next Sunday",
+                nov(1),
+                vec![oct(25)],
+            ),
+            (
+                "service November 1, 2026 (November 1, cancelled) Sunday",
+                nov(1),
+                vec![oct(18)],
+            ),
+            (
+                "service November 1, 2026 (November 1, cancelled) this Sunday",
+                nov(1),
+                vec![oct(18)],
+            ),
+            (
+                "service November 1, 2026 (November 1, cancelled) November 8",
+                nov(1),
+                vec![nov(8)],
+            ),
+            (
+                "choir November 1, 2026 (November 1, cancelled) Sunday",
+                nov(1),
+                vec![oct(18)],
+            ),
+            (
+                "a November 1, 2026 (November 1, cancelled) Sunday",
+                nov(1),
+                vec![oct(18)],
+            ),
+            (
+                "service November 8, 2026 (November 8, cancelled) Sunday",
+                nov(8),
+                vec![oct(18)],
+            ),
+            (
+                "service November 1, 2026 (cancelled November 1) Sunday",
+                nov(1),
+                vec![oct(18)],
+            ),
+            (
+                "service November 1, 2026 (November 1 cancelled) Sunday",
+                nov(1),
+                vec![oct(18)],
+            ),
+            (
+                "service November 1, 2026 (November 1, postponed) next Sunday",
+                nov(1),
+                vec![oct(25)],
+            ),
+            (
+                "service November 1, 2026 (November 1, moved) next Sunday",
+                nov(1),
+                vec![oct(25)],
+            ),
+            // Controls: each ingredient removed.
+            (
+                "November 1, 2026 (November 1, cancelled) Sunday",
+                nov(1),
+                vec![oct(18)],
+            ),
+            (
+                "service November 1, 2026 (November 1) Sunday",
+                nov(1),
+                vec![oct(18)],
+            ),
+            (
+                "service November 1, 2026 (November 1, cancelled)",
+                nov(1),
+                Vec::new(),
+            ),
+            (
+                "service November 1, 2026 (November 1, cancelled) Monday",
+                nov(1),
+                Vec::new(),
+            ),
+            (
+                "service November 1, 2026 (November 1, cancelled) (next Sunday)",
+                nov(1),
+                Vec::new(),
+            ),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(want), "{line}: For Sunday reads, no panic");
+            assert_eq!(
+                c.for_sunday_second_dates, second,
+                "{line}: For Sunday names the trailing signal"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(want),
+                "{line}: Keep-through reads, no panic"
+            );
+            assert_eq!(
+                c.keep_through_second_dates, second,
+                "{line}: Keep-through names the trailing signal"
+            );
+        }
+        // Neighbours on the corrected spans (the M3
+        // shapes `core_bracketed_bare_restatement`
+        // exists for; also pinned in
+        // `r25b_bracketed_restatement_bound_by_governance`):
+        // the bracketed restatement of a governed
+        // value stays bound, and a bracketed
+        // assertion beside a bracketed governed group
+        // still asserts, naming the governed date.
+        let line = "(November 1, cancelled) [November 1]";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the restatement stays bound");
+        let line = "[November 1, cancelled] [November 8]";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: the assertion stands");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: November 1 is named"
+        );
+        // The lane's fuzz-shaped samples of the same
+        // shape (RT26-1): pinned for panic-freedom —
+        // the parse completes; no reading is asserted
+        // for these composite lines.
+        for line in [
+            "(November 1, cancelled) next Sunday, cancelled (November 8) (we will November 1) November 1, 2026",
+            "it was scheduled for November 1, 2026 [November 1] (November 1, cancelled); (November 8)",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let _ = parse_contribution(&text, today()).expect("parses without panicking");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let _ = parse_contribution(&text, today()).expect("parses without panicking");
         }
     }
 }

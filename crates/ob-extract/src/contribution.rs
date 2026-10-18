@@ -1103,8 +1103,20 @@ fn genitive_completion(clause: &[String], prev: &[String]) -> bool {
     if clause.len() < 2 || !matches!(clause[0].as_str(), "the" | "a" | "an") {
         return false;
     }
-    let nouns_only = clause[1..].iter().all(|w| {
-        !is_cancellation_verb(w) && !direct_single_governor(w) && weekday_word(w).is_none()
+    // Round 17 (R17-6): the "no verb-form" test is
+    // the determiner-aware form test, the same one
+    // the rest of the batch's determiner rule uses —
+    // an -s stem word headed by this clause's own
+    // determiner is a noun phrase's head ("the
+    // drops", "the shifts"), not a verb-form, so it
+    // does not stop the crossing. A word that is a
+    // verb-form without that heading (a bare -ed
+    // form, "the moved service") still stops it.
+    let nouns_only = clause[1..].iter().enumerate().all(|(off, w)| {
+        let headed_noun = determiner_headed_s_form(clause, off + 1, w);
+        (!is_cancellation_verb(w) || headed_noun)
+            && (!direct_single_governor(w) || headed_noun)
+            && weekday_word(w).is_none()
     });
     if !nouns_only {
         return false;
@@ -1136,7 +1148,72 @@ fn genitive_completion(clause: &[String], prev: &[String]) -> bool {
 /// clause the window defines, never anywhere in
 /// prose at large. "Moved to" and "correction:"
 /// carry no marker and keep contributing.
+/// The start of a passive "for" construction
+/// standing at the end of a governor window, if one
+/// does (round 17, R17-4): the window ends in "for",
+/// the word before it is a participle — a governor
+/// participle in any form, or any -ed participle
+/// ("scheduled", the canonical occasion verb) — and
+/// scanning back from the participle crosses at
+/// least one auxiliary, one tolerated adverb
+/// allowed, exactly as the spent-predicate scan
+/// crosses them. In "(it was moved for November 1)"
+/// the predicate is spent on its subject and "for"
+/// names the date as the occasion, the way the
+/// comma twin "(it was moved, November 1)" always
+/// has. The bare same-clause parity stands apart:
+/// with no "for" there is no construction here, and
+/// "(it was moved November 1)" governs as pinned.
+fn passive_for_zone_start(window: &[String]) -> Option<usize> {
+    if window.len() < 3 || window.last().map(String::as_str) != Some("for") {
+        return None;
+    }
+    let for_pos = window.len() - 1;
+    // The participle phrase ends just before "for":
+    // a phrasal pair ("put back"), or one word.
+    let participle_start = if for_pos >= 2
+        && is_phrasal_governor_pair(&window[for_pos - 2], &window[for_pos - 1])
+    {
+        for_pos - 2
+    } else {
+        let word = window[for_pos - 1].as_str();
+        let is_participle = is_cancellation_verb(word) || word.ends_with("ed") || word == "held";
+        if !is_participle {
+            return None;
+        }
+        for_pos - 1
+    };
+    let mut j = participle_start;
+    let mut aux_seen = false;
+    let mut adverb_used = false;
+    while j > 0 {
+        let prev = window[j - 1].as_str();
+        if AUXILIARY_WORDS.contains(&prev) {
+            aux_seen = true;
+            j -= 1;
+        } else if !adverb_used && is_tolerated_adverb(prev) {
+            adverb_used = true;
+            j -= 1;
+        } else {
+            break;
+        }
+    }
+    if aux_seen {
+        Some(j)
+    } else {
+        None
+    }
+}
+
 fn governed_before(window: &[String]) -> bool {
+    // Round 17 (R17-4): governor phrases standing
+    // inside a passive "for" construction at the
+    // window's end — the auxiliary and the participle
+    // themselves — are the construction, not
+    // governors of the date the "for" names. A
+    // governor standing before the construction
+    // still governs.
+    let for_zone_start = passive_for_zone_start(window);
     for i in 0..window.len() {
         for len in 1..=3usize {
             let Some(phrase) = window.get(i..i + len) else {
@@ -1144,6 +1221,11 @@ fn governed_before(window: &[String]) -> bool {
             };
             if !phrase_governs(window, i, len) {
                 continue;
+            }
+            if let Some(zone_start) = for_zone_start {
+                if i >= zone_start {
+                    continue;
+                }
             }
             // Round 15 (R15-1): a displacement
             // phrase standing directly before a
@@ -1575,15 +1657,38 @@ const AUXILIARY_WORDS: [&str; 15] = [
 
 /// Whether a word may stand as the one adverb of
 /// tolerance between an auxiliary and its participle
-/// (round 16, R16-3): an -ly adverb, or one of the
-/// common short adverbs — "it was just moved" is the
-/// witness shape.
+/// (round 16, R16-3): one of the common short adverbs
+/// — "it was just moved" is the witness shape.
+/// Round 17 (R17-7): the tolerance set is a CLOSED
+/// list — the short adverbs plus the attested -ly
+/// adverbs named here. There is no -ly catch-all:
+/// the catch-all admitted nouns and names standing
+/// in the adverb slot ("it was family moved", "it
+/// was kelly moved" spent like "recently"), and any
+/// non-tolerated intervening word governs as it
+/// always has outside this slot.
 fn is_tolerated_adverb(word: &str) -> bool {
-    word.ends_with("ly")
-        || matches!(
-            word,
-            "just" | "already" | "still" | "also" | "even" | "now" | "soon" | "often"
-        )
+    matches!(
+        word,
+        "just"
+            | "already"
+            | "still"
+            | "also"
+            | "even"
+            | "now"
+            | "soon"
+            | "often"
+            | "recently"
+            | "previously"
+            | "originally"
+            | "finally"
+            | "officially"
+            | "tentatively"
+            | "temporarily"
+            | "currently"
+            | "newly"
+            | "jointly"
+    )
 }
 
 /// Whether the governor phrase standing at `i` in
@@ -1891,19 +1996,38 @@ fn is_target_phrase(phrase: &[String]) -> bool {
 /// are nothing but determiners, and the words between
 /// the phrase and the "to" are an object noun phrase,
 /// "back", or the like: no governor, cancellation
-/// verb, auxiliary, or weekday stands among them, and
-/// there are at most four of them. Returns the claim
-/// zone: the token the zone starts at — the phrase,
-/// extended back over its auxiliaries and one
-/// tolerated adverb, so the passive's "was" is part
-/// of the construction, not a past marker governing
-/// the target — and the "to" / "until" token.
+/// verb, auxiliary, or weekday stands among them.
+/// Round 17 (R17-5): the reach from the phrase to
+/// its "to" is bounded by the phrase's CLAUSE, not
+/// by a word count — the round-16 four-word fence
+/// lost a five-word object ("moved the November
+/// potluck planning meeting to November 8")
+/// silently. A clause break standing among the
+/// in-between words ends the reach (a comma inside
+/// or closing an intervening DATE is that date's
+/// own punctuation, not a clause break in the
+/// reach: the
+/// second "to" of a correction — "moved to
+/// November 8, then to November 15" — still claims
+/// its date, round 17 R17-1). Round 17 (R17-3): a
+/// "from" standing directly before a date among the
+/// in-between words is part of the construction —
+/// "(moved from November 1 to November 8)" claims
+/// its target, and November 1 is governed and named
+/// as the from-date like every other claimed
+/// group's other date. Returns the claim zone: the
+/// token the zone starts at — the phrase, extended
+/// back over its auxiliaries and one tolerated
+/// adverb, so the passive's "was" is part of the
+/// construction, not a past marker governing the
+/// target — and the "to" / "until" token.
 struct TargetClaim {
     zone_start: usize,
     to_pos: usize,
 }
 
 fn target_claim(
+    raw_tokens: &[&str],
     tokens: &[String],
     positional: &[(SimpleDate, usize, usize)],
     idx: usize,
@@ -1950,14 +2074,32 @@ fn target_claim(
         // Between the phrase and the "to": an object
         // noun phrase, "back", or the like — no word
         // with a governing or verbal life of its own,
-        // and not a run of them.
+        // and the reach stays inside the phrase's
+        // clause (round 17, R17-5 above). A "from"
+        // directly before an intervening date is the
+        // construction's own word (round 17, R17-3).
         let between = &tokens[pe..to_pos];
-        let between_ok = between.len() <= 4
-            && between.iter().all(|w| {
-                !direct_single_governor(w)
-                    && !is_cancellation_verb(w)
-                    && !AUXILIARY_WORDS.contains(&w.as_str())
-                    && weekday_word(w).is_none()
+        // A comma standing inside an intervening
+        // date's own span — after its day, before
+        // its year, or closing the date — is that
+        // date's punctuation, not a clause break in
+        // the reach.
+        let clause_bounded = (pe..to_pos).all(|j| {
+            let in_date_span = positional
+                .iter()
+                .any(|(_, s, used)| j >= *s && j < s + used);
+            !clause_break_after(raw_tokens[j]) || in_date_span
+        });
+        let between_ok = clause_bounded
+            && between.iter().enumerate().all(|(off, w)| {
+                let j = pe + off;
+                let from_before_date =
+                    w.as_str() == "from" && positional.iter().any(|(_, s, _)| *s == j + 1);
+                from_before_date
+                    || (!direct_single_governor(w)
+                        && !is_cancellation_verb(w)
+                        && !AUXILIARY_WORDS.contains(&w.as_str())
+                        && weekday_word(w).is_none())
             });
         if !between_ok {
             continue;
@@ -2074,7 +2216,7 @@ fn analyze_group(inner: &str, today: SimpleDate) -> GroupAnalysis {
     // Round 16 (R16-1): the target claim standing
     // for each occurrence, computed once.
     let claims: Vec<Option<TargetClaim>> = (0..positional.len())
-        .map(|idx| target_claim(&tokens, &positional, idx))
+        .map(|idx| target_claim(&raw_tokens, &tokens, &positional, idx))
         .collect();
     let any_target = claims.iter().any(|c| c.is_some());
     for (idx, entry) in positional.iter().enumerate() {
@@ -2132,8 +2274,23 @@ fn analyze_group(inner: &str, today: SimpleDate) -> GroupAnalysis {
                 .iter()
                 .enumerate()
                 .any(|(j, c)| c.is_some() && positional[j].0 != d);
-        if before_disqualified || after_disqualified || target_disqualified {
+        // Round 17 (R17-1): the LAST target in a
+        // claim run wins. An earlier claimed target
+        // superseded by a later distinct claimed
+        // target is governed like the from-date —
+        // "(November 1, moved to November 8, then to
+        // November 15)" asserts November 15, with
+        // November 1 and November 8 both named —
+        // instead of the run collapsing to no
+        // assertion at all.
+        let superseded_target = claim.is_some()
+            && claims
+                .iter()
+                .enumerate()
+                .any(|(j, c)| j > idx && c.is_some() && positional[j].0 != d);
+        if before_disqualified || after_disqualified || target_disqualified || superseded_target {
             let named = target_disqualified
+                || superseded_target
                 || (after_disqualified && next_start.is_some())
                 || (after_disqualified && !before_disqualified && next_start.is_none())
                 || (before_disqualified && idx > 0 && next_start.is_some());
@@ -2916,7 +3073,9 @@ fn relative_sunday_date(next: bool, today: SimpleDate) -> SimpleDate {
 }
 
 /// The governor composition on a plain line's
-/// framed signals (round 16, R16-4): each signal is
+/// signals (round 16, R16-4; round 17, R17-2: framed
+/// and relative signals alike, each judged by the
+/// words around its own token span): each signal is
 /// judged exactly as a date occurrence inside a
 /// group — its governor window (with the round-16
 /// run spending and target claim), its trailing
@@ -2924,7 +3083,7 @@ fn relative_sunday_date(next: bool, today: SimpleDate) -> SimpleDate {
 /// weekday — so the words between two dates on a
 /// plain header line compose the way the same words
 /// compose inside parentheses. Returns None when no
-/// signal is governed (the standing first-date
+/// signal is governed (the standing first-signal
 /// primacy then reads the line). When some signal
 /// is governed, the first UNGOVERNED signal reads
 /// and every other distinct date is named on the
@@ -2941,7 +3100,7 @@ fn plain_composition(
         .map(|(d, start, end)| (*d, *start, end - start))
         .collect();
     let claims: Vec<Option<TargetClaim>> = (0..positional.len())
-        .map(|idx| target_claim(tokens, &positional, idx))
+        .map(|idx| target_claim(raw_tokens, tokens, &positional, idx))
         .collect();
     let any_target = claims.iter().any(|c| c.is_some());
     let mut governed: Vec<bool> = Vec::new();
@@ -2974,7 +3133,20 @@ fn plain_composition(
                 .iter()
                 .enumerate()
                 .any(|(j, c)| c.is_some() && positional[j].0 != d);
-        governed.push(before_disqualified || after_disqualified || target_disqualified);
+        // Round 17 (R17-1): the last target wins on
+        // the plain surface too — an earlier claimed
+        // target superseded by a later distinct one
+        // yields and is named, so the plain twin of
+        // the collapsed group no longer asserts the
+        // superseded date.
+        let superseded_target = claim.is_some()
+            && claims
+                .iter()
+                .enumerate()
+                .any(|(j, c)| j > idx && c.is_some() && positional[j].0 != d);
+        governed.push(
+            before_disqualified || after_disqualified || target_disqualified || superseded_target,
+        );
     }
     if governed.iter().all(|g| !*g) {
         return None;
@@ -3269,13 +3441,22 @@ fn plain_multi_date_reading(
     // framed composes its governors like a group —
     // "November 1, 2026, postponed, drop it,
     // November 8, 2026" asserts November 8, November
-    // 1 governed and named. Mixed lines (a framed
-    // date beside a relative phrase) keep the
-    // standing first-signal reading: a relative
-    // phrase has no token span for the composition
-    // to judge, and single-date plain lines never
-    // reach this reading at all.
-    if framed_count == signals.len() {
+    // 1 governed and named. Round 17 (R17-2): the
+    // composition reaches MIXED lines too — a
+    // relative phrase DOES have a token span (the
+    // phrase's own words), so every signal, framed
+    // or relative, is judged by the words around its
+    // span: "November 1, 2026, cancelled, next
+    // Sunday" asserts October 25 (the relative's
+    // resolution, resolved exactly as round 13
+    // resolved it, the anchor rules unchanged) with
+    // November 1 governed and named. The composition
+    // returns None when no signal is governed, so a
+    // mixed line with no governor phrase, run, or
+    // target claim keeps the standing first-signal
+    // reading below byte-for-byte, and single-date
+    // plain lines never reach this reading at all.
+    if framed_count > 0 {
         let spans: Vec<(SimpleDate, usize, usize)> =
             signals.iter().map(|s| (s.date, s.start, s.end)).collect();
         if let Some(reading) = plain_composition(&tokens, &cleaned, &spans, alternatives) {
@@ -7885,6 +8066,312 @@ Youth group meets Wednesday at 6 PM.
             let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
             let c = parse_contribution(&text, today()).expect("parses");
             assert_eq!(c.for_date, None, "{group}: the bare -s form still governs");
+        }
+    }
+
+    #[test]
+    fn r17a_last_target_wins() {
+        // Round 17 (R17-1, red team RT17-1): a
+        // from-date plus two targets collapsed — the
+        // group asserted nothing and its plain-line
+        // twin asserted the SUPERSEDED first target.
+        // The target rule takes the LAST target in
+        // the claim run; earlier targets are governed
+        // and named like the from-date, on both
+        // surfaces. Verb-repeated forms already read
+        // this way and stand as the held twins.
+        for group in [
+            "(November 1, moved to November 8, then to November 15)",
+            "(November 1, postponed to November 8, then to November 15)",
+            "(November 1, moved to November 8, to November 15)",
+            "(November 1, moved to November 8, moved to November 15)",
+            "(November 1, moved to November 8, then moved to November 15)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(15)),
+                "{group}: the last target asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1), nov(8)],
+                "{group}: the from-date and the superseded target are named"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(15)), "{group}: paren-only");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1), nov(8)],
+                "{group}: named on the paren-only note"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(15)), "{group}: keep-through");
+            assert_eq!(
+                c.keep_through_second_dates,
+                vec![nov(1), nov(8)],
+                "{group}: named on the keep-through note"
+            );
+        }
+        // The plain-line twin reads the same way:
+        // the last target, the rest named.
+        let text = "For Sunday: November 1, 2026, moved to November 8, 2026, then to November 15, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(15)),
+            "the plain twin asserts the last target, not the superseded one"
+        );
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+        let text = "Keep-through: November 1, 2026, moved to November 8, 2026, then to November 15, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(15)), "keep-through mirror");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1), nov(8)]);
+    }
+
+    #[test]
+    fn r17a_mixed_plain_line_composition() {
+        // Round 17 (R17-2, red team RT17-2 + review
+        // Q4): plain composition stopped at all-framed
+        // lines, so a mixed line's governed framed
+        // date ARMED at full strength while its
+        // relative replacement was merely noted. The
+        // composition reaches mixed lines now: the
+        // governed signals yield and are named, the
+        // first ungoverned signal asserts, and
+        // relatives resolve exactly as round 13
+        // resolved them — today is Friday, October
+        // 16, 2026, so "next Sunday" is October 25.
+        for line in [
+            "November 1, 2026, cancelled, next Sunday",
+            "November 1, 2026, postponed, next Sunday",
+            "November 1, 2026, moved to next Sunday",
+            "November 1, 2026, postponed, drop it, next Sunday",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(oct(25)),
+                "{line}: the replacement asserts on For Sunday"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1)],
+                "{line}: the governed date is named"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(oct(25)),
+                "{line}: the replacement asserts on Keep-through"
+            );
+            assert_eq!(
+                c.keep_through_second_dates,
+                vec![nov(1)],
+                "{line}: named on the keep-through note"
+            );
+        }
+    }
+
+    #[test]
+    fn r17a_from_date_is_named() {
+        // Round 17 (R17-3, red team RT17-4): in the
+        // "from … to" shape the governed from-date
+        // was never named — the group asserted its
+        // target with an empty note. The shape claims
+        // its target now, so the from-date is governed
+        // and named like any claimed group's other
+        // date (the R16-5 naming principle).
+        let group = "(moved from November 1 to November 8)";
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the from-date is named on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the from-date is named, not dropped in silence"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{group}: named on the keep-through note"
+        );
+    }
+
+    #[test]
+    fn r17a_passive_for_names_the_occasion() {
+        // Round 17 (R17-4, red team RT17-5): "was +
+        // participle + for + date" silenced the
+        // occasion date it stated, while the comma
+        // forms and present-tense forms named it.
+        // After a passive participle, "for" + date
+        // names the date as the occasion.
+        for group in [
+            "(it was moved for November 1)",
+            "(it was rescheduled for November 1)",
+            "(it was scheduled for November 1)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{group}: the occasion date contributes on the relative path"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+        }
+        // Held parity: "for" is the distinguisher —
+        // the bare same-clause form still governs.
+        let text = "For Sunday: (it was moved November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "the pinned bare same-clause parity stands unchanged"
+        );
+    }
+
+    #[test]
+    fn r17a_claim_zone_is_clause_bounded() {
+        // Round 17 (R17-5, review Q1): the claim
+        // zone reached four words past its phrase, so
+        // a five-word object lost its target silently
+        // on every path. The zone is clause-bounded
+        // now, not word-counted: the object noun
+        // phrase may run to the end of the phrase's
+        // clause. No pre-existing pin asserted the
+        // four-word boundary as a reading — the
+        // four-word shapes in the r16a set read
+        // exactly as they read before, through the
+        // same rule with the count removed.
+        for group in [
+            "(moved the November potluck planning meeting to November 8)",
+            "(postponed the November potluck planning meeting until November 8)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(8)),
+                "{group}: the target asserts on the relative path"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        }
+    }
+
+    #[test]
+    fn r17a_genitive_crossing_uses_the_determiner_test() {
+        // Round 17 (R17-6, review sweep): the
+        // genitive crossing's "no verb-form" test
+        // called the raw verb test, so a determiner-
+        // headed -s noun head failed it and the date
+        // armed under an explicit "ignore", while the
+        // "the service" control disqualified. The
+        // completing-clause test uses the
+        // determiner-aware form test now.
+        for group in [
+            "(ignore, the date of, the drops, November 1)",
+            "(ignore, the date of, the shifts, November 1)",
+            "(ignore, the date of, the service, November 1)",
+            "(ignore, the date of, the classes, November 1)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: the crossing completes on the relative path"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: paren-only");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through");
+        }
+        // Held: a completing clause whose head is a
+        // bare verb-form still stops the crossing.
+        let text = "For Sunday: (ignore, the date of, the moved service, November 1)\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "a verb-form head still stops the crossing"
+        );
+    }
+
+    #[test]
+    fn r17a_adverb_tolerance_is_a_closed_list() {
+        // Round 17 (R17-7, review sweep): the one-
+        // adverb tolerance's -ly catch-all admitted
+        // nouns and names in the adverb slot, so
+        // "(it was family moved, November 1)" spent
+        // like "recently". The set is closed now:
+        // a non-tolerated intervening word does not
+        // spend — the predicate governs its date, as
+        // any non-tolerated word does.
+        for group in [
+            "(it was family moved, November 1)",
+            "(it was kelly moved, November 1)",
+            "(it was family cancelled, November 1)",
+            "(it was household moved, November 1)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: no spending on the relative path"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: paren-only");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through");
+        }
+        // The attested adverbs on the closed list
+        // still spend.
+        for group in [
+            "(it was recently moved, November 1)",
+            "(it was just moved, November 1)",
+            "(it was finally moved, November 1)",
+            "(it was originally moved, November 1)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{group}: a listed adverb still spends"
+            );
         }
     }
 

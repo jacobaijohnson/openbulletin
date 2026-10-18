@@ -427,3 +427,117 @@ spite / behalf) are unchanged. The mid-run failure list
 named this test alone. Suite: **808 tests (799 + 9 new),
 0 failed**, full unpiped `cargo test --workspace
 --no-fail-fast` exit 0; clippy `-D warnings` clean.
+
+## Shipped addendum, R26-C (2026-10-18)
+
+All nine R26-C items shipped in `crates/ob-extract/src/
+contribution.rs`, on the F5 object-continuation walk and
+the parse edges, each landed as small anchored edits with
+`cargo check` between items. **F2-1:** the backward walk
+crosses a PP inside the continuation without resetting
+the object material already crossed (one exception: a
+"by" agent phrase keeps the reset, which is what holds
+the pinned by-phrase alternatives); a passive verb
+standing directly before the weekday PP is crossed when
+its auxiliary stands before it AND a further PP
+intervenes between the weekday PP and the target — both
+orders of the served/sung witnesses now read nothing,
+and the direct no-intervening-PP passive keeps its
+pinned alternatives. **F2-2:** the walk's adverb crossing
+covers the eight flat adverbs (still / really / never /
+just / already / soon / also / now) as it covers -ly
+forms and "ever". **F2-3:** the trailing arm walks back
+over a whole trailing PP run (bare, comma-separated,
+mixed bare+relative) and re-judges it in forward-twin
+position; the claim-free alternatives and the
+different-second-weekday reading stand. **F2-4:** the
+walk carries its own crossing set
+(`is_continuation_preposition`) in which "for" is crossed
+when a target construction follows; `is_subject_preposition`
+and the passive-for naming rule are untouched, and
+"(it was moved for November 1)" still asserts. Deviation,
+stated plainly: the batch brief asked for the for-witness
+to "read nothing"; with the Sunday consumed, the target
+asserts with an empty note — the reading of the standing
+pinned consumed-PP twin ("(moved November 1, baked beans
+on Sunday to November 8)", `r25b_relative_pp_object_
+consulted`) and of the Sunday-free twin, both of which
+assert November 8. A nothing reading would have required
+the for-PP to govern the target, which no standing rule
+supports; the phantom (October 18 asserted/named,
+November 1 demoted) is gone, and the pin records the
+twin-consistent reading. **F2-5:** "until" terminates
+the forward arm's noun crossing exactly as "to" does, at
+every stack depth and order (bare and relative objects,
+relative targets after "until" invent no phantom), and
+the forward arm crosses a conjoined clause — subject
+run, auxiliary stack, verb form — to a target in the
+second conjunct; the backward walk crosses a further
+conjoined verb behind object material only when no
+determiner-headed subject run has been crossed since the
+last verb, which is what keeps a genuine second clause's
+subject a boundary. Held boundaries re-pinned: the
+verb-directly-before-PP alternatives; the
+second-clause-after-completed-claim composition (its
+Sunday asserts, naming the target); the 1-PP weekday and
+relative "until" readings (target asserts, from-date
+named by the until rule); the base-order 2-PP "until"
+shape. **F8:** one contextual boundary classification
+(`clause_break_after_at`) feeds every boundary site that
+fed on the bare period (governor window, governed-after,
+the claim scan's bounded reach and bound loops, the lone
+framed fence): an R25-A-class abbreviation keeps its
+period from acting as a boundary when it stands inside a
+PP before a name word; sentence periods elsewhere still
+break clauses. **M1:** a token that cleans to nothing is
+crossed without judgment in the consultation's backward
+and forward walks and is exempt in the claim scan's
+bounded reach — U+200B / U+FEFF / "*" tokens between
+"moved" and its date (standalone or attached) now read
+exactly as their clean twins, on group and plain
+surfaces. **M2:** an unclosed bracket span runs to the
+end of the token run in the span mask, and the
+line-level bracketed-restatement test counts a span open
+at the date and unclosed through the end of the core;
+"[November 1" alone still reads nothing. One distinction
+recorded: a span that CLOSED before the date
+("[our choir] November 1") binds nothing and the date
+still asserts — content beside the governed sibling, not
+a restatement of it. **M3:** the review's witness string
+was lost with its report; ~90 re-derived shapes were
+probed across the between-date and after-target
+families. No probed shape matches the synthesis's stated
+direction (with-object names, without-object inert): in
+every discriminating family the direction is the mirror
+image — object material makes the inserted clause inert,
+and the without-object twin is the one whose verb stands
+directly before the PP. That twin is the pinned R25-B
+boundary and stands. The with-object shape — a second
+clause carrying object material between the claimed date
+and the claim's own target phrase — names nothing (the
+target asserts, the note empty, on group, keep-through,
+relative, and plain surfaces) and is pinned as it stands;
+no code change was needed for it beyond the F2 walk work,
+and none was invented to match the lost witness.
+**Pins:** nine new tests (`r26c_passive_intervening_pp`,
+`r26c_flat_adverbs_in_auxiliary_stack`,
+`r26c_trailing_pp_run`, `r26c_for_pp_in_continuation`,
+`r26c_until_targets_and_conjoined_clauses`,
+`r26c_abbreviation_period_inside_pp`,
+`r26c_cf_only_tokens_at_claim_sites`,
+`r26c_unclosed_bracket_spans`,
+`r26c_second_clause_object_material_names_nothing`) —
+witnesses on the group, keep-through, relative, and
+plain surfaces the lanes probed, with the standing
+boundaries re-pinned in the same tests. **Flagged
+changes to pre-existing tests: none.** The full
+ob-extract library suite passed against the changed
+code before the new pins were added, and the mid-run
+failure list named no pre-existing test; the only
+failure during the run was one of the new pins itself
+(the 1-PP relative "until" shape first filed with the
+reads-nothing witnesses; it carries the standing until
+reading and was re-pinned in the boundary block, per
+above). Suite: **817 tests (808 + 9 new), 0 failed**,
+full unpiped `cargo test --workspace --no-fail-fast`
+exit 0; clippy `-D warnings` clean.

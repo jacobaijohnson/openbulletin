@@ -223,3 +223,137 @@ composition's group marker and breaking two
 `r21a_post_group_plain_segments_compose` witnesses
 until the marker was fenced out of the normalization.
 Booklet bytes untouched (no export code in this batch).
+
+## Shipped addendum, R22-B (2026-10-18)
+
+R22-4, R22-5, R22-6, and R22-8 shipped in one batch, all
+in `crates/ob-extract/src/contribution.rs`:
+
+- **R22-4.** Clause detection in the reach is now
+  shared: `aux_complement` finds an auxiliary's
+  complement verb form across the tolerated adverbs
+  (as before) plus at most one adverb of any kind
+  (an unlisted -ly adverb, "not", "never"). A
+  subjectless auxiliary + participle construction
+  ("then was played", "then was singing") is a
+  second clause — `phrase_governs` no longer lets
+  bare "was" govern the date its own clause names,
+  and a negation standing in the auxiliary's own
+  adverb slot ("then was not played") is spent on
+  the clause's verb the same way — so November 8
+  stands on its own standing, nothing named, where
+  before both dates silenced. With a subject before
+  the auxiliary, the same complement scan makes
+  "choir was loudly singing" (any one unlisted
+  adverb) a finite clause for the reach's test.
+  Held: the claim's own passive constructions are
+  unchanged ("then was moved" still claims with
+  naming, "then was cancelled" still silences), the
+  shared adverb walk's spending rules (the listed
+  list, the two-cap) are untouched — this is clause
+  detection, not spending — and a bare "was" with
+  no participle after it ("(was November 1)") still
+  governs as the past marker it is. One witness
+  needed the complement visible at all: "taken"
+  joins `IRREGULAR_FINITE_FORMS` (58 → 59), the
+  take family's participle the suffix rules cannot
+  build, on the R19-5 "gone" precedent.
+- **R22-5.** A subject run crosses a prepositional
+  phrase: `segment_subject_before` crosses a
+  preposition once it has crossed the noun-like
+  run that is its object (a weekday object
+  included), so "the team from Kent sang / played /
+  was singing …" (all 23 of RT22-6's verb forms,
+  probed) and "the choir on Sunday …" end the
+  reach — November 8 alone, nothing named. The
+  subject's "from" no longer governs the target:
+  `phrase_governs` exempts a "from" standing in a
+  subject PP (subject head before it, its object
+  after it, the clause's finite verb after that).
+  The PP's weekday is consumed wholly:
+  `weekday_in_subject_pp` keeps "on Sunday" inside
+  a subject phrase from spawning a signal in both
+  scans (group and plain), so no phantom October
+  18 asserts, is offered as an alternative, or is
+  named, for was-forms, plain forms, and -ed forms
+  alike. Held: subject runs without PPs behave
+  exactly as R21-B pinned, and an object PP keeps
+  its standing reading ("baked beans from Kent"
+  in the object continuation reads byte-identically
+  to HEAD — the reach is not ended by a clause
+  there; its silence is the standing "from"
+  governance, untouched).
+- **R22-6.** The determiner shield spans its noun
+  phrase for participle forms: in
+  `verb_form_is_finite`, an irregular participle
+  heading a noun phrase is shielded by a
+  determiner or possessive standing anywhere
+  before it in the segment (the R19-6 active-"for"
+  rule applied to the reach's shield), so "the
+  big left luggage" and "the big sung hymns" claim
+  November 8 with November 1 named, like the
+  regular twins. The span is scoped to forms with
+  a participle use: the new
+  `IRREGULAR_PAST_ONLY_FORMS` list (25 words —
+  sang, rang, took, and their kin, whose
+  participles are different words) keeps a
+  past-tense-only form finite in every position,
+  so "the choir sang hymns" and "the team from
+  Kent sang hymns" stay clauses, and regular forms
+  keep the subject rule ("the choir folded
+  bulletins"). Held: unshielded subjectless
+  irregulars ("sang hymns", "sung hymns", "left
+  luggage") still end the reach per verb test v2,
+  including the "moved the meeting" alternatives
+  landing.
+- **R22-8.** The bare inventory joins, in
+  `bare_filler_word`: the remaining prepositions
+  (with, during, since, within, without, upon,
+  unto, into, over, under, between, among,
+  against, per, via, onto, toward, towards,
+  across, behind, beyond, beside, despite, amid,
+  as — so "as per" / "as of" read bare word by
+  word); the determiner / quantifier class (each,
+  every, either, neither, both, all, any, some,
+  another, other, same, such); possessive + "own";
+  the conjunction / discourse tail (lest, albeit,
+  unless, whereas, hence, thus, moreover,
+  furthermore, nonetheless, nevertheless, instead,
+  meanwhile, otherwise, therefore, anyway, rather,
+  quite, indeed); and "too", bare in both slots.
+  The inventory comment now states the classes are
+  closed as listed and the rule is class-based
+  (function words bare, content labels not).
+  Every witness "(November 1, cancelled) (WORD
+  November 1)" — the 56 head words of the pin's
+  list (57 class words with "own"), the same
+  classes in the trailing slot, the stacks ("the
+  same", "my own", "each and every", "with the"),
+  and "(too November 1 too)" — reads nothing on
+  all paths (240 probe checks, zero non-empty). Held per
+  standing adjudications: "thanks" in head
+  position stays content, content labels assert,
+  and "(our choir November 1)", "(each choir
+  November 1)", "(with choir November 1)" assert.
+
+Tests: four new pins (`r22b_subjectless_auxiliary_
+is_a_second_clause`, `r22b_subject_prepositional_
+phrases`, `r22b_determiner_shield_spans_its_noun_
+phrase`, `r22b_bare_inventory_function_classes_
+round_three`), every witness on the lanes' paths.
+Workspace suite 763 → **767 passed, 0 failed**
+(cargo exit 0, full unpiped run); clippy
+`--workspace --all-targets` exit 0, no warnings.
+**No pre-existing test changed.** Two defects
+surfaced mid-batch in this batch's own first
+drafts and were fixed in the edits rather than in
+any test: the first shield draft was unscoped, so
+a subject's determiner shielded regular -ed clause
+verbs ("the team from Kent folded bulletins"
+silenced, "the choir on Sunday folded bulletins"
+falsely named November 1) until the span was
+scoped to participle-capable irregulars; and
+"then was taken" stayed silent on every path
+until "taken" joined the irregulars (above).
+Booklet bytes untouched (no export code in this
+batch).

@@ -357,3 +357,43 @@ scoped to participle-capable irregulars; and
 until "taken" joined the irregulars (above).
 Booklet bytes untouched (no export code in this
 batch).
+
+## Coordinator close, round 22 (2026-10-18)
+
+Both batches independently verified by the coordinator on the exact
+committed trees (full unpiped suite + clippy `-D warnings` after
+each): R22-A `d33a6c3` at 763 tests, R22-B `5d0b439` at **767 tests
+passing, 0 failed**, clippy clean at both steps. **Zero changed
+pre-existing tests in the whole round.** Booklet bytes untouched
+(31,717 / 34,977).
+
+All eight MAJORs closed: groups compose across separators on both
+paths and separator punctuation no longer destroys the relative
+memory (R22-1); a sender's semicolon is a clause break everywhere
+— root cause was the year token "2026;" failing the date parse and
+dropping out of the date's span (R22-2); the wrong-weekday check
+applies at every segment position (R22-3); a subjectless
+auxiliary + participle is a second clause, not a governor, and
+clause detection tolerates one adverb of any kind (R22-4); subject
+runs cross prepositional phrases, whose words are consumed wholly
+(R22-5); the determiner shield spans its noun phrase for
+participle forms, scoped by a past-only irregular split so
+"sang hymns" stays a clause (R22-6); the lone-framed fence fires
+only on content-free lines (R22-7); the bare inventory's function
+classes are completed and stated as closed, class-based (R22-8).
+R22-9 stands adjudicated (rights safety pair invariant;
+license-only residual).
+
+Recorded for round 23's lanes: the trailing deictics RT22-8 left
+ungraded (yesterday/today/tomorrow/here/there/together/alone/re)
+were deliberately NOT added to the inventory — they sit outside
+the enumerated classes; lanes should grade whether any of them
+can resurrect a governed date in a restatement, and if one can,
+that is a finding against the class boundary, not a list gap.
+Also standing: "(moved November 1, baked beans from Kent to
+November 8)" reads nothing by the standing "from" governance,
+verified unchanged by this round (R22-B addendum).
+
+The loop has not converged: round 22 returned findings, so the
+Tier-2 final gate stays queued behind a Wonder round with zero
+BLOCKER and zero MAJOR.

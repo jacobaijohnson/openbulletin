@@ -427,3 +427,42 @@ No other pre-existing test changed. Held lines: the
 R19–R21-A families except the two moves above,
 defensible silence, claim/scope pins, rights pin,
 loader pins, booklet bytes 31,717 / 34,977 untouched.
+
+## Coordinator close, round 21 (2026-10-18)
+
+Both batches independently verified by the coordinator on the exact
+committed trees (full unpiped suite + clippy `-D warnings` after
+each): R21-A `6417821` at 752 tests, R21-B `bbf4e0a` at **758 tests
+passing, 0 failed**, clippy clean at both steps. Booklet bytes
+untouched (31,717 / 34,977).
+
+Composition is now total: the whole line, segments in written
+order, one composition on both paths. The builder re-ran the
+lanes' 20-core × 421-combination census at **zero For/Keep
+divergences in every family** outside the standing rounds-8/9
+relative-line asymmetry. All eight MAJORs and MINORs R21-9/R21-10
+are closed; R21-11 stands adjudicated (rights safety pair
+invariant; license-only residual).
+
+Changed pre-existing tests in the round: exactly one test
+function (`r20b_one_verb_test_for_every_verb_form`), two pins
+moved within it — "sung hymns" (pre-authorized in the R21-6
+disposition) and "left luggage", the same irregular rule applied
+to the same verb class in the same test, flagged loudly by the
+builder and accepted here: "left" is the irregular past of
+"leave" exactly as "sung" is of "sing", and neither can head a
+noun phrase.
+
+Recorded for round 22's lanes to grade: (1) "(moved November 1,
+then was played to November 8)" remains total silence — the
+between-words auxiliary fence in `target_claim`, disclosed by
+the R21-B builder as out of that batch's scope; (2) R21-B item
+4's witness lands on the two-date alternatives landing rather
+than asserting, per the disposition's own rule; (3) "played
+hymns" (regular form + bare noun) deliberately stays on the
+modifier side of verb test v2, the regular/irregular line
+stated in the test.
+
+The loop has not converged: round 21 returned findings, so the
+Tier-2 final gate stays queued behind a Wonder round with zero
+BLOCKER and zero MAJOR.

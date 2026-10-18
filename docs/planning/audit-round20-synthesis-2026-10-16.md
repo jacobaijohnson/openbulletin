@@ -143,3 +143,81 @@ the "use" non-bare call, defensible silence, claim/scope pins,
 the rights brute-force pin, loader pins, booklet bytes
 31,717 / 34,977. Flag any changed pre-existing test loudly by
 name with its reason.
+
+## Shipped addendum, R20-A (2026-10-18)
+
+R20-1, R20-2, and R20-3 shipped, all work in
+`crates/ob-extract/src/contribution.rs`. **737 → 740 tests
+passing (ob-extract 224 → 227), clippy clean, zero
+pre-existing tests changed.** Three new pins:
+`r20a_core_group_composition`, `r20a_passive_predicate_is_not_bare`,
+`r20a_bare_function_words`. Held lines stand: the R19-1
+event rule, "(for November 1)" bare, the "use" non-bare
+call, defensible silence, claim/scope pins, the R19-A/R19-B
+families, the rights brute-force pin, loader pins, booklet
+bytes 31,717 / 34,977 untouched.
+
+**R20-1 — one composition for core + trailing groups.**
+When a plain core's own composition governs every signal
+it carries, the core now stands in the composition the
+way a sibling group stands in the cross-group rule: its
+governed values are read off the composition itself
+(`every_governed_core_values` — the composition's
+every-signal-governed silence is the judge, no second
+governor test), and they bind a trailing group's BARE
+restatement of the same value across the core/group
+boundary. A surviving group then asserts in `date_line`
+by the trailing-group primacy the paren-only path uses —
+the last surviving group is the line's date, earlier
+surviving groups disagree on the mismatch record
+(read-from-parentheses), a split chain's superseded
+targets and a two-group relative loser are named as the
+paren-only path names them, and the core's governed
+values are named on the second-date note as the plain
+composition names its governed dates. When no group
+survives, the line reads nothing. The Keep-through
+fallback (R9-9) reads its groups through the same core
+governance (`trailing_dates_after_core_governance`), so
+it can no longer assert a date the core governed and the
+group only restated bare. Pinned field-for-field on both
+lines: the base witness reads nothing on both paths;
+`(November 8)`, `(next Sunday)`, `(this Sunday)`, a
+Sunday-after group, a labelled `(service November 1)`,
+and `(moved to …)` groups assert on both; two-group
+shapes follow the same primacy with the bare governed
+restatement suppressed in either order; the held bounds
+stand (trailing group itself governed → nothing; an
+asserting core is unchanged, including the salvaging
+witness naming November 15 on the mismatch record).
+
+**R20-2 — a passive predicate is not bare.** The bare
+test now checks each side of an occurrence's date
+separately for a passive predicate construction — a
+cancellation/displacement participle standing as an
+auxiliary's predicate, by the standing
+`is_spent_predicate` test — and such an occurrence is
+not bare: "it was moved for November 1", "it was moved,
+November 1", "it was rescheduled for November 1", and
+"it was cancelled, November 1" head their own event
+clauses and assert beside any sibling governance, in
+groups, within one group, on plain lines, and in either
+order. The two sides are judged separately so a
+predicate cannot span the date itself ("was November 1,
+cancelled" forms no construction). Held: "(for
+November 1)" stays bare and bound; "use November 1"
+stays non-bare; "(it was scheduled for November 1)",
+"(it was held, November 1)", and the active-for twins
+keep asserting.
+
+**R20-3 — function words join the bare inventory.**
+`bare_filler_word` gains the possessive determiners
+(his, her, their, my, our, your, its), the demonstratives
+(this, these, those — "that" was already there), and the
+discourse garnish list, which is **closed: please, yes,
+again, ps** — no other garnish words join. A restatement
+wearing only one of those words is bare and stays
+governed on all paths, plain twins included. The
+boundary is pinned: a content label still asserts —
+"(choir November 1)", "(meeting November 1)", and
+"(November 1 reminder)" beside a sibling cancellation
+assert per R19-1; function words bind, labels assert.

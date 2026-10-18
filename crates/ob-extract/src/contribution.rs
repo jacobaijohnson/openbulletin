@@ -2702,6 +2702,7 @@ fn governed_before_target(window: &[String], window_start: usize, claim: &Target
 fn bare_filler_word(w: &str) -> bool {
     weekday_word(w).is_some()
         || AUXILIARY_WORDS.contains(&w)
+        || POSSESSIVE_DETERMINERS.contains(&w)
         || is_tolerated_adverb(w)
         || matches!(
             w,
@@ -2714,6 +2715,15 @@ fn bare_filler_word(w: &str) -> bool {
                 | "date"
                 | "it"
                 | "that"
+                // Round 20 (R20-3): the demonstratives
+                // join "that", which was already here —
+                // a restatement wearing only a
+                // demonstrative ("these November 1")
+                // carries no event content, exactly as
+                // "the November 1" does not.
+                | "this"
+                | "these"
+                | "those"
                 | "note"
                 | "notes"
                 | "and"
@@ -2725,7 +2735,36 @@ fn bare_filler_word(w: &str) -> bool {
                 | "at"
                 | "by"
                 | "in"
+                // Round 20 (R20-3): the discourse
+                // garnish list is CLOSED — please, yes,
+                // again, ps, and no others. These words
+                // frame a restatement ("please
+                // November 1", "ps November 1") without
+                // naming any event; a word not on this
+                // list (a label like "reminder", any
+                // other discourse word) is still event
+                // content for this test.
+                | "please"
+                | "yes"
+                | "again"
+                | "ps"
         )
+}
+
+/// Whether one side of an occurrence's region
+/// carries a passive predicate construction
+/// (round 20, R20-2): a cancellation/displacement
+/// participle standing as an auxiliary's predicate
+/// anywhere in the run — the `is_spent_predicate`
+/// test, applied to every phrase in the run. A
+/// lone auxiliary ("was November 1") and a lone
+/// participle with no auxiliary ("November 1,
+/// cancelled") are each no construction and do not
+/// fire here.
+fn region_has_passive_predicate(words: &[String]) -> bool {
+    (0..words.len()).any(|i| {
+        (1..=3usize).any(|len| words.get(i..i + len).is_some() && is_spent_predicate(words, i, len))
+    })
 }
 
 /// Whether the occurrence at `idx` in `positional`
@@ -2756,10 +2795,33 @@ fn occurrence_is_bare(
         .get(idx + 1)
         .map(|(_, s, _)| *s)
         .unwrap_or(tokens.len());
-    let mut words: Vec<String> = Vec::new();
-    words.extend_from_slice(&tokens[region_start..start.min(tokens.len())]);
+    // Round 20 (R20-2): a passive predicate
+    // construction standing in the region — an
+    // auxiliary with a governor participle as its
+    // predicate, "it was moved", "it was
+    // rescheduled", "it was cancelled" — is NOT
+    // bare, however the region's words classify one
+    // by one. Such a construction heads its own
+    // event clause (round 19, R19-1's rule), and the
+    // spent-predicate machinery already asserts its
+    // date standing alone; the bare test must not
+    // consume the auxiliary and the participle as
+    // governor-phrase words and suppress that
+    // clause's date under a sibling's governance.
+    // The two sides of the date are judged
+    // separately: a predicate cannot span the date
+    // itself, so an auxiliary before the date and a
+    // governor after it ("was November 1,
+    // cancelled") form no construction here.
+    let before_words = &tokens[region_start..start.min(tokens.len())];
     let after = (start + used).min(tokens.len());
-    words.extend_from_slice(&tokens[after..region_end.min(tokens.len())]);
+    let after_words = &tokens[after..region_end.min(tokens.len())];
+    if region_has_passive_predicate(before_words) || region_has_passive_predicate(after_words) {
+        return false;
+    }
+    let mut words: Vec<String> = Vec::new();
+    words.extend_from_slice(before_words);
+    words.extend_from_slice(after_words);
     let mut i = 0;
     while i < words.len() {
         if words[i].is_empty() || bare_filler_word(&words[i]) {
@@ -3270,10 +3332,13 @@ fn group_date(inner: &str, today: SimpleDate, anchor: SimpleDate) -> Option<Simp
 /// potluck's occurrence, in its own group), and a
 /// contribution a target claim asserts is never a
 /// restatement (see `GroupAnalysis::contributed_bare`).
-/// The line's plain core is not a sibling group:
-/// the standing core/group separation (a trailing
-/// group is judged on its own beside the core) is
-/// unchanged.
+/// The line's plain core is not a sibling group
+/// in THIS pass: a trailing group is judged on its
+/// own beside the core here, and the core/group
+/// composition (round 20, R20-1) applies the
+/// core's governance to these analyses at its own
+/// call sites (`governed_core_group_reading`,
+/// `trailing_dates_after_core_governance`).
 fn trailing_group_analyses(
     text: &str,
     today: SimpleDate,
@@ -4672,6 +4737,211 @@ fn plain_composition_reading(
     plain_composition(&tokens, &cleaned, &spans, alternatives)
 }
 
+/// The date values a plain core governs when its
+/// composition governs EVERY signal it carries
+/// (round 20, R20-1): the distinct signal dates of
+/// a core whose `plain_composition` reading is the
+/// every-signal-governed silence. A core that
+/// asserts, or governs nothing, or carries no
+/// signal, governs no value for this purpose — an
+/// asserting core composes with its groups through
+/// the standing garnish comparison, not through
+/// this rule. The composition itself is the judge:
+/// a single governed date ("November 1, 2026,
+/// cancelled") and a multi-signal all-governed
+/// core are read by the same scan the plain
+/// reading uses, so no second governor test
+/// stands beside it.
+fn every_governed_core_values(
+    core: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> Vec<SimpleDate> {
+    let tokens: Vec<&str> = core.split_whitespace().collect();
+    let cleaned: Vec<String> = tokens.iter().map(|t| group_token(t)).collect();
+    let signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
+    if signals.is_empty() {
+        return Vec::new();
+    }
+    let spans: Vec<(SimpleDate, usize, usize)> =
+        signals.iter().map(|s| (s.date, s.start, s.end)).collect();
+    let no_alternatives: &[SimpleDate] = &[];
+    match plain_composition(&tokens, &cleaned, &spans, no_alternatives) {
+        Some(reading) if reading.date.is_none() => {
+            let mut values: Vec<SimpleDate> = Vec::new();
+            for s in &signals {
+                if !values.contains(&s.date) {
+                    values.push(s.date);
+                }
+            }
+            values
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// One composition for a governed plain core and
+/// its trailing groups (round 20, R20-1): the
+/// reading `date_line` takes when the core's own
+/// composition reads no date because every core
+/// signal is governed, and trailing groups stand
+/// beside it. Before this, the two paths split on
+/// exactly this shape: the For Sunday reading
+/// returned the core's silence and dropped the
+/// groups unnamed, while the Keep-through
+/// fallback asserted the last group blind — in
+/// the base witness asserting the very date the
+/// core cancelled.
+///
+/// The composition is the paren-only composition
+/// with the core standing where a sibling group
+/// stands in the cross-group rule (round 19,
+/// R19-2): the core's governed values bind a
+/// trailing group's BARE restatement of the same
+/// value — governance crosses the core/group
+/// boundary exactly as it crosses a group
+/// boundary, and binds exactly the same
+/// occurrences (a labelled group, a claim's
+/// target, and a group governed in itself are
+/// judged as they always were). A surviving
+/// group then stands by the trailing-group
+/// primacy the paren-only path uses: the last
+/// surviving group is the line's date, earlier
+/// surviving groups disagree with it on the
+/// mismatch record, a chain's superseded targets
+/// and a two-group relative loser are named on
+/// the note as the paren-only path names them,
+/// and the core's governed values are named on
+/// the note beside the read date, as the plain
+/// composition names its governed dates. When
+/// no group survives, the line reads nothing and
+/// names only the groups' alternatives, as a
+/// no-reading line does. None when the core is
+/// not an every-governed core, or no trailing
+/// group stands at all: every other shape keeps
+/// its standing reading.
+fn governed_core_group_reading(
+    text: &str,
+    core: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+    alternatives: &[SimpleDate],
+    core_mismatch: Option<WeekdayMismatch>,
+) -> Option<DateLineReading> {
+    let governed_values = every_governed_core_values(core, today, anchor);
+    if governed_values.is_empty() {
+        return None;
+    }
+    let analyses = trailing_group_analyses(text, today, anchor);
+    if analyses.is_empty() {
+        return None;
+    }
+    // The core's governance applied to the
+    // groups: a bare contribution of a governed
+    // value is suppressed; every other
+    // contribution stands as the cross-group pass
+    // left it.
+    let surviving: Vec<SimpleDate> = analyses
+        .iter()
+        .filter_map(|(_, a)| {
+            a.contributed
+                .filter(|d| !(a.contributed_bare && governed_values.contains(d)))
+        })
+        .collect();
+    let Some(read) = surviving.last().copied() else {
+        let mut second_dates: Vec<SimpleDate> = Vec::new();
+        for d in alternatives {
+            if !second_dates.contains(d) {
+                second_dates.push(*d);
+            }
+        }
+        return Some(DateLineReading {
+            date: None,
+            weekday_mismatch: core_mismatch,
+            parenthesized_mismatch: None,
+            second_dates,
+        });
+    };
+    // A split chain's superseded targets are
+    // named on the note, not compared as garnish,
+    // as on the paren-only path — counting only
+    // targets that survived the core's governance.
+    let superseded: Vec<SimpleDate> = chain_superseded_dates(text, today, anchor, read)
+        .into_iter()
+        .filter(|d| surviving.contains(d))
+        .collect();
+    let remaining: Vec<SimpleDate> = surviving
+        .iter()
+        .copied()
+        .filter(|d| !superseded.contains(d))
+        .collect();
+    let parenthesized_mismatch = mismatch_from_groups(&remaining, read, true);
+    let mut second_dates: Vec<SimpleDate> = Vec::new();
+    for d in &governed_values {
+        if *d != read && !second_dates.contains(d) {
+            second_dates.push(*d);
+        }
+    }
+    for d in alternatives {
+        if *d != read && !second_dates.contains(d) {
+            second_dates.push(*d);
+        }
+    }
+    for d in &superseded {
+        if *d != read && !second_dates.contains(d) {
+            second_dates.push(*d);
+        }
+    }
+    // Round 19 (R19-10)'s two-group loser naming,
+    // as the paren-only path applies it.
+    if surviving.len() == 2
+        && analyses
+            .iter()
+            .any(|(inner, _)| group_inner_is_relative(inner))
+    {
+        for d in &surviving {
+            if *d != read && !second_dates.contains(d) {
+                second_dates.push(*d);
+            }
+        }
+    }
+    Some(DateLineReading {
+        date: Some(read),
+        weekday_mismatch: None,
+        parenthesized_mismatch,
+        second_dates,
+    })
+}
+
+/// The trailing groups' contributed dates after
+/// the core's governance has bound its bare
+/// restatements (round 20, R20-1): the list the
+/// Keep-through fallback (round 9, R9-9) reads,
+/// so a fallback beside a governed core asserts
+/// exactly what the unified composition asserts —
+/// a surviving group, never a date the core
+/// governed and the group only restated bare.
+/// Beside any other core the list is the standing
+/// trailing-group list unchanged.
+fn trailing_dates_after_core_governance(
+    text: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> Vec<SimpleDate> {
+    let core = strip_all_trailing_parenthesized(text.trim());
+    let governed_values = every_governed_core_values(core, today, anchor);
+    if governed_values.is_empty() {
+        return trailing_parenthesized_dates(text, today, anchor);
+    }
+    trailing_group_analyses(text, today, anchor)
+        .iter()
+        .filter_map(|(_, a)| {
+            a.contributed
+                .filter(|d| !(a.contributed_bare && governed_values.contains(d)))
+        })
+        .collect()
+}
+
 /// The base dates a line's Sunday-after phrases
 /// consume (round 19, R19-8): every "Sunday after
 /// <base>" run standing in the line's core, read
@@ -4968,6 +5238,23 @@ fn date_line(raw: &Option<String>, today: SimpleDate, anchor: SimpleDate) -> Dat
             }
         }
         None => {
+            // Round 20 (R20-1): one composition for
+            // an every-governed core and its trailing
+            // groups — the core's governed values
+            // bind bare trailing restatements, and a
+            // surviving group asserts here instead
+            // of dropping unnamed (see
+            // `governed_core_group_reading`).
+            if let Some(reading) = governed_core_group_reading(
+                text,
+                core,
+                today,
+                anchor,
+                &alternatives,
+                core_mismatch.clone(),
+            ) {
+                return reading;
+            }
             // Round 12 (R12-6): the same first-date
             // primacy on the de-grouped core, with
             // the trailing groups still compared as
@@ -5232,7 +5519,14 @@ pub fn parse_contribution_anchored(
         && keep_through_parenthesized_mismatch.is_none()
     {
         if let Some(kt_text) = raw.keep_through.as_deref() {
-            let groups = trailing_parenthesized_dates(kt_text, today, anchor);
+            // Round 20 (R20-1): the fallback reads
+            // the groups through the same core/group
+            // composition as the For Sunday line — a
+            // bare restatement of a value the core
+            // governs never becomes the keep-through
+            // date, and a surviving group is the one
+            // the composition stands on.
+            let groups = trailing_dates_after_core_governance(kt_text, today, anchor);
             if let Some(chosen) = groups.last().copied() {
                 keep_through = Some(chosen);
                 // Round 10 (R10-6): every distinct
@@ -10305,6 +10599,354 @@ Youth group meets Wednesday at 6 PM.
             .keep_through_parenthesized_mismatch
             .expect("keep-through names the other asserted date too");
         assert_eq!(mismatch.named, nov(8), "{groups}");
+    }
+
+    #[test]
+    fn r20a_core_group_composition() {
+        // Round 20 (R20-1, review F1 = red team
+        // RT20-1): a governed plain core beside any
+        // contributing trailing group split by path
+        // — For Sunday returned the core's governed
+        // silence and dropped the group unnamed,
+        // while the Keep-through fallback asserted
+        // the last group blind, in the base witness
+        // asserting the very date the core
+        // cancelled. One composition now stands for
+        // core + trailing groups on both paths: the
+        // core's governed values bind BARE trailing
+        // restatements of the same value across the
+        // core/group boundary, and a surviving group
+        // asserts by the trailing-group primacy the
+        // paren-only path uses. Every witness below
+        // is read on both lines and the two readings
+        // must agree field for field.
+        // (line, read date, second dates, mismatch named)
+        type CoreGroupCase<'a> = (
+            &'a str,
+            Option<SimpleDate>,
+            &'a [SimpleDate],
+            Option<SimpleDate>,
+        );
+        let cases: [CoreGroupCase<'_>; 14] = [
+            // The base witness: the trailing
+            // restatement is bare and bound by the
+            // core's cancellation — nothing, on
+            // both paths.
+            ("November 1, 2026, cancelled (November 1)", None, &[], None),
+            ("November 1, 2026, postponed (November 1)", None, &[], None),
+            ("not November 1, 2026 (November 1)", None, &[], None),
+            // A trailing group whose value the core
+            // does not govern asserts, the governed
+            // core value named on the note.
+            (
+                "November 1, 2026, cancelled (November 8)",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            (
+                "November 1, 2026, cancelled (next Sunday)",
+                Some(oct(25)),
+                &[nov(1)],
+                None,
+            ),
+            (
+                "November 1, 2026, cancelled (this Sunday)",
+                Some(oct(18)),
+                &[nov(1)],
+                None,
+            ),
+            (
+                "November 1, 2026, cancelled (the Sunday after November 1)",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            // A governed core date does not poison a
+            // clean group date it never governed.
+            (
+                "November 8, 2026, cancelled (November 1)",
+                Some(nov(1)),
+                &[nov(8)],
+                None,
+            ),
+            // A labelled group asserts its governed
+            // value (round 19, R19-1's rule), and a
+            // claim group claims its target.
+            (
+                "November 1, 2026, cancelled (service November 1)",
+                Some(nov(1)),
+                &[],
+                None,
+            ),
+            (
+                "November 1, 2026, cancelled (moved to November 1)",
+                Some(nov(1)),
+                &[],
+                None,
+            ),
+            (
+                "November 1, 2026, cancelled (moved to November 8)",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            // A relative restatement of the core's
+            // governed relative value is bound too.
+            ("next Sunday, cancelled (October 25)", None, &[], None),
+            // Two trailing groups: the bare governed
+            // restatement is suppressed and the clean
+            // group stands, in either group order.
+            (
+                "November 1, 2026, cancelled (November 8) (November 1)",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+            (
+                "November 1, 2026, cancelled (November 1) (November 8)",
+                Some(nov(8)),
+                &[nov(1)],
+                None,
+            ),
+        ];
+        for (line, want, want_second, want_mismatch) in cases {
+            let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let f = parse_contribution(&for_text, today()).expect("parses");
+            assert_eq!(f.for_date, want, "{line}: For Sunday");
+            assert_eq!(
+                f.for_sunday_second_dates,
+                want_second.to_vec(),
+                "{line}: For Sunday names the governed value"
+            );
+            let for_mismatch = f.for_sunday_parenthesized_mismatch.map(|m| m.named);
+            assert_eq!(for_mismatch, want_mismatch, "{line}: For Sunday mismatch");
+            let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let k = parse_contribution(&keep_text, today()).expect("parses");
+            assert_eq!(k.keep_through, want, "{line}: Keep-through agrees");
+            assert_eq!(
+                k.keep_through_second_dates,
+                want_second.to_vec(),
+                "{line}: Keep-through names the same"
+            );
+            let keep_mismatch = k.keep_through_parenthesized_mismatch.map(|m| m.named);
+            assert_eq!(
+                keep_mismatch, want_mismatch,
+                "{line}: Keep-through mismatch agrees"
+            );
+        }
+        // Two surviving groups follow the paren-only
+        // primacy: the last group stands, the earlier
+        // surviving group is named on the mismatch
+        // record, the governed core value on the note.
+        let line = "November 1, 2026, cancelled (November 8) (November 15)";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, Some(nov(15)), "{line}: the last group stands");
+        assert_eq!(f.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let mismatch = f
+            .for_sunday_parenthesized_mismatch
+            .expect("the earlier surviving group is named");
+        assert_eq!(mismatch.named, nov(8), "{line}");
+        assert_eq!(mismatch.read, nov(15), "{line}");
+        assert!(mismatch.read_from_parentheses, "{line}");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, Some(nov(15)), "{line}: keep-through");
+        assert_eq!(k.keep_through_second_dates, vec![nov(1)], "{line}");
+        let mismatch = k
+            .keep_through_parenthesized_mismatch
+            .expect("keep-through names the earlier group too");
+        assert_eq!(mismatch.named, nov(8), "{line}");
+        // Held bounds: the trailing group itself
+        // governed reads nothing on both paths; a
+        // core that asserts is unchanged, its groups
+        // still garnish against its date.
+        let line = "November 1, 2026, cancelled (November 1, cancelled)";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, None, "{line}: the group governs itself");
+        assert_eq!(f.for_sunday_parenthesized_mismatch, None, "{line}");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, None, "{line}: keep-through");
+        let line = "November 8, 2026 (November 1, cancelled)";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(
+            f.for_date,
+            Some(nov(8)),
+            "{line}: the asserting core stands"
+        );
+        assert_eq!(f.for_sunday_parenthesized_mismatch, None, "{line}");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, Some(nov(8)), "{line}: keep-through");
+        // The salvaging core composes as it always
+        // did: November 8 asserted, November 1
+        // second-named, the group naming November 15
+        // on the mismatch record, both paths.
+        let line = "November 1, 2026, cancelled, November 8, 2026 (November 15)";
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, Some(nov(8)), "{line}");
+        assert_eq!(f.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let mismatch = f
+            .for_sunday_parenthesized_mismatch
+            .expect("the group disagrees with the core's date");
+        assert_eq!(mismatch.named, nov(15), "{line}");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(k.keep_through_second_dates, vec![nov(1)], "{line}");
+        let mismatch = k
+            .keep_through_parenthesized_mismatch
+            .expect("keep-through names the group too");
+        assert_eq!(mismatch.named, nov(15), "{line}");
+    }
+
+    #[test]
+    fn r20a_passive_predicate_is_not_bare() {
+        // Round 20 (R20-2, review F2): the bare test
+        // consumed an auxiliary + governor-participle
+        // predicate word by word — "it was moved",
+        // "it was rescheduled", "it was cancelled"
+        // are all filler, auxiliaries, and governor
+        // phrases — so a passive construction's
+        // occasion date read as a bare restatement
+        // and was suppressed by any sibling
+        // governance, while the same construction
+        // with a non-governor participle ("it was
+        // scheduled for …", "it was held, …")
+        // asserted, as the spent / passive-for rules
+        // require. A region carrying a passive
+        // predicate construction is not bare: the
+        // construction heads its own event clause.
+        for groups in [
+            "(November 1, cancelled) (it was moved for November 1)",
+            "(November 1, cancelled) (it was moved, November 1)",
+            "(November 1, cancelled) (it was rescheduled for November 1)",
+            "(November 1, moved) (it was cancelled, November 1)",
+            "(it was moved for November 1) (November 1, cancelled)",
+            "(November 1, cancelled, it was moved for November 1)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{groups}: relative path asserts the passive clause's date"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+        }
+        // The plain twins, in both orders.
+        for line in [
+            "November 1, 2026, cancelled, it was moved for November 1, 2026",
+            "it was moved for November 1, 2026, November 1, 2026, cancelled",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{line}: the plain passive clause asserts"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(1)), "{line}: keep-through");
+        }
+        // Held: a lone "for" fragment stays bare and
+        // bound; the constructions that always
+        // asserted keep asserting; "use" stays
+        // non-bare by the stated judgment call.
+        let groups = "(November 1, cancelled) (for November 1)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: a lone for fragment stays bare");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{groups}: keep-through");
+        for groups in [
+            "(November 1, cancelled) (it was scheduled for November 1)",
+            "(November 1, cancelled) (it was held, November 1)",
+            "(November 1, cancelled) (we moved the meeting for November 1)",
+            "(November 1, cancelled) (use November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+        }
+    }
+
+    #[test]
+    fn r20a_bare_function_words() {
+        // Round 20 (R20-3, review F3 + red team
+        // RT20-2): the bare inventory admitted the
+        // articles but missed the other function
+        // words — possessive determiners,
+        // demonstratives, and discourse garnish — so
+        // a restatement wearing only one of those
+        // words counted as event content and its
+        // governed date resurrected on every path.
+        // Those classes are filler now. The garnish
+        // list is closed: please, yes, again, ps.
+        for word in [
+            "his", "her", "their", "my", "our", "your", "its", "this", "that", "these", "those",
+            "please", "yes", "again", "ps",
+        ] {
+            let groups = format!("(November 1, cancelled) ({word} November 1)");
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+            // The plain twin reads nothing either.
+            let line = format!("November 1, 2026, cancelled, {word} November 1, 2026");
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the plain twin stays governed");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through");
+        }
+        // Held: a label still asserts (round 19,
+        // R19-1) — function words bind, content
+        // labels assert. That is the pinned
+        // boundary of this fix.
+        for groups in [
+            "(November 1, cancelled) (choir November 1)",
+            "(November 1, cancelled) (meeting November 1)",
+            "(November 1, cancelled) (November 1 reminder)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: a label asserts beside a sibling cancellation"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+        }
     }
 
     #[test]

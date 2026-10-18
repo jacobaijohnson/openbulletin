@@ -156,3 +156,86 @@ claim/scope pins, the standing relative-line asymmetry,
 content labels assert, "thanks" head content, rights pin,
 loader pins, booklet bytes 31,717 / 34,977. Flag any changed
 pre-existing test loudly by name with its reason.
+
+## Shipped addendum, R23-A (2026-10-18)
+
+R23-1, R23-2, R23-3 shipped in one batch, all in
+`crates/ob-extract/src/contribution.rs`. Suite 767 → 769
+(+2 new pin tests, `r23a_bare_inventory_deictics_and_
+remainders` and `r23a_one_boundary_classification`; no
+pre-existing test changed, none removed — the full
+unpiped workspace run is exit 0 with 0 failed, and
+clippy `--workspace --all-targets` is clean). Booklet
+bytes untouched (no format/model file changed).
+
+Word classes added to the bare inventory (65 words):
+the deictic class (8: yesterday, today, tomorrow,
+here, there, together, alone, re); the preposition
+remainder (16: past, off, besides, plus, minus,
+concerning, regarding, barring, following, including,
+atop, amidst, amongst, thru, versus, vs); the
+quantifier/determiner remainder (17: much, many, few,
+several, enough, most, more, less, least, none, little,
+what, which, whose, whatever, whichever, whoever); the
+connective-adverb remainder (12: accordingly,
+consequently, subsequently, next, later, earlier,
+afterwards, afterward, beforehand, simultaneously,
+eventually, initially); the adverb remainder (12:
+once, twice, always, ever, perhaps, maybe, almost,
+nearly, pretty, fairly, basically, merely). The
+inventory comment's claim is corrected per the
+disposition: the classes are the rule, the lists are
+their current membership, and a newly found function
+word is a list gap (MAJOR when the word is ordinary
+office vocabulary). The lanes' ungraded pronouns /
+modals / interjections were NOT added, as instructed.
+Mirror held on the audit probes: every new-class word
+before a content label (choir/service) still asserts,
+"thanks" head content and possessive-headed events
+still assert.
+
+The boundary rule in one sentence: colon, semicolon,
+comma, dash (incl. en/em), slash, and period are
+clause/group boundaries exactly as the comma already
+was — at governor scope, relative-shape memory,
+weekday checks, group composition, and postposed
+composition alike — a closing paren between a governor
+and its date is a boundary of the same kind, and
+numeric-date slashes (11/1) stay token-internal.
+Mechanisms: the shared cleaning (`group_token`) and
+the clause-break test (`clause_break_after`) carry the
+full set; the relative-shape readers use the shared
+cleaning and trim boundaries at both ends of the
+remainder; the composition's weekday check strips a
+leading boundary (incl. the word "and") from each
+segment; a date run may not start on a boundary token
+(`parse_date_prefix`), which is what lets a nested
+group closing between a governor and its date read as
+its comma twin; and boundary punctuation attached at
+a token's head ("(please):November 1, …") is read off
+the token as at its tail.
+
+Audit-probe adjudication after the fix (same probe
+crates the lanes used, run against the shipped tree):
+bare23 — every enumerated class resurrect=false in
+head and probed trailing slots, mirror asserts
+throughout; comp23 — part B 0/30 differ from comma
+twins (was 1), part C 0 asserts across 233 wrong-
+weekday lines with the mismatch recorded on all 224
+census lines, part D governed-resurrection oracle
+0 of 92,032 fuzz lines (was 394); focus23 F1/F2/F3 —
+every colon-governor line reads as its comma twin,
+every separator lead records Monday@2026-11-15, every
+relative shape remembers and arms. Flagged test
+changes: NONE — no pre-existing test was changed.
+One expectation in the NEW boundary pin was corrected
+during the batch (the `((cancelled, November 1),
+November 8)` twin names nothing, matching its flat
+comma twin's standing group-initial-governor silence);
+that was a new-test authoring fix, not a behavior
+change. Remaining outside this batch's exact lists,
+recorded not fixed: the two-word stack units "care
+of", "back together", "gone tomorrow" still resurrect
+(their non-deictic members — care, back, gone — stand
+in no enumerated class), as do the lanes' ungraded
+pronouns/modals/interjections by design.

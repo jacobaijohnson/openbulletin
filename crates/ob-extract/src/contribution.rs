@@ -432,7 +432,13 @@ impl WeekdayMismatch {
 /// shortened, to its number (0 = Sunday .. 6 =
 /// Saturday): the same table the date reader uses.
 fn weekday_word(word: &str) -> Option<u32> {
-    let w = word.trim_end_matches(['.', ',']).to_ascii_lowercase();
+    // Round 23 (R23-3): a weekday wearing a boundary
+    // ending (colon, semicolon, slash — the one
+    // boundary classification) still names its weekday,
+    // as it already did wearing a comma or period.
+    let w = word
+        .trim_end_matches(['.', ',', ':', ';', '/'])
+        .to_ascii_lowercase();
     Some(match w.as_str() {
         "sun" | "sunday" => 0,
         "mon" | "monday" => 1,
@@ -718,8 +724,25 @@ fn strip_trailing_parenthesized(text: &str) -> Option<&str> {
 /// it names is remembered separately — the way a
 /// trailing weekday garnish already is.
 fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> bool {
+    // Round 23 (R23-3): the ONE boundary classification
+    // at this site too — colon, semicolon, comma, dash
+    // (incl. en/em), slash, and period are boundaries
+    // exactly as the comma is, at BOTH ends of the
+    // remainder: a separator standing where a group was
+    // taken off, standing between two trailing groups,
+    // or standing at a shape's own boundary ("next
+    // Sunday: (November 8)", "(November 1) / next
+    // Sunday", "next Sunday (November 8); (November 1)")
+    // is separator punctuation, not words of the shape,
+    // and the in-words memory survives it exactly as it
+    // survives the space and comma twins.
+    const BOUNDARY_TRIM: [char; 10] = [
+        ' ', '\t', ';', ',', ':', '.', '/', '-', '\u{2013}', '\u{2014}',
+    ];
     let mut rest = text;
     loop {
+        rest = rest.trim_start_matches(BOUNDARY_TRIM);
+        rest = rest.trim_end_matches(BOUNDARY_TRIM);
         if shape(rest) {
             return true;
         }
@@ -732,14 +755,6 @@ fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> bool {
             Some(stripped) => rest = stripped,
             None => return false,
         }
-        // Round 22 (R22-1): a separator standing where a
-        // group was taken off — the comma or semicolon a
-        // sender writes after a parenthesized date, or a
-        // dash — is separator punctuation, not words of
-        // the shape: "(November 1), next Sunday" and
-        // "(November 1); next Sunday" name their Sunday
-        // in words exactly as the space twin does.
-        rest = rest.trim_start_matches([' ', ';', ',', '-', '\u{2013}', '\u{2014}']);
     }
 }
 
@@ -925,8 +940,15 @@ fn dates_inside_group_signals(
 /// lowercased: the shape the governor and weekday
 /// checks read.
 fn group_token(raw: &str) -> String {
+    // Round 23 (R23-3): ONE boundary classification —
+    // colon, semicolon, comma, dash (incl. en/em),
+    // slash, and period are clause/group boundaries,
+    // and this shared cleaning strips them all from a
+    // token's edges. A slash INSIDE a token is not an
+    // edge: a numeric date ("11/1") stays token-internal
+    // and reads whole.
     raw.trim_matches([
-        '(', ')', '[', ']', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}',
+        '(', ')', '[', ']', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}', '/',
     ])
     .to_ascii_lowercase()
 }
@@ -939,9 +961,25 @@ fn group_token(raw: &str) -> String {
 /// standalone "-" / "--" token, or a token wearing a
 /// trailing en/em dash or hyphen.
 fn clause_break_after(raw: &str) -> bool {
+    // Round 23 (R23-3): the ONE boundary classification
+    // — a token wearing a trailing colon, semicolon,
+    // comma, dash (incl. en/em), slash, or period closes
+    // its clause exactly as the comma has since round 12,
+    // and a standalone boundary token ("/", ")", a dash)
+    // is a boundary standing alone: a closing paren
+    // between a governor and its date is a boundary of
+    // the same kind. A slash inside a token ("11/1") is
+    // token-internal and never reaches this test as an
+    // ending.
+    if raw.trim() == ")" || raw.trim() == "/" {
+        return true;
+    }
     let trimmed = raw.trim_end_matches([')', ']', ' ']);
     trimmed.ends_with(',')
         || trimmed.ends_with(';')
+        || trimmed.ends_with(':')
+        || trimmed.ends_with('.')
+        || trimmed.ends_with('/')
         || trimmed.ends_with('\u{2013}')
         || trimmed.ends_with('\u{2014}')
         || trimmed == "-"
@@ -3619,8 +3657,7 @@ fn governed_before_target(window: &[String], window_start: usize, claim: &Target
 /// trailing "thanks" are bare in the trailing
 /// slot only (see `occurrence_is_bare`).
 ///
-/// Round 22 (R22-8): the classes are closed as
-/// listed here and the rule is class-based —
+/// Round 22 (R22-8): the rule is class-based —
 /// function words are bare, content labels are
 /// not. The classes that join: the remaining
 /// prepositions ("with", "during", "since",
@@ -3647,6 +3684,37 @@ fn governed_before_target(window: &[String], window_start: usize, claim: &Target
 /// Trailing "thanks" stays bare in the trailing
 /// slot only, and "thanks" in head position stays
 /// content, per the R20-3 adjudication.
+///
+/// Round 23 (R23-1/R23-2): the CLASSES are the
+/// rule; the lists below are their current
+/// membership, not a closed set. A newly found
+/// function word is a list gap — graded MAJOR
+/// when the word is ordinary office vocabulary,
+/// as every word in this round's classes is. The
+/// classes that join: the deictics ("yesterday",
+/// "today", "tomorrow", "here", "there",
+/// "together", "alone", and the preposition "re"
+/// — temporal/locative deictic adverbs and their
+/// kin, the same class as the tolerated "again" /
+/// "now" / "then", naming no event); the lanes'
+/// enumerated remainders of the classes R22-8
+/// named — prepositions ("past", "off", "besides",
+/// "plus", "minus", "concerning", "regarding",
+/// "barring", "following", "including", "atop",
+/// "amidst", "amongst", "thru", "versus", "vs"),
+/// quantifier / determiners ("much", "many",
+/// "few", "several", "enough", "most", "more",
+/// "less", "least", "none", "little", "what",
+/// "which", "whose", "whatever", "whichever",
+/// "whoever"), connective adverbs ("accordingly",
+/// "consequently", "subsequently", "next",
+/// "later", "earlier", "afterwards", "afterward",
+/// "beforehand", "simultaneously", "eventually",
+/// "initially"), and adverbs ("once", "twice",
+/// "always", "ever", "perhaps", "maybe",
+/// "almost", "nearly", "pretty", "fairly",
+/// "basically", "merely"). The lanes' ungraded
+/// pronouns / modals / interjections do NOT join.
 fn bare_filler_word(w: &str) -> bool {
     weekday_word(w).is_some()
         || AUXILIARY_WORDS.contains(&w)
@@ -3783,6 +3851,83 @@ fn bare_filler_word(w: &str) -> bool {
                 | "quite"
                 | "indeed"
                 | "too"
+                // Round 23 (R23-1): the deictic class —
+                // temporal and locative deictics and
+                // the preposition "re" (see the doc
+                // comment above).
+                | "yesterday"
+                | "today"
+                | "tomorrow"
+                | "here"
+                | "there"
+                | "together"
+                | "alone"
+                | "re"
+                // Round 23 (R23-2): the preposition
+                // remainder.
+                | "past"
+                | "off"
+                | "besides"
+                | "plus"
+                | "minus"
+                | "concerning"
+                | "regarding"
+                | "barring"
+                | "following"
+                | "including"
+                | "atop"
+                | "amidst"
+                | "amongst"
+                | "thru"
+                | "versus"
+                | "vs"
+                // Round 23 (R23-2): the quantifier /
+                // determiner remainder.
+                | "much"
+                | "many"
+                | "few"
+                | "several"
+                | "enough"
+                | "most"
+                | "more"
+                | "less"
+                | "least"
+                | "none"
+                | "little"
+                | "what"
+                | "which"
+                | "whose"
+                | "whatever"
+                | "whichever"
+                | "whoever"
+                // Round 23 (R23-2): the connective-
+                // adverb remainder.
+                | "accordingly"
+                | "consequently"
+                | "subsequently"
+                | "next"
+                | "later"
+                | "earlier"
+                | "afterwards"
+                | "afterward"
+                | "beforehand"
+                | "simultaneously"
+                | "eventually"
+                | "initially"
+                // Round 23 (R23-2): the adverb
+                // remainder.
+                | "once"
+                | "twice"
+                | "always"
+                | "ever"
+                | "perhaps"
+                | "maybe"
+                | "almost"
+                | "nearly"
+                | "pretty"
+                | "fairly"
+                | "basically"
+                | "merely"
         )
 }
 
@@ -4936,14 +5081,13 @@ fn leading_group_disagrees(text: &str, today: SimpleDate, resolution: SimpleDate
 fn sunday_after_relative_shape(text: &str) -> bool {
     let words: Vec<String> = text
         .split_whitespace()
-        .map(|w| {
-            w.trim_matches(['(', ')', '[', ']', '.', ',', ';'])
-                .to_ascii_lowercase()
-        })
-        // Round 22 (R22-1): a separator token standing
-        // alone (";" / "," where a group was taken off)
-        // cleans to an empty word and is no word of the
-        // shape.
+        // Round 23 (R23-3): the one shared cleaning
+        // (`group_token`), as everywhere else — a
+        // separator token standing alone (":" / "/"
+        // / a dash where a group was taken off, or
+        // wearing a word) cleans to an empty word or
+        // a clean word, and is no word of the shape.
+        .map(group_token)
         .filter(|w| !w.is_empty())
         .collect();
     // Leading garnishes compose in order (round 7,
@@ -5014,13 +5158,12 @@ fn relative_sunday_phrase(raw: &Option<String>, today: SimpleDate) -> Option<Str
 fn relative_sunday_shape(text: &str) -> bool {
     let words: Vec<String> = text
         .split_whitespace()
-        .map(|w| {
-            w.trim_matches(['(', ')', '[', ']', '.', ',', ';'])
-                .to_ascii_lowercase()
-        })
-        // Round 22 (R22-1): a separator token standing
-        // alone cleans to an empty word and is no word
-        // of the shape, as in `sunday_after_relative_shape`.
+        // Round 23 (R23-3): the one shared cleaning
+        // (`group_token`), as in
+        // `sunday_after_relative_shape` — a separator
+        // token standing alone cleans to an empty word
+        // and is no word of the shape.
+        .map(group_token)
         .filter(|w| !w.is_empty())
         .collect();
     // Leading garnishes compose in order (round 7,
@@ -5055,6 +5198,25 @@ fn relative_sunday_shape(text: &str) -> bool {
 /// as a date, and how many words it took. Words after
 /// the date are the remainder, not a parse failure.
 fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(SimpleDate, usize)> {
+    // Round 23 (R23-3): a date run may not START on a
+    // boundary token — a token the shared cleaning
+    // (`group_token`) reduces to nothing is boundary
+    // punctuation standing alone (a comma left by a
+    // closing paren, a colon, a slash, a dash), never
+    // the first word of a date. The flexible reader
+    // strips commas globally, so ", November 8" used
+    // to read as a date run STARTING on the comma:
+    // the boundary token was absorbed into the date's
+    // own span, the governor before it stood inside
+    // the span's window, and a nested group closing
+    // between a governor and its date ("((November 1,
+    // cancelled), November 8)") silenced the target
+    // its comma twin asserts. A boundary is a boundary
+    // wherever it stands; the scan steps over it and
+    // starts the run on the date's own first word.
+    if tokens.first().is_some_and(|t| group_token(t).is_empty()) {
+        return None;
+    }
     // Round 22 (R22-2): a sender's semicolon (or colon)
     // attached to a date token — "2026;" — is a clause
     // break standing after the date, never part of the
@@ -5075,7 +5237,18 @@ fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(SimpleDate, 
             // group marker) keeps its shape: it is a
             // segment boundary no date run may start
             // on or cross, never an empty word.
-            let trimmed = t.trim_end_matches([';', ':']);
+            // Round 23 (R23-3): the same boundary
+            // punctuation ATTACHED at a token's head —
+            // a separator written with no space after
+            // a group, "(please):November 1, 2026,
+            // cancelled", or the composition's own ";"
+            // marker glued to the core's first word —
+            // is boundary, not part of the word: the
+            // token is read without it, exactly as at
+            // its tail.
+            let trimmed = t
+                .trim_start_matches([';', ':'])
+                .trim_end_matches([';', ':']);
             if trimmed.is_empty() {
                 t.to_string()
             } else {
@@ -7162,8 +7335,29 @@ fn composition_segment_weekday_mismatch(text: &str, today: SimpleDate) -> Option
     }
     core.push_str(&text[at..]);
     for segment in core.split(';') {
-        let segment = segment.trim();
-        if segment.is_empty() {
+        // Round 23 (R23-3): the separator standing where
+        // the group was taken off — comma, colon, dash
+        // (incl. en/em), period, slash, or the word
+        // "and" — is a boundary exactly as the space and
+        // semicolon already are: it is stripped from the
+        // segment's head before the segment is judged, so
+        // "(November 8), Monday, November 15, 2026" (and
+        // its colon / dash / period / slash / "and"
+        // twins) records the same mismatch and asserts
+        // nothing, exactly as the space twin does. A
+        // segment carrying no word of its own is skipped.
+        const SEGMENT_BOUNDARY: [char; 10] = [
+            ' ', '\t', ';', ',', ':', '.', '/', '-', '\u{2013}', '\u{2014}',
+        ];
+        let mut segment = segment.trim_matches(SEGMENT_BOUNDARY);
+        if let Some(rest) = segment
+            .strip_prefix("and ")
+            .or_else(|| segment.strip_prefix("And "))
+            .or_else(|| segment.strip_prefix("AND "))
+        {
+            segment = rest.trim_matches(SEGMENT_BOUNDARY);
+        }
+        if segment.is_empty() || !segment.chars().any(|c| c.is_alphanumeric()) {
             continue;
         }
         let segment_raw = Some(segment.to_string());
@@ -17745,6 +17939,467 @@ Youth group meets Wednesday at 6 PM.
             let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
             let c = parse_contribution(&text, today()).expect("parses");
             assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+        }
+    }
+
+    #[test]
+    fn r23a_bare_inventory_deictics_and_remainders() {
+        // Round 23 (R23-1/R23-2, review F1 + red team
+        // RT23-6/RT23-7): the deictic class and the
+        // lanes' enumerated remainders of the classes
+        // R22-8 named were still outside the bare
+        // inventory, so a governed date restated behind
+        // any of them resurrected on every path. The
+        // classes are the rule; the lists in
+        // `bare_filler_word` are their current
+        // membership. Every witness below reads
+        // nothing on every path; the lanes' ungraded
+        // pronouns / modals / interjections do NOT
+        // join and are not pinned here.
+        for word in [
+            // R23-1: the deictic class.
+            "yesterday",
+            "today",
+            "tomorrow",
+            "here",
+            "there",
+            "together",
+            "alone",
+            "re",
+            // R23-2: the preposition remainder.
+            "past",
+            "off",
+            "besides",
+            "plus",
+            "minus",
+            "concerning",
+            "regarding",
+            "barring",
+            "following",
+            "including",
+            "atop",
+            "amidst",
+            "amongst",
+            "thru",
+            "versus",
+            "vs",
+            // R23-2: the quantifier / determiner
+            // remainder.
+            "much",
+            "many",
+            "few",
+            "several",
+            "enough",
+            "most",
+            "more",
+            "less",
+            "least",
+            "none",
+            "little",
+            "what",
+            "which",
+            "whose",
+            "whatever",
+            "whichever",
+            "whoever",
+            // R23-2: the connective-adverb remainder.
+            "accordingly",
+            "consequently",
+            "subsequently",
+            "next",
+            "later",
+            "earlier",
+            "afterwards",
+            "afterward",
+            "beforehand",
+            "simultaneously",
+            "eventually",
+            "initially",
+            // R23-2: the adverb remainder.
+            "once",
+            "twice",
+            "always",
+            "ever",
+            "perhaps",
+            "maybe",
+            "almost",
+            "nearly",
+            "pretty",
+            "fairly",
+            "basically",
+            "merely",
+        ] {
+            let groups = format!("(November 1, cancelled) ({word} November 1)");
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+            // The plain twin resurrects nowhere either.
+            let line = format!("November 1, 2026, cancelled, {word} November 1, 2026");
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+        }
+        // The trailing slot, for every deictic and
+        // for the remainders' probed trailing members.
+        for word in [
+            "yesterday",
+            "today",
+            "tomorrow",
+            "here",
+            "there",
+            "together",
+            "alone",
+            "re",
+            "past",
+            "off",
+            "besides",
+            "much",
+            "many",
+            "few",
+            "several",
+            "most",
+            "none",
+            "later",
+            "earlier",
+            "afterwards",
+        ] {
+            let groups = format!("(November 1, cancelled) (November 1 {word})");
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+            let line = format!("November 1, 2026, cancelled, November 1, 2026 {word}");
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{line}: plain trailing twin stays governed"
+            );
+        }
+        // Stacks, the typed "re:" form, the "in re"
+        // unit, and a restatement wearing its own
+        // governor (the deictic is no governor).
+        for groups in [
+            "(November 1, cancelled) (here today November 1)",
+            "(November 1, cancelled) (November 1 here today)",
+            "(November 1, cancelled) (the November 1 today)",
+            "(November 1, cancelled) (re: November 1)",
+            "(November 1, cancelled) (in re November 1)",
+            "(November 1, cancelled) (today November 1, cancelled)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror, R23-1/R23-2): the widened
+        // inventory eats no real event — a member of
+        // each new class standing before a content
+        // label still asserts, "thanks" in head
+        // position stays content, and a
+        // possessive-headed event still asserts.
+        for groups in [
+            "(November 1, cancelled) (yesterday choir November 1)",
+            "(November 1, cancelled) (past choir November 1)",
+            "(November 1, cancelled) (several service November 1)",
+            "(November 1, cancelled) (which choir November 1)",
+            "(November 1, cancelled) (later service November 1)",
+            "(November 1, cancelled) (once choir November 1)",
+            "(November 1, cancelled) (thanks November 1)",
+            "(November 1, cancelled) (our choir November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+        }
+    }
+
+    #[test]
+    fn r23a_one_boundary_classification() {
+        // Round 23 (R23-3, review F2/F3/F4/F5 + red
+        // team RT23-1/RT23-2/RT23-3): boundary
+        // classification was per-site, so colon,
+        // semicolon, comma, dash (incl. en/em), slash,
+        // and period behaved differently at different
+        // sites. ONE classification now: every one of
+        // them is a clause/group boundary exactly as
+        // the comma is, at every site that judges
+        // governor scope, relative-shape memory,
+        // weekday checks, group composition, and
+        // postposed composition — and a closing paren
+        // between a governor and its date is a
+        // boundary of the same kind. Every witness
+        // below reads as its comma/space twin.
+        //
+        // (a) The wrong-weekday date behind a leading
+        // group asserts NEVER, whatever separator
+        // follows the group; the mismatch is recorded
+        // as the space twin records it, on both paths.
+        for sep in [
+            " ",
+            ", ",
+            ": ",
+            " - ",
+            "- ",
+            " \u{2013} ",
+            " \u{2014} ",
+            ". ",
+            " / ",
+            " and ",
+            "; ",
+        ] {
+            let line = format!("(November 8){sep}Monday, November 15, 2026");
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{line}: the contradicted date never asserts"
+            );
+            let mismatch = c
+                .named_weekday_mismatch
+                .clone()
+                .expect("the mismatch is recorded");
+            assert_eq!(mismatch.named, "Monday", "{line}");
+            assert_eq!(mismatch.date, nov(15), "{line}");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through asserts nothing");
+            let mismatch = c
+                .keep_through_weekday_mismatch
+                .clone()
+                .expect("the keep-through mismatch is recorded");
+            assert_eq!(mismatch.date, nov(15), "{line}");
+            // With a trailing group the contradiction
+            // is still recorded and nothing asserts.
+            let line = format!("(November 8){sep}Monday, November 15, 2026 (November 22)");
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: nothing asserts");
+            assert!(
+                c.named_weekday_mismatch.is_some(),
+                "{line}: the mismatch is recorded beside a trailing group"
+            );
+        }
+        // (b) A colon after the governor word is a
+        // clause break standing after the governor:
+        // the governor is spent on the first date and
+        // the replacement asserts, first date named —
+        // the comma twin's reading, on both surfaces.
+        for line in [
+            "November 1, 2026, cancelled: November 8, 2026",
+            "November 1, 2026, cancelled : November 8, 2026",
+            "November 1, 2026, cancelled: service November 8, 2026",
+            "November 1, 2026, postponed: service November 8, 2026",
+            "November 1, 2026: cancelled: November 8, 2026",
+            "(November 1, cancelled: November 8)",
+            "(November 1, cancelled: service November 8)",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1)],
+                "{line}: November 1 is named governed"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+            assert_eq!(
+                c.keep_through_second_dates,
+                vec![nov(1)],
+                "{line}: keep-through names November 1"
+            );
+        }
+        // (d) A slash after a date composes postposed
+        // exactly as the comma does.
+        for line in [
+            "November 1, 2026, cancelled / November 8, 2026",
+            "November 1, 2026, moved / November 8, 2026",
+            "(November 1, cancelled / November 8)",
+            "(November 1, moved / November 8)",
+            "November 1, 2026, cancelled / November 8, 2026, November 15, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+            assert!(
+                c.for_sunday_second_dates.contains(&nov(1)),
+                "{line}: November 1 is named governed"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        }
+        // The slash same-date restatement reads
+        // nothing, as every other separator twin does.
+        for line in [
+            "November 1, 2026 / cancelled, November 1, 2026",
+            "November 1, 2026, cancelled: November 1, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the governed date stays governed");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through");
+        }
+        // (c) The relative-shape memory survives a
+        // colon at its boundaries, a dash or slash
+        // before its group, and a semicolon or dash
+        // between trailing groups — the RT22-2
+        // witnesses with the new separators.
+        for (line, remembered) in [
+            ("next Sunday: (November 8)", nov(8)),
+            ("next Sunday \u{2014} (November 8)", nov(8)),
+            ("next Sunday / (November 8)", nov(8)),
+            ("(November 1): next Sunday", nov(1)),
+            ("(November 1) / next Sunday", nov(1)),
+            ("(November 1) next Sunday", nov(1)),
+            ("next Sunday (November 1, cancelled); (November 8)", nov(8)),
+            (
+                "next Sunday (November 1, cancelled) \u{2014} (November 8)",
+                nov(8),
+            ),
+            ("next Sunday; (November 8); (November 1)", nov(1)),
+            ("next Sunday: (November 8): (November 1)", nov(1)),
+            ("next Sunday, (November 8), (November 1)", nov(1)),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert!(
+                c.for_sunday_in_words.is_some(),
+                "{line}: the Sunday is remembered in words"
+            );
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(remembered),
+                "{line}: the parenthesized date is remembered"
+            );
+        }
+        // (e) The nested-paren witnesses read as
+        // their comma twins: a closing paren between
+        // a governor and its date is a boundary, and
+        // November 8 asserts with November 1 named.
+        for line in [
+            "((November 1, cancelled), November 8)",
+            "(November 1, (cancelled), November 8)",
+            "(((November 1, cancelled), November 8))",
+            "(November 1, cancelled, (November 8))",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1)],
+                "{line}: November 1 is named governed"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+            assert_eq!(
+                c.keep_through_second_dates,
+                vec![nov(1)],
+                "{line}: keep-through names November 1"
+            );
+        }
+        // The working twin whose governor stands
+        // BEFORE its date asserts November 8 and
+        // names nothing — the standing silence for a
+        // group-initial before-governor (round 16),
+        // exactly as its flat comma twin reads.
+        let line = "((cancelled, November 1), November 8)";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named, as the flat twin names nothing"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        // A separator attached with no space, after a
+        // group or before a governed core, is the
+        // same boundary (the comp23-D attached forms).
+        for line in [
+            "(please): November 1, 2026, cancelled",
+            "(yesterday November 1) (please November 1);November 1, 2026, postponed",
+            "(November 1 thanks) (please);November 1, 2026, cancelled",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the governed core stays governed");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through");
+        }
+        // Held: a colon after a DATE already read as
+        // a clause break (R22-2) and stays; a lone
+        // colon-governed date reads nothing; a
+        // numeric-date slash stays token-internal.
+        for (line, want) in [
+            (
+                "November 1, 2026: cancelled, November 8, 2026",
+                Some(nov(8)),
+            ),
+            ("cancelled: November 8, 2026", None),
+            ("note: November 8, 2026", None),
+            ("11/8/2026", Some(nov(8))),
+            ("11/1/2026, cancelled, 11/8/2026", Some(nov(8))),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, want, "{line}");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, want, "{line}: keep-through");
         }
     }
 }

@@ -143,3 +143,83 @@ claim/scope pins, the standing relative-line asymmetry,
 content labels assert, rights pin, loader pins, booklet
 bytes 31,717 / 34,977. Flag any changed pre-existing test
 loudly by name with its reason.
+
+## Shipped addendum, R22-A (2026-10-18)
+
+R22-1, R22-2, R22-3, and R22-7 shipped in one batch, all
+in `crates/ob-extract/src/contribution.rs`:
+
+- **R22-1.** A groups-only line whose de-grouped core
+  carries no signal of its own now composes in
+  `whole_line_composition` exactly as the paren-only
+  composition — last contributing group stands, earlier
+  groups on the mismatch record, relative losers on the
+  note — so groups separated by `;`, `-`, commas, or
+  plain words (even filler "note", even "cancelled,")
+  read identically on the For Sunday and Keep-through
+  paths. The relative-shape readers are separator-
+  transparent: a separator token left standing where a
+  leading group was taken off cleans to no word of the
+  shape, and the strip loop skips separator punctuation
+  between groups, so "(November 1); next Sunday" and
+  "(November 1), next Sunday" keep the in-words memory
+  (and the arming verdict) of their space twins.
+- **R22-2.** `parse_date_prefix` reads a date token
+  without a trailing `;`/`:` — a sender's semicolon
+  attached to the year ("2026;") is a clause break
+  standing after the date, never part of it. The year
+  stays inside the date's own span, the governor scope
+  behind it is the comma twin's, and a bare restatement
+  binds by date value: "November 1, 2026; cancelled,
+  November 8, 2026" asserts November 8 with November 1
+  named; the same-date restatement reads nothing. A
+  token of nothing but the punctuation (the
+  composition's own standalone `;` group marker) keeps
+  its shape and stays a boundary no date run may start
+  on. The r21a pins stand (see below).
+- **R22-3.** `date_line` judges the de-grouped core
+  segment by segment with the standing inner reader
+  before any composed reading: the first segment whose
+  framed date disagrees with its weekday records the
+  mismatch and yields no date, on both paths —
+  "(November 8) Monday, November 15, 2026" now matches
+  its group-less twin. Correct-weekday framed dates
+  behind leading groups assert as pinned in R21-A.
+- **R22-7.** The lone-framed fence
+  (`lone_framed_fence`) fires only when every clause
+  of the line beside the framed date is a weekday-
+  modifier phrase (weekday + noun-like window, noun-
+  like words and determiners only) and no content head
+  (`content_head_word`: service/choir/meeting/dinner
+  and their kin) stands anywhere on the line. "Monday
+  meeting, service November 8, 2026", "service
+  November 8, 2026, Monday meeting", and "Tuesday
+  choir, November 1, 2026" read nothing; "Sunday
+  bulletins, November 1, 2026", "Sunday school,
+  November 8, 2026", and the r21b shapes ("printed
+  Monday bulletins", "the Sunday bulletins", "Sunday
+  morning") keep asserting, and governed lines under
+  the fence keep their governed readings.
+
+Tests: five new pins (`r22a_separators_between_groups_
+compose`, `r22a_separator_after_a_leading_group_keeps_
+relative_memory`, `r22a_a_senders_semicolon_is_a_
+clause_break`, `r22a_wrong_weekday_behind_a_leading_
+group`, `r22a_lone_framed_fence_needs_a_content_free_
+line`), every witness on both paths. Workspace suite
+758 → **763 passed, 0 failed** (cargo exit 0, full
+unpiped run); clippy `--workspace --all-targets` exit
+0, no warnings. **No pre-existing test changed.**
+Two pre-existing failures surfaced mid-batch and were
+root-caused to this batch's own edits, then fixed in
+the edits rather than in the tests: the first fence
+draft required the modifier phrase's weekday to agree
+with the date, which broke the r21b pin "printed
+Monday bulletins, November 8, 2026" (the fence is
+content-based, not agreement-based, as shipped); and
+the first semicolon normalization emptied a standalone
+`;` token, letting a date run start on the
+composition's group marker and breaking two
+`r21a_post_group_plain_segments_compose` witnesses
+until the marker was fenced out of the normalization.
+Booklet bytes untouched (no export code in this batch).

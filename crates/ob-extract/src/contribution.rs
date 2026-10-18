@@ -732,6 +732,14 @@ fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> bool {
             Some(stripped) => rest = stripped,
             None => return false,
         }
+        // Round 22 (R22-1): a separator standing where a
+        // group was taken off — the comma or semicolon a
+        // sender writes after a parenthesized date, or a
+        // dash — is separator punctuation, not words of
+        // the shape: "(November 1), next Sunday" and
+        // "(November 1); next Sunday" name their Sunday
+        // in words exactly as the space twin does.
+        rest = rest.trim_start_matches([' ', ';', ',', '-', '\u{2013}', '\u{2014}']);
     }
 }
 
@@ -4465,6 +4473,11 @@ fn sunday_after_relative_shape(text: &str) -> bool {
             w.trim_matches(['(', ')', '[', ']', '.', ',', ';'])
                 .to_ascii_lowercase()
         })
+        // Round 22 (R22-1): a separator token standing
+        // alone (";" / "," where a group was taken off)
+        // cleans to an empty word and is no word of the
+        // shape.
+        .filter(|w| !w.is_empty())
         .collect();
     // Leading garnishes compose in order (round 7,
     // R7-5): an optional "on" and/or "the" in front of
@@ -4538,6 +4551,10 @@ fn relative_sunday_shape(text: &str) -> bool {
             w.trim_matches(['(', ')', '[', ']', '.', ',', ';'])
                 .to_ascii_lowercase()
         })
+        // Round 22 (R22-1): a separator token standing
+        // alone cleans to an empty word and is no word
+        // of the shape, as in `sunday_after_relative_shape`.
+        .filter(|w| !w.is_empty())
         .collect();
     // Leading garnishes compose in order (round 7,
     // R7-5): an optional "on" and/or "the".
@@ -4571,9 +4588,38 @@ fn relative_sunday_shape(text: &str) -> bool {
 /// as a date, and how many words it took. Words after
 /// the date are the remainder, not a parse failure.
 fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(SimpleDate, usize)> {
-    (1..=tokens.len())
+    // Round 22 (R22-2): a sender's semicolon (or colon)
+    // attached to a date token — "2026;" — is a clause
+    // break standing after the date, never part of the
+    // date itself: the token is read without it, exactly
+    // as `group_token` cleans it for the governor scans.
+    // Without this, the year fell outside the date's own
+    // span, the stray year token broke the governor
+    // scope behind it, and a cancelled date restated
+    // after its semicolon resurrected — a sender's
+    // semicolon must be indistinguishable from the
+    // composition's internal group marker, which the
+    // date readers never absorb into a date run.
+    let normalized: Vec<String> = tokens
+        .iter()
+        .map(|t| {
+            // A token of nothing but the punctuation
+            // (a standalone ";" — the composition's own
+            // group marker) keeps its shape: it is a
+            // segment boundary no date run may start
+            // on or cross, never an empty word.
+            let trimmed = t.trim_end_matches([';', ':']);
+            if trimmed.is_empty() {
+                t.to_string()
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .collect();
+    let refs: Vec<&str> = normalized.iter().map(String::as_str).collect();
+    (1..=refs.len())
         .rev()
-        .find_map(|end| parse_flexible_date(&tokens[..end].join(" "), today).map(|d| (d, end)))
+        .find_map(|end| parse_flexible_date(&refs[..end].join(" "), today).map(|d| (d, end)))
 }
 
 /// Whether the weekday at `i` in `core` wears the
@@ -5502,6 +5548,169 @@ fn scan_plain_signals(
     signals
 }
 
+/// Whether a word heads a content segment of a
+/// bulletin line (round 22, R22-7): it names an event
+/// or a gathered body — service, choir, meeting,
+/// dinner, and their kin — the labels a content-
+/// headed line is headed by ("service November 8,
+/// 2026", "Tuesday choir"). Printed matter and
+/// time-of-day words ("bulletins", "school",
+/// "morning") head no segment: they are the framed
+/// date's garnish in the fence's intended shapes
+/// ("printed Monday bulletins", "Sunday school").
+fn content_head_word(word: &str) -> bool {
+    matches!(
+        word,
+        "service"
+            | "services"
+            | "choir"
+            | "choirs"
+            | "meeting"
+            | "meetings"
+            | "dinner"
+            | "dinners"
+            | "practice"
+            | "rehearsal"
+            | "rehearsals"
+            | "potluck"
+            | "potlucks"
+            | "lunch"
+            | "lunches"
+            | "supper"
+            | "suppers"
+            | "breakfast"
+            | "breakfasts"
+            | "class"
+            | "classes"
+            | "lesson"
+            | "lessons"
+            | "study"
+            | "studies"
+            | "session"
+            | "sessions"
+            | "program"
+            | "programs"
+            | "event"
+            | "events"
+            | "gathering"
+            | "gatherings"
+            | "worship"
+            | "mass"
+            | "ceremony"
+            | "ceremonies"
+            | "funeral"
+            | "funerals"
+            | "wedding"
+            | "weddings"
+            | "baptism"
+            | "baptisms"
+            | "confirmation"
+            | "council"
+            | "committee"
+            | "committees"
+            | "group"
+            | "groups"
+            | "team"
+            | "teams"
+            | "congregation"
+            | "assembly"
+            | "assemblies"
+            | "retreat"
+            | "retreats"
+            | "concert"
+            | "concerts"
+            | "recital"
+            | "recitals"
+            | "sale"
+            | "sales"
+            | "fair"
+            | "fairs"
+            | "auction"
+            | "auctions"
+            | "clinic"
+            | "clinics"
+            | "workshop"
+            | "workshops"
+            | "seminar"
+            | "seminars"
+            | "lecture"
+            | "lectures"
+            | "party"
+            | "parties"
+            | "social"
+            | "socials"
+            | "outing"
+            | "outings"
+    )
+}
+
+/// Whether the lone-framed fence stands for a plain
+/// line (round 21, R21-7; fenced round 22, R22-7):
+/// the line's only signal is the framed date at
+/// `start..end`, and beside that date the line
+/// carries nothing but a weekday-modifier phrase —
+/// a weekday word standing with noun-like words, the
+/// framed date's garnish ("Sunday bulletins",
+/// "printed Monday bulletins", "Sunday school").
+/// Every clause of the line (split where a clause
+/// break stands) is judged: a clause holding no
+/// words beside the date is garnish-free; a clause
+/// holding words must hold a weekday + noun-like
+/// window, nothing but noun-like words (and
+/// determiners) beside it, and no content head
+/// (`content_head_word`) anywhere in it. Any other
+/// clause — a content-headed segment ("service …",
+/// "… Monday meeting", "Tuesday choir"), a governor
+/// clause, a verb — closes the fence, and the lone
+/// content-headed line keeps its standing silence.
+fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usize) -> bool {
+    let mut clauses: Vec<(usize, usize)> = Vec::new();
+    let mut clause_start = 0usize;
+    for (j, raw) in tokens.iter().enumerate() {
+        if clause_break_after(raw) {
+            clauses.push((clause_start, j + 1));
+            clause_start = j + 1;
+        }
+    }
+    if clause_start < tokens.len() {
+        clauses.push((clause_start, tokens.len()));
+    }
+    let mut has_phrase = false;
+    for (cs, ce) in clauses {
+        let mut clause_has_phrase = false;
+        let mut clause_has_words = false;
+        for i in cs..ce {
+            if i >= start && i < end {
+                continue;
+            }
+            let w = &cleaned[i];
+            if w.is_empty() {
+                continue;
+            }
+            clause_has_words = true;
+            if content_head_word(w) {
+                return false;
+            }
+            if weekday_word(w).is_some()
+                && cleaned.get(i + 1).is_some_and(|next| noun_like_word(next))
+                && i + 1 < ce
+            {
+                clause_has_phrase = true;
+                continue;
+            }
+            if noun_like_word(w) || matches!(w.as_str(), "the" | "a" | "an") {
+                continue;
+            }
+            return false;
+        }
+        if clause_has_words && !clause_has_phrase {
+            return false;
+        }
+        has_phrase = has_phrase || clause_has_phrase;
+    }
+    has_phrase
+}
+
 /// A plain line naming two or more framed dates
 /// and reading in no other way (round 12, R12-6):
 /// "October 25, 2026 and November 1, 2026" used to
@@ -5594,9 +5803,19 @@ fn plain_multi_date_reading(
         // nothing), and a lone relative signal
         // keeps the in-words readings.
         let lone_framed = signals.len() == 1 && signals[0].framed;
-        let modifier_phrase = cleaned
-            .windows(2)
-            .any(|w| weekday_word(&w[0]).is_some() && noun_like_word(&w[1]));
+        // Round 22 (R22-7): the fence fires only when the
+        // weekday-modifier phrase is the line's only
+        // content beside the framed date — no clause of
+        // the line may carry other content, and no
+        // content head (service/choir/meeting and their
+        // kin) may stand anywhere on the line: "Monday
+        // meeting, service November 8, 2026", "service
+        // November 8, 2026, Monday meeting", and
+        // "Tuesday choir, November 1, 2026" all read
+        // nothing, where the round-21 fence's any-
+        // weekday-anywhere scan asserted them.
+        let modifier_phrase =
+            lone_framed && lone_framed_fence(&tokens, &cleaned, signals[0].start, signals[0].end);
         if !(lone_framed && modifier_phrase) {
             return None;
         }
@@ -6119,7 +6338,84 @@ fn whole_line_composition(
     }
     core.push_str(&text[at..]);
     let core = core.trim();
-    let profile = core_composition_profile(core, today, anchor)?;
+    let profile = match core_composition_profile(core, today, anchor) {
+        Some(profile) => profile,
+        None => {
+            // Round 22 (R22-1): a groups-only line whose
+            // groups are separated by a semicolon, a dash,
+            // a comma, or plain words — even a filler word
+            // like "note" — composes exactly as the same
+            // groups standing adjacent do. The de-grouped
+            // core carries no signal of its own (no date,
+            // no relative phrase), so there is no core
+            // profile; the line is the paren-only
+            // composition over every group on the line,
+            // in written order, and the Keep-through
+            // fallback (which reads this composition
+            // through `trailing_dates_after_core_governance`)
+            // and the For Sunday reading agree on it.
+            let core_tokens: Vec<&str> = core.split_whitespace().collect();
+            let core_cleaned: Vec<String> = core_tokens.iter().map(|t| group_token(t)).collect();
+            let core_signals = scan_plain_signals(&core_tokens, &core_cleaned, today, anchor);
+            if !core_signals.is_empty() {
+                return None;
+            }
+            let entries = all_group_analyses(text, today, anchor);
+            let mut alternatives: Vec<SimpleDate> = Vec::new();
+            for (_, a) in &entries {
+                for d in &a.alternatives {
+                    if !alternatives.contains(d) {
+                        alternatives.push(*d);
+                    }
+                }
+            }
+            let contributed: Vec<SimpleDate> =
+                entries.iter().filter_map(|(_, a)| a.contributed).collect();
+            let Some(read) = contributed.last().copied() else {
+                return Some(DateLineReading {
+                    date: None,
+                    weekday_mismatch: None,
+                    parenthesized_mismatch: None,
+                    second_dates: alternatives,
+                });
+            };
+            let superseded = chain_superseded_dates(text, today, anchor, read);
+            let remaining: Vec<SimpleDate> = contributed
+                .iter()
+                .copied()
+                .filter(|d| !superseded.contains(d))
+                .collect();
+            let parenthesized_mismatch = mismatch_from_groups(&remaining, read, true);
+            let mut second_dates: Vec<SimpleDate> = Vec::new();
+            for d in &alternatives {
+                if *d != read && !second_dates.contains(d) {
+                    second_dates.push(*d);
+                }
+            }
+            for d in &superseded {
+                if *d != read && !second_dates.contains(d) {
+                    second_dates.push(*d);
+                }
+            }
+            if contributed.len() >= 2
+                && entries
+                    .iter()
+                    .any(|(inner, _)| group_inner_is_relative(inner))
+            {
+                for d in &contributed {
+                    if *d != read && !second_dates.contains(d) {
+                        second_dates.push(*d);
+                    }
+                }
+            }
+            return Some(DateLineReading {
+                date: Some(read),
+                weekday_mismatch: None,
+                parenthesized_mismatch,
+                second_dates,
+            });
+        }
+    };
     // Enter only for the shapes named above: a group
     // outside the trailing run, or the lone-signal
     // families (a content-headed core asserting, a
@@ -6362,6 +6658,49 @@ fn group_inner_is_relative(inner: &str) -> bool {
     })
 }
 
+/// The weekday mismatch a plain segment of the
+/// whole-line composition carries, if one does
+/// (round 22, R22-3): the line's de-grouped core —
+/// every group taken out, a semicolon standing where
+/// each group stood, as `whole_line_composition`
+/// builds it — is read segment by segment with the
+/// standing inner reader, and the first segment
+/// whose framed date disagrees with its weekday
+/// answers. A segment standing at the start of the
+/// core (directly after a leading group) frames its
+/// date there exactly as the same words frame it at
+/// the start of a line, and a weekday wearing "on"
+/// frames wherever it stands, so no segment position
+/// exempts a framed occurrence from the check. A
+/// line with no group has no composition segments
+/// and is never judged here.
+fn composition_segment_weekday_mismatch(text: &str, today: SimpleDate) -> Option<WeekdayMismatch> {
+    let spans = balanced_spans(text);
+    if spans.is_empty() {
+        return None;
+    }
+    let mut core = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for (start, end) in &spans {
+        core.push_str(&text[at..*start]);
+        core.push(';');
+        at = *end;
+    }
+    core.push_str(&text[at..]);
+    for segment in core.split(';') {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        let segment_raw = Some(segment.to_string());
+        let (_, mismatch) = date_line_inner(&segment_raw, today);
+        if mismatch.is_some() {
+            return mismatch;
+        }
+    }
+    None
+}
+
 /// Read one date line with its round-9 records: the
 /// plain readings are `date_line_inner`'s, and the
 /// trailing parenthesized dates compose around them.
@@ -6408,6 +6747,26 @@ fn date_line(raw: &Option<String>, today: SimpleDate, anchor: SimpleDate) -> Dat
     // on the second-date note, beside whatever the
     // line itself reads.
     let alternatives = trailing_group_alternatives(text, today, anchor);
+    // Round 22 (R22-3): a wrong-weekday framed date
+    // standing in a plain segment of the composition
+    // speaks first, exactly as it does without the
+    // group: "(November 8) Monday, November 15, 2026"
+    // yields no date and records the mismatch, where
+    // the line used to assert the date because the
+    // inner reader treated the weekday as ordinary
+    // text standing after the group. The check runs
+    // before every composed reading below; a line
+    // whose own inner reader already recorded a
+    // mismatch records the same one here (its first
+    // segment is the line's own opening words).
+    if let Some(mismatch) = composition_segment_weekday_mismatch(text, today) {
+        return DateLineReading {
+            date: None,
+            weekday_mismatch: Some(mismatch),
+            parenthesized_mismatch: None,
+            second_dates: Vec::new(),
+        };
+    }
     if let Some(read) = date {
         // Round 18 (R18-11): chain links among the
         // trailing groups are named as superseded
@@ -16020,5 +16379,342 @@ Youth group meets Wednesday at 6 PM.
             Vec::<SimpleDate>::new(),
             "{group}: the reach ended, so November 1 is not named as a from-date"
         );
+    }
+
+    #[test]
+    fn r22a_separators_between_groups_compose() {
+        // Round 22 (R22-1, red team RT22-1): a groups-only
+        // line whose groups are separated by ";", "-", or
+        // plain words read nothing on the For Sunday line
+        // while Keep-through asserted the last group —
+        // the de-grouped core (";", "note", ", cancelled,")
+        // was non-empty, so the paren-only reading was
+        // never taken. Separators are separators: the
+        // groups compose exactly as adjacent groups do,
+        // on both paths, the earlier group named on the
+        // parenthesized record as the paren-only
+        // composition names it.
+        for (line, want) in [
+            ("(November 8); (November 15)", nov(15)),
+            ("(November 8) - (November 15)", nov(15)),
+            ("(November 8) note (November 15)", nov(15)),
+            ("(November 1); (next Sunday)", oct(25)),
+            ("(November 1) - (next Sunday)", oct(25)),
+            ("(November 1) note (November 8)", nov(8)),
+            ("(November 1) cancelled (service November 1)", nov(1)),
+            (
+                "(service November 1), cancelled, (service November 1)",
+                nov(1),
+            ),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(want), "{line}: For Sunday");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(want), "{line}: Keep-through agrees");
+        }
+        // Field-for-field the paren-only composition:
+        // the last group stands, the earlier group is
+        // named on the mismatch record, and a relative
+        // loser is named on the note.
+        let line = "(November 8); (November 15)";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        let mismatch = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the earlier group is named");
+        assert_eq!(mismatch.named, nov(8), "{line}: November 8 named");
+        assert_eq!(mismatch.read, nov(15), "{line}: November 15 stands");
+        let line = "(November 1); (next Sunday)";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: the framed loser is named on the note"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{line}: Keep-through names it too"
+        );
+    }
+
+    #[test]
+    fn r22a_separator_after_a_leading_group_keeps_relative_memory() {
+        // Round 22 (R22-1, red team RT22-2): a comma or
+        // semicolon after a leading group destroyed the
+        // For line's relative memory entirely — the shape
+        // readers matched the phrase only when the group
+        // was followed by a bare space, so the verdict
+        // could not arm. The punctuated lines keep the
+        // in-words reading their space controls have.
+        for line in ["(November 1); next Sunday", "(November 1), next Sunday"] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: no hard date");
+            assert_eq!(
+                c.for_sunday_in_words.as_deref(),
+                Some(line),
+                "{line}: the sender's words are remembered as written"
+            );
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{line}: the group is remembered with the phrase"
+            );
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::DifferentSunday(nov(1)),
+                "{line}: the verdict arms against the group, as the space twin's does"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{line}: Keep-through asserts the group, as the space twin's does"
+            );
+        }
+        for line in [
+            "(November 1); this Sunday",
+            "(November 1); (November 8) next Sunday",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_in_words.as_deref(),
+                Some(line),
+                "{line}: remembered in words"
+            );
+        }
+        let line = "(November 1); (November 8) next Sunday";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_dates,
+            vec![nov(1), nov(8)],
+            "{line}: every group on the line is remembered"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{line}: the last group stands"
+        );
+        // A leading relative group before a plain date
+        // keeps the reading its space control has.
+        for line in [
+            "(next Sunday), November 1, 2026",
+            "(next Sunday); November 1, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{line}: For Sunday");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(1)), "{line}: Keep-through agrees");
+        }
+    }
+
+    #[test]
+    fn r22a_a_senders_semicolon_is_a_clause_break() {
+        // Round 22 (R22-2, review F3 = red team RT22-3):
+        // a sender's semicolon severed a date from its
+        // postposed governor on the composition paths —
+        // attached to the year ("2026;") it also dropped
+        // the year out of the date's own span, and the
+        // stray year token broke the governor scope
+        // behind it. A semicolon is a clause break
+        // everywhere governance is judged, attached or
+        // spaced, indistinguishable from the composition's
+        // internal group marker: every witness reads as
+        // its comma twin reads, on both paths.
+        for (line, want, want_second) in [
+            (
+                "November 1, 2026; cancelled, November 8, 2026",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            (
+                "November 1, 2026; postponed, November 8, 2026",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            (
+                "November 1, 2026; cancelled (November 8)",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            (
+                "(November 8) November 1, 2026; cancelled",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            (
+                "November 1, 2026, cancelled (November 8) November 15, 2026; cancelled",
+                Some(nov(8)),
+                vec![nov(1), nov(15)],
+            ),
+            (
+                "November 1, 2026; cancelled, November 1, 2026",
+                None,
+                Vec::new(),
+            ),
+            ("November 1, 2026; not November 1, 2026", None, Vec::new()),
+            ("November 1, 2026; cancelled", None, Vec::new()),
+            (
+                "November 1, 2026 ; cancelled, November 1, 2026",
+                None,
+                Vec::new(),
+            ),
+            ("(November 1; cancelled, November 1)", None, Vec::new()),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, want, "{line}: For Sunday");
+            assert_eq!(
+                c.for_sunday_second_dates, want_second,
+                "{line}: For Sunday second dates"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, want, "{line}: Keep-through agrees");
+            assert_eq!(
+                c.keep_through_second_dates, want_second,
+                "{line}: Keep-through second dates agree"
+            );
+        }
+    }
+
+    #[test]
+    fn r22a_wrong_weekday_behind_a_leading_group() {
+        // Round 22 (R22-3, red team RT22-4): a framed
+        // date whose weekday is wrong yields no date —
+        // except behind a leading group, where it
+        // asserted on both paths with no mismatch
+        // record, because the de-grouped core's inner
+        // reader treated the weekday as ordinary text
+        // after the group. The check applies to every
+        // framed occurrence however the line is
+        // composed: no segment position exempts it.
+        for (line, named, date) in [
+            ("(November 8) Monday, November 15, 2026", "Monday", nov(15)),
+            ("(November 15) Monday, November 8, 2026", "Monday", nov(8)),
+            (
+                "(November 8) Tuesday, November 15, 2026",
+                "Tuesday",
+                nov(15),
+            ),
+            (
+                "(November 8) Monday, November 15, 2026 (November 22)",
+                "Monday",
+                nov(15),
+            ),
+            (
+                "(November 8) on Monday, November 15, 2026",
+                "Monday",
+                nov(15),
+            ),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: no date on the For line");
+            let mismatch = c
+                .named_weekday_mismatch
+                .as_ref()
+                .expect("the mismatch is recorded on the For line");
+            assert_eq!(mismatch.named, named, "{line}: the weekday is named");
+            assert_eq!(mismatch.date, date, "{line}: the date it framed");
+            assert_eq!(
+                week_verdict(&c, Some(oct(25))),
+                WeekVerdict::NoSundayNamed,
+                "{line}: the verdict stays unarmed"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: no date on the Keep line");
+            let mismatch = c
+                .keep_through_weekday_mismatch
+                .as_ref()
+                .expect("the mismatch is recorded on the Keep line");
+            assert_eq!(mismatch.named, named, "{line}: Keep names the weekday");
+            assert_eq!(mismatch.date, date, "{line}: Keep names the date");
+        }
+        // Held (R21-A): correct-weekday framed dates
+        // behind leading groups assert as they always
+        // have, on both paths.
+        for (line, want) in [
+            ("(November 8) Sunday, November 15, 2026", nov(15)),
+            ("(November 15) Sunday, November 8, 2026", nov(8)),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(want), "{line}: For Sunday asserts");
+            assert_eq!(c.named_weekday_mismatch, None, "{line}: no mismatch");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(want), "{line}: Keep-through asserts");
+        }
+    }
+
+    #[test]
+    fn r22a_lone_framed_fence_needs_a_content_free_line() {
+        // Round 22 (R22-7, review F5): the R21-B fence
+        // (a lone framed date asserting beside a
+        // weekday-modifier phrase) triggered on ANY
+        // weekday+noun window anywhere in the line, so
+        // lone content-headed lines the batch held to
+        // silence asserted. The fence now requires the
+        // weekday-modifier phrase to be the line's only
+        // content beside the framed date — no
+        // content-headed segment (service/choir/meeting
+        // heads and their kin) anywhere on the line.
+        for line in [
+            "Monday meeting, service November 8, 2026",
+            "service November 8, 2026, Monday meeting",
+            "Tuesday choir, November 1, 2026",
+            "choir November 1, 2026, Monday meeting",
+            "early service November 1, 2026, Monday meeting",
+            "Wednesday dinner, November 8, 2026",
+            "Monday meeting, November 8, 2026",
+            "November 8, 2026, Monday meeting",
+            "Monday meeting, Tuesday choir, November 8, 2026",
+            "Monday meeting, Sunday school, November 8, 2026",
+            "Sunday school, Monday meeting, November 8, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: For Sunday reads nothing");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: Keep-through reads nothing");
+        }
+        // Held: the intended Sunday shapes keep
+        // asserting, and governed lines under the
+        // fence keep their governed readings.
+        for (line, want) in [
+            ("Sunday bulletins, November 1, 2026", Some(nov(1))),
+            ("Sunday school, November 8, 2026", Some(nov(8))),
+            ("printed Sunday bulletins, November 8, 2026", Some(nov(8))),
+            ("printed Monday bulletins, November 8, 2026", Some(nov(8))),
+            ("the Sunday bulletins, November 1, 2026", Some(nov(1))),
+            ("Sunday morning, November 8, 2026", Some(nov(8))),
+            ("Sunday bulletins, November 1, 2026, cancelled", None),
+            ("Monday meeting, November 1, 2026, cancelled", None),
+            ("Monday meeting November 8, 2026, cancelled", None),
+            ("service November 8, 2026", None),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, want, "{line}: For Sunday");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, want, "{line}: Keep-through agrees");
+        }
     }
 }

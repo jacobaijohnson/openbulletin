@@ -425,3 +425,32 @@ November 8)", "(delayed until November 8)"), the
 defensible-silence pins, the R19-A family, the
 determiner twins, and the bare-stack mismatch
 control.
+
+## Coordinator close, round 19 (2026-10-18)
+
+Both fix batches are in and independently verified by the coordinator on
+the exact committed trees (full unpiped workspace suite and clippy
+`-D warnings` after each batch): R19-A `9c8d650` at 730 tests, R19-B
+`d3dfe25` at **737 tests passing, 0 failed**, clippy clean at both steps.
+Booklet byte baseline untouched (31,717 imposed / 34,977 reader; neither
+batch touches layout code).
+
+Round 19's four MAJORs are closed: governance now binds bare restatements
+only, so a governed date no longer reaches across events (R19-1/R19-2);
+relative-only groups resolve at the parse anchor like mixed ones (R19-3);
+and the claim reach no longer dies on a bare -ed adjective heading its
+object (R19-4). The seven MINORs (R19-5 through R19-10) are closed in
+R19-B with seven new `r19b_*` pins and **zero changed pre-existing
+tests** across the whole round except the one flagged R18-2 pin move in
+R19-A, recorded at its site.
+
+One known limit is carried into round 20 by design, recorded in the
+R19-A addendum: a governed plain core beside a contributing trailing
+group still splits by path ("November 1, 2026, cancelled (November 1)":
+For Sunday reads nothing, Keep-through asserts). Round 20's lanes are
+briefed to grade it, together with the bare-test edges, the -ed
+adjective/subject seams, and fronted adverb stacks.
+
+The loop has not converged: round 19 returned findings, so the Tier-2
+final gate stays queued behind a Wonder round with zero BLOCKER and zero
+MAJOR.

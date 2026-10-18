@@ -393,3 +393,21 @@ What shipped, per finding:
   target construction, keeps its garnish mismatch
   (named November 1 against read November 8), and
   names nothing on the note.
+
+## Coordinator close (2026-10-17)
+
+Both batches shipped and were independently re-verified by the
+coordinator (full unpiped suite + clippy -D warnings at each step):
+R18-A `172e80c` (721 tests; one token cleaning, governance by date
+value, target ranking across framed + relative targets, groups
+with relative signals at the anchor, governed relatives named; ONE
+flagged pin change - the R12-A "(not November 1, November 1)" block
+was R18-2's witness shape and moved under it, marked in the test),
+R18-B `fe37adc` (727 tests; intervening date as from-date, reach
+ending at a finite verb clause, for-date composition, active
+"for", two-adverb tolerance with the extended list, cross-group
+superseded naming; zero changed pins; one judgment call recorded -
+in the R18-8 witness the claim dies but November 8 keeps its own
+standing as a lone ungoverned date). Round 19 audits these fixes.
+The Tier-2 final gate runs only after a round returns zero
+BLOCKER + zero MAJOR.

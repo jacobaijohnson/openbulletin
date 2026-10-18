@@ -391,3 +391,115 @@ No other pre-existing test changed. The inventory comment's
 claim stands as written: the classes are the rule, the lists
 are their current membership; the `BARE_PHRASE_UNITS` comment
 now records the 63-unit membership by family.
+
+## Shipped addendum, R25-B (2026-10-18)
+
+Shipped over `9c39abf` in `crates/ob-extract/src/contribution.rs`
+only. Full unpiped workspace run: **798 passed / 0 failed** (790 at
+the R25-A base + 8 new `r25b_*` tests), cargo exit 0; clippy
+`--workspace --all-targets -- -D warnings` exit 0.
+
+- **F5a** — the object-continuation backward walk
+  (`weekday_in_object_continuation_pp`) now crosses the claim's
+  OWN clause verb, and its auxiliaries, when object material
+  stands behind them, then crosses the verb's subject by the
+  standing branches. The second-clause boundary is discriminated
+  by position: a finite verb standing directly before the PP
+  (no object material crossed behind it) still ends the walk.
+  Every full-clause witness ("the choir sang baked beans from
+  Kent on Sunday to November 8", both orders, hymns/beans,
+  conjunction or not, plain twins) reads exactly as its
+  subjectless twin; the pinned second-clause readings
+  ("beans were served on Sunday", "choir sang on Sunday",
+  claim-free) keep both dates as alternatives, unchanged.
+- **F5b** — the relative-signal sites (group scan and plain
+  scan) consult the same check at the phrase's weekday word;
+  the check's preposition detection admits a relative object
+  ("on next Sunday", "before this Sunday", "on the next
+  Sunday"), and the forward arm accepts a relative phrase as
+  the claim's target after "to"/"until". "(moved November 1,
+  baked beans from Kent on Sunday to next Sunday)" reads
+  nothing and names nothing — pinned from the machinery's own
+  twin behaviour: its Sunday-free "from Kent" twin reads the
+  same, the "until" twin pair keeps its standing reading
+  (October 25 asserting, November 1 named). A relative object
+  deeper in the stack ("on Sunday from next Sunday to
+  November 8") is consumed by the same consultation.
+- **F5c** — the trailing arm (`weekday_pp_after_claimed_target`):
+  when the backward walk dies at a claimed date's "to", a
+  weekday PP standing after that date is re-judged in its
+  forward-twin position (end of the continuation, just before
+  the "to") on a rebuilt token run. "(moved November 1, baked
+  beans from Kent to November 8 on Sunday)" reads as its twin
+  without the trailing PP; the claim-free "(baked beans to
+  November 8 on Sunday)" keeps both dates as alternatives,
+  as pinned. The same arm consumes a trailing relative PP.
+- **M8** — the claim scan's zone extension (`target_claim`)
+  also runs the shared slot walk (`passive_for_slot_walk`) and
+  prefers its reach when that reach starts nearer the
+  auxiliary, while the bounded walk's reaches still win where
+  they reach at least as near. "(moved November 1, it was
+  softly moved to November 8)" (and loudly / really-softly)
+  asserts November 8 naming November 1, like its passive-for
+  and detection twins; the pinned three-word death
+  ("not really ever") holds — both walks refuse it.
+- **M9** — "so" and "too" join the slot vocabulary in both
+  slot walks (`aux_complement` and `passive_for_slot_walk`):
+  "(it was so gently moved for November 1)" and "(it was too
+  loudly moved for November 1)" assert November 1, detection
+  twins agree. The two-word cap stands; the phrasal adverbials
+  "at all" / "at once" / "in all" are recorded, not fixed —
+  pinned as still reading nothing.
+- **M2** — `parse_date_prefix`'s edge trim is by character
+  class: any character that is not a letter or a digit (the
+  garnish class of `token_has_no_letters_or_digits`) trims at
+  a token's head and tail. The class stops at the two
+  parentheses: they are the system's structural group
+  delimiters, not garnish, and the raw-text scans rely on the
+  parse failing at a group edge. (An interim full-class trim
+  failed five pre-existing tests — the leading-group and
+  relative-memory compositions `r10b_paren_only_for_sunday_
+  parity_and_a_mid_date_group`, `r21a_leading_groups_compose`,
+  `r22a_separator_after_a_leading_group_keeps_relative_memory`,
+  `r23a_one_boundary_classification`, `r24a_boundary_token_rule`
+  — and the class was refined before shipping; all five pass
+  unchanged in the shipped tree.) The witnesses "*November 1",
+  "🎉November 1", "•November 1", "2026*" now read exactly as
+  their clean twins: governed, nothing read.
+- **M3** — the whole-line composition's Assert arm binds a
+  bracketed bare restatement: when a group on the line governs
+  the core's asserted value directly and the asserting
+  occurrence is bare and bracket-wrapped (glued, spaced, or
+  doubled, square or brace), the line reads nothing
+  (`core_bracketed_bare_restatement`). "(November 1,
+  cancelled) [November 1]" and its dressed forms read nothing
+  on grp+keep; the alone-unread limitation stands; the R24-4
+  pin "[November 1, cancelled] [November 8]" still reads
+  November 8 naming November 1.
+- **M4 part 2** — the alignment landed at the parse site the
+  review named: because "#1" and the keycap digit carry a
+  digit, the M2 class trim lets a date run reach across them
+  exactly as across "1", so they no longer act as phantom
+  clause boundaries anywhere `parse_date_prefix` feeds
+  (separator, restatement-resurrection, and in-group shapes
+  all read as their digit twins; "#" and "*" remain true
+  boundaries). "(November 1 1st)" asserts November 1. The
+  remaining boundary sites were audited and already judge by
+  the letters-or-digits rule (`token_has_no_letters_or_digits`,
+  `group_token`, `clause_break_after`, the boundary-token
+  strippers, and the R25-A bare partition), and compose with
+  R25-A's single-character garnish unchanged. Unpinned probe
+  shapes beside the witnesses moved consistently with the
+  rule (a group date after a digit separator is named rather
+  than silently dropped; a trailing digit token no longer
+  blocks a relative+group composition) — twin-consistent in
+  every case, and no pre-existing test covered them.
+
+**Flagged pre-existing test changes: none.** No pre-existing
+test was edited, moved, or re-pinned. The five interim
+failures listed under M2 were resolved by refining the fix,
+not the tests. No R24-B/R24-5 boundary pin's witness turned
+out to be the full-clause shape in disguise: the pinned
+second-clause witnesses have their verb standing directly
+before the PP, which is exactly the discriminating structure
+F5a ships.

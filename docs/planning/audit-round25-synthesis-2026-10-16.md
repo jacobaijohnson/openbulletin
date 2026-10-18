@@ -307,3 +307,87 @@ its subjectless / bare / no-trailing-PP twin reads today.
   boundaries stand: a weekday PP in a genuinely second clause keeps
   its signal; a claim-free line's trailing PP still offers
   alternatives; subjectless twins keep their readings.
+
+## Shipped addendum, R25-A (2026-10-18)
+
+Shipped over `dea3c7a` in `crates/ob-extract/src/contribution.rs`
+only. Full unpiped workspace run: **790 passed / 0 failed** (782 at
+the round-25 base + 8 new `r25a_*` tests), cargo exit 0; clippy
+`--workspace --all-targets -- -D warnings` exit 0.
+
+- **F1** — `till`, `along`, `excepting`, `save`, `pending`,
+  `excluding`, `considering`, `assuming`, `granted`, `given` join
+  `bare_filler_word`; `anyhow` joins the connective adverbs.
+  Mirror-checked per word (content label still asserts).
+- **F2** — `BARE_PHRASE_UNITS` 13 → 63: the sweep's resurrecting
+  set exactly — office core 23, idiom tail 23, subordinator phrases
+  4 (`as far as`, `given that`, `seeing that`, `save that`) — plus
+  the shipped 13. Longest-first matching partitions "back together
+  at last" whole. Members standing alone keep their readings
+  (pinned: `seeing`, `long`, `case`, `spite`, `behalf`, and the
+  recorded-not-added singletons `ago` / `away` / `home` still
+  assert).
+- **F3** — pronoun class (30: the recorded 24 plus `i`, `who`,
+  `whom`, `whomever`, `one`, `others`) and modal class (12: `will`,
+  `would`, `can`, `could`, `may`, `might`, `must`, `shall`,
+  `should`, `ought`, `dare`, `need`) join the inventory.
+  Mirror-checked: "(we sang November 1)" / "(they sang
+  November 1)" still assert beside a sibling cancellation.
+- **M1** — interjection / address class (19 words as listed in
+  RT25-5 plus its tail) joins the discourse garnish.
+- **M5** — abbreviation class by cleaned form: `st`, `mt`, `mr`,
+  `mrs`, `ms`, `dr`, `rev`, `fr`, `br`, `sr`, `jr`. Witnesses
+  "(November 1, cancelled) (St November 1)" and "(November 1
+  St.)" read nothing on every surface.
+- **M6** — token cleaning strips Unicode format characters
+  (category Cf, by range table) at the cleaning sites in this
+  file: `group_token`, `weekday_word`, and the date-prefix
+  normalization. "cancelled" carrying U+200B / U+200D / U+FEFF /
+  U+00AD governs again, group and plain; a Cf glued inside a
+  date token no longer poisons its parse.
+- **M7** — `occurrence_is_bare`'s phrase-unit matching may not
+  span the date: a unit whose non-empty members stand on both
+  sides of the date span is not consumed as a unit.
+  "(gone November 1 tomorrow)" and "(care November 1 of)"
+  assert November 1 again on all surfaces.
+- **F4** — `lone_framed_fence`'s verb-form branch now computes
+  the phrase's head (final noun of the noun run) and judges it
+  against `GARNISH_NOUNS`, as the bare-shape branch does.
+  Garnish-headed verb-form phrases still assert ("Sunday baked
+  bulletins", "Sunday printed sheets", "Sunday baked beans
+  bulletins").
+- **M4 part 1** — in the bare partition, a cleaned
+  single-character token is garnish, and a multi-token bracket
+  span is garnish via a new span mask over the raw tokens
+  (`occurrence_is_bare` now takes the raw tokens; its three
+  call sites pass them). "[choir]" single-token behaviour
+  unchanged; unbracketed "choir" is still content.
+
+**Flagged pre-existing test changes (3 tests, all intended):**
+
+1. `r24a_bare_inventory_subordinator_class` — its closing block
+   pinned "(he November 1)", "(will November 1)", "(oh
+   November 1)" ASSERTING as "the ungraded sets stay untouched".
+   Those were R24-A deferral pins, not adjudications; round 25
+   graded the sets (F3 MAJOR, M1 MINOR) and they joined the
+   inventory, so the block now pins the same shapes governed
+   (None), with the reason in the test comment.
+2. `r24a_fence_judges_the_phrase_head` — "Sunday left luggage,
+   November 8, 2026" moved from the asserting list to the
+   silent list. F4: the verb-form phrase is judged by its head
+   ("luggage", not garnish), superseding the R23-6 shape pass it
+   was pinned under.
+3. `r23b_weekday_verb_form_modifier_phrase` — the eight
+   verb-form lines (heads luggage / hymns / seats / choir /
+   beans, none garnish) pinned the framed date asserting under
+   the R23-6 shape pass; they now read nothing and name
+   nothing. This includes the synthesis's named consequence,
+   the "Sunday baked beans" pin (head "beans"). The test's
+   R23-6 core claim — no phantom October 18 asserted, offered,
+   or named — stands and is still pinned; the group-twin claim
+   shape in the same test is untouched and stands.
+
+No other pre-existing test changed. The inventory comment's
+claim stands as written: the classes are the rule, the lists
+are their current membership; the `BARE_PHRASE_UNITS` comment
+now records the 63-unit membership by family.

@@ -436,7 +436,10 @@ fn weekday_word(word: &str) -> Option<u32> {
     // ending (colon, semicolon, slash — the one
     // boundary classification) still names its weekday,
     // as it already did wearing a comma or period.
-    let w = word
+    // Round 25 (R25-A, M6): format characters are
+    // stripped here too, as at every cleaning site.
+    let cleaned = strip_format_chars(word);
+    let w = cleaned
         .trim_end_matches(['.', ',', ':', ';', '/'])
         .to_ascii_lowercase();
     Some(match w.as_str() {
@@ -1019,6 +1022,54 @@ fn strip_trailing_boundary_tokens(text: &str) -> &str {
     }
 }
 
+/// Whether `c` is a Unicode format character
+/// (general category Cf): the invisible clipboard
+/// characters — zero-width spaces and joiners,
+/// the soft hyphen, bidi controls, the byte-order
+/// mark, and their kin across the planes.
+/// Round 25 (R25-A, M6 = review R25-10): token
+/// cleaning strips these everywhere tokens are
+/// cleaned — the ONE cleaning rule, extended by
+/// character class — so "cancelled" carrying a
+/// zero-width space governs again.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061c}'
+            | '\u{06dd}'
+            | '\u{070f}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d182}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
+    )
+}
+
+/// `text` with every format character (category
+/// Cf) removed: the cleaning step M6 adds at every
+/// site tokens are cleaned.
+fn strip_format_chars(text: &str) -> String {
+    if text.chars().any(is_format_char) {
+        text.chars().filter(|c| !is_format_char(*c)).collect()
+    } else {
+        text.to_string()
+    }
+}
+
 /// One group token with its wrapping punctuation off,
 /// lowercased: the shape the governor and weekday
 /// checks read.
@@ -1041,10 +1092,16 @@ fn group_token(raw: &str) -> String {
     if is_bracketed_token(raw) || token_has_no_letters_or_digits(raw) {
         return String::new();
     }
-    raw.trim_matches([
-        '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}', '/',
-    ])
-    .to_ascii_lowercase()
+    // Round 25 (R25-A, M6): format characters are
+    // stripped before the edge trim and the
+    // lowercasing, so one glued inside a word
+    // ("cancel\u{200b}led") cannot kill the word.
+    let stripped = strip_format_chars(raw);
+    stripped
+        .trim_matches([
+            '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}', '/',
+        ])
+        .to_ascii_lowercase()
 }
 
 /// Whether a raw group token ends a clause: a token
@@ -4502,6 +4559,26 @@ fn governed_before_target(window: &[String], window_start: usize, claim: &Target
 /// ungraded pronoun / modal / interjection sets
 /// the red team recorded-not-graded stay
 /// untouched.
+///
+/// Round 25 (R25-A): the classes complete further
+/// on the same rule. F1 (RT25-1): the preposition
+/// remainder — "till", "along", "excepting",
+/// "save", "pending", "excluding" — and the
+/// participial prepositions / subordinators
+/// "considering", "assuming", "granted", "given"
+/// join, and "anyhow" joins the connective adverbs
+/// with its twin "anyway". F3 (RT25-3): the
+/// pronoun class and the modal class join, graded
+/// MAJOR in round 25 — the R24-A deferral pins
+/// were deferrals, not adjudications, and flip.
+/// M1 (RT25-5): the interjection / address class
+/// joins the discourse garnish. M5 (review R25-9):
+/// a small closed abbreviation class joins by
+/// cleaned form. The mirror held for every
+/// addition (a pronoun or modal with its verb —
+/// "we sang" — still carries the verb as content,
+/// and a content label standing with any of these
+/// words still asserts).
 fn bare_filler_word(w: &str) -> bool {
     weekday_word(w).is_some()
         || AUXILIARY_WORDS.contains(&w)
@@ -4735,6 +4812,111 @@ fn bare_filler_word(w: &str) -> bool {
                 | "how"
                 | "whether"
                 | "than"
+                // Round 25 (R25-A, F1): the
+                // preposition remainder and the
+                // participial prepositions /
+                // subordinators, and "anyhow" with
+                // the connective adverbs.
+                | "till"
+                | "along"
+                | "excepting"
+                | "save"
+                | "pending"
+                | "excluding"
+                | "considering"
+                | "assuming"
+                | "granted"
+                | "given"
+                | "anyhow"
+                // Round 25 (R25-A, F3): the pronoun
+                // class — the round-24 recorded set
+                // and the additions the round-25
+                // sweep found resurrecting ("i",
+                // "who", "whom", "whomever", "one",
+                // "others").
+                | "i"
+                | "we"
+                | "they"
+                | "you"
+                | "he"
+                | "she"
+                | "him"
+                | "them"
+                | "us"
+                | "me"
+                | "itself"
+                | "himself"
+                | "herself"
+                | "themselves"
+                | "someone"
+                | "anyone"
+                | "everyone"
+                | "somebody"
+                | "anybody"
+                | "everybody"
+                | "something"
+                | "anything"
+                | "everything"
+                | "nothing"
+                | "nobody"
+                | "who"
+                | "whom"
+                | "whomever"
+                | "one"
+                | "others"
+                // Round 25 (R25-A, F3): the modal
+                // class, as probed.
+                | "will"
+                | "would"
+                | "can"
+                | "could"
+                | "may"
+                | "might"
+                | "must"
+                | "shall"
+                | "should"
+                | "ought"
+                | "dare"
+                | "need"
+                // Round 25 (R25-A, M1): the
+                // interjection / address class,
+                // discourse garnish of the same kind
+                // as "please" / "yes" / "ps" above.
+                | "oh"
+                | "ah"
+                | "oops"
+                | "wow"
+                | "hey"
+                | "hi"
+                | "hello"
+                | "dear"
+                | "yeah"
+                | "ok"
+                | "okay"
+                | "amen"
+                | "friends"
+                | "folks"
+                | "bye"
+                | "welcome"
+                | "sorry"
+                | "greetings"
+                | "congratulations"
+                // Round 25 (R25-A, M5): the closed
+                // abbreviation class, by cleaned
+                // form — "St." cleans to "st", and
+                // the common title set of a church
+                // office.
+                | "st"
+                | "mt"
+                | "mr"
+                | "mrs"
+                | "ms"
+                | "dr"
+                | "rev"
+                | "fr"
+                | "br"
+                | "sr"
+                | "jr"
         )
 }
 
@@ -4815,6 +4997,23 @@ fn after_region_has_own_passive_predicate(words: &[String], has_next: bool) -> b
 /// alone keeps its current reading — "(care
 /// November 1)" and "(gone November 1)" are not
 /// bare, and assert as they did.
+///
+/// Round 25 (R25-A, F2 = RT25-2 + review R25-4):
+/// the resurrecting units of the red team's sweep
+/// join — the office core of complex prepositions
+/// ("in spite of", "as long as", "on behalf of",
+/// "in lieu of", "with regard to", and kin), the
+/// idiom tail ("at last", "back home", "sooner or
+/// later", and kin), and the subordinator phrases
+/// ("as far as", "given that", "seeing that",
+/// "save that"). Membership is the sweep's
+/// resurrecting set exactly (bare25 / bare25b,
+/// mirror-checked); longest-first matching
+/// partitions "back together at last" whole, as
+/// one listed unit, where the two shipped units
+/// sharing "together" left no disjoint partition.
+/// Members standing alone keep their readings, as
+/// R24-2 required.
 const BARE_PHRASE_UNITS: &[&[&str]] = &[
     &["care", "of"],
     &["in", "care", "of"],
@@ -4829,6 +5028,60 @@ const BARE_PHRASE_UNITS: &[&[&str]] = &[
     &["as", "and", "when"],
     &["yet", "again"],
     &["together", "at", "last"],
+    // Round 25 (R25-A, F2): the office core.
+    &["in", "spite", "of"],
+    &["in", "spite", "of", "the"],
+    &["as", "long", "as"],
+    &["so", "long", "as"],
+    &["in", "case"],
+    &["just", "in", "case"],
+    &["on", "behalf", "of"],
+    &["on", "top", "of"],
+    &["in", "front", "of"],
+    &["in", "back", "of"],
+    &["by", "way", "of"],
+    &["for", "the", "sake", "of"],
+    &["in", "light", "of"],
+    &["in", "view", "of"],
+    &["in", "lieu", "of"],
+    &["with", "regard", "to"],
+    &["in", "regard", "to"],
+    &["ahead", "of"],
+    &["ahead", "of", "time"],
+    &["out", "of"],
+    &["up", "to"],
+    &["in", "time"],
+    &["on", "time"],
+    // Round 25 (R25-A, F2): the idiom tail.
+    &["at", "last"],
+    &["at", "long", "last"],
+    &["together", "at", "long", "last"],
+    &["back", "together", "at", "last"],
+    &["back", "home"],
+    &["back", "home", "together"],
+    &["gone", "home"],
+    &["gone", "home", "tomorrow"],
+    &["gone", "for", "tomorrow"],
+    &["back", "by", "tomorrow"],
+    &["come", "back", "together"],
+    &["at", "home"],
+    &["long", "ago"],
+    &["long", "last"],
+    &["far", "away"],
+    &["sooner", "or", "later"],
+    &["back", "and", "forth"],
+    &["to", "and", "fro"],
+    &["in", "and", "out"],
+    &["up", "and", "down"],
+    &["one", "by", "one"],
+    &["day", "by", "day"],
+    &["first", "and", "last"],
+    // Round 25 (R25-A, F2): the subordinator
+    // phrases.
+    &["as", "far", "as"],
+    &["given", "that"],
+    &["seeing", "that"],
+    &["save", "that"],
 ];
 
 /// The token span of a listed phrase unit standing
@@ -4878,7 +5131,41 @@ fn bare_phrase_unit_span(words: &[String], i: usize) -> Option<usize> {
 /// before the date ("early service November 1",
 /// "choir November 1") or after it ("November 1,
 /// choir") — is not bare, wherever it stands.
+/// Which tokens stand inside a bracket span of
+/// two or more tokens (round 25, R25-A, M4 part
+/// 1): a span "[our choir]" is no single token's
+/// bracketed token, but in the bare partition the
+/// whole span cleans to garnish exactly as a
+/// wholly bracketed token ("[choir]") already
+/// does. A one-token span is not marked here —
+/// `group_token` already cleans it to nothing.
+fn bracket_span_mask(raw_tokens: &[&str]) -> Vec<bool> {
+    let mut mask = vec![false; raw_tokens.len()];
+    let mut depth: i32 = 0;
+    let mut span_start: Option<usize> = None;
+    for (i, raw) in raw_tokens.iter().enumerate() {
+        let opens = raw.chars().filter(|c| *c == '[' || *c == '{').count() as i32;
+        let closes = raw.chars().filter(|c| *c == ']' || *c == '}').count() as i32;
+        if depth == 0 && opens > closes {
+            span_start = Some(i);
+        }
+        depth += opens - closes;
+        if depth <= 0 {
+            depth = 0;
+            if let Some(s) = span_start.take() {
+                if i > s {
+                    for m in &mut mask[s..=i] {
+                        *m = true;
+                    }
+                }
+            }
+        }
+    }
+    mask
+}
+
 fn occurrence_is_bare(
+    raw_tokens: &[&str],
     tokens: &[String],
     positional: &[(SimpleDate, usize, usize)],
     idx: usize,
@@ -4939,6 +5226,19 @@ fn occurrence_is_bare(
     // "thanks" still needs this trailing rule.
     let after_start = words.len();
     words.extend_from_slice(after_words);
+    // Round 25 (R25-A, M4 part 1): the bracket-span
+    // garnish flags for the region's words, aligned
+    // with `words` — the before-date words first,
+    // then the after-date words, each mapped back
+    // to its token index for the span mask.
+    let span_mask = bracket_span_mask(raw_tokens);
+    let mut bracket_garnish: Vec<bool> = Vec::with_capacity(words.len());
+    bracket_garnish.extend(
+        (region_start..start.min(tokens.len())).map(|k| span_mask.get(k).copied().unwrap_or(false)),
+    );
+    bracket_garnish.extend(
+        (after..region_end.min(tokens.len())).map(|k| span_mask.get(k).copied().unwrap_or(false)),
+    );
     let mut i = 0;
     while i < words.len() {
         // Round 24 (R24-2): a listed phrase unit
@@ -4949,10 +5249,33 @@ fn occurrence_is_bare(
         // "last" is not, so a member-by-member pass
         // strands both units on their last word.
         if let Some(span) = bare_phrase_unit_span(&words, i) {
-            i += span;
-            continue;
+            // Round 25 (R25-A, M7 = review R25-5): a
+            // unit may not span the date itself —
+            // the before-date and after-date words
+            // are judged as separate sequences, the
+            // same no-span rule the passive-
+            // predicate test above already follows.
+            // "(gone November 1 tomorrow)" and
+            // "(care November 1 of)" are not the
+            // units "gone tomorrow" / "care of".
+            let crosses_date =
+                i < after_start && (after_start..i + span).any(|p| !words[p].is_empty());
+            if !crosses_date {
+                i += span;
+                continue;
+            }
         }
+        // Round 25 (R25-A, M4 part 1): a cleaned
+        // single-character token is garnish in the
+        // bare partition ("(November 1 1)", "(x
+        // November 1)" resurrect nowhere), and a
+        // word standing inside a multi-token
+        // bracket span is garnish as a wholly
+        // bracketed token already is ("(November 1
+        // [our choir])").
         if words[i].is_empty()
+            || words[i].chars().count() == 1
+            || bracket_garnish.get(i).copied().unwrap_or(false)
             || bare_filler_word(&words[i])
             || (i >= after_start && matches!(words[i].as_str(), "too" | "thanks"))
         {
@@ -5288,7 +5611,7 @@ fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) -> GroupAna
             && governed_values.contains(&d)
             && !is_last_target
             && !is_sunday_after_phrase
-            && occurrence_is_bare(&tokens, &positional, idx);
+            && occurrence_is_bare(&raw_tokens, &tokens, &positional, idx);
         if before_disqualified
             || after_disqualified
             || target_disqualified
@@ -5327,7 +5650,7 @@ fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) -> GroupAna
             .collect();
         !idxs.is_empty()
             && idxs.iter().all(|i| {
-                occurrence_is_bare(&tokens, &positional, *i)
+                occurrence_is_bare(&raw_tokens, &tokens, &positional, *i)
                     && !(claims[*i].is_some() && !judgments[*i].3)
             })
     };
@@ -6156,7 +6479,13 @@ fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(SimpleDate, 
             // delimiters: a lone "[November 8]" gains
             // no group reading and stays unread, the
             // recorded limitation.
-            let trimmed = t
+            // Round 25 (R25-A, M6): format
+            // characters are stripped from the date
+            // token as at every cleaning site, so
+            // one glued inside a month name cannot
+            // poison the parse.
+            let stripped = strip_format_chars(t);
+            let trimmed = stripped
                 .trim_start_matches([';', ':', '[', '{'])
                 .trim_end_matches([';', ':', ']', '}']);
             if trimmed.is_empty() {
@@ -6845,7 +7174,7 @@ fn plain_composition(
             && governed_values.contains(&entry.0)
             && !last_target[idx]
             && !is_sunday_after_phrase
-            && occurrence_is_bare(tokens, &positional, idx);
+            && occurrence_is_bare(raw_tokens, tokens, &positional, idx);
         governed.push(direct_governed[idx] || claim_governed[idx] || by_date);
     }
     // Round 18 (R18-5): the prospective half of the
@@ -7201,11 +7530,18 @@ const GARNISH_NOUNS: [&str; 8] = [
 /// The verb-form adjective shape (R23-6) is judged
 /// as the phrase it is: weekday + verb-form word +
 /// noun-like word ("Sunday left luggage", "Sunday
-/// baked beans") is a modifier phrase whose
-/// adjective carries it, exactly as the signal
-/// scans read it — its pinned shapes assert, as
-/// they did before the inversion (the review's
-/// "Sunday baked beans" twin among them).
+/// baked beans") is a modifier phrase, exactly as
+/// the signal scans read it. Round 25 (R25-A, F4 =
+/// review R25-1): the fence judges that phrase by
+/// its HEAD — its final noun — against
+/// `GARNISH_NOUNS`, exactly as the bare-shape
+/// branch does; the R23-6 shape pass is superseded
+/// where the two conflict, so a verb-form phrase
+/// whose head is not garnish ("Sunday baked beans
+/// rehearsal", and the R23-6 pin "Sunday baked
+/// beans" itself, head "beans") no longer carries
+/// its date past the fence, while a garnish-headed
+/// one ("Sunday baked bulletins") still does.
 fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usize) -> bool {
     let mut clauses: Vec<(usize, usize)> = Vec::new();
     let mut clause_start = 0usize;
@@ -7243,6 +7579,18 @@ fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usi
                 // first: weekday + verb-form word +
                 // noun-like head outside the date
                 // span ("Sunday left luggage").
+                // Round 25 (R25-A, F4): the phrase
+                // is judged by its HEAD — the final
+                // noun of its noun run — against
+                // `GARNISH_NOUNS`, exactly as the
+                // bare-shape branch below judges its
+                // phrases; the R23-6 pass by shape
+                // alone is superseded where the two
+                // conflict, so a stacked tail can no
+                // longer ride a verb-form prefix past
+                // the head test ("Sunday baked beans
+                // rehearsal" reads nothing, as
+                // "Sunday morning rehearsal" does).
                 if cleaned
                     .get(i + 1)
                     .is_some_and(|next| is_finite_verb_form(next))
@@ -7250,6 +7598,15 @@ fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usi
                     && i + 2 < ce
                     && outside_date(i + 2)
                 {
+                    let mut head = i + 2;
+                    let mut k = i + 3;
+                    while k < ce && outside_date(k) && noun_like_word(&cleaned[k]) {
+                        head = k;
+                        k += 1;
+                    }
+                    if !GARNISH_NOUNS.contains(&cleaned[head].as_str()) {
+                        return false;
+                    }
                     clause_has_phrase = true;
                     continue;
                 }
@@ -7272,11 +7629,9 @@ fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usi
                 // bulletin" (head "bulletin"), and
                 // "Sunday morning bulletins" (head
                 // "bulletins") assert. The verb-form
-                // adjective shape above keeps its own
-                // pass by phrase shape (the standing
-                // R23-6 adjudication): it is not
-                // routed through this garnish-head
-                // test.
+                // adjective shape above is routed
+                // through the same garnish-head test
+                // since round 25 (R25-A, F4).
                 if cleaned.get(i + 1).is_some_and(|next| noun_like_word(next)) {
                     let mut head = i + 1;
                     let mut k = i + 2;
@@ -19705,25 +20060,43 @@ Youth group meets Wednesday at 6 PM.
         // verb-form word + noun-like word is a
         // modifier phrase on both surfaces — the
         // verb-form word is the phrase's adjective,
-        // no phantom October 18 is asserted, offered,
-        // or named, and the framed date asserts.
-        for (line, want) in [
-            ("Sunday left luggage, November 8, 2026", nov(8)),
-            ("Sunday sung hymns, November 1, 2026", nov(1)),
-            ("Sunday taken seats, November 8, 2026", nov(8)),
-            ("Sunday gone seats, November 8, 2026", nov(8)),
-            ("Sunday met choir, November 8, 2026", nov(8)),
-            ("Monday left luggage, November 8, 2026", nov(8)),
-            ("Sunday singing choir, November 8, 2026", nov(8)),
+        // and no phantom October 18 is asserted,
+        // offered, or named.
+        //
+        // FLAGGED PIN CHANGE (round 25, R25-A, F4):
+        // this loop pinned the framed date ASSERTING
+        // for all eight shapes under the R23-6 shape
+        // pass in `lone_framed_fence`. The fence now
+        // judges the verb-form phrase's HEAD against
+        // `GARNISH_NOUNS` exactly as it judges the
+        // bare shape (the synthesis's named
+        // consequence: the "Sunday baked beans" pin,
+        // head "beans", goes silent — and so do its
+        // siblings here, heads luggage / hymns /
+        // seats / choir, none of them garnish). The
+        // R23-6 no-phantom claim stands and is still
+        // what this loop pins: every line reads
+        // nothing and names nothing, October 18
+        // included. The group twin below (the phrase
+        // in an object continuation, claimed across)
+        // is untouched by the fence and stands as
+        // shipped.
+        for line in [
+            "Sunday left luggage, November 8, 2026",
+            "Sunday sung hymns, November 1, 2026",
+            "Sunday taken seats, November 8, 2026",
+            "Sunday gone seats, November 8, 2026",
+            "Sunday met choir, November 8, 2026",
+            "Monday left luggage, November 8, 2026",
+            "Sunday singing choir, November 8, 2026",
             // The regular -ed twin, standing.
-            ("Sunday baked beans, November 8, 2026", nov(8)),
+            "Sunday baked beans, November 8, 2026",
         ] {
             let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
             let c = parse_contribution(&text, today()).expect("parses");
             assert_eq!(
-                c.for_date,
-                Some(want),
-                "{line}: the framed date asserts, no phantom"
+                c.for_date, None,
+                "{line}: head not garnish, the fence does not fire, no phantom"
             );
             assert_eq!(
                 c.for_sunday_second_dates,
@@ -19732,7 +20105,7 @@ Youth group meets Wednesday at 6 PM.
             );
             let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
             let c = parse_contribution(&text, today()).expect("parses");
-            assert_eq!(c.keep_through, Some(want), "{line}: keep-through");
+            assert_eq!(c.keep_through, None, "{line}: keep-through");
             assert_eq!(
                 c.keep_through_second_dates,
                 Vec::<SimpleDate>::new(),
@@ -20023,10 +20396,19 @@ Youth group meets Wednesday at 6 PM.
                 "{groups}: keep-through stays governed"
             );
         }
-        // Held: the ungraded pronoun / modal /
-        // interjection sets the red team
-        // recorded-not-graded stay untouched — a
-        // restatement wearing only one still asserts.
+        // FLAGGED PIN CHANGE (round 25, R25-A,
+        // F3 + M1): this block pinned the ungraded
+        // pronoun / modal / interjection sets
+        // asserting ("the ungraded sets stay
+        // untouched"). Those pins were DEFERRALS,
+        // not adjudications; round 25 graded the
+        // sets (RT25-3: MAJOR for pronouns + modals;
+        // RT25-5: MINOR for interjections) and all
+        // three classes joined the inventory, so the
+        // same three shapes now read nothing,
+        // governed on every path — pinned in full
+        // in `r25a_bare_inventory_pronouns_modals`
+        // and `r25a_bare_inventory_interjections_and_abbreviations`.
         for groups in [
             "(November 1, cancelled) (he November 1)",
             "(November 1, cancelled) (will November 1)",
@@ -20035,9 +20417,8 @@ Youth group meets Wednesday at 6 PM.
             let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
             let c = parse_contribution(&text, today()).expect("parses");
             assert_eq!(
-                c.for_date,
-                Some(nov(1)),
-                "{groups}: the ungraded sets stay untouched"
+                c.for_date, None,
+                "{groups}: graded in round 25, the class joined the inventory"
             );
         }
     }
@@ -20126,6 +20507,586 @@ Youth group meets Wednesday at 6 PM.
     }
 
     #[test]
+    fn r25a_bare_inventory_preposition_remainder() {
+        // Round 25 (R25-A, F1 = RT25-1): the
+        // preposition / participial remainder joins
+        // the bare inventory, and "anyhow" joins
+        // the connective adverbs. Every witness
+        // reads nothing on every path; the mirror
+        // held (a content label standing with the
+        // word still asserts).
+        for word in [
+            "till",
+            "along",
+            "excepting",
+            "save",
+            "pending",
+            "considering",
+            "assuming",
+            "granted",
+            "given",
+            "excluding",
+            "anyhow",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // The plain twins, head and trailing.
+            for line in [
+                format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+                format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+            ] {
+                let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+            }
+            // Held (the mirror): a content label
+            // standing with the word still asserts.
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+    }
+
+    #[test]
+    fn r25a_bare_phrase_units_round25() {
+        // Round 25 (R25-A, F2 = RT25-2 + review
+        // R25-4): the resurrecting phrase units of
+        // the lane's sweep join BARE_PHRASE_UNITS —
+        // the office core, the idiom tail, and the
+        // subordinator phrases, membership exactly
+        // as swept (bare25 / bare25b). Every unit
+        // witness reads nothing on every path, head
+        // and trailing alike.
+        for unit in [
+            "in spite of",
+            "in spite of the",
+            "as long as",
+            "so long as",
+            "in case",
+            "just in case",
+            "on behalf of",
+            "on top of",
+            "in front of",
+            "in back of",
+            "by way of",
+            "for the sake of",
+            "in light of",
+            "in view of",
+            "in lieu of",
+            "with regard to",
+            "in regard to",
+            "ahead of",
+            "ahead of time",
+            "out of",
+            "up to",
+            "in time",
+            "on time",
+            "at last",
+            "at long last",
+            "together at long last",
+            "back together at last",
+            "back home",
+            "back home together",
+            "gone home",
+            "gone home tomorrow",
+            "gone for tomorrow",
+            "back by tomorrow",
+            "come back together",
+            "at home",
+            "long ago",
+            "long last",
+            "far away",
+            "sooner or later",
+            "back and forth",
+            "to and fro",
+            "in and out",
+            "up and down",
+            "one by one",
+            "day by day",
+            "first and last",
+            "as far as",
+            "given that",
+            "seeing that",
+            "save that",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({unit} November 1)"),
+                format!("(November 1, cancelled) (November 1 {unit})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+        }
+        // The plain twins of the lead units, and
+        // the overlap witness whole: "back together
+        // at last" partitions as one unit.
+        for line in [
+            "November 1, 2026, cancelled, in spite of November 1, 2026",
+            "November 1, 2026, cancelled, on behalf of November 1, 2026",
+            "November 1, 2026, cancelled, November 1, 2026 as long as",
+            "November 1, 2026, cancelled, back together at last November 1, 2026",
+            "November 1, 2026, cancelled, November 1, 2026 with regard to",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+        }
+        // Held (R24-2's rule): a unit's member
+        // standing alone keeps its reading — and
+        // the recorded singleton fragments the
+        // synthesis did not add ("ago", "away",
+        // "home" as sole companions) still assert.
+        for groups in [
+            "(November 1, cancelled) (seeing November 1)",
+            "(November 1, cancelled) (long November 1)",
+            "(November 1, cancelled) (case November 1)",
+            "(November 1, cancelled) (spite November 1)",
+            "(November 1, cancelled) (behalf November 1)",
+            "(November 1, cancelled) (ago November 1)",
+            "(November 1, cancelled) (away November 1)",
+            "(November 1, cancelled) (home November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: a lone member still asserts"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+        }
+    }
+
+    #[test]
+    fn r25a_bare_inventory_pronouns_modals() {
+        // Round 25 (R25-A, F3 = RT25-3): the
+        // pronoun and modal classes join the bare
+        // inventory — membership from the lane's
+        // probe output (the round-24 recorded sets
+        // plus the additions "i", "who", "whom",
+        // "whomever", "one", "others"). The R24-A
+        // deferral pins flip (flagged in that test).
+        // A pronoun or modal with its verb still
+        // asserts: the verb is content.
+        for word in [
+            "he",
+            "she",
+            "they",
+            "we",
+            "you",
+            "him",
+            "them",
+            "us",
+            "me",
+            "itself",
+            "himself",
+            "herself",
+            "themselves",
+            "someone",
+            "anyone",
+            "everyone",
+            "somebody",
+            "anybody",
+            "everybody",
+            "something",
+            "anything",
+            "everything",
+            "nothing",
+            "nobody",
+            "i",
+            "who",
+            "whom",
+            "whomever",
+            "one",
+            "others",
+            "will",
+            "would",
+            "can",
+            "could",
+            "may",
+            "might",
+            "must",
+            "shall",
+            "should",
+            "ought",
+            "dare",
+            "need",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror): a content label
+            // standing with the word still asserts.
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // The plain twins of the strongest five,
+        // and the pronoun+modal combinations a
+        // restatement actually wears.
+        for line in [
+            "November 1, 2026, cancelled, we November 1, 2026",
+            "November 1, 2026, cancelled, November 1, 2026 they",
+            "November 1, 2026, cancelled, will November 1, 2026",
+            "November 1, 2026, cancelled, November 1, 2026 would",
+            "November 1, 2026, cancelled, you November 1, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        }
+        for groups in [
+            "(November 1, cancelled) (we will November 1)",
+            "(November 1, cancelled) (they will November 1)",
+            "(November 1, cancelled) (we would November 1)",
+            "(November 1, cancelled) (November 1 we will)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: the combination stays governed");
+        }
+        // Held (the mirror, with a verb): a pronoun
+        // with its verb carries content and asserts
+        // beside the sibling cancellation.
+        for groups in [
+            "(November 1, cancelled) (we sang November 1)",
+            "(November 1, cancelled) (they sang November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: a pronoun with its verb still asserts"
+            );
+        }
+    }
+
+    #[test]
+    fn r25a_bare_inventory_interjections_and_abbreviations() {
+        // Round 25 (R25-A, M1 = RT25-5): the
+        // interjection / address class joins the
+        // discourse garnish. Round 25 (R25-A, M5 =
+        // review R25-9): the closed abbreviation
+        // class joins by cleaned form — the task
+        // witnesses "(November 1, cancelled) (St
+        // November 1)" and "(November 1 St.)" read
+        // nothing on every surface.
+        for word in [
+            "oh",
+            "ah",
+            "oops",
+            "wow",
+            "hey",
+            "hi",
+            "hello",
+            "dear",
+            "yeah",
+            "ok",
+            "okay",
+            "amen",
+            "friends",
+            "folks",
+            "bye",
+            "welcome",
+            "sorry",
+            "greetings",
+            "congratulations",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror).
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        for written in [
+            "St.", "Mt.", "Mr.", "Mrs.", "Ms.", "Dr.", "Rev.", "Fr.", "Br.", "Sr.", "Jr.",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({written} November 1)"),
+                format!("(November 1, cancelled) (November 1 {written})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+        }
+        // The task's witnesses verbatim, undotted
+        // head and trailing dotted alike.
+        for groups in [
+            "(November 1, cancelled) (St November 1)",
+            "(November 1, cancelled) (November 1 St.)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: reads nothing");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{groups}: keep-through reads nothing");
+        }
+    }
+
+    #[test]
+    fn r25a_token_cleaning_strips_format_chars() {
+        // Round 25 (R25-A, M6 = review R25-10):
+        // token cleaning strips Unicode format
+        // characters (category Cf), so a governor
+        // word carrying one governs again.
+        for glue in ["\u{200b}", "\u{200d}", "\u{feff}", "\u{00ad}"] {
+            let groups = format!("(November 1, cancel{glue}led) (November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{groups}: the glued governor governs its sibling restatement"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{groups}: keep-through");
+            let line = format!("November 1, 2026, cancel{glue}led, November 1, 2026");
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the plain twin governs too");
+        }
+        // A format character glued inside the date
+        // token itself does not poison its parse:
+        // the cancelled sibling still governs.
+        let groups = "(Novem\u{200b}ber 1, cancelled) (November 1)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: the glued date still reads");
+    }
+
+    #[test]
+    fn r25a_phrase_unit_does_not_span_the_date() {
+        // Round 25 (R25-A, M7 = review R25-5): a
+        // phrase unit is not matched across the
+        // date span — the before-date and
+        // after-date words are separate sequences.
+        // The lane's witnesses assert November 1
+        // again beside the cancelled sibling.
+        for groups in [
+            "(November 1, cancelled) (gone November 1 tomorrow)",
+            "(November 1, cancelled) (care November 1 of)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{groups}: the split unit does not consume the date"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{groups}: keep-through asserts"
+            );
+        }
+        // Held: the same units standing whole on
+        // one side of the date still consume it.
+        for groups in [
+            "(November 1, cancelled) (gone tomorrow November 1)",
+            "(November 1, cancelled) (November 1 gone tomorrow)",
+            "(November 1, cancelled) (care of November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: the whole unit stays governed");
+        }
+    }
+
+    #[test]
+    fn r25a_fence_verb_form_judges_its_head() {
+        // Round 25 (R25-A, F4 = review R25-1): the
+        // fence's verb-form branch judges the
+        // phrase's HEAD against GARNISH_NOUNS, as
+        // the bare-shape branch does. The lane's
+        // witnesses read nothing; garnish-headed
+        // verb-form phrases still assert.
+        for line in [
+            "Sunday baked rehearsal, November 8, 2026",
+            "Sunday printed rehearsal, November 8, 2026",
+            "Sunday baked beans rehearsal, November 8, 2026",
+            "our Sunday baked beans rehearsal, November 8, 2026",
+            // The bare-shape control, standing.
+            "Sunday morning rehearsal, November 8, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: For Sunday reads nothing");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: nothing is named"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: Keep-through reads nothing");
+        }
+        for (line, want) in [
+            ("Sunday baked bulletins, November 8, 2026", nov(8)),
+            ("Sunday printed sheets, November 8, 2026", nov(8)),
+            ("Sunday baked beans bulletins, November 8, 2026", nov(8)),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(want), "{line}: garnish head asserts");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(want), "{line}: keep-through asserts");
+        }
+    }
+
+    #[test]
+    fn r25a_bare_partition_single_chars_and_bracket_spans() {
+        // Round 25 (R25-A, M4 part 1 = review
+        // R25-8 + RT25-8): in the bare partition a
+        // cleaned single-character token is
+        // garnish, and a multi-token bracket span
+        // cleans to garnish as a wholly bracketed
+        // token already does. The witnesses no
+        // longer resurrect the governed date.
+        for groups in [
+            "(November 1, cancelled) (November 1 1)",
+            "(November 1, cancelled) (1 November 1)",
+            "(November 1, cancelled) (November 1 x)",
+            "(November 1, cancelled) (x November 1)",
+            "(November 1, cancelled) (November 1 [our choir])",
+            "(November 1, cancelled) (November 1 [x y])",
+            "(November 1, cancelled) ([our choir] November 1)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held: "[choir]"-style single-token
+        // behaviour is unchanged, and the
+        // unbracketed twin still asserts.
+        let groups = "(November 1, cancelled) (November 1 [choir])";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: the single-token span stands");
+        let groups = "(November 1, cancelled) (November 1 choir)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: unbracketed choir is still content"
+        );
+    }
+
+    #[test]
     fn r24a_fence_judges_the_phrase_head() {
         // Round 24 (R24-3, review F2 + M2 = red team
         // RT24-6 part): the lone-framed fence judges
@@ -20146,6 +21107,14 @@ Youth group meets Wednesday at 6 PM.
             // Held: "Sunday service" reads nothing —
             // service is an event head, not garnish.
             "Sunday service, November 8, 2026",
+            // FLAGGED PIN CHANGE (round 25, R25-A,
+            // F4): "Sunday left luggage" pinned
+            // asserting in the list below under the
+            // R23-6 shape pass; the fence now judges
+            // the verb-form phrase's HEAD ("luggage",
+            // not garnish) exactly as the bare-shape
+            // branch does, so it reads nothing here.
+            "Sunday left luggage, November 8, 2026",
         ] {
             let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
             let c = parse_contribution(&text, today()).expect("parses");
@@ -20176,12 +21145,8 @@ Youth group meets Wednesday at 6 PM.
             ("Sunday newsletter, November 1, 2026", nov(1)),
             ("Sunday leaflet, November 8, 2026", nov(8)),
             ("Sunday sheets, November 8, 2026", nov(8)),
-            // Held pins: "Monday bulletins" asserts,
-            // and the verb-form adjective phrase
-            // passes by phrase shape (R23-6), not by
-            // the garnish set.
+            // Held pin: "Monday bulletins" asserts.
             ("Monday bulletins, November 8, 2026", nov(8)),
-            ("Sunday left luggage, November 8, 2026", nov(8)),
         ] {
             let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
             let c = parse_contribution(&text, today()).expect("parses");

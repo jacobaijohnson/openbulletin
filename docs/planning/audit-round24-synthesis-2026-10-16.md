@@ -133,3 +133,87 @@ content labels assert, "thanks" head content, brackets
 are not group delimiters, rights pin, loader pins,
 booklet bytes 31,717 / 34,977. Flag any changed
 pre-existing test loudly by name with its reason.
+
+## Shipped addendum, R24-A (2026-10-18)
+
+R24-A shipped in `crates/ob-extract/src/contribution.rs`
+only: R24-1, R24-2, R24-3, R24-4. Numbers: baseline
+774 tests passing at `d7bea77`; after this batch the
+full unpiped workspace suite reads **778 passed,
+0 failed** (774 + 4 new tests, one per item, all
+witnesses pinned on both the For Sunday and
+Keep-through paths), and clippy over the workspace
+(`--all-targets`) is **clean, 0 warnings**. The
+fake-helper ETXTBSY flake did not fire. **No
+pre-existing test was changed** — no changed test
+to flag; the diff touches no pre-existing test body.
+
+- **R24-1.** The subordinator class joins
+  `bare_filler_word`: when, whenever, while, whilst,
+  although, though, because, if, yet, provided,
+  supposing, wherever, where, why, how, whether —
+  head and trailing slots, all surfaces; "than"
+  joins the connective class. The mirror held
+  (labels assert, "(our choir November 1)" asserts);
+  the recorded-not-graded pronoun / modal /
+  interjection sets stay untouched, pinned asserting
+  in the new test.
+- **R24-2.** The bare test (`occurrence_is_bare`)
+  gains phrase units, matched as whole consecutive
+  phrases before any member is judged alone. The
+  phrase-unit list as shipped (closed): "care of",
+  "in care of", "care of the", "back together",
+  "back together again", "gone tomorrow", "gone by
+  tomorrow", "per se", "if and when", "when and if",
+  "as and when", "yet again", "together at last".
+  A unit's member standing alone keeps its current
+  reading ("(care November 1)" and "(gone
+  November 1)" still assert, pinned).
+- **R24-3.** `lone_framed_fence` judges the
+  weekday phrase's HEAD — its final noun — against
+  the garnish set. "Sunday morning rehearsal",
+  "Sunday school picnic", "Sunday morning service",
+  "Sunday morning picnic", "Sunday bulletins
+  rehearsal", "Sunday morning meeting" now read
+  nothing; "Sunday morning", "Sunday school",
+  "Sunday bulletins", "Sunday school bulletin"
+  assert. The garnish set as shipped (closed):
+  bulletins, school, morning, bulletin, papers,
+  newsletter, leaflet, sheets — so "Sunday bulletin,
+  November 1, 2026" and "Sunday newsletter,
+  November 8, 2026" assert. Held: "Sunday service"
+  reads nothing; "Monday bulletins, November 8,
+  2026" asserts as pinned; the verb-form adjective
+  phrase ("Sunday left luggage, November 8, 2026")
+  still passes by phrase shape per the R23
+  adjudication, not through the garnish-head test.
+- **R24-4.** The boundary rule is a token rule:
+  any standalone token containing no letters and
+  no digits is a boundary token at every site using
+  the boundary classification — implemented in the
+  shared `group_token` cleaning and
+  `clause_break_after` (governor scope, group and
+  postposed composition), in `relative_shape_matches`
+  (relative-shape memory), and in
+  `composition_segment_weekday_mismatch` (weekday
+  check). The F4 witness reads as its comma twin;
+  F5's wrong-weekday witnesses record the mismatch
+  behind "*", "•", "|", "~", "_", and emoji
+  separators; F6's relative-memory witnesses keep
+  the in-words reading across those tokens.
+  Bracketed tokens ("[x]", "{x}") clean to boundary/
+  garnish in group cleaning, a token closing a
+  bracketed span carries the span's boundary for
+  clause scope, and "[" / "]" at a date token's
+  edges no longer poison `parse_date_prefix`:
+  "[November 8, 2026], November 15, 2026" reads
+  November 8 naming November 15, "Sunday bulletins,
+  [November 8, 2026]" asserts, "[November 1,
+  cancelled] [November 8]" reads November 8 naming
+  November 1, and "cancelled [November 8, 2026]"
+  stays governed. Brackets are NOT group delimiters:
+  "[November 8]" and "{November 8}" alone stay
+  unread, recorded as the limitation. Held: the
+  tabled separators' readings are unchanged (the
+  r23a boundary pin stands unmodified); numeric-date
+  slashes stay token-internal.

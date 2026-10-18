@@ -217,3 +217,104 @@ to flag; the diff touches no pre-existing test body.
   tabled separators' readings are unchanged (the
   r23a boundary pin stands unmodified); numeric-date
   slashes stay token-internal.
+
+## Shipped addendum, R24-B (2026-10-18)
+
+R24-B shipped in `crates/ob-extract/src/contribution.rs`
+only: R24-5, R24-6, R24-7, R24-8. Numbers: baseline
+778 tests passing at `b4bce44` (R24-A); after this
+batch the full unpiped workspace suite reads **782
+passed, 0 failed** (778 + 4 new tests, one per item,
+every witness pinned on the lanes' paths), and clippy
+over the workspace (`--all-targets`) is **clean, 0
+warnings**. The fake-helper ETXTBSY flake did not
+fire. **One pre-existing test changed, flagged:**
+`r23b_aux_slot_holds_two_words` — "(it was loudly
+moved for November 1)" moved from that test's
+held-silence list to its asserting list, because
+R24-6's alignment (below) makes an unlisted adverb
+alone in the passive-for complement spend, as it
+always has in detection; the test's comment records
+the supersession. No other pre-existing test body
+changed.
+
+- **R24-5.** A weekday standing as a PP object
+  inside a target claim's object continuation is
+  consumed wholly (`weekday_in_object_continuation_pp`,
+  wired into both signal scans): both PP orders of
+  the F3 witness read nothing and name nothing on
+  every path, by the standing "from" governance,
+  and the plain twins agree. Boundaries pinned as
+  implemented: a weekday PP in a second clause with
+  its own subject and finite verb ("beans were
+  served on Sunday", "choir sang on Sunday") is a
+  clause, not a PP inside the continuation — its
+  weekday keeps its signal and both dates stand as
+  alternatives; a weekday PP with no target phrase
+  behind it is no claim's continuation and keeps
+  its reading. One wording note: the batch brief's
+  "(moved the meeting, November 1, 2026, and baked
+  beans from Kent on Sunday to November 8)" string
+  reads **November 1 alone**, not nothing — its own
+  standing twins (the no-weekday twin and the "on
+  Sunday morning" twin) both read November 1 at
+  baseline, and the phantom October 18 was what
+  collapsed it into alternatives naming all three
+  dates; the brief's "claims November 8 naming
+  October 18" describes the review's F3 witness
+  string, which does now read nothing and name
+  nothing.
+- **R24-6.** The passive-for scan's complement gets
+  its own walk (`passive_for_slot_walk`): up to two
+  slot words — a tolerated adverb, an adverbial word
+  of any kind, "ever" / "yet", or a negation counting
+  as one slot word — cross between auxiliary and
+  participle, so "(it was softly gently moved for
+  November 1)", "(it was loudly moved for
+  November 1)", and "(it was not softly moved for
+  November 1)" assert November 1. The shared walk
+  and the governor scans it serves are unchanged:
+  three-word governor slots still do not spend
+  ("(it was not really ever moved to November 8)"
+  still kills its claim; the comma twins "(it was
+  softly gently moved, November 1)" and "(it was
+  loudly moved, November 1)" still read nothing by
+  the spent-predicate scan), and three-word slots
+  do not spend on the passive-for surface either.
+  Recorded consequence of aligning with detection:
+  an "-ly" noun or name in this complement
+  ("family", "kelly") now crosses there exactly as
+  it already did in `aux_complement`'s detection
+  slot; R17-7's pin is the comma surface, which is
+  untouched, and no pre-existing test pinned the
+  passive-for shape.
+- **R24-7.** A relative phrase standing as a
+  subject-PP object is consumed by the subject
+  (`relative_in_subject_pp`, applied in group
+  analysis and in the plain composition, with the
+  subject walks and `verb_after_pp_objects` taught
+  to cross a relative-phrase PP object): the target
+  asserts — the auxiliary forms ("before this
+  Sunday was singing / had sung / was played") no
+  longer demote it to alternatives — and the PP
+  object's resolution is named exactly as the
+  framed twin's PP object is named, on the plain
+  surface too ("the choir on next Sunday sang
+  November 8, 2026" reads November 8 naming
+  October 25, no longer the other way round).
+  Held: R23-5's framed PP-object pins, the
+  bare-weekday control ("the choir from Sunday
+  sang" stays silent), and relative phrases
+  elsewhere keep their standing readings (a bare
+  "next Sunday sang November 8, 2026" keeps its
+  primacy).
+- **R24-8.** A possessive determiner before the
+  weekday phrase is the phrase's own material in
+  `lone_framed_fence`, as a plain determiner is:
+  "our / my / their / his / her / your / its Sunday
+  bulletins, November 8, 2026" assert November 8
+  like the bare shape. Held: the fence's head test
+  (R24-3) is unchanged — "our Sunday picnic" still
+  reads nothing — and conjoined garnish ("Sunday
+  bulletins and Sunday school, November 8, 2026")
+  stays silent, accepted and recorded, not changed.

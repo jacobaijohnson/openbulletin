@@ -113,3 +113,143 @@ a two-group reading is named on the note, as on plain lines.
 
 Round 20 audits the fixes. The Tier-2 final gate runs only after
 a round returns zero BLOCKER + zero MAJOR.
+
+## Shipped addendum, R19-A — 2026-10-17
+
+Batch R19-A (R19-1, R19-2, R19-3) shipped in
+`crates/ob-extract/src/contribution.rs` only. Tests:
+727 passing at baseline (HEAD `ae04dc6`) → **730
+passing, 0 failed**, full workspace, unpiped, cargo
+exit 0; ob-extract 214 → 217 (three new `r19a_*`
+pins). Clippy (`cargo clippy --workspace
+--all-targets`): exit 0, zero warnings. Booklet
+bytes untouched (no layout code in this batch; the
+held 31,717 / 34,977 stand as the verify lane left
+them). The fake-helper ETXTBSY flake did not fire;
+no timing contention fired (one probe build was
+slow under sibling load, ~5 minutes, and completed
+— no run was discarded and no finding rests on it).
+
+**The bare-restatement test, in one sentence:** an
+occurrence is a bare restatement when its own
+region of the line — the words after the previous
+occurrence and before it, and the words after it up
+to the next occurrence or the end — contains, apart
+from the date itself, no word that is not a framing
+word (a weekday, "on", "the"), a filler or joining
+word, an auxiliary, a tolerated adverb, or part of
+a governor phrase. Implemented as
+`occurrence_is_bare` / `bare_filler_word`; the
+by-date step in both `analyze_group` and
+`plain_composition` now requires it, on top of the
+standing last-target override.
+
+**R19-1.** "(early service November 1, late
+service cancelled November 1)" and its reversed and
+party/service twins now assert November 1 on the
+relative, paren-only, and Keep-through paths, group
+and plain surfaces alike. What the note carries:
+nothing — the governed twin is the same value as
+the asserted date, so there is no distinct second
+date to name (`second_dates` is empty on every
+path). One mechanism the disposition's reading
+required, stated plainly: the second clause's
+"cancelled" was reaching the first occurrence
+through `governed_after` as a between-dates
+governor. `governed_after` now leaves a
+cancellation phrase alone when it stands in a
+clause of event content that runs directly into
+the next date (no clause break closes it) — that
+cancellation is the next date's own clause
+governor, judged by that date's window. The
+standing between-dates rule is unchanged where the
+phrase's clause is closed by a break or is itself
+a governor/filler clause. Round 18's bare
+witnesses stay silent, including the moved r12a
+pin at its round-18 reading ("(not November 1,
+November 1)"), the Oct 23 relative restatement,
+and a restatement wearing only "on".
+
+**R19-2.** Cross-group, same rule, implemented as
+a line-level pass (`trailing_group_analyses`) over
+a line's trailing groups: each group now reports
+the values it governs directly and whether its
+contribution stands only on bare restatements, and
+a bare contribution of a value a sibling group
+governs is suppressed. "(November 1, cancelled)
+(November 1)" reads nothing on all three paths,
+framing variants ("(on November 1)", "(the
+November 1)") included, in either group order
+(judgment call, stated: the cross-group rule is
+order-independent, as the within-line rule is —
+a governor standing after a bare restatement binds
+it inside one group, e.g. "(November 1, November
+1, cancelled)", and the same reading is taken
+across the parenthesis). Content groups assert
+independently per the adjudication: "(potluck
+November 1 cancelled) (service November 1)"
+asserts November 1 for the service on all paths.
+The different-dates construction is pinned as it
+reads: "(November 1, cancelled) (service November
+8) (service November 1)" asserts November 1 (the
+standing paren-only primacy — the last group
+stands) and names November 8 on the
+parenthesized-mismatch record (Keep-through mirror
+included); on the relative path both asserted
+group dates are remembered ([November 8, November
+1]). Neither asserted date is dropped unnamed. A
+claim's target in its own group is never
+suppressed ("(November 1, cancelled) (moved to
+November 1)" asserts), and a suppressed bare group
+leaves a clean sibling standing ("(November 8)
+(November 1, cancelled) (November 1)" asserts
+November 8). The plain core is not a sibling
+group: the standing core/group separation is
+unchanged, so the review lane's X3 bound
+("November 1, 2026 (November 1, cancelled)"
+asserts) stands.
+
+**R19-3.** `analyze_group` resolves every relative
+signal at the parse anchor (`anchored` is applied
+unconditionally; the mixed-only gate and the now
+unread `framed` field on the group signal scan are
+removed). "(next Sunday)" and "(choir picnic next
+Sunday)" in a file dated October 16, scanned
+October 23, contribute October 25 on all paths;
+"(this Sunday)" anchored contributes October 18;
+a Sunday-after group over a relative base anchors
+too ("(the Sunday after next Sunday)" → November
+1 at that anchor), while a framed-base
+Sunday-after keeps its framed-base resolution
+("(the Sunday after November 1)" → November 8). A
+lone "(Sunday)" group stays weekday garnish; the
+Oct 30 merge ("this Sunday" = the governed
+November 1) holds; the 28-day bound holds in both
+directions for groups (file September 25 anchors —
+"(next Sunday)" → October 4; file September 24
+falls back to the unanchored November 1). Plain
+relative-only lines are unchanged.
+
+**Changed pre-existing tests: none.** The full
+suite passes with zero modifications to any
+pre-existing test — the flag the task asked for is
+an empty list, verified by the unpiped workspace
+run (730 = 727 baseline + 3 new). The fear behind
+the flag did not materialize: every pre-existing
+pin that exercised value governance carries a bare
+restatement in the governed position. Judgment
+calls: (1) the cross-group rule is order
+independent (above); (2) in the bare test, "for"
+counts as a joining word only — R18-5's
+for-composition fences are judged elsewhere and
+were not disturbed; (3) a "use" prospective
+occurrence is not bare ("use" is neither a governor
+nor a filler word in the test), so it asserts
+across a group boundary by its own content, beside
+the claim override. Known limit, unchanged and
+out of this batch's dispositions: a governed plain
+core beside a contributing trailing group still
+splits by path ("November 1, 2026, cancelled
+(November 1)" reads nothing on For Sunday, asserts
+on Keep-through) — the core/group separation the
+R19-2 adjudication left standing.

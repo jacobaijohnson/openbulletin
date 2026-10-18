@@ -904,10 +904,11 @@ fn dates_inside_group_signals(
                     // Sunday bulletins" names no
                     // Sunday at all, and the scan must
                     // not invent one (October 18) for
-                    // the note.
-                    && !tokens
-                        .get(i + 1)
-                        .is_some_and(|next| noun_like_word(next))
+                    // the note. Round 23 (R23-6): the
+                    // verb-form adjective shape joins
+                    // it ("Sunday taken seats") — the
+                    // one reading in `weekday_modifier_at`.
+                    && !weekday_modifier_at(tokens, i)
                     // Round 22 (R22-5): a weekday
                     // consumed wholly as a subject
                     // PP's object ("the choir on
@@ -1600,8 +1601,16 @@ fn segment_subject_before(segment: &[String], off: usize) -> bool {
             pp_object_crossed = true;
             i -= 1;
         } else if weekday_word(w).is_some()
-            && i >= 2
-            && is_subject_preposition(segment[i - 2].as_str())
+            && ((i >= 2 && is_subject_preposition(segment[i - 2].as_str()))
+                // Round 23 (R23-5): the PP's weekday
+                // object may wear its own determiner
+                // — "the choir on the Sunday sang":
+                // the determiner stands between the
+                // preposition and the weekday, and
+                // the run crosses it the same way.
+                || (i >= 3
+                    && matches!(segment[i - 2].as_str(), "the" | "a" | "an")
+                    && is_subject_preposition(segment[i - 3].as_str())))
         {
             pp_object_crossed = true;
             i -= 1;
@@ -1615,6 +1624,35 @@ fn segment_subject_before(segment: &[String], off: usize) -> bool {
         }
     }
     head
+}
+
+/// Whether the weekday word at `i` in `tokens`
+/// heads a weekday-modifier phrase (round 20,
+/// R20-6; round 21, R21-7; round 23, R23-6): a
+/// weekday word followed by a noun-like word is
+/// that noun phrase's modifier ("Sunday
+/// bulletins", "Sunday school"), and — R23-6 — a
+/// weekday word followed by a VERB-FORM word and
+/// then a noun-like word is the same phrase with
+/// the verb-form word read as its adjective
+/// ("Sunday left luggage", "Sunday sung hymns",
+/// "Sunday taken seats"). Before this round the
+/// second shape spawned the phantom October 18:
+/// `noun_like_word` excludes the irregular verb
+/// forms, so "left" / "sung" / "taken" could not
+/// be the adjective the scans needed, and the
+/// weekday fell through to the bare-Sunday
+/// relative signal. One reading on every surface
+/// that judges a weekday phrase: the group and
+/// plain signal scans, the claim reach's
+/// between-words test, and the lone-framed fence.
+fn weekday_modifier_at(tokens: &[String], i: usize) -> bool {
+    weekday_word(&tokens[i]).is_some()
+        && (tokens.get(i + 1).is_some_and(|next| noun_like_word(next))
+            || (tokens
+                .get(i + 1)
+                .is_some_and(|next| is_finite_verb_form(next))
+                && tokens.get(i + 2).is_some_and(|next| noun_like_word(next))))
 }
 
 /// Whether the weekday word at `i` in `tokens` is
@@ -1633,11 +1671,48 @@ fn segment_subject_before(segment: &[String], off: usize) -> bool {
 /// with no subject head before it, or no clause
 /// verb after it, keeps its standing readings.
 fn weekday_in_subject_pp(tokens: &[String], i: usize) -> bool {
-    if i < 2 || !is_subject_preposition(tokens[i - 1].as_str()) {
+    // Round 23 (R23-5): the weekday object may
+    // wear its own determiner — "the choir on the
+    // Sunday sang" — so the preposition may stand
+    // one word further back, behind that
+    // determiner. A determiner inside the PP does
+    // not block consumption.
+    let prep = if i >= 1 && is_subject_preposition(tokens[i - 1].as_str()) {
+        i - 1
+    } else if i >= 2
+        && matches!(tokens[i - 1].as_str(), "the" | "a" | "an")
+        && is_subject_preposition(tokens[i - 2].as_str())
+    {
+        i - 2
+    } else {
+        return false;
+    };
+    if !subject_head_before(tokens, prep) {
         return false;
     }
+    // The phrase's object may wear its own nouns
+    // after the weekday ("on Sunday morning sang"),
+    // and a subject may wear a STACK of PPs, so the
+    // clause's verb may stand past a further PP
+    // ("on Sunday from Kent sang"); the shared
+    // forward walk crosses them all.
+    verb_after_pp_objects(tokens, i + 1)
+}
+
+/// Whether a subject head stands before the
+/// preposition at `pos` in `tokens` (round 23,
+/// R23-5): the backward walk crosses determiners,
+/// noun-like subject words, and — where a stack
+/// stands before this preposition — an earlier
+/// PP's object run and its preposition, exactly
+/// as `segment_subject_before`'s forward-facing
+/// twin crosses them walking back from a verb.
+/// The head is a noun-like word that is not
+/// itself a verb form.
+fn subject_head_before(tokens: &[String], pos: usize) -> bool {
     let mut head = false;
-    let mut j = i - 1;
+    let mut object_crossed = false;
+    let mut j = pos;
     while j > 0 {
         let w = tokens[j - 1].as_str();
         if matches!(w, "the" | "a" | "an") || POSSESSIVE_DETERMINERS.contains(&w) {
@@ -1646,23 +1721,77 @@ fn weekday_in_subject_pp(tokens: &[String], i: usize) -> bool {
             if !is_finite_verb_form(w) {
                 head = true;
             }
+            object_crossed = true;
+            j -= 1;
+        } else if weekday_word(w).is_some()
+            && ((j >= 2 && is_subject_preposition(tokens[j - 2].as_str()))
+                || (j >= 3
+                    && matches!(tokens[j - 2].as_str(), "the" | "a" | "an")
+                    && is_subject_preposition(tokens[j - 3].as_str())))
+        {
+            object_crossed = true;
+            j -= 1;
+        } else if is_subject_preposition(w) && object_crossed {
+            object_crossed = false;
+            j -= 1;
+        } else if is_tolerated_adverb(w) || AUXILIARY_WORDS.contains(&w) {
             j -= 1;
         } else {
             break;
         }
     }
-    if !head {
-        return false;
-    }
-    // The phrase's object may wear its own nouns
-    // after the weekday ("on Sunday morning sang");
-    // the clause's verb stands after them.
-    let mut k = i + 1;
-    while tokens
-        .get(k)
-        .is_some_and(|w| noun_like_word(w) && !is_finite_verb_form(w))
-    {
-        k += 1;
+    head
+}
+
+/// Whether the clause's verb stands at or after
+/// `start` in `tokens`, crossing the object
+/// material of a subject's PP STACK (round 23,
+/// R23-5): from `start`, cross noun-like object
+/// continuations; where a subject preposition
+/// stands, cross it and its own object — a
+/// determiner-wearing noun run, a weekday object
+/// (its own determiner included), or a framed
+/// date's word run, which is noun-like word by
+/// word — and repeat, any number of PPs in any
+/// preposition order. The walk ends at the first
+/// word that is none of that material: the verb
+/// stands there, or nowhere.
+fn verb_after_pp_objects(tokens: &[String], start: usize) -> bool {
+    let mut k = start;
+    loop {
+        while tokens
+            .get(k)
+            .is_some_and(|w| noun_like_word(w) && !is_finite_verb_form(w))
+        {
+            k += 1;
+        }
+        if !tokens.get(k).is_some_and(|w| is_subject_preposition(w)) {
+            break;
+        }
+        // Cross this PP: the preposition, any
+        // determiners its object wears, and the
+        // object itself.
+        let mut m = k + 1;
+        while tokens.get(m).is_some_and(|w| {
+            matches!(w.as_str(), "the" | "a" | "an") || POSSESSIVE_DETERMINERS.contains(&w.as_str())
+        }) {
+            m += 1;
+        }
+        if tokens.get(m).is_some_and(|w| weekday_word(w).is_some()) {
+            k = m + 1;
+            continue;
+        }
+        let object_start = m;
+        while tokens
+            .get(m)
+            .is_some_and(|w| noun_like_word(w) && !is_finite_verb_form(w))
+        {
+            m += 1;
+        }
+        if m == object_start {
+            return false;
+        }
+        k = m;
     }
     match tokens.get(k) {
         Some(w) => {
@@ -1671,6 +1800,34 @@ fn weekday_in_subject_pp(tokens: &[String], i: usize) -> bool {
         }
         None => false,
     }
+}
+
+/// Whether the framed date standing at
+/// `start..start + used` in `tokens` is consumed
+/// wholly as the object of a prepositional phrase
+/// inside a subject run (round 23, R23-5, review
+/// F9 + red team RT23-10): a subject preposition
+/// stands directly before the date, a subject head
+/// stands before the preposition, and the clause's
+/// own verb stands after the date — "the team
+/// after November 1 sang", "the choir on November
+/// 15 sang", after ANY preposition, exactly as
+/// after "from". Such a date is the subject
+/// phrase's own material: it asserts nothing of
+/// its own and competes with no other date; where
+/// a composition names the dates beside its
+/// assertion, it is named like the "from" twin's
+/// date is. A date whose PP is not a subject PP —
+/// no head before it, or no clause verb after it —
+/// keeps its standing readings.
+fn date_in_subject_pp(tokens: &[String], start: usize, used: usize) -> bool {
+    if start == 0 || !is_subject_preposition(tokens[start - 1].as_str()) {
+        return false;
+    }
+    if !subject_head_before(tokens, start - 1) {
+        return false;
+    }
+    verb_after_pp_objects(tokens, start + used)
 }
 
 /// Whether `word` can head the noun phrase a
@@ -1715,7 +1872,20 @@ fn noun_phrase_word(word: &str) -> bool {
 fn verb_form_is_finite(segment: &[String], off: usize) -> bool {
     if off > 0 {
         let prev = segment[off - 1].as_str();
-        if matches!(prev, "the" | "a" | "an") || POSSESSIVE_DETERMINERS.contains(&prev) {
+        // Round 23 (R23-8): the immediate shield is
+        // scoped by the past-only split exactly as
+        // the spanned shield below is — a past-only
+        // form ("sang", "rang", "took") has no
+        // adjective use in ANY position, the
+        // determiner directly before it
+        // notwithstanding, so "the sang hymns" reads
+        // as a clause exactly as "the big sang
+        // hymns" already did. Participle and regular
+        // forms keep the shield ("the taken seats",
+        // "the baked beans").
+        if (matches!(prev, "the" | "a" | "an") || POSSESSIVE_DETERMINERS.contains(&prev))
+            && !IRREGULAR_PAST_ONLY_FORMS.contains(&segment[off].as_str())
+        {
             return false;
         }
     }
@@ -1776,6 +1946,31 @@ fn verb_form_is_finite(segment: &[String], off: usize) -> bool {
     }
     if segment_subject_before(segment, off) {
         return true;
+    }
+    // Round 23 (R23-6): a verb-form word standing
+    // directly after a weekday word and heading a
+    // noun phrase is the weekday-modifier phrase's
+    // adjective, not a finite verb — "Sunday left
+    // luggage", "Sunday taken seats" in an object
+    // continuation are the phrase's own material,
+    // and the irregular branch below must not make
+    // a clause of them. The one exception is a
+    // weekday standing as a subject PP's object:
+    // in "the choir on Sunday sang hymns" the word
+    // after the weekday is the clause's verb, and
+    // it stays finite by the subject rule and this
+    // branch alike (the preposition — or its
+    // determiner — stands directly before the
+    // weekday there).
+    if heads_noun_phrase
+        && off > 0
+        && weekday_word(&segment[off - 1]).is_some()
+        && !(off >= 2 && is_subject_preposition(segment[off - 2].as_str()))
+        && !(off >= 3
+            && matches!(segment[off - 2].as_str(), "the" | "a" | "an")
+            && is_subject_preposition(segment[off - 3].as_str()))
+    {
+        return false;
     }
     if IRREGULAR_FINITE_FORMS.contains(&segment[off].as_str()) {
         return true;
@@ -1890,6 +2085,20 @@ fn noun_like_word(word: &str) -> bool {
 /// spent or unspent by the spent-predicate rule —
 /// the auxiliary keeps its standing there and
 /// this rule does not reach it.
+///
+/// Round 23 (R23-4): the auxiliary's slot holds
+/// TWO words, not one — each a negation or an
+/// adverb, listed or not. The two tolerances
+/// R22-4 pinned separately compose: a negation
+/// AND an adverb ("was not loudly played", "was
+/// not ever played", "was really not played",
+/// "was not yet played"), and two adverbs ("was
+/// softly gently singing", "was loudly
+/// beautifully played"), read as one auxiliary
+/// complement exactly as either tolerance alone
+/// did. "ever" and "yet" are the slot's non--ly
+/// adverbs the witnesses wear; a third slot word
+/// ends the scan, as any other word does.
 fn aux_complement(segment: &[String], off: usize) -> Option<usize> {
     let mut j = off + 1;
     let mut unlisted_used = 0usize;
@@ -1897,8 +2106,8 @@ fn aux_complement(segment: &[String], off: usize) -> Option<usize> {
         let w = w.as_str();
         if is_tolerated_adverb(w) {
             j += 1;
-        } else if adverbial_word(w) || matches!(w, "not" | "never") {
-            if unlisted_used >= 1 {
+        } else if adverbial_word(w) || matches!(w, "not" | "never" | "ever" | "yet") {
+            if unlisted_used >= 2 {
                 break;
             }
             unlisted_used += 1;
@@ -2249,47 +2458,78 @@ fn determiner_headed_s_form(slice: &[String], i: usize, word: &str) -> bool {
 /// clause verb after its object, governs as it
 /// always has.
 fn from_stands_in_subject_pp(slice: &[String], i: usize) -> bool {
-    let mut head = false;
+    if !subject_head_before(slice, i) {
+        return false;
+    }
+    // The object itself: determiners, then a
+    // weekday object or a noun-like run (a framed
+    // date's words included).
+    let mut k = i + 1;
+    while slice.get(k).is_some_and(|w| {
+        matches!(w.as_str(), "the" | "a" | "an") || POSSESSIVE_DETERMINERS.contains(&w.as_str())
+    }) {
+        k += 1;
+    }
+    let object_start = k;
+    if slice.get(k).is_some_and(|w| weekday_word(w).is_some()) {
+        k += 1;
+    } else {
+        while slice
+            .get(k)
+            .is_some_and(|w| noun_like_word(w) && !is_finite_verb_form(w))
+        {
+            k += 1;
+        }
+    }
+    if k == object_start {
+        return false;
+    }
+    // Round 23 (R23-5): the clause's verb may
+    // stand past a SECOND prepositional phrase —
+    // "the team from Kent on Sunday sang" — the
+    // shared forward walk crosses the whole stack
+    // before judging the verb.
+    verb_after_pp_objects(slice, k)
+}
+
+/// Whether the negation at `i` in `slice` stands
+/// in an auxiliary's adverb slot (round 22, R22-4;
+/// round 23, R23-4): scanning back from the
+/// negation crosses only slot words — tolerated
+/// adverbs, adverbs of any kind, "ever" / "yet",
+/// and further negations — and reaches an
+/// auxiliary whose complement (the `aux_complement`
+/// scan) stands AFTER the negation. R22-4's rule
+/// reached only a negation standing directly
+/// after its auxiliary ("was not played"); the
+/// two-word slot puts the negation in either
+/// position ("was really not played", "was loudly
+/// never played", "was ever not played"), and in
+/// every position the negation is spent on its
+/// verb, not on the date its clause names. A
+/// negation with no such construction around it
+/// ("was not November 8", "(not November 8)")
+/// governs as always.
+fn negation_in_aux_slot(slice: &[String], i: usize) -> bool {
     let mut j = i;
     while j > 0 {
         let w = slice[j - 1].as_str();
-        if matches!(w, "the" | "a" | "an") || POSSESSIVE_DETERMINERS.contains(&w) {
-            j -= 1;
-        } else if noun_like_word(w) {
-            if !is_finite_verb_form(w) {
-                head = true;
-            }
+        if AUXILIARY_WORDS.contains(&w) {
+            return match aux_complement(slice, j - 1) {
+                Some(comp) => comp > i,
+                None => false,
+            };
+        }
+        if is_tolerated_adverb(w)
+            || adverbial_word(w)
+            || matches!(w, "not" | "never" | "ever" | "yet")
+        {
             j -= 1;
         } else {
-            break;
+            return false;
         }
     }
-    if !head {
-        return false;
-    }
-    let mut k = i + 1;
-    let mut object = false;
-    while let Some(w) = slice.get(k) {
-        let w = w.as_str();
-        if matches!(w, "the" | "a" | "an") || POSSESSIVE_DETERMINERS.contains(&w) {
-            k += 1;
-        } else if (noun_like_word(w) && !is_finite_verb_form(w)) || weekday_word(w).is_some() {
-            object = true;
-            k += 1;
-        } else {
-            break;
-        }
-    }
-    if !object {
-        return false;
-    }
-    match slice.get(k) {
-        Some(w) => {
-            (is_finite_verb_form(w) && verb_form_is_finite(slice, k))
-                || auxiliary_heads_clause(slice, k)
-        }
-        None => false,
-    }
+    false
 }
 
 fn phrase_governs(slice: &[String], i: usize, len: usize) -> bool {
@@ -2344,19 +2584,11 @@ fn phrase_governs(slice: &[String], i: usize, len: usize) -> bool {
     // auxiliary's own adverb slot — "then was not
     // played", "then was never played" — negates
     // the clause's verb, not the date the clause
-    // names: when the auxiliary directly before it
-    // carries a complement across it (the
-    // `aux_complement` scan above), the negation
-    // is part of that clause construction and does
-    // not govern past it. A negation with no such
-    // construction around it ("was not November
-    // 8", "(not November 8)") governs as always.
-    if len == 1
-        && matches!(phrase[0].as_str(), "not" | "never")
-        && i > 0
-        && AUXILIARY_WORDS.contains(&slice[i - 1].as_str())
-        && aux_complement(slice, i - 1).is_some()
-    {
+    // names, and does not govern past it. Round 23
+    // (R23-4): the slot holds two words, so the
+    // negation may stand in either position in it
+    // (see `negation_in_aux_slot`).
+    if len == 1 && matches!(phrase[0].as_str(), "not" | "never") && negation_in_aux_slot(slice, i) {
         return false;
     }
     if len == 1
@@ -2885,6 +3117,37 @@ fn aux_adverb_walk(tokens: &[String], start: usize) -> Option<(usize, usize)> {
 /// to the construction's own clause, exactly as
 /// the unbounded walk's callers' runs are already
 /// clause-scoped.
+/// Whether an auxiliary stands just beyond the
+/// slot words ending at `pos` (round 23, R23-4):
+/// scanning back from `pos` crosses only slot
+/// words (tolerated adverbs, adverbs of any kind,
+/// "ever" / "yet", negations) and reaches an
+/// auxiliary. The spending walk crosses a
+/// negation only on this condition: a negation
+/// in an AUXILIARY's slot is spent on its verb,
+/// but a fronted negation with no auxiliary
+/// beyond it ("not moved to November 8") is a
+/// governor standing before its phrase, and the
+/// walk must not pull it into the claim zone.
+fn aux_beyond_slot(tokens: &[String], pos: usize) -> bool {
+    let mut k = pos;
+    while k > 0 {
+        let w = tokens[k - 1].as_str();
+        if AUXILIARY_WORDS.contains(&w) {
+            return true;
+        }
+        if is_tolerated_adverb(w)
+            || adverbial_word(w)
+            || matches!(w, "not" | "never" | "ever" | "yet")
+        {
+            k -= 1;
+        } else {
+            return false;
+        }
+    }
+    false
+}
+
 fn aux_adverb_walk_bounded(
     tokens: &[String],
     start: usize,
@@ -2894,12 +3157,42 @@ fn aux_adverb_walk_bounded(
     let mut j = start;
     let mut aux_seen = false;
     let mut adverbs_used = 0usize;
+    // Round 23 (R23-4): a negation in the slot is
+    // spent on its verb in every scan, this walk
+    // included — "(it was not moved for November
+    // 1)" asserts its occasion exactly as "(it was
+    // moved for November 1)" does. The negation
+    // counts toward the walk's two-word cap like
+    // any slot word, so a three-word slot (a
+    // negation and two adverbs, in any order) does
+    // not spend, as a three-adverb slot never has.
+    // An UNLISTED adverb crosses only beside a
+    // negation — the negation already crossed
+    // nearer the verb, or the negation standing
+    // just past it — the passive constructions'
+    // analogue of R22-4's single-unlisted slot:
+    // "not loudly", "loudly never", and "not ever"
+    // spend; an unlisted adverb alone ("loudly
+    // moved") and two unlisted adverbs still do
+    // not, the tolerated list governing which
+    // adverbs spend as it always has.
+    let mut negation_seen = false;
     while j > 0 {
         let prev = tokens[j - 1].as_str();
         if AUXILIARY_WORDS.contains(&prev) {
             aux_seen = true;
             j -= 1;
-        } else if is_tolerated_adverb(prev) {
+        } else if matches!(prev, "not" | "never") && aux_beyond_slot(tokens, j - 1) {
+            if adverbs_used >= 2 {
+                return None;
+            }
+            adverbs_used += 1;
+            negation_seen = true;
+            j -= 1;
+        } else if is_tolerated_adverb(prev)
+            || ((adverbial_word(prev) || matches!(prev, "ever" | "yet"))
+                && (negation_seen || (j >= 2 && matches!(tokens[j - 2].as_str(), "not" | "never"))))
+        {
             if adverbs_used >= 2 {
                 return None;
             }
@@ -3466,8 +3759,13 @@ fn target_claim(
                 // reading the group signal scan
                 // takes, so the reach crosses the
                 // noun phrase it modifies.
-                let weekday_modifier = weekday_word(w).is_some()
-                    && tokens.get(j + 1).is_some_and(|next| noun_like_word(next));
+                // Round 23 (R23-6): the one
+                // weekday-modifier reading, verb-form
+                // adjective shape included ("Sunday
+                // taken seats" in an object
+                // continuation is the phrase's own
+                // material, and the claim crosses it).
+                let weekday_modifier = weekday_modifier_at(tokens, j);
                 from_before_date
                     || (!direct_single_governor(w)
                         && !is_cancellation_verb(w)
@@ -4299,6 +4597,13 @@ fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) -> GroupAna
                     || contradicted_before(&tokens, start, d)
             }
         };
+        // Round 23 (R23-5): a framed date consumed
+        // as a subject PP's object is that phrase's
+        // own material — it does not qualify as an
+        // occurrence of its own, exactly as the
+        // "from" twin's date is governed in its
+        // window and named beside the assertion.
+        let before_disqualified = before_disqualified || date_in_subject_pp(&tokens, start, used);
         let after_disqualified = governed_after(&raw_tokens, &tokens, start + used, next_start);
         let target_disqualified = claim.is_none()
             && any_target
@@ -5852,7 +6157,15 @@ fn plain_composition(
             Some(claim) => governed_before_target(window, window_start, claim),
             None => governed_before(&tokens[..window_start], window),
         };
-        let before_disqualified = before || split_phrasal || contradicted_before(tokens, start, d);
+        // Round 23 (R23-5): a framed date consumed
+        // as a subject PP's object is governed for
+        // this composition in the same way as in a
+        // group — it asserts nothing of its own and
+        // is named beside the date that stands.
+        let before_disqualified = before
+            || split_phrasal
+            || contradicted_before(tokens, start, d)
+            || date_in_subject_pp(tokens, start, used);
         let after_disqualified = governed_after(raw_tokens, tokens, start + used, next_start);
         let target_disqualified = claim.is_none()
             && any_target
@@ -6157,7 +6470,12 @@ fn scan_plain_signals(
                 // in `dates_inside_group_signals`.
                 if cleaned[i] == "sunday"
                     && !(i == last_end && last_framed_sunday)
-                    && !cleaned.get(i + 1).is_some_and(|next| noun_like_word(next))
+                    // Round 23 (R23-6): the one
+                    // weekday-modifier reading,
+                    // verb-form adjective shape
+                    // included ("Sunday left
+                    // luggage"), as in groups.
+                    && !weekday_modifier_at(cleaned, i)
                     // Round 22 (R22-5): a weekday
                     // consumed wholly as a subject
                     // PP's object ("the choir on
@@ -6195,121 +6513,58 @@ fn scan_plain_signals(
     signals
 }
 
-/// Whether a word heads a content segment of a
-/// bulletin line (round 22, R22-7): it names an event
-/// or a gathered body — service, choir, meeting,
-/// dinner, and their kin — the labels a content-
-/// headed line is headed by ("service November 8,
-/// 2026", "Tuesday choir"). Printed matter and
-/// time-of-day words ("bulletins", "school",
-/// "morning") head no segment: they are the framed
-/// date's garnish in the fence's intended shapes
-/// ("printed Monday bulletins", "Sunday school").
-fn content_head_word(word: &str) -> bool {
-    matches!(
-        word,
-        "service"
-            | "services"
-            | "choir"
-            | "choirs"
-            | "meeting"
-            | "meetings"
-            | "dinner"
-            | "dinners"
-            | "practice"
-            | "rehearsal"
-            | "rehearsals"
-            | "potluck"
-            | "potlucks"
-            | "lunch"
-            | "lunches"
-            | "supper"
-            | "suppers"
-            | "breakfast"
-            | "breakfasts"
-            | "class"
-            | "classes"
-            | "lesson"
-            | "lessons"
-            | "study"
-            | "studies"
-            | "session"
-            | "sessions"
-            | "program"
-            | "programs"
-            | "event"
-            | "events"
-            | "gathering"
-            | "gatherings"
-            | "worship"
-            | "mass"
-            | "ceremony"
-            | "ceremonies"
-            | "funeral"
-            | "funerals"
-            | "wedding"
-            | "weddings"
-            | "baptism"
-            | "baptisms"
-            | "confirmation"
-            | "council"
-            | "committee"
-            | "committees"
-            | "group"
-            | "groups"
-            | "team"
-            | "teams"
-            | "congregation"
-            | "assembly"
-            | "assemblies"
-            | "retreat"
-            | "retreats"
-            | "concert"
-            | "concerts"
-            | "recital"
-            | "recitals"
-            | "sale"
-            | "sales"
-            | "fair"
-            | "fairs"
-            | "auction"
-            | "auctions"
-            | "clinic"
-            | "clinics"
-            | "workshop"
-            | "workshops"
-            | "seminar"
-            | "seminars"
-            | "lecture"
-            | "lectures"
-            | "party"
-            | "parties"
-            | "social"
-            | "socials"
-            | "outing"
-            | "outings"
-    )
-}
+/// The closed GARNISH-noun set of the lone-framed
+/// fence (round 23, R23-7): the head nouns of the
+/// pinned weekday-modifier shapes — printed matter
+/// and the standing time-of-day / school garnish of
+/// the r21b/r22a pins ("Sunday bulletins", "Sunday
+/// school", "Sunday morning", and their
+/// determiner- and modifier-wearing twins). The
+/// set is closed as listed: a bare weekday + noun
+/// phrase whose head stands outside it is content,
+/// whatever the noun, and the fence does not fire.
+const GARNISH_NOUNS: [&str; 3] = ["bulletins", "school", "morning"];
 
 /// Whether the lone-framed fence stands for a plain
-/// line (round 21, R21-7; fenced round 22, R22-7):
-/// the line's only signal is the framed date at
-/// `start..end`, and beside that date the line
-/// carries nothing but a weekday-modifier phrase —
-/// a weekday word standing with noun-like words, the
-/// framed date's garnish ("Sunday bulletins",
-/// "printed Monday bulletins", "Sunday school").
-/// Every clause of the line (split where a clause
-/// break stands) is judged: a clause holding no
-/// words beside the date is garnish-free; a clause
-/// holding words must hold a weekday + noun-like
-/// window, nothing but noun-like words (and
-/// determiners) beside it, and no content head
-/// (`content_head_word`) anywhere in it. Any other
-/// clause — a content-headed segment ("service …",
-/// "… Monday meeting", "Tuesday choir"), a governor
-/// clause, a verb — closes the fence, and the lone
-/// content-headed line keeps its standing silence.
+/// line (round 21, R21-7; fenced round 22, R22-7;
+/// inverted round 23, R23-7): the line's only signal
+/// is the framed date at `start..end`, and beside
+/// that date the line carries nothing but a
+/// weekday-modifier phrase — a weekday word standing
+/// with noun-like words, the framed date's garnish
+/// ("Sunday bulletins", "printed Monday bulletins",
+/// "Sunday school"). Every clause of the line (split
+/// where a clause break stands) is judged: a clause
+/// holding no words beside the date is garnish-free;
+/// a clause holding words must hold a weekday-
+/// modifier phrase and nothing but noun-like words
+/// (and determiners) beside it.
+///
+/// Round 22's fence asked the clause to hold no
+/// CONTENT head, judged against a ~70-word list —
+/// and the list's failure direction was assertion:
+/// every event noun the list missed ("Sunday
+/// picnic", "Sunday brunch", "Sunday festival")
+/// asserted its date, while a listed noun ("Sunday
+/// rehearsal") stayed silent. Round 23 inverts the
+/// test: the fence fires only when the phrase is
+/// garnish by the closed `GARNISH_NOUNS` set — a
+/// bare weekday + noun phrase fires only when its
+/// head noun is on the set, and any other noun,
+/// event or not, listed or not, blocks the fence.
+/// The failure direction for an unlisted noun is
+/// now silence, the safe direction, matching the
+/// held rule for lone content lines. The
+/// content-head list has left the fence entirely.
+///
+/// The verb-form adjective shape (R23-6) is judged
+/// as the phrase it is: weekday + verb-form word +
+/// noun-like word ("Sunday left luggage", "Sunday
+/// baked beans") is a modifier phrase whose
+/// adjective carries it, exactly as the signal
+/// scans read it — its pinned shapes assert, as
+/// they did before the inversion (the review's
+/// "Sunday baked beans" twin among them).
 fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usize) -> bool {
     let mut clauses: Vec<(usize, usize)> = Vec::new();
     let mut clause_start = 0usize;
@@ -6322,6 +6577,13 @@ fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usi
     if clause_start < tokens.len() {
         clauses.push((clause_start, tokens.len()));
     }
+    // Whether the word at `k` stands outside the
+    // framed date's own span: the adjective shape's
+    // head noun must be a real word of the clause,
+    // not the date itself ("Monday meeting" is a
+    // bare weekday + noun phrase whose head is
+    // "meeting" — the date after it is no head).
+    let outside_date = |k: usize| k < start || k >= end;
     let mut has_phrase = false;
     for (cs, ce) in clauses {
         let mut clause_has_phrase = false;
@@ -6335,14 +6597,44 @@ fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usi
                 continue;
             }
             clause_has_words = true;
-            if content_head_word(w) {
-                return false;
+            if weekday_word(w).is_some() && i + 1 < ce && outside_date(i + 1) {
+                // The verb-form adjective shape
+                // first: weekday + verb-form word +
+                // noun-like head outside the date
+                // span ("Sunday left luggage").
+                if cleaned
+                    .get(i + 1)
+                    .is_some_and(|next| is_finite_verb_form(next))
+                    && cleaned.get(i + 2).is_some_and(|next| noun_like_word(next))
+                    && i + 2 < ce
+                    && outside_date(i + 2)
+                {
+                    clause_has_phrase = true;
+                    continue;
+                }
+                // The bare shape: weekday + noun
+                // head — garnish only when the head
+                // is on the closed set ("Sunday
+                // picnic" and "Sunday rehearsal"
+                // alike read nothing now).
+                if cleaned.get(i + 1).is_some_and(|next| noun_like_word(next)) {
+                    if !GARNISH_NOUNS.contains(&cleaned[i + 1].as_str()) {
+                        return false;
+                    }
+                    clause_has_phrase = true;
+                    continue;
+                }
             }
-            if weekday_word(w).is_some()
+            // The verb-form adjective word of a
+            // phrase starting at the word before it
+            // ("left" in "Sunday left luggage"):
+            // the phrase's own material.
+            if i > cs
+                && weekday_word(&cleaned[i - 1]).is_some()
+                && is_finite_verb_form(w)
                 && cleaned.get(i + 1).is_some_and(|next| noun_like_word(next))
-                && i + 1 < ce
+                && outside_date(i + 1)
             {
-                clause_has_phrase = true;
                 continue;
             }
             if noun_like_word(w) || matches!(w.as_str(), "the" | "a" | "an") {
@@ -6453,14 +6745,16 @@ fn plain_multi_date_reading(
         // Round 22 (R22-7): the fence fires only when the
         // weekday-modifier phrase is the line's only
         // content beside the framed date — no clause of
-        // the line may carry other content, and no
-        // content head (service/choir/meeting and their
-        // kin) may stand anywhere on the line: "Monday
+        // the line may carry other content: "Monday
         // meeting, service November 8, 2026", "service
         // November 8, 2026, Monday meeting", and
         // "Tuesday choir, November 1, 2026" all read
         // nothing, where the round-21 fence's any-
-        // weekday-anywhere scan asserted them.
+        // weekday-anywhere scan asserted them. Round 23
+        // (R23-7): the phrase must be garnish by the
+        // closed set in `lone_framed_fence` — the
+        // content-head list that judged this in round
+        // 22 has left the fence.
         let modifier_phrase =
             lone_framed && lone_framed_fence(&tokens, &cleaned, signals[0].start, signals[0].end);
         if !(lone_framed && modifier_phrase) {
@@ -18400,6 +18694,537 @@ Youth group meets Wednesday at 6 PM.
             let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
             let c = parse_contribution(&text, today()).expect("parses");
             assert_eq!(c.keep_through, want, "{line}: keep-through");
+        }
+    }
+
+    #[test]
+    fn r23b_aux_slot_holds_two_words() {
+        // Round 23 (R23-4, review F6/F7 = red team
+        // RT23-4): the auxiliary's slot holds two
+        // words — a negation AND an adverb, or two
+        // adverbs — in detection and in spending
+        // alike. R22-4's two tolerances composed
+        // silenced both dates, and the spending walk
+        // never learned the negation rule at all.
+        // Every detection witness below reads
+        // November 8 alone, nothing named, on every
+        // path: the auxiliary construction is one
+        // clause, and its verb ends the reach.
+        for group in [
+            "(moved November 1, then was not loudly played to November 8)",
+            "(moved November 1, then was never loudly played to November 8)",
+            "(moved November 1, then was not ever played to November 8)",
+            "(moved November 1, choir was not ever singing to November 8)",
+            "(moved November 1, then was ever not played to November 8)",
+            "(moved November 1, then was really not played to November 8)",
+            "(moved November 1, then was not yet played to November 8)",
+            "(moved November 1, then was loudly never played to November 8)",
+            "(moved November 1, choir was softly gently singing to November 8)",
+            "(moved November 1, then was beautifully loudly played to November 8)",
+            "(moved November 1, then was loudly beautifully played to November 8)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(8)),
+                "{group}: November 8 stands alone on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: paren-only note is empty"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: keep-through note is empty"
+            );
+        }
+        // The spending scans learn the negation
+        // rule: a negation in the slot is spent on
+        // its verb in every scan, so the passive-for
+        // occasion asserts — alone, or beside its
+        // trailing date — and the claim's own
+        // passive claims through the negation.
+        for group in [
+            "(it was not moved for November 1)",
+            "(it was never moved for November 1)",
+            "(it was not ever moved for November 1)",
+            "(it was never really moved for November 1)",
+            "(it was not really moved for November 1)",
+            "(it was not loudly moved for November 1)",
+            "(it was loudly never moved for November 1)",
+            "(it was not moved, November 1)",
+            "(it was never moved, November 1)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{group}: the November 1 occasion asserts, spent through the slot"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+        }
+        for group in [
+            "(moved November 1, it was not moved to November 8)",
+            "(moved November 1, it was never moved to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{group}: the claim claims its target through the negation"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1)],
+                "{group}: November 1 is named as the from-date"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+            assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+        }
+        // Held: three-word slots do not spend (the
+        // spending cap is two, negation included);
+        // an unlisted adverb alone still does not
+        // spend (the R17-7 closed list); the claim's
+        // own passives keep their standing readings.
+        for group in [
+            "(it was not really truly moved for November 1)",
+            "(it was loudly moved for November 1)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{group}: no spending, the date is governed"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through");
+        }
+        let group = "(moved November 1, then was moved to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: still claims");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+        let group = "(moved November 1, then was cancelled to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: still silences");
+    }
+
+    #[test]
+    fn r23b_subject_pp_stacks_and_date_objects() {
+        // Round 23 (R23-5, review F8/F9 = red team
+        // RT23-5/RT23-10): the subject run crosses a
+        // PP stack of any length and any preposition
+        // order; a determiner inside the PP blocks
+        // nothing; and a framed date standing as a
+        // subject-PP object after ANY preposition is
+        // consumed by the subject exactly as after
+        // "from". Every stack witness below ends the
+        // reach: November 8 alone, nothing named, no
+        // phantom from the weekday PP in either
+        // stack order, on every path.
+        for group in [
+            "(moved November 1, the team from Kent on Sunday sang to November 8)",
+            "(moved November 1, the team from Kent on Sunday played to November 8)",
+            "(moved November 1, the team from Kent on Sunday was singing to November 8)",
+            "(moved November 1, the team from Kent in the hall sang to November 8)",
+            "(moved November 1, the team from Kent at noon sang to November 8)",
+            "(moved November 1, the big team from Kent on Sunday sang to November 8)",
+            "(moved November 1, the choir on Sunday from Kent sang to November 8)",
+            "(moved November 1, the choir on Sunday in the hall sang to November 8)",
+            "(moved November 1, the choir on Sunday in Kent sang to November 8)",
+            "(moved November 1, the choir on the Sunday sang to November 8)",
+            "(moved November 1, the choir on the Sunday played to November 8)",
+            "(moved November 1, the choir on the Sunday was singing to November 8)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(8)),
+                "{group}: November 8 stands alone on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named — no phantom October 18"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: paren-only note is empty"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: keep-through note is empty"
+            );
+        }
+        // The plain twins of the stacks assert
+        // November 8 with the governed November 1
+        // named, as the plain composition names
+        // every governed date beside an asserting
+        // one — and no phantom.
+        for line in [
+            "moved November 1, 2026, the team from Kent on Sunday sang to November 8, 2026",
+            "moved November 1, 2026, the choir on Sunday from Kent sang to November 8, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{line}: the plain twin asserts");
+            assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+            assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+        }
+        // A framed date as a subject-PP object,
+        // after any preposition: the target asserts
+        // (not alternatives), and the PP's date is
+        // named beside it exactly as the "from"
+        // twin's date is.
+        for (group, named) in [
+            (
+                "(moved November 1, the team from November 15 sang to November 8)",
+                nov(15),
+            ),
+            (
+                "(moved November 1, the choir on November 15 sang to November 8)",
+                nov(15),
+            ),
+            (
+                "(moved November 1, the team by November 15 sang to November 8)",
+                nov(15),
+            ),
+            (
+                "(moved November 1, the team before November 15 sang to November 8)",
+                nov(15),
+            ),
+            (
+                "(moved November 1, the team after November 1 sang to November 8)",
+                nov(1),
+            ),
+            (
+                "(moved November 1, the choir on November 1 sang to November 8)",
+                nov(1),
+            ),
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(8)),
+                "{group}: the target asserts on the relative path, not alternatives"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![named],
+                "{group}: the subject PP's date is named, as after from"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+            assert_eq!(c.for_sunday_second_dates, vec![named], "{group}");
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+            assert_eq!(c.keep_through_second_dates, vec![named], "{group}");
+        }
+        // The plain twins: the PP's date no longer
+        // asserts itself or demotes the clause's
+        // date — November 8 asserts, the PP date is
+        // noted, exactly as the "from" twin reads.
+        for line in [
+            "the choir on November 15 sang November 8, 2026",
+            "the team from November 15 sang November 8, 2026",
+            "the choir on November 1 was singing November 8, 2026",
+        ] {
+            let want_named = if line.contains("November 15") {
+                nov(15)
+            } else {
+                nov(1)
+            };
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+            assert_eq!(c.for_sunday_second_dates, vec![want_named], "{line}");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+            assert_eq!(c.keep_through_second_dates, vec![want_named], "{line}");
+        }
+        // Held: the object-continuation PP is not a
+        // subject PP — "(moved November 1, baked
+        // beans from Kent to November 8)" still
+        // reads nothing by "from" governance, and
+        // the single-PP pins of R22-5 stand (the
+        // r22b test above).
+        let group = "(moved November 1, baked beans from Kent to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the object PP still governs");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+
+    #[test]
+    fn r23b_weekday_verb_form_modifier_phrase() {
+        // Round 23 (R23-6, review F10): weekday +
+        // verb-form word + noun-like word is a
+        // modifier phrase on both surfaces — the
+        // verb-form word is the phrase's adjective,
+        // no phantom October 18 is asserted, offered,
+        // or named, and the framed date asserts.
+        for (line, want) in [
+            ("Sunday left luggage, November 8, 2026", nov(8)),
+            ("Sunday sung hymns, November 1, 2026", nov(1)),
+            ("Sunday taken seats, November 8, 2026", nov(8)),
+            ("Sunday gone seats, November 8, 2026", nov(8)),
+            ("Sunday met choir, November 8, 2026", nov(8)),
+            ("Monday left luggage, November 8, 2026", nov(8)),
+            ("Sunday singing choir, November 8, 2026", nov(8)),
+            // The regular -ed twin, standing.
+            ("Sunday baked beans, November 8, 2026", nov(8)),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(want),
+                "{line}: the framed date asserts, no phantom"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: no October 18 is named"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(want), "{line}: keep-through");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: keep-through names no phantom"
+            );
+        }
+        // The group twin: the phrase stands in an
+        // object continuation, the claim crosses it,
+        // November 8 claims with November 1 named —
+        // and no October 18 anywhere.
+        let group = "(moved the meeting, November 1, 2026, and Sunday taken seats to November 8)";
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target claims on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named, October 18 is not"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only claims");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+        // Held: the bare-noun modifier pins
+        // (R20-6/R21-7), the true relative phrases,
+        // and the subject-PP weekday consumption
+        // (R22-5) all stand — the r20b/r21b/r22b
+        // tests above; one of each re-checked here.
+        for (line, want) in [
+            ("Sunday bulletins, November 1, 2026", Some(nov(1))),
+            ("Sunday school, November 8, 2026", Some(nov(8))),
+            ("next Sunday, November 8, 2026", Some(nov(8))),
+            ("Sunday, November 8, 2026", Some(nov(8))),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, want, "{line}: standing reading");
+        }
+    }
+
+    #[test]
+    fn r23b_lone_framed_fence_fires_only_for_garnish() {
+        // Round 23 (R23-7, review F11): the
+        // lone-framed fence is inverted — it fires
+        // only when the line's content beside the
+        // framed date is a weekday-modifier phrase
+        // whose head noun is on the closed
+        // GARNISH-noun set (bulletins, school,
+        // morning, as shipped in `GARNISH_NOUNS`).
+        // Every other noun — event or not, on the
+        // old content-head list or off it — blocks
+        // the fence, and the line reads nothing:
+        // the failure direction is silence now.
+        for line in [
+            "Sunday picnic, November 8, 2026",
+            "Sunday brunch, November 8, 2026",
+            "Sunday festival, November 8, 2026",
+            "Sunday banquet, November 8, 2026",
+            "Monday picnic, November 8, 2026",
+            "Sunday picnics, November 8, 2026",
+            // On the old list, silent then and now —
+            // now by the garnish rule, not by list
+            // membership.
+            "Sunday rehearsal, November 1, 2026",
+            "Sunday rehearsal, November 8, 2026",
+            "Sunday service, November 8, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: For Sunday reads nothing");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: nothing is named"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: Keep-through reads nothing");
+        }
+        // The pinned garnish shapes keep asserting,
+        // and a governed line under a garnish phrase
+        // keeps its governed reading.
+        for (line, want) in [
+            ("Sunday bulletins, November 1, 2026", Some(nov(1))),
+            ("Sunday school, November 8, 2026", Some(nov(8))),
+            ("Sunday morning, November 8, 2026", Some(nov(8))),
+            ("printed Sunday bulletins, November 8, 2026", Some(nov(8))),
+            ("printed Monday bulletins, November 8, 2026", Some(nov(8))),
+            ("the Sunday bulletins, November 1, 2026", Some(nov(1))),
+            ("Sunday picnic, November 1, 2026, cancelled", None),
+            ("Sunday bulletins, November 1, 2026, cancelled", None),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, want, "{line}: For Sunday");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, want, "{line}: Keep-through agrees");
+        }
+        // Held: an off-garnish head in its own
+        // clause still closes the fence for the
+        // whole line, in either clause order.
+        for line in [
+            "Sunday bulletins, picnic November 8, 2026",
+            "picnic November 8, 2026, Sunday bulletins",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the fence stays closed");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through");
+        }
+    }
+
+    #[test]
+    fn r23b_past_only_split_scopes_both_shields() {
+        // Round 23 (R23-8, review M1 = red team
+        // RT23-8): the past-only split scopes BOTH
+        // determiner shields — "the sang hymns" in
+        // the reach reads as a clause (November 8
+        // alone, November 1 unnamed), exactly as
+        // "the big sang hymns" does, because a
+        // past-only form has no adjective use in
+        // any position. Participle forms keep their
+        // shield under both.
+        for group in [
+            "(moved November 1, and the sang hymns to November 8)",
+            "(moved November 1, the sang hymns to November 8)",
+            "(moved November 1, and the big sang hymns to November 8)",
+            "(moved November 1, and the took seats to November 8)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(8)),
+                "{group}: November 8 stands alone on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: November 1 is not named — the form read as a clause verb"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: paren-only note is empty"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: keep-through note is empty"
+            );
+        }
+        // Held: participle forms keep their shield
+        // under both the immediate and the spanned
+        // shield, and claim as before (R22-6's
+        // spanned-shield pins stand in the r22b
+        // test above).
+        for group in [
+            "(moved November 1, and the taken seats to November 8)",
+            "(moved November 1, and the big taken seats to November 8)",
+            "(moved November 1, and the baked beans to November 8)",
+            "(moved November 1, and the left luggage to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{group}: the shielded phrase still claims"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1)],
+                "{group}: November 1 is named as the from-date"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+            assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
         }
     }
 }

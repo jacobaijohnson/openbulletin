@@ -239,3 +239,125 @@ of", "back together", "gone tomorrow" still resurrect
 (their non-deictic members — care, back, gone — stand
 in no enumerated class), as do the lanes' ungraded
 pronouns/modals/interjections by design.
+
+## Shipped addendum, R23-B (2026-10-18)
+
+R23-4, R23-5, R23-6, R23-7, R23-8 shipped in one batch,
+all in `crates/ob-extract/src/contribution.rs`. Suite
+769 → 774 (+5 new pin tests, `r23b_aux_slot_holds_two_
+words`, `r23b_subject_pp_stacks_and_date_objects`,
+`r23b_weekday_verb_form_modifier_phrase`,
+`r23b_lone_framed_fence_fires_only_for_garnish`,
+`r23b_past_only_split_scopes_both_shields`; no
+pre-existing test changed, none removed — the full
+unpiped workspace run is exit 0 with 0 failed, and
+clippy `--workspace --all-targets` is clean). Booklet
+bytes untouched (no format/model file changed).
+
+R23-4: the auxiliary's slot holds two words in both
+scans. Detection (`aux_complement`) crosses tolerated
+adverbs as before plus up to two slot words, each a
+negation or an adverb listed or not ("ever" / "yet"
+join the slot's non--ly adverbs): "was not loudly
+played", "was not ever played", "choir was softly
+gently singing", "was really not played", "was not
+yet played" all read November 8 alone. The negation
+exemption in `phrase_governs` is generalized
+(`negation_in_aux_slot`): the negation may stand in
+either slot position, spent on its verb whenever an
+auxiliary behind the slot carries a complement past
+it. The spending walk (`aux_adverb_walk_bounded`,
+the one walk behind the spent-predicate, passive-for,
+and claim scans) learned the same rule: a negation
+crosses when an auxiliary stands beyond the slot, it
+counts toward the two-word cap, and an unlisted
+adverb crosses only beside a negation ("not loudly",
+"loudly never", "not ever" spend; an unlisted adverb
+alone and three-word slots still do not). "(it was
+not moved for November 1)" and its never/really/ever
+twins assert November 1; "(moved November 1, it was
+not moved to November 8)" claims as "then was moved"
+does. Held: "then was moved" claims with naming,
+"then was cancelled" silences, the claim's own
+two-adverb caps stand elsewhere.
+
+R23-5: the subject run crosses a PP stack of any
+length and any preposition order. Two shared walks
+carry it — `subject_head_before` (backward, crossing
+earlier PPs in a stack) and `verb_after_pp_objects`
+(forward, crossing each PP's object: noun run,
+determiner-wearing weekday, or framed date) — used
+by `weekday_in_subject_pp`, `from_stands_in_subject_
+pp`, and the new `date_in_subject_pp`. A determiner
+inside the PP blocks nothing ("the choir on the
+Sunday sang" and its `played` twin read November 8
+alone). A framed date standing as a subject-PP
+object after ANY preposition is consumed by the
+subject in both compositions: the target asserts
+(not alternatives) and the PP's date is named beside
+it exactly as the "from" twin's is ("the team after
+November 1 sang to November 8" asserts with
+November 1 named; "the choir on November 15 sang
+November 8, 2026" asserts November 8, November 15
+noted). Held: R22-5's single-PP pins, and the
+object-continuation PP ("baked beans from Kent")
+still reads nothing by "from" governance.
+
+R23-6: weekday + verb-form word + noun-like word is
+a modifier phrase on both surfaces, one reading in
+`weekday_modifier_at`, applied in the group and
+plain signal scans, the claim reach's between-words
+test, and the fence; `verb_form_is_finite` reads the
+verb-form word after a weekday (not standing as a
+subject PP's object) as the phrase's adjective when
+it heads a noun phrase. "Sunday left luggage,
+November 8, 2026" asserts November 8, "Sunday sung
+hymns, November 1, 2026" asserts November 1, and the
+group twin "(moved the meeting, November 1, 2026,
+and Sunday taken seats to November 8)" claims
+November 8 and names November 1 — no October 18 is
+asserted, offered, or named anywhere. Held: the
+bare-noun modifier pins, true relative phrases, and
+the subject-PP weekday consumption.
+
+R23-7: the lone-framed fence is inverted. It fires
+only when the line's content beside the framed date
+is a weekday-modifier phrase that is garnish: for
+the bare weekday + noun shape, the head noun must
+stand on the closed GARNISH-noun set as shipped —
+**bulletins, school, morning** (`GARNISH_NOUNS`,
+taken from the r21b/r22a asserting pins, which use
+no other bare head noun) — and any other noun,
+event or not, listed or not, blocks the fence.
+"Sunday picnic/brunch/festival/banquet, November 8,
+2026" read nothing; "Sunday rehearsal, November 1,
+2026" still reads nothing, now by the garnish rule
+rather than list membership; "Sunday bulletins",
+"Sunday school", and "Sunday morning" keep
+asserting. The `content_head_word` list (~70 words)
+has left the fence; the function is removed. One
+adjudication, flagged loudly: the verb-form
+adjective shape of R23-6 ("Sunday left luggage",
+"Sunday baked beans") passes the fence by its
+phrase shape, not by a garnish head — a garnish-only
+reading of that shape would contradict R23-6's
+explicit pins and the review's correct "Sunday
+baked beans" twin, so the garnish set governs the
+bare weekday + noun shape, which is the shape
+F11's witnesses all wear.
+
+R23-8: the past-only split scopes both determiner
+shields — the immediate shield at the head of
+`verb_form_is_finite` now exempts
+`IRREGULAR_PAST_ONLY_FORMS` exactly as the spanned
+shield does, so "the sang hymns" in the reach reads
+as a clause (November 8 alone, November 1 unnamed),
+exactly as "the big sang hymns" does. Participle
+forms keep their shield under both ("the taken
+seats", "the big taken seats" claim with naming).
+
+Flagged test changes: NONE — no pre-existing test
+was changed or removed. Every witness was probed
+before and after on the lanes' own paths (relative,
+paren-only, keep-through; plain twins where the
+findings carry them).

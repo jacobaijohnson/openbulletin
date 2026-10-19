@@ -735,3 +735,121 @@ are added and no pre-existing test body changes (834 → 839).
   168 match an in-battery twin exactly and the remaining
   27 match clean twins verified individually — with zero
   unexplained movement.
+
+## Shipped addendum, R28-B (2026-10-16)
+
+Batch R28-B shipped F4 + F5 as dispositioned. All work is in
+`crates/ob-extract/src/contribution.rs`; four `r28b_*` tests
+are added and no pre-existing test body changes (839 → 843).
+
+- **F4 — the verb-slot rule, stated once** (in
+  `weekday_in_object_continuation_pp`): the from-crossing
+  does not depend on the verb's shape. A finite verb
+  standing in the clause's verb slot directly before the
+  weekday PP, carrying no object and no auxiliary ("the
+  choir sang on Sunday from Kent …"), is the claim's own
+  clause verb exactly as the same verb carrying an object
+  ("sang hymns") or an auxiliary ("was travelling") is,
+  when the weekday's forward stack reaches the claim's
+  target through a "from" PP: the claim-phrase span and
+  the from-scope are the same whatever stands in the verb
+  slot. The forward arm is now judged once in the
+  consultation and reports whether its stack carried a
+  "from" PP; the backward walk's finite-verb branch reads
+  that report beside the standing passive arm. `drove` /
+  `rode` holding at the audited HEAD is the shape of the
+  rule, not an exception list: they stand in no
+  finite-form list, so the walk never saw a verb there at
+  all — no verb list was extended. The until form and the
+  accompaniment continuation consume identically (both
+  carry the from PP); a "from" deeper in the stack
+  (behind a static or destination PP) is the same
+  from-scope. Boundaries verified unmoved: no-PP and
+  destination-only and static-PP-only stacks with a bare
+  verb keep the alternatives readings; "from" before the
+  weekday consumes by its standing route; the passive
+  shape keeps its alternatives.
+- **F5(a) — the conjoined from-crossing.** The
+  mechanism-6 boundary fallback now also falls when the
+  forward arm reaches the target through a "from" PP in
+  the weekday's own conjunct — the single-clause
+  from-crossing composed across the clause boundary. All
+  18 subject×continuation rows (from / from+destination /
+  from+accompaniment × full, bare, pronoun, proper,
+  possessive, bare-plural subjects) read silence, as do
+  the until twin, the comma variant, and the doubled
+  from; a bare verb in the second clause composes with
+  F4's rule the same way. Bounds verified unmoved: no
+  continuation ⇒ alternatives; destination only ⇒
+  alternatives; accompaniment only ⇒ Nov 8 clean; static
+  PPs (in the hall, at school, for the choir) ⇒
+  alternatives; weekday in the first conjunct consumes
+  (forward arm, as before); "from" before the weekday in
+  the second conjunct keeps the pinned G2-C1 reading
+  (Nov 8, Sunday named) — that "from" is not in the
+  forward arm's stack and the fallback never sees it.
+  One composition recorded plainly: the from form with a
+  third full conjunct after the target ("… from Kent to
+  November 8 and the singers rehearsed pieces") reads
+  consumed, as its single-clause twin does; the
+  alternatives-restoring third-conjunct bound is the
+  no-from form (R27-A mechanism 6's pin), which stands
+  and is re-pinned in `r28b_conjoined_second_clause_
+  from_crossing`.
+- **F5(b) — the destination NP rule** (stated once in
+  the new `destination_to_end`, read by the forward arm,
+  by `forward_has_intervening_pp`, and by the W4 naming
+  consultation): a "to" PP is crossed as a destination
+  when its object is a place-shaped NP and a further
+  target construction follows it. Place-shaped is a
+  shape, not a determiner: determiner-headed ("to the
+  hall"), possessive-headed ("to our hall", "to my
+  hall"), or a bare place noun/name ("to church", "to
+  Seattle", "to London") all cross — the other
+  prepositions' behavior (into / past / toward / towards
+  / through crossing the same objects) is the control
+  and is unchanged. A "to" whose object is a framed date
+  or a relative phrase is the claim's target, never a
+  destination. **Ambiguity choice, stated per the
+  disposition:** a bare common noun standing in this
+  position — between an origin PP and the target
+  construction that must follow for the crossing to
+  fire — is read as the itinerary object; the position
+  is what makes the NP place-shaped, exactly as a
+  determiner-headed NP of any noun already was, and no
+  itinerary vocabulary list is kept.
+- **F5 tail (RT28-W4) — silenced in the naming, scoped
+  to the naming.** The second Sunday in "… from Kent to
+  the hall on Sunday to November 8" is NOT consumed on
+  the signal surfaces: its occurrence bounds the
+  target's governor window, which is exactly why Nov 8
+  asserts in that shape, and consuming it outright
+  (the batch's first attempt) demoted the target to
+  silence — the opposite of the disposition. Instead,
+  `analyze_group` computes the Sunday's resolutions
+  through a naming-only reading of the consultation
+  (`weekday_consumed_in_destination_stack`: the same
+  walk with a backward destination-"to" crossing
+  enabled) and excludes them from the group's named
+  alternatives, by date value, beside the standing
+  `consumed_bases` exclusion. The witness now reads
+  Nov 8 with an empty note on all three surfaces; the
+  from and accompaniment twins silence both Sundays as
+  before; the bare-destination twin reads identically
+  to its determiner twin. Recorded scope note: the
+  plain-line (ungrouped) twin of the shape still names
+  the phantom beside Nov 8 — plain composition names
+  governed dates through its own multi-site assembly
+  (its Nov 1 naming in that line is itself standing),
+  the tail's witness and twins are group-shaped, and
+  the batch did not rework the plain assembly for a
+  MINOR note-noise tail.
+- **Flagged items.** None. No pre-existing pin moved
+  (839 → 843, the four new pins only; the full suite and
+  clippy are green at the shipped tree, and the
+  differential probe over the F4/F5 witness grids —
+  100 shapes × 3 surfaces against the audited HEAD —
+  changed only the dispositioned readings: every
+  changed line is a phantom removal or a twin-matching
+  W4 note silencing, and every boundary shape in the
+  grids is byte-identical).

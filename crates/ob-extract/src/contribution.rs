@@ -2193,6 +2193,96 @@ fn passive_aux_before(tokens: &[String], verb: usize) -> bool {
     false
 }
 
+/// Round 28 (R28-B, F5 = red team RT28-W3): the
+/// end of the DESTINATION PP the "to" at `k`
+/// heads, if it heads one — the index just past
+/// its object's noun run. One rule for every site
+/// that crosses a destination "to" (the forward
+/// arm, its intervening-PP twin, and the backward
+/// walk): a "to" is crossed as a destination when
+/// its object is a PLACE-SHAPED NP and a further
+/// target construction follows it (another "to" /
+/// "until", a conjunction, or a further PP of the
+/// stack). Place-shaped is a shape, not a
+/// determiner: the NP may be determiner-headed
+/// ("to the hall", the R27-A rule), possessive-
+/// headed ("to our hall"), or bare ("to church",
+/// "to Seattle") — the other destination
+/// prepositions (into / past / toward / towards /
+/// through) have always crossed the same bare
+/// objects through their generic noun run, and
+/// "to" is now judged by the same shape. A bare
+/// common noun standing in this position — between
+/// an origin PP and the target construction that
+/// must follow for the crossing to fire — is read
+/// as the itinerary object: the position is what
+/// makes the NP place-shaped, exactly as a
+/// determiner-headed NP of any noun already was,
+/// and no itinerary vocabulary list is kept. Two
+/// shapes are never destinations: a "to" whose
+/// object is a framed date (the claim's target
+/// itself — "to November 8"), and a "to" whose
+/// object is a relative phrase (likewise the
+/// target's own shape, judged by its own arm).
+fn destination_to_end(
+    raw_tokens: &[&str],
+    tokens: &[String],
+    k: usize,
+    today: SimpleDate,
+) -> Option<usize> {
+    if tokens.get(k).map(String::as_str) != Some("to") {
+        return None;
+    }
+    // The NP's head: determiners and possessive
+    // determiners the object wears, crossed with
+    // any nothings among them (R28-A, F2).
+    let mut m = k + 1;
+    while tokens.get(m).is_some_and(|w| {
+        w.is_empty()
+            || matches!(w.as_str(), "the" | "a" | "an")
+            || POSSESSIVE_DETERMINERS.contains(&w.as_str())
+    }) {
+        m += 1;
+    }
+    // A date or a relative phrase standing as the
+    // object is the claim's target, not a
+    // destination.
+    if raw_tokens
+        .get(m..)
+        .is_some_and(|rest| parse_date_prefix(rest, today).is_some())
+    {
+        return None;
+    }
+    if matches!(
+        tokens.get(m).map(String::as_str),
+        Some("next") | Some("this")
+    ) && tokens.get(m + 1).is_some_and(|w| weekday_word(w).is_some())
+    {
+        return None;
+    }
+    let mut n = m;
+    while tokens.get(n).is_some_and(|w| {
+        w.is_empty()
+            || (noun_like_word(w)
+                && !is_finite_verb_form(w)
+                && w.as_str() != "until"
+                && !is_continuation_preposition(w))
+    }) {
+        n += 1;
+    }
+    if n == m {
+        return None;
+    }
+    let next = tokens.get(n).map(String::as_str);
+    if matches!(next, Some("to") | Some("until") | Some("and") | Some("or"))
+        || next.is_some_and(is_continuation_preposition)
+    {
+        Some(n)
+    } else {
+        None
+    }
+}
+
 /// Round 26 (R26-C, F2 mechanism 1): whether a
 /// further prepositional phrase stands between
 /// the weekday at `i` in `tokens` and the claim's
@@ -2200,7 +2290,12 @@ fn passive_aux_before(tokens: &[String], verb: usize) -> bool {
 /// forward arm would cross, judged here only for
 /// whether at least one PP intervenes before the
 /// target preposition is reached.
-fn forward_has_intervening_pp(tokens: &[String], i: usize) -> bool {
+fn forward_has_intervening_pp(
+    raw_tokens: &[&str],
+    tokens: &[String],
+    i: usize,
+    today: SimpleDate,
+) -> bool {
     let mut k = i + 1;
     let mut intervening = false;
     loop {
@@ -2223,45 +2318,20 @@ fn forward_has_intervening_pp(tokens: &[String], i: usize) -> bool {
         match tokens.get(k).map(String::as_str) {
             Some("to") | Some("until") => {
                 // Round 27 (R27-A, F1 mechanism 4): a
-                // destination "to" — determiner-headed
+                // destination "to" — a place-shaped
                 // place NP, a further target
                 // construction after it — is an
                 // intervening PP, not the claim's
                 // target, exactly as the main forward
-                // arm crosses it.
+                // arm crosses it. Round 28 (R28-B,
+                // F5): the place-shaped judgment is
+                // the shared `destination_to_end`
+                // rule (determiner-headed,
+                // possessive-headed, and bare objects
+                // alike), not this arm's own
+                // determiner check.
                 if tokens[k] == "to" {
-                    let mut m = k + 1;
-                    let mut det_seen = false;
-                    while tokens
-                        .get(m)
-                        .is_some_and(|w| w.is_empty() || matches!(w.as_str(), "the" | "a" | "an"))
-                    {
-                        det_seen = det_seen || matches!(tokens[m].as_str(), "the" | "a" | "an");
-                        m += 1;
-                    }
-                    let mut n = m;
-                    while tokens.get(n).is_some_and(|w| {
-                        // Round 28 (R28-A, F2): the
-                        // destination noun run crosses
-                        // nothings, as every other run
-                        // in this walk does — a nothing
-                        // inside the place NP ("to the
-                        // hall \u{200b} to November 8")
-                        // is nothing in it.
-                        w.is_empty()
-                            || (noun_like_word(w)
-                                && !is_finite_verb_form(w)
-                                && w.as_str() != "until"
-                                && !is_continuation_preposition(w))
-                    }) {
-                        n += 1;
-                    }
-                    let next = tokens.get(n).map(String::as_str);
-                    if det_seen
-                        && n > m
-                        && (matches!(next, Some("to") | Some("until") | Some("and") | Some("or"))
-                            || next.is_some_and(is_continuation_preposition))
-                    {
+                    if let Some(n) = destination_to_end(raw_tokens, tokens, k, today) {
                         intervening = true;
                         k = n;
                         continue;
@@ -2879,11 +2949,57 @@ fn subject_prep_before(tokens: &[String], i: usize) -> Option<usize> {
 /// the claim's target after "to"/"until"; (c) a
 /// weekday PP trailing the claim's target date is
 /// judged by `weekday_pp_after_claimed_target`.
+///
+/// Round 28 (R28-B, F5 tail = red team RT28-W4):
+/// the consultation has a second, NAMING-ONLY
+/// reading, entered through
+/// `weekday_consumed_in_destination_stack`: with
+/// `cross_destination_to` set, the backward walk
+/// also crosses a destination "to" PP standing
+/// before the weekday in the stack ("… from Kent
+/// to the hall on Sunday to November 8"). That
+/// Sunday is the stack's own material, but it is
+/// NOT consumed on the signal surfaces: its
+/// occurrence bounds the target's governor window,
+/// which is exactly why the target asserts in that
+/// shape. The naming reading exists so the group's
+/// naming can leave the Sunday's resolution
+/// unnamed beside the assertion it bounds — the
+/// phantom is silenced in the note, the target
+/// keeps asserting. Every signal-scan caller uses
+/// the standing reading (`cross_destination_to`
+/// unset) and is unchanged.
 fn weekday_in_object_continuation_pp(
     raw_tokens: &[&str],
     tokens: &[String],
     i: usize,
     today: SimpleDate,
+) -> bool {
+    weekday_in_object_continuation_pp_crossing(raw_tokens, tokens, i, today, false)
+}
+
+/// Whether the weekday at `i` is consumed as a PP
+/// inside the destination stack for NAMING
+/// purposes (round 28, R28-B, F5 tail = red team
+/// RT28-W4): the consultation above with its
+/// backward destination crossing enabled. Read
+/// only by `analyze_group`'s naming exclusion;
+/// never by a signal scan.
+fn weekday_consumed_in_destination_stack(
+    raw_tokens: &[&str],
+    tokens: &[String],
+    i: usize,
+    today: SimpleDate,
+) -> bool {
+    weekday_in_object_continuation_pp_crossing(raw_tokens, tokens, i, today, true)
+}
+
+fn weekday_in_object_continuation_pp_crossing(
+    raw_tokens: &[&str],
+    tokens: &[String],
+    i: usize,
+    today: SimpleDate,
+    cross_destination_to: bool,
 ) -> bool {
     // Round 25 (R25-B, F5b = review R25-2): the
     // weekday word at `i` may be the object word of
@@ -2941,6 +3057,14 @@ fn weekday_in_object_continuation_pp(
     // specifically — the one ending the forward
     // arm's every-conjunct judgment below revisits.
     let mut boundary_break = false;
+    // Round 28 (R28-B, F4 + F5): the forward arm is
+    // judged once, here, and read by three sites
+    // below: the finite-verb branch (the verb-slot
+    // rule), the boundary fallback (the conjoined
+    // from-crossing), and the consultation's own
+    // final judgment — one judgment, not three.
+    let (forward_ok, forward_conjuncts, forward_from) =
+        forward_walk_continuation(raw_tokens, tokens, i, today);
     let reached_target = loop {
         if j == 0 {
             break false;
@@ -3196,8 +3320,40 @@ fn weekday_in_object_continuation_pp(
                 let passive_stack_cross = !object_crossed
                     && !verb_crossed
                     && passive_aux_before(tokens, j - 1)
-                    && forward_has_intervening_pp(tokens, i);
-                if !object_crossed && !passive_stack_cross {
+                    && forward_has_intervening_pp(raw_tokens, tokens, i, today);
+                // Round 28 (R28-B, F4 = red team
+                // RT28-W1): THE VERB-SLOT RULE, stated
+                // once — the from-crossing does not
+                // depend on the verb's shape. A finite
+                // verb standing in the clause's verb
+                // slot directly before the weekday PP,
+                // carrying no object and no auxiliary
+                // ("the choir sang on Sunday from
+                // Kent …"), is the claim's own clause
+                // verb exactly as the same verb
+                // carrying an object ("sang hymns") or
+                // an auxiliary ("was travelling") is,
+                // when the weekday's forward stack
+                // reaches the claim's target through a
+                // "from" PP: the claim-phrase span and
+                // the from-scope are the same whatever
+                // stands in the verb slot. (The two
+                // verbs that already held — "drove" /
+                // "rode" — hold because they stand in
+                // no finite-form list, so the walk
+                // never saw a verb there at all; that
+                // accident is the shape of this rule,
+                // not an exception list.) Without a
+                // from PP in the stack the standing
+                // readings hold untouched: no target
+                // construction, a destination-only or
+                // static-PP stack, and the passive
+                // shape above keep the alternatives /
+                // target readings the bare verb has
+                // always given there.
+                let bare_from_cross =
+                    !object_crossed && !verb_crossed && forward_ok && forward_from;
+                if !object_crossed && !passive_stack_cross && !bare_from_cross {
                     break false;
                 }
                 if verb_crossed && subject_since_verb {
@@ -3213,6 +3369,33 @@ fn weekday_in_object_continuation_pp(
                 object_crossed = true;
                 j -= 1;
             }
+        } else if cross_destination_to
+            && w == "to"
+            && object_crossed
+            && destination_to_end(raw_tokens, tokens, j - 1, today).is_some()
+        {
+            // Round 28 (R28-B, F5 tail = red team
+            // RT28-W4): the NAMING consultation
+            // only (see
+            // `weekday_in_object_continuation_pp`):
+            // a destination "to" PP standing BEFORE
+            // the weekday in the stack is crossed
+            // backward exactly as the forward arm
+            // crosses it forward — "… from Kent to
+            // the hall on Sunday to November 8": the
+            // destination is the stack's own
+            // material, its object run already
+            // crossed behind this "to", and the
+            // Sunday after it stands inside the same
+            // continuation. The shared
+            // `destination_to_end` rule judges the
+            // "to": a "to" naming a date (the
+            // claim's target standing before a
+            // trailing PP) is never a destination,
+            // and a "to" with no destination object
+            // crossed behind it ends the walk as
+            // every uncrossed "to" always has.
+            j -= 1;
         } else {
             break false;
         }
@@ -3242,12 +3425,29 @@ fn weekday_in_object_continuation_pp(
         // consumed. Without that crossing the boundary
         // stands and the alternatives reading holds.
         if boundary_break {
-            let (ok, conjuncts) = forward_walk_continuation(raw_tokens, tokens, i, today);
-            return ok && conjuncts >= 1;
+            // Round 28 (R28-B, F5a = red team
+            // RT28-W2): the boundary also falls when
+            // the forward arm reaches the target
+            // through a "from" PP in the weekday's
+            // own conjunct — the single-clause
+            // from-crossing composed across the
+            // clause boundary. In a single clause the
+            // same stack consumes ("the band played
+            // songs on Sunday from Kent to November
+            // 8" alone reads silence); the clause
+            // boundary behind the walk does not
+            // change the from-scope ahead of it.
+            // Stacks with no "from" — no continuation,
+            // a destination PP alone, a static PP —
+            // keep the pinned alternatives, and a
+            // "from" standing BEFORE the weekday is
+            // not in this arm's stack at all, so the
+            // pinned G2-C1 reading stands.
+            return forward_ok && (forward_conjuncts >= 1 || forward_from);
         }
         return false;
     }
-    forward_walk_continuation(raw_tokens, tokens, i, today).0
+    forward_ok
 }
 
 /// The consultation's forward arm, standing alone
@@ -3271,13 +3471,22 @@ fn weekday_in_object_continuation_pp(
 /// accompaniment prepositions (see the arms
 /// below), without disturbing the static-PP
 /// readings.
+/// Round 28 (R28-B, F4 + F5): the arm also reports
+/// whether the stack it crossed to the target
+/// carried a "from" PP — the from-scope the
+/// backward walk's verb-slot rule and the
+/// conjoined-boundary fallback both read (see
+/// `weekday_in_object_continuation_pp`). A stack
+/// of static, destination, or accompaniment PPs
+/// alone does not set it.
 fn forward_walk_continuation(
     raw_tokens: &[&str],
     tokens: &[String],
     i: usize,
     today: SimpleDate,
-) -> (bool, usize) {
+) -> (bool, usize, bool) {
     let mut conjuncts_crossed = 0usize;
+    let mut from_crossed = false;
     let mut k = i + 1;
     // The post-PP slot: the auxiliary stack's slot
     // words, judged by the stack's own class.
@@ -3352,43 +3561,21 @@ fn forward_walk_continuation(
                 // "to" that names no date may head a
                 // DESTINATION PP instead of the
                 // claim's target — "… from Kent to
-                // the hall to November 8": the
-                // discriminator is the determiner-
-                // headed place NP after it, with a
-                // further target construction after
-                // that. Cross the PP and judge what
-                // follows by the same arms; a "to"
-                // with no determiner-headed NP, or
-                // nothing after its NP, ends the arm
-                // exactly as before.
-                if tokens[k] == "to"
-                    && tokens[k + 1..m]
-                        .iter()
-                        .any(|w| matches!(w.as_str(), "the" | "a" | "an"))
-                {
-                    let mut n = m;
-                    while tokens.get(n).is_some_and(|w| {
-                        // Round 28 (R28-A, F2): the
-                        // destination noun run crosses
-                        // nothings, as its twin in
-                        // `forward_has_intervening_pp`
-                        // now does and as the R26-C M1
-                        // comment on this walk states —
-                        // a nothing inside the place NP
-                        // is nothing in it.
-                        w.is_empty()
-                            || (noun_like_word(w)
-                                && !is_finite_verb_form(w)
-                                && w.as_str() != "until"
-                                && !is_continuation_preposition(w))
-                    }) {
-                        n += 1;
-                    }
-                    let next = tokens.get(n).map(String::as_str);
-                    if n > m
-                        && (matches!(next, Some("to") | Some("until") | Some("and") | Some("or"))
-                            || next.is_some_and(is_continuation_preposition))
-                    {
+                // the hall to November 8". Round 28
+                // (R28-B, F5 = red team RT28-W3): the
+                // discriminator is the shared
+                // place-shaped NP rule
+                // (`destination_to_end`) — determiner-
+                // headed, possessive-headed, or a bare
+                // place noun/name — with a further
+                // target construction after it. Cross
+                // the PP and judge what follows by the
+                // same arms; a "to" heading no
+                // place-shaped NP, or with nothing
+                // after its NP, ends the arm exactly
+                // as before.
+                if tokens[k] == "to" {
+                    if let Some(n) = destination_to_end(raw_tokens, tokens, k, today) {
                         k = n;
                         continue;
                     }
@@ -3396,6 +3583,13 @@ fn forward_walk_continuation(
                 break false;
             }
             Some(w) if is_continuation_preposition(w) => {
+                // Round 28 (R28-B, F4 + F5): a "from"
+                // PP crossed in the stack is the
+                // from-scope the consultation's other
+                // arms read.
+                if w == "from" {
+                    from_crossed = true;
+                }
                 let mut m = k + 1;
                 while tokens.get(m).is_some_and(|w| {
                     w.is_empty()
@@ -3510,7 +3704,7 @@ fn forward_walk_continuation(
             _ => break false,
         }
     };
-    (forward_ok, conjuncts_crossed)
+    (forward_ok, conjuncts_crossed, from_crossed)
 }
 
 /// Round 25 (R25-B, F5c = review R25-3): a weekday
@@ -7784,6 +7978,29 @@ fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) -> GroupAna
         }
         bases
     };
+    // Round 28 (R28-B, F5 tail = red team RT28-W4):
+    // the resolutions of bare Sundays standing as
+    // PPs inside the destination stack ("… from
+    // Kent to the hall on Sunday to November 8"),
+    // read by the naming-only consultation
+    // (`weekday_consumed_in_destination_stack`).
+    // Such a Sunday's occurrence bounds the
+    // target's governor window — the target asserts
+    // exactly as it does today — but the Sunday is
+    // the stack's own material, and its resolution
+    // is named nowhere beside that assertion: the
+    // from and accompaniment twins of the shape
+    // consume both Sundays outright, and this shape
+    // silences the naming the same way. Excluded by
+    // date value, as `consumed_bases` above is.
+    let stack_consumed: Vec<SimpleDate> = positional
+        .iter()
+        .filter(|(_, start, _)| {
+            tokens.get(*start).map(String::as_str) == Some("sunday")
+                && weekday_consumed_in_destination_stack(&raw_tokens, &tokens, *start, today)
+        })
+        .map(|(d, _, _)| *d)
+        .collect();
     // Round 18 (R18-2): the per-occurrence judgments
     // are collected first and applied in a second
     // pass, because governance attaches to the DATE
@@ -8063,7 +8280,11 @@ fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) -> GroupAna
                 }
             }
             for d in &trailing_named {
-                if *d != contributed && !consumed_bases.contains(d) && !alternatives.contains(d) {
+                if *d != contributed
+                    && !consumed_bases.contains(d)
+                    && !stack_consumed.contains(d)
+                    && !alternatives.contains(d)
+                {
                     alternatives.push(*d);
                 }
             }
@@ -8084,7 +8305,11 @@ fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) -> GroupAna
     if distinct.len() == 1 && partial.is_none() {
         let mut alternatives: Vec<SimpleDate> = Vec::new();
         for d in &trailing_named {
-            if *d != distinct[0] && !consumed_bases.contains(d) && !alternatives.contains(d) {
+            if *d != distinct[0]
+                && !consumed_bases.contains(d)
+                && !stack_consumed.contains(d)
+                && !alternatives.contains(d)
+            {
                 alternatives.push(*d);
             }
         }
@@ -8111,7 +8336,10 @@ fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) -> GroupAna
     // cancelled)" names nothing anywhere.
     if distinct.len() >= 2 {
         for d in &trailing_named {
-            if !consumed_bases.contains(d) && !alternatives.contains(d) {
+            if !consumed_bases.contains(d)
+                && !stack_consumed.contains(d)
+                && !alternatives.contains(d)
+            {
                 alternatives.push(*d);
             }
         }
@@ -29210,5 +29438,430 @@ Youth group meets Wednesday at 6 PM.
             Some(nov(15)),
             "{line}: the glued weekday reading stands"
         );
+    }
+
+    #[test]
+    fn r28b_bare_finite_verb_from_crossing() {
+        // Round 28 (R28-B, F4 = red team RT28-W1):
+        // a bare finite verb between the subject
+        // and the weekday PP defeated the
+        // from-crossing — the walk crossed the
+        // clause's verb only when an object stood
+        // behind it (or an auxiliary before it), so
+        // the ordinary intransitive sentence
+        // asserted the phantom October 18 while its
+        // object and auxiliary twins read silence.
+        // The verb-slot rule (stated once in
+        // `weekday_in_object_continuation_pp`): a
+        // finite verb in the verb slot is the
+        // claim's own clause verb whatever its
+        // shape, when the forward stack reaches the
+        // target through a "from" PP. The breaking
+        // grid's representatives, the two verbs
+        // that already held ("drove" / "rode" —
+        // they stand in no finite-form list, the
+        // accident that showed the rule's shape),
+        // and the object/auxiliary twins all read
+        // silence on every surface.
+        for verb in [
+            "sang",
+            "played",
+            "travelled",
+            "walked",
+            "went",
+            "met",
+            "spoke",
+            "taught",
+            "left",
+            "drove",
+            "rode",
+        ] {
+            let group =
+                format!("(moved November 1, the choir {verb} on Sunday from Kent to November 8)");
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{group}: the bare verb reads as its twins"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+        }
+        for group in [
+            // The object and auxiliary twins.
+            "(moved November 1, the choir sang hymns on Sunday from Kent to November 8)",
+            "(moved November 1, the choir was travelling on Sunday from Kent to November 8)",
+            "(moved November 1, the choir has travelled on Sunday from Kent to November 8)",
+            "(moved November 1, the choir did travel on Sunday from Kent to November 8)",
+            // The until form and the accompaniment
+            // continuation break identically and
+            // consume identically.
+            "(moved November 1, the choir sang on Sunday from Kent until November 8)",
+            "(moved November 1, the choir sang on Sunday from Kent with the choir to November 8)",
+            // A "from" deeper in the stack — behind
+            // a static PP or a destination PP — is
+            // the same from-scope.
+            "(moved November 1, the choir sang on Sunday in the hall from Kent to November 8)",
+            "(moved November 1, the choir sang on Sunday to the hall from Kent to November 8)",
+            // The verb-less fragment in the slot has
+            // always consumed.
+            "(moved November 1, baked beans on Sunday from Kent to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads silence");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+        }
+        // BOUNDARIES THAT STAND: with no "from" in
+        // the stack, the bare verb's standing
+        // readings do not move — a destination-only
+        // or static-PP stack offers both dates as
+        // alternatives, exactly as the bare shape
+        // always has (its object twins assert the
+        // target there, as pinned since R27-A).
+        for group in [
+            "(moved November 1, the choir sang on Sunday to November 8)",
+            "(moved November 1, the choir sang on Sunday in the hall to November 8)",
+            "(moved November 1, the choir sang on Sunday to the hall to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: nothing asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![oct(18), nov(8)],
+                "{group}: both dates stay on offer as alternatives"
+            );
+        }
+        // "from" BEFORE the weekday consumes by its
+        // standing route and is untouched.
+        let group = "(moved November 1, the choir sang from Kent on Sunday to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: the from-before shape reads silence"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+    }
+
+    #[test]
+    fn r28b_conjoined_second_clause_from_crossing() {
+        // Round 28 (R28-B, F5a = red team RT28-W2):
+        // a from-PP after the weekday in a conjoined
+        // second clause defeated the mechanism-5/6
+        // boundary for every subject kind — the
+        // backward walk died on the boundary and the
+        // forward arm's target reach was never
+        // consulted for its from-scope. The boundary
+        // now falls when the forward arm reaches the
+        // target through a "from" PP in the weekday's
+        // own conjunct: the single-clause crossing
+        // composed across the clause boundary.
+        for group in [
+            // The subject-kind grid, from form.
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and band played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and they played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and Pastor Lee played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and our band played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and singers played songs on Sunday from Kent to November 8)",
+            // from+destination and from+accompaniment.
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday from Kent to the hall to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday from Kent with the choir to November 8)",
+            // The until twin, the comma variant, the
+            // doubled from.
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday from Kent until November 8)",
+            "(moved November 1, the choir sang hymns, and the band played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday from Kent from Kent to November 8)",
+            // The F4 composition: a bare verb in the
+            // second clause crosses the same way.
+            "(moved November 1, the choir sang hymns and the band played on Sunday from Kent to November 8)",
+            // The single-clause twin of the second
+            // clause, pinned beside its composition.
+            "(moved November 1, the band played songs on Sunday from Kent to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: the from-crossing composes");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+        }
+        // BOUNDARIES THAT STAND (mechanisms 5/6's
+        // pinned readings in the same grid): no
+        // continuation, a destination alone, and
+        // static PPs offer both dates as
+        // alternatives; an accompaniment alone
+        // asserts the target clean, as it always
+        // has.
+        for group in [
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday to the hall to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday in the hall to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday at school to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday for the choir to November 8)",
+            // A third full conjunct after the target
+            // restores the alternatives (R27-A
+            // mechanism 6's pinned form).
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday to November 8 and the singers rehearsed pieces)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: nothing asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![oct(18), nov(8)],
+                "{group}: both dates stay on offer as alternatives"
+            );
+        }
+        let group = "(moved November 1, the choir sang hymns and the band played songs on Sunday with the choir to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the accompaniment-only target asserts clean"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+        // The weekday in the FIRST conjunct with
+        // the from-PP consumes (the forward arm, as
+        // it always has).
+        let group = "(moved November 1, the choir sang hymns on Sunday from Kent and the band played songs to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: the first-conjunct shape reads silence"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+        // "from" BEFORE the weekday in the second
+        // conjunct keeps the pinned G2-C1 reading:
+        // the target asserts, the Sunday named.
+        let group = "(moved November 1, the choir sang hymns and the band played songs from Kent on Sunday to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the G2-C1 target asserts"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18)],
+            "{group}: the Sunday stays named, as pinned"
+        );
+    }
+
+    #[test]
+    fn r28b_destination_to_place_shaped_np() {
+        // Round 28 (R28-B, F5b = red team RT28-W3,
+        // review Q4 observation): mechanism 4's
+        // destination crossing required a
+        // determiner-headed NP under "to" alone, so
+        // a bare or possessive-headed destination
+        // object asserted the phantom while the
+        // same objects under into / past / toward /
+        // towards / through consumed. The crossing
+        // is now the shared place-shaped rule
+        // (`destination_to_end`): determiner-headed,
+        // possessive-headed, and bare place
+        // noun/name objects under "to" cross, with
+        // a further target construction after them.
+        for object in [
+            // Bare itinerary objects (the witnesses).
+            "Kent",
+            "there",
+            "church",
+            "school",
+            "town",
+            "Seattle",
+            "hall",
+            "home",
+            "London",
+            // Possessive-headed.
+            "our hall",
+            "my hall",
+            "their hall",
+            // Determiner-headed (the standing rule).
+            "the hall",
+            "a hall",
+        ] {
+            let group = format!(
+                "(moved November 1, the choir sang hymns on Sunday from Kent to {object} to November 8)"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: the destination crosses");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+        }
+        // The control: the other destination
+        // prepositions cross the same bare and
+        // possessive objects, unchanged.
+        for prep in ["into", "past", "toward", "towards", "through"] {
+            for object in ["church", "our hall"] {
+                let group = format!(
+                    "(moved November 1, the choir sang hymns on Sunday from Kent {prep} {object} to November 8)"
+                );
+                let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{group}: the control crossing stands");
+                assert_eq!(
+                    c.for_sunday_second_dates,
+                    Vec::<SimpleDate>::new(),
+                    "{group}: nothing is named"
+                );
+            }
+        }
+        // A "to" naming the target date itself is
+        // never a destination: the plain target
+        // shape keeps its standing reading.
+        let group = "(moved November 1, the choir sang hymns on Sunday from Kent to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: the from-governed target reads silence"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+    }
+
+    #[test]
+    fn r28b_destination_stack_second_sunday_naming() {
+        // Round 28 (R28-B, F5 tail = red team
+        // RT28-W4): a second weekday PP after a
+        // destination PP named the phantom in the
+        // note while the target asserted correctly.
+        // The Sunday in that position is the
+        // destination stack's own material — its
+        // occurrence bounds the target's governor
+        // window, which is why the target asserts —
+        // so the naming is silenced and the
+        // assertion stands, exactly as the from and
+        // accompaniment twins already silence both
+        // Sundays.
+        let group = "(moved November 1, the choir sang hymns on Sunday from Kent to the hall on Sunday to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the target keeps asserting"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the phantom is named nowhere"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{group}: keep-through asserts the target"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named on the relative path"
+        );
+        // The bare-destination twin (F5b) reads
+        // identically to its determiner twin.
+        let group = "(moved November 1, the choir sang hymns on Sunday from Kent to church on Sunday to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the bare twin asserts its target"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the bare twin names nothing"
+        );
+        // The twins that silence both Sundays.
+        for group in [
+            "(moved November 1, the choir sang hymns on Sunday from Kent on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent with the choir on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent in the hall on Sunday to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: both Sundays are silent");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named"
+            );
+        }
     }
 }

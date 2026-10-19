@@ -591,3 +591,147 @@ against the same bar (zero BLOCKER + zero MAJOR over the
 close, MINORs fixed or dispositioned). The Tier-2 final
 gate remains unstarted and is not the coordinator's to
 start.
+
+## Shipped addendum, R28-A (2026-10-16)
+
+Batch R28-A shipped F1 + F2 as dispositioned. All work is in
+`crates/ob-extract/src/contribution.rs`; five `r28a_*` tests
+are added and no pre-existing test body changes (834 → 839).
+
+- **F1 — ungluing is a property of the token.** `segment_tokens`
+  now judges three phrase families on the unglued token vector
+  at every phrase position and unglues every word of a matching
+  phrase: the governor phrases, the cancellation phrases, and
+  the bare phrase units; the standing structural-word ungluing
+  (auxiliaries, continuation prepositions, "to", "off") is
+  unchanged. All-words-glued heads (`*hold *off`, `*used *to
+  *be` — including the worst witness, whose expressly
+  cancelled core stays cancelled), second/third-word glue
+  (`hold *off`, `put *back`, `call *off`, `used *to be`,
+  `used to *be`, `instead *of`, `rather *than`, `old *date`,
+  `back *together`), the glued walk words (`*on`, `*to`,
+  `*were`), and glued `off` alone in group/trailing positions
+  all read as their spaced twins. **The REL decision:
+  routed.** The relative-shape readers read the trailing
+  segment through the same `segment_tokens`, so the glued
+  cancellation phrases (`*never *mind`, `*cancel *it`,
+  `*drop *it`, `*scratch *that`, `*forget *about`) govern on
+  the REL surface as their spaced twins do; no standing
+  exception is recorded. The keep-plain readers' own glued
+  forms (`*next Sunday`, `*Monday` before a date) and glued
+  content/date words (`*November`, `*choir`) keep their
+  standing readings, as dispositioned.
+- **F2 — a nothing-token is nothing at positional readers.**
+  `nothing_token` states the class once: Cf-only tokens,
+  separator-only tokens (`*`, `|`, and their multiples and
+  mixtures), and separators glued to nothing. A standalone
+  bullet, tilde, dash, or emoji is NOT a nothing and keeps
+  its standing boundary reading. The positional pass
+  covered, class by class:
+  1. *Phrase matchers and their length narrowings* —
+     `phrase_governs` and every caller (`governed_before`,
+     `governed_before_target`, `governed_after`,
+     `unspent_trailing_governor_fronted`,
+     `is_spent_predicate_fronted` and its bare-test
+     callers) now take word-count phrases built by the new
+     `word_phrase` helper, so the one-word narrowings judge
+     word count: `was` + Cf + participle asserts its clean
+     twin's date, and a 3-word phrase with an interior
+     nothing (`used \u200b to be`) matches in every matcher,
+     `segment_tokens`' own governor check included.
+  2. *Clause-only predicates* — `is_cancellation_only_clause`,
+     `is_prospective_only_clause`, and `is_filler_clause`
+     judge the clause's words that are something.
+  3. *Target-claim phrase searches* — `target_claim`,
+     `group_has_target_claim` (through `target_claim`), the
+     chain's `phrase_with_to`, `active_for_zone_start`'s
+     displacement-phrase scan, and the bare test's
+     governor-consumption walk all read phrases in words.
+  4. *`last()`/adjacency readers* — `use_prospectives` and
+     the split-phrasal pair in both `analyze_group` and
+     `plain_composition` read the window's last word that
+     is something (`last_word`) and the next word after the
+     date's span: `use \u200b November 8` files November 8.
+  5. *Trailing-arm re-judgment* — `weekday_pp_after_claimed_target`:
+     the PP shape check judges the object's words, the
+     framed-date and date-start end equalities tolerate
+     trailing nothings, the noun-run object crosses
+     nothings, and the claim-"to" walk-back crosses
+     nothings with the determiners. The trailing-"to" note
+     noise (the phantom named in the note) dies with it.
+  6. *Forward-walk crossings* — the destination place-NP
+     noun runs in `forward_walk_continuation` and
+     `forward_has_intervening_pp`, and the forward
+     conjunction arm's subject/auxiliary sub-runs, cross
+     nothings as the walk's main runs already did.
+  7. *Date-span reading* — `parse_date_prefix` drops
+     nothing-tokens inside a date's own span, not only
+     Cf-only tokens (`November * 1` reads); the head
+     boundary rule is unchanged, and a standalone `;` or
+     bullet inside a span is still never dropped.
+  8. *Raw-text trailing-group extraction* —
+     `split_last_trailing_group` (in contribution.rs)
+     strips trailing whitespace-separated nothing-tokens
+     before requiring the closing paren, so MINOR-2's
+     trailing Cf no longer defeats extraction on the REL
+     surface; its callers (`strip_trailing_parenthesized`,
+     `strip_all_trailing_parenthesized`,
+     `trailing_group_analyses`) inherit the fix.
+  9. *Sunday-after base scan* — `sunday_after_phrase_run`
+     skips leading nothing-tokens between "after" and its
+     base and counts them in the reported span, as
+     `sunday_after_outcome`'s filtered scan already read
+     them.
+  10. *Clause-break classification at the governance
+     sites (MINOR-3, scoped — see flagged items)* —
+     `governance_clause_break_after_at` wraps the standing
+     classification for `governor_window_start` and
+     `governed_after` only.
+- **Membership/count deltas:** none. `BARE_PHRASE_UNITS`
+  still holds 166 units; no inventory, stem list, or word
+  list gains or loses a member. Test count 834 → 839 (the
+  five `r28a_*` pins).
+- **Flagged items.**
+  1. *The one scoped site (MINOR-3).* The shipped R24-4 pin
+     (`r24a_boundary_token_rule`) classes a separator-only
+     token as a boundary token at every site, and its
+     witness — a separator between a postposed cancellation
+     and the next date (`cancelled * November 8`, plain and
+     group) — reads November 8 asserting, as its comma twin
+     does. MINOR-3's witness (`not * November 8`) requires
+     the opposite at the shared boundary predicate. The
+     batch does not move the pin and does not apply the
+     nothing rule to `clause_break_after_at` globally.
+     Instead, at the two governance sites the disposition
+     names (the governor-window scan and `governed_after`'s
+     clause starts/completeness), a break after a nothing
+     counts only when it stands between a spent
+     cancellation and the next date
+     (`window_break_after_nothing`): a nothing inside a
+     governor phrase (`hold * off`, `drop * it`) or
+     directly after a prospective governor (`not *
+     November 8`) bounds nothing there, and both witnesses
+     read as their twins — the pinned one as its comma
+     twin, MINOR-3's as its clean twin. Every other
+     clause-break consumer (the claim reach's boundedness,
+     the weekday machinery, the fence tests) keeps the
+     standing classification. Named here so the next
+     round's enumeration can falsify it site by site: the
+     exception lives in exactly two call sites and one
+     helper.
+  2. *A standing compound, observed.* `(moved November 1,
+     baked beans to the hall \u200b to November 8 on
+     Sunday)` and its clean twin agree exactly (November 8
+     asserts, the phantom Sunday named in the note): the
+     destination-crossing + trailing-PP compound is not an
+     F2 divergence, and its clean-form reading stands
+     outside this batch's scope.
+- **Collateral check.** The lane batteries (seg, bare, cf,
+  cf2, cf3, walk, walk2, adj, xspan, coming) were re-run
+  against the round-27 close and the R28-A tree with one
+  harness: bare, walk, walk2, adj, xspan, and coming are
+  byte-identical; every changed reading in seg/cf/cf2/cf3
+  (195 line-readings) was checked against its clean twin —
+  168 match an in-battery twin exactly and the remaining
+  27 match clean twins verified individually — with zero
+  unexplained movement.

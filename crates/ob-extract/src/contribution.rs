@@ -699,6 +699,28 @@ fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<SundayAfter> 
 /// poisons the line it trails (round 11, R11-6).
 fn split_last_trailing_group(text: &str) -> Option<(&str, &str)> {
     let text = text.trim_end_matches(['.', ',']);
+    // Round 28 (R28-A, F2 = review MINOR-2): a
+    // nothing-token trailing the group in the raw
+    // text ("(moved … to November 8) \u{200b}", "…
+    // ) *") is nothing after it — the group still
+    // ends the line, so trailing whitespace-
+    // separated nothings come off before the
+    // closing-paren test. The slices returned are
+    // slices of the text with those nothings (and
+    // the punctuation above) removed.
+    let mut text = text;
+    loop {
+        let trimmed = text.trim_end();
+        match trimmed.rsplit_once(char::is_whitespace) {
+            Some((head, last)) if nothing_token(last) => {
+                text = head.trim_end_matches(['.', ',']);
+            }
+            _ => {
+                text = trimmed;
+                break;
+            }
+        }
+    }
     if !text.ends_with(')') {
         return None;
     }
@@ -1127,6 +1149,34 @@ fn cf_only_token(raw: &str) -> bool {
     stripped.len() < raw.len() && !stripped.chars().any(|c| c.is_alphanumeric())
 }
 
+/// Whether a raw token is a NOTHING token (round
+/// 28, R28-A, F2 = review MAJOR-1/MINOR-3): a token
+/// that is nothing but format characters
+/// (`cf_only_token`), a token that is nothing but
+/// this format's own separators standing alone
+/// ("*", "|", "**", "*|"), or a separator glued to
+/// nothing ("|\u{200b}", "*,"). A nothing token is
+/// nothing at every site that reads tokens —
+/// adjacency, walk-backs, slice bounds, date spans,
+/// and raw-text extraction alike — exactly as a
+/// Cf-only token has been since round 27. The class
+/// is stated once, here: other boundary tokens (a
+/// standalone "•", "~", an emoji, a dash) are NOT
+/// nothings — they keep their standing boundary
+/// readings wherever those stand, and a standalone
+/// ";" keeps its segment-boundary shape inside a
+/// date span (see `parse_date_prefix`).
+fn nothing_token(raw: &str) -> bool {
+    if cf_only_token(raw) {
+        return true;
+    }
+    let stripped = strip_format_chars(raw);
+    let core = stripped.trim_matches([
+        '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}', '/',
+    ]);
+    !core.is_empty() && core.chars().all(|c| c == '*' || c == '|')
+}
+
 /// One group token with its wrapping punctuation off,
 /// lowercased: the shape the governor and weekday
 /// checks read.
@@ -1164,67 +1214,130 @@ fn group_token(raw: &str) -> String {
 /// The cleaned tokens of one segment-bearing token
 /// run — a group's words, a plain core, a core
 /// segment — as every segment reader reads them
-/// (round 27, R27-C, F4 = red team RT27-C1): the
-/// shared cleaning (`group_token`), plus the
-/// segment-head rule. A governor word standing at
-/// a segment head governs with its segment, glued
-/// separator or not: `*` and `|` are this format's
-/// own structural separators (a shipped core is
-/// "November 1, 2026 * cancelled"), so a separator
-/// standing at a token's head IS the segment
-/// boundary — the segment it opens may open the
-/// run, follow a standalone separator token or a
-/// clause break, or be opened by the glued
-/// separator itself mid-run — and the word behind
-/// it is that segment's head word. Before this
-/// round the glued form ("*not", "|never",
-/// "*cancelled") cleaned to a word no governor
-/// family knows, so a trailing bare negated date
-/// across such a boundary asserted, and in the
-/// worst witness undid an expressly cancelled
-/// core. The ungluing is governor-scoped: only a
-/// head word that heads a governor phrase —
-/// judged with the words that follow it in its
-/// segment, by the phrase matchers' own rule —
-/// is read as that word; every other token (a
-/// glued date word, a glued content word) keeps
-/// its standing cleaned form byte for byte. The
-/// separators are NOT format characters: the Cf
-/// machinery (`cf_only_token`,
-/// `strip_format_chars`) is untouched, a
-/// standalone "*" / "|" token still cleans to
-/// nothing exactly as it always has, and
-/// `group_token` itself is unchanged — this rule
-/// lives here, where segment heads are read, not
-/// in the token cleaning. Ungluing only makes
-/// the head word visible; every contextual
-/// judgment on it (the auxiliary-slot and
-/// subject-PP narrowings, the determiner-headed
+/// (round 27, R27-C, F4 = red team RT27-C1; round
+/// 28, R28-A, F1 = review MAJOR-3 + red team
+/// RT28-C1): the shared cleaning (`group_token`),
+/// plus the ungluing rule. `*` and `|` are this
+/// format's own structural separators (a shipped
+/// core is "November 1, 2026 * cancelled"), so a
+/// separator glued to a word IS the separator plus
+/// that word. Round 27 read that rule only at a
+/// phrase's HEAD: a separator glued to a phrase's
+/// second or third word — or to every word —
+/// hid the phrase exactly as the pre-fix head
+/// gluing had ("hold *off", "*used *to *be"), and
+/// a glued "off", preposition, or auxiliary in a
+/// walk line was invisible to the walk. The rule
+/// is a property of the TOKEN, not of the phrase
+/// head:
+///
+/// - Governor phrases are judged on the UNGLUED
+///   token vector, at every position of the
+///   phrase: when a phrase of one to three words
+///   (read over the run's words that are
+///   something, as the phrase matchers read) is a
+///   governor phrase, every word of it is read
+///   unglued, the head and the continuations
+///   alike.
+/// - A glued word the segment machinery keys on
+///   structurally — an auxiliary, a preposition
+///   of the continuation family, the target
+///   preposition "to", or "off" (the preposition
+///   the bare test's own inventory carries) — is
+///   read unglued in every position, so the
+///   spaced form's walk, claim, and bare readings
+///   are reachable by its glued form in the same
+///   positions.
+///
+/// Every other token (a glued date word, a glued
+/// content word — "*November", "*choir") keeps its
+/// standing cleaned form byte for byte: ungluing
+/// makes structural words visible, it does not
+/// mint content. The separators are NOT format
+/// characters: the Cf machinery (`cf_only_token`,
+/// `strip_format_chars`) is untouched, a standalone
+/// "*" / "|" token still cleans to nothing exactly
+/// as it always has, and `group_token` itself is
+/// unchanged — this rule lives here, where segment
+/// tokens are read, not in the token cleaning.
+/// Ungluing only makes the word visible; every
+/// contextual judgment on it (the auxiliary-slot
+/// and subject-PP narrowings, the determiner-headed
 /// -s rule, the for-zones) still runs exactly as
 /// it runs on the spaced twin.
 fn segment_tokens(raw_tokens: &[&str]) -> Vec<String> {
     let mut tokens: Vec<String> = raw_tokens.iter().map(|t| group_token(t)).collect();
+    // The unglued view of the whole run: each token
+    // with its glued separators taken off.
+    let unglued: Vec<String> = tokens
+        .iter()
+        .map(|t| {
+            t.trim_start_matches(['*', '|'])
+                .trim_end_matches(['*', '|'])
+                .to_string()
+        })
+        .collect();
+    // The run's word positions in the unglued view.
+    let word_pos: Vec<usize> = (0..tokens.len())
+        .filter(|&i| !unglued[i].is_empty())
+        .collect();
+    let mut unglue = vec![false; tokens.len()];
+    // Governor phrases, judged on the unglued
+    // vector at every phrase position: every word
+    // of a matching phrase is read unglued. The
+    // cancellation phrases are judged the same
+    // way — the trailing readers read them off
+    // these tokens ("*cancel *it" loses its phrase
+    // on the relative path exactly as "*never
+    // *mind" loses its governor phrase there).
+    for s in 0..word_pos.len() {
+        for len in 1..=3usize {
+            if s + len > word_pos.len() {
+                break;
+            }
+            let phrase: Vec<String> = word_pos[s..s + len]
+                .iter()
+                .map(|&p| unglued[p].clone())
+                .collect();
+            if is_governor_phrase(&phrase) || is_cancellation_phrase(&phrase) {
+                for &p in &word_pos[s..s + len] {
+                    unglue[p] = true;
+                }
+            }
+        }
+    }
+    // Bare phrase units, judged on the unglued
+    // vector like the phrases above: a unit
+    // standing in a segment ("back *together") is
+    // the unit, so its words are read unglued for
+    // the bare test that consumes them.
+    {
+        let words: Vec<String> = word_pos.iter().map(|&p| unglued[p].clone()).collect();
+        for s in 0..words.len() {
+            if let Some(span) = bare_phrase_unit_span(&words, s) {
+                for &p in &word_pos[s..s + span] {
+                    unglue[p] = true;
+                }
+            }
+        }
+    }
+    // The structural words: an auxiliary, a
+    // continuation preposition, "to", or "off" is
+    // read unglued wherever it stands.
     for i in 0..tokens.len() {
-        let head = tokens[i].trim_start_matches(['*', '|']);
-        if head.len() == tokens[i].len() || head.is_empty() {
-            continue;
+        let w = unglued[i].as_str();
+        if !w.is_empty()
+            && (AUXILIARY_WORDS.contains(&w)
+                || is_continuation_preposition(w)
+                || w == "to"
+                || w == "off")
+        {
+            unglue[i] = true;
         }
-        let head = head.trim_end_matches(['*', '|']).to_string();
-        if head.is_empty() {
-            continue;
-        }
-        // The head word heads a governor phrase
-        // when a phrase starting on it — the word
-        // alone, or with its segment's following
-        // words — is one.
-        let governs = (1..=3usize).any(|len| {
-            let mut phrase: Vec<String> = Vec::with_capacity(len);
-            phrase.push(head.clone());
-            phrase.extend(tokens[i + 1..].iter().take(len - 1).cloned());
-            phrase.len() == len && is_governor_phrase(&phrase)
-        });
-        if governs {
-            tokens[i] = head;
+    }
+    for i in 0..tokens.len() {
+        if unglue[i] && unglued[i] != tokens[i] {
+            tokens[i] = unglued[i].clone();
         }
     }
     tokens
@@ -1351,6 +1464,12 @@ fn clause_break_after(raw: &str) -> bool {
 /// empty. Any other word is content and stops
 /// the reach-back.
 fn is_filler_clause(clause: &[String]) -> bool {
+    // Round 28 (R28-A, F2): judged on the clause's
+    // words that are something, as in the clause
+    // matchers above — a nothing-token inside a
+    // filler clause is nothing in it.
+    let words: Vec<String> = clause.iter().filter(|w| !w.is_empty()).cloned().collect();
+    let clause: &[String] = &words;
     if clause.iter().all(|w| w.is_empty()) {
         return true;
     }
@@ -1385,6 +1504,16 @@ fn is_filler_clause(clause: &[String]) -> bool {
 /// date is spent on that date, and a run of
 /// them is spent together.
 fn is_cancellation_only_clause(clause: &[String]) -> bool {
+    // Round 28 (R28-A, F2): the clause's words are
+    // its words that are something — a nothing-token
+    // standing inside the clause ("not \u{200b}",
+    // standing as its own clause between dates) is
+    // nothing in it, so the clause is judged on its
+    // words, as the clean twin's clause is. The
+    // positional logic below runs on the filtered
+    // words throughout.
+    let words: Vec<String> = clause.iter().filter(|w| !w.is_empty()).cloned().collect();
+    let clause: &[String] = &words;
     for i in 0..clause.len() {
         for len in 1..=3usize {
             let Some(phrase) = clause.get(i..i + len) else {
@@ -1433,6 +1562,11 @@ fn is_cancellation_only_clause(clause: &[String]) -> bool {
 /// stands inside it, so it never reaches this test
 /// as a between-dates clause.)
 fn is_prospective_only_clause(clause: &[String]) -> bool {
+    // Round 28 (R28-A, F2): judged on the clause's
+    // words that are something, as in
+    // `is_cancellation_only_clause` above.
+    let words: Vec<String> = clause.iter().filter(|w| !w.is_empty()).cloned().collect();
+    let clause: &[String] = &words;
     for i in 0..clause.len() {
         for len in 1..=3usize {
             let Some(phrase) = clause.get(i..i + len) else {
@@ -1485,6 +1619,82 @@ fn is_governor_family_clause(clause: &[String]) -> bool {
 /// unspent governor standing as its clause's
 /// trailing element reaches the first date of the
 /// next clause (see the body).
+/// Whether a clause break standing after the
+/// nothing-token at `j` bounds a governor window
+/// (round 28, R28-A, F2 = review MINOR-3). The
+/// standing boundary classification is untouched —
+/// a separator-only token is a boundary token at
+/// every site the R24-4 pin names — but at THIS
+/// site, the governor-scope scan, a break after a
+/// nothing bounds the window only when it stands
+/// between a spent cancellation and the next
+/// date: the word before the nothing ends a
+/// cancellation phrase, the governor
+/// `governed_after` has already spent on the date
+/// before it ("cancelled * November 8" reads as
+/// its comma twin, as R24-4 pins). A nothing
+/// standing INSIDE a governor phrase ("hold *
+/// off", "drop * it") or directly after a
+/// prospective governor — a phrase that governs
+/// forward, judged by the next date's own window,
+/// and is spent backward only as a complete
+/// clause of its own, which a nothing cannot make
+/// it ("not * November 8") — is nothing there, so
+/// the break does not bound the window and the
+/// phrase reaches the date as its clean twin's
+/// does.
+fn window_break_after_nothing(tokens: &[String], j: usize) -> bool {
+    let Some(&p) = prev_nonempty(tokens, j, 1).first() else {
+        return true;
+    };
+    // A phrase starting at the word before the
+    // nothing and completing after it: the nothing
+    // stands inside the phrase.
+    for len in 2..=3usize {
+        if let Some((phrase, end)) = word_phrase(tokens, p, len) {
+            if end - 1 > j && (is_governor_phrase(&phrase) || is_cancellation_phrase(&phrase)) {
+                return false;
+            }
+        }
+    }
+    // The phrases ending at that word: a
+    // cancellation ending there bounds the window;
+    // a prospective governor ending there does
+    // not.
+    let prevs = prev_nonempty(tokens, p + 1, 3);
+    let mut governor_ends = false;
+    for (rank, &s) in prevs.iter().enumerate() {
+        let len = prevs.len() - rank;
+        if let Some((phrase, end)) = word_phrase(tokens, s, len) {
+            if end == p + 1 {
+                if is_cancellation_phrase(&phrase) {
+                    return true;
+                }
+                if is_governor_phrase(&phrase) {
+                    governor_ends = true;
+                }
+            }
+        }
+    }
+    !governor_ends
+}
+
+/// The clause-break test at the governance sites
+/// (round 28, R28-A, F2 = review MINOR-3): the
+/// standing classification of
+/// `clause_break_after_at`, with the one
+/// exception of `window_break_after_nothing` — a
+/// break after a nothing-token counts at the
+/// governance sites only when it stands between a
+/// spent cancellation and the next date. Every
+/// other clause-break consumer (the weekday
+/// check, the claim reach, the fence tests) keeps
+/// the standing classification untouched.
+fn governance_clause_break_after_at(raw_tokens: &[&str], tokens: &[String], j: usize) -> bool {
+    clause_break_after_at(raw_tokens, tokens, j)
+        && (!nothing_token(raw_tokens[j]) || window_break_after_nothing(tokens, j))
+}
+
 fn governor_window_start(
     raw_tokens: &[&str],
     tokens: &[String],
@@ -1493,10 +1703,11 @@ fn governor_window_start(
     has_prev_date: bool,
 ) -> usize {
     let lo = prev_end.min(date_start);
+    let break_at = |j: usize| governance_clause_break_after_at(raw_tokens, tokens, j);
     let mut start = lo;
     let mut last_break: Option<usize> = None;
     for j in lo..date_start {
-        if clause_break_after_at(raw_tokens, tokens, j) {
+        if break_at(j) {
             start = j + 1;
             last_break = Some(j);
         }
@@ -1518,9 +1729,7 @@ fn governor_window_start(
         // The clause breaks in the window, in order;
         // the clauses they close are examined from
         // the nearest back (round 14, RT14-4 below).
-        let breaks: Vec<usize> = (lo..date_start)
-            .filter(|&j| clause_break_after_at(raw_tokens, tokens, j))
-            .collect();
+        let breaks: Vec<usize> = (lo..date_start).filter(|&j| break_at(j)).collect();
         let mut idx = breaks.len();
         while idx > 0 {
             idx -= 1;
@@ -2032,10 +2241,18 @@ fn forward_has_intervening_pp(tokens: &[String], i: usize) -> bool {
                     }
                     let mut n = m;
                     while tokens.get(n).is_some_and(|w| {
-                        noun_like_word(w)
-                            && !is_finite_verb_form(w)
-                            && w.as_str() != "until"
-                            && !is_continuation_preposition(w)
+                        // Round 28 (R28-A, F2): the
+                        // destination noun run crosses
+                        // nothings, as every other run
+                        // in this walk does — a nothing
+                        // inside the place NP ("to the
+                        // hall \u{200b} to November 8")
+                        // is nothing in it.
+                        w.is_empty()
+                            || (noun_like_word(w)
+                                && !is_finite_verb_form(w)
+                                && w.as_str() != "until"
+                                && !is_continuation_preposition(w))
                     }) {
                         n += 1;
                     }
@@ -2457,6 +2674,53 @@ fn next_nonempty(tokens: &[String], mut i: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// The last word that is something in a token run
+/// (round 28, R28-A, F2 = review MAJOR-1): the
+/// `last()` a positional reader means — a token
+/// that cleans to nothing standing at a window's
+/// end ("use \u{200b} November 8", "put \u{200b}"
+/// before its date) is nothing there, so the
+/// window's last word is the nearest word that is
+/// something before it.
+fn last_word(tokens: &[String]) -> Option<&str> {
+    tokens
+        .iter()
+        .rev()
+        .find(|w| !w.is_empty())
+        .map(String::as_str)
+}
+
+/// The phrase of `len` WORDS standing at word
+/// position `i` in `tokens`, and the index just
+/// past its last word (round 28, R28-A, F2 =
+/// review MAJOR-1 site 4): phrase matching slices
+/// over the run's words that are something, not
+/// over raw positions — a three-word governor
+/// phrase with a nothing-token inside it ("used
+/// \u{200b} to be") is a three-word phrase, and a
+/// one-word phrase wearing a nothing in the old
+/// positional slice ("was \u{200b} singing") is a
+/// one-word phrase, judged with its one-word
+/// narrowings. `tokens[i]` must itself be a word
+/// that is something (every caller skips empty
+/// positions before asking); fewer than `len`
+/// words remaining is no phrase.
+fn word_phrase(tokens: &[String], i: usize, len: usize) -> Option<(Vec<String>, usize)> {
+    if tokens.get(i).map_or(true, |w| w.is_empty()) {
+        return None;
+    }
+    let mut words: Vec<String> = Vec::with_capacity(len);
+    let mut j = i;
+    while words.len() < len {
+        let w = tokens.get(j)?;
+        if !w.is_empty() {
+            words.push(w.clone());
+        }
+        j += 1;
+    }
+    Some((words, j))
 }
 
 /// The preposition heading the phrase whose
@@ -3104,10 +3368,19 @@ fn forward_walk_continuation(
                 {
                     let mut n = m;
                     while tokens.get(n).is_some_and(|w| {
-                        noun_like_word(w)
-                            && !is_finite_verb_form(w)
-                            && w.as_str() != "until"
-                            && !is_continuation_preposition(w)
+                        // Round 28 (R28-A, F2): the
+                        // destination noun run crosses
+                        // nothings, as its twin in
+                        // `forward_has_intervening_pp`
+                        // now does and as the R26-C M1
+                        // comment on this walk states —
+                        // a nothing inside the place NP
+                        // is nothing in it.
+                        w.is_empty()
+                            || (noun_like_word(w)
+                                && !is_finite_verb_form(w)
+                                && w.as_str() != "until"
+                                && !is_continuation_preposition(w))
                     }) {
                         n += 1;
                     }
@@ -3196,22 +3469,26 @@ fn forward_walk_continuation(
                 // judge what follows by the same
                 // arms as before.
                 let mut m = k + 1;
+                // Round 28 (R28-A, F2): the conjunct's
+                // runs cross nothings, as every other
+                // run in this walk does.
                 while tokens.get(m).is_some_and(|w| {
-                    matches!(w.as_str(), "the" | "a" | "an")
+                    w.is_empty()
+                        || matches!(w.as_str(), "the" | "a" | "an")
                         || POSSESSIVE_DETERMINERS.contains(&w.as_str())
                 }) {
                     m += 1;
                 }
                 while tokens.get(m).is_some_and(|w| {
-                    noun_like_word(w) && !is_finite_verb_form(w) && w.as_str() != "until"
+                    w.is_empty()
+                        || (noun_like_word(w) && !is_finite_verb_form(w) && w.as_str() != "until")
                 }) {
                     m += 1;
                 }
                 let mut v = m;
-                while tokens
-                    .get(v)
-                    .is_some_and(|w| AUXILIARY_WORDS.contains(&w.as_str()) || aux_slot_word(w))
-                {
+                while tokens.get(v).is_some_and(|w| {
+                    w.is_empty() || AUXILIARY_WORDS.contains(&w.as_str()) || aux_slot_word(w)
+                }) {
                     v += 1;
                 }
                 if tokens.get(v).is_some_and(|w| is_finite_verb_form(w)) {
@@ -3292,25 +3569,38 @@ fn weekday_pp_after_claimed_target(
         let mut found: Option<usize> = None;
         // Weekday / relative-phrase objects, by
         // shape length (longest first).
-        for qlen in [4usize, 3, 2] {
-            if cur < qlen {
+        // Round 28 (R28-A, F2): the shapes are
+        // judged on the object's WORDS — a token
+        // that cleans to nothing standing inside
+        // the object ("until \u{200b} November 8 on
+        // Sunday", "… on \u{200b} Sunday") is
+        // nothing in it, so the candidate
+        // preposition is the word standing just
+        // before the object's words, however many
+        // nothings stand between them.
+        let word_pos: Vec<usize> = (0..cur).filter(|&p| !tokens[p].is_empty()).collect();
+        for objlen in [3usize, 2, 1] {
+            if word_pos.len() < objlen + 1 {
                 continue;
             }
-            let q = cur - qlen;
+            let q = word_pos[word_pos.len() - objlen - 1];
             if !is_continuation_preposition(tokens[q].as_str()) {
                 continue;
             }
-            let obj = &tokens[q + 1..cur];
+            let obj: Vec<&str> = word_pos[word_pos.len() - objlen..]
+                .iter()
+                .map(|&p| tokens[p].as_str())
+                .collect();
             let shape_ok = match obj.len() {
-                1 => weekday_word(&obj[0]).is_some(),
+                1 => weekday_word(obj[0]).is_some(),
                 2 => {
-                    matches!(obj[0].as_str(), "the" | "a" | "an" | "next" | "this")
-                        && weekday_word(&obj[1]).is_some()
+                    matches!(obj[0], "the" | "a" | "an" | "next" | "this")
+                        && weekday_word(obj[1]).is_some()
                 }
                 3 => {
-                    matches!(obj[0].as_str(), "the" | "a" | "an")
-                        && matches!(obj[1].as_str(), "next" | "this")
-                        && weekday_word(&obj[2]).is_some()
+                    matches!(obj[0], "the" | "a" | "an")
+                        && matches!(obj[1], "next" | "this")
+                        && weekday_word(obj[2]).is_some()
                 }
                 _ => false,
             };
@@ -3337,7 +3627,11 @@ fn weekday_pp_after_claimed_target(
                     continue;
                 }
                 if let Some((_, used)) = parse_date_prefix(&raw_tokens[q + 1..], today) {
-                    if q + 1 + used.max(1) == cur {
+                    // Round 28 (R28-A, F2): the date
+                    // ends at `cur` when only nothings
+                    // stand between its end and `cur`.
+                    let end = q + 1 + used.max(1);
+                    if end <= cur && tokens[end..cur].iter().all(|w| w.is_empty()) {
                         found = Some(q);
                         break;
                     }
@@ -3362,7 +3656,11 @@ fn weekday_pp_after_claimed_target(
                 }
                 let obj = &tokens[q + 1..cur];
                 if obj.iter().all(|w| {
-                    matches!(w.as_str(), "the" | "a" | "an")
+                    // Round 28 (R28-A, F2): a nothing
+                    // inside the noun run is nothing
+                    // in it.
+                    w.is_empty()
+                        || matches!(w.as_str(), "the" | "a" | "an")
                         || POSSESSIVE_DETERMINERS.contains(&w.as_str())
                         || (noun_like_word(w) && !is_finite_verb_form(w) && w.as_str() != "until")
                 }) {
@@ -3381,7 +3679,12 @@ fn weekday_pp_after_claimed_target(
     let mut date_start = None;
     for cand in (0..run_start).rev() {
         if let Some((_, used)) = parse_date_prefix(&raw_tokens[cand..], today) {
-            if cand + used.max(1) == run_start {
+            // Round 28 (R28-A, F2): the date ends at
+            // the run when only nothings stand
+            // between its end and the run's first
+            // preposition.
+            let end = cand + used.max(1);
+            if end <= run_start && tokens[end..run_start].iter().all(|w| w.is_empty()) {
                 date_start = Some(cand);
                 break;
             }
@@ -3392,8 +3695,14 @@ fn weekday_pp_after_claimed_target(
     };
     // The claim's "to"/"until" standing directly
     // before that date, behind optional determiners.
+    // Round 28 (R28-A, F2): the walk back crosses
+    // nothings with the determiners — "until
+    // \u{200b} November 8" claims its date exactly
+    // as the clean form does.
     let mut t = date_start;
-    while t > 0 && matches!(tokens[t - 1].as_str(), "the" | "a" | "an") {
+    while t > 0
+        && (tokens[t - 1].is_empty() || matches!(tokens[t - 1].as_str(), "the" | "a" | "an"))
+    {
         t -= 1;
     }
     if t == 0 || !matches!(tokens[t - 1].as_str(), "to" | "until") {
@@ -4009,15 +4318,26 @@ fn active_for_zone_start(window: &[String]) -> Option<usize> {
     // moved the move for …") is read by the nearest
     // phrase, and a phrase too far back — behind a
     // second verb — never reaches across it.
-    for end in (1..=for_pos).rev() {
+    // Round 28 (R28-A, F2): the phrase is read over
+    // the window's WORDS (see `word_phrase`), so a
+    // pair wearing a nothing between its words
+    // ("put \u{200b} back for …") is the pair; the
+    // object slice and the returned start stay in
+    // token positions, as the callers judge them.
+    let word_pos: Vec<usize> = (0..for_pos).filter(|&p| !window[p].is_empty()).collect();
+    for e in (0..word_pos.len()).rev() {
         for len in 1..=2usize {
-            if end < len {
+            if e + 1 < len {
                 continue;
             }
-            let phrase = &window[end - len..end];
-            if !is_displacement_phrase(phrase) {
+            let phrase: Vec<String> = word_pos[e + 1 - len..=e]
+                .iter()
+                .map(|&p| window[p].clone())
+                .collect();
+            if !is_displacement_phrase(&phrase) {
                 continue;
             }
+            let end = word_pos[e] + 1;
             let object = &window[end..for_pos];
             let object_ok = !active_for_object_has_finite_verb(object)
                 && object.iter().all(|w| {
@@ -4040,7 +4360,7 @@ fn active_for_zone_start(window: &[String]) -> Option<usize> {
                             && w.as_str() != "for")
                 });
             if object_ok {
-                return Some(end - len);
+                return Some(word_pos[e + 1 - len]);
             }
         }
     }
@@ -4079,10 +4399,15 @@ fn governed_before(before: &[String], window: &[String]) -> bool {
             continue;
         }
         for len in 1..=3usize {
-            let Some(phrase) = window.get(i..i + len) else {
+            // Round 28 (R28-A, F2): the phrase is
+            // `len` WORDS (see `word_phrase`), and
+            // the "to" it would stand before is the
+            // next word that is something after the
+            // phrase's own last word.
+            let Some((phrase, phrase_end)) = word_phrase(window, i, len) else {
                 break;
             };
-            if !phrase_governs(window, i, len) {
+            if !phrase_governs(window, i, &phrase) {
                 continue;
             }
             if let Some(zone_start) = for_zone_start {
@@ -4101,8 +4426,8 @@ fn governed_before(before: &[String], window: &[String]) -> bool {
             // "(November 1, moved to November 8)"
             // the phrase governs November 1
             // through `governed_after` instead.
-            if window.get(i + len).map(String::as_str) == Some("to")
-                && is_displacement_phrase(phrase)
+            if next_nonempty(window, phrase_end).is_some_and(|n| window[n].as_str() == "to")
+                && is_displacement_phrase(&phrase)
             {
                 continue;
             }
@@ -4270,10 +4595,14 @@ fn negation_in_aux_slot(slice: &[String], i: usize) -> bool {
     false
 }
 
-fn phrase_governs(slice: &[String], i: usize, len: usize) -> bool {
-    let Some(phrase) = slice.get(i..i + len) else {
-        return false;
-    };
+fn phrase_governs(slice: &[String], i: usize, phrase: &[String]) -> bool {
+    // Round 28 (R28-A, F2): the phrase arrives as
+    // WORDS (see `word_phrase`), so its length is
+    // its word count — the one-word narrowings
+    // below judge a one-word phrase, never a
+    // one-word phrase wearing a nothing-token in a
+    // two-position slice.
+    let len = phrase.len();
     if !is_governor_phrase(phrase) {
         return false;
     }
@@ -5001,8 +5330,8 @@ fn aux_adverb_walk_bounded(
 /// scoped to single displacement stems after five
 /// listed auxiliaries; the boundary was arbitrary,
 /// as the round-16 review states.
-fn is_spent_predicate(clause: &[String], i: usize, len: usize) -> bool {
-    is_spent_predicate_fronted(clause, i, len, false)
+fn is_spent_predicate(clause: &[String], i: usize, phrase: &[String]) -> bool {
+    is_spent_predicate_fronted(clause, i, phrase, false)
 }
 
 /// `is_spent_predicate` with the fronted-stack
@@ -5022,12 +5351,12 @@ fn is_spent_predicate(clause: &[String], i: usize, len: usize) -> bool {
 fn is_spent_predicate_fronted(
     clause: &[String],
     i: usize,
-    len: usize,
+    phrase: &[String],
     fronted_invalid: bool,
 ) -> bool {
-    let Some(phrase) = clause.get(i..i + len) else {
-        return false;
-    };
+    // Round 28 (R28-A, F2): the phrase arrives as
+    // words (see `word_phrase`), as at every phrase
+    // matcher this round converts.
     if !is_cancellation_phrase(phrase) {
         return false;
     }
@@ -5060,11 +5389,18 @@ fn unspent_trailing_governor_fronted(
     fronted_invalid: bool,
 ) -> bool {
     for i in 0..clause.len() {
+        if clause[i].is_empty() {
+            continue;
+        }
         for len in 1..=3usize {
-            let Some(phrase) = clause.get(i..i + len) else {
+            // Round 28 (R28-A, F2): word-count
+            // phrases, and a suffix of nothings is
+            // no suffix — the words after the phrase
+            // are its words that are something.
+            let Some((phrase, phrase_end)) = word_phrase(clause, i, len) else {
                 break;
             };
-            if !phrase_governs(clause, i, len) {
+            if !phrase_governs(clause, i, &phrase) {
                 continue;
             }
             // Round 15 (R15-1), generalized round 16
@@ -5075,7 +5411,7 @@ fn unspent_trailing_governor_fronted(
             // already spent on its subject — the held
             // "(it was moved, November 1)" shape names
             // its date, and so do its synonyms.
-            if is_spent_predicate_fronted(clause, i, len, fronted_invalid) {
+            if is_spent_predicate_fronted(clause, i, &phrase, fronted_invalid) {
                 continue;
             }
             // Round 14 (R14-2): the spent exception
@@ -5085,13 +5421,13 @@ fn unspent_trailing_governor_fronted(
             // a date was spent on that date by
             // `governed_after`, the same as the
             // participles always were.
-            if clause_follows_a_date && is_cancellation_phrase(phrase) {
+            if clause_follows_a_date && is_cancellation_phrase(&phrase) {
                 continue;
             }
-            let suffix = &clause[i + len..];
+            let suffix = &clause[phrase_end..];
             if suffix
                 .iter()
-                .all(|w| matches!(w.as_str(), "the" | "date" | "it"))
+                .all(|w| w.is_empty() || matches!(w.as_str(), "the" | "date" | "it"))
             {
                 return true;
             }
@@ -5137,9 +5473,18 @@ fn governed_after(
     }
     // The clause starts inside the segment: a new
     // clause opens after every clause break.
+    // Round 28 (R28-A, F2 = review MINOR-3): the
+    // governance break test (see
+    // `governance_clause_break_after_at`) — a
+    // nothing standing after a prospective in this
+    // segment ("November 1, not * November 8")
+    // opens no clause here either, so the
+    // prospective is not spent backward as a
+    // complete clause of its own; a break after a
+    // spent cancellation counts as it always has.
     let mut clause_starts: Vec<usize> = vec![seg_start];
     for j in seg_start + 1..seg_end {
-        if clause_break_after_at(raw_tokens, tokens, j - 1) {
+        if governance_clause_break_after_at(raw_tokens, tokens, j - 1) {
             clause_starts.push(j);
         }
     }
@@ -5149,9 +5494,14 @@ fn governed_after(
             continue;
         }
         for len in 1..=3usize {
-            let Some(phrase) = after.get(i..i + len) else {
+            // Round 28 (R28-A, F2): word-count
+            // phrases, as at every phrase matcher
+            // this round converts — the phrase's
+            // length below is its word count.
+            let Some((phrase, _phrase_end)) = word_phrase(after, i, len) else {
                 break;
             };
+            let phrase: &[String] = &phrase;
             // Round 14 (R14-2): a cancellation phrase
             // standing after a date cancels the date
             // it follows — the trailing position draws
@@ -5194,16 +5544,16 @@ fn governed_after(
             // it governs the later date, judged by
             // that date's window, and this date is
             // untouched.
-            let own_clause_complete =
-                own_end > own_start && clause_break_after_at(raw_tokens, tokens, own_end - 1);
+            let own_clause_complete = own_end > own_start
+                && governance_clause_break_after_at(raw_tokens, tokens, own_end - 1);
             let prospective_governs = next_start.is_some()
-                && phrase_governs(after, i, len)
+                && phrase_governs(after, i, phrase)
                 && !is_cancellation_phrase(phrase)
                 && own_clause_complete
                 && is_prospective_only_clause(own_clause);
             let governs = (is_cancellation_phrase(phrase)
-                && !(len == 1 && determiner_headed_s_form(after, i, &phrase[0])))
-                || (next_start.is_none() && phrase_governs(after, i, len))
+                && !(phrase.len() == 1 && determiner_headed_s_form(after, i, &phrase[0])))
+                || (next_start.is_none() && phrase_governs(after, i, phrase))
                 || prospective_governs;
             if !governs {
                 continue;
@@ -5404,17 +5754,26 @@ fn target_claim(
         }
         // The nearest target phrase ending at or
         // before the "to".
+        // Round 28 (R28-A, F2): the phrase is read
+        // in WORDS (see `word_phrase`) — a two-word
+        // phrase wearing a nothing between its words
+        // ("put \u{200b} back to …") is the phrase,
+        // and its end is the index just past its
+        // last word.
         let mut found: Option<(usize, usize)> = None;
         for ps in 0..to_pos {
+            if tokens[ps].is_empty() {
+                continue;
+            }
             for len in 1..=2usize {
-                let Some(phrase) = tokens.get(ps..ps + len) else {
+                let Some((phrase, pe)) = word_phrase(tokens, ps, len) else {
                     break;
                 };
-                if ps + len > to_pos {
+                if pe > to_pos {
                     break;
                 }
-                if is_target_phrase(phrase) {
-                    found = Some((ps, ps + len));
+                if is_target_phrase(&phrase) {
+                    found = Some((ps, pe));
                 }
             }
         }
@@ -5730,10 +6089,12 @@ fn governed_before_target(window: &[String], window_start: usize, claim: &Target
             continue;
         }
         for len in 1..=3usize {
-            let Some(phrase) = window.get(i..i + len) else {
+            // Round 28 (R28-A, F2): word-count
+            // phrases, as in `governed_before`.
+            let Some((phrase, phrase_end)) = word_phrase(window, i, len) else {
                 break;
             };
-            if !phrase_governs(window, i, len) {
+            if !phrase_governs(window, i, &phrase) {
                 continue;
             }
             let abs_start = window_start + i;
@@ -5743,8 +6104,8 @@ fn governed_before_target(window: &[String], window_start: usize, claim: &Target
             // Round 15 (R15-1): the standing adjacency
             // skip, kept for phrases the claim zone
             // does not cover.
-            if window.get(i + len).map(String::as_str) == Some("to")
-                && is_displacement_phrase(phrase)
+            if next_nonempty(window, phrase_end).is_some_and(|n| window[n].as_str() == "to")
+                && is_displacement_phrase(&phrase)
             {
                 continue;
             }
@@ -6709,7 +7070,13 @@ fn bare_filler_word(w: &str) -> bool {
 /// fire here.
 fn region_has_passive_predicate(words: &[String]) -> bool {
     (0..words.len()).any(|i| {
-        (1..=3usize).any(|len| words.get(i..i + len).is_some() && is_spent_predicate(words, i, len))
+        // Round 28 (R28-A, F2): word-count phrases,
+        // as at every phrase matcher this round
+        // converts.
+        (1..=3usize).any(|len| {
+            word_phrase(words, i, len)
+                .is_some_and(|(phrase, _)| is_spent_predicate(words, i, &phrase))
+        })
     })
 }
 
@@ -6733,7 +7100,14 @@ fn region_has_passive_predicate(words: &[String]) -> bool {
 fn after_region_has_own_passive_predicate(words: &[String], has_next: bool) -> bool {
     for i in 0..words.len() {
         for len in 1..=3usize {
-            if words.get(i..i + len).is_none() || !is_spent_predicate(words, i, len) {
+            // Round 28 (R28-A, F2): word-count
+            // phrases, and the lead-in's "for" is
+            // the suffix's last word that is
+            // something.
+            let Some((phrase, phrase_end)) = word_phrase(words, i, len) else {
+                break;
+            };
+            if !is_spent_predicate(words, i, &phrase) {
                 continue;
             }
             if has_next {
@@ -6742,9 +7116,9 @@ fn after_region_has_own_passive_predicate(words: &[String], has_next: bool) -> b
                 // the participle phrase is joining
                 // words ending in the "for" that
                 // names the next date as its occasion.
-                let suffix = &words[i + len..];
+                let suffix = &words[phrase_end..];
                 let lead_in = !suffix.is_empty()
-                    && suffix.last().map(String::as_str) == Some("for")
+                    && last_word(suffix) == Some("for")
                     && suffix
                         .iter()
                         .all(|w| w.is_empty() || w.as_str() == "for" || bare_filler_word(w));
@@ -7256,17 +7630,23 @@ fn occurrence_is_bare(
         // longest first — is the governance itself,
         // not event content: "cancelled, November 1"
         // restates its date bare.
-        let mut consumed = 0usize;
+        // Round 28 (R28-A, F2): the phrase is read
+        // in WORDS (see `word_phrase`) — the region
+        // is the run's words over cleaned tokens, so
+        // a phrase wearing a nothing between its
+        // words consumes its words, and the walk
+        // steps to just past its last word.
+        let mut consumed_end = 0usize;
         for len in (1..=3usize).rev() {
-            if let Some(phrase) = words.get(i..i + len) {
-                if is_governor_phrase(phrase) {
-                    consumed = len;
+            if let Some((phrase, end)) = word_phrase(&words, i, len) {
+                if is_governor_phrase(&phrase) {
+                    consumed_end = end;
                     break;
                 }
             }
         }
-        if consumed > 0 {
-            i += consumed;
+        if consumed_end > 0 {
+            i = consumed_end;
             continue;
         }
         return false;
@@ -7438,7 +7818,15 @@ fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) -> GroupAna
             passive_for_zone_start(&tokens[..window_start], window).is_some()
                 || active_for_zone_start(window).is_some(),
         );
-        use_prospectives.push(window.last().map(String::as_str) == Some("use"));
+        // Round 28 (R28-A, F2): the window's last
+        // word is its last word that is something —
+        // a nothing standing between "use" and its
+        // date ("use \u{200b} November 8") leaves
+        // "use" standing before the date, and the
+        // split pair's first word is read the same
+        // way; its second word is the next word that
+        // is something after the date's span.
+        use_prospectives.push(last_word(window) == Some("use"));
         let next_start = positional.get(idx + 1).map(|(_, s, _)| *s);
         // Round 14 (R14-1): the split phrasal form —
         // "put" standing last in the window and "off"
@@ -7449,8 +7837,8 @@ fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) -> GroupAna
         // pair whose first word inflects — "(called
         // November 1 off)", "(put November 1
         // back)", "(push November 1 back)".
-        let split_first = window.last().map(String::as_str);
-        let split_second = tokens.get(start + used).map(String::as_str);
+        let split_first = last_word(window);
+        let split_second = next_nonempty(&tokens, start + used).map(|n| tokens[n].as_str());
         let split_phrasal = match (split_first, split_second) {
             (Some(first), Some(second)) => is_phrasal_governor_pair(first, second),
             _ => false,
@@ -8145,12 +8533,16 @@ fn chain_superseded_from_entries(
         .collect();
     let phrase_with_to = |toks: &[String]| {
         (0..toks.len()).any(|ps| {
+            // Round 28 (R28-A, F2): the phrase is read
+            // in words, as in `target_claim` — its
+            // "to" / "until" may stand after its last
+            // word, past any nothing in between.
             (1..=2usize).any(|len| {
-                let Some(phrase) = toks.get(ps..ps + len) else {
+                let Some((phrase, pe)) = word_phrase(toks, ps, len) else {
                     return false;
                 };
-                is_target_phrase(phrase)
-                    && toks[ps + len..]
+                is_target_phrase(&phrase)
+                    && toks[pe..]
                         .iter()
                         .any(|w| w.as_str() == "to" || w.as_str() == "until")
             })
@@ -8438,10 +8830,18 @@ fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(SimpleDate, 
     // token), and a token of real garnish ("*", a
     // standalone ";") is never dropped here: only
     // `cf_only_token` tokens are.
+    // Round 28 (R28-A, F2 = review MINOR-3): the
+    // drop judges the NOTHING class (see
+    // `nothing_token`) — a separator-only token
+    // inside the span ("November * 1") is nothing
+    // in the date exactly as a Cf-only token is,
+    // and reads across the same way. A standalone
+    // ";" or bullet inside a span is not a nothing
+    // and is still never dropped.
     let kept: Vec<usize> = tokens
         .iter()
         .enumerate()
-        .filter(|(idx, t)| *idx == 0 || !cf_only_token(t))
+        .filter(|(idx, t)| *idx == 0 || !nothing_token(t))
         .map(|(idx, _)| idx)
         .collect();
     let normalized: Vec<String> = kept
@@ -9024,9 +9424,21 @@ fn sunday_after_phrase_run(
     fn clean(t: &str) -> String {
         group_token(t)
     }
-    let rest = &tokens[after_at + 1..];
+    // Round 28 (R28-A, F2 = review MINOR-1): a
+    // nothing-token standing between "after" and
+    // its base ("the Sunday after \u{200b} November
+    // 1, 2026") is nothing there — the base scan
+    // starts on the first token that is something,
+    // as `sunday_after_outcome`'s filtered scan
+    // already reads it, and the skipped tokens
+    // count in the span the scan reports.
+    let skip = tokens[after_at + 1..]
+        .iter()
+        .take_while(|t| nothing_token(t))
+        .count();
+    let rest = &tokens[after_at + 1 + skip..];
     if let Some((base, used)) = parse_date_prefix(rest, today) {
-        return Some((base, after_at + 1 + used));
+        return Some((base, after_at + 1 + skip + used));
     }
     // The base's own leading weekday, wearing an
     // optional "on": strip it and read what it framed.
@@ -9041,7 +9453,7 @@ fn sunday_after_phrase_run(
         return None;
     };
     let (base, used) = parse_date_prefix(&rest[offset..], today)?;
-    Some((base, after_at + 1 + offset + used))
+    Some((base, after_at + 1 + skip + offset + used))
 }
 
 /// The Sunday a bare relative phrase names,
@@ -9121,10 +9533,14 @@ fn plain_composition(
             passive_for_zone_start(&tokens[..window_start], window).is_some()
                 || active_for_zone_start(window).is_some(),
         );
-        use_prospectives.push(window.last().map(String::as_str) == Some("use"));
+        // Round 28 (R28-A, F2): the window's last
+        // word and the split pair's second word are
+        // read over the words that are something, as
+        // in `analyze_group` above.
+        use_prospectives.push(last_word(window) == Some("use"));
         let next_start = positional.get(idx + 1).map(|(_, s, _)| *s);
-        let split_first = window.last().map(String::as_str);
-        let split_second = tokens.get(start + used).map(String::as_str);
+        let split_first = last_word(window);
+        let split_second = next_nonempty(tokens, start + used).map(|n| tokens[n].as_str());
         let split_phrasal = match (split_first, split_second) {
             (Some(first), Some(second)) => is_phrasal_governor_pair(first, second),
             _ => false,
@@ -28437,6 +28853,362 @@ Youth group meets Wednesday at 6 PM.
             c.for_date,
             Some(nov(1)),
             "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+
+    #[test]
+    fn r28a_ungluing_is_a_token_property() {
+        // Round 28 (R28-A, F1 = review MAJOR-1 +
+        // red team §1): ungluing is a property of
+        // the token, not of the phrase head — a
+        // `*` / `|` glued to ANY word of a governor
+        // phrase is the separator plus that word,
+        // so governor phrases are judged on the
+        // unglued token vector at every phrase
+        // position (`segment_tokens`). Every line
+        // below reads as its spaced twin: nothing
+        // asserts, nothing is named.
+        for line in [
+            // All words glued.
+            "(back together November 1) *hold *off November 1, 2026",
+            "(back together November 1) *instead *of November 1, 2026",
+            "(November 1, cancelled) (*hold *off November 1)",
+            // The worst witness: an expressly
+            // cancelled core stays cancelled behind
+            // a fully glued trailing phrase.
+            "November 1, 2026, cancelled (while November 1) *used *to *be November 1, 2026",
+            // Second/third-word glue.
+            "(back together November 1) hold *off November 1, 2026",
+            "(November 1, cancelled) (put *off November 1)",
+            "(November 1, cancelled) (put *back November 1)",
+            "(November 1, cancelled) (call *off November 1)",
+            "(back together November 1) used *to be November 1, 2026",
+            "(back together November 1) used to *be November 1, 2026",
+            "(November 1, cancelled) (instead *of November 1)",
+            "(November 1, cancelled) (rather *than November 1)",
+            "(November 1, cancelled) (old *date November 1)",
+            // A glued bare-unit word: the unit is
+            // judged on the unglued vector too.
+            "(back *together November 1) not November 1, 2026",
+            // Glued `off` alone in group/trailing
+            // positions reaches the spaced reading.
+            "(November 1, cancelled) (*off November 1)",
+            // The glued walk words inside walk
+            // lines read as the spaced readings.
+            "(moved November 1, beans were not served *on Sunday from Kent to November 8)",
+            "(moved November 1, beans were not served on Sunday from Kent *to November 8)",
+            "(moved November 1, beans *were served on Sunday from Kent to November 8)",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{line}: the glued form reads as its spaced twin"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: nothing is named"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through twin");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: keep-through note is empty"
+            );
+        }
+        // The trailing glued `off` beside a
+        // cancellation: both dates are named,
+        // neither asserts.
+        let groups = "(November 1, cancelled) (November 1, *off November 8)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: nothing asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), nov(8)],
+            "{groups}: both dates are named governed"
+        );
+    }
+
+    #[test]
+    fn r28a_ungluing_relative_surface() {
+        // Round 28 (R28-A, F1): the REL-path
+        // phrasal divergence is routed through the
+        // same ungluing — the relative-shape
+        // readers read the trailing segment through
+        // `segment_tokens`, so a fully glued
+        // cancellation phrase in the trailing
+        // fragment governs on the relative surface
+        // exactly as its spaced twin does.
+        for line in [
+            "(back together November 1) *never *mind November 1, 2026",
+            "(back together November 1) *cancel *it November 1, 2026",
+            "(back together November 1) *drop *it November 1, 2026",
+            "(back together November 1) *scratch *that November 1, 2026",
+            "(back together November 1) *forget *about November 1, 2026",
+        ] {
+            let text = format!("For Sunday: next Sunday {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{line}: the glued phrase governs on the REL surface"
+            );
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{line}: no parenthesized date is remembered"
+            );
+        }
+    }
+
+    #[test]
+    fn r28a_nothing_tokens_at_positional_readers() {
+        // Round 28 (R28-A, F2 = review MAJOR-1 /
+        // MINOR-1 / MINOR-2): a nothing-token is
+        // nothing at positional readers too —
+        // trailing-arm walk-backs, forward
+        // destination crossings, `use` adjacency,
+        // and phrase slices all skip it, and every
+        // line reads as its clean twin.
+        for (line, want, named) in [
+            // (1) The trailing-arm re-judgment:
+            // the claim-"to" walk-back and the
+            // run-start adjacency skip nothings.
+            (
+                "(moved November 1, baked beans from Kent until \u{200b} November 8 on Sunday)",
+                None,
+                Vec::new(),
+            ),
+            (
+                "(moved November 1, baked beans from Kent until November 8 \u{200b} on Sunday)",
+                None,
+                Vec::new(),
+            ),
+            // The two-PP variant: the claimed date
+            // asserts, the phantom Sunday is named
+            // nowhere.
+            (
+                "(moved November 1, baked beans to November 8 \u{200b} on Sunday on Sunday)",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            // (2) The forward destination crossing:
+            // the place-NP noun run skips nothings.
+            (
+                "(moved November 1, baked beans on Sunday from Kent to the hall \u{200b} to November 8)",
+                None,
+                Vec::new(),
+            ),
+            // (3) `use` adjacency, in a group and on
+            // a plain line alike.
+            (
+                "(it was moved for November 1, use \u{200b} November 8)",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            (
+                "it was moved for November 1, use \u{200b} November 8",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            // (4) Phrase slices count words: a
+            // three-word governor phrase with an
+            // interior nothing matches.
+            ("(used \u{200b} to be November 1)", None, Vec::new()),
+            ("(used to \u{200b} be November 1)", None, Vec::new()),
+            (
+                "(back together November 1) *used \u{200b} to be November 1, 2026",
+                None,
+                Vec::new(),
+            ),
+            // The `was` + Cf + participle silence:
+            // the one-word "was" narrowing judges
+            // the word-count slice, so the target
+            // asserts as its clean twin's does.
+            (
+                "(moved November 1, the choir was \u{200b} singing hymns on Sunday to November 8)",
+                Some(nov(8)),
+                Vec::new(),
+            ),
+            // The same narrowing, forward: a bare
+            // "was" with a participle after the
+            // nothing keeps its past-marker
+            // governance of nothing — the date it
+            // names asserts, as the clean twin's
+            // does.
+            ("(was \u{200b} singing November 1)", Some(nov(1)), Vec::new()),
+            // The Sunday-after base scan starts on
+            // the first token that is something.
+            ("the Sunday after \u{200b} November 1, 2026", Some(nov(8)), Vec::new()),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, want, "{line}: reads as its clean twin");
+            assert_eq!(c.for_sunday_second_dates, named, "{line}: the note matches the twin");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, want, "{line}: keep-through twin");
+        }
+        // MINOR-2: a trailing nothing in the raw
+        // text does not defeat trailing-group
+        // extraction on the REL surface.
+        let line = "(moved November 1, baked beans on Sunday to November 8) \u{200b}";
+        let text = format!("For Sunday: next Sunday {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{line}: the group is extracted past the trailing nothing"
+        );
+        assert_eq!(
+            c.for_date, None,
+            "{line}: nothing asserts on the REL surface"
+        );
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the main surface reads its twin"
+        );
+    }
+
+    #[test]
+    fn r28a_separator_only_nothings() {
+        // Round 28 (R28-A, F2 = review MINOR-3):
+        // separator-only tokens are nothings —
+        // between a prospective and its date at
+        // the governance sites, inside a date's
+        // own span, and between a phrase's words.
+        // Each glued form is pinned beside its
+        // spaced/Cf form with the same reading.
+        for line in [
+            "(November 1, cancelled) (November 1, not * November 8)",
+            "(November 1, cancelled) (November 1, not | November 8)",
+            "(back together November 1) hold * off November 1, 2026",
+            "(back together November 1) hold | off November 1, 2026",
+            // A separator inside the date's own
+            // span, the date governed in its group.
+            "(November * 1, cancelled) (November 1, not November 8)",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{line}: the separator-only form governs as its twins"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: nothing is named"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through twin");
+        }
+        // The prospective spends forward: in the
+        // single group the earlier date asserts
+        // and the governed date is silent, for the
+        // separator-only form as for its twins.
+        for line in [
+            "(November 1, not * November 8)",
+            "(November 1, not | November 8)",
+            "(choir November 1, not * November 8)",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{line}: November 1 asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: the governed date is not named"
+            );
+        }
+        // A separator inside a date's own span in
+        // an asserting group: the date reads
+        // across it.
+        let groups = "(November 1, cancelled) (choir November * 1)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: the date reads across the separator"
+        );
+    }
+
+    #[test]
+    fn r28a_nothing_boundaries_stand() {
+        // Round 28 (R28-A, F1/F2): the boundaries
+        // the batch does not move, re-asserted
+        // beside the fixes.
+        // The spent-cancellation break stands
+        // (R24-4): a separator between a postposed
+        // cancellation and the next date bounds
+        // its scope exactly as its comma twin
+        // does, on the plain and group surfaces.
+        for line in [
+            "November 1, 2026, cancelled * November 8, 2026",
+            "(November 1, cancelled * November 8)",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1)],
+                "{line}: November 1 is named governed"
+            );
+        }
+        // A standalone bullet is not a nothing:
+        // its boundary reading stands.
+        let line = "(back together November 1) hold \u{2022} off November 1, 2026";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the bullet form keeps its reading"
+        );
+        // Glued content/date words keep their
+        // standing readings (R27-C boundary).
+        let line = "(November 1, cancelled) (*November 1)";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the glued date group is the date, bare"
+        );
+        let line = "(November 1, cancelled) (*choir November 1)";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: a glued content word asserts"
+        );
+        // The keep-plain readers' own glued forms
+        // stand (R27-C documented choice): a glued
+        // relative phrase and a glued weekday
+        // before a date keep their readings.
+        let line = "November 1, 2026, cancelled (*next Sunday) (November 8, 2026)";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the standing reading holds"
+        );
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let line = "(November 8) *Monday November 15, 2026";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(15)),
+            "{line}: the glued weekday reading stands"
         );
     }
 }

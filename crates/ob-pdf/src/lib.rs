@@ -448,6 +448,10 @@ impl PageContent {
         self.ops.push(ContentOp::Raw(s.to_string()));
     }
 
+    // Recorded allow (health audit m-6): the arguments are
+    // exactly the fields of the ContentOp::Text this method
+    // records, one to one; a parameter object would be a
+    // second copy of that record, renamed.
     #[allow(clippy::too_many_arguments)]
     fn text(
         &mut self,
@@ -640,6 +644,13 @@ impl PageContent {
 /// that do not decode): each prints as the "No picture yet"
 /// placeholder instead, and the export report counts them,
 /// so a copy never fails over a picture.
+// Recorded allow (health audit m-6): the arguments are the
+// draw call itself — the page being drawn on, the document
+// and frame being drawn, the box's rect, the page height
+// the rect is flipped against, and the export's purpose
+// and fonts. They arrive from three different owners in
+// draw_panel and meet only here; a parameter object would
+// be a struct with this one function as its only user.
 #[allow(clippy::too_many_arguments)]
 fn draw_picture_frame(
     pc: &mut PageContent,
@@ -728,6 +739,14 @@ fn draw_picture_frame(
 /// total height is `page_h` (panel height for reader PDFs, sheet height for
 /// imposed PDFs). Returns the count of pictures that printed
 /// as placeholders (see draw_picture_frame).
+// Recorded allow (health audit m-6): the flat list keeps
+// the two mutable/immutable roles visible at the call
+// sites — the page being drawn on (mut) and the document
+// (shared) — beside the export context (fonts, threads,
+// purpose) and the imposition caller's placement (panel,
+// index, offset, page height). Bundling them would mix
+// those owners into one struct every caller must rebuild
+// per panel.
 #[allow(clippy::too_many_arguments)]
 fn draw_panel(
     pc: &mut PageContent,
@@ -1899,8 +1918,16 @@ fn large_print_document_with_library(
     // least one more line of room, so this converges; the
     // cap only guards against a pathological document.
     for _ in 0..64 {
-        let (panels, panel_section) =
-            build_large_print_panels(&base, &pages_per_section, page, margin, usable_w, usable_h);
+        let (panels, panel_section) = build_large_print_panels(
+            &base,
+            &pages_per_section,
+            LargePrintGeometry {
+                page,
+                margin,
+                usable_w,
+                usable_h,
+            },
+        );
         out.panels = panels;
         let threads = ob_text::threading::layout_document_threads(&mut shaper, &out);
         let mut grew = false;
@@ -1935,15 +1962,29 @@ fn large_print_document_with_library(
 /// music boxes) at the top of the first page, text boxes
 /// stacked beneath and repeated on the later pages so
 /// their stories thread through.
-#[allow(clippy::too_many_arguments)]
-fn build_large_print_panels(
-    base: &Document,
-    pages_per_section: &[usize],
+/// The page geometry one large-print pass builds to
+/// (health audit m-6): the sheet, its margin, and the
+/// usable width and height inside it. These four values
+/// are one concept and are the only values the caller
+/// computes from the sheet, so they travel together.
+struct LargePrintGeometry {
     page: ob_model::Size,
     margin: ob_model::Mpt,
     usable_w: ob_model::Mpt,
     usable_h: ob_model::Mpt,
+}
+
+fn build_large_print_panels(
+    base: &Document,
+    pages_per_section: &[usize],
+    geo: LargePrintGeometry,
 ) -> (Vec<Panel>, Vec<usize>) {
+    let LargePrintGeometry {
+        page,
+        margin,
+        usable_w,
+        usable_h,
+    } = geo;
     let mut panels = Vec::new();
     let mut panel_section = Vec::new();
     for (si, src) in base.panels.iter().enumerate() {
@@ -3195,11 +3236,9 @@ mod tests {
         // Sans's (it does not). Which face printed is
         // therefore visible in the extracted text.
         let cabin = renamed_family(&dejavu, "DejaVu Sans", "Cabin");
-        let gill = renamed_family(
-            include_bytes!("../../ob-text/assets/fonts/LiberationSans-Regular.ttf"),
-            "Liberation Sans",
-            "Gill Sans MT",
-        );
+        let gill_bytes = std::fs::read(ob_text::bundled_asset_path("LiberationSans-Regular.ttf"))
+            .expect("bundled font present");
+        let gill = renamed_family(&gill_bytes, "Liberation Sans", "Gill Sans MT");
         let cabin_lib = vec![(
             ob_fonts::inspect(&cabin, "Cabin.ttf").expect("cabin inspects"),
             cabin.clone(),

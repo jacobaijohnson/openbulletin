@@ -2086,25 +2086,25 @@ impl App {
                 let layout = if flags.get(i) == Some(&true) {
                     let disp =
                         ob_text::text_layout::leader_run_spans(resolved_para, &eff_spans, dtext);
-                    shaper.layout_display_line_runs(
-                        dtext,
-                        &disp,
-                        &spec,
-                        st.font_size,
-                        1.3,
-                        frame.w,
-                        st.align,
-                    )
+                    shaper.layout_display_line_runs(ob_text::text_layout::SpannedLayoutRequest {
+                        text: dtext,
+                        spans: &disp,
+                        spec: &spec,
+                        size: st.font_size,
+                        leading_rel: 1.3,
+                        width: frame.w,
+                        align: st.align,
+                    })
                 } else {
-                    shaper.layout_paragraph_runs(
-                        dtext,
-                        &eff_spans,
-                        &spec,
-                        st.font_size,
-                        1.3,
-                        frame.w,
-                        st.align,
-                    )
+                    shaper.layout_paragraph_runs(ob_text::text_layout::SpannedLayoutRequest {
+                        text: dtext,
+                        spans: &eff_spans,
+                        spec: &spec,
+                        size: st.font_size,
+                        leading_rel: 1.3,
+                        width: frame.w,
+                        align: st.align,
+                    })
                 };
                 if layout.lines().iter().any(|l| !l.clusters.is_empty()) {
                     any_clusters = true;
@@ -3421,6 +3421,17 @@ impl App {
             return;
         };
         let name = file_name_of(&path);
+        // Size before read (health audit S-8): a zip past
+        // the clip intake's batch cap is refused from its
+        // filesystem size, before its bytes are read whole.
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() > ob_clips::MAX_CLIP_BATCH_BYTES {
+                self.fail(format!(
+                    "\"{name}\" is too large to bring in as clip art (over 512 megabytes)."
+                ));
+                return;
+            }
+        }
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
@@ -6119,6 +6130,17 @@ impl App {
             return;
         };
         let name = file_name_of(&path);
+        // Size before read (health audit S-8): a zip past
+        // the clip intake's batch cap is refused from its
+        // filesystem size, before its bytes are read whole.
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() > ob_clips::MAX_CLIP_BATCH_BYTES {
+                self.fail(format!(
+                    "\"{name}\" is too large to bring in as clip art: a clip art                      pack is not bigger than 512 megabytes."
+                ));
+                return;
+            }
+        }
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {

@@ -541,7 +541,19 @@ fn write_license_note(lib: &FontLibrary, repo_id: &str, detail: &serde_json::Val
                 "{family}\nLicense: {license}\nSource: {source}\nFull license text: see the family's entry in the Google Fonts catalog.\n"
             )
         });
-    let _ = std::fs::write(lib.dir().join(format!("{repo_id}-LICENSE.txt")), text);
+    let _ = std::fs::write(lib.dir().join(license_note_name(repo_id)), text);
+}
+
+/// The license note's file name for one catalog family:
+/// the repository id is remote-supplied (it comes from
+/// the catalog server's answer), so the name goes
+/// through the same `sanitize_file_name` the sibling
+/// font writes use before it is joined to the library
+/// folder (health audit S-4): separators and leading
+/// dots never reach the path, and the note always lands
+/// as one plain file inside the library.
+fn license_note_name(repo_id: &str) -> String {
+    crate::sanitize_file_name(&format!("{repo_id}-LICENSE.txt"))
 }
 
 /// The Church Starter Pack: metric twins for the fonts church
@@ -662,6 +674,54 @@ mod tests {
         assert_eq!(contents.faces[0].0, "DejaVuSans.ttf");
         assert_eq!(contents.faces[0].1, b"font bytes");
         assert_eq!(contents.license.as_deref(), Some("the license"));
+    }
+
+    #[test]
+    fn a_hostile_repo_id_keeps_the_license_note_inside_the_library() {
+        // S-4 pin: the id comes from the catalog server's
+        // answer, so a hostile one (separators, dot-dot)
+        // must still land as a single plain file inside
+        // the library folder, never outside it.
+        for hostile in ["../../escaped", "..\\..\\escaped", "..", "a/b/c"] {
+            let name = license_note_name(hostile);
+            assert!(
+                !name.contains('/') && !name.contains('\\'),
+                "no separator survives in {name:?} (from {hostile:?})"
+            );
+            assert!(!name.starts_with('.'), "no leading dots in {name:?}");
+            assert!(
+                name.ends_with("-LICENSE.txt") || name == "font.ttf",
+                "{name:?}"
+            );
+        }
+        assert_eq!(license_note_name("lato"), "lato-LICENSE.txt");
+        // End to end through the note writer itself: the
+        // note (best-effort license text and all) lands
+        // inside the library, and nothing appears outside.
+        let dir = std::env::temp_dir().join(format!("ob-fonts-note-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = crate::FontLibrary::open(dir.clone()).expect("library opens");
+        let detail = serde_json::json!({"license": "OFL-1.1", "family": "X", "source": "test"});
+        write_license_note(&lib, "../../escaped-note", &detail);
+        let mut landed: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read library")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        landed.sort();
+        assert_eq!(
+            landed,
+            vec!["escaped-note-LICENSE.txt".to_string()],
+            "one plain note file inside the library"
+        );
+        assert!(
+            !dir.parent()
+                .expect("parent")
+                .join("escaped-note-LICENSE.txt")
+                .exists(),
+            "nothing was written outside the library"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -790,11 +850,8 @@ mod tests {
         // Liberation ever gains the cross, this test says
         // the DejaVu pointer has become unnecessary, not
         // wrong, and the registry should be revisited.
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../ob-text/assets/fonts/LiberationSans-Regular.ttf"
-        );
-        let Ok(bytes) = std::fs::read(path) else {
+        let path = ob_text::bundled_asset_path("LiberationSans-Regular.ttf");
+        let Ok(bytes) = std::fs::read(&path) else {
             return;
         };
         let face = ttf_parser::Face::parse(&bytes, 0).expect("parse Liberation Sans");

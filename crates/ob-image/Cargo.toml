@@ -1,6 +1,6 @@
 [package]
 name = "ob-image"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -9,5 +9,16 @@ description = "OpenBulletin picture decoding: the recognition door (PNG/JPEG/Web
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
 quick-xml = "0.36"
+# resvg is taken with its default features, including
+# system-fonts: the recorded exception to this project's
+# no-system-fonts rule (health audit m-5). The exception
+# reaches only SVG rasterization in this crate, where
+# system fonts are resvg's text fallback for an SVG that
+# names a family; bulletin text is shaped by parley over
+# the user's Font Library (ob-text), which never
+# consults system fonts.
 resvg = "0.45"
 jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "ob-verovio-helper"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -13,3 +13,6 @@ path = "src/main.rs"
 [dependencies]
 ob-music = { path = "../ob-music" }
 serde_json.workspace = true
+
+[lints]
+workspace = true

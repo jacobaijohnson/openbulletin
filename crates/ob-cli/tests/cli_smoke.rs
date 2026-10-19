@@ -149,8 +149,7 @@ fn fonts_add_skips_the_bad_and_lands_the_good() {
     let dir = std::env::temp_dir().join(format!("ob-cli-fonts-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("dir");
-    let good_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../ob-text/assets/fonts/LiberationSans-Regular.ttf");
+    let good_src = ob_text::bundled_asset_path("LiberationSans-Regular.ttf");
     let good = dir.join("LiberationSans-Regular.ttf");
     std::fs::copy(&good_src, &good).expect("copy the good font");
     let bad = dir.join("notafont.txt");

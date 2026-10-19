@@ -175,27 +175,27 @@ fn layout_piece(shaper: &mut Shaper, prep: &PrepPara, start: usize, width: Mpt) 
         let expanded =
             shaper.expand_order_line(&prep.resolved, width, &prep.spec, prep.style.font_size);
         let disp = crate::text_layout::leader_run_spans(&prep.resolved, &prep.spans, &expanded);
-        return shaper.layout_display_line_runs(
-            &expanded,
-            &disp,
-            &prep.spec,
-            prep.style.font_size,
-            LEADING,
+        return shaper.layout_display_line_runs(crate::text_layout::SpannedLayoutRequest {
+            text: &expanded,
+            spans: &disp,
+            spec: &prep.spec,
+            size: prep.style.font_size,
+            leading_rel: LEADING,
             width,
-            prep.style.align,
-        );
+            align: prep.style.align,
+        });
     }
     let text = &prep.resolved[start..];
     let spans = clip_spans(&prep.spans, start..prep.resolved.len());
-    shaper.layout_paragraph_runs(
+    shaper.layout_paragraph_runs(crate::text_layout::SpannedLayoutRequest {
         text,
-        &spans,
-        &prep.spec,
-        prep.style.font_size,
-        LEADING,
+        spans: &spans,
+        spec: &prep.spec,
+        size: prep.style.font_size,
+        leading_rel: LEADING,
         width,
-        prep.style.align,
-    )
+        align: prep.style.align,
+    })
 }
 
 /// How many line heights a tabbed paragraph's one display

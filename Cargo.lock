@@ -2882,6 +2882,7 @@ name = "ob-fonts"
 version = "0.1.0"
 dependencies = [
  "ob-model",
+ "ob-text",
  "rustls",
  "rustls-native-certs",
  "serde",
@@ -3333,6 +3334,7 @@ dependencies = [
  "ob-layout",
  "ob-model",
  "ob-pdf",
+ "ob-text",
  "serde_json",
 ]
 

@@ -157,10 +157,7 @@ mod tests {
     use super::*;
 
     fn bundled(name: &str) -> Vec<u8> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/ob-text/assets/fonts")
-            .join(name);
-        std::fs::read(&path).expect("bundled font present")
+        std::fs::read(ob_text::bundled_asset_path(name)).expect("bundled font present")
     }
 
     /// Lay two standalone fonts side by side behind a

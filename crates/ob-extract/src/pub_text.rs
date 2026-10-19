@@ -695,6 +695,14 @@ pub(crate) fn span_font(props: &CharProps, fonts: &[String]) -> Option<String> {
 /// non-breaking space and the form feed is simply dropped;
 /// for Quill text the break reading is the useful one, and
 /// no control character is ever emitted raw.)
+// Recorded allow (health audit m-6): the pen state travels
+// as the Layout object already; what remains is this
+// piece's own facts (its text, its character properties,
+// the font table they resolve against) beside the output
+// spans and the shared loss counter — the walk's live
+// locals at every call site in this file, passed flat so
+// the borrow split (spans and loss both &mut, the rest
+// shared) stays visible.
 #[allow(clippy::too_many_arguments)]
 fn emit_piece(
     layout: &mut Layout,

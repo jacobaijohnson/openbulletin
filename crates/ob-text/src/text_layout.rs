@@ -369,6 +369,22 @@ fn align_offset(align: Align, frame_w: f32, line_w: f32) -> f32 {
     }
 }
 
+/// One spanned layout request (health audit m-6): the
+/// text, its effective face spans, the face it is set in,
+/// its size and leading, the width it must fit, and its
+/// alignment. The two `*_runs` layout entry points take
+/// exactly this set, so it travels as one object instead
+/// of seven positional arguments at every call site.
+pub struct SpannedLayoutRequest<'a> {
+    pub text: &'a str,
+    pub spans: &'a [RunSpan],
+    pub spec: &'a FontSpec,
+    pub size: Mpt,
+    pub leading_rel: f32,
+    pub width: Mpt,
+    pub align: Align,
+}
+
 impl Shaper {
     /// Lay a paragraph out for editing: display lines whose
     /// breaks are exactly `wrap`'s breaks (same parley pass,
@@ -387,7 +403,15 @@ impl Shaper {
             bold: spec.bold,
             italic: spec.italic,
         }];
-        self.layout_paragraph_runs(text, &spans, spec, size, leading_rel, max_width, align)
+        self.layout_paragraph_runs(SpannedLayoutRequest {
+            text,
+            spans: &spans,
+            spec,
+            size,
+            leading_rel,
+            width: max_width,
+            align,
+        })
     }
 
     /// `layout_paragraph` for a paragraph whose face switches
@@ -397,17 +421,16 @@ impl Shaper {
     /// would get unformatted except where the wider faces
     /// genuinely move a word; the strict re-break measures
     /// with the spans in force.
-    #[allow(clippy::too_many_arguments)]
-    pub fn layout_paragraph_runs(
-        &mut self,
-        text: &str,
-        spans: &[RunSpan],
-        spec: &FontSpec,
-        size: Mpt,
-        leading_rel: f32,
-        max_width: Mpt,
-        align: Align,
-    ) -> TextLayout {
+    pub fn layout_paragraph_runs(&mut self, req: SpannedLayoutRequest<'_>) -> TextLayout {
+        let SpannedLayoutRequest {
+            text,
+            spans,
+            spec,
+            size,
+            leading_rel,
+            width: max_width,
+            align,
+        } = req;
         let line_height = size as f32 / 1000.0 * leading_rel;
         let frame_w = max_width as f32 / 1000.0;
         if text.is_empty() {
@@ -531,22 +554,29 @@ impl Shaper {
             bold: spec.bold,
             italic: spec.italic,
         }];
-        self.layout_display_line_runs(text, &spans, spec, size, leading_rel, frame_width, align)
+        self.layout_display_line_runs(SpannedLayoutRequest {
+            text,
+            spans: &spans,
+            spec,
+            size,
+            leading_rel,
+            width: frame_width,
+            align,
+        })
     }
 
     /// `layout_display_line` with effective face spans over
     /// the (already expanded) line text.
-    #[allow(clippy::too_many_arguments)]
-    pub fn layout_display_line_runs(
-        &mut self,
-        text: &str,
-        spans: &[RunSpan],
-        spec: &FontSpec,
-        size: Mpt,
-        leading_rel: f32,
-        frame_width: Mpt,
-        align: Align,
-    ) -> TextLayout {
+    pub fn layout_display_line_runs(&mut self, req: SpannedLayoutRequest<'_>) -> TextLayout {
+        let SpannedLayoutRequest {
+            text,
+            spans,
+            spec,
+            size,
+            leading_rel,
+            width: frame_width,
+            align,
+        } = req;
         let line_height = size as f32 / 1000.0 * leading_rel;
         let frame_w = frame_width as f32 / 1000.0;
         let (clusters, advance) = line_clusters(self, text, spans, spec, size, leading_rel);
@@ -692,8 +722,15 @@ mod tests {
             },
         ];
         let plain = s.layout_paragraph(text, &spec(), 12_000, 1.3, 170_000, Align::Left);
-        let with_runs =
-            s.layout_paragraph_runs(text, &spans, &spec(), 12_000, 1.3, 170_000, Align::Left);
+        let with_runs = s.layout_paragraph_runs(SpannedLayoutRequest {
+            text,
+            spans: &spans,
+            spec: &spec(),
+            size: 12_000,
+            leading_rel: 1.3,
+            width: 170_000,
+            align: Align::Left,
+        });
         let plain_ranges: Vec<Range<usize>> =
             plain.lines().iter().map(|l| l.range.clone()).collect();
         let run_ranges: Vec<Range<usize>> =

@@ -237,6 +237,13 @@ pub struct AddReport {
 
 const MAX_CLIP_BYTES: usize = 64 * 1024 * 1024;
 
+/// The most one folder intake will hold in total:
+/// 512 MB of accepted files, the workspace's standing
+/// batch cap (the zip door and the .obd loader hold the
+/// same line). Files past it are counted and left out,
+/// like files past the per-file cap above.
+pub const MAX_CLIP_BATCH_BYTES: u64 = 512 * 1024 * 1024;
+
 pub struct ClipLibrary {
     dir: PathBuf,
 }
@@ -434,7 +441,8 @@ impl ClipLibrary {
             .unwrap_or_else(|| "Collection".to_string());
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
         let mut unreadable = 0usize;
-        gather_files(folder, folder, &mut files, &mut unreadable);
+        let mut total: u64 = 0;
+        gather_files(folder, folder, &mut files, &mut unreadable, &mut total);
         let mut report = self.add_collection(&name, &files, notes, convert)?;
         report.skipped_unreadable += unreadable;
         Ok(report)
@@ -553,21 +561,67 @@ fn collect_items(root: &Path, dir: &Path, out: &mut Vec<ClipItem>) {
     }
 }
 
-fn gather_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>, unreadable: &mut usize) {
+fn gather_files(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, Vec<u8>)>,
+    unreadable: &mut usize,
+    total: &mut u64,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
+        // The entry's own file type, never followed
+        // (health audit S-8): a symlink is not gathered
+        // and a symlinked folder is not descended, so a
+        // handed-over folder cannot pull outside content
+        // into the library across a fence the user never
+        // opened. Skipped symlinks are counted on the
+        // same surface as unreadable files: the intake
+        // report's skipped_unreadable count, which
+        // add_collection_from_folder folds in.
+        let Ok(file_type) = entry.file_type() else {
+            *unreadable += 1;
+            continue;
+        };
         let path = entry.path();
-        if path.is_dir() {
-            gather_files(root, &path, out, unreadable);
-        } else if path.is_file() {
+        if file_type.is_symlink() {
+            *unreadable += 1;
+            continue;
+        }
+        if file_type.is_dir() {
+            gather_files(root, &path, out, unreadable, total);
+        } else if file_type.is_file() {
+            // Size before read: the per-file cap is
+            // judged on the file's metadata length, so an
+            // oversize file is counted and left out
+            // without its bytes ever being read whole.
+            let Ok(meta) = entry.metadata() else {
+                *unreadable += 1;
+                continue;
+            };
+            if meta.len() > MAX_CLIP_BYTES as u64 {
+                *unreadable += 1;
+                continue;
+            }
+            // The batch total: intake stops accepting
+            // past 512 MB of accepted bytes; files past
+            // the line are counted and left out, like
+            // the other skips on this door.
+            if *total + meta.len() > MAX_CLIP_BATCH_BYTES {
+                *unreadable += 1;
+                continue;
+            }
             let rel = path
                 .strip_prefix(root)
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
             match std::fs::read(&path) {
-                Ok(bytes) => out.push((rel, bytes)),
+                Ok(bytes) => {
+                    *total += bytes.len() as u64;
+                    out.push((rel, bytes));
+                }
                 Err(_) => *unreadable += 1,
             }
         }
@@ -990,6 +1044,94 @@ mod tests {
         // the collection's notes.
         assert_eq!(set.piece_notes("star.svg"), set.notes.as_ref());
         assert!(!set.pieces.contains_key("ghost.svg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_picture_is_not_gathered_and_a_symlinked_folder_is_not_descended() {
+        // S-8 pin: a handed-over folder carrying symlinks
+        // must not pull the linked content into the
+        // library. The real picture lands; the symlink to
+        // it is counted as skipped, and the symlinked
+        // subfolder's picture never arrives at all.
+        let dir = temp_dir("symlink");
+        let outside = temp_dir("symlink-outside");
+        std::fs::create_dir_all(&outside).expect("outside dir");
+        std::fs::write(outside.join("secret.png"), tiny_png()).expect("outside picture");
+        let folder = dir.join("handed-over");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join("real.png"), tiny_png()).expect("real picture");
+        std::os::unix::fs::symlink(folder.join("real.png"), folder.join("link.png"))
+            .expect("file symlink");
+        std::os::unix::fs::symlink(&outside, folder.join("linked-folder")).expect("folder symlink");
+        let lib = ClipLibrary::open(dir.join("library")).expect("open");
+        let report = lib
+            .add_collection_from_folder(&folder, &CollectionNotes::default(), None)
+            .expect("add");
+        assert_eq!(report.added, 1, "only the real picture lands: {report:?}");
+        assert!(
+            report.skipped_unreadable >= 1,
+            "the symlink is counted as skipped: {report:?}"
+        );
+        let collection = lib.collection("handed-over").expect("collection");
+        assert_eq!(collection.items.len(), 1);
+        assert_eq!(collection.items[0].file_name, "real.png");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn an_oversize_file_is_left_out_from_its_size_alone() {
+        // S-8 pin (size before read): a sparse file whose
+        // stated length is past the 64 MB per-file cap is
+        // counted and left out; the small file beside it
+        // still lands.
+        let dir = temp_dir("oversize");
+        let folder = dir.join("handed-over");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join("small.png"), tiny_png()).expect("small picture");
+        let big = std::fs::File::create(folder.join("big.png")).expect("big file");
+        big.set_len(65 * 1024 * 1024).expect("sparse length");
+        drop(big);
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut unreadable = 0usize;
+        let mut total: u64 = 0;
+        gather_files(&folder, &folder, &mut files, &mut unreadable, &mut total);
+        assert_eq!(files.len(), 1, "only the small file is gathered: {files:?}");
+        assert_eq!(files[0].0, "small.png");
+        assert_eq!(unreadable, 1, "the oversize file is counted as skipped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_intake_stops_accepting_past_the_batch_cap() {
+        // S-8 pin (batch total): sparse files of 60 MB
+        // each (each under the per-file cap) sum past
+        // 512 MB; intake accepts up to the cap and counts
+        // the rest as skipped, accepting nothing past it.
+        let dir = temp_dir("batch-cap");
+        let folder = dir.join("handed-over");
+        std::fs::create_dir_all(&folder).expect("folder");
+        for i in 0..10 {
+            let f = std::fs::File::create(folder.join(format!("f{i}.png"))).expect("file");
+            f.set_len(60 * 1024 * 1024).expect("sparse length");
+            drop(f);
+        }
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut unreadable = 0usize;
+        let mut total: u64 = 0;
+        gather_files(&folder, &folder, &mut files, &mut unreadable, &mut total);
+        assert_eq!(files.len(), 8, "eight 60 MB files fit under 512 MB");
+        assert!(
+            total <= MAX_CLIP_BATCH_BYTES,
+            "accepted total stays at the cap: {total}"
+        );
+        assert_eq!(total, 8 * 60 * 1024 * 1024);
+        assert_eq!(
+            unreadable, 2,
+            "the two files past the cap are counted as skipped"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

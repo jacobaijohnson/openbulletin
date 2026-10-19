@@ -1,6 +1,6 @@
 [package]
 name = "ob-runner"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,3 +12,6 @@ description = "OpenBulletin helper runner: spawn a helper program with a deadlin
 # pipes open.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[lints]
+workspace = true

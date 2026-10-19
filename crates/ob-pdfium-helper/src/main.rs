@@ -11,16 +11,18 @@
 //! Render mode draws every page to a PNG in the output folder: the
 //! tracing guides for the import rescue (docs/EXTRACT.md).
 //! The PDFium shared library is found via $OB_PDFIUM_LIB (full path
-//! to libpdfium.so / pdfium.dll), defaulting to the workspace
-//! toolchain copy used in development.
+//! to libpdfium.so / pdfium.dll), or beside this helper program
+//! (the shipped layout). There is no other place it will look:
+//! if neither resolves, the helper refuses (fails closed) rather
+//! than reach for a development tree (health audit S-10).
 
 use ob_extract::{ExtractionDump, PageInfo, SourceKind, Span, SpanTrust};
 use pdfium_render::prelude::*;
 use std::process::exit;
 
-fn lib_path() -> String {
+fn lib_path() -> Option<String> {
     if let Ok(p) = std::env::var("OB_PDFIUM_LIB") {
-        return p;
+        return Some(p);
     }
     // The shipped bundle layout: the library sits beside the
     // helper itself (pdfium.dll on Windows, libpdfium.so on
@@ -30,13 +32,28 @@ fn lib_path() -> String {
             for name in ["pdfium.dll", "libpdfium.so", "libpdfium.dylib"] {
                 let candidate = dir.join(name);
                 if candidate.exists() {
-                    return candidate.to_string_lossy().into_owned();
+                    return Some(candidate.to_string_lossy().into_owned());
                 }
             }
         }
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/workspace/.toolchain/pdfium/lib/libpdfium.so")
+    // No development-tree fallback: a shipped helper whose
+    // library is not beside it and not named by the env
+    // override fails closed (health audit S-10).
+    None
+}
+
+/// The library path, or the helper's refusal in its
+/// existing error shape (a line on stderr, exit 1) when
+/// no library resolves.
+fn lib_path_or_refuse() -> String {
+    lib_path().unwrap_or_else(|| {
+        eprintln!(
+            "the PDF library that travels with the app could not be found \
+             (it should sit beside this reader program)"
+        );
+        exit(1);
+    })
 }
 
 /// The open-door gate (HF-2): a PDF past the standing
@@ -89,7 +106,7 @@ fn main() {
         eprintln!("cannot read {path}: {e}");
         exit(1);
     });
-    let bindings = Pdfium::bind_to_library(lib_path()).unwrap_or_else(|e| {
+    let bindings = Pdfium::bind_to_library(lib_path_or_refuse()).unwrap_or_else(|e| {
         eprintln!(
             "the PDF library that travels with the app could not be loaded \
              (it should sit beside this reader program). Details: {e:?}"
@@ -248,7 +265,7 @@ fn render_pages(path: &str, out_dir: &str) {
         eprintln!("cannot read {path}: {e}");
         exit(1);
     });
-    let bindings = Pdfium::bind_to_library(lib_path()).unwrap_or_else(|e| {
+    let bindings = Pdfium::bind_to_library(lib_path_or_refuse()).unwrap_or_else(|e| {
         eprintln!("cannot load PDFium library: {e:?}");
         exit(1);
     });

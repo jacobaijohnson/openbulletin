@@ -713,10 +713,7 @@ mod tests {
     use super::*;
 
     fn bundled(name: &str) -> Vec<u8> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/ob-text/assets/fonts")
-            .join(name);
-        std::fs::read(&path).expect("bundled font present")
+        std::fs::read(ob_text::bundled_asset_path(name)).expect("bundled font present")
     }
 
     /// The bundled faces as inspected facts, the way
@@ -802,8 +799,7 @@ mod tests {
     fn zip_traversal_names_stay_in_the_library() {
         let dir = temp_dir("traversal");
         let lib = FontLibrary::open(dir.clone()).expect("open");
-        let font = std::fs::read("../ob-text/assets/fonts/LiberationSans-Regular.ttf")
-            .expect("bundled font");
+        let font = bundled("LiberationSans-Regular.ttf");
         // Build a zip whose entry name tries to escape.
         let mut zip_bytes = Vec::new();
         {
@@ -831,10 +827,8 @@ mod tests {
     fn a_second_font_never_overwrites_a_namesake() {
         let dir = temp_dir("collision");
         let lib = FontLibrary::open(dir.clone()).expect("open");
-        let a =
-            std::fs::read("../ob-text/assets/fonts/LiberationSans-Regular.ttf").expect("font a");
-        let b =
-            std::fs::read("../ob-text/assets/fonts/LiberationSerif-Regular.ttf").expect("font b");
+        let a = bundled("LiberationSans-Regular.ttf");
+        let b = bundled("LiberationSerif-Regular.ttf");
         let first = lib.add_bytes(&a, "Same.ttf").expect("add a");
         let second = lib.add_bytes(&b, "Same.ttf").expect("add b");
         assert_ne!(first.file_name, second.file_name);
@@ -848,8 +842,7 @@ mod tests {
     fn restricted_fonts_may_not_be_packaged() {
         // Patch the fsType of a real font to Restricted (0x0002)
         // in its OS/2 table and confirm the rights gate closes.
-        let mut bytes = std::fs::read("../ob-text/assets/fonts/LiberationSans-Regular.ttf")
-            .expect("bundled font");
+        let mut bytes = bundled("LiberationSans-Regular.ttf");
         let num_tables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
         let mut patched = false;
         for i in 0..num_tables {

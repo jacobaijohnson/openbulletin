@@ -1083,6 +1083,12 @@ impl<'a> Compose<'a> {
     /// feed breaks the line too (a box has no next page),
     /// a tab becomes a space, the paragraph mark and other
     /// controls never reach a span.
+    // Recorded allow (health audit m-6): the pen state
+    // travels as the RectPen object already; the rest is
+    // this piece's own facts (its text, its character
+    // properties, its trust and page) and the line bounds
+    // (rx, right) of the box it is being placed into —
+    // two clusters the caller holds as separate locals.
     #[allow(clippy::too_many_arguments)]
     fn place_piece(
         &mut self,
@@ -1126,6 +1132,10 @@ impl<'a> Compose<'a> {
         pen.prev_ended_space = false;
     }
 
+    // Recorded allow (health audit m-6): as place_piece —
+    // the pen is already an object; the remaining
+    // arguments are the segment being flushed, its face
+    // and trust, its page, and the box's line bounds.
     #[allow(clippy::too_many_arguments)]
     fn place_flush(
         &mut self,
@@ -1208,6 +1218,12 @@ impl<'a> Compose<'a> {
         pen.prev_ended_space = segment.ends_with(' ');
     }
 
+    // Recorded allow (health audit m-6): the arguments
+    // are the fields of the Span this method builds,
+    // stated one to one (page, text, trust, x, y, w,
+    // size, and the character properties the rest of the
+    // span's fields derive from). A parameter object
+    // would be a second copy of the span record.
     #[allow(clippy::too_many_arguments)]
     fn push_span(
         &mut self,

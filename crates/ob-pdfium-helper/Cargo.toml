@@ -1,6 +1,6 @@
 [package]
 name = "ob-pdfium-helper"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -11,3 +11,6 @@ ob-extract = { path = "../ob-extract" }
 pdfium-render = "0.8"
 serde_json.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

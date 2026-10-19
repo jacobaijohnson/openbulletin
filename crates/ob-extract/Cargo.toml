@@ -1,6 +1,6 @@
 [package]
 name = "ob-extract"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -25,3 +25,6 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 ob-layout = { path = "../ob-layout" }
 ob-pdf = { path = "../ob-pdf" }
 chrono.workspace = true
+
+[lints]
+workspace = true

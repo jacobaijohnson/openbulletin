@@ -1,6 +1,6 @@
 [package]
 name = "ob-pdf"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -20,3 +20,6 @@ subsetter = "0.2.6"
 lopdf = "0.34"
 ob-layout = { path = "../ob-layout" }
 chrono.workspace = true
+
+[lints]
+workspace = true

@@ -135,6 +135,27 @@ development testing (a Bach chorale edition under
 CC BY-NC-SA 4.0) lives outside this repository and never
 ships, like the bulletin corpus.
 
+## Pre-1.0 dependency pins (recorded 2026-10-19, health audit m-4)
+
+Several load-bearing direct dependencies are pre-1.0
+("0.x") pins, where a minor bump may change the API:
+`pdfium-render` 0.8 (the PDFium boundary, ob-pdfium-helper),
+`parley` 0.12 and `fontique` 0.12 (text shaping, ob-text),
+`jxl-oxide` 0.12 and `resvg` 0.45 (picture decoding,
+ob-image), `subsetter` 0.2.6 (font subsetting, ob-pdf),
+`eframe` 0.29 (the desktop shell, ob-app), `lopdf` 0.34,
+`html5ever` / `markup5ever_rcdom` 0.39, `quick-xml` 0.36,
+`image` 0.25, `ttf-parser` 0.25, `rustls` 0.23,
+`base64` 0.22, `rfd` 0.15, `sha2` 0.10, and `libc` 0.2.
+
+Posture, in plain words: these pins are deliberate, not
+overlooked. No pin is raised casually. When a pin is
+raised, the upstream API churn is absorbed in the crate
+that owns the dependency (the PDFium churn in
+ob-pdfium-helper, the shaping churn in ob-text, and so
+on), never spread across the workspace, and the raise
+lands with the full suite green like any other change.
+
 ## The Publisher reader and the LibreOffice bridge
 
 Our Publisher (.pub) reader is an independent implementation

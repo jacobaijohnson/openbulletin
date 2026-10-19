@@ -675,6 +675,13 @@ pub(crate) fn split_present_paragraphs_under_heading(
 /// is judging in this story — is threaded in by the
 /// apply loop, so a simulation slice keeps the whole
 /// contribution's headings.
+// Recorded allow (health audit m-6): the six arguments
+// have six different owners in the apply loop — the
+// document and the counts are mutated, the contribution,
+// part, and plan are the work item, and `judged` is the
+// loop's shared judging context. The flat list keeps that
+// split visible; a bundle would have to mix &mut and
+// shared roles into one struct rebuilt on every call.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_part(
     doc: &mut Document,

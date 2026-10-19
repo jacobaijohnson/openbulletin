@@ -1,6 +1,6 @@
 [package]
 name = "ob-impose"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -8,3 +8,6 @@ description = "OpenBulletin imposition: reader panels -> printer sheets (bi-fold
 
 [dependencies]
 ob-model = { path = "../ob-model" }
+
+[lints]
+workspace = true

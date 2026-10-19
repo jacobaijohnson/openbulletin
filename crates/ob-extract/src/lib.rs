@@ -256,7 +256,7 @@ pub struct ExtractionDump {
 /// The loss sentence for text spans addressed to pages
 /// a dump does not list (round 2, R2-8), worded once so
 /// every door says it the same way.
-pub fn unlisted_page_spans_note(dropped: usize) -> String {
+pub(crate) fn unlisted_page_spans_note(dropped: usize) -> String {
     if dropped == 1 {
         "1 piece of text pointed at a page the reading did not list, so it was left out."
             .to_string()
@@ -281,7 +281,7 @@ impl ExtractionDump {
     /// channel the draft review already reads aloud.
     /// Picture-only markers carry no words and are not
     /// counted as text losses.
-    pub fn note_unlisted_page_spans(&mut self) {
+    fn note_unlisted_page_spans(&mut self) {
         let listed: std::collections::HashSet<u32> = self.pages.iter().map(|p| p.index).collect();
         let before = self.spans.len();
         self.spans

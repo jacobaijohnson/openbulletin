@@ -37,7 +37,7 @@ pub enum LearnKind {
 /// name does not say (or says nothing we know), the file's
 /// own first bytes do. Reading the head of a stranger file
 /// is all this does; parsing lives in the importers.
-pub fn detect_kind(extension: &str, head: &[u8]) -> Option<LearnKind> {
+fn detect_kind(extension: &str, head: &[u8]) -> Option<LearnKind> {
     match extension.to_ascii_lowercase().as_str() {
         "pdf" => return Some(LearnKind::Pdf),
         "pub" => return Some(LearnKind::Publisher),
@@ -104,7 +104,7 @@ impl KindCounts {
 
     /// Files that count one-for-one (their structure is
     /// stated in the file, not rebuilt).
-    pub fn structured(&self) -> usize {
+    fn structured(&self) -> usize {
         self.publisher + self.indesign + self.scribus + self.openbulletin
     }
 
@@ -119,7 +119,7 @@ impl KindCounts {
             }
     }
 
-    pub fn total(&self) -> usize {
+    fn total(&self) -> usize {
         self.pdf + self.structured()
     }
 }

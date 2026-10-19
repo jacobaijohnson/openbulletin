@@ -383,7 +383,7 @@ fn lines_of(spans: &[&crate::Span]) -> Vec<Line> {
 
 /// One page's words, rebuilt into reading lines (the analyzer
 /// reads these, never raw foreign files).
-pub fn rebuilt_page_lines(dump: &ExtractionDump, page: u32) -> Vec<String> {
+pub(crate) fn rebuilt_page_lines(dump: &ExtractionDump, page: u32) -> Vec<String> {
     let spans: Vec<&crate::Span> = dump
         .spans
         .iter()

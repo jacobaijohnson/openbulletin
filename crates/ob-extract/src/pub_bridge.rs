@@ -11,12 +11,12 @@ use std::time::{Duration, Instant};
 
 /// How long a conversion may run before we give up on it.
 /// Publisher files are small; two minutes is generous.
-pub const CONVERT_TIMEOUT: Duration = Duration::from_secs(120);
+const CONVERT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Well-known LibreOffice locations for an OS, best first.
 /// Pure: the caller decides what "exists" means, so this is
 /// testable without the program installed.
-pub fn soffice_candidates(os: &str) -> Vec<PathBuf> {
+fn soffice_candidates(os: &str) -> Vec<PathBuf> {
     match os {
         "windows" => vec![
             PathBuf::from(r"C:\Program Files\LibreOffice\program\soffice.exe"),
@@ -31,10 +31,10 @@ pub fn soffice_candidates(os: &str) -> Vec<PathBuf> {
 }
 
 /// Names to look up on PATH, best first.
-pub const PATH_NAMES: [&str; 2] = ["soffice", "libreoffice"];
+const PATH_NAMES: [&str; 2] = ["soffice", "libreoffice"];
 
 /// The first candidate that exists, if any.
-pub fn first_existing(candidates: &[PathBuf], exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+fn first_existing(candidates: &[PathBuf], exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
     candidates.iter().find(|p| exists(p)).cloned()
 }
 
@@ -69,7 +69,7 @@ pub fn find_soffice() -> Option<PathBuf> {
 
 /// The composition behind find_soffice, with every input
 /// injectable so the order can be tested.
-pub fn find_soffice_from(
+fn find_soffice_from(
     env_override: Option<PathBuf>,
     os: &str,
     exists: &dyn Fn(&Path) -> bool,
@@ -91,7 +91,7 @@ pub fn find_soffice_from(
 
 /// Where a converted PDF lands: LibreOffice names it after the
 /// source file, in the output folder.
-pub fn expected_pdf_path(pub_path: &Path, out_dir: &Path) -> PathBuf {
+fn expected_pdf_path(pub_path: &Path, out_dir: &Path) -> PathBuf {
     let stem = pub_path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -112,7 +112,7 @@ pub fn convert_pub_to_pdf(
     convert_pub_to_pdf_with_timeout(soffice, pub_path, out_dir, CONVERT_TIMEOUT)
 }
 
-pub fn convert_pub_to_pdf_with_timeout(
+fn convert_pub_to_pdf_with_timeout(
     soffice: &Path,
     pub_path: &Path,
     out_dir: &Path,

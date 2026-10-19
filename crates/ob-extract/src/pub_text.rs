@@ -1343,7 +1343,7 @@ pub(crate) fn reading_column_dump(
 /// Extract the words from Quill stream bytes: a text dump
 /// (one span per character run, reading order, synthetic
 /// letter pages) plus the loss report.
-pub fn extract_from_quill(
+fn extract_from_quill(
     quill: &[u8],
     source_name: &str,
     source_bytes: usize,

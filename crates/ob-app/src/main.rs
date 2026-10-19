@@ -11631,10 +11631,11 @@ impl App {
     /// a file beside the .obd, read as before.
     fn load_bg_texture(&self, ctx: &egui::Context, rel: &str) -> Option<egui::TextureHandle> {
         if let Some(stored) = self.doc.asset_data(rel) {
-            let img = image::load_from_memory(stored).ok()?.to_rgba8();
-            let (w, h) = img.dimensions();
-            let color =
-                egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
+            let decoded = ob_image::decode(stored).ok()?;
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [decoded.width as usize, decoded.height as usize],
+                &decoded.rgba,
+            );
             return Some(ctx.load_texture("trace-bg", color, egui::TextureOptions::LINEAR));
         }
         let base = self
@@ -11644,10 +11645,11 @@ impl App {
             .or_else(|| self.asset_base.clone())
             .unwrap_or_default();
         let bytes = std::fs::read(base.join(rel)).ok()?;
-        let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
-        let (w, h) = img.dimensions();
-        let color =
-            egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
+        let decoded = ob_image::decode(&bytes).ok()?;
+        let color = egui::ColorImage::from_rgba_unmultiplied(
+            [decoded.width as usize, decoded.height as usize],
+            &decoded.rgba,
+        );
         Some(ctx.load_texture("trace-bg", color, egui::TextureOptions::LINEAR))
     }
 
@@ -13763,59 +13765,25 @@ impl App {
     /// be read anywhere it might live stays a path, and the
     /// panel keeps its missing-picture note, as before.
     fn absorb_tracing_pictures(&mut self, target_dir: Option<&std::path::Path>) {
-        let mut jobs: Vec<(usize, String, Vec<u8>, String)> = Vec::new();
-        for (pi, panel) in self.doc.panels.iter().enumerate() {
-            let Some(r) = panel.background_image.clone() else {
-                continue;
-            };
-            if self.doc.asset_data(&r).is_some() {
-                continue; // already carried, by fingerprint
-            }
-            let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-            if let Some(dir) = self.path.as_ref().and_then(|p| p.parent()) {
-                candidates.push(dir.join(&r));
-            }
-            if let Some(dir) = target_dir {
-                candidates.push(dir.join(&r));
-            }
-            if let Some(base) = &self.asset_base {
-                candidates.push(base.join(&r));
-            }
-            for c in candidates {
-                if let Ok(bytes) = std::fs::read(&c) {
-                    let media = match std::path::Path::new(&r)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("")
-                        .to_ascii_lowercase()
-                        .as_str()
-                    {
-                        "jpg" | "jpeg" => "image/jpeg",
-                        "gif" => "image/gif",
-                        "webp" => "image/webp",
-                        _ => "image/png",
-                    }
-                    .to_string();
-                    jobs.push((pi, r.clone(), bytes, media));
-                    break;
-                }
-            }
+        // Delegate to the fenced gather in ob-format
+        // (HF-1): a received document's reference must not
+        // pull arbitrary local files into a bulletin that
+        // travels to other churches. One call per candidate
+        // base, in the existing priority order; a panel
+        // absorbed by an earlier call names an asset
+        // afterwards, so later calls skip it.
+        if let Some(dir) = self
+            .path
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        {
+            ob_format::absorb_sidecar_pictures_in(&mut self.doc, &dir);
         }
-        for (pi, old, bytes, media) in jobs {
-            let hash = self.doc.add_asset(
-                &bytes,
-                ob_model::AssetKind::TracingPicture,
-                &media,
-                ob_model::RightsRecord {
-                    source: old.clone(),
-                    ..Default::default()
-                },
-            );
-            if let Some(panel) = self.doc.panels.get_mut(pi) {
-                if panel.background_image.as_deref() == Some(old.as_str()) {
-                    panel.background_image = Some(hash);
-                }
-            }
+        if let Some(dir) = target_dir {
+            ob_format::absorb_sidecar_pictures_in(&mut self.doc, dir);
+        }
+        if let Some(base) = self.asset_base.clone() {
+            ob_format::absorb_sidecar_pictures_in(&mut self.doc, &base);
         }
     }
 
@@ -17271,6 +17239,60 @@ mod settings_tests {
         doc.fields
             .insert("occasion_date".into(), "2026-10-18".into());
         doc
+    }
+
+    #[test]
+    fn save_time_absorb_never_gathers_outside_the_document_folder() {
+        // H-A (HF-1): the Save-time gather is fenced the
+        // same way the loader's is. A ".." reference and
+        // an absolute reference to a real PNG canary
+        // outside the document folder absorb nothing at
+        // Save, while a legitimate sidecar in the
+        // document folder still absorbs.
+        const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\ncanary";
+        let root = std::env::temp_dir().join(format!("ob-app-ha-fence-{}", std::process::id()));
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).expect("dir");
+        std::fs::write(root.join("secret.png"), PNG_BYTES).expect("canary");
+        std::fs::write(sub.join("page.png"), PNG_BYTES).expect("sidecar");
+
+        let doc_path = sub.join("week.obd");
+        let mut app = App {
+            doc: doc_with_sheet(),
+            path: Some(doc_path),
+            ..Default::default()
+        };
+
+        // The ".." walk out of the document folder.
+        app.doc.panels[0].background_image = Some("../secret.png".into());
+        app.absorb_tracing_pictures(None);
+        assert_eq!(
+            app.doc.panels[0].background_image.as_deref(),
+            Some("../secret.png"),
+            "the reference stays a path; nothing was gathered"
+        );
+        assert!(app.doc.asset_bytes.is_empty());
+
+        // The absolute path to the same canary.
+        let absolute = root.join("secret.png").to_string_lossy().into_owned();
+        app.doc.panels[0].background_image = Some(absolute.clone());
+        app.absorb_tracing_pictures(None);
+        assert_eq!(
+            app.doc.panels[0].background_image.as_deref(),
+            Some(absolute.as_str())
+        );
+        assert!(app.doc.asset_bytes.is_empty());
+
+        // The legitimate sidecar in the document folder.
+        app.doc.panels[0].background_image = Some("page.png".into());
+        app.absorb_tracing_pictures(None);
+        let hash = ob_model::sha256_hex(PNG_BYTES);
+        assert_eq!(
+            app.doc.panels[0].background_image.as_deref(),
+            Some(hash.as_str())
+        );
+        assert_eq!(app.doc.asset_data(&hash), Some(PNG_BYTES));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

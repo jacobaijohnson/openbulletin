@@ -2056,7 +2056,25 @@ fn picture_media_type(bytes: &[u8]) -> Option<&'static str> {
 /// save to every recipient.
 fn absorb_sidecar_pictures(doc: &mut Document, obd_path: &Path) {
     let base = obd_path.parent().unwrap_or_else(|| Path::new("."));
-    let Ok(base) = std::fs::canonicalize(base) else {
+    absorb_sidecar_pictures_in(doc, base);
+}
+
+/// Gather a panel's tracing picture into the asset store
+/// when its reference is a sidecar path that resolves
+/// inside `base_dir`. This is the same fenced discipline
+/// as the loader's twin above, against a base the caller
+/// names: the Save path calls it once per folder a picture
+/// might live in, in priority order.
+///
+/// The fence exists because a received file must not pull
+/// arbitrary local files into a bulletin that travels to
+/// other churches: the sidecar must resolve INSIDE the
+/// named base tree, must be no larger than a page picture
+/// ever is, and its bytes must actually be a picture, with
+/// the media type taken from those bytes, never from the
+/// reference's file extension.
+pub fn absorb_sidecar_pictures_in(doc: &mut Document, base_dir: &Path) {
+    let Ok(base) = std::fs::canonicalize(base_dir) else {
         return;
     };
     // First pass (read-only): which panels carry a resolvable
@@ -2468,6 +2486,73 @@ mod tests {
             Some(hash.as_str())
         );
         assert_eq!(loaded.asset_data(&hash), Some(PNG_BYTES));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn absorb_sidecar_pictures_in_is_fenced_to_the_named_base() {
+        // H-A (HF-1): the pub caller-named-base gather
+        // carries the loader's fence. Four shapes, the
+        // same as the loader pin above: a ".." walk to a
+        // canary outside the named base, an absolute path
+        // to the same canary, text bytes wearing a
+        // picture's name inside the base, and a real
+        // picture beside the base under a plain name.
+        const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\ncanary";
+        let root = scratch("fence-in");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("secret.png"), PNG_BYTES).unwrap();
+        std::fs::write(sub.join("fake.png"), b"donor list, page one").unwrap();
+
+        // (a) The ".." walk out of the named base.
+        let mut doc = test_doc();
+        doc.panels[0].background_image = Some("../secret.png".into());
+        absorb_sidecar_pictures_in(&mut doc, &sub);
+        assert_eq!(
+            doc.panels[0].background_image.as_deref(),
+            Some("../secret.png"),
+            "the reference stays a path; nothing was gathered"
+        );
+        assert!(doc.asset_bytes.is_empty());
+
+        // (b) The absolute path to the same canary.
+        let absolute = root.join("secret.png").to_string_lossy().into_owned();
+        let mut doc = test_doc();
+        doc.panels[0].background_image = Some(absolute.clone());
+        absorb_sidecar_pictures_in(&mut doc, &sub);
+        assert_eq!(
+            doc.panels[0].background_image.as_deref(),
+            Some(absolute.as_str())
+        );
+        assert!(doc.asset_bytes.is_empty());
+
+        // (c) Text bytes with a picture's name, inside
+        // the named base.
+        let mut doc = test_doc();
+        doc.panels[0].background_image = Some("fake.png".into());
+        absorb_sidecar_pictures_in(&mut doc, &sub);
+        assert_eq!(doc.panels[0].background_image.as_deref(), Some("fake.png"));
+        assert!(doc.asset_bytes.is_empty());
+
+        // (d) The honest case still gathers: a real
+        // picture sitting beside the base under a plain
+        // name, stored under the media type its own
+        // bytes state.
+        std::fs::write(sub.join("page.png"), PNG_BYTES).unwrap();
+        let mut doc = test_doc();
+        doc.panels[0].background_image = Some("page.png".into());
+        absorb_sidecar_pictures_in(&mut doc, &sub);
+        let hash = ob_model::sha256_hex(PNG_BYTES);
+        assert_eq!(
+            doc.panels[0].background_image.as_deref(),
+            Some(hash.as_str())
+        );
+        assert_eq!(doc.asset_data(&hash), Some(PNG_BYTES));
+        assert_eq!(doc.assets.len(), 1);
+        assert_eq!(doc.assets[0].kind, AssetKind::TracingPicture);
+        assert_eq!(doc.assets[0].media_type, "image/png");
+        assert_eq!(doc.assets[0].rights.source, "page.png");
         let _ = std::fs::remove_dir_all(&root);
     }
 

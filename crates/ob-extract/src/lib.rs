@@ -1,16 +1,21 @@
-//! Extraction dump: the one format every importer targets.
+//! Extraction dump: the shared form the importers produce.
 //!
-//! A bulletin PDF (or later a .pub rescue or an IDML package) goes in;
-//! a versioned JSON dump comes out: pages, their sizes, and the text
-//! spans found on them, each marked with how much it can be trusted.
-//! The Template Analyzer reads dumps, never raw foreign files, so the
-//! risky parsing of stranger files lives in exactly one place (and, for
-//! the real PDF engine, in a separate helper process: PDFium).
+//! A bulletin file goes in and a versioned JSON dump (schema v2)
+//! comes out: pages, their sizes, and the text spans found on them,
+//! each marked with how much it can be trusted, and carrying
+//! position, size, and font facts where the source states them.
+//! The Template Analyzer reads dumps, never raw foreign files, so
+//! the risky parsing of stranger files lives in exactly one place.
 //!
-//! This first implementation is scaffolding: page geometry plus the raw
-//! text-show operations lopdf can decode. Positions and fonts stay
-//! empty until the PDFium helper fills them; the schema already has
-//! room, so the analyzer's side of the contract does not change.
+//! PDFs are extracted through the out-of-process PDFium helper
+//! (see `helper`). The in-process importers that exist today are
+//! IDML, Scribus, and the native Publisher reader; .pub files also
+//! come through the LibreOffice bridge (`pub_bridge`), which
+//! converts to PDF and then takes the PDF path, saved .obd files
+//! turn back into dumps in `learn`, and HTML import builds its
+//! draft directly (`html_import`). The lopdf reader that
+//! scaffolded the first dump (`extract_pdf`) remains for the
+//! crate's examples and tests only.
 
 pub mod analyzer;
 pub mod cfb;

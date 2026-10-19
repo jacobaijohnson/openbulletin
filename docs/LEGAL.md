@@ -36,8 +36,11 @@ Our writer emits WinAnsi simple fonts whose glyph mapping runs
 through the embedded cmap, so a cmap-less subset would render
 the wrong glyphs (or none). Subsetting waits for a deliberate
 CID-embedding migration of the writer; it must not be bolted
-onto the WinAnsi path. `subsetter` is therefore NOT a
-dependency today.
+onto the WinAnsi path. So `subsetter` stayed out of the tree
+at that writing. That conclusion is superseded: the note
+directly below records that the CID migration and subsetting
+shipped on 2026-10-16, and `subsetter` 0.2.6 is a dependency
+of ob-pdf today.
 
 CID migration and subsetting shipped (2026-10-16, O2): the
 migration the note above waited for has landed. ob-pdf now

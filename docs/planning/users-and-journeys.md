@@ -139,12 +139,13 @@ week between Thursday's work and Saturday's printing.
 **5. The special Sunday.** Christmas, Easter, a baptism, a
 funeral: the shape changes, the template bends, the deadline
 does not move. Design demand: seasonal variants are first
-class (the Analyzer already clusters them separately), and
-bending the template for one week must not break the standing
-one (Next Sunday returns to the ordinary shape). Standing:
-seasonal clustering shipped in the Analyzer; seasonal packs
-are roadmap, and this journey is their acceptance test when
-they land.
+class, and bending the template for one week must not break
+the standing one (Next Sunday returns to the ordinary shape).
+Standing: seasonal clustering is not built in the Analyzer —
+it grows one family of look-alike bulletins, leaves the rest
+out, and the review says only how many look like one family;
+seasonal packs are roadmap, and this journey is their
+acceptance test when they land.
 
 **6. The contribution week.** Parts arrive through the week:
 the pastor's service lines, the music slip, the Sunday school

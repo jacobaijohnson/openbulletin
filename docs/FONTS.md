@@ -2,7 +2,8 @@
 
 Jacob asked three questions (2026-10-15): which free fonts can we
 actually use under our license, can the app make fonts easy to get
-and install the same way on desktop and in the Docker/NAS shape, and
+and install the same way on desktop and in the Docker/NAS shape
+(planned, not built), and
 can fonts come out of imported files (a PDF or .pub that "has" the
 font)? Researched against primary sources; summarized here in plain
 words. Written as design first (2026-10-15); the Font Library, the
@@ -22,7 +23,9 @@ built and tested.
    not modify fonts). Documents made WITH an OFL font carry no
    restrictions at all. That all sits comfortably inside our
    MIT OR Apache-2.0 project.
-2. **One font library, same on desktop and server.** See below.
+2. **One font library, same on desktop and server.** One library on
+   desktop today; the planned Docker/NAS shape (not built) would use
+   the same library. See below.
 3. **Imported files give us font NAMES, not font files.** A PDF does
    embed pieces of its fonts, but they are subsets (only the letters
    that document used) and usually commercial fonts whose licenses
@@ -142,7 +145,7 @@ Office (most church office computers already have it, and the Fonts
 panel can copy system fonts into the library), or Monotype sells it
 directly. The free lookalike is Cabin, above.
 
-## The font library (desktop and Docker behave identically)
+## The font library (desktop today; the planned Docker shape would behave identically)
 
 Our layout engine deliberately uses only font files we hand it, so
 the same bulletin lays out identically on every machine. Live system
@@ -165,8 +168,10 @@ laptop). So fonts live in one app-managed folder, the Font Library:
   OFL-1.1 license and installs by this same road.
 - **System fonts (desktop):** offered as "copy into the library,"
   never linked live, for the determinism reason above. In the
-  Docker shape the library is a folder in the data volume, and the
-  same Add/Find flows work from the browser.
+  planned Docker shape (not built; docs/DEPLOYMENT.md and
+  ROADMAP.md both mark it planned) the library would be a folder
+  in the data volume, and the same Add/Find flows would work
+  from the browser.
 
 Documents name fonts by family plus file hash. The fingerprint a
 save stamps on each style and the faces a print PDF embeds are
@@ -218,13 +223,21 @@ silently skipped.
 
 ## Live preview and comparison
 
+Not built. This section describes the remaining shape (the Status
+section below lists it as remaining), not today's import review.
+
 PDFium, already our extractor, can also draw a page of the original
-PDF as a picture. The import review therefore shows: the original
-page picture on one side, our rebuilt page on the other, with a
-swipe between them (already the analyzer's design). For font
-matching specifically, the same line of text is shown in the
+PDF as a picture. The import review would therefore show: the
+original page picture on one side, our rebuilt page on the other,
+with a swipe between them (already the analyzer's design). For font
+matching specifically, the same line of text would be shown in the
 original and in each candidate font, big enough to judge. The admin
-picks; nothing is silently substituted.
+would pick; nothing would be silently substituted in that review.
+
+Today's import review is a list of the pieces that arrived, with
+their notes; there is no side-by-side preview and no per-candidate
+font picking, and font substitution follows the resolution chain
+described above.
 
 ## Guardrails
 

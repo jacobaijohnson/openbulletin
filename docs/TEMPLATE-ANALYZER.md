@@ -12,8 +12,10 @@ One PDF cannot tell you what is standing content and what is weekly: a
 date and a service time look identical on the page. Ten PDFs can. Blocks
 that appear in (nearly) every bulletin at the same place in the same style
 are standing structure; blocks whose text changes every week are weekly
-slots; text that changes in a pattern (dates, numbers, names) is a field
-candidate. The corpus turns classification into statistics instead of
+slots. Text that changes in a pattern (dates, numbers, names) would be
+a field candidate, but that finer classification is not built: the
+analyzer today sorts blocks into standing and weekly only (see step 4).
+The corpus turns classification into statistics instead of
 guesses, which is what makes the suggestion trustworthy enough to offer
 one-click Accept.
 
@@ -30,25 +32,35 @@ one-click Accept.
    consensus; PDFs contribute exact appearance and geometry. When both
    exist for the same bulletin, the pair cross-checks the extraction.
 3. Align panels across documents; cluster blocks by position + style.
-4. Classify: standing (same text everywhere), weekly (text varies),
-   field-like (varies by pattern: dates advance, hymn numbers change,
-   readings rotate). Infer the fold preset from page geometry consensus.
+4. Classify: standing (same text everywhere) or weekly (text varies).
+   A third, field-like classification (varies by pattern: dates advance,
+   hymn numbers change, readings rotate) is not built; pattern-varying
+   blocks are classified weekly today. Infer the fold preset from page
+   geometry consensus.
 5. Build a draft .obd template: panels, frames, stories with classified
-   roles, styles mapped from font clusters, fields proposed for the
-   pattern-varying blocks, church profile harvested from the cover.
-6. Review screen, plain language: "Here is the template we built from
-   your last 12 bulletins" with the preview and three buttons:
+   roles, styles mapped from font clusters. Not built: fields proposed
+   for the pattern-varying blocks, and a church profile harvested from
+   the cover; the draft instead carries the caller's existing church
+   profile through unchanged.
+6. Review screen, plain language: it says how many bulletins were
+   studied and how many of them look like one family, lists each piece
+   as standing ("Stays") or changing weekly, and offers three buttons:
    - Accept: saves it as the church's template, onboarding continues.
    - Edit: opens the template editor with the suggestion loaded.
    - Cancel: closes with nothing saved; the built-in templates remain.
-   Low-confidence items are listed in words ("We were not sure about the
-   block at the bottom of page 2") and highlighted in the preview; they
-   never silently become standing content.
+   Not built: low-confidence items listed in words ("We were not sure
+   about the block at the bottom of page 2") and highlighted in a review
+   preview. There is no confidence tier, and the review window has no
+   preview pane.
 
 ## Guardrails
 - A suggestion is a draft until a human accepts or edits it. Nothing is
   auto-applied to a real bulletin.
-- Seasonal variants (Christmas, Easter) cluster separately instead of
-  polluting the ordinary-Sunday template; the analyzer says so when it
-  sees them ("2 of these look like special services; we set them aside").
+- Seasonal variants (Christmas, Easter): a separate seasonal clustering
+  and set-aside is not built. The analyzer grows one family of look-alike
+  bulletins and builds the template from that family; bulletins outside
+  it are left out, and the review says only how many of the studied
+  bulletins look like one family. It does not identify seasonal or
+  special services, and it does not say a set-aside sentence such as
+  "2 of these look like special services; we set them aside".
 - Works on the user's own files, on their machine. No cloud, no telemetry.

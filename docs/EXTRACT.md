@@ -1,19 +1,23 @@
-# Extraction dump (import scaffolding)
+# Extraction dump (the importers' shared form)
 
-Every importer (PDF first, then .pub rescue and IDML) produces the same
-thing: a versioned JSON **extraction dump** (`ob-extract`,
-`DUMP_SCHEMA_VERSION = 1`). The Template Analyzer reads dumps only.
+The extraction importers share one form: a versioned JSON
+**extraction dump** (`ob-extract`, `DUMP_SCHEMA_VERSION = 2`).
+The Template Analyzer reads dumps only.
 
 A dump carries: source kind and name, page count and page sizes in
 points, and text spans. Each span is marked **raw_text** or
 **picture_only** (a page with no readable text: a scan or outlined
 fonts; the analyzer treats those as tracing guides, never as words).
-Spans will carry position, size, and font facts once the real engine
-lands; the fields exist now so the contract does not change later.
+Spans carry position (x, y, width, height), font size and font name,
+bold, alignment, italic, fill color, and inline runs where the
+source states them. Those facts arrived with schema v2; readers
+still accept v1 dumps, whose spans default the newer fields.
 
-Engine plan (from the Opus import pass, docs/planning/opus-import.md):
-PDFium in an out-of-process helper fills the dump; lopdf stays as the
-structural sidecar (this scaffold). MuPDF (AGPL) and Poppler (GPL) stay
+Engine (from the Opus import pass, docs/planning/opus-import.md):
+PDFium in an out-of-process helper fills the dump for PDFs; that is
+the production PDF path. The lopdf reader that scaffolded the first
+dump remains in the crate, used by its examples and tests only.
+MuPDF (AGPL) and Poppler (GPL) stay
 out on license grounds, consistent with the MIT OR Apache-2.0 project
 license.
 
@@ -206,5 +210,5 @@ defaults to none). Sixteen same-size half-letter pages become a
 saddle-booklet draft automatically; anything else becomes plain
 pages. Verified on a real 16-page corpus bulletin: 16 panels,
 16 guides, and the guide render is a faithful page image. The
-app's page canvas (which will show the guides under the text) is
-the next layer; the draft already opens as a normal bulletin.
+app's page canvas shows the guides under the text, and the draft
+opens as a normal bulletin.

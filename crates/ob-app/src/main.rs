@@ -16296,7 +16296,7 @@ impl eframe::App for App {
                             }
                         }
                         ui.label("Reading copy: one panel per page, for proofreading, email, and the website.");
-                        if ui.button("Open a copy to read through").clicked() {
+                        if ui.button("Save a copy to read through").clicked() {
                             self.commit_if_editing();
                             self.save_announcements();
                             if let Some(path) = rfd::FileDialog::new()

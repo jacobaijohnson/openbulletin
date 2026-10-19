@@ -7701,6 +7701,297 @@ fn bracket_span_mask(raw_tokens: &[&str]) -> Vec<bool> {
     mask
 }
 
+/// Whether the token at `t` in `tokens` is the
+/// weekday word of a live weekday signal in
+/// `positional` (round 28, R28-C, F3): a bare
+/// weekday signal standing on the token itself
+/// (a one-token span), or a "next Sunday" / "this
+/// Sunday" relative phrase whose span covers the
+/// token. A framed date whose span covers the
+/// token is NOT a weekday signal — a framed
+/// date's own leading weekday word included —
+/// and neither is a Sunday-after phrase standing
+/// on the token: both carry spans longer than one
+/// token that start on the token itself, not on a
+/// relative word.
+fn weekday_signal_word(
+    positional: &[(SimpleDate, usize, usize)],
+    tokens: &[String],
+    t: usize,
+) -> bool {
+    if t >= tokens.len() || weekday_word(&tokens[t]).is_none() {
+        return false;
+    }
+    positional.iter().any(|(_, s, u)| {
+        *s <= t && t < s + u && (*u == 1 || tokens[*s] == "next" || tokens[*s] == "this")
+    })
+}
+
+/// The inventory's head-noun classes for the
+/// determiner rule in `occurrence_is_bare` (round
+/// 28, R28-C, F6): the words of `bare_filler_word`
+/// that can stand as a noun phrase's head noun —
+/// the standing time nouns and their round-27
+/// time-companion kin (B1), the lone titles (B3),
+/// the directions (B4), and the ordinals (the
+/// standing first / second / third and B5's
+/// remainder, "last" included). The inventory's
+/// function classes are NOT head nouns: a
+/// determiner or quantifier standing after "the"
+/// ("the same", "the whole") heads no noun
+/// phrase, the sign-off words (B2) and the
+/// pronoun tail (B6) name no referent, and the
+/// cardinals name a count, not a referent — all
+/// keep their standing bare readings.
+fn inventory_head_noun(w: &str) -> bool {
+    matches!(
+        w,
+        // The standing time nouns and the B1
+        // time companions.
+        "day"
+            | "days"
+            | "week"
+            | "weeks"
+            | "month"
+            | "months"
+            | "year"
+            | "years"
+            | "hour"
+            | "hours"
+            | "time"
+            | "noon"
+            | "midnight"
+            | "tonight"
+            | "morning"
+            | "afternoon"
+            | "evening"
+            | "night"
+            | "weekend"
+            | "dawn"
+            | "dusk"
+            | "sunrise"
+            | "sunset"
+            | "daytime"
+            | "nighttime"
+            | "weekday"
+            | "minute"
+            | "moment"
+            | "lunchtime"
+            | "bedtime"
+            | "daybreak"
+            | "nightfall"
+            | "twilight"
+            | "mealtime"
+            | "teatime"
+            | "suppertime"
+            | "dinnertime"
+            | "spring"
+            | "summer"
+            | "autumn"
+            | "fall"
+            | "winter"
+            | "season"
+            | "midday"
+            | "midweek"
+            | "nightly"
+            | "hourly"
+            | "yearly"
+            // The B3 lone titles.
+            | "pastor"
+            | "reverend"
+            | "father"
+            | "brother"
+            | "sister"
+            | "deacon"
+            | "elder"
+            | "bishop"
+            | "chaplain"
+            | "rabbi"
+            | "priest"
+            | "minister"
+            | "missionary"
+            | "professor"
+            | "doctor"
+            | "captain"
+            | "major"
+            | "colonel"
+            | "general"
+            | "sir"
+            | "madam"
+            | "madame"
+            | "lord"
+            | "lady"
+            | "king"
+            | "queen"
+            | "prince"
+            | "princess"
+            | "saint"
+            | "pope"
+            | "president"
+            | "chairman"
+            | "secretary"
+            | "treasurer"
+            | "director"
+            | "manager"
+            | "coach"
+            | "teacher"
+            | "nurse"
+            | "officer"
+            | "judge"
+            | "mayor"
+            | "senator"
+            | "miss"
+            | "hon"
+            | "esq"
+            // The B4 directions.
+            | "north"
+            | "south"
+            | "east"
+            | "west"
+            | "northeast"
+            | "northwest"
+            | "southeast"
+            | "southwest"
+            | "uptown"
+            | "downtown"
+            | "midtown"
+            // The ordinals: the standing first /
+            // second / third, B5's remainder, and
+            // "last".
+            | "first"
+            | "second"
+            | "third"
+            | "fourth"
+            | "fifth"
+            | "sixth"
+            | "seventh"
+            | "eighth"
+            | "ninth"
+            | "tenth"
+            | "eleventh"
+            | "twelfth"
+            | "thirteenth"
+            | "fourteenth"
+            | "fifteenth"
+            | "sixteenth"
+            | "seventeenth"
+            | "eighteenth"
+            | "nineteenth"
+            | "twentieth"
+            | "thirtieth"
+            | "fortieth"
+            | "fiftieth"
+            | "hundredth"
+            | "last"
+    )
+}
+
+/// The preposition words of the bare inventory
+/// (round 28, R28-C, F6): the families
+/// `bare_filler_word` lists across rounds 20–23,
+/// named here for the determiner rule's lone-
+/// preposition block.
+fn bare_preposition_word(w: &str) -> bool {
+    matches!(
+        w,
+        "on" | "for"
+            | "of"
+            | "to"
+            | "from"
+            | "at"
+            | "by"
+            | "in"
+            | "until"
+            | "before"
+            | "after"
+            | "through"
+            | "circa"
+            | "about"
+            | "around"
+            | "near"
+            | "with"
+            | "during"
+            | "since"
+            | "within"
+            | "without"
+            | "upon"
+            | "unto"
+            | "into"
+            | "over"
+            | "under"
+            | "between"
+            | "among"
+            | "against"
+            | "per"
+            | "via"
+            | "onto"
+            | "toward"
+            | "towards"
+            | "across"
+            | "behind"
+            | "beyond"
+            | "beside"
+            | "despite"
+            | "amid"
+            | "past"
+            | "off"
+            | "besides"
+            | "concerning"
+            | "regarding"
+            | "atop"
+            | "amidst"
+            | "amongst"
+            | "thru"
+            | "versus"
+            | "vs"
+    )
+}
+
+/// Whether the word at `i` in an occurrence's
+/// region words stands as the head noun of a
+/// determiner-headed noun phrase that reads as
+/// content (round 28, R28-C, F6): the nearest word
+/// before it on its own side of the date — the
+/// region's before and after sides are separate
+/// sequences, and a noun phrase cannot span the
+/// date — that is something is the definite
+/// article "the", AND that article is not itself
+/// the object of a lone bare preposition standing
+/// outside any phrase unit this partition
+/// consumed. The article is the definite article
+/// only: a possessive standing before a title is
+/// R27-B's recorded partition correction ("your
+/// pastor" partitions word by word and stays
+/// governed), and an indefinite article heads no
+/// definite reference (the standing "a week ago"
+/// phrases stay governed). The lone-preposition
+/// block is the "in the morning" line: a temporal
+/// phrase whose preposition stands alone before
+/// the article keeps its standing bare reading,
+/// while an article reached through a consumed
+/// unit — "in spite of the pastor", "thanks to
+/// the pastor" — or standing first on its side —
+/// "the pastor" — heads a complete definite
+/// reference and reads as content.
+fn determiner_headed_content(
+    words: &[String],
+    i: usize,
+    after_start: usize,
+    unit_spans: &[(usize, usize)],
+) -> bool {
+    let side_start = if i < after_start { 0 } else { after_start };
+    let Some(p) = (side_start..i).rev().find(|p| !words[*p].is_empty()) else {
+        return false;
+    };
+    if words[p] != "the" {
+        return false;
+    }
+    let Some(q) = (side_start..p).rev().find(|q| !words[*q].is_empty()) else {
+        return true;
+    };
+    !(bare_preposition_word(&words[q]) && !unit_spans.iter().any(|(s, e)| *s <= q && q < *e))
+}
+
 fn occurrence_is_bare(
     raw_tokens: &[&str],
     tokens: &[String],
@@ -7776,6 +8067,13 @@ fn occurrence_is_bare(
     bracket_garnish.extend(
         (after..region_end.min(tokens.len())).map(|k| span_mask.get(k).copied().unwrap_or(false)),
     );
+    // Round 28 (R28-C, F6): the phrase-unit spans
+    // this partition consumes, in region-word
+    // coordinates — the determiner rule below
+    // reads whether the word before an article
+    // stood inside one (a complex preposition's
+    // tail) or alone (a lone bare preposition).
+    let mut unit_spans: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while i < words.len() {
         // Round 24 (R24-2): a listed phrase unit
@@ -7798,9 +8096,97 @@ fn occurrence_is_bare(
             let crosses_date =
                 i < after_start && (after_start..i + span).any(|p| !words[p].is_empty());
             if !crosses_date {
+                // Round 28 (R28-C, F3 = review
+                // R28 MAJOR-2): a bare unit's own
+                // weekday signal is part of the
+                // bare span. The unit is judged as
+                // written in the token stream, not
+                // only by the part of it standing
+                // inside this region: a region ends
+                // at the next occurrence, so when
+                // the unit's own weekday word IS
+                // that next occurrence — a live
+                // signal of this very line or group
+                // (see `weekday_signal_word`) — the
+                // region's partition consumes only
+                // the unit's head ("see you") and
+                // the span as written still carries
+                // the signal. Such a span is not
+                // bare material for this occurrence
+                // and the region is not bare: the
+                // shipped unit &["see", "you",
+                // "sunday"] made the restated
+                // November 1 in "November 1, 2026,
+                // cancelled, November 1, 2026 see you
+                // sunday" read bare, while the
+                // Sunday inside the unit still
+                // spawned its weekday signal and the
+                // phantom October 18 won the
+                // segment. Judged with the unit
+                // standing, the occurrence asserts
+                // and the signal is named beside it,
+                // as the line read before the unit
+                // shipped. The unit's membership
+                // stands and its group readings
+                // stand (the group twin offers its
+                // alternatives by its two signals,
+                // not by bareness); weekday phrases
+                // that partition word by word —
+                // "coming sunday", "last sunday" —
+                // spawn their signals without any
+                // unit and keep their pinned
+                // readings, untouched by this rule.
+                let unit_token_start = if i < after_start {
+                    region_start + i
+                } else {
+                    after + (i - after_start)
+                };
+                let written_span = bare_phrase_unit_span(tokens, unit_token_start).unwrap_or(0);
+                let unit_has_live_weekday = (unit_token_start..unit_token_start + written_span)
+                    .any(|t| weekday_signal_word(positional, tokens, t));
+                if unit_has_live_weekday {
+                    return false;
+                }
+                unit_spans.push((i, i + span));
                 i += span;
                 continue;
             }
+        }
+        // Round 28 (R28-C, F6 = red team RT28-B1,
+        // coordinator-adjudicated): a determiner-
+        // headed group whose head noun is an
+        // inventory word reads as CONTENT in this
+        // test. B3 joined LONE titles — "(pastor
+        // November 1)" governs, as shipped — and
+        // title+name pairs stayed out because a
+        // title standing with its name is content.
+        // A determiner-headed group, "the pastor",
+        // is a complete definite reference, the
+        // same grammatical object as "the choir",
+        // so an inventory head noun standing under
+        // the definite article is not consumed as
+        // bare here (see `determiner_headed_content`
+        // for the line's exact shape — the article
+        // only, and never under a lone bare
+        // preposition): "(in spite of the pastor,
+        // November 1)" and "(thanks to the pastor,
+        // November 1)" assert beside a cancelled
+        // sibling, as their choir twins do, for
+        // every head-noun class (titles, time
+        // nouns, directions, ordinals). A weekday
+        // word is never a head noun for this rule:
+        // it is a signal word, not an inventory
+        // noun (R28-C, F3's family), and bracket
+        // garnish keeps its standing garnish
+        // reading.
+        if !words[i].is_empty()
+            && words[i].chars().count() > 1
+            && !bracket_garnish.get(i).copied().unwrap_or(false)
+            && inventory_head_noun(&words[i])
+            && weekday_word(&words[i]).is_none()
+            && determiner_headed_content(&words, i, after_start, &unit_spans)
+        {
+            return false;
         }
         // Round 25 (R25-A, M4 part 1): a cleaned
         // single-character token is garnish in the
@@ -29861,6 +30247,293 @@ Youth group meets Wednesday at 6 PM.
                 c.for_sunday_second_dates,
                 Vec::<SimpleDate>::new(),
                 "{group}: nothing is named"
+            );
+        }
+    }
+
+    #[test]
+    fn r28c_bare_unit_weekday_signal_is_part_of_the_span() {
+        // Round 28 (R28-C, F3 = review R28
+        // MAJOR-2): a bare unit's own weekday
+        // signal is part of the bare span. The
+        // shipped unit &["see", "you", "sunday"]
+        // made the plain witness below read FOR
+        // 2026-10-18 [2026-11-01] at the audited
+        // HEAD — the restated November 1 read
+        // bare and was suppressed, while the
+        // Sunday inside the unit still spawned
+        // its weekday signal and the phantom won
+        // the segment. The witness reads as it
+        // read before the unit shipped: November
+        // 1 asserts, the Sunday named beside it.
+        // (Fixtures: today is Friday 2026-10-16;
+        // November 1, 2026 is a Sunday; the
+        // phantom Sunday is October 18, 2026.)
+        let line = "November 1, 2026, cancelled, November 1, 2026 see you sunday";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the restated date asserts again"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18)],
+            "{line}: the unit's Sunday is named, not asserted"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{line}: keep-through asserts the restated date"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![oct(18)],
+            "{line}: keep-through names the Sunday"
+        );
+        // The relative-prefixed reading of the
+        // witness is unchanged at both trees: the
+        // prefix's own Sunday asserts and both
+        // line dates are named.
+        let text = format!("For Sunday: next Sunday {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(oct(25)),
+            "{line}: the relative path stands"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), oct(18)],
+            "{line}: the relative path naming stands"
+        );
+        // The glued twin reads as the spaced one
+        // (R28-A's ungluing reaches the unit, and
+        // this rule judges the unit as written).
+        let line = "November 1, 2026, cancelled, November 1, 2026 *see *you sunday";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the glued twin asserts the restated date"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18)],
+            "{line}: the glued twin names the Sunday"
+        );
+        // The group twin stands, as it read at
+        // both trees: the group offers both of its
+        // signals as alternatives and asserts
+        // none — its reading never turned on
+        // bareness, and this batch does not move
+        // it. The single-group form, whose second
+        // November 1 WAS bound by value at the
+        // audited HEAD (the group contributed the
+        // phantom), offers the same alternatives.
+        for groups in [
+            "(November 1, cancelled) (November 1 see you sunday)",
+            "(November 1, cancelled, November 1 see you sunday)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path offers alternatives"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1), oct(18)],
+                "{groups}: relative path names both signals"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only offers alternatives");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1), oct(18)],
+                "{groups}: paren-only names both signals"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through offers alternatives"
+            );
+            assert_eq!(
+                c.keep_through_second_dates,
+                vec![nov(1), oct(18)],
+                "{groups}: keep-through names both signals"
+            );
+        }
+        // The unit's head-slot group stands
+        // governed: standing before the framed
+        // date, its Sunday is that date's framing
+        // weekday and spawns no signal, so the
+        // span is judged bare exactly as shipped.
+        let groups = "(November 1, cancelled) (see you sunday November 1)";
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+        // The family boundary: exactly one listed
+        // unit carries a weekday word ("see you
+        // sunday"); the weekday phrases that
+        // partition word by word spawn their
+        // signals without any unit and keep their
+        // pinned plain readings — the trailing
+        // "coming sunday" / "last sunday" twins
+        // assert the coming Sunday, as R27-B's
+        // adjudication recorded — and a unit
+        // carrying a weekday word that spawns no
+        // signal at all ("see you monday": this
+        // machinery's signals are Sundays) binds
+        // its restatement exactly as shipped.
+        for (line, want, secs) in [
+            (
+                "November 1, 2026, cancelled, November 1, 2026 coming sunday",
+                Some(oct(18)),
+                vec![nov(1)],
+            ),
+            (
+                "November 1, 2026, cancelled, November 1, 2026 last sunday",
+                Some(oct(18)),
+                vec![nov(1)],
+            ),
+            (
+                "November 1, 2026, cancelled, November 1, 2026 see you monday",
+                None,
+                Vec::new(),
+            ),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, want, "{line}: the standing reading holds");
+            assert_eq!(
+                c.for_sunday_second_dates, secs,
+                "{line}: the standing naming holds"
+            );
+        }
+    }
+
+    #[test]
+    fn r28c_determiner_headed_inventory_noun_is_content() {
+        // Round 28 (R28-C, F6 = red team RT28-B1,
+        // coordinator-adjudicated): a determiner-
+        // headed group whose head noun is an
+        // inventory word reads as content in the
+        // mirror/bare test. At the audited HEAD
+        // all 19 ring III nouns below flipped both
+        // adjudicated mirror constructions to
+        // silence where choir / rain / hall assert;
+        // they assert now, on every surface, as
+        // the choir twins do.
+        for word in [
+            // Titles.
+            "pastor", "father", "sister", "brother", "doctor", "elder", "deacon", "saint",
+            // Time nouns.
+            "night", "morning", "evening", "season", "winter", "summer", "noon", "weekend",
+            // Direction, ordinals.
+            "north", "fifth", "last", // The standing controls.
+            "choir", "rain", "hall",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) (in spite of the {word}, November 1)"),
+                format!("(November 1, cancelled) (thanks to the {word}, November 1)"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date,
+                    Some(nov(1)),
+                    "{groups}: relative path asserts"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through,
+                    Some(nov(1)),
+                    "{groups}: keep-through asserts"
+                );
+            }
+        }
+        // The determiner-headed forms of the
+        // batch's own templates assert, in both
+        // slots, for a representative of each
+        // head-noun class.
+        for word in [
+            "pastor", "morning", "week", "north", "fifth", "last", "first",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) (the {word} November 1)"),
+                format!("(November 1, cancelled) (November 1 the {word})"),
+            ] {
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_date,
+                    Some(nov(1)),
+                    "{groups}: the determiner-headed form asserts"
+                );
+            }
+        }
+        // The boundaries that do not move: a LONE
+        // title with no determiner governs, as B3
+        // shipped it; a title standing with its
+        // name asserts, as adjudicated; a
+        // possessive before a title is R27-B's
+        // recorded partition correction and stays
+        // governed; a temporal phrase whose
+        // preposition stands alone before the
+        // article ("in the morning") and a
+        // determiner-class word after the article
+        // ("the same") keep their standing bare
+        // readings.
+        for (groups, want) in [
+            ("(November 1, cancelled) (pastor November 1)", None),
+            ("(November 1, cancelled) (November 1 pastor)", None),
+            (
+                "(November 1, cancelled) (pastor lee November 1)",
+                Some(nov(1)),
+            ),
+            ("(November 1, cancelled) (your pastor November 1)", None),
+            ("(November 1, cancelled) (in the morning November 1)", None),
+            ("(November 1, cancelled) (November 1 in the morning)", None),
+            ("(November 1, cancelled) (the same November 1)", None),
+            ("(November 1, cancelled) (a week ago November 1)", None),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, want,
+                "{groups}: relative path boundary stands"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, want, "{groups}: paren-only boundary stands");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, want,
+                "{groups}: keep-through boundary stands"
             );
         }
     }

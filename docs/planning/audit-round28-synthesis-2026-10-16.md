@@ -853,3 +853,122 @@ are added and no pre-existing test body changes (839 → 843).
   changed line is a phantom removal or a twin-matching
   W4 note silencing, and every boundary shape in the
   grids is byte-identical).
+
+## Shipped addendum, R28-C (2026-10-16)
+
+Batch R28-C shipped F3 + F6 as dispositioned. All work is in
+`crates/ob-extract/src/contribution.rs`; two `r28c_*` tests
+are added and no pre-existing test body changes (843 → 845).
+
+- **F3 — a bare unit's own weekday signal is part of the
+  bare span** (in `occurrence_is_bare`'s unit branch, with
+  the new `weekday_signal_word` stating what counts as a
+  weekday signal). A phrase unit is judged as written in
+  the token stream, not only by the part standing inside
+  the occurrence's region: a region ends at the next
+  occurrence, so when the unit's own weekday word IS that
+  next occurrence, the partition consumes only the unit's
+  head ("see you") and the span as written still carries
+  the signal. Such a span is not bare material for the
+  occurrence, and the occurrence is not bare.
+  `weekday_signal_word` counts a bare weekday signal
+  standing on its token and a "next/this Sunday" phrase
+  covering it; a framed date — its own leading weekday
+  word included — and a Sunday-after phrase are not
+  weekday signals. The plain witness reads FOR
+  **2026-11-01** [2026-10-18] again on the For and Keep
+  surfaces (its reading at `55a2b46`); the
+  relative-prefixed reading stands unchanged and the
+  glued twin (`*see *you sunday`) reads as the spaced one.
+  The unit's membership stands (`BARE_PHRASE_UNITS` still
+  166) and its group readings stand: the group twin
+  offers its alternatives at both trees because its two
+  signals qualify together, not by bareness, and the
+  single-group form offers the same alternatives again
+  instead of contributing the phantom.
+- **The weekday-bearing units found: exactly one.** An
+  enumeration of all 166 units against every weekday word
+  and abbreviation finds only `&["see", "you", "sunday"]`
+  carrying a weekday word. The "coming sunday"-family
+  remnants are not units: the pair partitions word by
+  word through the bare word "coming" (R27-B's
+  adjudication), spawns its signal without any unit, and
+  keeps its pinned plain readings — the trailing twin
+  asserts October 18 — as do "last sunday" and the other
+  word-by-word weekday phrases; a unit whose weekday word
+  spawns no signal ("see you monday" — this machinery's
+  signals are Sundays) binds its restatement exactly as
+  shipped. The family and its boundaries are pinned in
+  `r28c_bare_unit_weekday_signal_is_part_of_the_span`.
+- **F6 — the determiner line, drawn** (in
+  `occurrence_is_bare`'s partition, with the new
+  `inventory_head_noun`, `bare_preposition_word`, and
+  `determiner_headed_content`). An inventory head noun
+  standing under the definite article is not consumed as
+  bare, so the group reads as content: all 19 witness
+  nouns assert beside the cancelled sibling in both
+  adjudicated constructions ("in spite of the …",
+  "thanks to the …") on all surfaces, as the
+  choir/rain/hall twins do, and the determiner-headed
+  forms of the batch templates ("(the W November 1)",
+  "(November 1 the W)") assert in both slots. The line's
+  exact shape, each edge set by a shipped pin:
+  1. *The head must be a head noun* — the inventory's
+     noun classes (the standing time nouns and their B1
+     companions, the B3 titles, the B4 directions, the
+     ordinals with "last"). The inventory's function
+     classes are not heads ("the same", "the whole" keep
+     their standing readings), and neither are B2's
+     sign-off words, B6's pronoun tail, or the cardinals.
+  2. *The article is the definite article "the" only* —
+     a possessive standing before a title is R27-B's
+     recorded partition correction ("your pastor"
+     partitions word by word and stays governed), and an
+     indefinite article heads no definite reference (the
+     standing "a week ago" phrases stay governed).
+  3. *An article reached through a phrase unit the
+     partition consumed* — a complex preposition's tail:
+     "in spite of", "thanks to", "care of", "on behalf
+     of" — *or standing first on its side* heads the
+     reference; an article standing as the object of a
+     lone bare preposition does not ("in the morning"
+     and its phrase ring keep their standing bare
+     readings).
+  Lone titles (no determiner) govern as shipped;
+  title+name asserts as adjudicated; the batch's 259
+  mirror checks and every shipped pin stand.
+- **Membership/count deltas:** no inventory gains or
+  loses a member — `bare_filler_word` and
+  `BARE_PHRASE_UNITS` are untouched; both rules live
+  inside `occurrence_is_bare` and its new helpers, so
+  `bare_filler_word`'s other consumer (the
+  passive-predicate lead-in check) is untouched, and
+  `segment_tokens` / `nothing_token` / `word_phrase` /
+  `destination_to_end` are unmodified. Test count
+  843 → 845 (the two `r28c_*` pins).
+- **Flagged items.** None; no stop-item was hit — the
+  machinery separated determiner-headed content from
+  bare remainders without moving a shipped reading. The
+  pins that bound the F6 line (r22b's "my own" / "the
+  same", r26b's "a week ago", r27b's "your pastor"
+  correction and "in the morning" ring) are named in the
+  code comments and re-pinned as boundaries in
+  `r28c_determiner_headed_inventory_noun_is_content`.
+- **Collateral check.** The red team's round-28 drivers
+  were re-run against the audited HEAD (`f29aaaf`) and
+  the R28-C tree with one harness: ring28, coming28,
+  comingctl28, twin28, verb28, verbx28, walk28, and
+  walkx28 are byte-identical; mirr28/mirrx28 change only
+  in the two adjudicated constructions (the 19 nouns
+  flipping to the choir twins' readings). A sweep
+  battery built for this batch (1,486 lines × 3
+  surfaces: ~170 inventory and control words × 10
+  templates, plus the F3 family) changes only in the
+  determiner-headed templates for exactly the 121
+  head-class words, the same constructions under
+  unit-headed prepositions and on the plain surface, and
+  the F3 witness family — zero changes in the lone,
+  possessive, lone-preposition, and mirror templates,
+  and no assertion lost anywhere.
+
+**Completion note (recovery, 2026-10-19).** The original writer's session ended in a runtime restart after this addendum was written and before commit; the batch was recovered from the uncommitted tree by the coordinator's decision (diff read in full, in scope, suite green). The only change made in completion was removing one duplicated `#[test]` attribute line the interrupted write had left above `r28b_destination_stack_second_sunday_naming`, which had also double-registered that test (846 vs the addendum's 845). Final verified counts are the addendum's: 845 passed / 0 failed, clippy exit 0.

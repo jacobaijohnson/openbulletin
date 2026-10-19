@@ -400,6 +400,19 @@ impl ClipLibrary {
             .to_string();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
             .map_err(|e| format!("that zip file cannot be read: {e}"))?;
+        // Entry-count cap (health audit S-6), the IDML and
+        // font-pack readers' 512: a clipart pack is dozens
+        // of pictures, not thousands of entries, and the
+        // count is known from the archive's own directory
+        // before any entry is read.
+        const MAX_ENTRIES: usize = 512;
+        if archive.len() > MAX_ENTRIES {
+            return Err(format!(
+                "that zip holds {} files; a clipart pack may carry at most {}",
+                archive.len(),
+                MAX_ENTRIES
+            ));
+        }
         // Actual bytes, counted as they arrive; `total`
         // never passes the cap, so each read is capped at
         // what is left of it and memory stays bounded no
@@ -714,6 +727,36 @@ mod tests {
         let collection = lib.collection("Old pack").expect("collection");
         assert_eq!(collection.items.len(), 1);
         assert_eq!(collection.items[0].file_name, "legacy.png");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zip_past_the_entry_count_cap_is_refused() {
+        // S-6 pin: 513 tiny entries against the 512 cap.
+        // The refusal comes from the archive's own
+        // directory count, before any entry is read.
+        let dir = temp_dir("zip-count");
+        let lib = ClipLibrary::open(dir.clone()).expect("open");
+        let zip_bytes = {
+            let mut buf = Vec::new();
+            {
+                let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+                let opts = zip::write::SimpleFileOptions::default();
+                use std::io::Write as _;
+                for i in 0..513 {
+                    writer
+                        .start_file(format!("f{i}.png"), opts)
+                        .expect("start entry");
+                    writer.write_all(&tiny_png()).expect("write entry");
+                }
+                writer.finish().expect("finish");
+            }
+            buf
+        };
+        let err = lib
+            .add_collection_from_zip("pack.zip", &zip_bytes, &CollectionNotes::default(), None)
+            .expect_err("too many entries refused");
+        assert!(err.contains("512"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

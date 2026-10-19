@@ -532,10 +532,14 @@ fn run(cli: Cli) -> Result<(), String> {
                     let mut added = 0usize;
                     let mut skipped = 0usize;
                     for file in &files {
-                        let bytes = match std::fs::read(file) {
+                        // The open-door gate (HF-2): a font file
+                        // or pack is refused from its stated size
+                        // before it is read whole, in the batch's
+                        // own skipped-and-named style.
+                        let bytes = match ob_extract::read_open_door_file(file) {
                             Ok(b) => b,
                             Err(e) => {
-                                println!("skipped {}: it could not be read ({e})", file.display());
+                                println!("skipped {}: {e}", file.display());
                                 skipped += 1;
                                 continue;
                             }
@@ -591,6 +595,10 @@ fn run(cli: Cli) -> Result<(), String> {
 /// opens the draft and types the new bulletin over the pictures;
 /// guides never print.
 fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), String> {
+    // The open-door gate (HF-2): the helper gates the PDF
+    // in its own process too, but the refusal belongs at
+    // this door, before any helper starts.
+    ob_extract::check_open_door_size(input)?;
     let helper = resolve_helper(helper)?;
     let assets_dir = out.join("assets");
     std::fs::create_dir_all(&assets_dir)

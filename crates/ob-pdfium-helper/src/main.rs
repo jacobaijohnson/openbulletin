@@ -39,6 +39,25 @@ fn lib_path() -> String {
     format!("{home}/workspace/.toolchain/pdfium/lib/libpdfium.so")
 }
 
+/// The open-door gate (HF-2): a PDF past the standing
+/// 512 MB limit is refused from its filesystem size,
+/// before it is read whole or handed to PDFium. The
+/// refusal message when the file must be turned away, in
+/// this helper's plain error shape; None when it may
+/// proceed. A file whose size cannot be read proceeds:
+/// the read itself will speak for that case.
+fn oversize_refusal(path: &str) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > ob_extract::MAX_OPEN_DOOR_BYTES {
+        Some(format!(
+            "{path} is too large to read: OpenBulletin can open files up to \
+             512 megabytes, and this one is bigger than that"
+        ))
+    } else {
+        None
+    }
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let first = args.next().unwrap_or_else(|| {
@@ -62,6 +81,10 @@ fn main() {
     // page pictures (schema v2's image channel). Without it,
     // the dump carries no image files, as v1 did.
     let images_dir = args.next();
+    if let Some(why) = oversize_refusal(&path) {
+        eprintln!("{why}");
+        exit(1);
+    }
     let bytes = std::fs::read(&path).unwrap_or_else(|e| {
         eprintln!("cannot read {path}: {e}");
         exit(1);
@@ -217,6 +240,10 @@ fn main() {
 /// Draw every page to `page-NN.png` in the output folder, at about
 /// 200 dpi: crisp enough to trace over, small enough to keep.
 fn render_pages(path: &str, out_dir: &str) {
+    if let Some(why) = oversize_refusal(path) {
+        eprintln!("{why}");
+        exit(1);
+    }
     let bytes = std::fs::read(path).unwrap_or_else(|e| {
         eprintln!("cannot read {path}: {e}");
         exit(1);
@@ -257,4 +284,36 @@ fn render_pages(path: &str, out_dir: &str) {
         }
     }
     println!("rendered {written} pages to {out_dir}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// HF-2 pin: a sparse file whose stated length is past
+    /// the limit (set_len allocates nothing, so the pin is
+    /// instant) is refused from its metadata alone, in
+    /// plain words naming the limit; an ordinary file and
+    /// a missing file both pass the gate (the read speaks
+    /// for the missing one).
+    #[test]
+    fn oversize_pdf_is_refused_from_its_stated_size() {
+        let path =
+            std::env::temp_dir().join(format!("ob-helper-door-gate-{}.pdf", std::process::id()));
+        let file = std::fs::File::create(&path).expect("create sparse file");
+        file.set_len(ob_extract::MAX_OPEN_DOOR_BYTES + 1)
+            .expect("state an oversize length");
+        drop(file);
+        let why = oversize_refusal(&path.to_string_lossy()).expect("the gate refuses");
+        assert!(why.contains("too large"), "{why}");
+        assert!(why.contains("512 megabytes"), "{why}");
+        let _ = std::fs::remove_file(&path);
+
+        let small =
+            std::env::temp_dir().join(format!("ob-helper-door-small-{}.pdf", std::process::id()));
+        std::fs::write(&small, b"%PDF-small").expect("write small file");
+        assert!(oversize_refusal(&small.to_string_lossy()).is_none());
+        let _ = std::fs::remove_file(&small);
+        assert!(oversize_refusal("no-such-file-xyz.pdf").is_none());
+    }
 }

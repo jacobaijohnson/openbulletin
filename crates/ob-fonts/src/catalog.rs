@@ -118,15 +118,69 @@ fn agents() -> Vec<ureq::Agent> {
     out
 }
 
+/// The most one catalog download may be: 32 MB, counted
+/// in actual bytes as the body arrives. Font files have
+/// always been held to it (a font file is a few MB); the
+/// JSON and text answers go through the same capped
+/// reader, so no catalog answer can stream without
+/// limit into memory (health audit S-5).
+const MAX_DOWNLOAD_BYTES: u64 = 33_554_432;
+
+/// Read one response body through the download cap. Some
+/// proxies and CDNs close the connection without the TLS
+/// farewell message, which strict readers report as an
+/// error after the last byte; when we already hold
+/// exactly the promised byte count the file is complete,
+/// and the caller's own parser is the final judge either
+/// way.
+fn read_body_capped(
+    reader: impl std::io::Read,
+    expected: Option<usize>,
+    url: &str,
+) -> Result<Vec<u8>, String> {
+    let mut reader = std::io::Read::take(reader, MAX_DOWNLOAD_BYTES + 1);
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; 16384];
+    let mut failed: Option<String> = None;
+    loop {
+        match std::io::Read::read(&mut reader, &mut buf) {
+            Ok(0) => break,
+            Ok(k) => bytes.extend_from_slice(&buf[..k]),
+            Err(e) => {
+                if expected != Some(bytes.len()) {
+                    failed = Some(format!("{url}: {e}"));
+                }
+                break;
+            }
+        }
+    }
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    if bytes.len() as u64 > MAX_DOWNLOAD_BYTES {
+        return Err(format!(
+            "{url}: that download is too large (over 32 megabytes)"
+        ));
+    }
+    Ok(bytes)
+}
+
 /// GET and parse JSON, trying each agent in turn.
 fn get_json(url: &str) -> Result<serde_json::Value, String> {
     let mut last = String::new();
     for agent in agents() {
         match agent.get(url).call() {
-            Ok(r) => match r.into_json() {
-                Ok(v) => return Ok(v),
-                Err(e) => last = format!("{url}: {e}"),
-            },
+            Ok(response) => {
+                let expected: Option<usize> = response
+                    .header("Content-Length")
+                    .and_then(|v| v.parse().ok());
+                match read_body_capped(response.into_reader(), expected, url).and_then(|bytes| {
+                    serde_json::from_slice(&bytes).map_err(|e| format!("{url}: {e}"))
+                }) {
+                    Ok(v) => return Ok(v),
+                    Err(e) => last = e,
+                }
+            }
             Err(e) => last = format!("{url}: {e}"),
         }
     }
@@ -138,21 +192,26 @@ fn get_string(url: &str) -> Result<String, String> {
     let mut last = String::new();
     for agent in agents() {
         match agent.get(url).call() {
-            Ok(r) => match r.into_string() {
-                Ok(v) => return Ok(v),
-                Err(e) => last = format!("{url}: {e}"),
-            },
+            Ok(response) => {
+                let expected: Option<usize> = response
+                    .header("Content-Length")
+                    .and_then(|v| v.parse().ok());
+                match read_body_capped(response.into_reader(), expected, url)
+                    .and_then(|bytes| String::from_utf8(bytes).map_err(|e| format!("{url}: {e}")))
+                {
+                    Ok(v) => return Ok(v),
+                    Err(e) => last = e,
+                }
+            }
             Err(e) => last = format!("{url}: {e}"),
         }
     }
     Err(last)
 }
 
-/// One whole-file download, trying each agent in turn. Some proxies
-/// and CDNs close the connection without the TLS farewell message,
-/// which strict readers report as an error after the last byte;
-/// when we already hold exactly the promised byte count the file is
-/// complete, and the font parser is the final judge either way.
+/// One whole-file download, trying each agent in turn,
+/// its body read through the same capped reader as every
+/// catalog answer (see read_body_capped).
 fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
     let mut last = String::new();
     for agent in agents() {
@@ -161,28 +220,9 @@ fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
                 let expected: Option<usize> = response
                     .header("Content-Length")
                     .and_then(|v| v.parse().ok());
-                // Cap downloads: a font file is a few MB; a
-                // hostile or broken endpoint must not stream
-                // forever into memory (closing audit).
-                let mut reader = std::io::Read::take(response.into_reader(), 33_554_432);
-                let mut bytes = Vec::new();
-                let mut buf = [0u8; 16384];
-                let mut failed: Option<String> = None;
-                loop {
-                    match std::io::Read::read(&mut reader, &mut buf) {
-                        Ok(0) => break,
-                        Ok(k) => bytes.extend_from_slice(&buf[..k]),
-                        Err(e) => {
-                            if expected != Some(bytes.len()) {
-                                failed = Some(format!("{url}: {e}"));
-                            }
-                            break;
-                        }
-                    }
-                }
-                match failed {
-                    None => return Ok(bytes),
-                    Some(e) => last = e,
+                match read_body_capped(response.into_reader(), expected, url) {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(e) => last = e,
                 }
             }
             Err(e) => last = format!("{url}: {e}"),
@@ -332,13 +372,97 @@ pub fn install(lib: &FontLibrary, id: &str) -> Result<Vec<FontInfo>, String> {
 /// Both are permissive; the note carries the project's own
 /// text verbatim so nothing rests on the catalog's word
 /// alone.
-fn install_dejavu(lib: &FontLibrary, detail: &serde_json::Value) -> Result<Vec<FontInfo>, String> {
+/// The DejaVu release zip is read under the workspace
+/// font-pack reader's caps (the pack intake in lib.rs):
+/// at most 512 entries, 64 MB a file, 256 MB in all,
+/// counted in actual bytes as read (health audit S-5).
+const PACK_MAX_ENTRIES: usize = 512;
+const PACK_MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+const PACK_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+
+/// What the DejaVu release zip gave up: the core faces
+/// it carried (each under the name the library files it
+/// by) and the project's license text, when it carried
+/// one.
+#[derive(Debug)]
+struct DejaVuZipContents {
+    faces: Vec<(&'static str, Vec<u8>)>,
+    license: Option<String>,
+}
+
+/// One entry of the release zip, read under the pack
+/// caps and added to the running total. None when the
+/// entry is absent, unreadable, or past a cap: the
+/// caller simply goes on without it, and the install's
+/// second route stands behind a zip that gives up
+/// nothing usable.
+fn read_pack_entry(
+    archive: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>,
+    name: &str,
+    total: &mut u64,
+) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut f = archive.by_name(name).ok()?;
+    let mut data = Vec::new();
+    f.by_ref()
+        .take(PACK_MAX_ENTRY_BYTES + 1)
+        .read_to_end(&mut data)
+        .ok()?;
+    if data.len() as u64 > PACK_MAX_ENTRY_BYTES {
+        return None;
+    }
+    *total += data.len() as u64;
+    if *total > PACK_MAX_TOTAL_BYTES {
+        return None;
+    }
+    Some(data)
+}
+
+/// Read the DejaVu release zip under the pack caps. An
+/// archive past the entry-count cap is refused whole,
+/// in plain words; a face or the license past its own
+/// cap is left out of the contents, as a failed read
+/// always has been on this route.
+fn read_dejavu_zip(bytes: &[u8]) -> Result<DejaVuZipContents, String> {
     const FACES: [&str; 4] = [
         "DejaVuSans.ttf",
         "DejaVuSans-Bold.ttf",
         "DejaVuSans-Oblique.ttf",
         "DejaVuSans-BoldOblique.ttf",
     ];
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec()))
+        .map_err(|e| format!("that font pack cannot be read: {e}"))?;
+    if archive.len() > PACK_MAX_ENTRIES {
+        return Err(format!(
+            "that font pack holds {} files; a pack may carry at most {}",
+            archive.len(),
+            PACK_MAX_ENTRIES
+        ));
+    }
+    let names: Vec<String> = (0..archive.len())
+        .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+        .collect();
+    let mut total: u64 = 0;
+    let mut faces: Vec<(&'static str, Vec<u8>)> = Vec::new();
+    for want in FACES {
+        if let Some(entry) = names.iter().find(|n| n.ends_with(want)) {
+            if let Some(data) = read_pack_entry(&mut archive, entry, &mut total) {
+                if !data.is_empty() {
+                    faces.push((want, data));
+                }
+            }
+        }
+    }
+    let mut license = None;
+    if let Some(entry) = names.iter().find(|n| n.ends_with("LICENSE")) {
+        if let Some(data) = read_pack_entry(&mut archive, entry, &mut total) {
+            license = String::from_utf8(data).ok();
+        }
+    }
+    Ok(DejaVuZipContents { faces, license })
+}
+
+fn install_dejavu(lib: &FontLibrary, detail: &serde_json::Value) -> Result<Vec<FontInfo>, String> {
     let catalog_license = detail["license"].as_str().unwrap_or("OFL-1.1");
     let source = detail["source"]
         .as_str()
@@ -346,32 +470,15 @@ fn install_dejavu(lib: &FontLibrary, detail: &serde_json::Value) -> Result<Vec<F
     let mut installed: Vec<FontInfo> = Vec::new();
     let mut project_license: Option<String> = None;
 
-    // First route: the project's own release zip.
+    // First route: the project's own release zip, read
+    // under the font-pack caps (S-5).
     let zip_url = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-sans-ttf-2.37.zip";
     if let Ok(bytes) = get_bytes(zip_url) {
-        if let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) {
-            use std::io::Read;
-            let names: Vec<String> = (0..archive.len())
-                .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
-                .collect();
-            for want in FACES {
-                if let Some(entry) = names.iter().find(|n| n.ends_with(want)) {
-                    if let Ok(mut f) = archive.by_name(entry) {
-                        let mut data = Vec::new();
-                        if f.read_to_end(&mut data).is_ok() && !data.is_empty() {
-                            if let Ok(info) = lib.add_bytes(&data, want) {
-                                installed.push(info);
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(entry) = names.iter().find(|n| n.ends_with("LICENSE")) {
-                if let Ok(mut f) = archive.by_name(entry) {
-                    let mut text = String::new();
-                    if f.read_to_string(&mut text).is_ok() {
-                        project_license = Some(text);
-                    }
+        if let Ok(contents) = read_dejavu_zip(&bytes) {
+            project_license = contents.license;
+            for (want, data) in &contents.faces {
+                if let Ok(info) = lib.add_bytes(data, want) {
+                    installed.push(info);
                 }
             }
         }
@@ -477,6 +584,84 @@ pub fn install_pack(lib: &crate::FontLibrary, ids: &[&str]) -> PackReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capped_body_reader_refuses_past_32_mb_and_passes_ordinary_bodies() {
+        // The reader every catalog answer now goes
+        // through (S-5): an ordinary body passes whole,
+        // and a body past the cap is refused on the bytes
+        // that actually arrived, counted as read.
+        let body = read_body_capped(std::io::Cursor::new(b"[]".to_vec()), None, "test://x")
+            .expect("small body");
+        assert_eq!(body, b"[]");
+        let big = vec![0u8; (MAX_DOWNLOAD_BYTES + 1) as usize];
+        let err = read_body_capped(std::io::Cursor::new(big), None, "test://x")
+            .expect_err("over-cap body refused");
+        assert!(err.contains("too large"), "{err}");
+        assert!(err.contains("32 megabytes"), "{err}");
+    }
+
+    fn zip_bytes(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, data) in entries {
+                use std::io::Write as _;
+                writer.start_file(*name, opts).expect("start entry");
+                writer.write_all(data).expect("write entry");
+            }
+            writer.finish().expect("finish zip");
+        }
+        buf
+    }
+
+    #[test]
+    fn dejavu_zip_past_the_entry_count_cap_is_refused() {
+        // 513 tiny entries against the pack's 512 cap.
+        let entries: Vec<(String, Vec<u8>)> = (0..(PACK_MAX_ENTRIES + 1))
+            .map(|i| (format!("file-{i}.txt"), b"x".to_vec()))
+            .collect();
+        let refs: Vec<(&str, Vec<u8>)> = entries
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.clone()))
+            .collect();
+        let err = read_dejavu_zip(&zip_bytes(&refs)).expect_err("too many entries refused");
+        assert!(err.contains("512"), "{err}");
+    }
+
+    #[test]
+    fn dejavu_zip_entry_past_its_cap_is_left_out_and_the_rest_reads() {
+        // One face a hair past 64 MB of almost-nothing
+        // (deflated to very little on the wire): it is
+        // left out, the license still reads, and nothing
+        // fails whole.
+        let big = vec![0u8; (PACK_MAX_ENTRY_BYTES + 1) as usize];
+        let bytes = zip_bytes(&[
+            ("dejavu-sans-ttf-2.37/ttf/DejaVuSans.ttf", big),
+            ("dejavu-sans-ttf-2.37/LICENSE", b"the license".to_vec()),
+        ]);
+        let contents = read_dejavu_zip(&bytes).expect("the zip reads");
+        assert!(contents.faces.is_empty(), "the over-cap face is left out");
+        assert_eq!(contents.license.as_deref(), Some("the license"));
+    }
+
+    #[test]
+    fn dejavu_zip_reads_faces_and_license_under_the_caps() {
+        let bytes = zip_bytes(&[
+            (
+                "dejavu-sans-ttf-2.37/ttf/DejaVuSans.ttf",
+                b"font bytes".to_vec(),
+            ),
+            ("dejavu-sans-ttf-2.37/LICENSE", b"the license".to_vec()),
+        ]);
+        let contents = read_dejavu_zip(&bytes).expect("the zip reads");
+        assert_eq!(contents.faces.len(), 1);
+        assert_eq!(contents.faces[0].0, "DejaVuSans.ttf");
+        assert_eq!(contents.faces[0].1, b"font bytes");
+        assert_eq!(contents.license.as_deref(), Some("the license"));
+    }
 
     #[test]
     fn license_gate() {

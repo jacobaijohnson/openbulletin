@@ -25,6 +25,74 @@ pub mod runner;
 
 use serde::{Deserialize, Serialize};
 
+/// The open-door size limit: no file handed to an importer
+/// may be larger than this, however it arrives. The CFB
+/// reader has long declared 512 MB implausible for a
+/// compound file (its own MAX_INPUT); the health audit
+/// (HF-2) made the same judgment at every open door, so a
+/// hostile multi-gigabyte file is refused from its
+/// filesystem size before a single byte is read, and the
+/// read that follows is counted in actual bytes besides.
+pub const MAX_OPEN_DOOR_BYTES: u64 = 512 * 1024 * 1024;
+
+/// The door's refusal, in plain words.
+fn open_door_too_large() -> String {
+    "that file is too large to bring in: OpenBulletin can open files up to \
+     512 megabytes, and this one is bigger than that"
+        .to_string()
+}
+
+/// The metadata half of the door gate: refuse from the
+/// filesystem's stated length, before any read. A file
+/// whose metadata cannot be read passes here; the read
+/// itself will speak for that case, and the counted read
+/// below still bounds what arrives.
+pub fn check_open_door_size(path: &std::path::Path) -> Result<(), String> {
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > MAX_OPEN_DOOR_BYTES {
+            return Err(open_door_too_large());
+        }
+    }
+    Ok(())
+}
+
+/// Read a whole file at an open door: the metadata gate
+/// first, then a counted read (the limit plus one byte),
+/// so a file that grows between the two, or whose
+/// metadata understated it, is refused on the bytes that
+/// actually arrived.
+pub fn read_open_door_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    check_open_door_size(path)?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("cannot read that file: {e}"))?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(MAX_OPEN_DOOR_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot read that file: {e}"))?;
+    if bytes.len() as u64 > MAX_OPEN_DOOR_BYTES {
+        return Err(open_door_too_large());
+    }
+    Ok(bytes)
+}
+
+/// The same door for a text file: gated, counted in
+/// actual bytes, and read as text.
+pub fn read_open_door_text(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read as _;
+    check_open_door_size(path)?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("cannot read that file: {e}"))?;
+    let mut text = String::new();
+    file.by_ref()
+        .take(MAX_OPEN_DOOR_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("cannot read that file: {e}"))?;
+    if text.len() as u64 > MAX_OPEN_DOOR_BYTES {
+        return Err(open_door_too_large());
+    }
+    Ok(text)
+}
+
 /// Bump when the dump shape changes incompatibly.
 /// v2: spans carry alignment, italic, and fill color, and
 /// the dump has an image channel (bytes in sidecar files,
@@ -476,6 +544,51 @@ fn page_size(doc: &lopdf::Document, page_id: &lopdf::ObjectId) -> Option<(f32, f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sparse file whose stated length is one byte past
+    /// the door limit: set_len allocates nothing, so the
+    /// pin is instant, and the refusal must come from the
+    /// metadata gate alone (reading it whole would also
+    /// "work" — the point is that the door never tries).
+    fn sparse_oversize_file(tag: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("ob-door-gate-{tag}-{}.bin", std::process::id()));
+        let file = std::fs::File::create(&path).expect("create sparse file");
+        file.set_len(MAX_OPEN_DOOR_BYTES + 1)
+            .expect("state an oversize length");
+        drop(file);
+        path
+    }
+
+    #[test]
+    fn open_door_gate_refuses_an_oversize_file_before_any_read() {
+        let path = sparse_oversize_file("gate");
+        let err = check_open_door_size(&path).expect_err("the gate refuses");
+        assert!(err.contains("too large"), "{err}");
+        assert!(err.contains("512 megabytes"), "{err}");
+        let err = read_open_door_file(&path).expect_err("the counted read refuses at the gate");
+        assert!(err.contains("too large"), "{err}");
+        let err = read_open_door_text(&path).expect_err("the text door refuses at the gate");
+        assert!(err.contains("too large"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn open_door_reads_an_ordinary_file_through() {
+        let path =
+            std::env::temp_dir().join(format!("ob-door-gate-small-{}.txt", std::process::id()));
+        std::fs::write(&path, b"a small bulletin").expect("write small file");
+        assert!(check_open_door_size(&path).is_ok());
+        assert_eq!(
+            read_open_door_file(&path).expect("read small file"),
+            b"a small bulletin"
+        );
+        assert_eq!(
+            read_open_door_text(&path).expect("read small text"),
+            "a small bulletin"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 
     fn sample_pdf() -> Vec<u8> {
         let start = chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap();

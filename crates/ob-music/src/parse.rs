@@ -170,6 +170,15 @@ pub fn load_music(bytes: &[u8]) -> Result<(String, MusicInfo), String> {
 /// memory).
 const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
 
+/// XML nesting deeper than this is not a score, it is a
+/// trap (health audit S-7): the sibling parsers (IDML,
+/// Scribus, SVG) all stop at 256, and the walk below
+/// piles every open element onto a stack, so a score
+/// nested millions deep would pile without bound. Real
+/// MusicXML nests perhaps thirty levels; this is
+/// generous headroom.
+const MAX_XML_DEPTH: usize = 256;
+
 /// Read one zip entry's text under the cap. One byte past
 /// it is read, so an entry exactly at the cap still counts
 /// as inside; anything larger refuses in plain words.
@@ -194,6 +203,19 @@ fn read_entry_text(entry: &mut zip::read::ZipFile, what: &str) -> Result<String,
 fn zip_score_text(bytes: &[u8]) -> Result<String, String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| format!("that file is a zip we cannot open ({e})"))?;
+    // Entry-count cap (health audit S-6), the IDML and
+    // font-pack readers' 512: a .mxl carries a container
+    // and a score, not thousands of entries, and the
+    // count is known from the archive's own directory
+    // before any entry is read.
+    const MAX_ENTRIES: usize = 512;
+    if zip.len() > MAX_ENTRIES {
+        return Err(format!(
+            "that zip holds {} files; a music file may carry at most {}",
+            zip.len(),
+            MAX_ENTRIES
+        ));
+    }
     let mut names: Vec<String> = (0..zip.len())
         .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
         .collect();
@@ -351,6 +373,11 @@ pub fn parse_musicxml(xml: &str) -> Result<MusicInfo, String> {
                     text.clear();
                 }
                 stack.push(name);
+                if stack.len() > MAX_XML_DEPTH {
+                    return Err(
+                        "that music file's XML is nested too deeply to read safely".to_string()
+                    );
+                }
             }
             Ok(Event::Empty(e)) => {
                 let name = local(e.name().as_ref());
@@ -661,6 +688,44 @@ mod tests {
             !sniff_music(&buf),
             "the sniff refuses it too, without reading it whole"
         );
+    }
+
+    #[test]
+    fn mxl_past_the_entry_count_cap_is_refused() {
+        // S-6 pin: 513 tiny entries against the 512 cap,
+        // refused from the archive's own directory count.
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            use std::io::Write as _;
+            for i in 0..513 {
+                zw.start_file(format!("f{i}.txt"), opts).unwrap();
+                zw.write_all(b"x").unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        let err = load_music(&buf).expect_err("too many entries refused");
+        assert!(err.contains("512"), "{err}");
+    }
+
+    #[test]
+    fn score_nested_past_the_depth_budget_refuses_in_plain_words() {
+        // S-7 pin: a score nested deeper than the sibling
+        // parsers' 256 refuses; the audit's probe nested
+        // 3,000,000 deep and parsed Ok.
+        let deep = format!(
+            "<score-partwise>{}</score-partwise>",
+            "<a>".repeat(300) + &"</a>".repeat(300)
+        );
+        let err = parse_musicxml(&deep).expect_err("too deep refused");
+        assert!(err.contains("nested too deeply"), "{err}");
+        // Control: nesting within the budget still parses.
+        let within = format!(
+            "<score-partwise>{}</score-partwise>",
+            "<a>".repeat(200) + &"</a>".repeat(200)
+        );
+        assert!(parse_musicxml(&within).is_ok());
     }
 
     /// The Bach fixture from the M0 spike: the real corpus.

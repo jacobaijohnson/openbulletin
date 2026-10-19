@@ -131,6 +131,10 @@ struct Counts {
     dropped: Vec<(DropKind, usize)>,
     links: usize,
     web_pictures: usize,
+    /// Pictures inside the page that the picture budget
+    /// (HF-3) would not carry: too large alone, past the
+    /// count, or past the total. Counted, never silent.
+    size_left_out: usize,
 }
 
 impl Counts {
@@ -194,12 +198,17 @@ struct Walker {
     /// the block stream on the spot.
     cell_pictures_open: bool,
     pictures: Vec<CarriedPicture>,
+    /// The data-URI picture budget this walk carries,
+    /// and the picture bytes it has carried so far,
+    /// counted as each picture is decoded (HF-3).
+    picture_budget: PictureBudget,
+    picture_bytes: usize,
     counts: Counts,
     total_words: usize,
 }
 
 impl Walker {
-    fn new() -> Self {
+    fn with_picture_budget(picture_budget: PictureBudget) -> Self {
         Walker {
             blocks: Vec::new(),
             cur: None,
@@ -208,6 +217,8 @@ impl Walker {
             cell_pictures: Vec::new(),
             cell_pictures_open: false,
             pictures: Vec::new(),
+            picture_budget,
+            picture_bytes: 0,
             counts: Counts::default(),
             total_words: 0,
         }
@@ -353,6 +364,19 @@ impl Walker {
         if src.len() >= 5 && src[..5].eq_ignore_ascii_case("data:") {
             match decode_data_uri(src) {
                 Some((bytes, media_type)) if ob_image::probe(&bytes).is_ok() => {
+                    // The picture budget (HF-3): past any
+                    // cap — its own size, the count, or the
+                    // running total counted as decoded —
+                    // the picture is dropped and counted,
+                    // and the import goes on without it.
+                    let over_alone = bytes.len() > self.picture_budget.per_picture;
+                    let over_count = self.pictures.len() >= self.picture_budget.count;
+                    let over_total = self.picture_bytes + bytes.len() > self.picture_budget.total;
+                    if over_alone || over_count || over_total {
+                        self.counts.size_left_out += 1;
+                        return;
+                    }
+                    self.picture_bytes += bytes.len();
                     let index = self.pictures.len();
                     self.pictures.push(CarriedPicture { bytes, media_type });
                     if self.cell_pictures_open {
@@ -1015,6 +1039,42 @@ const MAX_TAG_COUNT: usize = 500_000;
 const TOO_BIG_PAGE: &str = "This page is built too deeply (or has too many pieces) \
     to read safely, so it was not brought in.";
 
+/// The data-URI picture budgets (health audit HF-3). A
+/// picture carried inside the page was the one channel
+/// this importer had not budgeted: a page could land
+/// tens of megabytes of pictures in the asset store. The
+/// caps are the project's standing ones: one picture may
+/// be as large as a sidecar picture may (64 MB, the
+/// .obd loader's sidecar limit), all the pictures
+/// together may fill the standing 512 MB total, and the
+/// count stays in the low thousands — far past any real
+/// newsletter (this importer's tag budget is 500,000 for
+/// the whole page), and low enough that the picture list
+/// itself stays small. What goes past any cap is dropped
+/// and counted in the review, like everything else this
+/// importer leaves out; an import never fails over a
+/// picture.
+const MAX_DATA_PICTURE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DATA_PICTURE_COUNT: usize = 2_000;
+const MAX_DATA_PICTURES_TOTAL: usize = 512 * 1024 * 1024;
+
+/// The picture budget one walk carries. Production walks
+/// use the standing constants above; the tests hand the
+/// walk a small budget so each cap can be pinned without
+/// hundred-megabyte fixtures.
+#[derive(Clone, Copy)]
+struct PictureBudget {
+    per_picture: usize,
+    count: usize,
+    total: usize,
+}
+
+const PRODUCTION_PICTURE_BUDGET: PictureBudget = PictureBudget {
+    per_picture: MAX_DATA_PICTURE_BYTES,
+    count: MAX_DATA_PICTURE_COUNT,
+    total: MAX_DATA_PICTURES_TOTAL,
+};
+
 /// Elements that never hold anything: counted as tags
 /// but never pushed onto the nesting stack.
 const VOID_ELEMENTS: &[&str] = &[
@@ -1329,6 +1389,19 @@ pub fn document_from_html(
     source_name: &str,
     profile: ChurchProfile,
 ) -> Result<DraftOutcome, String> {
+    document_from_html_with_budget(bytes, source_name, profile, PRODUCTION_PICTURE_BUDGET)
+}
+
+/// The import itself, under a stated picture budget: the
+/// production door passes the standing constants, and
+/// the tests pass a small budget so each cap is pinned
+/// without hundred-megabyte fixtures (HF-3).
+fn document_from_html_with_budget(
+    bytes: &[u8],
+    source_name: &str,
+    profile: ChurchProfile,
+    picture_budget: PictureBudget,
+) -> Result<DraftOutcome, String> {
     // Round 2, RT-3: measure before parsing (see
     // pre_parse_budget); the tree check below still
     // runs on what the parser built.
@@ -1346,7 +1419,7 @@ pub fn document_from_html(
                 .to_string(),
         );
     }
-    let mut walker = Walker::new();
+    let mut walker = Walker::with_picture_budget(picture_budget);
     // Walk the body when the page has one; otherwise the
     // whole tree (the head is skipped by the walk itself).
     let start = find_first(&dom.document, "body").unwrap_or_else(|| dom.document.clone());
@@ -1542,6 +1615,28 @@ pub fn document_from_html(
                 format!(
                     "{n} pictures sit on the web and were not brought in. The words \
                      around them are here."
+                )
+            },
+        });
+    }
+    if walker.counts.size_left_out > 0 {
+        let n = walker.counts.size_left_out;
+        items.push(ImportItem {
+            panel: 0,
+            label: "Pictures left out for size".into(),
+            badge: Badge::CheckThis,
+            detail: if n == 1 {
+                "1 picture inside the page was too much to bring in (one picture may \
+                 be up to 64 megabytes, at most 2,000 pictures can come over, and \
+                 all of them together up to 512 megabytes) and was left out. The \
+                 words around it are here."
+                    .into()
+            } else {
+                format!(
+                    "{n} pictures inside the page were too much to bring in (one \
+                     picture may be up to 64 megabytes, at most 2,000 pictures can \
+                     come over, and all of them together up to 512 megabytes) and \
+                     were left out. The words around them are here."
                 )
             },
         });
@@ -1756,6 +1851,123 @@ mod tests {
                 && i.detail.contains("1 picture")
                 && i.detail.contains("came with it")
         }));
+    }
+
+    /// One 1x1 PNG (68 bytes), the picture every HF-3 pin
+    /// below is built from.
+    const TINY_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    /// A page holding `n` data-URI pictures. Each picture
+    /// is the tiny PNG plus its own count of trailing
+    /// bytes (past the PNG's end, where readers ignore
+    /// them), so every picture is a distinct asset of a
+    /// known size: 68, 69, 70, ... bytes.
+    fn page_with_data_pictures(n: usize) -> String {
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(TINY_PNG_BASE64)
+            .expect("the tiny PNG decodes");
+        let imgs: String = (0..n)
+            .map(|i| {
+                let mut bytes = png.clone();
+                bytes.extend((0..i).map(|_| 0u8));
+                let uri = format!(
+                    "data:image/png;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(&bytes)
+                );
+                format!("<p><img src=\"{uri}\"></p>")
+            })
+            .collect();
+        format!("<html><body><p>Words for the page.</p>{imgs}</body></html>")
+    }
+
+    fn carried_picture_count(out: &DraftOutcome) -> usize {
+        out.doc
+            .assets
+            .iter()
+            .filter(|a| a.kind == AssetKind::Picture)
+            .count()
+    }
+
+    fn size_left_out_detail(out: &DraftOutcome) -> String {
+        out.items
+            .iter()
+            .find(|i| i.label == "Pictures left out for size")
+            .map(|i| i.detail.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn data_picture_past_the_per_picture_cap_is_dropped_and_counted() {
+        // A budget whose per-picture cap (10 bytes) the
+        // 68-byte PNG cannot fit: dropped, counted in the
+        // spoken summary, and the import itself succeeds.
+        let budget = PictureBudget {
+            per_picture: 10,
+            count: 100,
+            total: 1_000_000,
+        };
+        let out = document_from_html_with_budget(
+            page_with_data_pictures(1).as_bytes(),
+            "page.html",
+            ChurchProfile::default(),
+            budget,
+        )
+        .expect("the import goes on without the picture");
+        assert_eq!(carried_picture_count(&out), 0);
+        let detail = size_left_out_detail(&out);
+        assert!(
+            detail.starts_with("1 picture inside the page was too much"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn data_pictures_past_the_count_cap_are_dropped_and_counted() {
+        // Three pictures, room for two: the third is
+        // dropped and counted; the first two come over.
+        let budget = PictureBudget {
+            per_picture: 1_000_000,
+            count: 2,
+            total: 1_000_000,
+        };
+        let out = document_from_html_with_budget(
+            page_with_data_pictures(3).as_bytes(),
+            "page.html",
+            ChurchProfile::default(),
+            budget,
+        )
+        .expect("the import goes on");
+        assert_eq!(carried_picture_count(&out), 2);
+        let detail = size_left_out_detail(&out);
+        assert!(
+            detail.starts_with("1 picture inside the page was too much"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn data_pictures_past_the_total_cap_stop_being_carried_and_are_counted() {
+        // A total with room for one 68-byte picture but
+        // not two: the first is carried, the rest are
+        // dropped and counted as the total fills.
+        let budget = PictureBudget {
+            per_picture: 1_000_000,
+            count: 100,
+            total: 100,
+        };
+        let out = document_from_html_with_budget(
+            page_with_data_pictures(3).as_bytes(),
+            "page.html",
+            ChurchProfile::default(),
+            budget,
+        )
+        .expect("the import goes on");
+        assert_eq!(carried_picture_count(&out), 1);
+        let detail = size_left_out_detail(&out);
+        assert!(
+            detail.starts_with("2 pictures inside the page were too much"),
+            "{detail}"
+        );
     }
 
     #[test]

@@ -11893,6 +11893,11 @@ impl App {
         self.note("Reading your old bulletin...".into());
         std::thread::spawn(move || {
             let result = (|| -> Result<ImportReview, String> {
+                // The PDF door: the helper reads the file in
+                // its own process and gates it there too, but
+                // the refusal belongs at this door, before any
+                // helper starts.
+                ob_extract::check_open_door_size(&pdf)?;
                 let helper = ob_extract::helper::resolve_helper(None);
                 let workdir = std::env::temp_dir()
                     .join(format!("openbulletin-import-{}", std::process::id()));
@@ -11949,8 +11954,7 @@ impl App {
         self.note("Reading your InDesign file...".into());
         std::thread::spawn(move || {
             let result = (|| -> Result<ImportReview, String> {
-                let bytes =
-                    std::fs::read(&path).map_err(|e| format!("cannot read that file: {e}"))?;
+                let bytes = ob_extract::read_open_door_file(&path)?;
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -11992,8 +11996,7 @@ impl App {
         self.note("Reading your Scribus file...".into());
         std::thread::spawn(move || {
             let result = (|| -> Result<ImportReview, String> {
-                let bytes =
-                    std::fs::read(&path).map_err(|e| format!("cannot read that file: {e}"))?;
+                let bytes = ob_extract::read_open_door_file(&path)?;
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -12187,11 +12190,19 @@ impl App {
                 // Sniff the first bytes: PDF says %PDF, an IDML
                 // is a zip (PK), a .pub is a compound file, a
                 // Scribus file is XML under a SCRIBUSUTF8NEW root.
-                let head = std::fs::read(&path)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .take(4096)
-                    .collect::<Vec<u8>>();
+                // Only the head is read (counted, never the whole
+                // file): the sniff routes, the door it routes to
+                // applies the open-door size gate.
+                let head = {
+                    use std::io::Read as _;
+                    std::fs::File::open(&path)
+                        .map(|mut f| {
+                            let mut buf = Vec::new();
+                            let _ = f.by_ref().take(4096).read_to_end(&mut buf);
+                            buf
+                        })
+                        .unwrap_or_default()
+                };
                 if head.starts_with(b"%PDF") {
                     self.start_import(path);
                 } else if String::from_utf8_lossy(&head).contains("<score-partwise") {
@@ -12201,8 +12212,12 @@ impl App {
                 } else if head.starts_with(b"PK") {
                     // A zip: an IDML package, or a .mxl music
                     // file. The music sniff reads the whole
-                    // file; IDML remains the default.
-                    let bytes = std::fs::read(&path).unwrap_or_default();
+                    // file; IDML remains the default. The sniff's
+                    // read goes through the same open-door gate;
+                    // an oversize file sniffs as nothing here and
+                    // the IDML door it lands on refuses it in
+                    // plain words.
+                    let bytes = ob_extract::read_open_door_file(&path).unwrap_or_default();
                     if ob_music::sniff_music(&bytes) {
                         self.start_music_import(path);
                     } else {
@@ -12234,10 +12249,10 @@ impl App {
     /// web text, not a designed bulletin.
     fn start_md_import(&mut self, path: std::path::PathBuf) {
         let name = file_name_of(&path);
-        let text = match std::fs::read_to_string(&path) {
+        let text = match ob_extract::read_open_door_text(&path) {
             Ok(t) => t,
             Err(e) => {
-                self.fail(format!("Could not read that file. ({e})"));
+                self.fail(e);
                 return;
             }
         };
@@ -12275,10 +12290,10 @@ impl App {
     /// answers at once.
     fn start_html_import(&mut self, path: std::path::PathBuf) {
         let name = file_name_of(&path);
-        let bytes = match std::fs::read(&path) {
+        let bytes = match ob_extract::read_open_door_file(&path) {
             Ok(b) => b,
             Err(e) => {
-                self.fail(format!("Could not read that file. ({e})"));
+                self.fail(e);
                 return;
             }
         };
@@ -12316,8 +12331,7 @@ impl App {
         self.note("Reading your music file...".into());
         std::thread::spawn(move || {
             let result = (|| -> Result<ImportReview, String> {
-                let bytes =
-                    std::fs::read(&path).map_err(|e| format!("cannot read that file: {e}"))?;
+                let bytes = ob_extract::read_open_door_file(&path)?;
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -13297,8 +13311,7 @@ impl App {
                                 ob_extract::helper::dump_pdf(&helper, &pdf).map(|d| (d, Some(pdf)))
                             }),
                             None => (|| {
-                                let bytes = std::fs::read(path)
-                                    .map_err(|e| format!("cannot read that file: {e}"))?;
+                                let bytes = ob_extract::read_open_door_file(path)?;
                                 let size = bytes.len();
                                 let cfb = ob_extract::cfb::Cfb::open(bytes)?;
                                 let x = ob_extract::pub_layout::extract_pub_positioned(
@@ -13307,12 +13320,10 @@ impl App {
                                 Ok((x.dump, None))
                             })(),
                         },
-                        Some(LearnKind::Indesign) => std::fs::read(path)
-                            .map_err(|e| format!("cannot read that file: {e}"))
+                        Some(LearnKind::Indesign) => ob_extract::read_open_door_file(path)
                             .and_then(|bytes| ob_extract::idml::dump_from_idml(&bytes, &name))
                             .map(|d| (d, None)),
-                        Some(LearnKind::Scribus) => std::fs::read(path)
-                            .map_err(|e| format!("cannot read that file: {e}"))
+                        Some(LearnKind::Scribus) => ob_extract::read_open_door_file(path)
                             .and_then(|bytes| ob_extract::sla::dump_from_sla(&bytes, &name))
                             .map(|d| (d, None)),
                         Some(LearnKind::OpenBulletin) => ob_format::load(path).map(|doc| {
@@ -16484,7 +16495,7 @@ fn native_pub_review(
     name: &str,
     profile: ChurchProfile,
 ) -> Result<ImportReview, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read that file: {e}"))?;
+    let bytes = ob_extract::read_open_door_file(path)?;
     let source_bytes = bytes.len();
     let cfb = ob_extract::cfb::Cfb::open(bytes)?;
     let x = ob_extract::pub_layout::extract_pub_positioned(&cfb, name, source_bytes)?;
@@ -16558,6 +16569,33 @@ fn native_pub_review(
         source_name: name.to_string(),
         note: Some(note),
     })
+}
+
+#[cfg(test)]
+mod door_gate_tests {
+    use super::*;
+
+    /// HF-2 pin, one real door end to end: a sparse file
+    /// whose stated length is past the open-door limit
+    /// (set_len allocates nothing, so the pin is instant)
+    /// is refused by the native Publisher door in plain
+    /// words, at the gate, before any of it is read.
+    #[test]
+    fn native_pub_door_refuses_an_oversize_file_at_the_door() {
+        let path =
+            std::env::temp_dir().join(format!("ob-app-door-gate-{}.pub", std::process::id()));
+        let file = std::fs::File::create(&path).expect("create sparse file");
+        file.set_len(ob_extract::MAX_OPEN_DOOR_BYTES + 1)
+            .expect("state an oversize length");
+        drop(file);
+        let err = match native_pub_review(&path, "big.pub", ChurchProfile::default()) {
+            Ok(_) => panic!("the door refuses an oversize file"),
+            Err(e) => e,
+        };
+        assert!(err.contains("too large"), "{err}");
+        assert!(err.contains("512 megabytes"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 /// A finished PDF rescue waiting for the admin's verdict:

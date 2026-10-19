@@ -8352,31 +8352,310 @@ fn bare_preposition_word(w: &str) -> bool {
     )
 }
 
+/// The index of the nearest word before `pos`
+/// on the same side (at or after `side_start`)
+/// that is something, if one stands there.
+fn prev_word_pos(words: &[String], side_start: usize, pos: usize) -> Option<usize> {
+    (side_start..pos).rev().find(|p| !words[*p].is_empty())
+}
+
+/// Whether a word may stand as a bare-class
+/// MODIFIER between a determiner and its head
+/// noun (round 29, R29-C, F6 arm 3): the
+/// determiner / quantifier class of the bare
+/// inventory, the determiner-adjectives, and
+/// the prenominal ordinal / sequence words.
+/// Such a word modifies the head; it does not
+/// head the phrase itself, so it cannot defeat
+/// a determiner standing before it — while
+/// standing AS a head ("the same", with no noun
+/// after it) it keeps its shipped bare reading,
+/// because this test is only ever read looking
+/// back from a head noun.
+fn determiner_modifier_word(w: &str) -> bool {
+    matches!(
+        w,
+        "same"
+            | "other"
+            | "another"
+            | "such"
+            | "own"
+            | "each"
+            | "every"
+            | "either"
+            | "neither"
+            | "both"
+            | "all"
+            | "any"
+            | "some"
+            | "much"
+            | "many"
+            | "few"
+            | "several"
+            | "enough"
+            | "most"
+            | "more"
+            | "less"
+            | "least"
+            | "little"
+            | "various"
+            | "numerous"
+            | "countless"
+            | "fewer"
+            | "one"
+            // The determiner-adjectives (R26-B, M6).
+            | "whole"
+            | "entire"
+            | "certain"
+            | "particular"
+            | "specific"
+            | "additional"
+            | "extra"
+            | "further"
+            | "single"
+            | "sole"
+            | "half"
+            | "double"
+            // The ordinals and the prenominal
+            // sequence words.
+            | "first"
+            | "second"
+            | "third"
+            | "fourth"
+            | "fifth"
+            | "sixth"
+            | "seventh"
+            | "eighth"
+            | "ninth"
+            | "tenth"
+            | "eleventh"
+            | "twelfth"
+            | "thirteenth"
+            | "fourteenth"
+            | "fifteenth"
+            | "sixteenth"
+            | "seventeenth"
+            | "eighteenth"
+            | "nineteenth"
+            | "twentieth"
+            | "thirtieth"
+            | "fortieth"
+            | "fiftieth"
+            | "hundredth"
+            | "last"
+            | "previous"
+            | "preceding"
+            | "next"
+            | "following"
+            | "coming"
+    )
+}
+
+/// Whether a word can stand FIRST in a complex
+/// preposition whose tail preposition stands
+/// immediately after it (round 29, R29-C, F6
+/// arm 1): a preposition word itself ("off of",
+/// "in between"), a preposition-like word the
+/// bare-preposition list does not carry ("as",
+/// "inside", "outside", "along", "up"), or one
+/// of the causal / exception / sequence words
+/// that head a two-word complex preposition in
+/// office prose ("because of", "apart from",
+/// "aside from", "instead of", "except for",
+/// "but for", "save for", "away from",
+/// "next to", "due to", "thanks to", and kin).
+/// A word outside this class standing before a
+/// preposition — a governor participle
+/// ("cancelled with …"), a conjunction ("and
+/// with …"), a consumed unit ("back together
+/// with …") — forms no preposition phrase with
+/// it: the preposition after such a word stands
+/// alone, exactly as the lone-preposition block
+/// has always judged it.
+fn complex_preposition_starter(w: &str) -> bool {
+    bare_preposition_word(w)
+        || matches!(
+            w,
+            "as" | "inside"
+                | "outside"
+                | "along"
+                | "up"
+                | "because"
+                | "apart"
+                | "aside"
+                | "instead"
+                | "except"
+                | "but"
+                | "save"
+                | "away"
+                | "next"
+                | "due"
+                | "owing"
+                | "thanks"
+                | "prior"
+                | "subsequent"
+                | "contrary"
+                | "close"
+                | "ahead"
+                | "opposite"
+                | "regardless"
+                | "irrespective"
+                | "care"
+        )
+}
+
+/// Whether a word can stand as the middle noun
+/// of a three/four-word complex preposition —
+/// preposition + noun + tail ("in spite of",
+/// "in need of", "on behalf of"), or
+/// preposition + determiner + noun + tail
+/// ("at the time of", "in the event of", "for
+/// the sake of"). The class is the nouns such
+/// phrases are built from; the time-of-day and
+/// season nouns are NOT in it — they head the
+/// temporal phrases of the B1 ring ("in the
+/// morning"), and a preposition standing after
+/// one of those phrases is a lone preposition,
+/// not this phrase's tail.
+fn complex_preposition_middle(w: &str) -> bool {
+    matches!(
+        w,
+        "time"
+            | "need"
+            | "case"
+            | "spite"
+            | "behalf"
+            | "front"
+            | "back"
+            | "top"
+            | "way"
+            | "means"
+            | "regard"
+            | "respect"
+            | "reference"
+            | "addition"
+            | "connection"
+            | "relation"
+            | "response"
+            | "accordance"
+            | "compliance"
+            | "consequence"
+            | "consideration"
+            | "contrast"
+            | "excess"
+            | "terms"
+            | "line"
+            | "place"
+            | "exchange"
+            | "favour"
+            | "favor"
+            | "account"
+            | "reason"
+            | "result"
+            | "event"
+            | "sake"
+            | "light"
+            | "view"
+            | "lieu"
+            | "care"
+            | "charge"
+            | "name"
+            | "honor"
+            | "honour"
+            | "memory"
+            | "presence"
+            | "absence"
+            | "company"
+            | "course"
+            | "midst"
+            | "middle"
+            | "end"
+            | "side"
+            | "heart"
+            | "hope"
+            | "fear"
+            | "reply"
+            | "opposed"
+    )
+}
+
+/// Whether the preposition at `tail` in `words`
+/// is the tail of a complex preposition, judged
+/// as a phrase SHAPE (round 29, R29-C, F6 arm 1),
+/// not by `BARE_PHRASE_UNITS` membership, which
+/// stays at 166. The shapes are the two-word
+/// shape (a complex-preposition starter
+/// immediately before the tail), the three-word
+/// shape (starter plus middle noun plus tail),
+/// and the four-word shape (starter plus
+/// determiner plus middle noun plus tail). Unit
+/// membership is a separate, older reach into
+/// the same reading and is judged by the caller.
+fn complex_preposition_tail(words: &[String], side_start: usize, tail: usize) -> bool {
+    let Some(a) = prev_word_pos(words, side_start, tail) else {
+        return false;
+    };
+    if complex_preposition_starter(&words[a]) {
+        return true;
+    }
+    if !complex_preposition_middle(&words[a]) {
+        return false;
+    }
+    let Some(b) = prev_word_pos(words, side_start, a) else {
+        return false;
+    };
+    if complex_preposition_starter(&words[b]) {
+        return true;
+    }
+    if !matches!(words[b].as_str(), "the" | "a" | "an") {
+        return false;
+    }
+    let Some(c) = prev_word_pos(words, side_start, b) else {
+        return false;
+    };
+    complex_preposition_starter(&words[c])
+}
+
 /// Whether the word at `i` in an occurrence's
 /// region words stands as the head noun of a
 /// determiner-headed noun phrase that reads as
-/// content (round 28, R28-C, F6): the nearest word
-/// before it on its own side of the date — the
-/// region's before and after sides are separate
-/// sequences, and a noun phrase cannot span the
-/// date — that is something is the definite
-/// article "the", AND that article is not itself
-/// the object of a lone bare preposition standing
-/// outside any phrase unit this partition
-/// consumed. The article is the definite article
-/// only: a possessive standing before a title is
-/// R27-B's recorded partition correction ("your
-/// pastor" partitions word by word and stays
-/// governed), and an indefinite article heads no
-/// definite reference (the standing "a week ago"
-/// phrases stay governed). The lone-preposition
-/// block is the "in the morning" line: a temporal
-/// phrase whose preposition stands alone before
-/// the article keeps its standing bare reading,
-/// while an article reached through a consumed
-/// unit — "in spite of the pastor", "thanks to
-/// the pastor" — or standing first on its side —
-/// "the pastor" — heads a complete definite
+/// content (round 28, R28-C, F6; the reach
+/// restated round 29, R29-C, F6): the determiner
+/// standing before it on its own side of the
+/// date — the region's before and after sides
+/// are separate sequences, and a noun phrase
+/// cannot span the date — with any bare-class
+/// modifier words between determiner and head
+/// skipped (the head governs the reading), is a
+/// definite determiner, AND that determiner is
+/// not itself the object of a lone bare
+/// preposition. The definite determiners are
+/// "the" / "this" / "that" (round 29): "the"
+/// heads a reference standing first on its side
+/// or after any non-preposition word, as shipped;
+/// a demonstrative heads one only when reached
+/// through a complex preposition's tail —
+/// a demonstrative standing at its side's head
+/// is the deictic phrase the bare inventory
+/// already judges ("this morning", the B1 ring,
+/// keeps its standing governed reading). A
+/// possessive standing before a title is R27-B's
+/// recorded partition correction ("your pastor"
+/// partitions word by word and stays governed),
+/// and an indefinite article heads no definite
+/// reference (the standing "a week ago" phrases
+/// stay governed). The lone-preposition block is
+/// the "in the morning" line and stands as
+/// shipped (round 29 adjudication): a preposition
+/// standing alone before the determiner keeps
+/// its standing bare reading, while a determiner
+/// reached through a complex preposition's tail
+/// — a consumed unit ("in spite of the pastor",
+/// "thanks to the pastor") or any phrase of that
+/// shape, unit member or not ("because of the
+/// pastor", "in need of the pastor", "at the
+/// time of the pastor") — or "the" standing
+/// first on its side heads a complete definite
 /// reference and reads as content.
 fn determiner_headed_content(
     words: &[String],
@@ -8385,16 +8664,49 @@ fn determiner_headed_content(
     unit_spans: &[(usize, usize)],
 ) -> bool {
     let side_start = if i < after_start { 0 } else { after_start };
-    let Some(p) = (side_start..i).rev().find(|p| !words[*p].is_empty()) else {
-        return false;
+    // The determiner standing before the head:
+    // bare-class modifiers between it and the
+    // head are skipped — the head governs.
+    let mut cursor = i;
+    let p = loop {
+        let Some(p) = prev_word_pos(words, side_start, cursor) else {
+            return false;
+        };
+        if determiner_modifier_word(&words[p]) {
+            cursor = p;
+            continue;
+        }
+        break p;
     };
-    if words[p] != "the" {
-        return false;
+    let demonstrative = match words[p].as_str() {
+        "the" => false,
+        "this" | "that" => true,
+        _ => return false,
+    };
+    let Some(q) = prev_word_pos(words, side_start, p) else {
+        // Standing first on its side: "the"
+        // heads the reference, as shipped; a
+        // demonstrative standing first is the
+        // deictic phrase and does not.
+        return !demonstrative;
+    };
+    if !bare_preposition_word(&words[q]) {
+        // After a non-preposition word the same
+        // line holds: "the" heads the reference;
+        // a demonstrative there is a deictic
+        // standing in its own phrase, not a
+        // reference reached through a tail.
+        return !demonstrative;
     }
-    let Some(q) = (side_start..p).rev().find(|q| !words[*q].is_empty()) else {
-        return true;
-    };
-    !(bare_preposition_word(&words[q]) && !unit_spans.iter().any(|(s, e)| *s <= q && q < *e))
+    // The determiner is the object of the
+    // preposition at `q`: it heads the reference
+    // exactly when that preposition is a complex
+    // preposition's tail — a consumed unit's
+    // member, or the tail of a phrase of the
+    // complex shape. A lone bare preposition's
+    // object stays excluded, as shipped.
+    unit_spans.iter().any(|(s, e)| *s <= q && q < *e)
+        || complex_preposition_tail(words, side_start, q)
 }
 
 fn occurrence_is_bare(
@@ -8571,8 +8883,9 @@ fn occurrence_is_bare(
         // so an inventory head noun standing under
         // the definite article is not consumed as
         // bare here (see `determiner_headed_content`
-        // for the line's exact shape — the article
-        // only, and never under a lone bare
+        // for the line's exact shape — the definite
+        // determiners, restated round 29 (R29-C),
+        // and never under a lone bare
         // preposition): "(in spite of the pastor,
         // November 1)" and "(thanks to the pastor,
         // November 1)" assert beside a cancelled
@@ -31881,5 +32194,404 @@ Youth group meets Wednesday at 6 PM.
             vec![nov(8)],
             "{group}: the target stays named"
         );
+    }
+
+    #[test]
+    fn r29c_non_unit_complex_prepositions_assert() {
+        // Round 29 (R29-C, F6 arm 1 = review
+        // MAJOR-3 + red team RT29-D1): an article
+        // reached through a complex preposition's
+        // tail heads the reference, unit member or
+        // not. At the audited HEAD the fifteen
+        // complex prepositions that are not
+        // `BARE_PHRASE_UNITS` members flipped every
+        // head class to silence while their choir
+        // twins asserted; the reach is now judged
+        // as a phrase shape, and the unit list
+        // stays at 166. Every phrase below asserts
+        // November 1 beside the cancelled sibling,
+        // on every surface, in the before slot.
+        for prep in [
+            "because of",
+            "as for",
+            "apart from",
+            "aside from",
+            "instead of",
+            "except for",
+            "but for",
+            "save for",
+            "as of",
+            "off of",
+            "inside of",
+            "outside of",
+            "in between",
+            "in need of",
+            "at the time of",
+        ] {
+            let groups = format!("(November 1, cancelled) ({prep} the pastor, November 1)");
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{groups}: relative path asserts"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{groups}: keep-through asserts"
+            );
+        }
+        // The after slot and the plain surface,
+        // for the eleven of the fifteen whose
+        // tails stand outside the shipped governor
+        // families (the remaining four are pinned
+        // standing in the boundary test below:
+        // "from" and "except" are single governors
+        // and "instead of" is a governor pair, so
+        // a date standing next to them is governed
+        // by that machinery, choir twins alike).
+        for prep in [
+            "because of",
+            "as for",
+            "but for",
+            "save for",
+            "as of",
+            "off of",
+            "inside of",
+            "outside of",
+            "in between",
+            "in need of",
+            "at the time of",
+        ] {
+            let groups = format!("(November 1, cancelled) (November 1, {prep} the pastor)");
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{groups}: relative path after slot asserts"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: after slot asserts");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{groups}: keep-through after slot asserts"
+            );
+            // The plain surface, both slots.
+            for line in [
+                format!("November 1, 2026, cancelled, {prep} the pastor November 1, 2026"),
+                format!("November 1, 2026, cancelled, November 1, 2026 {prep} the pastor"),
+            ] {
+                let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_date,
+                    Some(nov(1)),
+                    "{line}: the plain surface asserts"
+                );
+            }
+        }
+        // The unit-headed controls stand as they
+        // always have ("due to" is a unit; "in
+        // spite of" is a unit).
+        for prep in ["due to", "in spite of", "thanks to", "on behalf of"] {
+            let groups = format!("(November 1, cancelled) ({prep} the pastor, November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: the unit-headed control asserts"
+            );
+        }
+    }
+
+    #[test]
+    fn r29c_complex_prepositions_spread_of_heads() {
+        // Round 29 (R29-C, F6 arm 1): the shape
+        // reach is not a title rule — a spread of
+        // head classes (titles, time nouns,
+        // directions, ordinals) asserts through
+        // the non-unit complex prepositions, as
+        // the same heads do through the units in
+        // the R28-C pins.
+        for (prep, head) in [
+            ("because of", "elder"),
+            ("as for", "doctor"),
+            ("instead of", "morning"),
+            ("off of", "winter"),
+            ("inside of", "season"),
+            ("outside of", "weekend"),
+            ("in between", "week"),
+            ("save for", "north"),
+            ("but for", "south"),
+            ("as of", "fifth"),
+            ("in need of", "last"),
+            ("at the time of", "season"),
+            ("except for", "pastor"),
+            ("apart from", "sister"),
+        ] {
+            let groups = format!("(November 1, cancelled) ({prep} the {head}, November 1)");
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{groups}: relative path asserts"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{groups}: keep-through asserts"
+            );
+        }
+    }
+
+    #[test]
+    fn r29c_demonstrative_determiners_assert() {
+        // Round 29 (R29-C, F6 arm 2 = review
+        // MAJOR-3, coordinator-adjudicated): the
+        // definite determiners are "the" / "this"
+        // / "that". A demonstrative heading an
+        // inventory noun, reached through a
+        // complex preposition's tail, is a
+        // complete definite reference of the same
+        // grammatical object as "the pastor" and
+        // asserts beside the cancelled sibling, on
+        // every surface. At the audited HEAD every
+        // phrase below read silence.
+        for phrase in [
+            "in spite of this pastor",
+            "in spite of that pastor",
+            "thanks to this pastor",
+            "thanks to that pastor",
+            "in spite of this winter",
+            "in spite of this season",
+            "in spite of this weekend",
+            "in spite of that morning",
+            "thanks to that season",
+            // The demonstrative through a NON-unit
+            // complex tail: the two arms compose.
+            "because of this pastor",
+            "because of that morning",
+            "due to this elder",
+        ] {
+            let groups = format!("(November 1, cancelled) ({phrase}, November 1)");
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{groups}: relative path asserts"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{groups}: keep-through asserts"
+            );
+        }
+        // The after slot and the plain surface.
+        let groups = "(November 1, cancelled) (November 1, in spite of this pastor)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: the after slot asserts");
+        let line = "November 1, 2026, cancelled, in spite of this pastor November 1, 2026";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the plain surface asserts"
+        );
+    }
+
+    #[test]
+    fn r29c_bare_modifier_between_determiner_and_head() {
+        // Round 29 (R29-C, F6 arm 3 = review
+        // MAJOR-3): a bare-class MODIFIER between
+        // determiner and head does not defeat the
+        // head — the head governs the reading.
+        // Edge 1 of the shipped rule excluded "the
+        // same" standing AS a head; in "the same
+        // morning" the head is "morning" and
+        // "same" is its modifier, a shape that was
+        // never adjudicated. At the audited HEAD
+        // the "same" / "other" forms below read
+        // silence; the controls ("the old pastor"
+        // and kin, whose modifiers are not bare
+        // words) asserted already and still do.
+        for phrase in [
+            "in spite of the same morning",
+            "the other morning",
+            "the same pastor",
+            "the other pastor",
+            "the same morning",
+            "in spite of the other winter",
+            "because of the same pastor",
+            // The controls, standing as shipped.
+            "the old pastor",
+            "the senior pastor",
+            "the last pastor",
+        ] {
+            let groups = format!("(November 1, cancelled) ({phrase}, November 1)");
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{groups}: relative path asserts"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{groups}: keep-through asserts"
+            );
+        }
+        // The after slot: the determiner phrase
+        // standing after the restated date.
+        let groups = "(November 1, cancelled) (November 1 the other pastor)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: the after slot asserts");
+    }
+
+    #[test]
+    fn r29c_determiner_boundaries_stand() {
+        // Round 29 (R29-C, F6 boundaries): the
+        // edges that stand as shipped, pinned
+        // beside the restated reach.
+        //
+        // (a) Lone-preposition objects, recorded
+        // as standing in the round-29 adjudication:
+        // an article standing as the object of a
+        // lone bare preposition stays excluded —
+        // the mechanical line stands, for the
+        // article and for a demonstrative alike,
+        // in both slots.
+        for groups in [
+            "(November 1, cancelled) (with the pastor, November 1)",
+            "(November 1, cancelled) (for the pastor, November 1)",
+            "(November 1, cancelled) (on the pastor, November 1)",
+            "(November 1, cancelled) (at the pastor, November 1)",
+            "(November 1, cancelled) (by the pastor, November 1)",
+            "(November 1, cancelled) (with the morning, November 1)",
+            "(November 1, cancelled) (in the morning November 1)",
+            "(November 1, cancelled) (November 1 with the pastor)",
+            "(November 1, cancelled) (with this pastor, November 1)",
+            // A preposition preceded only by a
+            // governor word, a conjunction, or a
+            // consumed unit stands just as alone:
+            // none of those forms a complex
+            // preposition with it.
+            "(November 1, cancelled) (and with the pastor, November 1)",
+            "(November 1, cancelled) (back together with the pastor, November 1)",
+            "(November 1, cancelled) (at noon with the pastor, November 1)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path boundary stands"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only boundary stands");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through boundary stands"
+            );
+        }
+        // (b) "the same" standing AS a head keeps
+        // its shipped exclusion (edge 1 stands),
+        // and a demonstrative standing at its
+        // side's head keeps the deictic bare
+        // reading of the B1 ring ("this morning").
+        for groups in [
+            "(November 1, cancelled) (the same November 1)",
+            "(November 1, cancelled) (the other November 1)",
+            "(November 1, cancelled) (this morning November 1)",
+            "(November 1, cancelled) (this evening November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: the standing exclusion holds");
+        }
+        // (c) Possessive and indefinite heads stay
+        // excluded, and a lone title with no
+        // determiner governs, as shipped.
+        for groups in [
+            "(November 1, cancelled) (your pastor November 1)",
+            "(November 1, cancelled) (a pastor November 1)",
+            "(November 1, cancelled) (an elder November 1)",
+            "(November 1, cancelled) (a week ago November 1)",
+            "(November 1, cancelled) (pastor November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: the standing exclusion holds");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through exclusion holds"
+            );
+        }
+        // (d) The governor-tainted tails: in the
+        // after slot and on the plain surface, a
+        // date standing next to "apart from" /
+        // "aside from" / "instead of" / "except
+        // for" is governed by the shipped governor
+        // machinery ("from" and "except" are
+        // single governors; "instead of" is a
+        // governor pair) — for the choir twins
+        // exactly as for the inventory heads, so
+        // those slots are not the determiner
+        // line's to move. Their before-slot
+        // assertions are pinned in the first
+        // r29c test above.
+        for prep in ["apart from", "aside from", "instead of", "except for"] {
+            for groups in [
+                format!("(November 1, cancelled) (November 1, {prep} the pastor)"),
+                format!("(November 1, cancelled) (November 1, {prep} the choir)"),
+            ] {
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: the governor reading stands");
+            }
+            let line = format!("November 1, 2026, cancelled, {prep} the choir November 1, 2026");
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{line}: the plain governor reading stands"
+            );
+        }
     }
 }

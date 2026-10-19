@@ -870,3 +870,141 @@ suite, clippy, and booklet numbers above are from
 the re-run, each redirected to a durable on-disk
 log with its exit marker appended and read after
 the producing process was confirmed gone.
+
+## Shipped addendum, R29-C (F6)
+
+Shipped as one batch on the round-29 synthesis tree
+(5b95320). Files: `crates/ob-extract/src/contribution.rs`
+plus this addendum — all work in and around
+`determiner_headed_content`, as dispositioned. Suite
+**862 passed / 0 failed** (857 + 5 new `r29c_*` pins,
+append-only at the test tail, zero pre-existing test
+bodies changed), clippy `--workspace --all-targets
+-- -D warnings` exit 0, booklet **31,717 / 34,977**
+byte-exact. `BARE_PHRASE_UNITS` unchanged at 166 (the
+block does not appear in the diff): this batch judges
+complex prepositions as a shape and does not grow the
+unit list.
+
+- **Arm 1 — any complex preposition's tail.**
+  `determiner_headed_content` now reaches the
+  determiner through `complex_preposition_tail`,
+  which judges the phrase ending at the preposition
+  before the determiner as a SHAPE: the two-word
+  shape (a complex-preposition starter immediately
+  before the tail — a preposition word itself, a
+  preposition-like word, or one of the causal /
+  exception / sequence starters), the three-word
+  shape (starter + middle noun + tail, "in need
+  of"), and the four-word shape (starter +
+  determiner + middle noun + tail, "at the time
+  of"). The middle-noun class is the nouns such
+  phrases are built from; the time-of-day and
+  season nouns are not in it, so a preposition
+  standing after a B1 temporal phrase ("at noon
+  with …", "in the morning …") is still a lone
+  preposition. The consumed-unit reach stands
+  beside the shape reach, unchanged. Pinned: all
+  fifteen non-unit complex prepositions (because
+  of, as for, apart from, aside from, instead of,
+  except for, but for, save for, as of, off of,
+  inside of, outside of, in between, in need of,
+  at the time of) assert with the pastor head in
+  the before slot on FOR / KEEP / REL, and a
+  spread of head classes (titles, time nouns,
+  directions, ordinals) asserts through them.
+  The after slot and the plain surface are pinned
+  asserting for the eleven whose tails stand
+  outside the shipped governor families; the
+  remaining four are recorded under (d) below.
+- **Arm 2 — demonstrative determiners.** The
+  definite determiners are `the` / `this` /
+  `that`. A demonstrative heads the reference
+  when reached through a complex preposition's
+  tail, by the same unit-or-shape reach as "the"
+  ("in spite of this pastor", "thanks to that
+  season", "because of this pastor" — the arms
+  compose). A demonstrative standing at its
+  side's head, or after a non-preposition word,
+  does NOT head one: it is the deictic phrase the
+  bare inventory already judges, and the B1 ring
+  ("this morning", "this evening") keeps its
+  standing governed reading, pinned standing in
+  the boundary test. "The"'s shipped reaches
+  (standing first on its side; after any
+  non-preposition word) are unchanged.
+- **Arm 3 — bare-class modifiers.** Looking back
+  from the head, `determiner_headed_content`
+  skips bare-class modifier words
+  (`determiner_modifier_word`: the determiner /
+  quantifier class, the determiner-adjectives,
+  and the prenominal ordinal / sequence words)
+  before identifying the determiner, so "in
+  spite of the same morning", "the other
+  morning", "the same pastor", and "the other
+  pastor" assert, in both slots. The controls
+  ("the old pastor", "the senior pastor", "the
+  last pastor") assert as they always have.
+  Edge 1 stands: "the same" / "the other"
+  standing AS a head keeps its shipped exclusion
+  — the skip is only ever read looking back from
+  an inventory head noun, and neither word is
+  one — pinned standing.
+
+Boundaries pinned standing, none moved:
+
+- **The lone-preposition block stands**, as the
+  adjudication recorded: an article (or a
+  demonstrative) standing as the object of a
+  lone bare preposition stays excluded — "with /
+  for / on / at / by the pastor", "in the
+  morning", the after-slot "(November 1 with
+  the pastor)". A preposition preceded only by
+  a governor word, a conjunction, or a consumed
+  unit ("and with …", "back together with …",
+  "at noon with …") stands just as alone: none
+  of those words forms a complex preposition
+  with it, so the shape reach does not reach it.
+- **Head classes only; possessive and
+  indefinite heads stay excluded** ("your
+  pastor", "a pastor", "an elder", "a week ago"
+  all govern, as shipped); a lone title with no
+  determiner governs, as B3 shipped it.
+- **(d) The governor-tainted tails.** In the
+  after slot and on the plain surface, a date
+  standing next to "apart from" / "aside from" /
+  "instead of" / "except for" is governed by the
+  shipped governor machinery — "from" and
+  "except" are single governors and "instead
+  of" is a governor pair (R12) — for the choir
+  twins exactly as for the inventory heads
+  (verified: "(November 1, apart from the
+  choir)" and its plain twin read None beside
+  "(November 1, because of the choir)"'s
+  assertion). Those slots were never the
+  determiner line's to move; the four phrases'
+  before-slot assertions, where the flip lived,
+  are pinned in the first `r29c_*` test. This is
+  recorded as a boundary observation, not a
+  flagged defect: no witness in F6's mirror
+  construction is left reading None by it.
+
+Flagged items: none. No pre-existing pin was hit;
+no boundary in the disposition moved; no
+stop-and-report condition triggered — the
+restated reach was drawn without moving the
+lone-preposition block, the head classes, the
+possessive/indefinite exclusions, the mirror
+checks, the lone-title readings, or any shipped
+pin (the implementation-only suite run before
+the pins were added already stood at 857 / 0).
+Environment note, recorded per standing
+practice: a scratch worktree build of the HEAD
+tree for baseline probes ran out of /tmp space
+mid-compile and is not cited; every baseline
+reading cited above is from the probe run taken
+against HEAD before the implementation was
+written, or from a choir twin, whose reading
+this batch's diff cannot reach (the determiner
+rule is only ever consulted for an inventory
+head noun).

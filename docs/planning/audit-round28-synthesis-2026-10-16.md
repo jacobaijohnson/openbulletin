@@ -972,3 +972,134 @@ are added and no pre-existing test body changes (843 → 845).
   and no assertion lost anywhere.
 
 **Completion note (recovery, 2026-10-19).** The original writer's session ended in a runtime restart after this addendum was written and before commit; the batch was recovered from the uncommitted tree by the coordinator's decision (diff read in full, in scope, suite green). The only change made in completion was removing one duplicated `#[test]` attribute line the interrupted write had left above `r28b_destination_stack_second_sunday_naming`, which had also double-registered that test (846 vs the addendum's 845). Final verified counts are the addendum's: 845 passed / 0 failed, clippy exit 0.
+
+## Coordinator close, round 28 (2026-10-19)
+
+All three fix batches shipped and were independently
+re-verified by the coordinator on their exact committed
+trees (full unpiped suite + clippy `-D warnings`, counts
+read from cargo's own output in on-disk logs): **845
+passed / 0 failed across 28 test-result lines, cargo exit
+0; clippy exit 0; booklet baseline reproduced byte-exact
+— imposed 31,717 / reader 34,977** at the final tree
+`a96f96c`.
+
+- **R28-A `f57e9ec`** — 834 → 839 tests, zero pre-existing
+  test bodies changed. F1 shipped as dispositioned:
+  ungluing is a property of the token at every phrase
+  position, and the REL decision was **routed, not
+  recorded** — the relative-shape readers read the
+  trailing segment through the same `segment_tokens`, so
+  no standing exception exists for the phrasal family.
+  F2's positional pass is enumerated in the addendum in
+  ten reader classes. **One scoped exception, accepted
+  as recorded:** MINOR-3's clause-break site collides
+  with the shipped R24-4 boundary-token pin
+  (`r24a_boundary_token_rule`, whose witness requires the
+  separator to bound scope as its comma twin does). The
+  batch did not move the pin and did not globalize the
+  nothing rule; at the two governance sites the
+  disposition names (`governor_window_start`,
+  `governed_after`), a break after a nothing counts only
+  between a spent cancellation and the next date
+  (`window_break_after_nothing`). Both witnesses read as
+  their twins and the pin stands unchanged. The exception
+  lives in exactly two call sites and one helper and is
+  named so round 29's enumeration can falsify it site by
+  site. Also recorded by the batch: a destination +
+  trailing-PP compound whose clean and Cf forms agree
+  (Nov 8 asserts, phantom named) — a standing clean-form
+  reading, outside F1/F2's scope.
+- **R28-B `f29aaaf`** — 839 → 843 tests, zero pre-existing
+  test bodies changed. F4's verb-slot rule is stated once
+  (in `weekday_in_object_continuation_pp`): a finite verb
+  in the verb slot is the claim's own clause verb
+  whatever its shape, when the forward stack reaches the
+  target through a "from" PP; `drove`/`rode` holding at
+  the audited HEAD was the accident that showed the
+  rule's shape — no verb list was extended. F5(a)
+  composes the single-clause from-crossing across the
+  clause boundary; the grid's pinned bounds stand,
+  verified unmoved. F5(b) states the destination rule
+  once (`destination_to_end`): place-shaped is a shape,
+  not a determiner — determiner-, possessive-, and bare
+  place-noun/name objects cross under "to"; a framed
+  date or relative phrase as object is the target, never
+  a destination. **Ambiguity choice recorded:** a bare
+  common noun in that position reads as the itinerary
+  object (position makes it place-shaped; no vocabulary
+  list is kept). W4's naming fix is scoped to the group
+  surface, for the reason the addendum gives (the second
+  Sunday's occurrence bounds the target's governor
+  window, which is why it asserts). Two scope notes
+  carried to round 29, recorded: the **plain-line W4
+  twin** still names the phantom beside Nov 8 (plain
+  composition's own naming assembly; the disposition's
+  witness was group-shaped), and the **third-conjunct
+  composition** — the from form with a third full
+  conjunct after the target reads consumed, as its
+  single-clause twin does; the alternatives-restoring
+  bound is the no-from form (mechanism 6's pin), which
+  stands and is re-pinned.
+- **R28-C `a96f96c`** — 843 → 845 tests, zero pre-existing
+  test bodies changed. F3 shipped: exactly one of the
+  166 units carries a weekday word (`see you sunday`),
+  and its signal is now part of its bare span. F6's
+  determiner line is drawn in `occurrence_is_bare` with
+  its three edges pinned (head-noun classes only; the
+  definite article only — possessives stay R27-B's
+  partition, indefinites head no definite reference; an
+  article reached through a consumed phrase unit or
+  standing first on its side heads the reference, an
+  article standing as a lone bare preposition's object
+  does not — "in the morning" keeps its standing bare
+  reading). **Recovered by completing the uncommitted
+  batch, not by resetting it** — coordinator decision on
+  evidence, the second such recovery in two rounds: the
+  original writer's session ended in a runtime restart
+  after its addendum was written and before commit; the
+  dirty tree held exactly the two sanctioned files, pure
+  insertions, and the coordinator read the diff in full
+  (in scope, inventories untouched, both findings'
+  mechanisms as the addendum describes) and ran the
+  dirty-tree suite green before deciding. The
+  interrupted write had left one scar: a duplicated
+  `#[test]` line above `r28b_destination_stack_second_
+  sunday_naming`, which double-registered that test
+  (846 against the addendum's 845) and failed clippy's
+  duplicate-attribute lint. A completing writer removed
+  exactly that line under snapshot discipline (start
+  hashes recorded in its report), appended the
+  completion note to the addendum, and committed; the
+  committed tree was then verified by the coordinator
+  (845/0, clippy 0, the r28b test registered exactly
+  once).
+
+Round totals: 834 → **845 tests, all passing, clippy
+clean** at the close tree. Every finding in this
+synthesis is dispositioned: F1 and F2 fixed in R28-A (one
+scoped exception, accepted above), F4 and F5 in R28-B
+(its tail's plain form carried as a recorded item), F3
+and F6 in R28-C. The four MINORs are dispositioned inside
+F2 (its lesser sites) and F5 (RT28-W4). Rights held for
+the ninth consecutive round under M8's standing
+adjudication; the loader, the verdict contract, and the
+fuzz bins held as the synthesis records. Whether the
+loop has converged is round 29's question: the exit bar
+is a full audit round at zero BLOCKER + zero MAJOR over
+this close.
+
+Carried to round 29, recorded: the verify lane's brief
+carries the unchanged fuzz bins re-run as claims and the
+rights safety axes, as standing practice. The falsifiable
+records from this round's batches are the lanes' first
+targets: R28-A's two-site clause-break exception
+(`window_break_after_nothing`); R28-B's plain-line W4
+naming and its destination ambiguity choice; R28-C's
+determiner line and its three edges. Lane scratch crates
+are assigned in the briefs themselves (probe29v /
+probe29r / probe29) after round 28's collision.
+Environment at this close: disk 41G free of 100G (59%);
+fabricated completions and one VM reboot again shaped
+the round's method, and every cited number stands on
+on-disk logs with embedded exit codes.

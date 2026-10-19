@@ -821,3 +821,130 @@ trailing negations and the spaced twins stand as
 they always have, and the governor-scoping guard
 (a glued content word and a glued date word still
 assert) holds on the plain and group surfaces.
+
+## Coordinator close, round 27 (2026-10-19)
+
+All three fix batches shipped and verified on their exact
+committed trees (full unpiped suite + clippy `-D warnings`,
+counts read from cargo's own output). R27-A was verified by
+the previous coordinator on its own runs (824 passed / 0
+failed, clippy exit 0, booklet byte-exact); R27-B and R27-C
+were independently re-verified by this successor coordinator
+after the previous instance ended mid-round: **834 passed /
+0 failed across 28 test-result lines, cargo exit 0; clippy
+exit 0; booklet baseline reproduced byte-exact — imposed
+31,717 / reader 34,977** at the final tree `02e8c6f`. The
+handover state (HEAD, tree, the one dirty file) was
+re-measured before the recovery began and matched.
+
+- **R27-A `55a2b46`** — 817 → 824 tests. The seven F1
+  mechanisms shipped as span rules and the F3 site
+  enumeration stands as the addendum records; seven
+  `r27a_*` pins, no pre-existing test body changed.
+  **Adjudication recorded (the previous coordinator's
+  intention, entered here): mechanism 5's witness reading
+  is accepted.** For "(… sang hymns and the band played
+  songs on Sunday and the singers rehearsed pieces from
+  Kent to November 8)" the consumed reading is silence,
+  parity with its first-conjunct from-twin; without
+  "from", the target asserts with an empty note, parity
+  with its first-conjunct twin. An alternatives reading
+  is unreachable for the witness itself — "from"
+  governance silences the target the alternatives would
+  name. Both variants stand pinned in
+  `r27a_boundary_at_every_conjunct`.
+- **R27-B `5733879`** — 824 → 831 tests. Ring III as
+  dispositioned; **recovered by completing the
+  uncommitted batch, not by resetting it** — coordinator
+  decision on evidence: the foundation's membership
+  cross-checked line by line against the red team's
+  sweep lists, and its only pre-existing test change was
+  the disposition-mandated thanks flip. The recovery
+  record, plainly: the previous coordinator ended after
+  dispatching the batch, but its writer kept working
+  uncommitted — the foundation a successor inspection
+  found (367 insertions) had grown to 1,213 by the
+  completing writer's arrival, the seven `r27b_*` tests
+  among them, written but never run. Two of those pins
+  were probed wrong and corrected in completion: `your
+  pastor` governs ("your" already bare, "pastor" joining
+  in B3), and `gone home tomorrow night` governs ("gone
+  home" a shipped unit, "tomorrow" bare, "night" joining
+  in B1), with `come home tomorrow` verified still
+  asserting. Mid-completion the orphaned writer edited
+  the file once more (the "coming" change, 07:16:35
+  UTC); the completing writer detected it against its
+  foundation snapshot, stopped without clobbering, and
+  reported; the batch was reconciled and finished under
+  single ownership with snapshot discipline.
+  **Adjudication recorded: "coming" joins the bare
+  words.** The pair "coming Sunday" is a resurrecting
+  member of B1's pair sweep under a FIX disposition, and
+  the listed phrase unit provably cannot reach the
+  head-slot shape — probed with the unit in place,
+  `(coming sunday November 1)` still asserted on all
+  surfaces, because the phrase is itself a relative date
+  phrase in the machinery and "coming" can stand alone
+  in a weekday-framed date's region. Membership is
+  therefore sourced from the pair sweep by this
+  adjudication, not from the sweep's word list; the unit
+  is removed and `BARE_PHRASE_UNITS` stands at **166**
+  (117 + 50 dispositioned − 1), counted in source at
+  this close. Acceptance was made conditional on a final
+  green suite and clippy; the condition was met in the
+  batch and again in this close's re-verification.
+  **Also recorded: the pair's plain twins stand as the
+  family's do** — head plain asserts November 1, trailing
+  plain asserts October 18 (the coming Sunday's own
+  resolution), the same standing plain reading `last
+  sunday` / `previous sunday` carry; governing the plain
+  pair would take plain relative-signal machinery
+  changes beyond this adjudication, and the readings are
+  pinned as they stand. Four flagged pre-existing flips,
+  all the one R20-3 lone-"thanks" reading superseded by
+  F2/B2: `r26b_phrase_units_ring2`,
+  `r21b_bare_inventory_function_words`,
+  `r22b_bare_inventory_function_classes_round_three`,
+  `r23a_bare_inventory_deictics_and_remainders`. No other
+  pre-existing test body changed.
+- **R27-C `02e8c6f`** — 831 → 834 tests, **zero flagged
+  changes to pre-existing tests** (the code change alone
+  reproduced 831/0 before its pins were added). F4's
+  rule is stated once, at the segment-head level: the
+  new `segment_tokens` reader serves every segment
+  reader; a `*` / `|` separator glued to a segment's
+  head word is the segment boundary, and a head word
+  that heads a governor phrase is read as that word —
+  governor-scoped only, `group_token` and the Cf
+  machinery untouched, glued content words (`*November`,
+  `*choir`) keeping their standing readings. A 32-pair
+  glued-vs-spaced twin probe over the For/Keep/
+  relative-group surfaces showed 0 differences, mirrors
+  included. The leading-negation and trailing-cancelled
+  boundaries stand as pinned.
+
+Round totals: 817 → **834 tests, all passing, clippy
+clean** at the close tree. Every finding in this
+synthesis is dispositioned: F1 and F3 fixed in R27-A, F2
+in R27-B (with the two adjudications above), F4 in R27-C
+at the coordinator's MAJOR grade. Rights held for the
+eighth consecutive round under M8's standing
+adjudication; the loader, the verdict contract, and the
+fuzz bins held as the synthesis records (0 panics in both
+unchanged bins — the round-25 gap closed by evidence).
+Whether the loop has converged is round 28's question:
+the exit bar is a full audit round at zero BLOCKER +
+zero MAJOR over this close.
+
+Carried to round 28, recorded: the verify lane's brief
+carries the unchanged fuzz bins re-run as claims as
+standing practice now, together with the rights safety
+axes (the 19 standing-draw sequences; M8's adjudication
+stands). M7's remaining merged forms stay recorded until
+another plausible member appears (`above all else` was
+the first). The "coming sunday" plain readings stand as
+accepted unless a lane raises them as a defect.
+Environment at this close: disk 46G free of 100G (55%)
+after Jacob's clean; the repo `target/` repopulated to
+11G by the round's own builds; the cargo registry stands
+at 1.2G, reported per the adopted practice, not pruned.

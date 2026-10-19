@@ -12,7 +12,8 @@
 //! names a sidecar file beside the .obd is read into the
 //! asset store. Saving always writes v1.
 //!
-//! Saves are atomic (temp file + rename) in both versions.
+//! Saves are atomic and durable (temp file, sync, rename,
+//! directory sync) in both versions.
 
 use ob_model::{Asset, AssetKind, Document, Insert, RightsRecord};
 use serde::{Deserialize, Serialize};
@@ -1288,6 +1289,42 @@ fn archive_from_candidate_file(
     zip::ZipArchive::new(reader).ok()
 }
 
+/// The durable half of every save in this crate (HF-5):
+/// write the bytes to the sibling temp file, sync that file
+/// to disk, rename it over the target, then sync the
+/// containing directory where the platform allows it. The
+/// file sync is load-bearing: a failure there is a save
+/// failure, never a "Saved". The directory sync is
+/// best-effort — on platforms where a directory cannot be
+/// opened and synced this way there is nothing to do, and
+/// the save must not fail over it. Rename alone survives an
+/// app crash; the syncs are what survive a power cut.
+fn sync_and_rename(tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
+    {
+        let mut file = std::fs::File::create(tmp).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(tmp, path).map_err(|e| e.to_string())?;
+    sync_directory(path);
+    Ok(())
+}
+
+/// Sync the directory holding `path`, so the rename itself
+/// is durable. Unix only: elsewhere opening a directory for
+/// sync is not supported, and this stays a no-op rather
+/// than an error (see `sync_and_rename`).
+fn sync_directory(path: &Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        if let Ok(dir_file) = std::fs::File::open(dir) {
+            let _ = dir_file.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
     let mut doc = doc.clone();
     // Save what the document will say it is: the current
@@ -1318,12 +1355,11 @@ pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
         }
         zip.finish().map_err(|e| e.to_string())?;
     }
-    // Atomic save: write to a sibling temp file, then rename over the target.
+    // Atomic and durable save: write to a sibling temp file,
+    // sync it, then rename over the target.
     // A bulletin lost on Saturday night is a trust-ending event.
     let tmp = path.with_extension("obd.tmp");
-    std::fs::write(&tmp, buf).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-    Ok(())
+    sync_and_rename(&tmp, path, &buf)
 }
 
 pub fn load(path: &Path) -> Result<Document, String> {
@@ -1751,9 +1787,7 @@ pub fn save_insert(insert: &Insert, host: &Document, path: &Path) -> Result<(), 
         zip.finish().map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("obdi.tmp");
-    std::fs::write(&tmp, buf).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-    Ok(())
+    sync_and_rename(&tmp, path, &buf)
 }
 
 /// Load an .obdi file: the sheet, the asset records it
@@ -2176,6 +2210,24 @@ mod tests {
             inserts: Default::default(),
             applied_contributions: Vec::new(),
         }
+    }
+
+    #[test]
+    fn sync_and_rename_lands_whole_and_leaves_no_temp() {
+        // HF-5 pin: the durable-write helper lands the new
+        // bytes whole at the target, replaces an existing
+        // target whole, and leaves no temp file behind. (The
+        // sync calls themselves are not observable from a
+        // test; they are verified by code inspection.)
+        let dir = scratch("sync-rename");
+        let path = dir.join("week.obd");
+        let tmp = path.with_extension("obd.tmp");
+        std::fs::write(&path, b"the previous bulletin, longer than the new one")
+            .expect("seed target");
+        sync_and_rename(&tmp, &path, b"new").expect("durable write");
+        assert_eq!(std::fs::read(&path).expect("read target"), b"new");
+        assert!(!tmp.exists(), "no temp file remains");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

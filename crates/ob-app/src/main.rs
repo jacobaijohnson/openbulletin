@@ -640,9 +640,54 @@ pub fn settings_path() -> std::path::PathBuf {
     base.join("OpenBulletin").join("settings.json")
 }
 
+/// The app's one durable-write shape (HF-5, S-MIN-1): write
+/// the bytes to a temp file in the target's own folder (so
+/// the rename stays on one volume), sync the temp file,
+/// rename it over the target, then sync the containing
+/// directory where the platform allows it. The temp-file
+/// sync is load-bearing and its failure is the caller's
+/// error to report; the directory sync is best-effort —
+/// where a directory cannot be opened and synced that way,
+/// there is nothing to do and the write must not fail over
+/// it. A crash mid-write leaves the previous file whole.
+fn write_file_atomically(path: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    use std::io::Write as _;
+    let mut tmp_name = path.as_os_str().to_owned();
+    tmp_name.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp_name);
+    let outcome = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    outcome?;
+    sync_directory_best_effort(path);
+    Ok(())
+}
+
+/// Sync the directory holding `path`, so a rename is
+/// durable across a power cut. Unix only: elsewhere this
+/// is a no-op, never an error (see `write_file_atomically`).
+fn sync_directory_best_effort(path: &std::path::Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        if let Ok(dir_file) = std::fs::File::open(dir) {
+            let _ = dir_file.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// Where the autosave journal lives: beside settings.json.
-/// Two files: the bulletin itself and a two-line note (when it was
-/// written, and which file it belongs to, if any).
+/// Two files: the bulletin itself and a note (when it was
+/// written, which file it belongs to if any, and the token
+/// of the instance that wrote it).
 pub fn journal_paths() -> (std::path::PathBuf, std::path::PathBuf) {
     let dir = settings_path()
         .parent()
@@ -666,8 +711,29 @@ fn write_journal_to(
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    std::fs::write(meta, format!("{when}\n{source_line}\n"))
+    // The note lands with the same atomic, durable discipline
+    // as the bulletin (S-MIN-5): a torn or missing note used to
+    // demote an intact journal bulletin to unreadable at the
+    // next startup. Third line: the token of the instance that
+    // wrote this journal (S-MIN-3), so retirement can tell its
+    // own journal from another live instance's. Older notes
+    // have no third line and read as tokenless.
+    let note_text = format!("{when}\n{source_line}\n{}\n", instance_token());
+    write_file_atomically(meta, note_text.as_bytes())
         .map_err(|e| format!("cannot write the autosave note: {e}"))
+}
+
+/// The instance token a journal's note names as its owner,
+/// if the note carries one (notes written before the token
+/// existed have only two lines).
+fn journal_token_from(meta: &std::path::Path) -> Option<String> {
+    let note = std::fs::read_to_string(meta).ok()?;
+    let token = note.lines().nth(2)?.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
 }
 
 fn read_journal_from(
@@ -2375,13 +2441,12 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    // Atomic, the document format's discipline (round 2,
-    // R2-4): write a sibling temp file and rename it over,
-    // so a crash mid-write cannot truncate the one file
-    // that remembers the office's printers and keys.
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    // Atomic and durable, the document format's discipline
+    // (round 2, R2-4; HF-5): a synced sibling temp file
+    // renamed over, so a crash or power cut mid-write cannot
+    // truncate the one file that remembers the office's
+    // printers and keys.
+    write_file_atomically(&path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// One row of the Fonts panel: a library font with everything the
@@ -2646,6 +2711,15 @@ struct App {
     /// Another live OpenBulletin process holds the journal: this
     /// instance never writes or clears it (closing audit).
     peer_alive: bool,
+    /// The safety copy has failed to write this session and
+    /// the user has already been told once (S-MIN-5): the
+    /// journal keeps retrying quietly after that, rather
+    /// than raising the banner every two seconds.
+    journal_failure_noted: bool,
+    /// The hymn memory has failed to write this session and
+    /// the user has already been told once (S-MIN-2): later
+    /// failures stay quiet, like the journal's.
+    hymn_memory_failure_noted: bool,
     /// PDF rescue in flight and awaiting review.
     import_rx: Option<std::sync::mpsc::Receiver<Result<ImportReview, String>>>,
     analyzer_rx: Option<std::sync::mpsc::Receiver<Result<AnalyzerReview, String>>>,
@@ -3135,6 +3209,7 @@ impl Default for App {
         let participant_inputs = participant_values(&doc);
         let participant_line_names = doc.profile.serving_lines.clone();
         let (settings, settings_read) = load_settings();
+        let (hymn_memory, hymn_memory_read) = load_hymn_memory();
         // Reopen on the step the user left (J6), clamped to
         // the steps that exist.
         let step = settings.last_step.min(STEPS.len() - 1);
@@ -3142,7 +3217,7 @@ impl Default for App {
         // A settings file that could not be read is said out
         // loud once, on the first status line, never suffered
         // in silence (round 2, R2-4).
-        let status = match settings_read {
+        let mut status = match settings_read {
             SettingsRead::Clean => "Welcome to OpenBulletin.".to_string(),
             SettingsRead::SetAside => "Welcome to OpenBulletin. Your settings file \
                  could not be read, so it was set aside as settings-unreadable.json \
@@ -3153,6 +3228,16 @@ impl Default for App {
                  defaults, and the rest were kept."
                 .to_string(),
         };
+        // The same one-time courtesy for the hymn memory
+        // (S-MIN-2): a damaged file was set aside, not
+        // silently forgotten.
+        if hymn_memory_read == HymnMemoryRead::SetAside {
+            status.push_str(
+                " Your hymn memory file could not be read, so it was set aside \
+                 as hymn-memory-unreadable.json and the memory starts fresh; it \
+                 will learn again as bulletins are saved.",
+            );
+        }
         Self {
             doc,
             preset,
@@ -3168,7 +3253,7 @@ impl Default for App {
             date_input,
             service_inputs,
             hymn_inputs,
-            hymn_memory: load_hymn_memory(),
+            hymn_memory,
             sermon_input,
             participant_inputs,
             participant_line_names,
@@ -3260,6 +3345,8 @@ impl Default for App {
             pending_path: None,
             discard_armed: false,
             peer_alive: false,
+            journal_failure_noted: false,
+            hymn_memory_failure_noted: false,
             import_rx: None,
             analyzer_rx: None,
             analyzer_review: None,
@@ -5772,15 +5859,64 @@ pub fn hymn_memory_path() -> std::path::PathBuf {
     dir.join("hymn-memory.json")
 }
 
-/// The hymn memory as it stands on disk. A file that
-/// cannot be read starts the memory over: it is learned
-/// data, rebuilt from the church's bulletins as they are
-/// saved, never the only copy of anything.
-fn load_hymn_memory() -> ob_model::hymns::HymnMemory {
-    std::fs::read_to_string(hymn_memory_path())
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+/// How reading the hymn memory file went, so the app can
+/// say once, in plain words, when the file could not be
+/// trusted — the settings file's courtesy (SettingsRead),
+/// extended to its sibling (S-MIN-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HymnMemoryRead {
+    /// The file read clean, or there was no file yet.
+    Clean,
+    /// The file was there but could not be read as a hymn
+    /// memory at all; it was set aside as
+    /// hymn-memory-unreadable.json and the memory starts
+    /// fresh.
+    SetAside,
+}
+
+/// Move an unreadable hymn memory file out of the way,
+/// under a name that says what happened, so the next launch
+/// starts clean and the damaged copy is still on disk for
+/// anyone who goes looking (the settings/journal pattern).
+/// An older set-aside is replaced: one damaged copy is
+/// enough.
+fn set_aside_unreadable_hymn_memory(path: &std::path::Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let to = path.with_file_name("hymn-memory-unreadable.json");
+    std::fs::rename(path, &to).is_ok()
+}
+
+/// The hymn memory as it stands on disk. A file that is
+/// simply not there starts the memory over in silence, as
+/// it always has: it is learned data, rebuilt from the
+/// church's bulletins as they are saved, never the only
+/// copy of anything. A file that is there but does not
+/// parse is set aside with its bytes preserved and the
+/// fact reported in the read state (S-MIN-2) — the old
+/// code reset it silently, unlike every sibling file.
+fn load_hymn_memory_from(path: &std::path::Path) -> (ob_model::hymns::HymnMemory, HymnMemoryRead) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return (
+            ob_model::hymns::HymnMemory::default(),
+            HymnMemoryRead::Clean,
+        );
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(memory) => (memory, HymnMemoryRead::Clean),
+        Err(_) => {
+            set_aside_unreadable_hymn_memory(path);
+            (
+                ob_model::hymns::HymnMemory::default(),
+                HymnMemoryRead::SetAside,
+            )
+        }
+    }
+}
+
+fn load_hymn_memory() -> (ob_model::hymns::HymnMemory, HymnMemoryRead) {
+    load_hymn_memory_from(&hymn_memory_path())
 }
 
 /// Feed one document to the hymn memory (R-2a): the
@@ -6627,7 +6763,10 @@ impl App {
         self.saved_snapshot = self.canonical_snapshot();
         self.journal_snapshot = self.saved_snapshot.clone();
         let (obd, meta) = journal_paths();
-        clear_journal_from(&obd, &meta);
+        // Retire only a journal this instance may retire
+        // (S-MIN-3): another live instance's safety copy is
+        // not ours to clear just because this file saved.
+        retire_journal_from(&obd, &meta, &instance_lock_path(), instance_token());
     }
 
     /// Remember the bulletin file this office just opened or
@@ -6711,7 +6850,7 @@ impl App {
                     self.recovery = Some((doc, source, when));
                 }
             } else if !self.peer_alive {
-                clear_journal_from(&obd, &meta);
+                retire_journal_from(&obd, &meta, &instance_lock_path(), instance_token());
             }
         } else if !self.peer_alive && (obd.exists() || meta.exists()) {
             // A journal is on disk but did not read: the crash
@@ -6749,7 +6888,7 @@ impl App {
             JournalAction::Clear => {
                 self.journal_snapshot = snap;
                 let (obd, meta) = journal_paths();
-                clear_journal_from(&obd, &meta);
+                retire_journal_from(&obd, &meta, &instance_lock_path(), instance_token());
             }
             JournalAction::Write => {
                 let (obd, meta) = journal_paths();
@@ -6763,6 +6902,18 @@ impl App {
                 let doc = self.canonical_document();
                 if write_journal_to(&obd, &meta, &doc, &self.path).is_ok() {
                     self.journal_snapshot = snap;
+                } else if !self.journal_failure_noted {
+                    // A journal that cannot be written is dead
+                    // autosave for the whole session: say so
+                    // once, in plain words (S-MIN-5), then keep
+                    // retrying quietly as before.
+                    self.journal_failure_noted = true;
+                    self.fail(
+                        "The safety copy could not be written, so your unsaved \
+                         work is not being kept safe. Save your bulletin to a \
+                         file to keep it safe."
+                            .into(),
+                    );
                 }
             }
         }
@@ -6859,6 +7010,15 @@ impl App {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.catalog_rx = None;
                 self.catalog_busy = false;
+                // A stopped catalog worker speaks, like a
+                // stopped import reader (S-MIN-4): the Fonts
+                // search used to just stop spinning in
+                // silence.
+                self.fail(
+                    "The font catalog stopped, so fonts cannot be searched or \
+                     fetched until you restart OpenBulletin."
+                        .into(),
+                );
             }
         }
     }
@@ -6932,7 +7092,7 @@ impl App {
         if throw_away {
             self.recovery = None;
             let (obd, meta) = journal_paths();
-            clear_journal_from(&obd, &meta);
+            retire_journal_from(&obd, &meta, &instance_lock_path(), instance_token());
             self.journal_snapshot = self.saved_snapshot.clone();
             self.status = "Threw away the unsaved copy.".into();
         }
@@ -9224,7 +9384,7 @@ impl App {
         {
             let (bytes, report) =
                 ob_pdf::export_reader_pdf_report(&doc, ob_pdf::ExportPurpose::ForPrinting);
-            match std::fs::write(&path, &bytes) {
+            match write_file_atomically(&path, &bytes) {
                 Ok(()) => {
                     self.note(format!(
                         "Loose sheet written: {}, {}.{}{}",
@@ -13147,7 +13307,7 @@ impl App {
             .save_file()
         {
             let bytes = ob_pdf::export_reader_pdf(&doc, ob_pdf::ExportPurpose::ForPrinting);
-            match std::fs::write(&path, &bytes) {
+            match write_file_atomically(&path, &bytes) {
                 Ok(()) => self.note(format!(
                     "Sender's card written: {}. Print it and hand it to anyone who sends words.",
                     file_name_of(&path)
@@ -13619,7 +13779,7 @@ impl App {
     fn save_large_print_copy(&mut self, path: &std::path::Path) {
         let (bytes, report) =
             ob_pdf::export_large_print_pdf_report(&self.doc, ob_pdf::ExportPurpose::ForPrinting);
-        match std::fs::write(path, &bytes) {
+        match write_file_atomically(path, &bytes) {
             Ok(()) => {
                 self.status = format!(
                     "Large-print copy written: {}, {}, for printing.{}{}",
@@ -13640,7 +13800,7 @@ impl App {
             .unwrap_or_default();
         match ext.as_str() {
             "idml" => match ob_extract::idml_export::export_idml(&self.doc) {
-                Ok((bytes, report)) => match std::fs::write(path, &bytes) {
+                Ok((bytes, report)) => match write_file_atomically(path, &bytes) {
                     Ok(()) => {
                         let mut msg =
                             format!("Saved a copy for InDesign as {}.", file_name_of(path));
@@ -13660,7 +13820,7 @@ impl App {
                 Err(e) => self.fail(format!("Could not make that copy: {e}")),
             },
             "sla" => match ob_extract::sla_export::export_sla(&self.doc) {
-                Ok((bytes, report)) => match std::fs::write(path, &bytes) {
+                Ok((bytes, report)) => match write_file_atomically(path, &bytes) {
                     Ok(()) => {
                         let mut msg =
                             format!("Saved a copy for Scribus as {}.", file_name_of(path));
@@ -13684,7 +13844,7 @@ impl App {
                 // radio above the button remembers (O1).
                 let purpose = self.settings.pdf_purpose();
                 let (bytes, report) = ob_pdf::export_reader_pdf_report(&self.doc, purpose);
-                match std::fs::write(path, &bytes) {
+                match write_file_atomically(path, &bytes) {
                     Ok(()) => {
                         let msg = format!(
                             "Saved a copy as {}, {}, {}.{}{}",
@@ -13706,7 +13866,7 @@ impl App {
                 // runs, field words filled in. Spoken-only
                 // words never publish, markdown included.
                 let (text, spoken_left_out) = ob_model::markdown::to_markdown_report(&self.doc);
-                match std::fs::write(path, text) {
+                match write_file_atomically(path, text.as_bytes()) {
                     Ok(()) => {
                         let msg = format!(
                             "Saved the words as {}, for a website or newsletter.{}",
@@ -13728,7 +13888,7 @@ impl App {
                 match ob_extract::html_export::export_html(&self.doc) {
                     Ok((bytes, report)) => {
                         let target = web_page_path(path);
-                        match std::fs::write(&target, &bytes) {
+                        match write_file_atomically(&target, &bytes) {
                             Ok(()) => {
                                 let mut msg = format!(
                                     "Saved the web page as {}, {}.",
@@ -13912,17 +14072,28 @@ impl App {
     /// Write the hymn memory beside the settings. Best
     /// effort, like the settings themselves: a memory that
     /// will not write never blocks the work it came from.
-    /// The write is atomic, the settings pattern (round
-    /// 3, R3-12): a crash mid-write leaves the old memory
-    /// whole rather than a truncated file that parses as
-    /// nothing and silently starts the memory over.
-    fn persist_hymn_memory(&self) {
-        if let Ok(text) = serde_json::to_string_pretty(&self.hymn_memory) {
-            let path = hymn_memory_path();
-            let tmp = path.with_extension("json.tmp");
-            if std::fs::write(&tmp, text).is_ok() {
-                let _ = std::fs::rename(&tmp, &path);
-            }
+    /// The write is atomic and durable, the settings pattern
+    /// (round 3, R3-12; HF-5): a crash mid-write leaves the
+    /// old memory whole rather than a truncated file that
+    /// parses as nothing and silently starts the memory over.
+    /// A failure is spoken once per session (S-MIN-2) — the
+    /// old code swallowed even a failed rename in silence —
+    /// and then stays quiet, like the journal's failures.
+    fn persist_hymn_memory(&mut self) {
+        let outcome = serde_json::to_string_pretty(&self.hymn_memory)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                write_file_atomically(&hymn_memory_path(), text.as_bytes())
+                    .map_err(|e| e.to_string())
+            });
+        if outcome.is_err() && !self.hymn_memory_failure_noted {
+            self.hymn_memory_failure_noted = true;
+            self.fail(
+                "The hymn memory could not be written, so hymn pairings learned \
+                 this time will not be remembered. Your bulletin itself is saved \
+                 as usual."
+                    .into(),
+            );
         }
     }
 
@@ -15770,7 +15941,7 @@ impl eframe::App for App {
                                 "openbulletin-print-copy-{}.pdf",
                                 std::process::id()
                             ));
-                            match std::fs::write(&path, &bytes).map_err(|e| e.to_string()).and_then(|_| open_with_os(&path)) {
+                            match write_file_atomically(&path, &bytes).map_err(|e| e.to_string()).and_then(|_| open_with_os(&path)) {
                                 Ok(()) => {
                                     self.print_fingerprint = Some(snapshot(&self.doc));
                                     self.store_doc_state();
@@ -15805,7 +15976,7 @@ impl eframe::App for App {
                                     &self.doc,
                                     ob_pdf::ExportPurpose::ForPrinting,
                                 );
-                                match std::fs::write(&path, &bytes) {
+                                match write_file_atomically(&path, &bytes) {
                                     Ok(()) => {
                                         self.print_fingerprint = Some(snapshot(&self.doc));
                                         self.store_doc_state();
@@ -15837,7 +16008,7 @@ impl eframe::App for App {
                                     &self.doc,
                                     ob_pdf::ExportPurpose::ForEmailOrWeb,
                                 );
-                                match std::fs::write(&path, &bytes) {
+                                match write_file_atomically(&path, &bytes) {
                                     Ok(()) => {
                                         // No print fingerprint: a
                                         // reading copy is not the
@@ -15886,7 +16057,7 @@ impl eframe::App for App {
                                     &proof,
                                     ob_pdf::ExportPurpose::ForPrinting,
                                 );
-                                self.status = match std::fs::write(&path, &bytes) {
+                                self.status = match write_file_atomically(&path, &bytes) {
                                     Ok(()) => format!(
                                         "Music proof saved: {} hymn{}, {} page{} of printed music.{}",
                                         counts.hymns,
@@ -15985,7 +16156,7 @@ impl eframe::App for App {
                                 .add_filter("PDF", &["pdf"])
                                 .save_file()
                             {
-                                match std::fs::write(&path, ob_pdf::export_duplex_test_pdf()) {
+                                match write_file_atomically(&path, &ob_pdf::export_duplex_test_pdf()) {
                                     Ok(()) => self.status = "Test sheet saved. Print it with two-sided printing ON, and pick \"flip on long edge\" if the printer asks. Then answer below.".into(),
                                     Err(e) => self.status = format!("Could not save the test sheet: {e}"),
                                 }
@@ -16661,8 +16832,9 @@ enum PendingOpen {
 }
 
 /// The instance lock: a file in the settings folder holding
-/// the running app's process id. A second instance reads it to
-/// know the journal already has an owner.
+/// the running app's process id and its instance token. A
+/// second instance reads it to know the journal already has
+/// an owner.
 fn instance_lock_path() -> std::path::PathBuf {
     settings_path()
         .parent()
@@ -16670,24 +16842,198 @@ fn instance_lock_path() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("openbulletin.lock"))
 }
 
+/// This process's instance token (S-MIN-3): the process id
+/// plus a nanosecond nonce, minted once per launch. A pid
+/// alone is not the token — pids are recycled — but two
+/// instances alive at the same time never share a pid, and
+/// two launches at different times never share the nonce,
+/// so the pair names one launch and no other. The token is
+/// what the journal note records as its owner, and what the
+/// lock records as its holder: retirement trusts the token
+/// match, not the pid.
+fn instance_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{}-{nonce}", std::process::id())
+    })
+}
+
+/// What an instance lock file says: the holder's process id
+/// and instance token. Locks written before the token existed
+/// carry only the pid; a lock too damaged to read says
+/// nothing at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstanceLock {
+    pid: Option<u32>,
+    token: Option<String>,
+}
+
+fn read_instance_lock_from(lock: &std::path::Path) -> Option<InstanceLock> {
+    let text = std::fs::read_to_string(lock).ok()?;
+    let mut lines = text.lines();
+    let pid = lines.next().and_then(|l| l.trim().parse::<u32>().ok());
+    let token = lines
+        .next()
+        .map(|l| l.trim().to_string())
+        .filter(|t| !t.is_empty());
+    // A one-line legacy lock is just the pid.
+    if pid.is_none() {
+        let legacy = text.trim().parse::<u32>().ok()?;
+        return Some(InstanceLock {
+            pid: Some(legacy),
+            token: None,
+        });
+    }
+    Some(InstanceLock { pid, token })
+}
+
 fn write_instance_lock() {
-    let _ = std::fs::write(instance_lock_path(), std::process::id().to_string());
+    write_instance_lock_to(&instance_lock_path(), instance_token());
+}
+
+fn write_instance_lock_to(lock: &std::path::Path, token: &str) {
+    let text = format!("{}\n{token}\n", std::process::id());
+    let _ = std::fs::write(lock, text);
+}
+
+/// Whether the process with this pid is provably not a live
+/// OpenBulletin peer (Unix): the pid is gone, or the process
+/// there is plainly some other program — a recycled pid.
+/// Where the process exists but its identity cannot be
+/// established, this answers false: fail toward treating
+/// the peer as alive and keeping its journal.
+fn peer_provably_gone(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let proc_dir = std::path::PathBuf::from(format!("/proc/{pid}"));
+        if !proc_dir.exists() {
+            return true;
+        }
+        // The exe link names the running program where it is
+        // readable; a name that is not this app means the pid
+        // was recycled by an unrelated process.
+        if let Ok(exe) = std::fs::read_link(proc_dir.join("exe")) {
+            let names_app = exe
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase().contains("openbulletin"))
+                .unwrap_or(false);
+            return !names_app;
+        }
+        if let Ok(cmdline) = std::fs::read(proc_dir.join("cmdline")) {
+            let text = String::from_utf8_lossy(&cmdline).to_lowercase();
+            if !text.is_empty() {
+                return !text.contains("openbulletin");
+            }
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 /// Is another OpenBulletin process alive? Proven on Unix via
-/// /proc; elsewhere we cannot tell cheaply, so we answer no
-/// rather than mute a lone instance's autosave.
+/// /proc (with the recycled-pid guard above); elsewhere a
+/// foreign token in the lock cannot prove liveness on its
+/// own, so we answer no rather than mute a lone instance's
+/// autosave — on those platforms the token, not this check,
+/// is what protects the journal (see
+/// `journal_retirement_allowed`).
 fn peer_instance_alive() -> bool {
-    let Ok(text) = std::fs::read_to_string(instance_lock_path()) else {
+    peer_instance_alive_from(&instance_lock_path(), std::process::id(), instance_token())
+}
+
+fn peer_instance_alive_from(lock: &std::path::Path, own_pid: u32, own_token: &str) -> bool {
+    let Some(info) = read_instance_lock_from(lock) else {
         return false;
     };
-    let Ok(pid) = text.trim().parse::<u32>() else {
-        return false;
-    };
-    if pid == std::process::id() {
+    if info.token.as_deref() == Some(own_token) {
         return false;
     }
-    std::path::Path::new(&format!("/proc/{pid}")).exists()
+    let Some(pid) = info.pid else {
+        return false;
+    };
+    if pid == own_pid {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        std::path::Path::new(&format!("/proc/{pid}")).exists() && !peer_provably_gone(pid)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// May this instance retire (clear) a journal? (S-MIN-3.)
+/// Only its own journal, or one whose owner is gone:
+/// - a note naming this instance's token is its own;
+/// - a note naming another token may be retired when that
+///   owner is provably gone, or when the lock no longer
+///   names that token — its owner exited and a later launch
+///   (possibly this one) holds the lock now;
+/// - a note naming another token while the lock still names
+///   that same token belongs to the instance holding the
+///   lock, and is never retired from here;
+/// - a tokenless note (written before tokens existed) is
+///   retired only when the lock names no other live holder.
+///
+/// Pure over its inputs, so the rules can be pinned directly.
+fn journal_retirement_allowed(
+    meta_token: Option<&str>,
+    own_token: &str,
+    lock_token: Option<&str>,
+    owner_provably_gone: bool,
+) -> bool {
+    match meta_token {
+        Some(token) if token == own_token => true,
+        Some(token) => {
+            if owner_provably_gone {
+                return true;
+            }
+            lock_token != Some(token)
+        }
+        None => owner_provably_gone || lock_token.is_none() || lock_token == Some(own_token),
+    }
+}
+
+/// Retire a journal through the token rules, clearing it
+/// only when `journal_retirement_allowed` says this instance
+/// may. Answers true when the journal was cleared.
+fn retire_journal_from(
+    obd: &std::path::Path,
+    meta: &std::path::Path,
+    lock: &std::path::Path,
+    own_token: &str,
+) -> bool {
+    let meta_token = journal_token_from(meta);
+    let lock_info = read_instance_lock_from(lock);
+    let lock_token = lock_info.as_ref().and_then(|i| i.token.as_deref());
+    // The owner is provably gone when the lock's pid names a
+    // process that is dead or is plainly not this app. With
+    // no pid to check, nothing is proven.
+    let owner_provably_gone = lock_info
+        .as_ref()
+        .and_then(|i| i.pid)
+        .map(peer_provably_gone)
+        .unwrap_or(false);
+    let allowed = journal_retirement_allowed(
+        meta_token.as_deref(),
+        own_token,
+        lock_token,
+        owner_provably_gone,
+    );
+    if allowed {
+        clear_journal_from(obd, meta);
+    }
+    allowed
 }
 
 /// What a right-click on the canvas belongs to.
@@ -19431,6 +19777,156 @@ mod settings_tests {
         // has nothing to set aside.
         assert!(!set_aside_unreadable_journal(&obd, &meta));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn atomic_write_lands_whole_and_leaves_no_temp() {
+        // HF-5 / S-MIN-1 pin: the app's durable-write helper
+        // lands the new bytes whole, replaces an existing
+        // target whole, and leaves no temp file behind. (The
+        // sync calls themselves are not observable from a
+        // test; they are verified by code inspection.)
+        let dir = std::env::temp_dir().join(format!("ob-app-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("copy.pdf");
+        std::fs::write(&path, b"the previous copy, longer than the new one").expect("seed");
+        write_file_atomically(&path, b"new").expect("atomic write");
+        assert_eq!(std::fs::read(&path).expect("read target"), b"new");
+        assert!(!dir.join("copy.pdf.tmp").exists(), "no temp file remains");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corrupt_hymn_memory_is_set_aside_and_missing_is_not() {
+        // S-MIN-2 pin: a hymn-memory.json that exists but
+        // does not parse is set aside with its damaged bytes
+        // preserved, the memory starts empty, and the read
+        // state carries the one-time note. A missing file
+        // starts empty with no set-aside and no note.
+        let dir = std::env::temp_dir().join(format!("ob-app-hymn-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("hymn-memory.json");
+        std::fs::write(&path, b"{ this is not a hymn memory").expect("write damaged memory");
+        let (memory, read) = load_hymn_memory_from(&path);
+        assert_eq!(read, HymnMemoryRead::SetAside);
+        assert!(memory.pairs.is_empty(), "memory starts empty");
+        assert!(!path.exists(), "damaged file moved out of the way");
+        let aside = dir.join("hymn-memory-unreadable.json");
+        assert_eq!(
+            std::fs::read(&aside).expect("set-aside bytes"),
+            b"{ this is not a hymn memory",
+            "the damaged bytes are preserved"
+        );
+        // Missing file: empty, Clean, nothing set aside.
+        let (memory, read) = load_hymn_memory_from(&path);
+        assert_eq!(read, HymnMemoryRead::Clean);
+        assert!(memory.pairs.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn journal_note_carries_the_owner_token() {
+        // S-MIN-3/S-MIN-5 pin: the journal written through
+        // the atomic pair carries its owning instance's
+        // token as the note's third line, round-trips as
+        // before, and leaves no temp file behind.
+        let dir = std::env::temp_dir().join(format!("ob-app-journal-token-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let obd = dir.join("autosave.obd");
+        let meta = dir.join("autosave.txt");
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        write_journal_to(&obd, &meta, &doc, &None).expect("write journal");
+        assert_eq!(
+            journal_token_from(&meta).as_deref(),
+            Some(instance_token()),
+            "the note names this instance as the journal's owner"
+        );
+        assert!(read_journal_from(&obd, &meta).is_some(), "round-trip holds");
+        assert!(
+            !dir.join("autosave.txt.tmp").exists(),
+            "no temp file remains"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn journal_retirement_respects_the_owner_token() {
+        // S-MIN-3 pin: a journal whose note names a foreign
+        // token is not retired while the lock still names
+        // that same foreign token (a live second instance);
+        // the same journal is retired once the lock no longer
+        // names its owner, and a journal naming this
+        // instance's own token is always retired.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-journal-retire-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let obd = dir.join("autosave.obd");
+        let meta = dir.join("autosave.txt");
+        let lock = dir.join("openbulletin.lock");
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        // A foreign instance's journal, with the lock still
+        // naming that foreign instance.
+        write_journal_to(&obd, &meta, &doc, &None).expect("write journal");
+        std::fs::write(&meta, "1729000000\n\nforeign-token\n").expect("foreign note");
+        std::fs::write(&lock, format!("{}\nforeign-token\n", std::process::id()))
+            .expect("foreign lock");
+        assert!(
+            !retire_journal_from(&obd, &meta, &lock, instance_token()),
+            "a live foreign owner's journal is not retired"
+        );
+        assert!(obd.exists() && meta.exists(), "the journal survives");
+        // The lock no longer names that owner: it exited, and
+        // the journal may be retired through the usual path.
+        write_instance_lock_to(&lock, instance_token());
+        assert!(
+            retire_journal_from(&obd, &meta, &lock, instance_token()),
+            "an exited owner's journal may be retired"
+        );
+        assert!(!obd.exists() && !meta.exists(), "the journal is cleared");
+        // Own-token retirement always works.
+        write_journal_to(&obd, &meta, &doc, &None).expect("write own journal");
+        assert!(retire_journal_from(&obd, &meta, &lock, instance_token()));
+        assert!(!obd.exists() && !meta.exists());
+        // The pure rule: a provably gone owner may always be
+        // retired, even while a stale lock still names it.
+        assert!(journal_retirement_allowed(
+            Some("foreign-token"),
+            "own-token",
+            Some("foreign-token"),
+            true
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn catalog_worker_disconnect_speaks() {
+        // S-MIN-4 pin: when the catalog worker's channel
+        // disconnects (the worker stopped), poll_catalog
+        // clears the busy state AND says so, like poll_import.
+        let mut app = App::default();
+        let (tx, rx) = std::sync::mpsc::channel::<CatalogMsg>();
+        app.catalog_rx = Some(rx);
+        app.catalog_busy = true;
+        drop(tx);
+        app.poll_catalog(&egui::Context::default());
+        assert!(app.catalog_rx.is_none());
+        assert!(!app.catalog_busy);
+        assert!(app.status_error, "the stop is a failure banner");
+        assert!(
+            app.status.contains("font catalog stopped"),
+            "spoken in plain words: {}",
+            app.status
+        );
     }
 
     #[test]

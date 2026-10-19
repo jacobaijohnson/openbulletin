@@ -1,0 +1,18839 @@
+use super::*;
+
+fn today() -> SimpleDate {
+    SimpleDate {
+        year: 2026,
+        month: 10,
+        day: 16,
+    }
+}
+
+fn oct(day: u32) -> SimpleDate {
+    SimpleDate {
+        year: 2026,
+        month: 10,
+        day,
+    }
+}
+
+fn sep(day: u32) -> SimpleDate {
+    SimpleDate {
+        year: 2026,
+        month: 9,
+        day,
+    }
+}
+
+const FULL: &str = "\
+From: Pastor Lee
+For Sunday: October 25, 2026
+Keep-through: November 8, 2026
+
+## For the service
+Sermon: **The Good Shepherd**
+Hymn\t432
+
+## Announcement
+Harvest supper is Saturday at 5 PM.
+
+## Insert
+Prayer list for this week.
+
+## Sunday school
+Classes meet at 9 AM.
+
+## Youth
+Youth group meets Wednesday at 6 PM.
+";
+
+#[test]
+fn full_header_and_all_five_parts() {
+    let c = parse_contribution(FULL, today()).expect("parses");
+    assert_eq!(c.from.as_deref(), Some("Pastor Lee"));
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(
+        c.keep_through,
+        Some(SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 8
+        })
+    );
+    let kinds: Vec<PartKind> = c.parts.iter().map(|p| p.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            PartKind::Service,
+            PartKind::Announcement,
+            PartKind::Insert,
+            PartKind::SundaySchool,
+            PartKind::Youth,
+        ]
+    );
+    assert_eq!(c.parts[0].paragraphs[0].text(), "Sermon: The Good Shepherd");
+    assert_eq!(
+        c.parts[1].paragraphs[0].text(),
+        "Harvest supper is Saturday at 5 PM."
+    );
+}
+
+#[test]
+fn missing_header_still_parses() {
+    let c = parse_contribution("## Announcement\n\nThe bake sale is Friday.\n", today())
+        .expect("parses");
+    assert_eq!(c.from, None);
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.keep_through, None);
+    assert_eq!(c.parts.len(), 1);
+    assert_eq!(c.parts[0].kind, PartKind::Announcement);
+}
+
+#[test]
+fn words_before_the_first_heading_are_an_announcement() {
+    let text =
+        "From: Sue\n\nChoir rehearsal moved to Thursday.\n\n## Youth\n\nPizza night Friday.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.parts.len(), 2);
+    assert_eq!(c.parts[0].kind, PartKind::Announcement);
+    assert_eq!(
+        c.parts[0].paragraphs[0].text(),
+        "Choir rehearsal moved to Thursday."
+    );
+    assert_eq!(c.parts[1].kind, PartKind::Youth);
+}
+
+#[test]
+fn headings_match_without_regard_to_case_or_plural() {
+    let text = "## ANNOUNCEMENTS\n\nOne.\n\n## sunday school\n\nTwo.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    let kinds: Vec<PartKind> = c.parts.iter().map(|p| p.kind).collect();
+    assert_eq!(kinds, vec![PartKind::Announcement, PartKind::SundaySchool]);
+}
+
+#[test]
+fn a_part_heading_with_a_parenthesized_suffix_is_that_headings_part() {
+    // Round 9 (R9-8, red team RT9-8 verbatim): a
+    // sender writes "## Sunday school (Room 2)" —
+    // the very words the bulletin prints for that
+    // section. The part is the Sunday school part,
+    // not a plain announcement, and its heading line
+    // is not swallowed: the part carries its lines
+    // under the base heading. The same holds as a
+    // second part, after an announcement.
+    let text = "## Sunday school (Room 2)\n\nClasses meet at 9 AM.\n\nBring a friend to class.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.parts.len(), 1);
+    assert_eq!(c.parts[0].kind, PartKind::SundaySchool);
+    let lines: Vec<String> = c.parts[0].paragraphs.iter().map(|p| p.text()).collect();
+    assert_eq!(
+        lines,
+        vec![
+            "Classes meet at 9 AM.".to_string(),
+            "Bring a friend to class.".to_string()
+        ]
+    );
+    let text = "## Announcement\n\nThe bake sale is Friday.\n\n## Sunday school (Room 2)\n\nClasses meet at 9 AM.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    let kinds: Vec<PartKind> = c.parts.iter().map(|p| p.kind).collect();
+    assert_eq!(kinds, vec![PartKind::Announcement, PartKind::SundaySchool]);
+    // A longer heading is not a suffixed one: it
+    // stays ordinary body text, never a part break.
+    let text = "## Sunday school teachers\n\nOne.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.parts.len(), 1);
+    assert_eq!(c.parts[0].kind, PartKind::Announcement);
+}
+
+#[test]
+fn flexible_dates_read_and_a_wrong_weekday_yields_no_date() {
+    // 2026-10-25 is a Sunday; saying Monday makes the
+    // date unreadable rather than guessed.
+    let wrong = "From: Sue\nFor Sunday: Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(wrong, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let right = "From: Sue\nFor Sunday: Sun, Oct 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(right, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    let numeric = "For Sunday: 10/25/26\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(numeric, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+}
+
+#[test]
+fn a_wrong_weekday_is_named_not_mistaken_for_no_sunday() {
+    // Round 3 (RT3-D): 2026-10-25 is a Sunday. A line
+    // calling it Monday names an impossible day, and
+    // the parse says so, instead of the review having
+    // to call the file dateless.
+    let wrong = "From: Sue\nFor Sunday: Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(wrong, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the date itself still does not read");
+    let m = c
+        .named_weekday_mismatch
+        .expect("the wrong weekday is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    assert_eq!(
+        m.sentence(),
+        "This part names Monday, October 25, 2026, but that date is a \
+             Sunday. Check the date with the sender."
+    );
+    // A correct weekday records no mismatch, and a
+    // line with no date in it records none either.
+    let right = "From: Sue\nFor Sunday: Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(right, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.named_weekday_mismatch, None);
+    let none = parse_contribution("## Announcement\n\nHi.\n", today()).expect("parses");
+    assert_eq!(none.named_weekday_mismatch, None);
+    let vague = "For Sunday: soon\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(vague, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(
+        c.named_weekday_mismatch, None,
+        "an unreadable line is not a wrong-weekday line"
+    );
+}
+
+#[test]
+fn a_wrong_weekday_on_the_keep_through_line_is_named_too() {
+    // Round 4 (R4-7 / RT-5d): 2026-11-30 is a
+    // Monday. A keep-through line calling it Friday
+    // used to drop the date in silence, and the
+    // announcement ended a week early; now the parse
+    // records the mistake and applies no date.
+    let wrong = "From: Sue\nKeep-through: Friday, November 30, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(wrong, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "the date does not apply");
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the wrong weekday is recorded");
+    assert_eq!(m.named, "Friday");
+    assert_eq!(
+        m.date,
+        SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 30
+        }
+    );
+    assert_eq!(
+        m.keep_through_sentence(),
+        "This part says keep through Friday, November 30, 2026, but that date is a \
+             Monday. Check the date with the sender."
+    );
+    // A correct keep-through weekday reads as before.
+    let right = "From: Sue\nKeep-through: Monday, November 30, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(right, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 30
+        })
+    );
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+}
+
+#[test]
+fn a_weekday_written_after_the_date_is_read_and_checked() {
+    // Round 4 (R4-7): the weekday does not have to
+    // come first. "October 25, 2026 (Monday)" names
+    // it last; 2026-10-25 is a Sunday, so the word
+    // is the mistake. Written correctly, in parens
+    // or after a comma, the line parses normally.
+    let wrong = "From: Sue\nFor Sunday: October 25, 2026 (Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(wrong, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let m = c
+        .named_weekday_mismatch
+        .expect("the trailing wrong weekday is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    assert_eq!(
+        m.sentence(),
+        "This part names Monday, October 25, 2026, but that date is a \
+             Sunday. Check the date with the sender."
+    );
+    let comma = "From: Sue\nFor Sunday: October 25, 2026, Monday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(comma, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert!(c.named_weekday_mismatch.is_some());
+    let right = "From: Sue\nFor Sunday: October 25, 2026 (Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(right, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.named_weekday_mismatch, None);
+}
+
+#[test]
+fn the_sunday_after_a_named_date_reads_as_that_sunday() {
+    // Round 5 (RT5-6): "the Sunday after October 25,
+    // 2026" named no date the parser could use.
+    // October 25, 2026 is itself a Sunday, and
+    // "after" is strict, so the words name the NEXT
+    // Sunday, November 1. A named weekday date in
+    // the middle of the week (Wednesday, October
+    // 21) names the Sunday of that same week, and
+    // the named date may carry its own weekday or
+    // arrive in numeric form.
+    let text =
+        "From: Sue\nFor Sunday: the Sunday after October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 1
+        })
+    );
+    assert_eq!(c.named_weekday_mismatch, None);
+    assert_eq!(c.for_sunday_in_words, None);
+    let text = "For Sunday: Sunday after Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 1
+        }),
+        "a named date that IS a Sunday steps a whole week"
+    );
+    let text = "For Sunday: Sunday after October 21, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    let text = "For Sunday: Sunday after 10/21/26\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    // The verdict machinery treats the read date
+    // like any other: it arms against a different
+    // open Sunday and matches its own.
+    let text = "For Sunday: the Sunday after October 21, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    assert_eq!(
+        week_verdict(&c, Some(oct(18))),
+        WeekVerdict::DifferentSunday(oct(25))
+    );
+}
+
+#[test]
+fn an_on_before_a_framing_weekday_records_its_mismatch() {
+    // Round 6 (R6-6): "on Monday, October 25, 2026"
+    // used to drop its weekday silently and read
+    // the date clean, where the bare leading form
+    // ("Monday, October 25, 2026") records the
+    // mismatch. The filler word "on" in front of a
+    // framing weekday changes nothing: October 25,
+    // 2026 is a Sunday. Both date lines, the shared
+    // helper.
+    let text = "From: Sue\nFor Sunday: on Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the date itself still does not read");
+    let m = c
+        .named_weekday_mismatch
+        .expect("the wrong weekday behind \"on\" is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    assert_eq!(
+        m.sentence(),
+        "This part names Monday, October 25, 2026, but that date is a \
+             Sunday. Check the date with the sender."
+    );
+    let text = "From: Sue\nKeep-through: on Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the keep-through line records it too");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    // An agreeing weekday behind "on" reads clean.
+    let text = "From: Sue\nFor Sunday: on Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.named_weekday_mismatch, None);
+}
+
+#[test]
+fn the_sunday_after_composes_with_a_trailing_weekday() {
+    // Round 6 (RT6-8): a trailing weekday on a
+    // "Sunday after [date]" line describes the base
+    // date it follows. An agreeing one resolves
+    // (Sunday after October 25, 2026 is November 1);
+    // a disagreeing one records the mismatch against
+    // the base date and yields no date, on both
+    // lines.
+    let nov1 = SimpleDate {
+        year: 2026,
+        month: 11,
+        day: 1,
+    };
+    let text =
+        "From: Sue\nFor Sunday: Sunday after October 25, 2026 (Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov1));
+    assert_eq!(c.named_weekday_mismatch, None);
+    let text =
+        "From: Sue\nFor Sunday: Sunday after October 25, 2026 (Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "a disagreeing trailing weekday yields no date"
+    );
+    let m = c
+        .named_weekday_mismatch
+        .expect("the trailing weekday's mistake is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25), "the weekday describes the base date");
+    assert_eq!(
+        m.sentence(),
+        "This part names Monday, October 25, 2026, but that date is a \
+             Sunday. Check the date with the sender."
+    );
+    let text = "From: Sue\nKeep-through: the Sunday after October 25, 2026 (Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the keep-through line records it too");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    let text = "From: Sue\nKeep-through: the Sunday after October 25, 2026 (Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov1));
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+}
+
+#[test]
+fn a_sunday_after_a_relative_sunday_is_remembered_and_resolved_by_the_verdict() {
+    // Round 6 (RT6-9): "the Sunday after next
+    // Sunday" used to fall into NoSundayNamed with
+    // the file misdescribed as naming no Sunday.
+    // The shape is remembered in the sender's words;
+    // the verdict resolves it against the open
+    // bulletin (the relative Sunday reads as the
+    // bulletin's date, then the first Sunday
+    // strictly after it) and arms it like any named
+    // Sunday that differs. October 25, 2026 is a
+    // Sunday; the Sunday after it is November 1.
+    let nov1 = SimpleDate {
+        year: 2026,
+        month: 11,
+        day: 1,
+    };
+    for line in [
+        "the Sunday after next Sunday",
+        "the Sunday after this Sunday",
+        "Sunday after next Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date in the words alone");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}");
+        assert_eq!(c.for_sunday_in_words, None, "{line}");
+        assert_eq!(
+            c.for_sunday_after_in_words.as_deref(),
+            Some(line),
+            "{line}: the shape is remembered as written"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::DifferentSunday(nov1),
+            "{line}: resolved against the open bulletin, and armed"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(18))),
+            WeekVerdict::DifferentSunday(oct(25)),
+            "{line}: the Sunday after October 18's reading is October 25"
+        );
+        assert_eq!(
+            week_verdict(&c, None),
+            WeekVerdict::NoSundayNamed,
+            "{line}: no bulletin date to read against"
+        );
+    }
+    // A bare relative Sunday keeps its round-5
+    // behavior exactly: remembered in the other
+    // field, read as the open bulletin's Sunday.
+    let text = "For Sunday: next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_after_in_words, None);
+    assert_eq!(c.for_sunday_in_words.as_deref(), Some("next Sunday"));
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SundayInWords(oct(25))
+    );
+}
+
+#[test]
+fn a_sunday_named_only_in_words_is_remembered_and_read_against_the_bulletin() {
+    // Round 5 (RT5-6): "next Sunday" used to read as
+    // no Sunday named, and the review misdescribed
+    // the file. The words are remembered as written;
+    // with a bulletin open, the verdict reads them
+    // as that bulletin's Sunday; with none, the
+    // verdict stays NoSundayNamed but the words are
+    // still on the parse for the review's sentence.
+    for line in ["next Sunday", "this Sunday", "on Sunday", "Sunday"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date in the words alone");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(line),
+            "{line}: the sender's words are remembered"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{line}: read as the open bulletin's Sunday"
+        );
+        assert_eq!(
+            week_verdict(&c, None),
+            WeekVerdict::NoSundayNamed,
+            "{line}: no bulletin date to read against"
+        );
+    }
+    // Words beyond the relative Sunday are not this
+    // shape, and an absolute date leaves no marker.
+    let text = "For Sunday: next Sunday morning\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_in_words, None);
+    let text = "For Sunday: October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_in_words, None);
+}
+
+#[test]
+fn a_weekday_word_elsewhere_in_the_line_is_ordinary_text() {
+    // Round 5 (R5-D, review M4): the mismatch
+    // sentence speaks only when the weekday word
+    // directly frames the date. In "bring a friend
+    // Friday, October 25, 2026" the Friday belongs
+    // to the friend, not the date: the date reads
+    // and no mismatch is recorded, on either date
+    // line. October 25, 2026 is a Sunday.
+    let text = "For Sunday: bring a friend Friday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.named_weekday_mismatch, None);
+    let text = "Keep-through: bring a friend Friday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+    // A weekday word buried inside the date's own
+    // tokens frames nothing either: no mismatch is
+    // recorded (and the line still yields no date).
+    let text = "For Sunday: October Monday 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.named_weekday_mismatch, None);
+    // The genuinely adjacent cases still speak, on
+    // both lines: a leading weekday is a claim about
+    // the date, and so is a trailing one.
+    let text = "For Sunday: Friday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let m = c.named_weekday_mismatch.expect("the leading Friday speaks");
+    assert_eq!(m.named, "Friday");
+    assert_eq!(m.date, oct(25));
+    let text = "Keep-through: Friday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the leading Friday speaks on this line too");
+    assert_eq!(m.named, "Friday");
+    assert_eq!(m.date, oct(25));
+    let text = "Keep-through: October 25, 2026 (Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the trailing Monday speaks on this line too");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+}
+
+#[test]
+fn r7c_an_on_weekday_mid_sentence_records_its_mismatch() {
+    // Round 7 (R7-3 / RT7-3): "use on Monday,
+    // October 25, 2026" used to land the date clean
+    // — no mismatch, SameSunday unarmed against the
+    // October 25 bulletin — because the "on" framing
+    // was only recognized at the line's start.
+    // October 25, 2026 is a Sunday; Monday, October
+    // 25 does not exist. A weekday wearing "on"
+    // frames the date wherever it stands, on both
+    // lines.
+    let text = "From: Sue\nFor Sunday: use on Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the impossible day does not read");
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::NoSundayNamed,
+        "no longer an unarmed SameSunday against October 25"
+    );
+    let m = c
+        .named_weekday_mismatch
+        .expect("the mid-sentence \"on\" weekday is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    let text =
+        "From: Sue\nKeep-through: use on Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the keep-through line records it too");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    // An agreeing mid-sentence "on" weekday reads
+    // clean, exactly as the leading form does.
+    let text = "For Sunday: use on Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.named_weekday_mismatch, None);
+    // Standing, by the round-7 disposition: red
+    // team's D5b ("please note Monday, ...", no
+    // "on") stays under the R5-D ordinary-text rule
+    // — the weekday belongs to the sentence's other
+    // words, the date reads, and no mismatch is
+    // recorded. Recorded for round 8 to re-probe.
+    let text = "For Sunday: please note Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "D5b stands as shipped");
+    assert_eq!(c.named_weekday_mismatch, None, "D5b stands as shipped");
+}
+
+#[test]
+fn r7c_a_sunday_after_base_with_a_wrong_weekday_yields_no_date() {
+    // Round 7 (R7-4 / RT7-4): "Sunday after
+    // Tuesday, October 26, 2026" (October 26 is a
+    // Monday) used to yield for_date = October 26
+    // itself, no mismatch: the base's wrong weekday
+    // refused the Sunday-after reading, and the
+    // mid-sentence rule then salvaged the bare base
+    // date. A date inside a "Sunday after ..." phrase
+    // is the base, never the line's own date, on
+    // both lines.
+    for line in [
+        "Sunday after Tuesday, October 26, 2026",
+        "the Sunday after Tuesday, October 26, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the base is not the date");
+        let m = c
+            .named_weekday_mismatch
+            .expect("the base's wrong weekday is recorded");
+        assert_eq!(m.named, "Tuesday", "{line}");
+        assert_eq!(m.date, oct(26), "{line}: the base date");
+    }
+    let text = "Keep-through: Sunday after Tuesday, October 26, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the keep-through line records it too");
+    assert_eq!(m.named, "Tuesday");
+    assert_eq!(m.date, oct(26));
+}
+
+#[test]
+fn r7c_the_sunday_after_reader_composes_its_garnishes() {
+    // Round 7 (R7-5 / review M3, RT7-7 D9): "on
+    // Sunday after October 25, 2026" and "on the
+    // Sunday after ..." used to fall to a silent
+    // NoSundayNamed under the false sentence "These
+    // words do not say which Sunday they are for".
+    // The date is fully determined: November 1,
+    // 2026, and it arms like any named Sunday.
+    let nov1 = SimpleDate {
+        year: 2026,
+        month: 11,
+        day: 1,
+    };
+    for line in [
+        "on Sunday after October 25, 2026",
+        "on the Sunday after October 25, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov1), "{line}");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}");
+        assert_eq!(c.for_sunday_in_words, None, "{line}");
+        assert_eq!(c.for_sunday_after_in_words, None, "{line}");
+        assert_eq!(
+            week_verdict(&c, Some(nov1)),
+            WeekVerdict::SameSunday,
+            "{line}"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::DifferentSunday(nov1),
+            "{line}: armed against a different open Sunday"
+        );
+    }
+    let text = "Keep-through: on the Sunday after October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov1));
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+    // The trailing weekday composes with the
+    // leading garnishes too, against the base
+    // (RT6-8's rule): agreeing resolves, disagreeing
+    // records the mismatch against the base.
+    let text = "For Sunday: on Sunday after October 25, 2026 (Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov1));
+    let text = "For Sunday: on Sunday after October 25, 2026 (Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let m = c
+        .named_weekday_mismatch
+        .expect("the trailing weekday's mistake is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25), "against the base date");
+}
+
+#[test]
+fn r7c_relative_shapes_keep_their_words_with_a_trailing_weekday() {
+    // Round 7 (R7-5 / RT7-6): "the Sunday after
+    // next Sunday (Monday)" and "next Sunday
+    // (Monday)" used to die on the garnish — silent
+    // NoSundayNamed, the words remembered nowhere.
+    // The shapes keep their in-words memory WITH
+    // the garnish attached, and the verdicts read
+    // exactly as the ungarnished shapes' do.
+    let nov1 = SimpleDate {
+        year: 2026,
+        month: 11,
+        day: 1,
+    };
+    for line in [
+        "the Sunday after next Sunday (Monday)",
+        "on the Sunday after next Sunday",
+        "the Sunday after the next Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date in the words alone");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}");
+        assert_eq!(c.for_sunday_in_words, None, "{line}");
+        assert_eq!(
+            c.for_sunday_after_in_words.as_deref(),
+            Some(line),
+            "{line}: remembered as written, garnish attached"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::DifferentSunday(nov1),
+            "{line}: resolved against the open bulletin, and armed"
+        );
+        assert_eq!(
+            week_verdict(&c, None),
+            WeekVerdict::NoSundayNamed,
+            "{line}: no bulletin date to read against"
+        );
+    }
+    let text = "For Sunday: next Sunday (Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.named_weekday_mismatch, None);
+    assert_eq!(
+        c.for_sunday_in_words.as_deref(),
+        Some("next Sunday (Monday)"),
+        "the bare relative shape remembers the garnish too"
+    );
+    assert_eq!(c.for_sunday_after_in_words, None);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SundayInWords(oct(25))
+    );
+    assert_eq!(week_verdict(&c, None), WeekVerdict::NoSundayNamed);
+}
+
+#[test]
+fn r7c_leading_and_trailing_weekdays_are_each_checked() {
+    // Round 7 (R7-7 / RT7-7): combined, a leading
+    // and a trailing weekday used to silence each
+    // other — no date and no mismatch, though each
+    // single shape records its own. Each framing is
+    // checked; a disagreeing one records its
+    // mismatch even when no date results, on both
+    // lines. October 25, 2026 is a Sunday.
+    let text = "For Sunday: on Monday, October 25, 2026 (Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let m = c
+        .named_weekday_mismatch
+        .expect("the disagreeing leading weekday is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    let text = "For Sunday: on Sunday, October 25, 2026 (Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let m = c
+        .named_weekday_mismatch
+        .expect("the disagreeing trailing weekday is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    let text = "Keep-through: on Monday, October 25, 2026 (Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the keep-through line records it too");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    // Both framings agreeing reads the date clean.
+    let text = "For Sunday: on Sunday, October 25, 2026 (Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.named_weekday_mismatch, None);
+}
+
+#[test]
+fn r7c_agreeing_controls_still_stand() {
+    // The controls the round-7 probes resolved
+    // correctly stay resolved (red team RT7-4's
+    // agreeing base, RT7-6's ungarnished relative
+    // shapes, and the R5-D ordinary-text rule).
+    let nov1 = SimpleDate {
+        year: 2026,
+        month: 11,
+        day: 1,
+    };
+    let text = "For Sunday: Sunday after October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov1));
+    assert_eq!(c.named_weekday_mismatch, None);
+    let text = "For Sunday: Sunday after Monday, October 26, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov1),
+        "an agreeing base weekday still resolves to November 1"
+    );
+    assert_eq!(c.named_weekday_mismatch, None);
+    let text = "For Sunday: bring a friend Friday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "ordinary text reads clean");
+    assert_eq!(c.named_weekday_mismatch, None);
+}
+
+#[test]
+fn runs_the_sender_typed_survive() {
+    let text = "## Announcement\n\nThe **harvest supper** is *Saturday* at 5.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    let runs = &c.parts[0].paragraphs[0].runs;
+    assert!(
+        runs.iter()
+            .any(|r| r.text.contains("harvest supper") && r.bold == Some(true)),
+        "bold run survives: {runs:?}"
+    );
+    assert!(
+        runs.iter()
+            .any(|r| r.text.contains("Saturday") && r.italic == Some(true)),
+        "italic run survives: {runs:?}"
+    );
+}
+
+#[test]
+fn no_readable_words_is_a_plain_refusal() {
+    assert_eq!(
+        parse_contribution("From: Sue\nFor Sunday: October 25, 2026\n", today()),
+        Err("This file has no words we can read.".to_string())
+    );
+    assert_eq!(
+        parse_contribution("  \n\n", today()),
+        Err("This file has no words we can read.".to_string())
+    );
+    assert_eq!(
+        parse_contribution("## Announcement\n\n## Youth\n", today()),
+        Err("This file has no words we can read.".to_string())
+    );
+}
+
+#[test]
+fn header_values_keep_their_letters_exactly() {
+    // A name whose letters change byte length when
+    // lowercased must still come through whole: the
+    // header reader slices the line as written.
+    let text = "From: İpek Yılmaz\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.from.as_deref(), Some("İpek Yılmaz"));
+    // And a line that merely starts alike is not a
+    // header: its words stay an announcement.
+    let text = "Fromage is a fine word.\n\n## Youth\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.from, None);
+    assert_eq!(c.parts[0].kind, PartKind::Announcement);
+    assert_eq!(c.parts[0].paragraphs[0].text(), "Fromage is a fine word.");
+}
+
+#[test]
+fn week_verdicts() {
+    let mut c = parse_contribution(FULL, today()).expect("parses");
+    assert_eq!(
+        week_verdict(&c, Some(oct(18))),
+        WeekVerdict::DifferentSunday(oct(25))
+    );
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    assert_eq!(week_verdict(&c, None), WeekVerdict::NoSundayNamed);
+    c.for_date = None;
+    assert_eq!(week_verdict(&c, Some(oct(18))), WeekVerdict::NoSundayNamed);
+}
+
+#[test]
+fn date_formats_speak_plainly() {
+    assert_eq!(format_date_long(oct(25)), "Sunday, October 25, 2026");
+    assert_eq!(format_date_short(oct(25)), "October 25, 2026");
+}
+
+#[test]
+fn split_keeps_the_words_as_written_for_editing() {
+    let raw = split_contribution(FULL);
+    assert_eq!(raw.from.as_deref(), Some("Pastor Lee"));
+    assert_eq!(raw.for_sunday.as_deref(), Some("October 25, 2026"));
+    assert_eq!(raw.keep_through.as_deref(), Some("November 8, 2026"));
+    assert_eq!(raw.parts.len(), 5);
+    assert_eq!(raw.parts[0].0, PartKind::Service);
+    assert!(raw.parts[0].1.contains("Sermon: **The Good Shepherd**"));
+}
+
+#[test]
+fn r8c_a_framed_date_reads_past_words_after_the_date() {
+    // Round 8 (R8-4 / RT8-3): "use on Monday,
+    // October 25, 2026 for the picnic" recorded
+    // nothing — the framed reader parsed everything
+    // after the framing weekday as one date, and any
+    // word after the date killed the reading. The
+    // framing needs the weekday directly in front of
+    // the date; what follows the date is the line's
+    // remainder. October 25, 2026 is a Sunday.
+    for line in [
+        "use on Monday, October 25, 2026 for the picnic",
+        "please use on Monday, October 25, 2026, thank you",
+        "on Monday, October 25, 2026 we celebrate",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the impossible day does not read");
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::NoSundayNamed,
+            "{line}: no date reads, and the mismatch record speaks instead"
+        );
+        let m = c
+            .named_weekday_mismatch
+            .expect("the mismatch is recorded wherever the date stands");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, oct(25), "{line}");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: the mirror drops it too");
+        let m = c
+            .keep_through_weekday_mismatch
+            .expect("the keep-through mirror records it");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, oct(25), "{line}");
+    }
+    // The agreeing control (RT8-3's E2) died the
+    // same way — the shape failed on the trailing
+    // words, not the weekday. It now yields its
+    // date by the same rules as the line-ending
+    // form, on both lines.
+    let text =
+        "For Sunday: use on Sunday, October 25, 2026 for the picnic\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.named_weekday_mismatch, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    let text =
+        "Keep-through: use on Sunday, October 25, 2026 for the picnic\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+    // The Sunday-after variant (RT8-3's E5) lost a
+    // determined date to one trailing word the same
+    // way: the Sunday after October 25, 2026 is
+    // November 1.
+    let nov1 = SimpleDate {
+        year: 2026,
+        month: 11,
+        day: 1,
+    };
+    let text =
+        "For Sunday: words for Sunday after October 25, 2026 please\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov1));
+    assert_eq!(c.named_weekday_mismatch, None);
+    let text =
+        "Keep-through: words for Sunday after October 25, 2026 please\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov1));
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+}
+
+#[test]
+fn r8c_a_second_on_framing_is_judged_not_laundered() {
+    // Round 8 (R8-5 / RT8-4): the framed reader
+    // tried only the FIRST "on"+weekday candidate;
+    // when it failed, the ordinary-text fallback
+    // returned the second framed date clean —
+    // SameSunday, unarmed, no mismatch. The reader
+    // now scans every candidate until one frames a
+    // date, and the fallback never returns a date
+    // whose weekday wears the framing stack.
+    // October 25, 2026 is a Sunday.
+    let text = "For Sunday: meet on Friday, then use on Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "no longer a clean read of an impossible day"
+    );
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::NoSundayNamed,
+        "not the unarmed SameSunday the red team probed"
+    );
+    let m = c
+        .named_weekday_mismatch
+        .expect("the second framing is judged, not laundered");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    let text = "Keep-through: meet on Friday, then use on Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the keep-through mirror records it too");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    // The shadow control (round 8 review, D4): a
+    // candidate whose following words do not parse
+    // as a date is not a framing — scanning
+    // continues, and the real date reads clean.
+    let text = "For Sunday: on Monday we prayed, service on Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "D4 still reads clean");
+    assert_eq!(c.named_weekday_mismatch, None, "D4 still records nothing");
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    let text = "Keep-through: on Monday we prayed, service on Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+}
+
+#[test]
+fn r8c_on_the_weekday_frames_with_its_garnish_stack() {
+    // Round 8 (R8-6 / RT8-5): the plain-date
+    // readers required the weekday immediately
+    // after "on", so "on the Monday, October 25,
+    // 2026" read clean — SameSunday, unarmed —
+    // though the Sunday-after reader strips
+    // "on"/"the" garnishes in a loop. The framing
+    // readers accept the same garnish stack,
+    // wherever the framing stands. October 25, 2026
+    // is a Sunday.
+    let text = "For Sunday: on the Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "no longer an unarmed SameSunday");
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::NoSundayNamed,
+        "not the unarmed SameSunday the red team probed"
+    );
+    let m = c
+        .named_weekday_mismatch
+        .expect("the garnished framing is judged");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    let text = "Keep-through: on the Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the keep-through mirror records it too");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    // Wherever the framing stands in the line.
+    let text = "For Sunday: use on the Monday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let m = c
+        .named_weekday_mismatch
+        .expect("mid-line, the stack still frames");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, oct(25));
+    // An agreeing weekday behind the stack reads
+    // clean, exactly as "on Sunday" does.
+    let text = "For Sunday: on the Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.named_weekday_mismatch, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+}
+
+#[test]
+fn r8c_a_parenthesized_date_on_a_relative_sunday_is_remembered_and_compared() {
+    // Round 8 (carried shape, open two rounds /
+    // RT8-10): "the Sunday after next Sunday
+    // (October 25)" named no Sunday anywhere — the
+    // trailing parenthesized absolute date was
+    // remembered nowhere. It is now remembered with
+    // the in-words phrase, and the verdict compares
+    // it with the relative resolution once an open
+    // bulletin anchors it. October 25, 2026 is a
+    // Sunday; the Sunday after October 18 is
+    // October 25, and after October 25, November 1.
+    let nov8 = SimpleDate {
+        year: 2026,
+        month: 11,
+        day: 8,
+    };
+    for line in [
+        "the Sunday after next Sunday (October 25)",
+        "the Sunday after next Sunday (October 25, 2026)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date in the words alone");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}");
+        assert_eq!(
+            c.for_sunday_after_in_words.as_deref(),
+            Some(line),
+            "{line}: the phrase is remembered as written"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(oct(25)),
+            "{line}: the parenthesized date is remembered with it"
+        );
+        // Anchored and agreeing (resolution October
+        // 25 against the October 18 bulletin): reads
+        // as the relative verdict does today.
+        assert_eq!(
+            week_verdict(&c, Some(oct(18))),
+            WeekVerdict::DifferentSunday(oct(25)),
+            "{line}: resolution and parenthesis agree"
+        );
+        // Anchored against October 25 (the
+        // resolution is November 1): CHANGED IN
+        // ROUND 9 (R9-11) — this assertion used to
+        // expect DifferentSunday(October 25), armed,
+        // with the review naming October 25 on both
+        // sides. The parenthesized date is the
+        // sender's explicit date and the stronger
+        // signal: when it equals the open bulletin's
+        // date the verdict is SameSunday, unarmed,
+        // and the review notes the relative words
+        // beside it (pinned in
+        // `r9c_a_parenthesized_date_that_matches_the_bulletin_reads_same_sunday`).
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SameSunday,
+            "{line}: the parenthesized date is the bulletin's own Sunday"
+        );
+        // No anchor: the review's in-words sentence
+        // carries the sender's phrase as now.
+        assert_eq!(
+            week_verdict(&c, None),
+            WeekVerdict::NoSundayNamed,
+            "{line}: no bulletin date to read against"
+        );
+    }
+    // A parenthesis naming a third Sunday: the
+    // verdict names it, not the resolution.
+    let text = "For Sunday: the Sunday after next Sunday (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov8));
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov8),
+        "the resolution is November 1; the sender's date is named instead"
+    );
+    // The bare relative Sunday carries the same
+    // memory: agreement reads as the in-words
+    // verdict does today, disagreement names the
+    // sender's date and arms like any differing
+    // named Sunday.
+    let text = "For Sunday: next Sunday (October 25)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_in_words.as_deref(),
+        Some("next Sunday (October 25)")
+    );
+    assert_eq!(c.for_sunday_after_in_words, None);
+    assert_eq!(c.for_sunday_parenthesized_date, Some(oct(25)));
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SundayInWords(oct(25)),
+        "agreeing: read as the open bulletin's Sunday, as today"
+    );
+    assert_eq!(
+        week_verdict(&c, Some(oct(18))),
+        WeekVerdict::DifferentSunday(oct(25)),
+        "disagreeing: the named date, armed"
+    );
+    assert_eq!(week_verdict(&c, None), WeekVerdict::NoSundayNamed);
+    // A parenthesis that does not read as a date at
+    // all is garnish, not memory: "(Monday)" stands
+    // beside the phrase as it always has (round 6,
+    // RT6-8), and an unreadable date remembers
+    // nothing either.
+    let text = "For Sunday: next Sunday (Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_in_words.as_deref(),
+        Some("next Sunday (Monday)")
+    );
+    assert_eq!(c.for_sunday_parenthesized_date, None);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SundayInWords(oct(25))
+    );
+    let text = "For Sunday: next Sunday (October 32)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_in_words.as_deref(),
+        Some("next Sunday (October 32)")
+    );
+    assert_eq!(c.for_sunday_parenthesized_date, None);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SundayInWords(oct(25))
+    );
+}
+
+fn nov(day: u32) -> SimpleDate {
+    SimpleDate {
+        year: 2026,
+        month: 11,
+        day,
+    }
+}
+
+#[test]
+fn r9c_keep_through_reads_a_trailing_parenthesized_date() {
+    // Round 9 (R9-9, review R9-R4 + red team RT9-9
+    // verbatim): "Keep through the Sunday after next
+    // Sunday (November 8)" read nothing at all — the
+    // sender's one absolute date was lost in silence.
+    // The parenthesized date now stands as the
+    // keep-through date when the line's own words
+    // yield none. October 25, 2026 is a Sunday;
+    // November 1 and November 8 are the Sundays
+    // after it.
+    let text =
+        "Keep-through: the Sunday after next Sunday (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+    let text =
+        "Keep-through: the Sunday after next Sunday (November 8, 2026)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    // The review lane's second shape: a bare relative
+    // phrase whose parenthesis alone is complete.
+    let text = "Keep-through: next Sunday (November 1, 2026)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)));
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+    // Relative phrases on Keep-through otherwise stay
+    // unread BY DESIGN (no anchor machinery,
+    // recorded since round 6): no parenthesis, no
+    // date, and nothing recorded.
+    let text = "Keep-through: the Sunday after next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+    let text = "Keep-through: next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    // When the line yields a date AND a parenthesized
+    // date, they compose as garnish: agreeing stands
+    // clean, disagreeing records the keep-through
+    // mismatch and the line's own date governs.
+    let text = "Keep-through: November 8, 2026 (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+    let text = "Keep-through: November 8, 2026 (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the disagreeing garnish is recorded");
+    assert_eq!(m.read, nov(8));
+    assert_eq!(m.named, nov(1));
+    assert_eq!(
+        m.keep_through_sentence(),
+        "This part says keep through November 8, 2026, but the date in \
+             parentheses is November 1, 2026. Check the date with the sender."
+    );
+    // Stacked groups on a relative Keep-through line
+    // that disagree with each other: the last stands
+    // and the earlier disagreement is recorded, not
+    // laundered.
+    let text = "Keep-through: next Sunday (November 1) (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the stacked disagreement is recorded");
+    assert_eq!(m.read, nov(8));
+    assert_eq!(m.named, nov(1));
+}
+
+#[test]
+fn r9c_stacked_parentheses_are_all_compared() {
+    // Round 9 (R9-10, red team RT9-10 verbatim):
+    // stacked parentheses compared only the LAST
+    // group, so a disagreeing earlier group was
+    // laundered when the last agreed. Against the
+    // October 25 bulletin, the bare shape
+    // "(November 1) (October 25)" read clean.
+    let text = "For Sunday: next Sunday (November 1) (October 25)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_dates, vec![nov(1), oct(25)]);
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(oct(25)),
+        "the round-8 single field stays the last group"
+    );
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(1)),
+        "the earlier disagreeing group arms and is named"
+    );
+    // Both groups agreeing reads clean, exactly as a
+    // single agreeing group does today.
+    let text =
+        "For Sunday: next Sunday (October 25) (October 25, 2026)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_dates, vec![oct(25), oct(25)]);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SundayInWords(oct(25))
+    );
+    // The Sunday-after mirror (RT9-10): "(October 25)
+    // (November 1)" — the last group is the resolution
+    // (November 1) and read clean, while the earlier
+    // group disagreed with it.
+    // CHANGED in round 10 (R10-7, flagged): this shape
+    // used to expect DifferentSunday(October 25) —
+    // a verdict carrying the open bulletin's own
+    // date, the contract wart review MINOR-2 named.
+    // The verdict is now SameSunday on the
+    // bulletin-equal parenthesis, and the note (the
+    // same-Sunday sentence, not the armed one) names
+    // the resolution and both groups.
+    let text = "For Sunday: the Sunday after next Sunday (October 25) (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_dates, vec![oct(25), nov(1)]);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SameSunday,
+        "a DifferentSunday verdict never carries the bulletin's date"
+    );
+    let sentence = c
+        .parenthesized_same_sunday_sentence(oct(25))
+        .expect("the SameSunday note names the disagreeing garnish");
+    assert_eq!(
+        sentence,
+        "These words say they are for Sunday, October 25, 2026, the date \
+             written in parentheses. The words also name a Sunday in relative \
+             words that would be Sunday, November 1, 2026. The dates in \
+             parentheses do not agree with each other: Sunday, October 25, \
+             2026 and Sunday, November 1, 2026."
+    );
+    // Both groups agreeing with the resolution reads
+    // exactly as the single agreeing group does.
+    let text = "For Sunday: the Sunday after next Sunday (November 1) (November 1, 2026)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_dates, vec![nov(1), nov(1)]);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(1))
+    );
+    assert_eq!(c.parenthesized_different_sentence(oct(25)), None);
+    // Non-date groups are skipped in both orders, as
+    // the round-8 probes held: the date group is the
+    // only memory.
+    for line in [
+        "next Sunday (Room 2) (October 25)",
+        "next Sunday (October 25) (Room 2)",
+        "next Sunday (October 25) (Sunday)",
+        "next Sunday (Sunday) (October 25)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_sunday_parenthesized_dates, vec![oct(25)], "{line}");
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn r9c_a_parenthesized_date_that_matches_the_bulletin_reads_same_sunday() {
+    // Round 9 (R9-11, red team RT9-11 verbatim):
+    // bulletin October 25; "the Sunday after next
+    // Sunday (October 25)". The relative resolution
+    // is November 1 and the parenthesis disagrees
+    // with it, but the parenthesis IS the bulletin's
+    // date: the old armed sentence named October 25
+    // as both the file's Sunday and the bulletin's.
+    // The parenthesized date is the sender's explicit
+    // date and the stronger signal, so the verdict is
+    // SameSunday, unarmed, and the review notes the
+    // relative words in plain words.
+    let text = "For Sunday: the Sunday after next Sunday (October 25)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    let sentence = c
+        .parenthesized_same_sunday_sentence(oct(25))
+        .expect("the note stands beside the SameSunday verdict");
+    assert_eq!(
+        sentence,
+        "These words say they are for Sunday, October 25, 2026, the date \
+             written in parentheses. The words also name a Sunday in relative \
+             words that would be Sunday, November 1, 2026."
+    );
+    assert_eq!(c.parenthesized_different_sentence(oct(25)), None);
+    // The other branch: the parenthesis matches
+    // neither the resolution (November 1) nor the
+    // bulletin (October 25). It still arms, and the
+    // armed sentence names the resolution and the
+    // parenthesized date — never one date on both
+    // sides.
+    let text = "For Sunday: the Sunday after next Sunday (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(8))
+    );
+    let sentence = c
+        .parenthesized_different_sentence(oct(25))
+        .expect("the armed sentence names both dates");
+    assert_eq!(
+        sentence,
+        "These words name a Sunday in relative words that would be \
+             Sunday, November 1, 2026. The date in parentheses is Sunday, \
+             November 8, 2026. The bulletin open is for Sunday, October 25, 2026."
+    );
+    assert_eq!(c.parenthesized_same_sunday_sentence(oct(25)), None);
+    // The agreeing-with-resolution shape keeps the
+    // ordinary armed sentence: no special sentence.
+    let text = "For Sunday: the Sunday after next Sunday (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(1))
+    );
+    assert_eq!(c.parenthesized_different_sentence(oct(25)), None);
+    assert_eq!(c.parenthesized_same_sunday_sentence(oct(25)), None);
+}
+
+#[test]
+fn r9c_absolute_lines_compose_a_parenthesized_date_as_garnish() {
+    // Round 9 (R9-12, red team RT9-12 verbatim): on
+    // absolute lines a parenthesized date was never
+    // examined — a plain date with one read as NO
+    // date at all, and a Sunday-after line's
+    // contradictory parenthesis was invisible.
+    // The plain shape must yield its date.
+    let text = "For Sunday: October 25, 2026 (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "the plain date reads");
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SameSunday,
+        "the line's own date governs"
+    );
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the disagreeing parenthesis is recorded");
+    assert_eq!(m.read, oct(25));
+    assert_eq!(m.named, nov(1));
+    assert_eq!(
+        m.sentence(),
+        "This part names October 25, 2026, but the date in parentheses is \
+             November 1, 2026. Check the date with the sender."
+    );
+    // Agreeing stands clean.
+    let text = "For Sunday: October 25, 2026 (October 25)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    // The Keep-through mirror of the plain shape.
+    let text = "Keep-through: October 25, 2026 (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the keep-through mirror records it");
+    assert_eq!(m.read, oct(25));
+    assert_eq!(m.named, nov(1));
+    // A Sunday-after line's parenthesis is compared
+    // with the resolution (November 1): the
+    // contradictory one is recorded, the agreeing
+    // one stands clean — on both lines, where the
+    // machinery is shared.
+    let text = "For Sunday: Sunday after October 25, 2026 (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(
+        week_verdict(&c, Some(nov(1))),
+        WeekVerdict::SameSunday,
+        "against its own resolution the line is clean but for the garnish"
+    );
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the contradictory parenthesis is no longer invisible");
+    assert_eq!(m.read, nov(1));
+    assert_eq!(m.named, nov(8));
+    let text = "For Sunday: Sunday after October 25, 2026 (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    let text =
+        "Keep-through: Sunday after October 25, 2026 (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)));
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the keep-through mirror records it too");
+    assert_eq!(m.read, nov(1));
+    assert_eq!(m.named, nov(8));
+    let text =
+        "Keep-through: Sunday after October 25, 2026 (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)));
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+    // The trailing weekday parenthesis control
+    // stands as it always has: "(Monday)" is a
+    // weekday garnish, judged as one, not a date.
+    let text = "For Sunday: October 25, 2026 (Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert!(c.named_weekday_mismatch.is_some());
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+}
+
+#[test]
+fn r9c_a_second_date_in_a_date_line_is_noted_not_substituted() {
+    // Round 9 (R9-13, red team RT9-13 verbatim): the
+    // line concludes SameSunday on the framed date,
+    // and the sender's operative second date was
+    // invisible to the review. It is now noted in
+    // plain words, without changing which date
+    // governs.
+    let line =
+        "on Sunday, October 25, 2026 was when the fair was supposed to be, use November 1 instead";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "the framed date still governs");
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    assert_eq!(c.for_sunday_second_date, Some(nov(1)));
+    assert_eq!(
+        second_date_sentence(nov(1)),
+        "This file named another date too: Sunday, November 1, 2026. \
+             Check which date was meant."
+    );
+    // The Keep-through mirror, run verbatim as the
+    // red team ran it.
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    assert_eq!(c.keep_through_second_date, Some(nov(1)));
+    assert_eq!(
+        keep_through_second_date_sentence(nov(1)),
+        "The Keep-through line named another date too: Sunday, \
+             November 1, 2026. Check which date was meant."
+    );
+    // Single-date lines note nothing: their review
+    // sentences are unchanged.
+    let text = "For Sunday: October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_second_date, None);
+    // A Sunday-after line's base is not a second
+    // date: it is the date the read date resolves
+    // from.
+    let text = "For Sunday: Sunday after October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_date, None);
+    // A parenthesized garnish is remembered on its
+    // own record, not double-counted as a second
+    // date.
+    let text = "For Sunday: October 25, 2026 (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_date, None);
+    // The same date named twice is not another date.
+    let text = "For Sunday: on Sunday, October 25, 2026, the same Sunday, October 25, 2026 as ever\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_date, None);
+}
+
+#[test]
+fn r10b_a_second_date_before_the_read_date_is_noted() {
+    // Round 10 (R10-4, red team RT10-D1 verbatim):
+    // "Use November 1, not Sunday, October 25, 2026"
+    // read October 25 with the November 1 standing
+    // BEFORE it invisible — the second-date scan only
+    // looked after the read date. The scan now reads
+    // the whole line: the before-the-date correction
+    // earns the same note, and the same arming, as
+    // the after-the-date case pinned in round 9
+    // (the read date governs; the verdict stays
+    // SameSunday, unarmed, beside the note).
+    let text =
+        "For Sunday: Use November 1, not Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "the framed date still governs");
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SameSunday,
+        "armed exactly as the after-the-date case: not at all"
+    );
+    assert_eq!(c.for_sunday_second_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    assert_eq!(
+        second_dates_sentence(&c.for_sunday_second_dates),
+        "This file named another date too: Sunday, November 1, 2026. \
+             Check which date was meant."
+    );
+    // The Keep-through mirror.
+    let text =
+        "Keep-through: Use November 1, not Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    assert_eq!(c.keep_through_second_date, Some(nov(1)));
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+    // Its twin is indistinguishable to the machinery,
+    // as the red team recorded: the framed date is
+    // followed and the other date is noted either way.
+    let text = "For Sunday: The fair moved from November 1 to Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+}
+
+#[test]
+fn r10b_a_wordy_trailing_group_contributes_its_date() {
+    // Round 10 (R10-5, red team RT10-D2 verbatim): a
+    // trailing group with words in it used to poison
+    // the whole line — no date read at all. A group
+    // containing exactly one absolute date now
+    // contributes it as a parenthesized date for the
+    // existing composition.
+    for line in [
+        "October 25, 2026 (correction: November 1)",
+        "October 25, 2026 (use November 1 instead)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "{line}: the line date reads");
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SameSunday,
+            "{line}"
+        );
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the contained date is named as a parenthesized mismatch");
+        assert_eq!(m.read, oct(25), "{line}");
+        assert_eq!(m.named, nov(1), "{line}");
+        assert_eq!(
+            m.sentence(),
+            "This part names October 25, 2026, but the date in parentheses is \
+                 November 1, 2026. Check the date with the sender.",
+            "{line}: named exactly as a bare-date group is"
+        );
+        assert_eq!(
+            c.for_sunday_second_date, None,
+            "{line}: the garnish is not double-counted as a second date"
+        );
+    }
+    // The Keep-through mirror of the correction shape.
+    let text =
+        "Keep-through: October 25, 2026 (correction: November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the keep-through mirror records it too");
+    assert_eq!(m.named, nov(1));
+    // FLAGGED PIN CHANGE (round 11, R11-6): both
+    // blocks below used to expect NoSundayNamed —
+    // the non-contributing group poisoned the plain
+    // reading it trailed, which is the defect
+    // RT11-6 names. A group that contributes nothing
+    // now behaves as if absent: the plain date
+    // reads and stands, and a two-date group's
+    // dates are named as alternatives on the
+    // second-date note. The groups themselves still
+    // contribute nothing, as they always have.
+    let text = "For Sunday: October 25, 2026 (Room 2)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(25)),
+        "the no-date group no longer poisons the line"
+    );
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    // A trailing group with two dates in it
+    // contributes nothing either — but the dates
+    // are named as alternatives, not laundered.
+    let text =
+        "For Sunday: October 25, 2026 (November 1 and November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(25)),
+        "the multi-date group no longer poisons the line"
+    );
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+}
+
+#[test]
+fn r10b_every_disagreeing_date_is_named_on_every_shape() {
+    // Round 10 (R10-6, review MINOR-1 + red team
+    // RT10-D3): outside the Sunday-after shape only
+    // one disagreeing date was ever named, and the
+    // Keep-through stacked sentence misdescribed
+    // where the kept date came from.
+    // Keep-through relative with three groups: the
+    // last stands, and BOTH earlier disagreeing
+    // groups are named; the sentence says the kept
+    // date came from the parentheses.
+    let text =
+            "Keep-through: next Sunday (November 1) (November 8) (November 15)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(15)));
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the stacked disagreement is recorded");
+    assert_eq!(m.read, nov(15));
+    assert_eq!(m.named, nov(1));
+    assert_eq!(m.also_named, vec![nov(8)], "November 8 is named too");
+    assert_eq!(
+        m.keep_through_sentence(),
+        "The dates in parentheses do not agree with each other: \
+             November 1, 2026 and November 8, 2026 and November 15, 2026. \
+             This part is read as keep through November 15, 2026. \
+             Check the date with the sender."
+    );
+    // The review lane's MINOR-1 witness: both dates
+    // were in parentheses, and the sentence now says
+    // so instead of framing one as a plain reading.
+    let text = "Keep-through: next Sunday (November 1) (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the stacked disagreement is recorded");
+    assert_eq!(
+        m.keep_through_sentence(),
+        "The dates in parentheses do not agree with each other: \
+             November 1, 2026 and November 8, 2026. \
+             This part is read as keep through November 8, 2026. \
+             Check the date with the sender."
+    );
+    // Absolute Keep-through lines with two groups,
+    // both orders: every disagreeing group is named.
+    let text =
+        "Keep-through: November 8, 2026 (November 1) (November 15)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("both disagreeing groups are recorded");
+    assert_eq!(m.named, nov(1));
+    assert_eq!(m.also_named, vec![nov(15)]);
+    assert_eq!(
+        m.keep_through_sentence(),
+        "This part says keep through November 8, 2026, but the dates in \
+             parentheses are November 1, 2026 and November 15, 2026. \
+             Check the date with the sender."
+    );
+    let text =
+        "Keep-through: November 8, 2026 (November 15) (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("both disagreeing groups are recorded, in written order");
+    assert_eq!(m.named, nov(15));
+    assert_eq!(m.also_named, vec![nov(1)]);
+    // Absolute For Sunday line with two groups.
+    let text = "For Sunday: October 25, 2026 (November 1) (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("both disagreeing groups are recorded");
+    assert_eq!(m.named, nov(1));
+    assert_eq!(m.also_named, vec![nov(8)]);
+    assert_eq!(
+        m.sentence(),
+        "This part names October 25, 2026, but the dates in parentheses are \
+             November 1, 2026 and November 8, 2026. \
+             Check the date with the sender."
+    );
+    // A middle group that agrees with the standing
+    // date does not hide the disagreeing groups
+    // around it: every distinct disagreeing date is
+    // still named.
+    let text = "For Sunday: October 25, 2026 (November 1) (October 25) (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the disagreeing groups are recorded");
+    assert_eq!(m.named, nov(1));
+    assert_eq!(m.also_named, vec![nov(8)]);
+    // The bare relative shape gains the listing
+    // sentence: every group is named, and the
+    // bulletin is named.
+    let text =
+            "For Sunday: next Sunday (November 8) (November 15) (October 25)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(8))
+    );
+    let sentence = c
+        .parenthesized_different_sentence(oct(25))
+        .expect("the bare shape gains the listing sentence");
+    assert_eq!(
+        sentence,
+        "These words name a Sunday in relative words that would be \
+             Sunday, October 25, 2026. The dates in parentheses do not agree \
+             with each other: Sunday, November 8, 2026 and Sunday, November 15, \
+             2026 and Sunday, October 25, 2026. The bulletin open is for \
+             Sunday, October 25, 2026."
+    );
+    // Two second dates: the note names both.
+    let line = "on Sunday, October 25, 2026 was when the fair was supposed to be, use November 1 instead, or November 8 instead";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+    assert_eq!(
+        second_dates_sentence(&c.for_sunday_second_dates),
+        "This file named other dates too: Sunday, November 1, 2026 and \
+             Sunday, November 8, 2026. Check which date was meant."
+    );
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SameSunday,
+        "the note still changes no verdict"
+    );
+}
+
+#[test]
+fn r10b_a_different_sunday_verdict_never_carries_the_bulletins_date() {
+    // Round 10 (R10-7, review MINOR-2): under
+    // stacked-parenthesis composition week_verdict
+    // could return DifferentSunday(d) where d IS
+    // the open bulletin's date. The contract is
+    // pinned over the stacked shapes wholesale:
+    // for every witness, DifferentSunday(d) implies
+    // d != the bulletin's date.
+    // The review lane's witness reads SameSunday
+    // with a note naming the disagreeing garnish.
+    let text = "For Sunday: the Sunday after next Sunday (October 25) (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    let sentence = c
+        .parenthesized_same_sunday_sentence(oct(25))
+        .expect("the SameSunday note stands");
+    assert!(
+        sentence.contains("Sunday, November 8, 2026"),
+        "the disagreeing garnish is named in the note: {sentence}"
+    );
+    // The wholesale pin over the stacked shapes,
+    // both group orders and both bulletins.
+    let shapes: [(&str, SimpleDate); 10] = [
+        (
+            "the Sunday after next Sunday (October 25) (November 8)",
+            oct(25),
+        ),
+        (
+            "the Sunday after next Sunday (October 25) (November 1)",
+            oct(25),
+        ),
+        (
+            "the Sunday after next Sunday (November 8) (October 25)",
+            oct(25),
+        ),
+        (
+            "the Sunday after next Sunday (November 1) (November 8)",
+            oct(25),
+        ),
+        ("the Sunday after next Sunday (October 25)", oct(25)),
+        ("the Sunday after next Sunday (November 8)", oct(25)),
+        (
+            "the Sunday after next Sunday (November 1) (November 8)",
+            nov(1),
+        ),
+        ("next Sunday (November 1) (October 25)", oct(25)),
+        ("next Sunday (October 25) (November 1)", oct(25)),
+        ("next Sunday (November 8) (November 15)", oct(25)),
+    ];
+    for (line, bulletin) in shapes {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        if let WeekVerdict::DifferentSunday(d) = week_verdict(&c, Some(bulletin)) {
+            assert_ne!(
+                d,
+                bulletin,
+                "{line} against {}: DifferentSunday never carries the bulletin's date",
+                format_date_long(bulletin)
+            );
+        }
+    }
+}
+
+#[test]
+fn r10b_paren_only_for_sunday_parity_and_a_mid_date_group() {
+    // Round 10 (R10-10, red team RT10-D4): a
+    // paren-only For Sunday line read NoSundayNamed
+    // against every bulletin while the identical
+    // Keep-through line read its date fine.
+    let text = "For Sunday: (October 25)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "the paren-only date reads");
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SameSunday,
+        "composed by the existing rules, as Keep-through is"
+    );
+    assert_eq!(
+        week_verdict(&c, Some(nov(1))),
+        WeekVerdict::DifferentSunday(oct(25))
+    );
+    let text = "Keep-through: (October 25)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)), "the parity shape itself");
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+    // Stacked paren-only groups: the last stands and
+    // the earlier disagreement is recorded, its
+    // source stated as the parentheses.
+    let text = "For Sunday: (October 25) (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the stacked paren-only disagreement is recorded");
+    assert_eq!(m.read, nov(1));
+    assert_eq!(m.named, oct(25));
+    assert_eq!(
+        m.sentence(),
+        "The dates in parentheses do not agree with each other: \
+             October 25, 2026 and November 1, 2026. \
+             This part is read as naming November 1, 2026. \
+             Check the date with the sender."
+    );
+    // A group standing between a month-day and its
+    // year does not poison the plain date: it reads
+    // October 25, 2026 with the November 1 group
+    // compared as garnish, on both lines.
+    let text = "For Sunday: October 25 (November 1), 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the mid-date group is compared as garnish");
+    assert_eq!(m.read, oct(25));
+    assert_eq!(m.named, nov(1));
+    assert_eq!(
+        c.for_sunday_second_date, None,
+        "the garnish is not double-counted as a second date"
+    );
+    let text = "Keep-through: October 25 (November 1), 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the keep-through mirror compares it too");
+    assert_eq!(m.named, nov(1));
+    // The accepted boundary stands (R10-10c): a
+    // group followed by other words, or standing
+    // before the phrase, stays unread.
+    let text = "For Sunday: next Sunday (October 25) please\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+    let text = "For Sunday: (October 25) next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+}
+
+#[test]
+fn r11c_negated_and_origin_groups_contribute_nothing() {
+    // Round 11 (R11-4, red team RT11-5 verbatim): a
+    // contained date governed by a negation or an
+    // origin marker standing before it inside its
+    // group does not contribute, on every consuming
+    // path. November 1, 2026 is a Sunday.
+    for group in [
+        "(not November 1)",
+        "(ignore November 1)",
+        "(moved from November 1)",
+        "(from November 1)",
+        "(never November 1)",
+        "(no longer November 1)",
+        "(don't use November 1)",
+        "(didn't use November 1)",
+        "(originally November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        let expected_words = format!("next Sunday {group}");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(expected_words.as_str()),
+            "{group}: the relative words still stand"
+        );
+        assert_eq!(c.for_sunday_parenthesized_date, None, "{group}");
+        assert_eq!(
+            c.for_sunday_parenthesized_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the governed date is not remembered"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the governed date"
+        );
+        // Paren-only lines: the governed date never
+        // becomes the operative date.
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{group}");
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::NoSundayNamed,
+            "{group}: never SameSunday on a negated date"
+        );
+        // Keep-through lines: trailing governed
+        // groups and the fallback alike set nothing.
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through paren-only");
+        let text = format!("Keep-through: choir anthem {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through fallback");
+        assert_eq!(c.keep_through_parenthesized_mismatch, None, "{group}");
+    }
+    // The review lane's origin witness through the
+    // Keep-through fallback (R11-6 in their numbering).
+    let text = "Keep-through: choir anthem (from November 1 service)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through, None,
+        "an origin mention sets no keep-through"
+    );
+    // The Sunday-after relative shape: the sentence
+    // never states a negated date as the sender's.
+    let text =
+        "For Sunday: the Sunday after next Sunday (not November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        week_verdict(&c, Some(nov(1))),
+        WeekVerdict::DifferentSunday(nov(8)),
+        "resolved against November 1, not SameSunday on the negated group"
+    );
+    assert_eq!(c.parenthesized_same_sunday_sentence(nov(1)), None);
+    // Absolute composition: the plain date stands,
+    // no mismatch is recorded on the governed date.
+    let text = "For Sunday: October 25, 2026 (not November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    let text = "Keep-through: November 8, 2026 (ignore November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+    // Held shapes, unchanged: "(moved to ...)" is
+    // an assertion and arms; "(correction: ...)"
+    // contributes; a group restating the line's own
+    // date records no mismatch.
+    let text = "For Sunday: next Sunday (moved to November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(1)));
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(1))
+    );
+    let text = "For Sunday: October 25, 2026 (correction: November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the correction shape still contributes");
+    assert_eq!(m.named, nov(1));
+    let text =
+        "For Sunday: October 25, 2026 (service on October 25, 2026)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+}
+
+#[test]
+fn r11c_non_contributing_groups_name_alternatives_and_never_poison() {
+    // Round 11 (R11-6, red team RT11-6 + review
+    // R11-7): a group that contributes nothing never
+    // takes the line's reading with it, and offered
+    // alternatives are named on the second-date
+    // note, not laundered into a clean reading.
+    let text =
+        "For Sunday: October 25, 2026 (November 1 or November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "the plain date stands");
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+    assert_eq!(
+        second_dates_sentence(&c.for_sunday_second_dates),
+        "This file named other dates too: Sunday, November 1, 2026 and \
+             Sunday, November 8, 2026. Check which date was meant."
+    );
+    // The relative mirror: the words resolve, the
+    // alternatives are named beside the resolution,
+    // and no group feeds the verdict.
+    let text = "For Sunday: next Sunday (November 1 or November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_in_words.as_deref(),
+        Some("next Sunday (November 1 or November 8)")
+    );
+    assert_eq!(c.for_sunday_parenthesized_dates, Vec::<SimpleDate>::new());
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SundayInWords(oct(25)),
+        "resolved on the words, not armed on an alternative"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1), nov(8)],
+        "the alternatives are named, not laundered into a clean acceptance"
+    );
+    // Nested groups kill neither reading.
+    // FLAGGED PIN CHANGE (round 12, R12-7b): the
+    // relative block below used to expect
+    // SundayInWords — the nested group's date was
+    // invisible inside its inner parentheses,
+    // which is the defect RT12-5 names. The group
+    // content reading now sees through balanced
+    // inner parentheses, exactly as the flat
+    // "(note: November 1)" control has always
+    // contributed, so November 1 is the group's
+    // date: it is compared as garnish on the
+    // absolute line and remembered — and armed —
+    // on the relative one.
+    let text = "For Sunday: October 25, 2026 (note (November 1))\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the nested group's date is compared as garnish");
+    assert_eq!(m.named, nov(1));
+    let text = "For Sunday: next Sunday (note (November 1))\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_in_words.as_deref(),
+        Some("next Sunday (note (November 1))")
+    );
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(1)));
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(1))
+    );
+    // "Or the 8th" is an offered alternative, not a
+    // promotion of November 1 alone to a certainty.
+    let text = "For Sunday: next Sunday (November 1 or the 8th)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_dates, Vec::<SimpleDate>::new());
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SundayInWords(oct(25)),
+        "November 1 alone no longer arms"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+    let text = "For Sunday: October 25, 2026 (November 1 or the 8th)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+    // A mid-date group plus a trailing group
+    // together (review R11-7): the plain date reads,
+    // and both groups are compared as garnish.
+    let text = "For Sunday: October 25 (November 1), 2026 (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("both groups are named as garnish");
+    assert_eq!(m.named, nov(1));
+    assert_eq!(m.also_named, vec![nov(8)]);
+}
+
+#[test]
+fn r11c_the_second_date_anchor_is_the_read_dates_own_occurrence() {
+    // Round 11 (R11-7, review R11-3 + red team
+    // RT11-3): "October 20, then Sunday, October 25,
+    // 2026" notes October 20 — a date in the six
+    // days before the read date is a second date,
+    // not the read date's anchor by proxy.
+    let text = "For Sunday: October 20, then Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, vec![oct(20)]);
+    assert_eq!(
+        second_dates_sentence(&c.for_sunday_second_dates),
+        "This file named another date too: Tuesday, October 20, 2026. \
+             Check which date was meant."
+    );
+    let text = "For Sunday: October 20, 2026 planning day; service is Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, vec![oct(20)]);
+    // The Keep-through mirror.
+    let text = "Keep-through: October 20, 2026 planning day; service is Sunday, October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    assert_eq!(c.keep_through_second_dates, vec![oct(20)]);
+    // On a Sunday-after line the resolution's base
+    // is never flagged as its own second date...
+    let text = "For Sunday: the Sunday after October 20, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    // ...and a stray date standing before the phrase
+    // is the date noted, not the base.
+    let text = "For Sunday: October 22, 2026 social; the Sunday after October 20, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, vec![oct(22)]);
+}
+
+#[test]
+fn r11c_a_contradicting_weekday_inside_a_wordy_group_contributes_nothing() {
+    // Round 11 (R11-8, review R11-4 + red team
+    // RT11-6 tail): November 1, 2026 is a Sunday, so
+    // a group naming it a Monday contributes
+    // nothing — the weekday law inside groups.
+    let text = "For Sunday: October 25, 2026 (Monday November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    let text =
+        "For Sunday: October 25, 2026 (correction: Monday, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    // A paren-only line governed by such a group
+    // reads no date at all.
+    for line in ["(Monday November 1)", "(correction: Monday, November 1)"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{line}");
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::NoSundayNamed,
+            "{line}: no governing on a weekday-contradicted date"
+        );
+    }
+    // An agreeing weekday inside the group leaves
+    // the contribution standing.
+    let text =
+        "For Sunday: October 25, 2026 (correction: Sunday, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("an agreeing weekday still contributes");
+    assert_eq!(m.named, nov(1));
+}
+
+#[test]
+fn r12a_governor_families_completed_on_every_path() {
+    // Round 12 (R12-1, red team RT12-1 + review
+    // R12-3): the R11 governor list missed the
+    // ordinary words an office actually writes,
+    // and every miss reproduced the full R11-4
+    // harm — the disowned date armed a verdict,
+    // blessed SameSunday, or set keep-through.
+    // The families are completed: negation /
+    // cancellation (skip, except, rather than,
+    // instead of, cancelled/canceled, bare no,
+    // isn't family, never mind) and origin / past
+    // (previously, formerly, used to be, was, old
+    // date), on top of the R11 set. Each phrasing
+    // is pinned on every consuming path.
+    for phrase in [
+        "skip",
+        "except",
+        "rather than",
+        "instead of",
+        "cancelled",
+        "canceled:",
+        "no",
+        "isn't",
+        "aren't",
+        "wasn't",
+        "weren't",
+        "never mind",
+        "previously",
+        "formerly",
+        "used to be",
+        "was",
+        "old date:",
+    ] {
+        let group = format!("({phrase} November 1)");
+        // Relative path: the governed date is not
+        // remembered, and nothing arms on it.
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        let expected_words = format!("next Sunday {group}");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(expected_words.as_str()),
+            "{group}: the relative words still stand"
+        );
+        assert_eq!(c.for_sunday_parenthesized_date, None, "{group}");
+        assert_eq!(
+            c.for_sunday_parenthesized_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the governed date is not remembered"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the governed date"
+        );
+        // Paren-only path: the governed date never
+        // becomes the operative date.
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{group}");
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::NoSundayNamed,
+            "{group}: never SameSunday on a governed date"
+        );
+        // Keep-through paths: trailing governed
+        // groups and the fallback alike set
+        // nothing.
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through paren-only");
+        let text = format!("Keep-through: choir anthem {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through fallback");
+        assert_eq!(c.keep_through_parenthesized_mismatch, None, "{group}");
+        // Absolute composition: the plain date
+        // stands, and no mismatch is recorded on
+        // the governed date.
+        let text = format!("For Sunday: October 25, 2026 {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "{group}");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{group}");
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SameSunday,
+            "{group}"
+        );
+    }
+    // A governed date trailing a line's own date
+    // names no mismatch either (RT12-1's trailing
+    // form, with a completed-family word).
+    let text = "For Sunday: November 1, 2026 (skip November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+    // Held care with the common words: "was" and
+    // "no" govern only in the governing clause.
+    // A group merely carrying them in an earlier
+    // clause still contributes its date — the
+    // governor was spent on that clause's own
+    // words, not on the date in the fresh clause
+    // after the comma.
+    for group in [
+        "(choir was singing, November 1)",
+        "(no rehearsal, November 1)",
+        "(it was moved, November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{group}: a non-governing \"was\"/\"no\" does not disqualify"
+        );
+    }
+}
+
+#[test]
+fn r13a_contraction_class_and_wrong_label_on_every_path() {
+    // Round 13 (R13-1, review R13-1 + red team
+    // RT13-1): the governor families missed the
+    // contraction class, and "(won't be November
+    // 1)" / "(wrong: November 1)" reproduced the
+    // full R11-4 harm on every consuming path.
+    // Negation is now a class: any token ending
+    // in "n't", plus unpunctuated "wont" and
+    // "cannot", governs — the rule a reader
+    // applies, not another word list.
+    for phrase in [
+        "won't be",
+        "wont be",
+        "cannot be",
+        "can't be",
+        "shouldn't be",
+        "couldn't be",
+    ] {
+        let group = format!("({phrase} November 1)");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the contraction class governs on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the governed date is not remembered"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the governed date"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::SundayInWords(nov(1)),
+            "{group}: the words resolve against the bulletin, \
+                 never DifferentSunday on the governed date"
+        );
+    }
+    // Held controls: the spelled-out forms the
+    // bare "not" token has always caught still
+    // govern.
+    for phrase in ["will not be", "must not be", "is not"] {
+        let group = format!("({phrase} November 1)");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the spelled-out negation still governs"
+        );
+    }
+    // "won't" and the "wrong:" label are pinned
+    // on every consuming path, the way the R12
+    // families are.
+    for phrase in ["won't be", "wrong:"] {
+        let group = format!("({phrase} November 1)");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        let expected_words = format!("next Sunday {group}");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(expected_words.as_str()),
+            "{group}: the relative words still stand"
+        );
+        assert_eq!(c.for_sunday_parenthesized_date, None, "{group}");
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the governed date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{group}");
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::NoSundayNamed,
+            "{group}: never SameSunday on a governed date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through paren-only");
+        let text = format!("Keep-through: choir anthem {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through fallback");
+        assert_eq!(c.keep_through_parenthesized_mismatch, None, "{group}");
+        let text = format!("For Sunday: October 25, 2026 {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "{group}");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{group}");
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SameSunday,
+            "{group}"
+        );
+    }
+}
+
+#[test]
+fn r13a_cancellation_verbs_disqualify() {
+    // Round 13 (R13-1, red team RT13-1): the
+    // cancellation family held only the past
+    // forms cancelled/canceled; the verbs an
+    // office actually writes — cancel, scratch,
+    // drop, postpone, remove, hold off — governed
+    // nothing, and every miss set the dropped
+    // date as keep-through or armed it.
+    for phrase in [
+        "cancel", "scratch", "drop", "postpone", "remove", "hold off",
+    ] {
+        let group = format!("({phrase} November 1)");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the cancellation verb governs on the relative path"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the cancelled date"
+        );
+    }
+    // Cancel and scratch are also pinned on the
+    // Keep-through paths, trailing and fallback.
+    for phrase in ["cancel", "scratch"] {
+        let group = format!("({phrase} November 1)");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through paren-only");
+        let text = format!("Keep-through: choir anthem {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through fallback");
+        assert_eq!(c.keep_through_parenthesized_mismatch, None, "{group}");
+    }
+}
+
+#[test]
+fn r13a_unspent_governor_survives_clause_break() {
+    // Round 13 (R13-2, review R13-2): a clause
+    // break erased a governor that had governed
+    // nothing yet — "(ignore, November 1)" and
+    // its family contributed in full. A break now
+    // erases only a spent governor: an unspent
+    // governor standing as its clause's trailing
+    // element (nothing after it but date-referring
+    // filler) still governs the first date of the
+    // next clause.
+    for group in [
+        "(ignore, November 1)",
+        "(from, November 1)",
+        "(skip, November 1)",
+        "(please ignore, November 1)",
+        "(do not use, November 1)",
+        "(ignore the date, November 1)",
+        "(ignore; November 1)",
+        "(ignore - November 1)",
+        "(ignore \u{2014} November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the unspent governor survives the break"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the governed date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::NoSundayNamed,
+            "{group}: never SameSunday on a governed date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // The garnish pin stands, on comma, semicolon
+    // and dash alike: a governor followed by other
+    // words in its own clause reaches nothing
+    // across the break, and the fresh-clause date
+    // is named, not silently dropped.
+    for group in [
+        "(notes from the pastor, November 1)",
+        "(notes from the pastor; November 1)",
+        "(notes from the pastor - November 1)",
+    ] {
+        let text = format!("For Sunday: October 25, 2026 {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "{group}");
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the fresh-clause date is named, not silently dropped");
+        assert_eq!(m.named, nov(1), "{group}");
+    }
+    // Held care cases stand with original
+    // expectations: a non-governing clause before
+    // the break contributes its date, a group
+    // naming no full date reads nothing, and the
+    // between-two-dates pins are untouched — a
+    // governor spent on one date (forward, or as
+    // the trailing cancellation the date it
+    // follows claims) governs nothing after it.
+    let text =
+        "For Sunday: next Sunday (choir was singing, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(1)));
+    let text = "For Sunday: next Sunday (choir from November)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, None);
+    assert_eq!(c.for_sunday_parenthesized_dates, Vec::<SimpleDate>::new());
+    let text =
+        "For Sunday: next Sunday (ignore November 1, use November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(8)));
+    let text = "For Sunday: (November 1, cancelled, November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "a spent cancellation governs nothing in the fresh clause"
+    );
+}
+
+#[test]
+fn r14a_wider_verb_set_governs_before_the_date() {
+    // Round 14 (R14-1a, review R14-1 + red team
+    // RT14-2): the before-position verb set the
+    // R13-A builder flagged as untaken — put off,
+    // delay, omit, disregard, forget (about) —
+    // contributed at full strength on every path.
+    // The set is completed, the split form
+    // included. Each phrasing is pinned on the
+    // relative, paren-only, and Keep-through
+    // paths, the way the lanes probed them.
+    for phrase in [
+        "put off",
+        "delay",
+        "delayed",
+        "omit",
+        "disregard",
+        "forget",
+        "forget about",
+    ] {
+        let group = format!("({phrase} November 1)");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: governs on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the governed date is not remembered"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the governed date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::NoSundayNamed,
+            "{group}: never SameSunday on a governed date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through paren-only");
+        let text = format!("Keep-through: choir anthem {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through fallback");
+    }
+    // The split form: "put" before the date,
+    // "off" after it, one phrasal governor
+    // wrapped around its date.
+    let group = "(put November 1 off)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date, None,
+        "{group}: the split form governs on the relative path"
+    );
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: paren-only");
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "{group}: keep-through");
+    // Held care: a bare "put" with no "off" is
+    // not the phrasal governor — the date stands.
+    let text = "For Sunday: (put November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "a bare \"put\" governs nothing without its \"off\""
+    );
+}
+
+#[test]
+fn r14a_cancellation_verbs_govern_by_stem() {
+    // Round 14 (R14-1b, red team RT14-2): the
+    // attested verbs' own morphology governed
+    // nothing — the list matched whole tokens and
+    // no tense class existed beside the
+    // contraction class. The cancellation verbs
+    // now match by stem: base, -ed, and -ing
+    // forms, doubled-consonant and e-drop
+    // spellings included.
+    for phrase in [
+        "cancelling",  // doubled consonant
+        "canceling",   // e-drop class spelling of cancel
+        "postponing",  // e-drop
+        "postponed",   // e-final past
+        "removing",    // e-drop
+        "dropping",    // doubled consonant
+        "dropped",     // doubled consonant past
+        "scratching",  // plain -ing
+        "delaying",    // plain -ing
+        "omitting",    // doubled consonant
+        "disregarded", // plain -ed
+        "forgetting",  // doubled consonant
+    ] {
+        let group = format!("({phrase} November 1)");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the stem form governs on the relative path"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the governed date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // Overreach discipline, pinned: the stem rule
+    // matches verb inflections only. Noun
+    // derivations and near-miss words govern
+    // nothing, and the dates they stand before
+    // are named.
+    for group in [
+        "(cancellation policy, November 1)",
+        "(postponement notice, November 1)",
+        "(November notes, November 1)",
+    ] {
+        let text = format!("For Sunday: October 25, 2026 {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "{group}");
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the near-miss clause names its date");
+        assert_eq!(m.named, nov(1), "{group}: the date is named, not governed");
+    }
+}
+
+#[test]
+fn r14a_trailing_position_draws_from_the_same_family() {
+    // Round 14 (R14-2, review R14-3 + red team
+    // RT14-1): `governed_after` was never widened
+    // — after a date, only cancelled/canceled
+    // governed, so the trailing forms of the
+    // round's own verbs blessed the dates they
+    // cancelled. The trailing position now draws
+    // from the same family function as the before
+    // position. Before/after symmetry pins: each
+    // tail below disqualifies, and its
+    // before-position twin disqualifies too.
+    for (before, after) in [
+        ("drop November 1", "November 1, drop it"),
+        ("scratch November 1", "November 1, scratch that"),
+        ("postpone November 1", "November 1, postponed"),
+        ("remove November 1", "November 1, removed"),
+        ("put off November 1", "November 1, put off"),
+        ("hold off November 1", "November 1, hold off"),
+        ("cancel November 1", "November 1, cancel it"),
+        ("delay November 1", "November 1, delayed"),
+        ("omit November 1", "November 1, omit it"),
+        ("forget November 1", "November 1, forget it"),
+        ("ignore November 1", "November 1, ignore"),
+        ("dropping November 1", "November 1, dropping"),
+        ("cancel November 1", "November 1 - scratch that"),
+    ] {
+        let group = format!("({after})");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the trailing form governs on the relative path"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the cancelled date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::NoSundayNamed,
+            "{group}: never SameSunday on a cancelled date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+        let group = format!("({before})");
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: the before-position twin disqualifies too"
+        );
+    }
+    // A governor at the end of a nested
+    // parenthetical inside the group still falls
+    // back on the date it follows (RT14-1).
+    let text = "For Sunday: (November 1 (ignore))\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "the nested trailing governor disqualifies"
+    );
+    // Held lines stand: a trailing cancellation
+    // is spent on the date it follows and governs
+    // nothing after it — the fresh date asserts,
+    // for the widened family as for cancelled.
+    for group in [
+        "(November 1, cancelled, November 8)",
+        "(November 1, postponed, November 8)",
+        "(November 1, drop it, November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the spent trailing governor governs nothing after it"
+        );
+    }
+    // And the prospective fallback stays scoped:
+    // a "not" with a later date to govern leaves
+    // the date it follows untouched.
+    let text = "For Sunday: (November 1, not November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the trailing \"not\" governs the later date, not this one"
+    );
+}
+
+#[test]
+fn r14a_nope_hyphenated_compounds_and_possessed_wont() {
+    // Round 14 (R14-3): "nope" joins the negation
+    // family in the before position.
+    let group = "(nope November 1)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date, None,
+        "{group}: \"nope\" governs on the relative path"
+    );
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: paren-only");
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "{group}: keep-through");
+    // Its trailing twin governs too, under the
+    // last-date fallback (review R14-3's probe).
+    let text = "For Sunday: (November 1, nope)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the trailing \"nope\" disqualifies");
+    // Round 14 (R14-4): a hyphenated compound
+    // containing a governor stem or negation
+    // governs — the hyphens split for the
+    // governor test only.
+    for group in [
+        "(do-not-use November 1)",
+        "(no-longer November 1)",
+        "(hold-off November 1)",
+        "(never-mind November 1)",
+        "(scratch-that November 1)",
+        "(don't-use November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the hyphenated compound governs on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // The hyphenated trailing twin cancels too.
+    let text = "For Sunday: (November 1, hold-off)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the hyphenated trailing compound cancels");
+    // Held care: a hyphenated compound with no
+    // governor part governs nothing.
+    let text = "For Sunday: (follow-up November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "a hyphenated compound with no governor part names its date"
+    );
+    // Round 14 (R14-5): "wont" does not govern
+    // when immediately preceded by a possessive
+    // determiner — "(his wont, November 1)" now
+    // NAMES its date, on every path the lanes
+    // showed it suppressed.
+    for group in [
+        "(his wont, November 1)",
+        "(his wont November 1)",
+        "(her wont, November 1)",
+        "(by his wont, November 1)",
+        "(as is his wont, November 1)",
+    ] {
+        let text = format!("For Sunday: October 25, 2026 {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "{group}");
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the possessed \"wont\" clause names its date");
+        assert_eq!(m.named, nov(1), "{group}: the date is named, not governed");
+    }
+    let text = "For Sunday: next Sunday (his wont, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(1)),
+        "the possessed \"wont\" governs nothing on the relative path"
+    );
+    let text = "Keep-through: (his wont, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(1)),
+        "the possessed \"wont\" governs nothing on the keep-through path"
+    );
+    // The unpunctuated "won't" still governs where
+    // no possessive precedes it, and the
+    // contraction itself is unaffected by a
+    // possessive-shaped neighbour.
+    let text = "For Sunday: (wont be November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the bare \"wont\" still governs");
+    let text = "For Sunday: (his won't be November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the contraction \"won't\" is unaffected");
+}
+
+#[test]
+fn r14a_reach_back_crosses_filler_only_clauses() {
+    // Round 14 (RT14-4): the unspent-governor
+    // reach-back was exactly one clause — an
+    // extra comma defeated the held witness
+    // "(ignore the date, November 1)". The
+    // reach-back now crosses consecutive
+    // intervening clauses while each contains no
+    // date token and consists solely of filler
+    // words (the, a, an, date, it, note, notes).
+    for group in [
+        "(ignore, the date, November 1)",
+        "(ignore, notes, November 1)",
+        "(ignore, the, November 1)",
+        "(ignore, a note, the date, November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the reach-back crosses the filler clauses"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the governed date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // Content-clause control: an intervening
+    // clause with real content still stops the
+    // reach-back, and the date contributes.
+    for group in [
+        "(ignore, choir notes, November 1)",
+        "(ignore, notes from the pastor, November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{group}: a content clause stops the reach-back"
+        );
+    }
+    // Held companions from the same family: two
+    // unspent governors in two clauses still
+    // govern, and an unspent governor spends on
+    // the first date only.
+    let text = "For Sunday: (ignore, skip, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "two unspent governors still govern");
+    let text = "For Sunday: (ignore, November 1, November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the unspent governor spends on the first date only"
+    );
+}
+
+#[test]
+fn r15a_remaining_verbs_govern_before_and_trailing() {
+    // Round 15 (R15-1, review R15-1 + red team
+    // RT15-1): the verb family round 14 recorded
+    // as not taken — called off / call off, put
+    // back, push back, reschedule, move, shift,
+    // bump, in their stem forms — contributed at
+    // full strength before and trailing, on
+    // every path. They govern now.
+    for phrase in [
+        "called off",
+        "call off",
+        "calling off",
+        "calls off",
+        "put back",
+        "push back",
+        "pushed back",
+        "pushing back",
+        "reschedule",
+        "rescheduled",
+        "rescheduling",
+        "move",
+        "moved",
+        "moving",
+        "shift",
+        "shifted",
+        "bump",
+        "bumped",
+    ] {
+        let group = format!("({phrase} November 1)");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: governs on the relative path"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the governed date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::NoSundayNamed,
+            "{group}: never SameSunday on a governed date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+        let text = format!("Keep-through: choir anthem {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through fallback");
+    }
+    for phrase in [
+        "called off",
+        "call off",
+        "put back",
+        "pushed back",
+        "push back",
+        "rescheduled",
+        "reschedule",
+        "reschedule it",
+        "moved",
+        "move",
+        "shifted",
+        "bumped",
+    ] {
+        let group = format!("(November 1, {phrase})");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the trailing form governs on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // The split forms: the pair wrapped around
+    // its date governs, as "put ... off" has
+    // since round 14.
+    for group in [
+        "(called November 1 off)",
+        "(put November 1 back)",
+        "(push November 1 back)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the split form governs");
+    }
+    // A spent trailing phrase of the new family
+    // governs nothing after it — the fresh date
+    // asserts, as with cancelled.
+    for group in [
+        "(November 1, called off, November 8)",
+        "(November 1, rescheduled, November 8)",
+        "(November 1, moved, November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the spent trailing governor governs nothing after it"
+        );
+    }
+    // The "to"-target shapes assert their
+    // target: the phrase governs the FROM date
+    // when one stands before it, and with no
+    // from-date the to-date is the line's date.
+    for group in [
+        "(rescheduled to November 8)",
+        "(moved to November 8)",
+        "(move November 1 to November 8)",
+        "(November 1, moved to November 8)",
+        "(reschedule November 1 to November 8)",
+        "(bump November 1 to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+    }
+}
+
+#[test]
+fn r15a_s_forms_and_forgots_irregular_past_govern() {
+    // Round 15 (R15-2, review R15-2 + red team
+    // RT15-2): the stem rule missed its own
+    // fourth form — every -s form — and forget's
+    // irregular past. Both govern now, subject
+    // shapes included.
+    for phrase in [
+        "cancels",
+        "postpones",
+        "removes",
+        "delays",
+        "drops",
+        "scratches",
+        "omits",
+        "disregards",
+        "forgets",
+        "forgot",
+        "forgotten",
+        "forgot about",
+        "choir cancels",
+        "Sue postpones",
+        "it removes",
+        "choir drops",
+        "we forgot",
+    ] {
+        let group = format!("({phrase} November 1)");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: governs on the relative path"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SundayInWords(oct(25)),
+            "{group}: no arming on the governed date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    for group in ["(November 1, cancels)", "(November 1, forgot)"] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the trailing form governs");
+    }
+    // The two-date correction shapes read their
+    // asserted date again, on its own terms.
+    for group in [
+        "(cancels November 1, use November 8)",
+        "(forgot November 1, use November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the asserted date is read"
+        );
+    }
+}
+
+#[test]
+fn r15a_stacked_cancellations_spend_the_whole_run() {
+    // Round 15 (R15-3, red team RT15-3): the
+    // spent-trailing exception covered only the
+    // clause immediately after a date, so a
+    // second cancellation phrase between the
+    // dates read unspent and governed the
+    // replacement — both dates vanished. The
+    // exception now covers a RUN of consecutive
+    // cancellation-only clauses: the whole run
+    // spends on the first date, the second
+    // asserts. Every lane construction is a
+    // witness, the "scratch that" variant
+    // included.
+    for group in [
+        "(November 1, cancelled, cancelled, November 8)",
+        "(November 1, postponed, postponed, November 8)",
+        "(November 1, cancelled, drop it, November 8)",
+        "(November 1, drop it, drop it, November 8)",
+        "(November 1, postponed, drop it, November 8)",
+        "(November 1, postponed, drop it, the date, November 8)",
+        "(November 1, cancelled, the date, drop it, November 8)",
+        "(November 1, postponed, scratch that, November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the replacement asserts on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+    }
+}
+
+#[test]
+fn r15a_of_joins_the_filler_reach_back() {
+    // Round 15 (RT15-5): the filler reach-back
+    // stopped at "of" — a filler clause carrying
+    // it read as content and armed the governed
+    // date. "of" is filler now, and a genitive
+    // fragment of the date phrase ("the date of
+    // the service") counts as filler too: it
+    // names the date's occasion, not content.
+    for group in [
+        "(ignore, the date of, November 1)",
+        "(ignore, the date of the service, November 1)",
+        "(ignore, the date of November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the reach-back crosses it"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // Content-clause control stands: a clause
+    // with real content of its own still stops
+    // the reach-back.
+    let text = "For Sunday: (ignore, the date, choir, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "a content clause still stops the reach-back"
+    );
+}
+
+#[test]
+fn r15a_trailing_scope_and_the_named_governed_date() {
+    // Round 15 (R15-6, red team RT15-6): one
+    // clause-scope rule for the trailing reach.
+    // (a) A trailing phrase governs the date it
+    // follows only when every clause between
+    // the date and the phrase is itself a
+    // cancellation or filler clause — a content
+    // clause breaks the reach, and the date
+    // contributes.
+    let group = "(November 1, choir practice, ignore)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(1)),
+        "{group}: the content clause breaks the trailing reach"
+    );
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    // The in-scope twins still govern: the
+    // phrase in the date's own clause, and the
+    // phrase behind nothing but filler.
+    for group in ["(November 1, ignore)", "(November 1, the date, ignore)"] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: still governs");
+    }
+    // (b) A trailing phrase governs the date it
+    // follows, and that date is still NAMED on
+    // the second-date note — governed, but
+    // named like any distinct date the line
+    // named, never silently dropped.
+    for (group, read, named) in [
+        ("(November 1, November 8, drop it)", nov(1), nov(8)),
+        ("(November 1, November 8, cancelled)", nov(1), nov(8)),
+        (
+            "(November 8, November 1, postponed, drop it)",
+            nov(8),
+            nov(1),
+        ),
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(read), "{group}: the first date stands");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![named],
+            "{group}: the governed date is named on the note"
+        );
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(read),
+            "{group}: relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![named],
+            "{group}: named on the relative path too"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(read), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![named],
+            "{group}: named on the keep-through note"
+        );
+    }
+}
+
+#[test]
+fn r16a_target_rule_reads_the_named_target() {
+    // Round 16 (R16-1, review R16-1 + red team
+    // RT16-1/2/3): the to-target rule fired only
+    // for the telegraphic "(moved to November 8)".
+    // The target rule is group-level now: a
+    // displacement or postpone phrase and a
+    // "to" / "until" + date later in the group —
+    // across auxiliaries, an object noun phrase,
+    // or "back" — reads that date as the target.
+    for group in [
+        "(it was moved to November 8)",
+        "(the service was moved to November 8)",
+        "(the potluck was moved to November 8)",
+        "(service was rescheduled to November 8)",
+        "(was moved to November 8)",
+        "(moved the potluck to November 8)",
+        "(moved the meeting to November 8)",
+        "(moved it to November 8)",
+        "(rescheduled the concert to November 8)",
+        "(moved back to November 8)",
+        "(moved forward to November 8)",
+        "(postponed to November 8)",
+        "(postponed until November 8)",
+        "(moved to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+    }
+    // With an earlier date in the group, the
+    // phrase governs that date and the target
+    // asserts; the governed date is named on the
+    // second-date note (R16-1 / R16-5).
+    for group in [
+        "(November 1, postponed to November 8)",
+        "(November 1, postponed until November 8)",
+        "(it was moved to November 8, November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the governed date is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{group}: named on the keep-through note"
+        );
+    }
+    // The claim's scope, stated as pins: a
+    // governor standing before the claim zone
+    // still governs the target, and a phrase
+    // outside the displacement/postpone family
+    // ("delayed") claims no target.
+    for group in ["(not moved to November 8)", "(delayed until November 8)"] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: no target is claimed");
+    }
+}
+
+#[test]
+fn r16a_prospective_clauses_spend_with_the_run() {
+    // Round 16 (R16-2, review Q4): a prospective
+    // clause inside a between-dates run broke
+    // run-spending — the replacement died unnamed,
+    // or both dates died in silence. Clauses
+    // between the dates that carry no date of
+    // their own and belong to the governor
+    // families now spend together on the first
+    // date; the second asserts, the first is named.
+    for group in [
+        "(November 1, not, drop it, November 8)",
+        "(November 1, postponed, not, November 8)",
+        "(November 1, drop it, not, November 8)",
+        "(November 1, ignore, drop it, November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the replacement asserts on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the spent first date is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{group}: named on the keep-through note"
+        );
+    }
+    // Held: a prospective word in the second
+    // date's own clause still governs that date —
+    // "(November 1, postponed, not November 8)"
+    // names nothing anywhere, the defensible
+    // silence — and a prospective clause carrying
+    // its own date is that date's own clause.
+    let text = "For Sunday: (November 1, postponed, not November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the negated replacement governs");
+    let text = "For Sunday: (November 1, postponed, use November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "a prospective clause carrying its own date asserts it"
+    );
+    // Held, defensible silence: a run AFTER the
+    // second date governs it and names it, and a
+    // trailing run over both dates silences both.
+    let text =
+        "For Sunday: (November 1, cancelled, November 8, drop it)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "both dates governed on the page");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "a lone governed outcome keeps the standing silence"
+    );
+}
+
+#[test]
+fn r16a_auxiliary_class_spends_every_participle() {
+    // Round 16 (R16-3, red team RT16-4 + review
+    // Q1): the auxiliary-spent rule was a five-word
+    // list scoped to single displacement stems.
+    // Auxiliaries are a class now (be / have / get
+    // forms, one adverb of tolerance), and the
+    // spent rule covers every governor participle,
+    // cancellation and displacement, single and
+    // phrasal: the predicate is spent on its
+    // subject, and the following date is the
+    // group's occasion date.
+    for (group, want) in [
+        ("(it was cancelled, November 1)", nov(1)),
+        ("(it was canceled, November 1)", nov(1)),
+        ("(they are moved, November 1)", nov(1)),
+        ("(it is being moved, November 1)", nov(1)),
+        ("(it was being moved, November 1)", nov(1)),
+        ("(it has moved, November 1)", nov(1)),
+        ("(it got moved, November 1)", nov(1)),
+        ("(it gets moved, November 1)", nov(1)),
+        ("(it was just moved, November 1)", nov(1)),
+        ("(it was put back, November 1)", nov(1)),
+        ("(it was pushed back, November 1)", nov(1)),
+        ("(it was called off, November 1)", nov(1)),
+        ("(it has been cancelled, November 1)", nov(1)),
+        ("(it was postponed, November 8)", nov(8)),
+        ("(it was put back, November 8)", nov(8)),
+        ("(it was moved, November 1)", nov(1)),
+        ("(she was shifted, November 1)", nov(1)),
+        ("(the meeting got moved, November 1)", nov(1)),
+        ("(it will be postponed, November 8)", nov(8)),
+        ("(it was recently rescheduled, November 1)", nov(1)),
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(want),
+            "{group}: the occasion date contributes on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{group}: keep-through");
+    }
+    // Held parity: without the clause break the
+    // spent rule does not apply, for both families
+    // alike — the predicate governs its date.
+    for group in ["(it was moved November 1)", "(it was cancelled November 1)"] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: no clause break, no spending");
+    }
+}
+
+#[test]
+fn r16a_plain_line_two_date_composition() {
+    // Round 16 (R16-4, red team RT16-5): the
+    // clause/run composition did not reach plain
+    // header lines — the same words that assert
+    // the replacement inside parentheses ARMED
+    // the vacated first date on a plain line. One
+    // composition, both surfaces.
+    let text = "For Sunday: November 1, 2026, postponed, drop it, November 8, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "the replacement asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "the governed first date is named"
+    );
+    let text = "Keep-through: November 1, 2026, postponed, drop it, November 8, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "keep-through mirror");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+    // The single-phrase and mirror shapes compose
+    // the same way.
+    let text =
+        "For Sunday: November 1, 2026, postponed, November 8, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    let text =
+        "For Sunday: November 8, 2026, postponed, November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the mirror asserts its replacement"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(8)]);
+    // The year-less shape with its "for".
+    let text =
+        "For Sunday: November 1, postponed, drop it, for November 8\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    // Both dates governed on the page reads as
+    // the group's silence, not as the first date.
+    let text = "For Sunday: November 1, 2026, cancelled, November 8, 2026, drop it\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "both dates governed on the page");
+    // Single-date plain lines are unchanged: a
+    // trailing cancellation still governs.
+    let text = "For Sunday: November 1, 2026, cancelled\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "single-date behavior unchanged");
+}
+
+#[test]
+fn r16a_governed_between_dates_is_named() {
+    // Round 16 (R16-5, review Q2): displacement
+    // noun labels suppress per the accepted fence,
+    // but between dates the suppressed date dropped
+    // UNNAMED — the R15-6a cost class. A date
+    // governed between dates is now named on the
+    // second-date note whatever family governed it.
+    for group in [
+        "(November 1, usher shift, November 8)",
+        "(November 1, parking bump, November 8)",
+        "(November 1, cancelled, November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the second date asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the governed date is named on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: named, not dropped in silence"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{group}: named on the keep-through note"
+        );
+    }
+}
+
+#[test]
+fn r16a_genitive_reach_back_crosses_the_completing_clause() {
+    // Round 16 (R16-7, review R16-6): the genitive
+    // filler rule was clause-local, so splitting
+    // "the date of / the service" at its own comma
+    // armed the date under an explicit "ignore".
+    // When a filler clause ends in "of", the
+    // reach-back also crosses the determiner-headed
+    // clause that completes the genitive.
+    for group in [
+        "(ignore, the date of, the service, November 1)",
+        "(ignore, the date of, the choir picnic, November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the reach-back crosses it on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // A following clause with real content — a
+    // verb-form among its words — still stops
+    // the reach-back: the clause is no longer a
+    // determiner-headed noun fragment.
+    let text = "For Sunday: (ignore, the date of, the moved service, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "a verb-form in the following clause stops the reach-back"
+    );
+}
+
+#[test]
+fn r16a_determiner_headed_s_nouns_name_their_dates() {
+    // Round 16 (RT16-6): determiner-headed -s noun
+    // phrases suppressed like verbs — "(the drops,
+    // November 1)" lost its date. An -s stem word
+    // heading a determiner-headed noun phrase does
+    // not govern in its -s form; bare -s forms
+    // keep governing (the accepted verb-identity
+    // class stands).
+    for group in [
+        "(the drops, November 1)",
+        "(the cough drops, November 1)",
+        "(the moves, November 1)",
+        "(the shifts, November 1)",
+        "(the bumps, November 1)",
+        "(the delays, November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{group}: the noun phrase names its date on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    }
+    // The trailing position reads the same way.
+    let text = "For Sunday: (November 1, the drops)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "trailing determiner-headed noun");
+    // Bare -s forms keep governing.
+    for group in ["(ticket drops, November 1)", "(choir cancels November 1)"] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the bare -s form still governs");
+    }
+}
+
+#[test]
+fn r17a_last_target_wins() {
+    // Round 17 (R17-1, red team RT17-1): a
+    // from-date plus two targets collapsed — the
+    // group asserted nothing and its plain-line
+    // twin asserted the SUPERSEDED first target.
+    // The target rule takes the LAST target in
+    // the claim run; earlier targets are governed
+    // and named like the from-date, on both
+    // surfaces. Verb-repeated forms already read
+    // this way and stand as the held twins.
+    for group in [
+        "(November 1, moved to November 8, then to November 15)",
+        "(November 1, postponed to November 8, then to November 15)",
+        "(November 1, moved to November 8, to November 15)",
+        "(November 1, moved to November 8, moved to November 15)",
+        "(November 1, moved to November 8, then moved to November 15)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(15)),
+            "{group}: the last target asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), nov(8)],
+            "{group}: the from-date and the superseded target are named"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(15)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), nov(8)],
+            "{group}: named on the paren-only note"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(15)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1), nov(8)],
+            "{group}: named on the keep-through note"
+        );
+    }
+    // The plain-line twin reads the same way:
+    // the last target, the rest named.
+    let text = "For Sunday: November 1, 2026, moved to November 8, 2026, then to November 15, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(15)),
+        "the plain twin asserts the last target, not the superseded one"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)]);
+    let text = "Keep-through: November 1, 2026, moved to November 8, 2026, then to November 15, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(15)), "keep-through mirror");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1), nov(8)]);
+}
+
+#[test]
+fn r17a_mixed_plain_line_composition() {
+    // Round 17 (R17-2, red team RT17-2 + review
+    // Q4): plain composition stopped at all-framed
+    // lines, so a mixed line's governed framed
+    // date ARMED at full strength while its
+    // relative replacement was merely noted. The
+    // composition reaches mixed lines now: the
+    // governed signals yield and are named, the
+    // first ungoverned signal asserts, and
+    // relatives resolve exactly as round 13
+    // resolved them — today is Friday, October
+    // 16, 2026, so "next Sunday" is October 25.
+    for line in [
+        "November 1, 2026, cancelled, next Sunday",
+        "November 1, 2026, postponed, next Sunday",
+        "November 1, 2026, moved to next Sunday",
+        "November 1, 2026, postponed, drop it, next Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(oct(25)),
+            "{line}: the replacement asserts on For Sunday"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: the governed date is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(oct(25)),
+            "{line}: the replacement asserts on Keep-through"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{line}: named on the keep-through note"
+        );
+    }
+}
+
+#[test]
+fn r17a_from_date_is_named() {
+    // Round 17 (R17-3, red team RT17-4): in the
+    // "from … to" shape the governed from-date
+    // was never named — the group asserted its
+    // target with an empty note. The shape claims
+    // its target now, so the from-date is governed
+    // and named like any claimed group's other
+    // date (the R16-5 naming principle).
+    let group = "(moved from November 1 to November 8)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(8)),
+        "{group}: the target asserts on the relative path"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: the from-date is named on the relative path"
+    );
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: the from-date is named, not dropped in silence"
+    );
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+    assert_eq!(
+        c.keep_through_second_dates,
+        vec![nov(1)],
+        "{group}: named on the keep-through note"
+    );
+}
+
+#[test]
+fn r17a_passive_for_names_the_occasion() {
+    // Round 17 (R17-4, red team RT17-5): "was +
+    // participle + for + date" silenced the
+    // occasion date it stated, while the comma
+    // forms and present-tense forms named it.
+    // After a passive participle, "for" + date
+    // names the date as the occasion.
+    for group in [
+        "(it was moved for November 1)",
+        "(it was rescheduled for November 1)",
+        "(it was scheduled for November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{group}: the occasion date contributes on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    }
+    // Held parity: "for" is the distinguisher —
+    // the bare same-clause form still governs.
+    let text = "For Sunday: (it was moved November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "the pinned bare same-clause parity stands unchanged"
+    );
+}
+
+#[test]
+fn r17a_claim_zone_is_clause_bounded() {
+    // Round 17 (R17-5, review Q1): the claim
+    // zone reached four words past its phrase, so
+    // a five-word object lost its target silently
+    // on every path. The zone is clause-bounded
+    // now, not word-counted: the object noun
+    // phrase may run to the end of the phrase's
+    // clause. No pre-existing pin asserted the
+    // four-word boundary as a reading — the
+    // four-word shapes in the r16a set read
+    // exactly as they read before, through the
+    // same rule with the count removed.
+    for group in [
+        "(moved the November potluck planning meeting to November 8)",
+        "(postponed the November potluck planning meeting until November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+    }
+}
+
+#[test]
+fn r17a_genitive_crossing_uses_the_determiner_test() {
+    // Round 17 (R17-6, review sweep): the
+    // genitive crossing's "no verb-form" test
+    // called the raw verb test, so a determiner-
+    // headed -s noun head failed it and the date
+    // armed under an explicit "ignore", while the
+    // "the service" control disqualified. The
+    // completing-clause test uses the
+    // determiner-aware form test now.
+    for group in [
+        "(ignore, the date of, the drops, November 1)",
+        "(ignore, the date of, the shifts, November 1)",
+        "(ignore, the date of, the service, November 1)",
+        "(ignore, the date of, the classes, November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the crossing completes on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // Held: a completing clause whose head is a
+    // bare verb-form still stops the crossing.
+    let text = "For Sunday: (ignore, the date of, the moved service, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "a verb-form head still stops the crossing"
+    );
+}
+
+#[test]
+fn r17a_adverb_tolerance_is_a_closed_list() {
+    // Round 17 (R17-7, review sweep): the one-
+    // adverb tolerance's -ly catch-all admitted
+    // nouns and names in the adverb slot, so
+    // "(it was family moved, November 1)" spent
+    // like "recently". The set is closed now:
+    // a non-tolerated intervening word does not
+    // spend — the predicate governs its date, as
+    // any non-tolerated word does.
+    for group in [
+        "(it was family moved, November 1)",
+        "(it was kelly moved, November 1)",
+        "(it was family cancelled, November 1)",
+        "(it was household moved, November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: no spending on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // The attested adverbs on the closed list
+    // still spend.
+    for group in [
+        "(it was recently moved, November 1)",
+        "(it was just moved, November 1)",
+        "(it was finally moved, November 1)",
+        "(it was originally moved, November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{group}: a listed adverb still spends"
+        );
+    }
+}
+
+#[test]
+fn r18a_one_token_cleaning() {
+    // Round 18 (R18-1, review Q2): the plain-line
+    // cleaner did not strip ":", while the group
+    // tokenizer did, so a governor wearing a colon
+    // governed inside parentheses and was invisible
+    // on a plain line — "cancelled: November 1,
+    // 2026, next Sunday" ARMED the cancelled
+    // November 1. One cleaning now: the plain path
+    // cleans with `group_token`, so the colon form
+    // reads exactly as its colon-free twin, on
+    // both date lines.
+    for line in [
+        "cancelled: November 1, 2026, next Sunday",
+        "cancelled November 1, 2026, next Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(oct(25)),
+            "{line}: the replacement asserts on For Sunday"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: the governed date is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(oct(25)), "{line}: Keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+    }
+    // The two-framed twin: the colon form asserts
+    // the standing date, like the colon-free one.
+    for line in [
+        "cancelled: November 1, 2026, November 8, 2026",
+        "cancelled November 1, 2026, November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+    }
+    // The group twin always read this way; it
+    // stands as the control.
+    let group = "(cancelled: November 1, November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only control");
+}
+
+#[test]
+fn r18a_governance_by_date() {
+    // Round 18 (R18-2, red team RT18-2): governance
+    // attached to OCCURRENCES, so a cancelled date
+    // restated anywhere on the line — in either
+    // form, on either side of the governor —
+    // resurrected and asserted. Governance now
+    // attaches to the date VALUE: a date governed
+    // in any occurrence does not assert from
+    // another occurrence, unless a target claim
+    // names it as the last target.
+    for line in [
+        "November 1, 2026, cancelled, November 1, 2026",
+        "October 25, 2026, cancelled, next Sunday",
+        "next Sunday, cancelled, October 25, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the restated governed date asserts nothing"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: and is named nowhere"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: Keep-through");
+    }
+    // At a today where "next Sunday" IS the
+    // governed date (Friday, October 23, 2026, so
+    // next Sunday is November 1), the relative
+    // restatement asserts nothing either, in
+    // either order — and the anchored copies read
+    // the same (today October 30, file dated
+    // October 23: the anchor resolves the relative
+    // to November 1 there too).
+    let late = oct(23);
+    for line in [
+        "November 1, 2026, cancelled, next Sunday",
+        "next Sunday, cancelled, November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, late).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: at October 23");
+        let c = parse_contribution_anchored(&text, oct(30), Some(late)).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: anchored at October 23");
+    }
+    // The control stands: a DIFFERENT replacement
+    // date beside the governed one still asserts,
+    // with the governed date named (the r17a pin's
+    // shape, restated here as this rule's fence).
+    let text = "For Sunday: November 1, 2026, cancelled, next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    // Groups judge by the same value rule, on
+    // every path.
+    for group in [
+        "(November 1, cancelled, November 1)",
+        "(October 25, cancelled, October 25)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // The target override: a governed date restated
+    // as the LAST target of a claim asserts by the
+    // claim, on both surfaces.
+    for group in [
+        "(meeting November 1, cancelled, moved to November 1)",
+        "(November 1, moved to November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{group}: the claim asserts on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    }
+    let text = "For Sunday: November 1, 2026, cancelled, moved to November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the plain target override asserts by the claim"
+    );
+}
+
+#[test]
+fn r18a_target_ranking_by_written_order() {
+    // Round 18 (R18-3, red team RT18-1): last-target
+    // ranking ignored RELATIVE targets on plain
+    // lines — a relative target anywhere but last
+    // asserted, and every later framed target was
+    // demoted to the note. Ranking is by written
+    // order across framed and relative targets
+    // alike: the last target asserts, the earlier
+    // targets and the from-date are named, matching
+    // the all-framed twin.
+    for line in [
+        "November 1, 2026, moved to next Sunday, then to November 15, 2026",
+        "November 1, 2026, postponed, next Sunday, then to November 15, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(15)),
+            "{line}: the last target asserts on For Sunday"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), oct(25)],
+            "{line}: the from-date and the resolved relative target are named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(15)), "{line}: Keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1), oct(25)], "{line}");
+    }
+    // The lane's other witnesses: a different
+    // from-date, and a three-target chain ending
+    // in a framed date past the relative.
+    let text = "For Sunday: November 8, 2026, moved to next Sunday, then to November 15, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(15)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(8), oct(25)]);
+    let text = "For Sunday: November 1, 2026, moved to next Sunday, then to November 15, 2026, then to November 22, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(22)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1), oct(25), nov(15)]);
+    // The group twin reads identically now that
+    // groups carry relative signals (R18-6).
+    let group = "(November 1, moved to next Sunday, then to November 15)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(15)),
+        "{group}: relative path"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1), oct(25)]);
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(15)), "{group}: paren-only");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1), oct(25)]);
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(15)), "{group}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1), oct(25)]);
+}
+
+#[test]
+fn r18a_groups_gain_relative_signals() {
+    // Round 18 (R18-6, review Q2): a relative phrase
+    // inside a group was not a signal at all —
+    // "(November 1, cancelled, next Sunday)" read
+    // nothing while its plain twin asserted
+    // October 25. Groups now resolve relative
+    // phrases and judge them as signals in written
+    // order alongside framed ones, under the same
+    // per-occurrence rules (governors, claims, and
+    // R18-2's governance by date).
+    for (group, want, named) in [
+        ("(November 1, cancelled, next Sunday)", oct(25), nov(1)),
+        ("(November 1, cancelled, this Sunday)", oct(18), nov(1)),
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(want),
+            "{group}: relative path"
+        );
+        assert_eq!(c.for_sunday_second_dates, vec![named], "{group}");
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{group}: paren-only");
+        assert_eq!(c.for_sunday_second_dates, vec![named], "{group}");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![named], "{group}");
+    }
+    // A governed relative alone in its group
+    // contributes nothing, as a governed framed
+    // date does.
+    let group = "(cancelled, next Sunday)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: the governed relative is silent");
+    // Relative-only groups on a date line
+    // contribute their resolution.
+    let text = "For Sunday: (next Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "(next Sunday) contributes");
+    assert_eq!(c.for_sunday_in_words, None, "and is not an in-words line");
+    let text = "Keep-through: (next Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)), "keep-through mirror");
+    let text = "For Sunday: (this Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(18)), "(this Sunday) contributes");
+    let text = "For Sunday: next Sunday (next Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(oct(25)),
+        "a relative-only group trailing a relative line is remembered by its resolution"
+    );
+    // The anchor reaches a mixed group exactly as
+    // it reaches a mixed plain line: parsed at
+    // October 23 for a file dated October 16, the
+    // group's "next Sunday" resolves to October 25
+    // and asserts, with November 1 governed and
+    // named; unanchored at October 23 the relative
+    // resolves to November 1 itself, the governed
+    // value, and R18-2 silences the group.
+    let group = "(November 1, cancelled, next Sunday)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution_anchored(&text, oct(23), Some(today())).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "{group}: anchored mixed group");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    let c = parse_contribution(&text, oct(23)).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: unanchored at October 23");
+    // A governor-free mixed group follows the
+    // standing two-date group rule, as two framed
+    // dates do: it contributes neither and offers
+    // both as alternatives.
+    let text = "For Sunday: (November 1, next Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "two ungoverned signals: no assertion");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1), oct(25)],
+        "both are offered, in written order"
+    );
+}
+
+#[test]
+fn r18a_governed_relative_is_named() {
+    // Round 18 (R18-7, review Q2): lines an earlier
+    // reader salvaged never reached the governor
+    // composition, so a governed relative signal
+    // standing before the salvaged date was never
+    // named — "cancelled, next Sunday, November 1,
+    // 2026" asserted November 1 with October 25
+    // nowhere. A governed relative is now named on
+    // the second-date note by its resolved date,
+    // as a governed framed date is.
+    for line in [
+        "cancelled, next Sunday, November 1, 2026",
+        "drop next Sunday, November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the standing date asserts on For Sunday"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(25)],
+            "{line}: the governed relative is named by its resolution"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{line}: Keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![oct(25)],
+            "{line}: named on the keep-through note"
+        );
+    }
+}
+
+#[test]
+fn r19a_governance_binds_bare_restatements_only() {
+    // Round 19 (R19-1, review Q1): governance by
+    // date value (R18-2) overreached within a line
+    // — two EVENTS sharing one date value, one of
+    // them governed, read nothing at all, unnamed,
+    // because the value rule had no notion of
+    // which event an occurrence belonged to. The
+    // by-date step now binds only a BARE
+    // restatement: an occurrence whose own region
+    // carries the date, its framing, filler, and
+    // governor phrases and no event content of its
+    // own. An occurrence heading its own event
+    // clause asserts by its own judgment.
+    for group in [
+        "(early service November 1, late service cancelled November 1)",
+        "(early service cancelled November 1, late service November 1)",
+        "(choir party November 1, cancelled, service November 1)",
+        "(choir November 1, late service cancelled November 1)",
+        "(early service cancelled November 1, November 1, choir)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{group}: relative path asserts the standing event's date"
+        );
+        // The governed twin is the SAME value as
+        // the asserted date, so the note carries
+        // nothing: there is no distinct second
+        // date to name.
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the note carries nothing on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the note carries nothing on the paren-only path"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the note carries nothing on the keep-through path"
+        );
+    }
+    // The plain twins assert the same way.
+    for line in [
+        "early service November 1, 2026, late service cancelled November 1, 2026",
+        "choir party November 1, 2026, cancelled, service November 1, 2026",
+        "service November 1, 2026, choir party November 1, 2026, cancelled",
+        "November 1, 2026, cancelled, the service November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026, choir",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the content occurrence asserts on the plain surface"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: and the note carries nothing"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{line}: Keep-through");
+    }
+    // The bare family stays silent, framing words
+    // and all: round 18's witnesses, the moved
+    // r12a pin's shape, and a restatement wearing
+    // only "on".
+    for group in [
+        "(November 1, cancelled, November 1)",
+        "(not November 1, November 1)",
+        "(November 1, November 1, cancelled)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: a bare restatement stays governed"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    let text =
+        "For Sunday: November 1, 2026, cancelled, on November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "a restatement wearing only the framing word \"on\" is bare and stays governed"
+    );
+}
+
+#[test]
+fn r19a_cross_group_governance_scope() {
+    // Round 19 (R19-2, red team RT19-1, as
+    // adjudicated): governance by date value
+    // stopped at the parenthesis in round 18 — a
+    // date governed in one group asserted from a
+    // sibling group on the same line. The rule is
+    // now the same across the boundary as inside
+    // one group: a BARE restatement in another
+    // group of a value governed anywhere among
+    // the line's groups stays governed, in either
+    // group order, framing words and all.
+    for groups in [
+        "(November 1, cancelled) (November 1)",
+        "(cancelled, November 1) (November 1)",
+        "(November 1) (November 1, cancelled)",
+        "(November 1, cancelled) (on November 1)",
+        "(November 1, cancelled) (the November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path reads nothing"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_dates,
+            Vec::<SimpleDate>::new(),
+            "{groups}: no group date is remembered on the relative path"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{groups}: and names nothing"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{groups}: keep-through reads nothing");
+    }
+    // Content groups assert independently, on
+    // either side of the boundary: the potluck
+    // was cancelled, the service was not, and
+    // November 1 asserting for the service is the
+    // correct reading (the coordinator's
+    // adjudication of RT19-1). A target claim in
+    // its own group asserts its target likewise —
+    // cross-group governance never eats a claim's
+    // target.
+    for groups in [
+        "(potluck November 1 cancelled) (service November 1)",
+        "(November 1, cancelled) (service November 1)",
+        "(choir, November 1, cancelled) (service November 1)",
+        "(service November 1) (potluck November 1 cancelled)",
+        "(November 1, cancelled) (moved to November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{groups}: relative path"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    }
+    // A governed value does not leak onto other
+    // dates: the clean sibling still asserts.
+    let text = "For Sunday: (November 1, cancelled) (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "the clean group asserts");
+    // A suppressed bare group leaves the clean
+    // group standing before it untouched.
+    let text =
+        "For Sunday: (November 8) (November 1, cancelled) (November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the bare third group stays governed; November 8 stands"
+    );
+    // Two content groups asserting different
+    // dates: the line asserts per its standing
+    // primacy for paren-only lines — the last
+    // group stands — and the other asserted date
+    // is named on the parenthesized-mismatch
+    // record, not dropped unnamed.
+    let groups = "(November 1, cancelled) (service November 8) (service November 1)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{groups}: the last content group stands"
+    );
+    let mismatch = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the other asserted date is named");
+    assert_eq!(mismatch.named, nov(8), "{groups}: November 8 is named");
+    assert_eq!(mismatch.read, nov(1), "{groups}");
+    let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(1)),
+        "{groups}: relative path"
+    );
+    assert_eq!(
+        c.for_sunday_parenthesized_dates,
+        vec![nov(8), nov(1)],
+        "{groups}: both asserted group dates are remembered on the relative path"
+    );
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    let mismatch = c
+        .keep_through_parenthesized_mismatch
+        .expect("keep-through names the other asserted date too");
+    assert_eq!(mismatch.named, nov(8), "{groups}");
+}
+
+#[test]
+fn r20a_core_group_composition() {
+    // Round 20 (R20-1, review F1 = red team
+    // RT20-1): a governed plain core beside any
+    // contributing trailing group split by path
+    // — For Sunday returned the core's governed
+    // silence and dropped the group unnamed,
+    // while the Keep-through fallback asserted
+    // the last group blind, in the base witness
+    // asserting the very date the core
+    // cancelled. One composition now stands for
+    // core + trailing groups on both paths: the
+    // core's governed values bind BARE trailing
+    // restatements of the same value across the
+    // core/group boundary, and a surviving group
+    // asserts by the trailing-group primacy the
+    // paren-only path uses. Every witness below
+    // is read on both lines and the two readings
+    // must agree field for field.
+    // (line, read date, second dates, mismatch named)
+    type CoreGroupCase<'a> = (
+        &'a str,
+        Option<SimpleDate>,
+        &'a [SimpleDate],
+        Option<SimpleDate>,
+    );
+    let cases: [CoreGroupCase<'_>; 14] = [
+        // The base witness: the trailing
+        // restatement is bare and bound by the
+        // core's cancellation — nothing, on
+        // both paths.
+        ("November 1, 2026, cancelled (November 1)", None, &[], None),
+        ("November 1, 2026, postponed (November 1)", None, &[], None),
+        ("not November 1, 2026 (November 1)", None, &[], None),
+        // A trailing group whose value the core
+        // does not govern asserts, the governed
+        // core value named on the note.
+        (
+            "November 1, 2026, cancelled (November 8)",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        (
+            "November 1, 2026, cancelled (next Sunday)",
+            Some(oct(25)),
+            &[nov(1)],
+            None,
+        ),
+        (
+            "November 1, 2026, cancelled (this Sunday)",
+            Some(oct(18)),
+            &[nov(1)],
+            None,
+        ),
+        (
+            "November 1, 2026, cancelled (the Sunday after November 1)",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        // A governed core date does not poison a
+        // clean group date it never governed.
+        (
+            "November 8, 2026, cancelled (November 1)",
+            Some(nov(1)),
+            &[nov(8)],
+            None,
+        ),
+        // A labelled group asserts its governed
+        // value (round 19, R19-1's rule), and a
+        // claim group claims its target.
+        (
+            "November 1, 2026, cancelled (service November 1)",
+            Some(nov(1)),
+            &[],
+            None,
+        ),
+        (
+            "November 1, 2026, cancelled (moved to November 1)",
+            Some(nov(1)),
+            &[],
+            None,
+        ),
+        (
+            "November 1, 2026, cancelled (moved to November 8)",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        // A relative restatement of the core's
+        // governed relative value is bound too.
+        ("next Sunday, cancelled (October 25)", None, &[], None),
+        // Two trailing groups: the bare governed
+        // restatement is suppressed and the clean
+        // group stands, in either group order.
+        (
+            "November 1, 2026, cancelled (November 8) (November 1)",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        (
+            "November 1, 2026, cancelled (November 1) (November 8)",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+    ];
+    for (line, want, want_second, want_mismatch) in cases {
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, want, "{line}: For Sunday");
+        assert_eq!(
+            f.for_sunday_second_dates,
+            want_second.to_vec(),
+            "{line}: For Sunday names the governed value"
+        );
+        let for_mismatch = f.for_sunday_parenthesized_mismatch.map(|m| m.named);
+        assert_eq!(for_mismatch, want_mismatch, "{line}: For Sunday mismatch");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, want, "{line}: Keep-through agrees");
+        assert_eq!(
+            k.keep_through_second_dates,
+            want_second.to_vec(),
+            "{line}: Keep-through names the same"
+        );
+        let keep_mismatch = k.keep_through_parenthesized_mismatch.map(|m| m.named);
+        assert_eq!(
+            keep_mismatch, want_mismatch,
+            "{line}: Keep-through mismatch agrees"
+        );
+    }
+    // Two surviving groups follow the paren-only
+    // primacy: the last group stands, the earlier
+    // surviving group is named on the mismatch
+    // record, the governed core value on the note.
+    let line = "November 1, 2026, cancelled (November 8) (November 15)";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(f.for_date, Some(nov(15)), "{line}: the last group stands");
+    assert_eq!(f.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let mismatch = f
+        .for_sunday_parenthesized_mismatch
+        .expect("the earlier surviving group is named");
+    assert_eq!(mismatch.named, nov(8), "{line}");
+    assert_eq!(mismatch.read, nov(15), "{line}");
+    assert!(mismatch.read_from_parentheses, "{line}");
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, Some(nov(15)), "{line}: keep-through");
+    assert_eq!(k.keep_through_second_dates, vec![nov(1)], "{line}");
+    let mismatch = k
+        .keep_through_parenthesized_mismatch
+        .expect("keep-through names the earlier group too");
+    assert_eq!(mismatch.named, nov(8), "{line}");
+    // Held bounds: the trailing group itself
+    // governed reads nothing on both paths; a
+    // core that asserts is unchanged, its groups
+    // still garnish against its date.
+    let line = "November 1, 2026, cancelled (November 1, cancelled)";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(f.for_date, None, "{line}: the group governs itself");
+    assert_eq!(f.for_sunday_parenthesized_mismatch, None, "{line}");
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, None, "{line}: keep-through");
+    let line = "November 8, 2026 (November 1, cancelled)";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(
+        f.for_date,
+        Some(nov(8)),
+        "{line}: the asserting core stands"
+    );
+    assert_eq!(f.for_sunday_parenthesized_mismatch, None, "{line}");
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, Some(nov(8)), "{line}: keep-through");
+    // The salvaging core composes as it always
+    // did: November 8 asserted, November 1
+    // second-named, the group naming November 15
+    // on the mismatch record, both paths.
+    let line = "November 1, 2026, cancelled, November 8, 2026 (November 15)";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(f.for_date, Some(nov(8)), "{line}");
+    assert_eq!(f.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let mismatch = f
+        .for_sunday_parenthesized_mismatch
+        .expect("the group disagrees with the core's date");
+    assert_eq!(mismatch.named, nov(15), "{line}");
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, Some(nov(8)), "{line}: keep-through");
+    assert_eq!(k.keep_through_second_dates, vec![nov(1)], "{line}");
+    let mismatch = k
+        .keep_through_parenthesized_mismatch
+        .expect("keep-through names the group too");
+    assert_eq!(mismatch.named, nov(15), "{line}");
+}
+
+#[test]
+fn r21a_leading_groups_compose() {
+    // Round 21 (R21-1, red team RT21-1): a group
+    // standing BEFORE the plain core composed with
+    // nothing at all — the line read nothing on
+    // both paths, silently, even when the group
+    // agreed with the core, even beside an
+    // asserting core. Leading groups now join the
+    // one composition in written order, by the
+    // trailing rules mirrored: beside an asserting
+    // core a leading group is garnish, named on
+    // the mismatch when it differs and silent when
+    // it agrees; beside a governed core a surviving
+    // leading group asserts as a surviving trailing
+    // group does, the governed value named on the
+    // note. Every witness is read on both lines and
+    // the two readings must agree field for field.
+    // (line, read date, second dates, mismatch named)
+    type LeadCase<'a> = (
+        &'a str,
+        Option<SimpleDate>,
+        &'a [SimpleDate],
+        Option<SimpleDate>,
+    );
+    let cases: [LeadCase<'_>; 8] = [
+        // The agreeing group is silent; the core
+        // asserts, on both paths.
+        ("(November 15) November 15, 2026", Some(nov(15)), &[], None),
+        (
+            "(November 15, 2026) November 15, 2026",
+            Some(nov(15)),
+            &[],
+            None,
+        ),
+        // A disagreeing leading group is garnish
+        // named on the mismatch, exactly as a
+        // trailing one is.
+        (
+            "(November 8) November 15, 2026",
+            Some(nov(15)),
+            &[],
+            Some(nov(8)),
+        ),
+        // Beside a governed core the surviving
+        // leading group asserts, the governed core
+        // value named on the note.
+        (
+            "(November 8) November 1, 2026, cancelled",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        // A bare leading restatement of the
+        // governed value binds: nothing reads.
+        ("(November 1) November 1, 2026, cancelled", None, &[], None),
+        // Two leading groups compose in order: the
+        // bare governed restatement binds and the
+        // surviving group asserts.
+        (
+            "(November 8) (November 1) November 1, 2026, cancelled",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        // A leading group beside a governed core
+        // AND a trailing group: written-order
+        // primacy among the survivors — the last
+        // stands, the earlier is named on the
+        // mismatch record, the governed value on
+        // the note.
+        (
+            "(November 8) November 1, 2026, cancelled (November 15)",
+            Some(nov(15)),
+            &[nov(1)],
+            Some(nov(8)),
+        ),
+        // A content-headed core reads with its
+        // leading group composed the same way.
+        (
+            "(November 8) service November 15, 2026",
+            Some(nov(15)),
+            &[],
+            Some(nov(8)),
+        ),
+    ];
+    for (line, want, want_second, want_mismatch) in cases {
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, want, "{line}: For Sunday");
+        assert_eq!(
+            f.for_sunday_second_dates,
+            want_second.to_vec(),
+            "{line}: For Sunday second dates"
+        );
+        let for_mismatch = f.for_sunday_parenthesized_mismatch.map(|m| m.named);
+        assert_eq!(for_mismatch, want_mismatch, "{line}: For Sunday mismatch");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, want, "{line}: Keep-through agrees");
+        assert_eq!(
+            k.keep_through_second_dates,
+            want_second.to_vec(),
+            "{line}: Keep-through second dates agree"
+        );
+        let keep_mismatch = k.keep_through_parenthesized_mismatch.map(|m| m.named);
+        assert_eq!(
+            keep_mismatch, want_mismatch,
+            "{line}: Keep-through mismatch agrees"
+        );
+    }
+    // Two leading groups beside an asserting core
+    // are both named on the mismatch record, in
+    // written order.
+    let line = "(November 8) (November 22) November 15, 2026";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(f.for_date, Some(nov(15)), "{line}");
+    let mismatch = f
+        .for_sunday_parenthesized_mismatch
+        .expect("both leading groups are named");
+    assert_eq!(mismatch.named, nov(8), "{line}");
+    assert_eq!(mismatch.also_named, vec![nov(22)], "{line}");
+    assert!(!mismatch.read_from_parentheses, "{line}");
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, Some(nov(15)), "{line}: keep-through");
+    let mismatch = k
+        .keep_through_parenthesized_mismatch
+        .expect("keep-through names both too");
+    assert_eq!(mismatch.named, nov(8), "{line}");
+    assert_eq!(mismatch.also_named, vec![nov(22)], "{line}");
+    // The relative core: "(November 8) next
+    // Sunday" reads as its trailing twin does —
+    // the For Sunday line remembers the words with
+    // the group's date on the parenthesized
+    // record (the phrase resolves to October 25),
+    // and the Keep-through line reads the group.
+    // The standing relative-line asymmetry is the
+    // shape of both twins, not a split this round
+    // closes.
+    let line = "(November 8) next Sunday";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(f.for_date, None, "{line}: the words carry the Sunday");
+    assert_eq!(f.for_sunday_in_words.as_deref(), Some(line), "{line}");
+    assert_eq!(f.for_sunday_parenthesized_date, Some(nov(8)), "{line}");
+    assert_eq!(f.for_sunday_parenthesized_dates, vec![nov(8)], "{line}");
+    assert_eq!(
+        week_verdict(&f, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(8)),
+        "{line}: the named group date is compared with the resolution"
+    );
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, Some(nov(8)), "{line}: keep-through");
+    // Held boundary (round 10, R10-10c): a leading
+    // group that merely restates the phrase's own
+    // Sunday stays unread on both paths — "(October
+    // 25) next Sunday" names no Sunday anywhere.
+    let line = "(October 25) next Sunday";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(f.for_date, None, "{line}");
+    assert_eq!(f.for_sunday_in_words, None, "{line}: the boundary stands");
+    assert_eq!(f.for_sunday_parenthesized_date, None, "{line}");
+    assert_eq!(
+        week_verdict(&f, Some(oct(25))),
+        WeekVerdict::NoSundayNamed,
+        "{line}"
+    );
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, None, "{line}: keep-through boundary too");
+}
+
+#[test]
+fn r21a_content_and_for_occasion_cores_compose() {
+    // Round 21 (R21-2, red team RT21-2): the R20-1
+    // composition keyed on the governed plain
+    // core, so a content-headed core ("service
+    // November 1, 2026") and the for-occasion
+    // cores ("it was scheduled for November 1,
+    // 2026", "it was moved for …", "we moved the
+    // meeting for …") beside a trailing group
+    // still split — For Sunday dropped the whole
+    // line silently while Keep-through asserted
+    // the last group blind (402 of the lanes' 421
+    // census combinations per core). The
+    // composition now keys on the core's VALUE,
+    // whatever head the core wears: a
+    // content-headed core asserts its date and its
+    // groups are garnish; a for-occasion core
+    // contributes its occasion date as the core
+    // value for governance binding — a bare
+    // trailing restatement of it binds and reads
+    // nothing extra, a different group asserts by
+    // the survivor rules with the occasion named
+    // on the note, a labelled restatement stands
+    // by its own clause — identically on both
+    // paths. The for-core alone keeps reading
+    // nothing, as it always has.
+    // (line, read date, second dates, mismatch named)
+    type CoreCase<'a> = (
+        &'a str,
+        Option<SimpleDate>,
+        &'a [SimpleDate],
+        Option<SimpleDate>,
+    );
+    let cases: [CoreCase<'_>; 13] = [
+        // Content-headed cores assert; the group
+        // is garnish named on the mismatch.
+        (
+            "service November 1, 2026 (November 8)",
+            Some(nov(1)),
+            &[],
+            Some(nov(8)),
+        ),
+        (
+            "choir November 1, 2026 (November 8)",
+            Some(nov(1)),
+            &[],
+            Some(nov(8)),
+        ),
+        (
+            "service November 1, 2026 (next Sunday)",
+            Some(nov(1)),
+            &[],
+            Some(oct(25)),
+        ),
+        // An agreeing group beside a content core
+        // is silent.
+        (
+            "service November 1, 2026 (November 1)",
+            Some(nov(1)),
+            &[],
+            None,
+        ),
+        // A bare trailing restatement of the
+        // occasion date binds on both paths: the
+        // line reads nothing extra — nothing.
+        (
+            "it was scheduled for November 1, 2026 (November 1)",
+            None,
+            &[],
+            None,
+        ),
+        (
+            "it was moved for November 1, 2026 (November 1)",
+            None,
+            &[],
+            None,
+        ),
+        (
+            "we moved the meeting for November 1, 2026 (November 1)",
+            None,
+            &[],
+            None,
+        ),
+        // A different group asserts, the occasion
+        // named on the note, on both paths.
+        (
+            "it was scheduled for November 1, 2026 (November 8)",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        (
+            "it was moved for November 1, 2026 (November 8)",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        (
+            "we moved the meeting for November 1, 2026 (next Sunday)",
+            Some(oct(25)),
+            &[nov(1)],
+            None,
+        ),
+        (
+            "it was scheduled for November 1, 2026 (service November 8)",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        // A labelled restatement of the occasion
+        // is no restatement: it stands by its own
+        // clause, as R19-1 requires everywhere.
+        (
+            "it was scheduled for November 1, 2026 (service November 1)",
+            Some(nov(1)),
+            &[],
+            None,
+        ),
+        // The for-core alone keeps reading
+        // nothing (standing), on both paths.
+        ("it was scheduled for November 1, 2026", None, &[], None),
+    ];
+    for (line, want, want_second, want_mismatch) in cases {
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, want, "{line}: For Sunday");
+        assert_eq!(
+            f.for_sunday_second_dates,
+            want_second.to_vec(),
+            "{line}: For Sunday second dates"
+        );
+        let for_mismatch = f.for_sunday_parenthesized_mismatch.map(|m| m.named);
+        assert_eq!(for_mismatch, want_mismatch, "{line}: For Sunday mismatch");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, want, "{line}: Keep-through agrees");
+        assert_eq!(
+            k.keep_through_second_dates,
+            want_second.to_vec(),
+            "{line}: Keep-through second dates agree"
+        );
+        let keep_mismatch = k.keep_through_parenthesized_mismatch.map(|m| m.named);
+        assert_eq!(
+            keep_mismatch, want_mismatch,
+            "{line}: Keep-through mismatch agrees"
+        );
+    }
+    // The lanes' census, in miniature (the full
+    // 20-core × 421-combination census was re-run
+    // against this build as a probe: every family
+    // below at zero divergences; the bare relative
+    // cores remain the standing asymmetry, out of
+    // scope): for each core family — governed
+    // framed, content-headed, for-occasion ×3,
+    // claim, Sunday-after, salvaged — crossed with
+    // a representative group set (none, bare same,
+    // bare different, labelled, relative, claim),
+    // the For Sunday and Keep-through readings
+    // agree field for field.
+    let cores = [
+        "November 1, 2026, cancelled",
+        "service November 1, 2026",
+        "choir November 1, 2026",
+        "it was scheduled for November 1, 2026",
+        "it was moved for November 1, 2026",
+        "we moved the meeting for November 1, 2026",
+        "November 1, 2026, moved to November 8, 2026",
+        "the Sunday after November 1, 2026, cancelled",
+        "November 1, 2026, cancelled, November 8, 2026",
+    ];
+    let groups = [
+        "",
+        "(November 1)",
+        "(November 8)",
+        "(service November 1)",
+        "(next Sunday)",
+        "(moved to November 8)",
+    ];
+    for core in cores {
+        for group in groups {
+            let line = if group.is_empty() {
+                core.to_string()
+            } else {
+                format!("{core} {group}")
+            };
+            let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let f = parse_contribution(&for_text, today()).expect("parses");
+            let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let k = parse_contribution(&keep_text, today()).expect("parses");
+            assert_eq!(f.for_date, k.keep_through, "{line}: dates agree");
+            assert_eq!(
+                f.for_sunday_second_dates, k.keep_through_second_dates,
+                "{line}: second dates agree"
+            );
+            let fm = f
+                .for_sunday_parenthesized_mismatch
+                .map(|m| (m.named, m.also_named, m.read, m.read_from_parentheses));
+            let km = k
+                .keep_through_parenthesized_mismatch
+                .map(|m| (m.named, m.also_named, m.read, m.read_from_parentheses));
+            assert_eq!(fm, km, "{line}: mismatch records agree");
+        }
+    }
+}
+
+#[test]
+fn r21a_post_group_plain_segments_compose() {
+    // Round 21 (R21-3, red team RT21-3): plain
+    // words standing after the last trailing group
+    // escaped the composition entirely — the first
+    // plain signal read the line and the governed
+    // core date resurrected on both paths, the
+    // surviving group named nowhere. A post-group
+    // plain segment is a segment of the
+    // composition now: the line's core is read
+    // with every group taken out (a group leaves a
+    // clause break behind it, so its neighbours
+    // are judged as segments), governance by date
+    // value binds a bare post-group restatement, a
+    // surviving post-group date stands by the
+    // composition, and a surviving group is never
+    // displaced silently.
+    // (line, read date, second dates, mismatch named)
+    type PostCase<'a> = (
+        &'a str,
+        Option<SimpleDate>,
+        &'a [SimpleDate],
+        Option<SimpleDate>,
+    );
+    let cases: [PostCase<'_>; 7] = [
+        // The bare post-group restatement of the
+        // governed value binds: the surviving
+        // group asserts, the governed value named.
+        (
+            "November 1, 2026, cancelled (November 8) November 1, 2026",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        // The no-year twin reads the same.
+        (
+            "November 1, 2026, cancelled (November 8) November 1",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        // The post-group date restates the
+        // surviving group's own value: it stands,
+        // the governed value named, no mismatch.
+        (
+            "November 1, 2026, cancelled (November 8) November 8, 2026",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+        // Two surviving segments: written-order
+        // primacy — the later survivor (the
+        // post-group plain date) stands, the
+        // earlier survivor (the group) is named on
+        // the mismatch record, the governed value
+        // on the note.
+        (
+            "November 1, 2026, cancelled (November 8) November 15, 2026",
+            Some(nov(15)),
+            &[nov(1)],
+            Some(nov(8)),
+        ),
+        // The two-group twin: both groups stand
+        // between the governed core and the bound
+        // restatement — the last group asserts,
+        // the earlier is named on the mismatch.
+        (
+            "November 1, 2026, cancelled (November 8) (November 15) November 1, 2026",
+            Some(nov(15)),
+            &[nov(1)],
+            Some(nov(8)),
+        ),
+        // The relative twin: the post-group framed
+        // date restates the governed relative's
+        // resolution and binds — the group asserts,
+        // the resolution named on the note.
+        (
+            "next Sunday, cancelled (November 8) October 25, 2026",
+            Some(nov(8)),
+            &[oct(25)],
+            None,
+        ),
+        // Control, unchanged: the restatement
+        // inside a group stays governed.
+        (
+            "November 1, 2026, cancelled (November 8) (November 1)",
+            Some(nov(8)),
+            &[nov(1)],
+            None,
+        ),
+    ];
+    for (line, want, want_second, want_mismatch) in cases {
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution(&for_text, today()).expect("parses");
+        assert_eq!(f.for_date, want, "{line}: For Sunday");
+        assert_eq!(
+            f.for_sunday_second_dates,
+            want_second.to_vec(),
+            "{line}: For Sunday second dates"
+        );
+        let for_mismatch = f.for_sunday_parenthesized_mismatch.map(|m| m.named);
+        assert_eq!(for_mismatch, want_mismatch, "{line}: For Sunday mismatch");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution(&keep_text, today()).expect("parses");
+        assert_eq!(k.keep_through, want, "{line}: Keep-through agrees");
+        assert_eq!(
+            k.keep_through_second_dates,
+            want_second.to_vec(),
+            "{line}: Keep-through second dates agree"
+        );
+        let keep_mismatch = k.keep_through_parenthesized_mismatch.map(|m| m.named);
+        assert_eq!(
+            keep_mismatch, want_mismatch,
+            "{line}: Keep-through mismatch agrees"
+        );
+    }
+    // Control, unchanged: with no group at all the
+    // governed restatement stays governed.
+    let line = "November 1, 2026, cancelled, November 1, 2026";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(f.for_date, None, "{line}");
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, None, "{line}: keep-through");
+}
+
+#[test]
+fn r21a_anchor_parity_for_governed_values() {
+    // Round 21 (R21-4, review F1): a relative-
+    // governed core read its governed value at
+    // scan-day, not at the parse anchor — "next
+    // Sunday, cancelled (October 25)" filed
+    // October 16 and scanned October 23 asserted
+    // the very date the core cancelled and named a
+    // phantom November 1 (the scan-day resolution)
+    // on the note. Every value the composition
+    // binds now resolves its relative signals at
+    // the anchor, the anchor the groups have used
+    // since R19-3.
+    let scan_day = SimpleDate {
+        year: 2026,
+        month: 10,
+        day: 23,
+    };
+    let file_day = oct(16);
+    // (line, read date, second dates)
+    type AnchorCase<'a> = (&'a str, Option<SimpleDate>, &'a [SimpleDate]);
+    let cases: [AnchorCase<'_>; 3] = [
+        // October 25 is the governed value at the
+        // anchor: its bare restatement binds, and
+        // no phantom November 1 is named anywhere.
+        ("next Sunday, cancelled (October 25)", None, &[]),
+        ("next Sunday, cancelled (next Sunday)", None, &[]),
+        // The surviving group asserts, and the
+        // governed value it names is the anchored
+        // October 25.
+        (
+            "next Sunday, cancelled (October 25) (November 8)",
+            Some(nov(8)),
+            &[oct(25)],
+        ),
+    ];
+    for (line, want, want_second) in cases {
+        let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let f = parse_contribution_anchored(&for_text, scan_day, Some(file_day)).expect("parses");
+        assert_eq!(f.for_date, want, "{line}: For Sunday at the anchor");
+        assert_eq!(
+            f.for_sunday_second_dates,
+            want_second.to_vec(),
+            "{line}: For Sunday names the anchored value"
+        );
+        assert_eq!(f.for_sunday_parenthesized_mismatch, None, "{line}");
+        let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let k = parse_contribution_anchored(&keep_text, scan_day, Some(file_day)).expect("parses");
+        assert_eq!(k.keep_through, want, "{line}: Keep-through agrees");
+        assert_eq!(
+            k.keep_through_second_dates,
+            want_second.to_vec(),
+            "{line}: Keep-through names the same"
+        );
+        assert_eq!(k.keep_through_parenthesized_mismatch, None, "{line}");
+    }
+}
+
+#[test]
+fn r21a_occurrence_regions_end_at_neighbours() {
+    // Round 21 (R21-5, review F5): the bare test's
+    // after-side sweep credited a bare restatement
+    // with the NEXT date's passive-for clause —
+    // "November 1, 2026, cancelled, November 1,
+    // 2026, it was moved for November 8, 2026"
+    // asserted the cancelled November 1, the
+    // moved-for construction minus its date being
+    // read as the restatement's own predicate. An
+    // occurrence's regions end at the neighbouring
+    // occurrences now, on every surface that
+    // judges bareness: a passive "for" lead-in in
+    // the after-region credits the next occurrence,
+    // not this one, so the restatement stays bare
+    // and bound, and November 8 asserts by its own
+    // construction with November 1 named.
+    let line = "November 1, 2026, cancelled, November 1, 2026, it was moved for November 8, 2026";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(f.for_date, Some(nov(8)), "{line}: For Sunday");
+    assert_eq!(f.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, Some(nov(8)), "{line}: Keep-through agrees");
+    assert_eq!(k.keep_through_second_dates, vec![nov(1)], "{line}");
+    // The group surface judges bareness by the
+    // same bound: inside one group the restatement
+    // stays governed and the moved-for occasion
+    // contributes, where the group used to fence
+    // both dates into alternatives.
+    let line = "(November 1, cancelled, November 1, it was moved for November 8)";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(f.for_date, Some(nov(8)), "{line}: paren-only For Sunday");
+    assert_eq!(f.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, Some(nov(8)), "{line}: keep-through");
+    assert_eq!(k.keep_through_second_dates, vec![nov(1)], "{line}");
+    // Held (round 20, R20-2): a predicate standing
+    // in an occurrence's OWN region still makes it
+    // non-bare — the comma twin, whose trailing
+    // clause is clause-complete, and the
+    // sibling-cancellation shapes pinned in
+    // `r20a_passive_predicate_is_not_bare` — and
+    // those readings stand unchanged.
+    let line = "November 1, 2026, cancelled, November 1, 2026, it was moved, November 8, 2026";
+    let for_text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let f = parse_contribution(&for_text, today()).expect("parses");
+    assert_eq!(f.for_date, Some(nov(8)), "{line}: the comma twin stands");
+    assert_eq!(f.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let keep_text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let k = parse_contribution(&keep_text, today()).expect("parses");
+    assert_eq!(k.keep_through, Some(nov(8)), "{line}: keep-through");
+}
+
+#[test]
+fn r20a_passive_predicate_is_not_bare() {
+    // Round 20 (R20-2, review F2): the bare test
+    // consumed an auxiliary + governor-participle
+    // predicate word by word — "it was moved",
+    // "it was rescheduled", "it was cancelled"
+    // are all filler, auxiliaries, and governor
+    // phrases — so a passive construction's
+    // occasion date read as a bare restatement
+    // and was suppressed by any sibling
+    // governance, while the same construction
+    // with a non-governor participle ("it was
+    // scheduled for …", "it was held, …")
+    // asserted, as the spent / passive-for rules
+    // require. A region carrying a passive
+    // predicate construction is not bare: the
+    // construction heads its own event clause.
+    for groups in [
+        "(November 1, cancelled) (it was moved for November 1)",
+        "(November 1, cancelled) (it was moved, November 1)",
+        "(November 1, cancelled) (it was rescheduled for November 1)",
+        "(November 1, moved) (it was cancelled, November 1)",
+        "(it was moved for November 1) (November 1, cancelled)",
+        "(November 1, cancelled, it was moved for November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{groups}: relative path asserts the passive clause's date"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    }
+    // The plain twins, in both orders.
+    for line in [
+        "November 1, 2026, cancelled, it was moved for November 1, 2026",
+        "it was moved for November 1, 2026, November 1, 2026, cancelled",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the plain passive clause asserts"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{line}: keep-through");
+    }
+    // Held: a lone "for" fragment stays bare and
+    // bound; the constructions that always
+    // asserted keep asserting; "use" stays
+    // non-bare by the stated judgment call.
+    let groups = "(November 1, cancelled) (for November 1)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{groups}: a lone for fragment stays bare");
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "{groups}: keep-through");
+    for groups in [
+        "(November 1, cancelled) (it was scheduled for November 1)",
+        "(November 1, cancelled) (it was held, November 1)",
+        "(November 1, cancelled) (we moved the meeting for November 1)",
+        "(November 1, cancelled) (use November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    }
+}
+
+#[test]
+fn r20a_bare_function_words() {
+    // Round 20 (R20-3, review F3 + red team
+    // RT20-2): the bare inventory admitted the
+    // articles but missed the other function
+    // words — possessive determiners,
+    // demonstratives, and discourse garnish — so
+    // a restatement wearing only one of those
+    // words counted as event content and its
+    // governed date resurrected on every path.
+    // Those classes are filler now. The garnish
+    // list is closed: please, yes, again, ps.
+    for word in [
+        "his", "her", "their", "my", "our", "your", "its", "this", "that", "these", "those",
+        "please", "yes", "again", "ps",
+    ] {
+        let groups = format!("(November 1, cancelled) ({word} November 1)");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+        // The plain twin reads nothing either.
+        let line = format!("November 1, 2026, cancelled, {word} November 1, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the plain twin stays governed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through");
+    }
+    // Held: a label still asserts (round 19,
+    // R19-1) — function words bind, content
+    // labels assert. That is the pinned
+    // boundary of this fix.
+    for groups in [
+        "(November 1, cancelled) (choir November 1)",
+        "(November 1, cancelled) (meeting November 1)",
+        "(November 1, cancelled) (November 1 reminder)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a label asserts beside a sibling cancellation"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    }
+}
+
+#[test]
+fn r20b_one_verb_test_for_every_verb_form() {
+    // Round 20 (R20-4, review F4 + red team
+    // RT20-4/RT20-5): the reach's verb test was
+    // two half-rules — R19-4 tempered only
+    // generic -ed forms, so listed-stem,
+    // irregular, and -ing adjectives heading the
+    // object continuation killed the claim
+    // identically, a generic -ed verb with a
+    // subject and an object read as an adjective
+    // (the reach crossed a real clause and named
+    // a false from-date), and a postposed -ed
+    // after its noun killed the claim. The test
+    // is now ONE for every verb-form word: a
+    // verb-form word counts as a finite verb
+    // only when a noun-like subject stands
+    // before it in its segment; otherwise, with
+    // a noun-like word after it or standing
+    // postposed after its noun, it reads as a
+    // modifier and the reach continues.
+    // The adjective family claims the target on
+    // every path, the from-date named.
+    for group in [
+        "(moved the meeting, November 1, 2026, and planned dinner to November 8)",
+        "(moved the meeting, November 1, 2026, and gathered supplies to November 8)",
+        // Round 21 (R21-6): "sung hymns" and
+        // "left luggage" stood in this list
+        // until the verb test v2 — both are
+        // irregular past forms, which cannot
+        // head a noun phrase under the v2 rule,
+        // so they read as clauses now and are
+        // pinned with the clause family below.
+        // ("sung hymns" is the move the round-21
+        // synthesis pre-authorizes; "left
+        // luggage" is the same rule on the same
+        // list — "left" is an irregular form of
+        // "leave" exactly as "sung" is of
+        // "sing".)
+        "(moved the meeting, November 1, 2026, and read books to November 8)",
+        "(moved the meeting, November 1, 2026, and planning meeting to November 8)",
+        "(moved the meeting, November 1, 2026, and meeting notes to November 8)",
+        "(moved the meeting, November 1, 2026, and singing lessons to November 8)",
+        "(moved the meeting, November 1, 2026, and gathering supplies to November 8)",
+        // The stacked generic controls of the
+        // review probes claim the same way.
+        "(moved the meeting, November 1, 2026, and fresh baked beans to November 8)",
+        "(moved the meeting, November 1, 2026, and sliced baked beans to November 8)",
+        "(moved the meeting, November 1, 2026, and baked canned goods to November 8)",
+        "(moved the meeting, November 1, 2026, and beans baked canned goods to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named as the from-date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    }
+    // The plain twins assert the target instead
+    // of filing for the from-date.
+    for line in [
+        "moved the meeting, November 1, 2026, and planned dinner to November 8, 2026",
+        "moved the meeting, November 1, 2026, and planning meeting to November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the plain twin asserts the target"
+        );
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+    }
+    // A real clause ends the reach (RT20-4):
+    // subject + generic -ed verb + object, like
+    // "choir sang hymns" — November 8 keeps its
+    // own standing and November 1 is NOT named
+    // as a from-date.
+    for group in [
+        "(moved November 1, choir folded bulletins to November 8)",
+        "(moved November 1, team grilled chicken to November 8)",
+        "(moved November 1, ushers stacked chairs to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: November 8 stands on its own"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the reach ended, so November 1 is not named as a from-date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // Round 21 (R21-6, the verb test v2): the
+    // two irregular entries moved out of the
+    // adjective family above — an irregular
+    // past form cannot head a noun phrase, so
+    // "sung hymns" and "left luggage" are
+    // subjectless clauses and the reach ends.
+    // In this "moved the meeting" form the
+    // from-date is not governed ("moved" is
+    // spent on its object), so with no claim
+    // to order the pair the group offers both
+    // dates as alternatives instead of
+    // claiming the target; in the "(moved
+    // November 1, …)" form the same clause
+    // leaves November 8 standing alone (see
+    // `r21b_verb_test_v2`).
+    for group in [
+        "(moved the meeting, November 1, 2026, and sung hymns to November 8)",
+        "(moved the meeting, November 1, 2026, and left luggage to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: the reach ended, so the target is not claimed"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), nov(8)],
+            "{group}: both dates are offered as alternatives"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1), nov(8)],
+            "{group}: keep-through offers both dates"
+        );
+    }
+    // A postposed adjective continues the reach
+    // (RT20-5): the target is claimed, the
+    // from-date named. The comma variant of the
+    // stacked family — "beans, baked canned
+    // goods", the same postposed construction
+    // wearing its comma — claims like its
+    // comma-less twin; before this round it
+    // collapsed through the reach's
+    // clause-boundary rule.
+    for group in [
+        "(moved the meeting, November 1, 2026, and dinner rolls, baked to November 8)",
+        "(moved the meeting, November 1, 2026, and beans, baked canned goods to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the postposed adjective continues the reach"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named as the from-date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    }
+}
+
+#[test]
+fn r20b_adverb_tolerance_unified() {
+    // Round 20 (R20-5, review F5 + red team
+    // RT20-7/RT20-8): adverb tolerance was three
+    // different rules — the list omitted the
+    // ordinary tier (really, actually, truly,
+    // quickly, definitely, probably, carefully),
+    // a single one silenced even a target claim,
+    // and fronted/pre-auxiliary stacks consulted
+    // neither the list nor the two-word cap. The
+    // seven words join the list (34 in all), and
+    // all three scans (target claim, passive
+    // spent, passive-for) apply the SAME list
+    // and the SAME two-word cap in BOTH
+    // positions: a listed stack of up to two
+    // before the auxiliary spends exactly as
+    // after it; an unlisted adverb in either
+    // position does not spend; a three-word
+    // stack does not spend in either position.
+    // Post-auxiliary, the spent scan: each new
+    // word spends alone, and a listed pair does.
+    for group in [
+        "(it was really moved, November 1)",
+        "(it was actually moved, November 1)",
+        "(it was truly moved, November 1)",
+        "(it was quickly moved, November 1)",
+        "(it was definitely moved, November 1)",
+        "(it was probably moved, November 1)",
+        "(it was carefully moved, November 1)",
+        "(it was just really moved, November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{group}: the new word spends in the spent scan"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    }
+    // The passive-for scan reads them the same
+    // way, and the target claim claims through
+    // them.
+    for group in [
+        "(it was really moved for November 1)",
+        "(it was just really moved for November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{group}: the new word spends in the passive-for scan"
+        );
+    }
+    let group = "(it was really moved to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the claim claims its target through the new word"
+    );
+    // Both fronted positions spend, in all three
+    // scans: pre-auxiliary (between subject and
+    // auxiliary) and detached (before the
+    // clause).
+    for (group, want) in [
+        ("(it really was moved, November 1)", nov(1)),
+        ("(really, it was moved, November 1)", nov(1)),
+        ("(it really was moved for November 1)", nov(1)),
+        ("(really, it was moved for November 1)", nov(1)),
+        ("(it really was moved to November 8)", nov(8)),
+        ("(really, it was moved to November 8)", nov(8)),
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(want),
+            "{group}: the fronted stack spends as the post-auxiliary stack does"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{group}: keep-through");
+    }
+    // Three stacked do not spend in either
+    // position, in any scan — the fronted three
+    // (RT20-8: three words that are NOW listed,
+    // so the cap, not the list, is what stops
+    // them), the pre-auxiliary three, and the
+    // post-auxiliary three.
+    for group in [
+        // Spent scan.
+        "(really truly actually, it was moved, November 1)",
+        "(just very plain, it was moved, November 1)",
+        "(it just very plain was moved, November 1)",
+        "(it was just very plain moved, November 1)",
+        // Passive-for scan.
+        "(really truly actually, it was moved for November 1)",
+        "(it just very plain was moved for November 1)",
+        // Target-claim scan.
+        "(really truly actually, it was moved to November 8)",
+        "(it was just very plain moved to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: a three-word stack does not spend in either position"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // The pre-auxiliary three in a claim group
+    // leaves the from-date standing on its own:
+    // the claim dies, November 8 is governed by
+    // the unspent construction, November 1
+    // asserts alone and names nothing.
+    let group = "(November 1, just very plain was moved to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "{group}: the claim dies");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+    // An unlisted adverb does not spend in
+    // either position, in any scan.
+    for group in [
+        "(it was yesterday moved, November 1)",
+        "(it yesterday was moved, November 1)",
+        "(yesterday, it was moved, November 1)",
+        "(yesterday, it was moved for November 1)",
+        "(yesterday, it was moved to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: an unlisted adverb does not spend in either position"
+        );
+    }
+}
+
+#[test]
+fn r20b_weekday_modifier_in_a_group_is_not_a_signal() {
+    // Round 20 (R20-6, red team RT20-6): a bare
+    // weekday standing as a noun modifier inside
+    // a group — "printed Sunday bulletins" —
+    // spawned a relative signal and named a date
+    // nobody wrote (October 18, this Sunday).
+    // A weekday word followed by a noun-like
+    // word inside a group is a modifier, not a
+    // relative signal: the group asserts its
+    // target and names its from-date, and names
+    // NO October 18.
+    let group = "(moved the meeting, November 1, 2026, and printed Sunday bulletins to November 8)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(8)),
+        "{group}: the target asserts on the relative path"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: only the from-date is named — no October 18"
+    );
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    // The modifier phrase alone names no date
+    // at all.
+    let text = "For Sunday: (Sunday bulletins)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "a noun phrase names no Sunday");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "and names nothing on the note"
+    );
+    // Held: the true relative phrases in groups
+    // keep contributing as pinned.
+    for (group, want) in [
+        ("(next Sunday)", oct(25)),
+        ("(this Sunday)", oct(18)),
+        ("(the Sunday after November 1)", nov(8)),
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(want),
+            "{group}: the relative phrase stands"
+        );
+    }
+}
+
+#[test]
+fn r20b_consumed_base_excluded_in_group_alternatives() {
+    // Round 20 (R20-7, review F6): R19-8's
+    // consumed-base exclusion held only on the
+    // plain-core merge; inside a group the
+    // restated base was still named through the
+    // group's alternatives. The exclusion now
+    // applies wherever second dates are named
+    // from a Sunday-after phrase: the group
+    // below asserts its resolution and names
+    // NOTHING for its consumed base, on every
+    // path. The salvaged/asserted reading is
+    // unchanged.
+    let group = "(the Sunday after November 1, November 1, cancelled)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the resolution asserts, as it did"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: the consumed base is not named on the group path"
+    );
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+    assert_eq!(
+        c.keep_through_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: the base is not named on the keep-through note either"
+    );
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: the relative path names no consumed base either"
+    );
+}
+
+#[test]
+fn r20b_chain_link_must_belong_to_a_target_construction() {
+    // Round 20 (R20-8, review F7): R19-9's
+    // continuation link admitted any pre-date
+    // "to" in the last group, including garnish
+    // prose — "note to November 15" wore the
+    // chain's shape, so the earlier group was
+    // named as a superseded target and the real
+    // garnish mismatch was suppressed. The link
+    // now counts only when its "to" belongs to
+    // a target construction: a displacement /
+    // postpone phrase in the group governs the
+    // link, or the link directly continues one.
+    // Garnish "to" in the last group never
+    // classifies a chain.
+    for groups in [
+        "(moved to November 8) (back to November 15)",
+        "(moved to November 8) (note to November 15)",
+        "(moved to November 8) (return to November 15)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(15)),
+            "{groups}: the last group still asserts"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{groups}: November 8 is garnish, not a superseded target"
+        );
+        let mismatch = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the garnish mismatch stands");
+        assert_eq!(mismatch.named, nov(8), "{groups}");
+        assert_eq!(mismatch.read, nov(15), "{groups}");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(15)), "{groups}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{groups}: keep-through note is empty"
+        );
+    }
+    // Held: the true chains still name their
+    // superseded targets (the r19b witnesses,
+    // re-pinned here on the link forms the new
+    // test admits: a bare continuation link, and
+    // a phrase governing its own link).
+    for groups in [
+        "(moved to November 8) (then to November 15)",
+        "(moved to November 8) (to November 15)",
+        "(moved to November 8) (moved to November 15)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(15)),
+            "{groups}: the last target asserts"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(8)],
+            "{groups}: the superseded target is named"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{groups}: a chain link is not a garnish disagreement"
+        );
+    }
+}
+
+#[test]
+fn r20b_multi_group_losers_are_named() {
+    // Round 20 (R20-9, review F8): R19-10's
+    // loser naming stopped at exactly two
+    // groups; a three-group mixed stack's losers
+    // stood on the mismatch record only. The
+    // two-group rule generalizes: in a
+    // multi-group reading with at least one
+    // relative group, losers are named on the
+    // note as the two-group rule names them.
+    let groups = "(November 8) (next Sunday) (November 15)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(15)),
+        "{groups}: the last group still stands"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8), oct(25)],
+        "{groups}: both losers are named on the note"
+    );
+    let mismatch = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the mismatch record stands as it did");
+    assert_eq!(mismatch.named, nov(8), "{groups}");
+    assert_eq!(mismatch.also_named, vec![oct(25)], "{groups}");
+    assert_eq!(mismatch.read, nov(15), "{groups}");
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(15)), "{groups}: keep-through");
+    assert_eq!(
+        c.keep_through_second_dates,
+        vec![nov(8), oct(25)],
+        "{groups}: the losers are named on the keep-through note"
+    );
+    // Held: the bare framed stack keeps
+    // mismatch-only naming (the r18b pin) — no
+    // relative group stands in it.
+    let text = "For Sunday: (November 1) (November 8) (November 15)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(15)), "the bare stack stands");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "the bare stack names nothing on the note"
+    );
+    let mismatch = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the bare stack keeps its garnish mismatch");
+    assert_eq!(mismatch.named, nov(1));
+    assert_eq!(mismatch.also_named, vec![nov(8)]);
+}
+
+#[test]
+fn r20b_sunday_after_relative_base_salvages() {
+    // Round 20 (R20-10, review F9): a
+    // Sunday-after phrase over a RELATIVE base
+    // died with its restated governed value —
+    // its resolution is the same value as the
+    // governed restatement, so governance by
+    // value took the resolution with it — while
+    // the framed-base twin salvaged. Parity: an
+    // ungoverned Sunday-after phrase salvages
+    // by its own resolution whatever its base's
+    // form; a governed phrase still dies.
+    for (line, want) in [
+        (
+            "the Sunday after next Sunday, November 1, 2026, cancelled",
+            nov(1),
+        ),
+        (
+            "the Sunday after this Sunday, October 25, 2026, cancelled",
+            oct(25),
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(want),
+            "{line}: the phrase salvages by its own resolution"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: the restated base is not named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{line}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: keep-through note is empty"
+        );
+    }
+    // The group twin salvages the same way.
+    let group = "(the Sunday after next Sunday, November 1, cancelled)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{group}: the group phrase salvages by its resolution"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+    // A governed phrase still dies: the governor
+    // standing between the phrase and its
+    // restatement governs the phrase in its own
+    // span, and the bare restatement is bound by
+    // that governance.
+    let line = "the Sunday after next Sunday, cancelled, November 1, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: a governed phrase dies");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: and names nothing"
+    );
+}
+
+#[test]
+fn r19a_groups_anchor_all_relatives() {
+    // Round 19 (R19-3, review Q2): a relative-only
+    // group resolved at scan-day `today` under an
+    // anchored parse, while its mixed twin
+    // resolved at the file's date — "(next
+    // Sunday)" in a file dated October 16, scanned
+    // October 23, contributed November 1, a Sunday
+    // the sender never meant. Groups now resolve
+    // every relative signal at the parse anchor,
+    // relative-only exactly as mixed.
+    let late = oct(23);
+    let file_day = Some(today());
+    for (group, want) in [
+        ("(next Sunday)", oct(25)),
+        ("(choir picnic next Sunday)", oct(25)),
+        ("(this Sunday)", oct(18)),
+        ("(the Sunday after next Sunday)", nov(1)),
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution_anchored(&text, late, file_day).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(want),
+            "{group}: the anchored relative-only group reads at the file's date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution_anchored(&text, late, file_day).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{group}: keep-through");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution_anchored(&text, late, file_day).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(want),
+            "{group}: relative path"
+        );
+    }
+    // The unanchored controls keep the scan-day
+    // reading the lanes probed.
+    let text = "For Sunday: (next Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, late).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "unanchored at October 23, next Sunday is November 1"
+    );
+    // The mixed twin agrees with its relative-only
+    // sibling at the anchor, as it did before.
+    let text = "For Sunday: (November 1, cancelled, next Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, file_day).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "the mixed twin at the anchor");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    // Held shapes stand: a lone "(Sunday)" group
+    // is weekday garnish and contributes nothing,
+    // anchored or not; a Sunday-after phrase over
+    // a framed base keeps its framed-base
+    // resolution; and at October 30, where "this
+    // Sunday" IS November 1, the governed merge
+    // holds on the group surface.
+    let text = "For Sunday: (Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, file_day).expect("parses");
+    assert_eq!(c.for_date, None, "(Sunday) alone stays garnish, anchored");
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "(Sunday) alone stays garnish");
+    let text = "For Sunday: (the Sunday after November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, file_day).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "a framed-base Sunday-after group keeps its framed-base resolution"
+    );
+    let text = "For Sunday: (November 1, cancelled, this Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, oct(30)).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "at October 30 this Sunday is the governed November 1 and merges"
+    );
+    // The 28-day bound holds for groups as for
+    // plain lines: a file dated September 24
+    // (29 days before the scan) falls back to the
+    // unanchored reading.
+    let text = "For Sunday: (next Sunday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, Some(sep(24))).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "a file date beyond the bound falls back to today for groups too"
+    );
+    let c = parse_contribution_anchored(text, late, Some(sep(25))).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(4)),
+        "a file date exactly 28 days before anchors the group: next Sunday is October 4"
+    );
+}
+
+#[test]
+fn r19b_ed_adjectives_in_the_reach_claim() {
+    // Round 19 (R19-4, review Q3 + red team
+    // RT19-2): the claim reach's finite-verb test
+    // shielded only the word directly after a
+    // determiner, so a determiner-less -ed
+    // adjective heading the object continuation
+    // killed the claim — R18-4's own witness
+    // shape collapsed to alternatives, and its
+    // plain twin filed for the from-date. The
+    // test, in one sentence: an -ed word whose
+    // only verb claim is the generic -ed suffix
+    // is an adjective when a noun-like word
+    // stands immediately after it, and a finite
+    // reading of such a word requires a subject
+    // standing before it in its segment.
+    for group in [
+        "(moved the meeting, November 1, 2026, and baked beans to November 8)",
+        "(moved the meeting, November 1, 2026, and canned goods to November 8)",
+        "(moved the meeting, November 1, 2026, and sliced bread to November 8)",
+        "(moved the meeting, November 1, 2026, and printed bulletins to November 8)",
+        // The determiner twin, held from round 18.
+        "(moved the meeting, November 1, 2026, and the baked beans to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named as the from-date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    }
+    // The simple continuation claims the same
+    // way, and the plain twin asserts the target
+    // instead of filing for the from-date.
+    let group = "(moved November 1, and baked beans to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: the claim names its from-date"
+    );
+    let line = "moved the meeting, November 1, 2026, and baked beans to November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the plain twin asserts the target, not the from-date"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+    // Held: a real second clause still ends the
+    // reach — "sang" through the irregular list,
+    // and an -ed verb with its own subject
+    // standing before it ("team played").
+    for group in [
+        "(moved November 1, choir sang to November 8)",
+        "(moved November 1, team played to November 8)",
+        "(moved November 1, choir practiced to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: November 8 stands on its own"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the reach ended, so November 1 is not named as a from-date"
+        );
+    }
+}
+
+#[test]
+fn r19b_verb_list_gaps_close() {
+    // Round 19 (R19-5, review Q3 + red team
+    // RT19-3): the finite-verb closed list missed
+    // the go family and the rehearses / gathers /
+    // plans stems, so the claim reach crossed
+    // those second clauses and named the from-date
+    // (the R18-8 witness behavior with a different
+    // verb). They join the test, and the second
+    // clauses end the reach like "sang" does: the
+    // claim dies, and November 8 keeps its own
+    // standing per the R18-8 reading.
+    for group in [
+        "(moved November 1, choir goes to November 8)",
+        "(moved November 1, team plans to November 8)",
+        "(moved November 1, choir rehearses to November 8)",
+        "(moved November 1, congregation gathers to November 8)",
+        "(moved November 1, choir went to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: November 8 stands on its own, on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the claim died, so November 1 is not named"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+}
+
+#[test]
+fn r19b_active_for_determiner_protects_a_modified_head() {
+    // Round 19 (R19-6, review Q4 + red team
+    // RT19-4): the active-for object scan shielded
+    // only the word directly after the determiner,
+    // so any modifier between the determiner and
+    // the head noun "meeting" (meet's -ing form)
+    // exposed it as a second verb and the occasion
+    // date fell silent. In this scan a determiner
+    // standing anywhere before the object phrase's
+    // head protects it.
+    for group in [
+        "(we moved the big meeting for November 1)",
+        "(we moved the church meeting for November 1)",
+        "(we moved the Johnson meeting for November 1)",
+        "(we moved a big meeting for November 1)",
+        "(she moved the Johnson meeting for November 1)",
+        // The bare heads, held from round 18.
+        "(we moved the meeting for November 1)",
+        "(we moved the files for November 1)",
+        "(we moved the Johnson files for November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{group}: the occasion contributes on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    }
+    // The fences stand: bare active parity
+    // governs, and an active cancellation with
+    // "for" stays outside the displacement family.
+    for group in [
+        "(we moved it November 1)",
+        "(we moved the meeting November 1)",
+        "(we cancelled it for November 1)",
+        "(we cancelled the meeting for November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: outside the active-for scope");
+    }
+}
+
+#[test]
+fn r19b_adverb_list_completed_and_both_positions_tolerate() {
+    // Round 19 (R19-7, red team RT19-5/RT19-6):
+    // the closed tolerated-adverb list omitted
+    // the ordinary intensifiers very, plain, and
+    // simply, so a stack wearing one silenced in
+    // every scan, while the same stack standing
+    // before the auxiliary spent. The three words
+    // join the list (27 words in all), and one rule
+    // governs both positions: a listed stack of
+    // up to two standing before the auxiliary
+    // tolerates exactly as after it — in all three
+    // scans that cross the slot (the spent-
+    // predicate scan, the passive-for scan, and
+    // the target claim's zone scan).
+    // Post-auxiliary stacks now spend in the
+    // spent-predicate scan, on every path.
+    for group in [
+        "(it was just plain moved, November 1)",
+        "(it was recently plain moved, November 1)",
+        "(it was just simply moved, November 1)",
+        "(it was very recently moved, November 1)",
+        "(it has been just plain moved, November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{group}: the stack spends on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    }
+    // The passive-for scan reads the new words
+    // the same way.
+    for group in [
+        "(it was just plain moved for November 1)",
+        "(it was very recently moved for November 1)",
+        "(it was just simply moved for November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{group}: the stack spends in the passive-for scan"
+        );
+    }
+    // The target claim's zone scan: the stack
+    // between the auxiliary and the participle no
+    // longer leaves "moved" outside its own claim
+    // zone to govern the target.
+    let group = "(it was just plain moved to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the claim claims its target"
+    );
+    // Both positions, in all three scans: a
+    // fronted stack (standing before the whole
+    // clause, or between the subject and the
+    // auxiliary) reads exactly as the
+    // post-auxiliary stack does.
+    for group in [
+        // Spent-predicate scan.
+        "(just plain, it was moved, November 1)",
+        "(it just plain was moved, November 1)",
+        "(very recently, it was moved, November 1)",
+        // Passive-for scan.
+        "(just plain, it was moved for November 1)",
+        "(it just plain was moved for November 1)",
+        // Target-claim zone scan.
+        "(just plain, it was moved to November 8)",
+        "(it just plain was moved to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        let want = if group.contains("November 8") {
+            nov(8)
+        } else {
+            nov(1)
+        };
+        assert_eq!(
+            c.for_date,
+            Some(want),
+            "{group}: the fronted stack spends as the post-auxiliary stack does"
+        );
+    }
+    // Held lines stand: an unlisted word in the
+    // post-auxiliary slot still does not spend,
+    // and three stacked listed adverbs still
+    // break the tolerance there.
+    for group in [
+        "(it was family moved, November 1)",
+        "(it was still just plain moved, November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: past the tolerance, the participle governs"
+        );
+    }
+}
+
+#[test]
+fn r19b_naming_excludes_consumed_bases() {
+    // Round 19 (R19-8, review sweep): the R18-7
+    // composition naming merge leaked a Sunday-
+    // after phrase's consumed base: the
+    // composition's signal scan splits the
+    // restated base into its own signal, so "the
+    // Sunday after November 1, 2026, November 1,
+    // 2026, cancelled" named November 1 beside
+    // the November 8 it asserts — the base the
+    // standing second-date scan deliberately
+    // never names. The merge now excludes a
+    // relative phrase's consumed base, as the
+    // standing scan does. What asserts is
+    // unchanged; only the leaked name goes.
+    let line = "the Sunday after November 1, 2026, November 1, 2026, cancelled";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the salvaged reading itself is unchanged"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: the consumed base is not named"
+    );
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+    assert_eq!(
+        c.keep_through_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: the base is not named on the keep-through note either"
+    );
+    // The control without the governor names
+    // nothing either, as it never has.
+    let line = "the Sunday after November 1, 2026, November 1, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{line}");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: a restated base is a restatement"
+    );
+    // The merge still names what it exists to
+    // name: a governed relative signal standing
+    // before a salvaged date (the R18-7 witness)
+    // is no phrase's base, and keeps its name.
+    let line = "cancelled, next Sunday, November 1, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "{line}");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(25)],
+        "{line}: the governed relative is still named by its resolution"
+    );
+}
+
+#[test]
+fn r19b_chain_test_requires_a_claim() {
+    // Round 19 (R19-9, review sweep): R18-11's
+    // chain-vs-stack test rode on any "to"/"until"
+    // token in the last contributing group, so a
+    // bare date group wearing garnish prose that
+    // happened to contain "to" misclassified as a
+    // chain link — November 8 was reclassified
+    // from disagreeing garnish to superseded
+    // target, and the real mismatch was
+    // suppressed. The test now requires an actual
+    // target claim in the last group.
+    for groups in [
+        "(moved to November 8) (November 15, note to self)",
+        "(moved to November 8) (November 15, back to church)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(15)),
+            "{groups}: the last group still asserts"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{groups}: November 8 is garnish, not a superseded target"
+        );
+        let mismatch = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the garnish mismatch is no longer suppressed");
+        assert_eq!(mismatch.named, nov(8), "{groups}");
+        assert_eq!(mismatch.read, nov(15), "{groups}");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(15)),
+            "{groups}: relative path asserts the last group"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{groups}: relative path names no chain link"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(15)), "{groups}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{groups}: keep-through note is empty"
+        );
+        let mismatch = c
+            .keep_through_parenthesized_mismatch
+            .expect("keep-through keeps the garnish mismatch too");
+        assert_eq!(mismatch.named, nov(8), "{groups}");
+    }
+    // The true chain family still names its
+    // superseded targets, in every link form.
+    for groups in [
+        "(moved to November 8) (then to November 15)",
+        "(moved to November 8) (to November 15)",
+        "(moved to November 8) (until November 15)",
+        "(moved to November 8) (moved to November 15)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(15)),
+            "{groups}: the last target asserts"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(8)],
+            "{groups}: the superseded target is named"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{groups}: a chain link is not a garnish disagreement"
+        );
+    }
+}
+
+#[test]
+fn r19b_two_group_loser_is_named() {
+    // Round 19 (R19-10, red team RT19-7): a
+    // two-group reading mixing a framed group and
+    // a relative group resolved by last-group-wins
+    // and left the loser off the note — "(November
+    // 8) (next Sunday)" asserted October 25 with
+    // November 8 standing only on the mismatch
+    // record; the note carried nothing, on either
+    // line. The loser of a two-group reading
+    // is now named on the note, as the other signal
+    // of a plain mixed line is.
+    let groups = "(November 8) (next Sunday)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(25)),
+        "{groups}: the last group still stands"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8)],
+        "{groups}: the loser is named on the note"
+    );
+    let mismatch = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the mismatch record stands as it did");
+    assert_eq!(mismatch.named, nov(8), "{groups}");
+    assert_eq!(mismatch.read, oct(25), "{groups}");
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)), "{groups}: keep-through");
+    assert_eq!(
+        c.keep_through_second_dates,
+        vec![nov(8)],
+        "{groups}: the loser is named on the keep-through note"
+    );
+    // The reversed order reads alike: the framed
+    // group stands, the relative loser is named.
+    let groups = "(next Sunday) (November 8)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{groups}: the last group stands");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(25)],
+        "{groups}: the relative loser is named by its resolution"
+    );
+    // Held: the bare framed stack keeps its
+    // standing reading — the loser named on the
+    // mismatch record alone, nothing on the note
+    // (the r18b chain pin's control).
+    let text = "For Sunday: (November 1) (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "the bare stack stands");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "the bare stack names nothing on the note"
+    );
+    let mismatch = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the bare stack keeps its garnish mismatch");
+    assert_eq!(mismatch.named, nov(1));
+}
+
+#[test]
+fn r18b_intervening_date_is_a_from_date() {
+    // Round 18 (R18-4, review Q3): a list comma
+    // in the object collapsed the from/to group —
+    // "(moved the meeting, November 1, 2026, and
+    // the dinner to November 8)" offered both
+    // dates as alternatives and asserted nothing,
+    // where its comma-after-date twin asserted
+    // November 8 with November 1 named. An
+    // intervening date inside the claim reach is
+    // a from-date (governed + named); it never
+    // breaks the reach by standing there, and
+    // neither does the list comma in front of it.
+    for group in [
+        "(moved the meeting, November 1, 2026, and the dinner to November 8)",
+        "(moved the meeting November 1, 2026, and the dinner to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the intervening date is named as the from-date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    }
+    // The plain-line twin reads the same way.
+    let line = "moved the meeting, November 1, 2026, and the dinner to November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the plain twin asserts the target"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+}
+
+#[test]
+fn r18b_reach_ends_at_a_second_clause() {
+    // Round 18 (R18-8, review Q3): the date-span
+    // exemption let the claim reach cross a real
+    // second clause — "(moved November 1, choir
+    // sang to November 8)" CLAIMED November 8
+    // across "choir sang" and named November 1
+    // as its from-date. The rule, stated plainly:
+    // after an intervening date's span, the reach
+    // continues only into the target construction
+    // itself ("to", "then to", "and to") or an
+    // object continuation of the phrase's object
+    // ("and the dinner to …"); a new finite verb
+    // clause — a subject and its finite verb —
+    // ends it. The distinguisher is the finite
+    // verb: object continuations name things, a
+    // second clause does something.
+    for group in [
+        "(moved November 1, choir sang to November 8)",
+        "(moved November 1, choir practiced to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: November 8 stands on its own, unclaimed"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is claimed, so November 1 is not named as a from-date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // November 8's own standing is the standing
+    // of any lone ungoverned group date: "(choir
+    // sang to November 8)" has always asserted
+    // it, and still does.
+    let text = "For Sunday: (choir sang to November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the second clause's own date stands"
+    );
+    // The continuations that DO claim: the "to"
+    // directly, its lead-ins, and an object
+    // continuation — each names November 1 as
+    // the from-date.
+    for group in [
+        "(moved November 1, to November 8)",
+        "(moved November 1, then to November 8)",
+        "(moved November 1, and to November 8)",
+        "(moved November 1, the dinner to November 8)",
+        "(moved November 1, and the dinner to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the reach claims its target"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the from-date is named"
+        );
+    }
+}
+
+#[test]
+fn r18b_for_date_enters_composition() {
+    // Round 18 (R18-5, red team RT18-3): the
+    // passive-"for" occasion reading collapsed
+    // when any second date stood in the group —
+    // both dates merely noted, neither filed.
+    // The for-date enters the composition as a
+    // signal like any other: two for-side dates
+    // read by primacy with the other noted, and a
+    // prospective second date ("use November 8")
+    // asserts with the for-date named.
+    for (group, want, named) in [
+        (
+            "(it was scheduled for November 1 and November 8)",
+            nov(1),
+            nov(8),
+        ),
+        (
+            "(it was scheduled for November 8 and November 1)",
+            nov(8),
+            nov(1),
+        ),
+        ("(it was moved for November 1, November 8)", nov(1), nov(8)),
+        (
+            "(it was moved for November 1, then November 8)",
+            nov(1),
+            nov(8),
+        ),
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(want),
+            "{group}: primacy asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![named],
+            "{group}: the other date is noted"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{group}: paren-only");
+        assert_eq!(c.for_sunday_second_dates, vec![named], "{group}");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![named], "{group}");
+    }
+    // The prospective form asserts its own date,
+    // on the group paths and the plain twin.
+    let group = "(it was moved for November 1, use November 8)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(8)),
+        "{group}: the use date asserts on the relative path"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: the for-date is named"
+    );
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    let line = "it was moved for November 1, 2026, use November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the plain twin asserts the use date"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+    // Held lines: a "then to" chain still reads
+    // by its claim, the lone for-date still
+    // contributes, and the bare parity still
+    // governs.
+    let text =
+        "For Sunday: (it was moved for November 1, then to November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the claim still orders a then-to chain"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    let text = "For Sunday: (it was moved November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "the pinned bare same-clause parity stands"
+    );
+}
+
+#[test]
+fn r18b_active_for_names_the_occasion() {
+    // Round 18 (R18-9, red team RT18-4): active
+    // "for" never named the occasion — "(we moved
+    // it for November 1)" was silent, while its
+    // passive twin named the date. A displacement
+    // verb + "for" + date names the occasion in
+    // the active voice too, scoped to the
+    // displacement family as the passive rule is
+    // scoped to participles.
+    for group in [
+        "(we moved it for November 1)",
+        "(moved it for November 1)",
+        "(she moved it for November 1)",
+        "(we shifted it for November 1)",
+        "(we bumped it for November 1)",
+        "(we rescheduled it for November 1)",
+        "(we moved the meeting for November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{group}: the occasion contributes on the relative path"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    }
+    // A second date beside an active for-date
+    // composes by the same primacy as the passive
+    // form (R18-5): the for-date asserts, the
+    // other is named — where RT18-4 found the
+    // for-date dropped off the note entirely.
+    let text = "For Sunday: (we moved it for November 1, November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the active for-date reads by primacy"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(8)]);
+    // Scope fences: the bare active parity still
+    // governs ("for" is the distinguisher), and
+    // an active cancellation with "for" is
+    // outside the displacement family.
+    for group in [
+        "(we moved it November 1)",
+        "(we cancelled it for November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: outside the active-for scope");
+    }
+}
+
+#[test]
+fn r18b_adverb_tolerance_two_and_the_completed_list() {
+    // Round 18 (R18-10, red team RT18-5/RT18-6 +
+    // review sweep): the tolerance was exactly
+    // one adverb and the closed list omitted
+    // common forms, so "(it was just recently
+    // moved, November 1)" silenced while its
+    // has-been twin spent, and "then" / "briefly"
+    // broke the slot outright. Tolerance is up
+    // to TWO consecutive listed adverbs now, and
+    // the list gains then, briefly, shortly,
+    // formally, unanimously, happily (24 words).
+    let group = "(it was just recently moved, November 1)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(1)),
+        "{group}: two stacked adverbs spend on the relative path"
+    );
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    for group in [
+        "(it was recently just moved, November 1)",
+        "(it was just recently cancelled, November 1)",
+        "(it has been just recently moved, November 1)",
+        "(it was just recently moved for November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{group}: the stack spends in every scan"
+        );
+    }
+    // The completed list: each new word spends in
+    // the slot, and the for-zone scan inherits it.
+    for group in [
+        "(it was then moved, November 1)",
+        "(it was briefly moved, November 1)",
+        "(it was shortly moved, November 1)",
+        "(it was formally moved, November 1)",
+        "(it was unanimously moved, November 1)",
+        "(it was happily moved, November 1)",
+        "(it was briefly moved for November 1)",
+        "(it was then moved for November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{group}: a listed adverb spends");
+    }
+    // The cap is pinned: three stacked listed
+    // adverbs still break the tolerance, and an
+    // unlisted word still does not spend.
+    for group in [
+        "(it was still just recently moved, November 1)",
+        "(it was just recently finally moved, November 1)",
+        "(it was family moved, November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: past the cap, the participle governs"
+        );
+    }
+}
+
+#[test]
+fn r18b_split_chain_names_superseded_targets() {
+    // Round 18 (R18-11, red team RT18-7): a chain
+    // split across two groups asserted correctly
+    // but dropped the superseded target unnamed —
+    // "(moved to November 8) (then to November
+    // 15)" named nothing, where the single-group
+    // twin names November 8. Superseded targets
+    // are named on the line's note across group
+    // boundaries, and they are chain links, not
+    // disagreeing garnish: no parenthesized
+    // mismatch stands against them.
+    let groups = "(moved to November 8) (then to November 15)";
+    let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(15)),
+        "{groups}: the last target asserts on the relative path"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8)],
+        "{groups}: the superseded target is named on the relative path"
+    );
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(15)), "{groups}: paren-only");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(8)], "{groups}");
+    assert_eq!(
+        c.for_sunday_parenthesized_mismatch, None,
+        "{groups}: a chain link is not a garnish disagreement"
+    );
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(15)), "{groups}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(8)], "{groups}");
+    // The from-date group split: both earlier
+    // dates are named, in written order.
+    let groups = "(November 1, moved to November 8) (then to November 15)";
+    let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(15)), "{groups}");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1), nov(8)],
+        "{groups}: the from-date and the superseded target are both named"
+    );
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(15)), "{groups}: paren-only");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1), nov(8)], "{groups}");
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{groups}");
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(15)), "{groups}: keep-through");
+    assert_eq!(
+        c.keep_through_second_dates,
+        vec![nov(1), nov(8)],
+        "{groups}"
+    );
+    // A three-link split names both superseded
+    // targets.
+    let text = "For Sunday: (moved to November 8) (then to November 15) (then to November 22)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(22)), "the last link asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8), nov(15)],
+        "both superseded targets are named"
+    );
+    // Held: the single-group twin reads as it
+    // always has, and a bare stack of date groups
+    // keeps the garnish-mismatch reading — no
+    // target construction, no chain naming.
+    let text = "For Sunday: (moved to November 8, then to November 15)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(15)), "the single-group twin stands");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(8)]);
+    let text = "For Sunday: (November 1) (November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the bare stack still reads its last group"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "the bare stack names nothing on the note"
+    );
+    let mismatch = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the bare stack keeps its garnish mismatch");
+    assert_eq!(
+        mismatch.named,
+        nov(1),
+        "the earlier group is the disagreement"
+    );
+    assert_eq!(mismatch.read, nov(8));
+}
+
+#[test]
+fn r12a_a_governor_scopes_to_the_one_date_it_governs() {
+    // Round 12 (R12-2, red team RT12-2 + review
+    // R12-4): a governor used to scope over the
+    // whole rest of its group, so the asserted
+    // date after it vanished — not contributed,
+    // not an alternative, not a second date,
+    // nowhere. A governor now scopes to the one
+    // date it governs; a date asserted later in
+    // the group is read on its own terms, exactly
+    // as if the governed date were absent.
+    for group in [
+        "(ignore November 1, use November 8)",
+        "(not November 1, November 8)",
+        "(moved from November 1 to November 8)",
+        "(from November 1 to November 8)",
+        "(not November 1; use November 8)",
+        "(correction: not November 1, November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the asserted date is read"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_dates,
+            vec![nov(8)],
+            "{group}: the governed date is not remembered beside it"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::DifferentSunday(nov(8)),
+            "{group}: the asserted date arms on its own terms"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::DifferentSunday(nov(8)),
+            "{group}: never a reading on the governed date"
+        );
+    }
+    // Paren-only and Keep-through paths read the
+    // asserted date the same way.
+    let text = "For Sunday: (ignore November 1, use November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    assert_eq!(
+        week_verdict(&c, Some(nov(8))),
+        WeekVerdict::SameSunday,
+        "the asserted date is the operative date, on its own terms"
+    );
+    let text = "For Sunday: (moved from November 1 to November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "moved-from reads its target");
+    let text = "Keep-through: (moved from November 1 to November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    // "(moved from X to Y)" in the canonical
+    // reschedule shape: X is the origin, Y the
+    // assertion.
+    let text =
+        "For Sunday: next Sunday (moved from October 25 to November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(1)));
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(1))
+    );
+    // PIN MOVED, round 18 (R18-2): this block used
+    // to pin the opposite reading — "the same date
+    // restated ungoverned after its negation is
+    // read by its second standing" (round 12,
+    // R12-2). Governance now attaches to the date
+    // VALUE, not the occurrence: a date governed in
+    // any occurrence does not assert from another
+    // occurrence, so "(not November 1, November 1)"
+    // reads nothing, exactly as the red team's
+    // restated-cancellation witness does. The
+    // group contributes no date, and the line
+    // stands on its relative words alone.
+    let text = "For Sunday: next Sunday (not November 1, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, None);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::SundayInWords(oct(25))
+    );
+    // The "or" form of the same correction: the
+    // ungoverned offer stands.
+    let text = "For Sunday: next Sunday (not November 1 or November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(8)));
+    // A governor whose clause holds no date
+    // governs nothing in the next clause
+    // (RT12-2's over-broad edge): "from" governs
+    // "notes", and the November 1 in the fresh
+    // clause is named, as garnish, not suppressed
+    // into silence.
+    let text =
+            "For Sunday: October 25, 2026 (notes from the pastor, November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the fresh-clause date is named, not silently dropped");
+    assert_eq!(m.named, nov(1));
+    // Held, from round 11's probe controls: a
+    // governor with a word of its own to govern
+    // inside its clause still governs the date
+    // after it in that clause.
+    let text = "For Sunday: next Sunday (ignore it: November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, None);
+    let text = "For Sunday: next Sunday (not anymore November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, None);
+}
+
+#[test]
+fn r12a_two_framed_dates_on_a_plain_line_read_the_first() {
+    // Round 12 (R12-6, red team RT12-4): a plain
+    // For Sunday line naming two dates read
+    // NoSundayNamed, and the review's first line
+    // said the words do not say which Sunday they
+    // are for — false, and Accept stood unarmed.
+    // First-date primacy: the first framed date
+    // is the line's date, the remaining distinct
+    // dates join the second-date note, and the
+    // verdict arms like any named Sunday.
+    for line in [
+        "October 25, 2026 and November 1, 2026",
+        "October 25, 2026 / November 1, 2026",
+        "October 25, 2026 (Room 2) and November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "{line}: the first date reads");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: the second date is noted"
+        );
+        assert_eq!(
+            second_dates_sentence(&c.for_sunday_second_dates),
+            "This file named another date too: Sunday, November 1, 2026. \
+                 Check which date was meant.",
+            "{line}"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SameSunday,
+            "{line}"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::DifferentSunday(oct(25)),
+            "{line}: armed — words meant for November 1 no longer land silently"
+        );
+    }
+    // The Keep-through mirror shares the rule.
+    let text = "Keep-through: October 25, 2026 and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+    // Written order decides, not the calendar.
+    let text = "For Sunday: November 1, 2026 and October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, vec![oct(25)]);
+    // The same date written twice reads as that
+    // date plainly, with nothing noted.
+    let text = "For Sunday: October 25, 2026 and October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    // NoSundayNamed stays reserved for lines
+    // naming no date — and for a line naming
+    // only one date in passing words, whose
+    // standing readings are unchanged.
+    let text = "For Sunday: soon\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+    let text = "For Sunday: October 25, 2026 please\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "a single passing date is not this shape");
+}
+
+#[test]
+fn r13c_mixed_plain_signals_read_the_first_and_note_the_other() {
+    // Round 13 (R13-5, red team RT13-4): "October
+    // 25, 2026 and next Sunday" read NoSundayNamed
+    // with nothing noted — the R12-6 plain
+    // multi-date reading covered framed + framed
+    // only. The mixed reading stands now: the
+    // FIRST signal is the line's date, the other
+    // is noted through the second-date machinery.
+    // Today is Friday, October 16, 2026, so
+    // "this Sunday" resolves to October 18 and
+    // "next Sunday" to October 25 — the Sundays
+    // the lane fixtures name.
+    // Framed first: the framed date reads, and
+    // the relative phrase's resolution is noted
+    // as a second date.
+    let text = "For Sunday: November 1, 2026 and next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "the first signal reads");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(25)],
+        "next Sunday resolves to October 25 against today, and is noted"
+    );
+    assert_eq!(
+        second_dates_sentence(&c.for_sunday_second_dates),
+        "This file named another date too: Sunday, October 25, 2026. \
+             Check which date was meant."
+    );
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(1)),
+        "armed — words meant for November 1 no longer land silently"
+    );
+    let text = "For Sunday: October 25, 2026 and this Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(18)],
+        "this Sunday resolves to October 18, the coming Sunday"
+    );
+    // Relative first: the resolution reads, and
+    // the framed date is named beside it as the
+    // second date.
+    let text = "For Sunday: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(25)),
+        "the first signal — the relative phrase — reads by its resolution"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    assert_eq!(
+        week_verdict(&c, Some(nov(1))),
+        WeekVerdict::DifferentSunday(oct(25))
+    );
+    let text = "For Sunday: this Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(18)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    // A Sunday-after relative phrase is a
+    // relative signal too, in either order: its
+    // resolution (the Sunday after next Sunday,
+    // November 1) is the signal's date.
+    let text =
+        "For Sunday: October 25, 2026 and the Sunday after next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    let text =
+        "For Sunday: the Sunday after next Sunday and October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, vec![oct(25)]);
+    // The same signal twice reads plainly, as
+    // the framed twin already does: a relative
+    // phrase whose resolution IS the framed date
+    // restates it, in either order, and the same
+    // relative phrase twice is one signal.
+    for line in [
+        "October 25, 2026 and next Sunday",
+        "next Sunday and October 25, 2026",
+        "October 25, 2026 and next Sunday and next Sunday",
+        "next Sunday and next Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(oct(25)), "{line}: reads plainly");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is noted — the signals agree"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::SameSunday,
+            "{line}"
+        );
+    }
+    // The Keep-through mirror shares the rule.
+    let text = "Keep-through: November 1, 2026 and next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)));
+    assert_eq!(c.keep_through_second_dates, vec![oct(25)]);
+    let text = "Keep-through: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+    // Held lines stand: a bare relative line
+    // keeps its in-words reading (no date is read
+    // from the words alone), and differing
+    // relative phrases with no framed signal are
+    // not this shape either.
+    let text = "For Sunday: next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.for_sunday_in_words.as_deref(), Some("next Sunday"));
+    let text = "For Sunday: this Sunday and next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+}
+
+#[test]
+fn r14b_mixed_relatives_anchor_at_the_file_date() {
+    // Round 14 (R14-6, review R14-6 + red team
+    // RT14-5): a mixed line's relative phrases
+    // used to resolve against parse day alone.
+    // Parsed a week late — today Friday, October
+    // 23, 2026, for a file dated Friday, October
+    // 16 — "next Sunday and October 25, 2026"
+    // read for November 1, the sender's own
+    // restated explicit date demoted to the
+    // second-date note. Anchored at the file's
+    // date, the relative phrase resolves as it
+    // did when written: against October 16,
+    // "next Sunday" IS October 25, the signals
+    // agree, and the line reads plainly.
+    let late = oct(23);
+    let file_day = oct(16);
+    let text = "For Sunday: next Sunday and October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, late).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the unanchored control: a week late, the relative phrase wins"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![oct(25)]);
+    let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(25)),
+        "anchored: the sender's restated date wins"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "the signals agree at the file's date — nothing is noted"
+    );
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    // The reversed order likewise: anchored, the
+    // framed date reads and the relative phrase
+    // restates it, so the spurious November 1
+    // note the late parse manufactures is gone.
+    let text = "For Sunday: October 25, 2026 and next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, late).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "the unanchored control: the late resolution is noted"
+    );
+    let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    // Distinct signals stay distinct at the
+    // anchor: the relative phrase reads for
+    // October 25 with November 1 noted, in
+    // either order, on both date lines.
+    let text = "For Sunday: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    let text = "For Sunday: November 1, 2026 and next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, vec![oct(25)]);
+    let text = "Keep-through: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(25)));
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+    // The Sunday-after witness (RT14-5's second
+    // line): anchored, its resolution is the
+    // explicit November 1 it stands beside;
+    // unanchored a week late it read November 8
+    // over that date.
+    let text =
+        "For Sunday: the Sunday after next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, late).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "the unanchored control");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    // A file date in the future, a file date
+    // that is no calendar date, and no file
+    // date at all all fall back to today: the
+    // anchor never stands in the future.
+    let text = "For Sunday: next Sunday and October 25, 2026\n\n## Announcement\n\nHi.\n";
+    for bad in [
+        Some(oct(30)),
+        Some(SimpleDate {
+            year: 2026,
+            month: 2,
+            day: 31,
+        }),
+        None,
+    ] {
+        let c = parse_contribution_anchored(text, late, bad).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{bad:?}: falls back to the today reading"
+        );
+        assert_eq!(c.for_sunday_second_dates, vec![oct(25)], "{bad:?}");
+    }
+    // Held lines: the anchor touches mixed
+    // lines only. A relative-only line keeps
+    // its standing reading against today — the
+    // restated relative phrase resolves to
+    // November 1, the coming "next Sunday" at
+    // parse day — a bare relative line still
+    // reads in words alone, and differing
+    // relatives with no framed signal still
+    // name no Sunday.
+    let text = "For Sunday: next Sunday and next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "relative-only readings are unchanged by the anchor"
+    );
+    let text = "For Sunday: next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.for_sunday_in_words.as_deref(), Some("next Sunday"));
+    let text = "For Sunday: this Sunday and next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+    // A framed-only line is unchanged too.
+    let text = "For Sunday: October 25, 2026 and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution_anchored(text, late, Some(file_day)).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+}
+
+#[test]
+fn r15b_file_date_plausibility_bound() {
+    // Round 15 (R15-4): a preserved timestamp
+    // (a zip/rsync/sync copy keeping an old
+    // mtime) can make the file-date anchor WORSE
+    // than today — the review lane's witness
+    // family, scanned Friday, October 23, 2026,
+    // read an unnamed Sunday in the past under
+    // old-September anchors. The bound: the file
+    // date anchors only when it is at most 28
+    // days before today; older falls back to
+    // today, exactly like missing/invalid.
+    let late = oct(23);
+    let text = "For Sunday: next Sunday and October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let plain = parse_contribution(text, late).expect("parses");
+    assert_eq!(plain.for_date, Some(nov(1)), "the unanchored control");
+    assert_eq!(plain.for_sunday_second_dates, vec![oct(25)]);
+    // Exactly 28 days before today — Friday,
+    // September 25, 2026 — anchors: at that
+    // date "next Sunday" is October 4, and the
+    // sender's explicit October 25 is noted.
+    let c = parse_contribution_anchored(text, late, Some(sep(25))).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(4)),
+        "a file date exactly 28 days before today anchors"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![oct(25)]);
+    // 29 days before today — September 24 —
+    // falls back: the parse is the unanchored
+    // parse, field for field.
+    let c = parse_contribution_anchored(text, late, Some(sep(24))).expect("parses");
+    assert_eq!(
+        c, plain,
+        "a file date 29 days before today falls back to today"
+    );
+    assert_eq!(c.for_date, Some(nov(1)));
+    // The witness family itself: an
+    // old-September file date (September 20,
+    // 33 days before the October scan) reads
+    // exactly as the unanchored parse does.
+    let c = parse_contribution_anchored(text, late, Some(sep(20))).expect("parses");
+    assert_eq!(c, plain, "the old-September witness falls back to today");
+    // The Keep-through mirror shares the bound
+    // through the same anchor resolution.
+    let kt_text = "Keep-through: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let kt_plain = parse_contribution(kt_text, late).expect("parses");
+    assert_eq!(kt_plain.keep_through, Some(nov(1)));
+    assert_eq!(kt_plain.keep_through_second_dates, Vec::<SimpleDate>::new());
+    let c = parse_contribution_anchored(kt_text, late, Some(sep(25))).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(oct(4)),
+        "28 days before anchors here too"
+    );
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+    let c = parse_contribution_anchored(kt_text, late, Some(sep(24))).expect("parses");
+    assert_eq!(c, kt_plain, "29 days before falls back here too");
+}
+
+#[test]
+fn r14b_same_week_file_date_is_identical() {
+    // Round 14 (R14-6): when the file's date IS
+    // today — the normal same-week case — the
+    // anchored parse is the standing parse,
+    // field for field, across the round-13
+    // mixed-signal family and its held lines.
+    for line in [
+        "November 1, 2026 and next Sunday",
+        "October 25, 2026 and this Sunday",
+        "next Sunday and November 1, 2026",
+        "this Sunday and November 1, 2026",
+        "October 25, 2026 and the Sunday after next Sunday",
+        "the Sunday after next Sunday and October 25, 2026",
+        "October 25, 2026 and next Sunday",
+        "next Sunday and October 25, 2026",
+        "next Sunday and next Sunday",
+        "October 25, 2026 and November 1, 2026",
+        "next Sunday",
+        "this Sunday and next Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let plain = parse_contribution(&text, today()).expect("parses");
+        let anchored = parse_contribution_anchored(&text, today(), Some(today())).expect("parses");
+        assert_eq!(plain, anchored, "{line}: mtime == today changes nothing");
+    }
+    let text = "Keep-through: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let plain = parse_contribution(text, today()).expect("parses");
+    let anchored = parse_contribution_anchored(text, today(), Some(today())).expect("parses");
+    assert_eq!(plain, anchored, "the Keep-through mirror too");
+}
+
+#[test]
+fn r15b_different_day_same_week_file_date_is_identical() {
+    // Round 15 (R15-5): the r14b pin above
+    // exercises only anchor == today, where
+    // identity holds by construction. A
+    // DIFFERENT-day same-week anchor — file
+    // dates Monday, October 12 through
+    // Thursday, October 15, 2026, against
+    // today Friday, October 16 — parses
+    // field-for-field identically too, over
+    // the same round-13 family, because
+    // relative resolutions are constant
+    // within a relative week (the review
+    // lane's probe verified 0/14 diffs).
+    for file_day in [oct(12), oct(13), oct(14), oct(15)] {
+        for line in [
+            "November 1, 2026 and next Sunday",
+            "October 25, 2026 and this Sunday",
+            "next Sunday and November 1, 2026",
+            "this Sunday and November 1, 2026",
+            "October 25, 2026 and the Sunday after next Sunday",
+            "the Sunday after next Sunday and October 25, 2026",
+            "October 25, 2026 and next Sunday",
+            "next Sunday and October 25, 2026",
+            "next Sunday and next Sunday",
+            "October 25, 2026 and November 1, 2026",
+            "next Sunday",
+            "this Sunday and next Sunday",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let plain = parse_contribution(&text, today()).expect("parses");
+            let anchored =
+                parse_contribution_anchored(&text, today(), Some(file_day)).expect("parses");
+            assert_eq!(
+                plain, anchored,
+                "{line}: a same-week file date ({file_day:?}) changes nothing"
+            );
+        }
+        let text = "Keep-through: next Sunday and November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let plain = parse_contribution(text, today()).expect("parses");
+        let anchored = parse_contribution_anchored(text, today(), Some(file_day)).expect("parses");
+        assert_eq!(
+            plain, anchored,
+            "the Keep-through mirror too ({file_day:?})"
+        );
+    }
+}
+
+#[test]
+fn r12a_trailing_governors_and_nested_groups() {
+    // Round 12 (R12-7, review R12-5 + red team
+    // RT12-5): (a) a trailing governor word in the
+    // same group clause, with no later date to
+    // govern, disqualifies the date it follows;
+    // (b) the group content reading sees through
+    // balanced inner parentheses.
+    for group in [
+        "(November 1, cancelled)",
+        "(November 1, canceled)",
+        "(November 1, no longer)",
+        "(November 1, not)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: the trailing governor disqualifies its date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only");
+        assert_eq!(
+            week_verdict(&c, Some(nov(1))),
+            WeekVerdict::NoSundayNamed,
+            "{group}: never SameSunday on a cancelled date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    // A cancellation spent, the date after it in
+    // a fresh clause is read on its own terms.
+    let text = "For Sunday: (November 1, cancelled, November 8)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    // The held case stands exactly: the trailing
+    // "not" governs the date after it, and the
+    // date before it is untouched.
+    let text = "For Sunday: next Sunday (November 1, not October 25)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(1)));
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(1))
+    );
+    let text = "For Sunday: (November 1, not October 25)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "paren-only reads November 1");
+    // (b) Nested groups: the inner content is the
+    // group's content for date-reading purposes.
+    let text = "For Sunday: ((November 1))\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "((November 1)) reads its date");
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(1))
+    );
+    let text = "Keep-through: ((November 1))\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)));
+    let text = "For Sunday: next Sunday ((November 1))\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(1)));
+    // A nested governor still governs through
+    // the inner parentheses.
+    let text = "For Sunday: next Sunday (note (not November 1))\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, None);
+    let text = "For Sunday: next Sunday ((not) November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_sunday_parenthesized_date, None);
+}
+
+#[test]
+fn r12a_sunday_after_phrases_consume_their_runs_wherever_they_stand() {
+    // Round 12 (R12-9a, red team RT12-6): a
+    // second "Sunday after" phrase's resolution
+    // was never noted — the scan treated its
+    // base as the read date's own restatement —
+    // and a base restated in plain words WAS
+    // noted as "another date", the same date
+    // called both base and another date on one
+    // line. The phrase now consumes its run
+    // wherever it stands, and its resolution is
+    // noted like the first phrase's.
+    let text = "For Sunday: Sunday after October 18, 2026 and Sunday after October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "the first phrase reads");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "the second phrase's resolution (the Sunday after October 25) is noted"
+    );
+    assert_eq!(
+        second_dates_sentence(&c.for_sunday_second_dates),
+        "This file named another date too: Sunday, November 1, 2026. \
+             Check which date was meant."
+    );
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::SameSunday);
+    // A run equal to the standing base is a
+    // restatement, never another date: the base
+    // (October 20) is not noted, and neither is
+    // the read date (October 25) beside it.
+    let text = "For Sunday: Sunday after October 20, 2026; October 20, 2026 minutes, service October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "the restated base is not \"another date\""
+    );
+    // The same phrase twice: one resolution,
+    // standing as the read date, and its base is
+    // consumed both times — nothing is noted.
+    let text = "For Sunday: Sunday after October 25, 2026 and Sunday after October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    // Held controls from round 11 stand: two
+    // runs after a phrase note exactly the
+    // further date, and a base standing after a
+    // plainly read date is not flagged.
+    let text = "For Sunday: Sunday after October 18, 2026, then October 25, 2026 and November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    let text =
+            "For Sunday: November 1, 2026, the Sunday after October 25, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+}
+
+#[test]
+fn r21b_verb_test_v2_subject_is_a_run() {
+    // Round 21 (R21-6, review F3 + red team
+    // RT21-7): the one verb test's subject was
+    // exactly ONE noun-like word, so any real
+    // clause with a multi-word subject — a
+    // modifier, a compound head, a title, a
+    // subject wearing a phrase — was crossed
+    // and November 1 was named as a false
+    // from-date. Under the verb test v2 the
+    // subject is a RUN of determiner / modifier
+    // / noun-like words ending at the verb:
+    // every shape below ends the reach, on
+    // every path — November 8 stands alone and
+    // November 1 is NOT named.
+    for group in [
+        "(moved November 1, the big choir sang to November 8)",
+        "(moved November 1, big choir sang to November 8)",
+        "(moved November 1, choir members sang to November 8)",
+        "(moved November 1, the choir members sang to November 8)",
+        "(moved November 1, visiting choir sang to November 8)",
+        "(moved November 1, the youth choir sang to November 8)",
+        "(moved November 1, the handbell choir rang to November 8)",
+        "(moved November 1, handbell choir rang to November 8)",
+        "(moved November 1, Pastor Lee sang to November 8)",
+        "(moved November 1, Mr Johnson played to November 8)",
+        "(moved November 1, Dr Lee sang to November 8)",
+        "(moved November 1, choir 2 sang to November 8)",
+        "(moved November 1, the choir in the hall sang to November 8)",
+        // The comma variant (F3): the comma
+        // after the subject is a clause break,
+        // not postposed-modifier punctuation —
+        // "sang" is a real clause's verb.
+        "(moved November 1, the choir members, sang to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: November 8 stands alone on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: November 1 is not named as a from-date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // The plain twin: November 8 asserts; the
+    // plain composition names the governed
+    // November 1 on its note, as it names
+    // every governed date beside an asserting
+    // one (the group paths above name nothing,
+    // by the standing group naming rule).
+    let line = "moved November 1, 2026, the big choir sang to November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{line}: the plain twin asserts");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+}
+
+#[test]
+fn r21b_verb_test_v2_subjectless_clauses_and_auxiliaries() {
+    // Round 21 (R21-6, review F4 + red team
+    // RT21-6): subjectless verb forms with
+    // clause shapes claimed and named the
+    // from-date, and a past-progressive second
+    // clause silenced both dates. Under v2 a
+    // verb-form word with no subject before it
+    // is still finite when it cannot head a
+    // noun phrase there — an irregular past
+    // form, a form followed by a determiner or
+    // an adverb, a bare form with no noun
+    // phrase around it — and an auxiliary with
+    // a subject before it in its segment is
+    // itself a finite verb. Every shape below
+    // ends the reach: November 8 stands alone,
+    // November 1 is NOT named, on every path.
+    for group in [
+        // Irregular past forms, with and
+        // without an object.
+        "(moved November 1, sang hymns to November 8)",
+        "(moved November 1, then sang to November 8)",
+        // A determiner object, an adverb
+        // object, a bare regular verb.
+        "(moved November 1, folded the bulletins to November 8)",
+        "(moved November 1, played beautifully to November 8)",
+        "(moved November 1, then played to November 8)",
+        "(moved November 1, and played to November 8)",
+        // The past-progressive second clause:
+        // "was" heads its own clause and is
+        // not a bare past marker governing
+        // the date its clause names.
+        "(moved November 1, choir was singing to November 8)",
+        "(moved November 1, choir was singing hymns to November 8)",
+        "(moved November 1, choir was playing to November 8)",
+        "(moved November 1, choir was rehearsing to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: November 8 stands alone on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: November 1 is not named as a from-date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // The plain twin of the progressive: the
+    // line asserts November 8 instead of
+    // reading nothing on both paths.
+    let line = "moved November 1, 2026, choir was singing to November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{line}: the plain twin asserts");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+    // Held: the modifier side of the v2 line —
+    // a REGULAR form followed directly by a
+    // bare noun-like word, with no subject
+    // before it, heads that noun phrase and
+    // the reach continues: the claim stands
+    // and November 1 is named. "played hymns"
+    // is the "baked beans" shape with a listed
+    // stem; the irregular twin "sang hymns"
+    // above is the clause, and the spelling
+    // is the distinction the test can see.
+    for group in [
+        "(moved November 1, baked beans to November 8)",
+        "(moved November 1, planned dinner to November 8)",
+        "(moved November 1, planning meeting to November 8)",
+        "(moved November 1, played hymns to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the paren-only path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named as the from-date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{group}: keep-through names the from-date"
+        );
+    }
+}
+
+#[test]
+fn r21b_plain_weekday_modifier_is_not_a_signal() {
+    // Round 21 (R21-7, review F2 = red team
+    // RT21-4): the R20-6 weekday-modifier rule
+    // was scoped to groups, so on a plain line
+    // "Sunday school, November 8, 2026" filed
+    // for a phantom October 18 — the bare
+    // "Sunday" spawned a this-Sunday relative
+    // signal that outranked the framed date
+    // after it. The rule now applies in
+    // `scan_plain_signals` too: a weekday word
+    // followed by a noun-like word is a
+    // modifier, never a relative signal, and
+    // the framed date the phrase garnishes
+    // asserts by the plain primacy.
+    for (line, want) in [
+        ("Sunday school, November 8, 2026", nov(8)),
+        ("Sunday bulletins, November 1, 2026", nov(1)),
+        ("the Sunday bulletins, November 1, 2026", nov(1)),
+        ("printed Sunday bulletins, November 8, 2026", nov(8)),
+        ("Sunday morning, November 8, 2026", nov(8)),
+        // The weekday rule is the general
+        // R20-6 rule, not a Sunday special
+        // case.
+        ("printed Monday bulletins, November 8, 2026", nov(8)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(want),
+            "{line}: the framed date asserts, no phantom Sunday"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: no October 18 is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{line}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: keep-through names no phantom"
+        );
+    }
+    // The naming half: where a claim or a
+    // first framed date saves the asserted
+    // date, the phantom is not named either.
+    let line =
+        "moved the meeting, November 1, 2026, and printed Sunday bulletins to November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{line}: the target asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{line}: November 1 is named, October 18 is not"
+    );
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+    let line = "November 1, 2026, printed Sunday bulletins, November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{line}: the first framed date stands"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8)],
+        "{line}: November 8 is named, October 18 is not"
+    );
+    // Held: the framing control and the true
+    // relative phrases keep their standing
+    // readings on plain lines.
+    for (line, want) in [
+        ("Sunday, November 8, 2026", nov(8)),
+        ("next Sunday, November 8, 2026", nov(8)),
+        ("this Sunday, November 8, 2026", nov(8)),
+        (
+            "Sunday morning service, November 1, 2026, November 8, 2026",
+            nov(1),
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{line}: standing reading");
+    }
+    // Held: the modifier fence did not widen
+    // the plain readings — a lone framed date
+    // under ordinary content words still reads
+    // nothing, as a content-headed line alone
+    // always has.
+    let line = "choir practice, November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: no weekday phrase, no reading");
+}
+
+#[test]
+fn r21b_bare_inventory_function_words() {
+    // Round 21 (R21-8, red team RT21-5 +
+    // review F7): the bare inventory still
+    // missed the function-word classes —
+    // conjunction / discourse heads, trailing
+    // discourse words, the adverb "only", the
+    // preposition family, and the possessive
+    // pronouns — so a governed date restated
+    // behind any of them resurrected on every
+    // path. The inventory's rule is general
+    // (see `bare_filler_word`): function words
+    // — words that name no event — are bare;
+    // content labels are not. Every witness
+    // below reads nothing on every path.
+    for word in [
+        "so", "well", "however", "only", "until", "before", "after", "through", "circa", "about",
+        "around", "near", "mine", "ours", "yours", "hers", "theirs",
+    ] {
+        let groups = format!("(November 1, cancelled) ({word} November 1)");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // A listed word behind a discourse head
+    // binds too ("so" poisoned "please").
+    let groups = "(November 1, cancelled) (so please November 1)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+    // The trailing slot: "too" and "thanks"
+    // standing after the date are bare there.
+    for word in ["too", "thanks"] {
+        let groups = format!("(November 1, cancelled) (November 1 {word})");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // The plain twins read nothing either.
+    for line in [
+        "November 1, 2026, cancelled, so November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 too",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the plain twin stays governed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through");
+    }
+    // Held (the R20-3 adjudication, not
+    // moved): the label heads stay content and
+    // assert, and a possessive-headed event
+    // asserts as it always has. (Round 27,
+    // R27-B / B2: "thanks" in head position —
+    // this list's R20-3 example in rounds
+    // 21–26 — joins the bare inventory as a
+    // sign-off single, so its entry is removed
+    // here and its flipped reading is pinned
+    // below; flagged in the R27-B addendum.)
+    for groups in [
+        "(November 1, cancelled) (reminder November 1)",
+        "(November 1, cancelled) (our choir November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a label asserts beside a sibling cancellation"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    }
+    // FLAGGED PIN (R27-B): this test's held list
+    // stood in rounds 21–26 with "(thanks
+    // November 1)" asserting under the R20-3
+    // adjudication. Round 27's synthesis (F2 /
+    // B2) joins "thanks" as a sign-off single,
+    // superseding R20-3 for this word, so the
+    // witness now reads governed on both paths
+    // the held list checks.
+    let groups = "(November 1, cancelled) (thanks November 1)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{groups}: a lone head thanks is governed (R27-B, B2)"
+    );
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through, None,
+        "{groups}: keep-through stays governed (R27-B, B2)"
+    );
+}
+
+#[test]
+fn r21b_claim_fronted_stack_before_an_intervening_date() {
+    // Round 21 (R21-9, review F6): on the
+    // claim scan, a fronted adverb stack
+    // standing in its own clause before an
+    // intervening date escaped the unified
+    // cap — the claim's extra fronted check
+    // examined only the fragment immediately
+    // before the bound (the from-date's own
+    // fragment) and never the stack's clause
+    // one break earlier. The shared walk now
+    // applies there too: same list, same
+    // two-word cap, fronted position. A
+    // fronted three-stack does not spend; the
+    // claim dies and the pair stands as
+    // alternatives, as an unclaimed pair with
+    // no governed date does.
+    for group in [
+        "(just really truly, November 1, moved to November 8)",
+        // An unlisted fronted adverb does not
+        // spend either, in this position as in
+        // every other.
+        "(yesterday, November 1, moved to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: the fronted stack does not spend the claim"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), nov(8)],
+            "{group}: both dates are offered as alternatives"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1), nov(8)],
+            "{group}: keep-through offers both dates"
+        );
+    }
+    // A fronted listed one- or two-stack in
+    // the same position spends as it does in
+    // every other position: the claim stands.
+    for group in [
+        "(just, November 1, moved to November 8)",
+        "(just truly, November 1, moved to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the fronted stack spends, the target asserts"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named as the from-date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{group}: keep-through names the from-date"
+        );
+    }
+}
+
+#[test]
+fn r21b_postposed_exemption_fenced_to_its_shape() {
+    // Round 21 (R21-10, red team RT21-8): the
+    // postposed-modifier clause-break
+    // exemption plus a two-noun segment let
+    // the plain path file the vacated date —
+    // "(moved the meeting, November 1, 2026,
+    // and beans, choir baked to November 8)"
+    // offered both dates as alternatives in
+    // the group and filed November 1 (the
+    // date the meeting moved FROM) on the
+    // plain path. The exemption is now
+    // fenced to the pinned postposed shape:
+    // it judges the verb form the comma's
+    // continuation contains — reached across
+    // the noun-like words of its own run —
+    // and exempts the comma only when the one
+    // verb test reads that form as a postposed
+    // modifier in its segment, exactly as for
+    // the directly postposed form. The
+    // witness files its target date on every
+    // path, the vacated date named as the
+    // claim's from-date.
+    let group = "(moved the meeting, November 1, 2026, and beans, choir baked to November 8)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(8)),
+        "{group}: the target asserts on the relative path"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: November 1 is named as the from-date"
+    );
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    // The plain twin files the target too.
+    let line = "moved the meeting, November 1, 2026, and beans, choir baked to November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the plain twin files the target date, not the vacated one"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+    // The same shape in miniature, where
+    // November 1 is governed by the bare
+    // "moved": the object-list continuation
+    // claims by the same fence.
+    let group = "(moved November 1, and beans, choir baked to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: the target asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: November 1 is named as the from-date"
+    );
+    // The fence's other side: without the
+    // object-list conjunction the segment is
+    // judged as the clause it is — "baked"
+    // has its subject run ("beans, choir")
+    // and is finite under the v2 test, the
+    // comma keeps its clause-break force, and
+    // the reach ends (RT21-8's F43 bound).
+    let group = "(moved November 1, beans, choir baked to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: November 8 stands on its own"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: the reach ended, so November 1 is not named as a from-date"
+    );
+}
+
+#[test]
+fn r22a_separators_between_groups_compose() {
+    // Round 22 (R22-1, red team RT22-1): a groups-only
+    // line whose groups are separated by ";", "-", or
+    // plain words read nothing on the For Sunday line
+    // while Keep-through asserted the last group —
+    // the de-grouped core (";", "note", ", cancelled,")
+    // was non-empty, so the paren-only reading was
+    // never taken. Separators are separators: the
+    // groups compose exactly as adjacent groups do,
+    // on both paths, the earlier group named on the
+    // parenthesized record as the paren-only
+    // composition names it.
+    for (line, want) in [
+        ("(November 8); (November 15)", nov(15)),
+        ("(November 8) - (November 15)", nov(15)),
+        ("(November 8) note (November 15)", nov(15)),
+        ("(November 1); (next Sunday)", oct(25)),
+        ("(November 1) - (next Sunday)", oct(25)),
+        ("(November 1) note (November 8)", nov(8)),
+        ("(November 1) cancelled (service November 1)", nov(1)),
+        (
+            "(service November 1), cancelled, (service November 1)",
+            nov(1),
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{line}: For Sunday");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{line}: Keep-through agrees");
+    }
+    // Field-for-field the paren-only composition:
+    // the last group stands, the earlier group is
+    // named on the mismatch record, and a relative
+    // loser is named on the note.
+    let line = "(November 8); (November 15)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    let mismatch = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the earlier group is named");
+    assert_eq!(mismatch.named, nov(8), "{line}: November 8 named");
+    assert_eq!(mismatch.read, nov(15), "{line}: November 15 stands");
+    let line = "(November 1); (next Sunday)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{line}: the framed loser is named on the note"
+    );
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through_second_dates,
+        vec![nov(1)],
+        "{line}: Keep-through names it too"
+    );
+}
+
+#[test]
+fn r22a_separator_after_a_leading_group_keeps_relative_memory() {
+    // Round 22 (R22-1, red team RT22-2): a comma or
+    // semicolon after a leading group destroyed the
+    // For line's relative memory entirely — the shape
+    // readers matched the phrase only when the group
+    // was followed by a bare space, so the verdict
+    // could not arm. The punctuated lines keep the
+    // in-words reading their space controls have.
+    for line in ["(November 1); next Sunday", "(November 1), next Sunday"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no hard date");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(line),
+            "{line}: the sender's words are remembered as written"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{line}: the group is remembered with the phrase"
+        );
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::DifferentSunday(nov(1)),
+            "{line}: the verdict arms against the group, as the space twin's does"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{line}: Keep-through asserts the group, as the space twin's does"
+        );
+    }
+    for line in [
+        "(November 1); this Sunday",
+        "(November 1); (November 8) next Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(line),
+            "{line}: remembered in words"
+        );
+    }
+    let line = "(November 1); (November 8) next Sunday";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_dates,
+        vec![nov(1), nov(8)],
+        "{line}: every group on the line is remembered"
+    );
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(8)),
+        "{line}: the last group stands"
+    );
+    // A leading relative group before a plain date
+    // keeps the reading its space control has.
+    for line in [
+        "(next Sunday), November 1, 2026",
+        "(next Sunday); November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{line}: For Sunday");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{line}: Keep-through agrees");
+    }
+}
+
+#[test]
+fn r22a_a_senders_semicolon_is_a_clause_break() {
+    // Round 22 (R22-2, review F3 = red team RT22-3):
+    // a sender's semicolon severed a date from its
+    // postposed governor on the composition paths —
+    // attached to the year ("2026;") it also dropped
+    // the year out of the date's own span, and the
+    // stray year token broke the governor scope
+    // behind it. A semicolon is a clause break
+    // everywhere governance is judged, attached or
+    // spaced, indistinguishable from the composition's
+    // internal group marker: every witness reads as
+    // its comma twin reads, on both paths.
+    for (line, want, want_second) in [
+        (
+            "November 1, 2026; cancelled, November 8, 2026",
+            Some(nov(8)),
+            vec![nov(1)],
+        ),
+        (
+            "November 1, 2026; postponed, November 8, 2026",
+            Some(nov(8)),
+            vec![nov(1)],
+        ),
+        (
+            "November 1, 2026; cancelled (November 8)",
+            Some(nov(8)),
+            vec![nov(1)],
+        ),
+        (
+            "(November 8) November 1, 2026; cancelled",
+            Some(nov(8)),
+            vec![nov(1)],
+        ),
+        (
+            "November 1, 2026, cancelled (November 8) November 15, 2026; cancelled",
+            Some(nov(8)),
+            vec![nov(1), nov(15)],
+        ),
+        (
+            "November 1, 2026; cancelled, November 1, 2026",
+            None,
+            Vec::new(),
+        ),
+        ("November 1, 2026; not November 1, 2026", None, Vec::new()),
+        ("November 1, 2026; cancelled", None, Vec::new()),
+        (
+            "November 1, 2026 ; cancelled, November 1, 2026",
+            None,
+            Vec::new(),
+        ),
+        ("(November 1; cancelled, November 1)", None, Vec::new()),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, want, "{line}: For Sunday");
+        assert_eq!(
+            c.for_sunday_second_dates, want_second,
+            "{line}: For Sunday second dates"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, want, "{line}: Keep-through agrees");
+        assert_eq!(
+            c.keep_through_second_dates, want_second,
+            "{line}: Keep-through second dates agree"
+        );
+    }
+}
+
+#[test]
+fn r22a_wrong_weekday_behind_a_leading_group() {
+    // Round 22 (R22-3, red team RT22-4): a framed
+    // date whose weekday is wrong yields no date —
+    // except behind a leading group, where it
+    // asserted on both paths with no mismatch
+    // record, because the de-grouped core's inner
+    // reader treated the weekday as ordinary text
+    // after the group. The check applies to every
+    // framed occurrence however the line is
+    // composed: no segment position exempts it.
+    for (line, named, date) in [
+        ("(November 8) Monday, November 15, 2026", "Monday", nov(15)),
+        ("(November 15) Monday, November 8, 2026", "Monday", nov(8)),
+        (
+            "(November 8) Tuesday, November 15, 2026",
+            "Tuesday",
+            nov(15),
+        ),
+        (
+            "(November 8) Monday, November 15, 2026 (November 22)",
+            "Monday",
+            nov(15),
+        ),
+        (
+            "(November 8) on Monday, November 15, 2026",
+            "Monday",
+            nov(15),
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date on the For line");
+        let mismatch = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the mismatch is recorded on the For line");
+        assert_eq!(mismatch.named, named, "{line}: the weekday is named");
+        assert_eq!(mismatch.date, date, "{line}: the date it framed");
+        assert_eq!(
+            week_verdict(&c, Some(oct(25))),
+            WeekVerdict::NoSundayNamed,
+            "{line}: the verdict stays unarmed"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no date on the Keep line");
+        let mismatch = c
+            .keep_through_weekday_mismatch
+            .as_ref()
+            .expect("the mismatch is recorded on the Keep line");
+        assert_eq!(mismatch.named, named, "{line}: Keep names the weekday");
+        assert_eq!(mismatch.date, date, "{line}: Keep names the date");
+    }
+    // Held (R21-A): correct-weekday framed dates
+    // behind leading groups assert as they always
+    // have, on both paths.
+    for (line, want) in [
+        ("(November 8) Sunday, November 15, 2026", nov(15)),
+        ("(November 15) Sunday, November 8, 2026", nov(8)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{line}: For Sunday asserts");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no mismatch");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{line}: Keep-through asserts");
+    }
+}
+
+#[test]
+fn r22a_lone_framed_fence_needs_a_content_free_line() {
+    // Round 22 (R22-7, review F5): the R21-B fence
+    // (a lone framed date asserting beside a
+    // weekday-modifier phrase) triggered on ANY
+    // weekday+noun window anywhere in the line, so
+    // lone content-headed lines the batch held to
+    // silence asserted. The fence now requires the
+    // weekday-modifier phrase to be the line's only
+    // content beside the framed date — no
+    // content-headed segment (service/choir/meeting
+    // heads and their kin) anywhere on the line.
+    for line in [
+        "Monday meeting, service November 8, 2026",
+        "service November 8, 2026, Monday meeting",
+        "Tuesday choir, November 1, 2026",
+        "choir November 1, 2026, Monday meeting",
+        "early service November 1, 2026, Monday meeting",
+        "Wednesday dinner, November 8, 2026",
+        "Monday meeting, November 8, 2026",
+        "November 8, 2026, Monday meeting",
+        "Monday meeting, Tuesday choir, November 8, 2026",
+        "Monday meeting, Sunday school, November 8, 2026",
+        "Sunday school, Monday meeting, November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: For Sunday reads nothing");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: Keep-through reads nothing");
+    }
+    // Held: the intended Sunday shapes keep
+    // asserting, and governed lines under the
+    // fence keep their governed readings.
+    for (line, want) in [
+        ("Sunday bulletins, November 1, 2026", Some(nov(1))),
+        ("Sunday school, November 8, 2026", Some(nov(8))),
+        ("printed Sunday bulletins, November 8, 2026", Some(nov(8))),
+        ("printed Monday bulletins, November 8, 2026", Some(nov(8))),
+        ("the Sunday bulletins, November 1, 2026", Some(nov(1))),
+        ("Sunday morning, November 8, 2026", Some(nov(8))),
+        ("Sunday bulletins, November 1, 2026, cancelled", None),
+        ("Monday meeting, November 1, 2026, cancelled", None),
+        ("Monday meeting November 8, 2026, cancelled", None),
+        ("service November 8, 2026", None),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, want, "{line}: For Sunday");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, want, "{line}: Keep-through agrees");
+    }
+}
+
+#[test]
+fn r22b_subjectless_auxiliary_is_a_second_clause() {
+    // Round 22 (R22-4, review F1 + red team
+    // RT22-5/RT22-9): "(moved November 1, then
+    // was played to November 8)" was total
+    // silence — `target_claim`'s between-words
+    // fence killed the claim AND bare "was" is
+    // itself a direct_single_governor, so
+    // November 8 was governed rather than
+    // unclaimed. Every other auxiliary, and
+    // "was" with a subject, already landed on
+    // November 8 alone. In the claim reach a
+    // subjectless auxiliary + participle
+    // construction is a second clause: the
+    // claim dies there, November 8 stands on
+    // its own standing (asserts alone, nothing
+    // named), and the auxiliary does not govern
+    // it — "was" joins the family. An auxiliary
+    // followed by at most one adverb of any
+    // kind (listed or not) and then a
+    // participle / -ing form, with a subject
+    // before the auxiliary, is likewise a
+    // finite clause for the reach's test.
+    for group in [
+        // The subjectless "was" family (F1).
+        "(moved November 1, then was played to November 8)",
+        "(moved November 1, was then played to November 8)",
+        "(moved November 1, and was played to November 8)",
+        "(moved November 1, was played to November 8)",
+        "(moved November 1, then was sung to November 8)",
+        "(moved November 1, then was sang to November 8)",
+        "(moved November 1, then was held to November 8)",
+        "(moved November 1, then was taken to November 8)",
+        "(moved November 1, then was beautifully played to November 8)",
+        "(moved November 1, then was played beautifully to November 8)",
+        "(moved November 1, then quickly was played to November 8)",
+        "(moved November 1, then was quickly played to November 8)",
+        "(moved November 1, then was never played to November 8)",
+        "(moved November 1, then was not played to November 8)",
+        "(moved November 1, then was played hymns to November 8)",
+        "(moved November 1, then was singing to November 8)",
+        "(moved November 1, was singing to November 8)",
+        // The standing escapes keep landing.
+        "(moved November 1, then were played to November 8)",
+        "(moved November 1, it was played to November 8)",
+        "(moved November 1, choir was played to November 8)",
+        // The unlisted-adverb progressive
+        // (RT22-5): one adverb of any kind
+        // between auxiliary and participle.
+        "(moved November 1, choir was loudly singing to November 8)",
+        "(moved November 1, choir was beautifully singing to November 8)",
+        "(moved November 1, choir was joyfully singing to November 8)",
+        "(moved November 1, choir was loudly playing to November 8)",
+        "(moved November 1, choir was loudly sung to November 8)",
+        "(moved November 1, choir was not singing to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: November 8 stands alone on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // The plain twins assert November 8; the
+    // plain composition names the governed
+    // November 1 on its note, as it names every
+    // governed date beside an asserting one.
+    for line in [
+        "moved November 1, 2026, then was played to November 8, 2026",
+        "moved November 1, 2026, choir was loudly singing to November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: the plain twin asserts");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+    }
+    // Held: the claim's own passive
+    // constructions keep their standing
+    // readings — the repeated governor
+    // participle still re-anchors and claims
+    // with naming, the cancellation still
+    // silences, and a bare "was" with no
+    // participle after it still governs as
+    // the past marker it is.
+    let group = "(moved November 1, then was moved to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the governor participle still claims"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: November 1 is named"
+    );
+    for group in [
+        "(moved November 1, then was cancelled to November 8)",
+        "(was November 1)",
+        "(November 1, cancelled) (was November 1)",
+        "(was not November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only reads nothing");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+    }
+}
+
+#[test]
+fn r22b_subject_prepositional_phrases() {
+    // Round 22 (R22-5, red team RT22-6/RT22-7):
+    // a subject run crosses a prepositional
+    // phrase — determiner / noun head +
+    // preposition + its own noun-like run
+    // counts as the subject, and the phrase's
+    // words are consumed wholly by it. "The
+    // team from Kent …" silenced both dates
+    // for all 23 verb forms (the subject's
+    // "from" read as an origin governor of the
+    // target), and "the choir on Sunday …"
+    // failed three ways by verb class (a
+    // phantom October 18 asserting over the
+    // was-forms, alternatives naming the
+    // phantom for the irregular and auxiliary
+    // forms, a false from-date naming for the
+    // regular -ed forms). Every shape below
+    // ends the reach: November 8 stands alone,
+    // November 1 is NOT named, and no October
+    // 18 is asserted or named anywhere.
+    for group in [
+        // The from-Kent family (RT22-6): plain,
+        // auxiliary, perfect, and object forms.
+        "(moved November 1, the team from Kent sang to November 8)",
+        "(moved November 1, the team from Kent played to November 8)",
+        "(moved November 1, the team from Kent met to November 8)",
+        "(moved November 1, the team from Kent spoke to November 8)",
+        "(moved November 1, the team from Kent walked to November 8)",
+        "(moved November 1, the team from Kent rehearsed to November 8)",
+        "(moved November 1, the team from Kent folded bulletins to November 8)",
+        "(moved November 1, the team from Kent stacked chairs to November 8)",
+        "(moved November 1, the team from Kent played hymns to November 8)",
+        "(moved November 1, the team from Kent sang hymns to November 8)",
+        "(moved November 1, the team from Kent rang bells to November 8)",
+        "(moved November 1, the team from Kent was singing to November 8)",
+        "(moved November 1, the team from Kent were singing to November 8)",
+        "(moved November 1, the team from Kent is singing to November 8)",
+        "(moved November 1, the team from Kent had sung to November 8)",
+        "(moved November 1, the team from Kent was loudly singing to November 8)",
+        "(moved November 1, Pastor Lee from Kent played to November 8)",
+        // The on-Sunday family (RT22-7): the
+        // PP's weekday spawns no signal for
+        // was-forms, plain forms, and -ed forms
+        // alike.
+        "(moved November 1, the choir on Sunday was singing to November 8)",
+        "(moved November 1, the choir on Sunday was playing to November 8)",
+        "(moved November 1, the choir on Sunday was singing hymns to November 8)",
+        "(moved November 1, the choir on Sunday was loudly singing to November 8)",
+        "(moved November 1, the choir on Sunday sang to November 8)",
+        "(moved November 1, the choir on Sunday sang hymns to November 8)",
+        "(moved November 1, the choir on Sunday met to November 8)",
+        "(moved November 1, the choir on Sunday spoke to November 8)",
+        "(moved November 1, the choir on Sunday had sung to November 8)",
+        "(moved November 1, the choir on Sunday is singing to November 8)",
+        "(moved November 1, the choir on Sunday were singing to November 8)",
+        "(moved November 1, the choir on Sunday played to November 8)",
+        "(moved November 1, the choir on Sunday rehearsed to November 8)",
+        "(moved November 1, the choir on Sunday walked to November 8)",
+        "(moved November 1, the choir on Sunday folded bulletins to November 8)",
+        "(moved November 1, the choir on Sunday played hymns to November 8)",
+        // The standing PP controls keep landing.
+        "(moved November 1, the choir in Kent sang to November 8)",
+        "(moved November 1, the choir before lunch played to November 8)",
+        "(moved November 1, the choir after lunch played to November 8)",
+        "(moved November 1, the choir since lunch played to November 8)",
+        "(moved November 1, the choir in the hall sang to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: November 8 stands alone on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named — no phantom October 18"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // The plain twins assert November 8 with
+    // no phantom: the plain composition names
+    // the governed November 1 on its note, as
+    // it names every governed date beside an
+    // asserting one.
+    for line in [
+        "moved November 1, 2026, the team from Kent sang to November 8, 2026",
+        "moved November 1, 2026, the choir on Sunday was singing to November 8, 2026",
+        "moved November 1, 2026, the choir on Sunday sang to November 8, 2026",
+        "moved November 1, 2026, the choir on Sunday played to November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: the plain twin asserts");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+    }
+    // Held: a "from" with no subject phrase
+    // around it still governs as the origin
+    // marker it is.
+    let text = "For Sunday: (from November 1)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "a bare origin group reads nothing");
+}
+
+#[test]
+fn r22b_determiner_shield_spans_its_noun_phrase() {
+    // Round 22 (R22-6, review F2): the
+    // determiner shield stopped one word early
+    // — "(moved November 1, and the big left
+    // luggage to November 8)" and "the big
+    // sung hymns" killed the claim where the
+    // regular twins claim, because the shield
+    // covered only the word immediately before
+    // the verb form and the irregular branch
+    // returned finite before the
+    // heads-a-noun-phrase test was reached.
+    // Within its noun phrase, a participle-form
+    // adjective is now shielded by a determiner
+    // standing anywhere before it (the R19-6
+    // active-"for" rule applied to the reach's
+    // shield): every shape below claims
+    // November 8 with November 1 named, like
+    // the regular twins.
+    for group in [
+        "(moved November 1, and the big left luggage to November 8)",
+        "(moved November 1, the big left luggage to November 8)",
+        "(moved November 1, and my big left luggage to November 8)",
+        "(moved November 1, and the big sung hymns to November 8)",
+        "(moved November 1, the big sung hymns to November 8)",
+        "(moved November 1, and a big sung hymn to November 8)",
+        "(moved November 1, and the sung hymns to November 8)",
+        // The regular twins, unchanged.
+        "(moved November 1, and the big baked beans to November 8)",
+        "(moved November 1, and the big singing choir to November 8)",
+        "(moved November 1, and the left luggage to November 8)",
+        "(moved November 1, the left luggage to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named as the from-date"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    }
+    // Held: unshielded irregulars still end
+    // the reach per verb test v2, and a
+    // past-tense-only form has no adjective
+    // use to shield — a clause subject's own
+    // determiner does not shield its verb, in
+    // the subject's phrase or any other
+    // position: November 8 stands alone,
+    // November 1 not named.
+    for group in [
+        "(moved November 1, sang hymns to November 8)",
+        "(moved November 1, sung hymns to November 8)",
+        "(moved November 1, left luggage to November 8)",
+        "(moved November 1, the choir sang hymns to November 8)",
+        "(moved November 1, the choir sang to November 8)",
+        "(moved November 1, the big choir sang to November 8)",
+        "(moved November 1, the choir folded bulletins to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: November 8 stands alone");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: November 1 is not named as a from-date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // Held (the v2 move of R21-B, unchanged):
+    // the subjectless irregulars in the
+    // "moved the meeting" form still land on
+    // alternatives — the reach ends and the
+    // group offers both dates.
+    for group in [
+        "(moved the meeting, November 1, 2026, and sung hymns to November 8)",
+        "(moved the meeting, November 1, 2026, and left luggage to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the target is not claimed");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), nov(8)],
+            "{group}: both dates are offered as alternatives"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1), nov(8)],
+            "{group}: keep-through offers both dates"
+        );
+    }
+}
+
+#[test]
+fn r22b_bare_inventory_function_classes_round_three() {
+    // Round 22 (R22-8, review F4/F6 + red team
+    // RT22-8): the bare inventory's classes
+    // still omitted whole function-word classes
+    // — the remaining prepositions (led by
+    // "with"), the determiner / quantifier
+    // class, possessive + "own", the review
+    // tail, and head-position "too" — so a
+    // governed date restated behind any of them
+    // resurrected on every path (280 fuzz
+    // resurrections, all through "(with
+    // November 1)"). The classes join the
+    // inventory; they are closed as listed in
+    // `bare_filler_word` and the rule is
+    // class-based: function words are bare,
+    // content labels are not. Every witness
+    // below reads nothing on every path.
+    for word in [
+        // The remaining prepositions.
+        "with",
+        "during",
+        "since",
+        "within",
+        "without",
+        "upon",
+        "unto",
+        "into",
+        "over",
+        "under",
+        "between",
+        "among",
+        "against",
+        "per",
+        "via",
+        "onto",
+        "toward",
+        "towards",
+        "across",
+        "behind",
+        "beyond",
+        "beside",
+        "despite",
+        "amid",
+        "as",
+        // The determiner / quantifier class.
+        "each",
+        "every",
+        "either",
+        "neither",
+        "both",
+        "all",
+        "any",
+        "some",
+        "another",
+        "other",
+        "same",
+        "such",
+        // The review tail (conjunction /
+        // discourse), and "too" in head
+        // position.
+        "lest",
+        "albeit",
+        "unless",
+        "whereas",
+        "hence",
+        "thus",
+        "moreover",
+        "furthermore",
+        "nonetheless",
+        "nevertheless",
+        "instead",
+        "meanwhile",
+        "otherwise",
+        "therefore",
+        "anyway",
+        "rather",
+        "quite",
+        "indeed",
+        "too",
+    ] {
+        let groups = format!("(November 1, cancelled) ({word} November 1)");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // The same classes in the trailing slot,
+    // the two-word units, possessive + "own",
+    // and stacks of bare words.
+    for groups in [
+        "(November 1, cancelled) (November 1 with)",
+        "(November 1, cancelled) (November 1 per)",
+        "(November 1, cancelled) (November 1 same)",
+        "(November 1, cancelled) (November 1 own)",
+        "(November 1, cancelled) (November 1 very own)",
+        "(November 1, cancelled) (as per November 1)",
+        "(November 1, cancelled) (as of November 1)",
+        "(November 1, cancelled) (my own November 1)",
+        "(November 1, cancelled) (his own November 1)",
+        "(November 1, cancelled) (our own November 1)",
+        "(November 1, cancelled) (the same November 1)",
+        "(November 1, cancelled) (that same November 1)",
+        "(November 1, cancelled) (each and every November 1)",
+        "(November 1, cancelled) (with the November 1)",
+        "(November 1, cancelled) (too November 1 too)",
+        "(November 1, cancelled) (November 1, cancelled (with November 1))",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // The composition fuzz's shape and the
+    // plain twins read nothing either.
+    for line in [
+        "November 1, 2026, cancelled (with November 1)",
+        "November 1, 2026, cancelled, as per November 1, 2026",
+        "November 1, 2026, cancelled, my own November 1, 2026",
+        "November 1, 2026, cancelled, too November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the plain twin stays governed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+    }
+    // Held (the standing adjudications, not
+    // moved): content labels assert, and a
+    // possessive- or quantifier-headed event
+    // asserts — the new classes eat no real
+    // event. (Round 27, R27-B / B2: "thanks"
+    // in head position — this list's standing
+    // example in rounds 22–26 — joins the bare
+    // inventory as a sign-off single, so its
+    // entry is removed here and its flipped
+    // reading is pinned below; flagged in the
+    // R27-B addendum.)
+    for groups in [
+        "(November 1, cancelled) (reminder November 1)",
+        "(November 1, cancelled) (our choir November 1)",
+        "(November 1, cancelled) (our own choir November 1)",
+        "(November 1, cancelled) (each choir November 1)",
+        "(November 1, cancelled) (with choir November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    }
+    // FLAGGED PIN (R27-B): this test's held list
+    // stood in rounds 22–26 with "(thanks
+    // November 1)" asserting under the R20-3
+    // adjudication. Round 27's synthesis (F2 /
+    // B2) joins "thanks" as a sign-off single,
+    // superseding R20-3 for this word, so the
+    // witness now reads governed on both paths
+    // the held list checks.
+    let groups = "(November 1, cancelled) (thanks November 1)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{groups}: a lone head thanks is governed (R27-B, B2)"
+    );
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through, None,
+        "{groups}: keep-through stays governed (R27-B, B2)"
+    );
+}
+
+#[test]
+fn r23a_bare_inventory_deictics_and_remainders() {
+    // Round 23 (R23-1/R23-2, review F1 + red team
+    // RT23-6/RT23-7): the deictic class and the
+    // lanes' enumerated remainders of the classes
+    // R22-8 named were still outside the bare
+    // inventory, so a governed date restated behind
+    // any of them resurrected on every path. The
+    // classes are the rule; the lists in
+    // `bare_filler_word` are their current
+    // membership. Every witness below reads
+    // nothing on every path; the lanes' ungraded
+    // pronouns / modals / interjections do NOT
+    // join and are not pinned here.
+    for word in [
+        // R23-1: the deictic class.
+        "yesterday",
+        "today",
+        "tomorrow",
+        "here",
+        "there",
+        "together",
+        "alone",
+        "re",
+        // R23-2: the preposition remainder.
+        "past",
+        "off",
+        "besides",
+        "plus",
+        "minus",
+        "concerning",
+        "regarding",
+        "barring",
+        "following",
+        "including",
+        "atop",
+        "amidst",
+        "amongst",
+        "thru",
+        "versus",
+        "vs",
+        // R23-2: the quantifier / determiner
+        // remainder.
+        "much",
+        "many",
+        "few",
+        "several",
+        "enough",
+        "most",
+        "more",
+        "less",
+        "least",
+        "none",
+        "little",
+        "what",
+        "which",
+        "whose",
+        "whatever",
+        "whichever",
+        "whoever",
+        // R23-2: the connective-adverb remainder.
+        "accordingly",
+        "consequently",
+        "subsequently",
+        "next",
+        "later",
+        "earlier",
+        "afterwards",
+        "afterward",
+        "beforehand",
+        "simultaneously",
+        "eventually",
+        "initially",
+        // R23-2: the adverb remainder.
+        "once",
+        "twice",
+        "always",
+        "ever",
+        "perhaps",
+        "maybe",
+        "almost",
+        "nearly",
+        "pretty",
+        "fairly",
+        "basically",
+        "merely",
+    ] {
+        let groups = format!("(November 1, cancelled) ({word} November 1)");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+        // The plain twin resurrects nowhere either.
+        let line = format!("November 1, 2026, cancelled, {word} November 1, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+    }
+    // The trailing slot, for every deictic and
+    // for the remainders' probed trailing members.
+    for word in [
+        "yesterday",
+        "today",
+        "tomorrow",
+        "here",
+        "there",
+        "together",
+        "alone",
+        "re",
+        "past",
+        "off",
+        "besides",
+        "much",
+        "many",
+        "few",
+        "several",
+        "most",
+        "none",
+        "later",
+        "earlier",
+        "afterwards",
+    ] {
+        let groups = format!("(November 1, cancelled) (November 1 {word})");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+        let line = format!("November 1, 2026, cancelled, November 1, 2026 {word}");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: plain trailing twin stays governed"
+        );
+    }
+    // Stacks, the typed "re:" form, the "in re"
+    // unit, and a restatement wearing its own
+    // governor (the deictic is no governor).
+    for groups in [
+        "(November 1, cancelled) (here today November 1)",
+        "(November 1, cancelled) (November 1 here today)",
+        "(November 1, cancelled) (the November 1 today)",
+        "(November 1, cancelled) (re: November 1)",
+        "(November 1, cancelled) (in re November 1)",
+        "(November 1, cancelled) (today November 1, cancelled)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // Held (the mirror, R23-1/R23-2): the widened
+    // inventory eats no real event — a member of
+    // each new class standing before a content
+    // label still asserts, and a
+    // possessive-headed event still asserts.
+    // (Round 27, R27-B / B2: "thanks" in head
+    // position — this list's standing example
+    // in round 23 — joins the bare inventory as
+    // a sign-off single, so its entry is
+    // removed here and its flipped reading is
+    // pinned below; flagged in the R27-B
+    // addendum.)
+    for groups in [
+        "(November 1, cancelled) (yesterday choir November 1)",
+        "(November 1, cancelled) (past choir November 1)",
+        "(November 1, cancelled) (several service November 1)",
+        "(November 1, cancelled) (which choir November 1)",
+        "(November 1, cancelled) (later service November 1)",
+        "(November 1, cancelled) (once choir November 1)",
+        "(November 1, cancelled) (our choir November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    }
+    // FLAGGED PIN (R27-B): this test's held list
+    // stood in round 23 with "(thanks
+    // November 1)" asserting under the R20-3
+    // adjudication. Round 27's synthesis (F2 /
+    // B2) joins "thanks" as a sign-off single,
+    // superseding R20-3 for this word, so the
+    // witness now reads governed on both paths
+    // the held list checks.
+    let groups = "(November 1, cancelled) (thanks November 1)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{groups}: a lone head thanks is governed (R27-B, B2)"
+    );
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through, None,
+        "{groups}: keep-through stays governed (R27-B, B2)"
+    );
+}
+
+#[test]
+fn r23a_one_boundary_classification() {
+    // Round 23 (R23-3, review F2/F3/F4/F5 + red
+    // team RT23-1/RT23-2/RT23-3): boundary
+    // classification was per-site, so colon,
+    // semicolon, comma, dash (incl. en/em), slash,
+    // and period behaved differently at different
+    // sites. ONE classification now: every one of
+    // them is a clause/group boundary exactly as
+    // the comma is, at every site that judges
+    // governor scope, relative-shape memory,
+    // weekday checks, group composition, and
+    // postposed composition — and a closing paren
+    // between a governor and its date is a
+    // boundary of the same kind. Every witness
+    // below reads as its comma/space twin.
+    //
+    // (a) The wrong-weekday date behind a leading
+    // group asserts NEVER, whatever separator
+    // follows the group; the mismatch is recorded
+    // as the space twin records it, on both paths.
+    for sep in [
+        " ",
+        ", ",
+        ": ",
+        " - ",
+        "- ",
+        " \u{2013} ",
+        " \u{2014} ",
+        ". ",
+        " / ",
+        " and ",
+        "; ",
+    ] {
+        let line = format!("(November 8){sep}Monday, November 15, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the contradicted date never asserts"
+        );
+        let mismatch = c
+            .named_weekday_mismatch
+            .clone()
+            .expect("the mismatch is recorded");
+        assert_eq!(mismatch.named, "Monday", "{line}");
+        assert_eq!(mismatch.date, nov(15), "{line}");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through asserts nothing");
+        let mismatch = c
+            .keep_through_weekday_mismatch
+            .clone()
+            .expect("the keep-through mismatch is recorded");
+        assert_eq!(mismatch.date, nov(15), "{line}");
+        // With a trailing group the contradiction
+        // is still recorded and nothing asserts.
+        let line = format!("(November 8){sep}Monday, November 15, 2026 (November 22)");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: nothing asserts");
+        assert!(
+            c.named_weekday_mismatch.is_some(),
+            "{line}: the mismatch is recorded beside a trailing group"
+        );
+    }
+    // (b) A colon after the governor word is a
+    // clause break standing after the governor:
+    // the governor is spent on the first date and
+    // the replacement asserts, first date named —
+    // the comma twin's reading, on both surfaces.
+    for line in [
+        "November 1, 2026, cancelled: November 8, 2026",
+        "November 1, 2026, cancelled : November 8, 2026",
+        "November 1, 2026, cancelled: service November 8, 2026",
+        "November 1, 2026, postponed: service November 8, 2026",
+        "November 1, 2026: cancelled: November 8, 2026",
+        "(November 1, cancelled: November 8)",
+        "(November 1, cancelled: service November 8)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: November 1 is named governed"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{line}: keep-through names November 1"
+        );
+    }
+    // (d) A slash after a date composes postposed
+    // exactly as the comma does.
+    for line in [
+        "November 1, 2026, cancelled / November 8, 2026",
+        "November 1, 2026, moved / November 8, 2026",
+        "(November 1, cancelled / November 8)",
+        "(November 1, moved / November 8)",
+        "November 1, 2026, cancelled / November 8, 2026, November 15, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+        assert!(
+            c.for_sunday_second_dates.contains(&nov(1)),
+            "{line}: November 1 is named governed"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+    }
+    // The slash same-date restatement reads
+    // nothing, as every other separator twin does.
+    for line in [
+        "November 1, 2026 / cancelled, November 1, 2026",
+        "November 1, 2026, cancelled: November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the governed date stays governed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through");
+    }
+    // (c) The relative-shape memory survives a
+    // colon at its boundaries, a dash or slash
+    // before its group, and a semicolon or dash
+    // between trailing groups — the RT22-2
+    // witnesses with the new separators.
+    for (line, remembered) in [
+        ("next Sunday: (November 8)", nov(8)),
+        ("next Sunday \u{2014} (November 8)", nov(8)),
+        ("next Sunday / (November 8)", nov(8)),
+        ("(November 1): next Sunday", nov(1)),
+        ("(November 1) / next Sunday", nov(1)),
+        ("(November 1) next Sunday", nov(1)),
+        ("next Sunday (November 1, cancelled); (November 8)", nov(8)),
+        (
+            "next Sunday (November 1, cancelled) \u{2014} (November 8)",
+            nov(8),
+        ),
+        ("next Sunday; (November 8); (November 1)", nov(1)),
+        ("next Sunday: (November 8): (November 1)", nov(1)),
+        ("next Sunday, (November 8), (November 1)", nov(1)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert!(
+            c.for_sunday_in_words.is_some(),
+            "{line}: the Sunday is remembered in words"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(remembered),
+            "{line}: the parenthesized date is remembered"
+        );
+    }
+    // (e) The nested-paren witnesses read as
+    // their comma twins: a closing paren between
+    // a governor and its date is a boundary, and
+    // November 8 asserts with November 1 named.
+    for line in [
+        "((November 1, cancelled), November 8)",
+        "(November 1, (cancelled), November 8)",
+        "(((November 1, cancelled), November 8))",
+        "(November 1, cancelled, (November 8))",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: November 1 is named governed"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{line}: keep-through names November 1"
+        );
+    }
+    // The working twin whose governor stands
+    // BEFORE its date asserts November 8 and
+    // names nothing — the standing silence for a
+    // group-initial before-governor (round 16),
+    // exactly as its flat comma twin reads.
+    let line = "((cancelled, November 1), November 8)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: nothing is named, as the flat twin names nothing"
+    );
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+    // A separator attached with no space, after a
+    // group or before a governed core, is the
+    // same boundary (the comp23-D attached forms).
+    for line in [
+        "(please): November 1, 2026, cancelled",
+        "(yesterday November 1) (please November 1);November 1, 2026, postponed",
+        "(November 1 thanks) (please);November 1, 2026, cancelled",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the governed core stays governed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through");
+    }
+    // Held: a colon after a DATE already read as
+    // a clause break (R22-2) and stays; a lone
+    // colon-governed date reads nothing; a
+    // numeric-date slash stays token-internal.
+    for (line, want) in [
+        (
+            "November 1, 2026: cancelled, November 8, 2026",
+            Some(nov(8)),
+        ),
+        ("cancelled: November 8, 2026", None),
+        ("note: November 8, 2026", None),
+        ("11/8/2026", Some(nov(8))),
+        ("11/1/2026, cancelled, 11/8/2026", Some(nov(8))),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, want, "{line}");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, want, "{line}: keep-through");
+    }
+}
+
+#[test]
+fn r23b_aux_slot_holds_two_words() {
+    // Round 23 (R23-4, review F6/F7 = red team
+    // RT23-4): the auxiliary's slot holds two
+    // words — a negation AND an adverb, or two
+    // adverbs — in detection and in spending
+    // alike. R22-4's two tolerances composed
+    // silenced both dates, and the spending walk
+    // never learned the negation rule at all.
+    // Every detection witness below reads
+    // November 8 alone, nothing named, on every
+    // path: the auxiliary construction is one
+    // clause, and its verb ends the reach.
+    for group in [
+        "(moved November 1, then was not loudly played to November 8)",
+        "(moved November 1, then was never loudly played to November 8)",
+        "(moved November 1, then was not ever played to November 8)",
+        "(moved November 1, choir was not ever singing to November 8)",
+        "(moved November 1, then was ever not played to November 8)",
+        "(moved November 1, then was really not played to November 8)",
+        "(moved November 1, then was not yet played to November 8)",
+        "(moved November 1, then was loudly never played to November 8)",
+        "(moved November 1, choir was softly gently singing to November 8)",
+        "(moved November 1, then was beautifully loudly played to November 8)",
+        "(moved November 1, then was loudly beautifully played to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: November 8 stands alone on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // The spending scans learn the negation
+    // rule: a negation in the slot is spent on
+    // its verb in every scan, so the passive-for
+    // occasion asserts — alone, or beside its
+    // trailing date — and the claim's own
+    // passive claims through the negation.
+    for group in [
+        "(it was not moved for November 1)",
+        "(it was never moved for November 1)",
+        "(it was not ever moved for November 1)",
+        "(it was never really moved for November 1)",
+        "(it was not really moved for November 1)",
+        "(it was not loudly moved for November 1)",
+        "(it was loudly never moved for November 1)",
+        // Round 24 (R24-6): an unlisted adverb
+        // alone in the passive-for complement
+        // spends now — the passive-for scan
+        // crosses adverbs as detection does, so
+        // this shape joins the asserting list
+        // (it stood in the held list below until
+        // this round; see the note there).
+        "(it was loudly moved for November 1)",
+        "(it was not moved, November 1)",
+        "(it was never moved, November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{group}: the November 1 occasion asserts, spent through the slot"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    }
+    for group in [
+        "(moved November 1, it was not moved to November 8)",
+        "(moved November 1, it was never moved to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the claim claims its target through the negation"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named as the from-date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    }
+    // Held: three-word slots do not spend (the
+    // spending cap is two, negation included);
+    // the claim's own passives keep their
+    // standing readings. Round 24 (R24-6) moved
+    // one shape out of this list: "(it was loudly
+    // moved for November 1)" asserts now, because
+    // the passive-for scan's complement crosses
+    // adverbs as detection does — an unlisted
+    // adverb alone crosses there, as it always
+    // has in `aux_complement`. The governor
+    // scans keep the R17-7 closed list and this
+    // cap unchanged: the comma twin "(it was
+    // loudly moved, November 1)" still reads
+    // nothing by the spent-predicate scan.
+    let group = "(it was not really truly moved for November 1)";
+    {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: no spending, the date is governed"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+    let group = "(moved November 1, then was moved to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: still claims");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+    let group = "(moved November 1, then was cancelled to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: still silences");
+}
+
+#[test]
+fn r23b_subject_pp_stacks_and_date_objects() {
+    // Round 23 (R23-5, review F8/F9 = red team
+    // RT23-5/RT23-10): the subject run crosses a
+    // PP stack of any length and any preposition
+    // order; a determiner inside the PP blocks
+    // nothing; and a framed date standing as a
+    // subject-PP object after ANY preposition is
+    // consumed by the subject exactly as after
+    // "from". Every stack witness below ends the
+    // reach: November 8 alone, nothing named, no
+    // phantom from the weekday PP in either
+    // stack order, on every path.
+    for group in [
+        "(moved November 1, the team from Kent on Sunday sang to November 8)",
+        "(moved November 1, the team from Kent on Sunday played to November 8)",
+        "(moved November 1, the team from Kent on Sunday was singing to November 8)",
+        "(moved November 1, the team from Kent in the hall sang to November 8)",
+        "(moved November 1, the team from Kent at noon sang to November 8)",
+        "(moved November 1, the big team from Kent on Sunday sang to November 8)",
+        "(moved November 1, the choir on Sunday from Kent sang to November 8)",
+        "(moved November 1, the choir on Sunday in the hall sang to November 8)",
+        "(moved November 1, the choir on Sunday in Kent sang to November 8)",
+        "(moved November 1, the choir on the Sunday sang to November 8)",
+        "(moved November 1, the choir on the Sunday played to November 8)",
+        "(moved November 1, the choir on the Sunday was singing to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: November 8 stands alone on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named — no phantom October 18"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // The plain twins of the stacks assert
+    // November 8 with the governed November 1
+    // named, as the plain composition names
+    // every governed date beside an asserting
+    // one — and no phantom.
+    for line in [
+        "moved November 1, 2026, the team from Kent on Sunday sang to November 8, 2026",
+        "moved November 1, 2026, the choir on Sunday from Kent sang to November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: the plain twin asserts");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+    }
+    // A framed date as a subject-PP object,
+    // after any preposition: the target asserts
+    // (not alternatives), and the PP's date is
+    // named beside it exactly as the "from"
+    // twin's date is.
+    for (group, named) in [
+        (
+            "(moved November 1, the team from November 15 sang to November 8)",
+            nov(15),
+        ),
+        (
+            "(moved November 1, the choir on November 15 sang to November 8)",
+            nov(15),
+        ),
+        (
+            "(moved November 1, the team by November 15 sang to November 8)",
+            nov(15),
+        ),
+        (
+            "(moved November 1, the team before November 15 sang to November 8)",
+            nov(15),
+        ),
+        (
+            "(moved November 1, the team after November 1 sang to November 8)",
+            nov(1),
+        ),
+        (
+            "(moved November 1, the choir on November 1 sang to November 8)",
+            nov(1),
+        ),
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path, not alternatives"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![named],
+            "{group}: the subject PP's date is named, as after from"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(c.for_sunday_second_dates, vec![named], "{group}");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![named], "{group}");
+    }
+    // The plain twins: the PP's date no longer
+    // asserts itself or demotes the clause's
+    // date — November 8 asserts, the PP date is
+    // noted, exactly as the "from" twin reads.
+    for line in [
+        "the choir on November 15 sang November 8, 2026",
+        "the team from November 15 sang November 8, 2026",
+        "the choir on November 1 was singing November 8, 2026",
+    ] {
+        let want_named = if line.contains("November 15") {
+            nov(15)
+        } else {
+            nov(1)
+        };
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+        assert_eq!(c.for_sunday_second_dates, vec![want_named], "{line}");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![want_named], "{line}");
+    }
+    // Held: the object-continuation PP is not a
+    // subject PP — "(moved November 1, baked
+    // beans from Kent to November 8)" still
+    // reads nothing by "from" governance, and
+    // the single-PP pins of R22-5 stand (the
+    // r22b test above).
+    let group = "(moved November 1, baked beans from Kent to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: the object PP still governs");
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "{group}: keep-through");
+}
+
+#[test]
+fn r23b_weekday_verb_form_modifier_phrase() {
+    // Round 23 (R23-6, review F10): weekday +
+    // verb-form word + noun-like word is a
+    // modifier phrase on both surfaces — the
+    // verb-form word is the phrase's adjective,
+    // and no phantom October 18 is asserted,
+    // offered, or named.
+    //
+    // FLAGGED PIN CHANGE (round 25, R25-A, F4):
+    // this loop pinned the framed date ASSERTING
+    // for all eight shapes under the R23-6 shape
+    // pass in `lone_framed_fence`. The fence now
+    // judges the verb-form phrase's HEAD against
+    // `GARNISH_NOUNS` exactly as it judges the
+    // bare shape (the synthesis's named
+    // consequence: the "Sunday baked beans" pin,
+    // head "beans", goes silent — and so do its
+    // siblings here, heads luggage / hymns /
+    // seats / choir, none of them garnish). The
+    // R23-6 no-phantom claim stands and is still
+    // what this loop pins: every line reads
+    // nothing and names nothing, October 18
+    // included. The group twin below (the phrase
+    // in an object continuation, claimed across)
+    // is untouched by the fence and stands as
+    // shipped.
+    for line in [
+        "Sunday left luggage, November 8, 2026",
+        "Sunday sung hymns, November 1, 2026",
+        "Sunday taken seats, November 8, 2026",
+        "Sunday gone seats, November 8, 2026",
+        "Sunday met choir, November 8, 2026",
+        "Monday left luggage, November 8, 2026",
+        "Sunday singing choir, November 8, 2026",
+        // The regular -ed twin, standing.
+        "Sunday baked beans, November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: head not garnish, the fence does not fire, no phantom"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: no October 18 is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: keep-through names no phantom"
+        );
+    }
+    // The group twin: the phrase stands in an
+    // object continuation, the claim crosses it,
+    // November 8 claims with November 1 named —
+    // and no October 18 anywhere.
+    let group = "(moved the meeting, November 1, 2026, and Sunday taken seats to November 8)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(8)),
+        "{group}: the target claims on the relative path"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: November 1 is named, October 18 is not"
+    );
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only claims");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{group}");
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    // Held: the bare-noun modifier pins
+    // (R20-6/R21-7), the true relative phrases,
+    // and the subject-PP weekday consumption
+    // (R22-5) all stand — the r20b/r21b/r22b
+    // tests above; one of each re-checked here.
+    for (line, want) in [
+        ("Sunday bulletins, November 1, 2026", Some(nov(1))),
+        ("Sunday school, November 8, 2026", Some(nov(8))),
+        ("next Sunday, November 8, 2026", Some(nov(8))),
+        ("Sunday, November 8, 2026", Some(nov(8))),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, want, "{line}: standing reading");
+    }
+}
+
+#[test]
+fn r23b_lone_framed_fence_fires_only_for_garnish() {
+    // Round 23 (R23-7, review F11): the
+    // lone-framed fence is inverted — it fires
+    // only when the line's content beside the
+    // framed date is a weekday-modifier phrase
+    // whose head noun is on the closed
+    // GARNISH-noun set (bulletins, school,
+    // morning, as shipped in `GARNISH_NOUNS`).
+    // Every other noun — event or not, on the
+    // old content-head list or off it — blocks
+    // the fence, and the line reads nothing:
+    // the failure direction is silence now.
+    for line in [
+        "Sunday picnic, November 8, 2026",
+        "Sunday brunch, November 8, 2026",
+        "Sunday festival, November 8, 2026",
+        "Sunday banquet, November 8, 2026",
+        "Monday picnic, November 8, 2026",
+        "Sunday picnics, November 8, 2026",
+        // On the old list, silent then and now —
+        // now by the garnish rule, not by list
+        // membership.
+        "Sunday rehearsal, November 1, 2026",
+        "Sunday rehearsal, November 8, 2026",
+        "Sunday service, November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: For Sunday reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: Keep-through reads nothing");
+    }
+    // The pinned garnish shapes keep asserting,
+    // and a governed line under a garnish phrase
+    // keeps its governed reading.
+    for (line, want) in [
+        ("Sunday bulletins, November 1, 2026", Some(nov(1))),
+        ("Sunday school, November 8, 2026", Some(nov(8))),
+        ("Sunday morning, November 8, 2026", Some(nov(8))),
+        ("printed Sunday bulletins, November 8, 2026", Some(nov(8))),
+        ("printed Monday bulletins, November 8, 2026", Some(nov(8))),
+        ("the Sunday bulletins, November 1, 2026", Some(nov(1))),
+        ("Sunday picnic, November 1, 2026, cancelled", None),
+        ("Sunday bulletins, November 1, 2026, cancelled", None),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, want, "{line}: For Sunday");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, want, "{line}: Keep-through agrees");
+    }
+    // Held: an off-garnish head in its own
+    // clause still closes the fence for the
+    // whole line, in either clause order.
+    for line in [
+        "Sunday bulletins, picnic November 8, 2026",
+        "picnic November 8, 2026, Sunday bulletins",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the fence stays closed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through");
+    }
+}
+
+#[test]
+fn r23b_past_only_split_scopes_both_shields() {
+    // Round 23 (R23-8, review M1 = red team
+    // RT23-8): the past-only split scopes BOTH
+    // determiner shields — "the sang hymns" in
+    // the reach reads as a clause (November 8
+    // alone, November 1 unnamed), exactly as
+    // "the big sang hymns" does, because a
+    // past-only form has no adjective use in
+    // any position. Participle forms keep their
+    // shield under both.
+    for group in [
+        "(moved November 1, and the sang hymns to November 8)",
+        "(moved November 1, the sang hymns to November 8)",
+        "(moved November 1, and the big sang hymns to November 8)",
+        "(moved November 1, and the took seats to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: November 8 stands alone on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: November 1 is not named — the form read as a clause verb"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // Held: participle forms keep their shield
+    // under both the immediate and the spanned
+    // shield, and claim as before (R22-6's
+    // spanned-shield pins stand in the r22b
+    // test above).
+    for group in [
+        "(moved November 1, and the taken seats to November 8)",
+        "(moved November 1, and the big taken seats to November 8)",
+        "(moved November 1, and the baked beans to November 8)",
+        "(moved November 1, and the left luggage to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the shielded phrase still claims"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named as the from-date"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{group}");
+    }
+}
+
+#[test]
+fn r24a_bare_inventory_subordinator_class() {
+    // Round 24 (R24-1, review F1 = red team
+    // RT24-1): the subordinator class joins the
+    // bare inventory, and "than" joins the
+    // connective class. Every witness below reads
+    // nothing on every path; the mirror held (a
+    // content label standing with the word still
+    // asserts).
+    for word in [
+        "when",
+        "whenever",
+        "while",
+        "whilst",
+        "although",
+        "though",
+        "because",
+        "if",
+        "yet",
+        "provided",
+        "supposing",
+        "wherever",
+        "where",
+        "why",
+        "how",
+        "whether",
+        "than",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // The plain twins, head and trailing.
+        for line in [
+            format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+            format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    }
+    // Phrasal witnesses through the new members.
+    for groups in [
+        "(November 1, cancelled) (even if November 1)",
+        "(November 1, cancelled) (as if November 1)",
+        "(November 1, cancelled) (more than November 1)",
+        "(November 1, cancelled) (less than November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // FLAGGED PIN CHANGE (round 25, R25-A,
+    // F3 + M1): this block pinned the ungraded
+    // pronoun / modal / interjection sets
+    // asserting ("the ungraded sets stay
+    // untouched"). Those pins were DEFERRALS,
+    // not adjudications; round 25 graded the
+    // sets (RT25-3: MAJOR for pronouns + modals;
+    // RT25-5: MINOR for interjections) and all
+    // three classes joined the inventory, so the
+    // same three shapes now read nothing,
+    // governed on every path — pinned in full
+    // in `r25a_bare_inventory_pronouns_modals`
+    // and `r25a_bare_inventory_interjections_and_abbreviations`.
+    for groups in [
+        "(November 1, cancelled) (he November 1)",
+        "(November 1, cancelled) (will November 1)",
+        "(November 1, cancelled) (oh November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{groups}: graded in round 25, the class joined the inventory"
+        );
+    }
+}
+
+#[test]
+fn r24a_bare_phrase_units() {
+    // Round 24 (R24-2, red team RT24-2 + review
+    // M1): phrase units in the bare test — a
+    // region is bare when its words partition
+    // into inventory words and the listed phrase
+    // units, matched as units. The closed list as
+    // shipped: "care of", "in care of", "care of
+    // the", "back together", "back together
+    // again", "gone tomorrow", "gone by tomorrow",
+    // "per se", "if and when", "when and if",
+    // "as and when", "yet again", "together at
+    // last". Every unit witness reads nothing on
+    // every path, head and trailing alike.
+    for unit in [
+        "care of",
+        "in care of",
+        "care of the",
+        "back together",
+        "back together again",
+        "gone tomorrow",
+        "gone by tomorrow",
+        "per se",
+        "if and when",
+        "when and if",
+        "as and when",
+        "yet again",
+        "together at last",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({unit} November 1)"),
+            format!("(November 1, cancelled) (November 1 {unit})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+    }
+    // The plain twins of the lead units.
+    for line in [
+        "November 1, 2026, cancelled, care of November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 per se",
+        "November 1, 2026, cancelled (back together November 1)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+    }
+    // Held: a unit's member standing alone keeps
+    // its current reading — "care" and "gone"
+    // alone are not bare, and assert as they did.
+    for groups in [
+        "(November 1, cancelled) (care November 1)",
+        "(November 1, cancelled) (gone November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a lone member still asserts"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    }
+}
+
+#[test]
+fn r25a_bare_inventory_preposition_remainder() {
+    // Round 25 (R25-A, F1 = RT25-1): the
+    // preposition / participial remainder joins
+    // the bare inventory, and "anyhow" joins
+    // the connective adverbs. Every witness
+    // reads nothing on every path; the mirror
+    // held (a content label standing with the
+    // word still asserts).
+    for word in [
+        "till",
+        "along",
+        "excepting",
+        "save",
+        "pending",
+        "considering",
+        "assuming",
+        "granted",
+        "given",
+        "excluding",
+        "anyhow",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // The plain twins, head and trailing.
+        for line in [
+            format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+            format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+}
+
+#[test]
+fn r25a_bare_phrase_units_round25() {
+    // Round 25 (R25-A, F2 = RT25-2 + review
+    // R25-4): the resurrecting phrase units of
+    // the lane's sweep join BARE_PHRASE_UNITS —
+    // the office core, the idiom tail, and the
+    // subordinator phrases, membership exactly
+    // as swept (bare25 / bare25b). Every unit
+    // witness reads nothing on every path, head
+    // and trailing alike.
+    for unit in [
+        "in spite of",
+        "in spite of the",
+        "as long as",
+        "so long as",
+        "in case",
+        "just in case",
+        "on behalf of",
+        "on top of",
+        "in front of",
+        "in back of",
+        "by way of",
+        "for the sake of",
+        "in light of",
+        "in view of",
+        "in lieu of",
+        "with regard to",
+        "in regard to",
+        "ahead of",
+        "ahead of time",
+        "out of",
+        "up to",
+        "in time",
+        "on time",
+        "at last",
+        "at long last",
+        "together at long last",
+        "back together at last",
+        "back home",
+        "back home together",
+        "gone home",
+        "gone home tomorrow",
+        "gone for tomorrow",
+        "back by tomorrow",
+        "come back together",
+        "at home",
+        "long ago",
+        "long last",
+        "far away",
+        "sooner or later",
+        "back and forth",
+        "to and fro",
+        "in and out",
+        "up and down",
+        "one by one",
+        "day by day",
+        "first and last",
+        "as far as",
+        "given that",
+        "seeing that",
+        "save that",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({unit} November 1)"),
+            format!("(November 1, cancelled) (November 1 {unit})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+    }
+    // The plain twins of the lead units, and
+    // the overlap witness whole: "back together
+    // at last" partitions as one unit.
+    for line in [
+        "November 1, 2026, cancelled, in spite of November 1, 2026",
+        "November 1, 2026, cancelled, on behalf of November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 as long as",
+        "November 1, 2026, cancelled, back together at last November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 with regard to",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+    }
+    // Held (R24-2's rule): a unit's member
+    // standing alone keeps its reading.
+    // FLAGGED CHANGE (R26-B, F7 = RT26-6): the
+    // recorded singletons "ago", "away", "home"
+    // were pinned here as still asserting; they
+    // JOIN the inventory in R26-B, so their lone
+    // shapes now govern and move to
+    // `r26b_singletons_and_ago_phrases`. The
+    // remaining lone members below are unchanged.
+    for groups in [
+        "(November 1, cancelled) (seeing November 1)",
+        "(November 1, cancelled) (long November 1)",
+        "(November 1, cancelled) (case November 1)",
+        "(November 1, cancelled) (spite November 1)",
+        "(November 1, cancelled) (behalf November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a lone member still asserts"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
+    }
+}
+
+#[test]
+fn r25a_bare_inventory_pronouns_modals() {
+    // Round 25 (R25-A, F3 = RT25-3): the
+    // pronoun and modal classes join the bare
+    // inventory — membership from the lane's
+    // probe output (the round-24 recorded sets
+    // plus the additions "i", "who", "whom",
+    // "whomever", "one", "others"). The R24-A
+    // deferral pins flip (flagged in that test).
+    // A pronoun or modal with its verb still
+    // asserts: the verb is content.
+    for word in [
+        "he",
+        "she",
+        "they",
+        "we",
+        "you",
+        "him",
+        "them",
+        "us",
+        "me",
+        "itself",
+        "himself",
+        "herself",
+        "themselves",
+        "someone",
+        "anyone",
+        "everyone",
+        "somebody",
+        "anybody",
+        "everybody",
+        "something",
+        "anything",
+        "everything",
+        "nothing",
+        "nobody",
+        "i",
+        "who",
+        "whom",
+        "whomever",
+        "one",
+        "others",
+        "will",
+        "would",
+        "can",
+        "could",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "should",
+        "ought",
+        "dare",
+        "need",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // The plain twins of the strongest five,
+    // and the pronoun+modal combinations a
+    // restatement actually wears.
+    for line in [
+        "November 1, 2026, cancelled, we November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 they",
+        "November 1, 2026, cancelled, will November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 would",
+        "November 1, 2026, cancelled, you November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+    }
+    for groups in [
+        "(November 1, cancelled) (we will November 1)",
+        "(November 1, cancelled) (they will November 1)",
+        "(November 1, cancelled) (we would November 1)",
+        "(November 1, cancelled) (November 1 we will)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: the combination stays governed");
+    }
+    // Held (the mirror, with a verb): a pronoun
+    // with its verb carries content and asserts
+    // beside the sibling cancellation.
+    for groups in [
+        "(November 1, cancelled) (we sang November 1)",
+        "(November 1, cancelled) (they sang November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a pronoun with its verb still asserts"
+        );
+    }
+}
+
+#[test]
+fn r25a_bare_inventory_interjections_and_abbreviations() {
+    // Round 25 (R25-A, M1 = RT25-5): the
+    // interjection / address class joins the
+    // discourse garnish. Round 25 (R25-A, M5 =
+    // review R25-9): the closed abbreviation
+    // class joins by cleaned form — the task
+    // witnesses "(November 1, cancelled) (St
+    // November 1)" and "(November 1 St.)" read
+    // nothing on every surface.
+    for word in [
+        "oh",
+        "ah",
+        "oops",
+        "wow",
+        "hey",
+        "hi",
+        "hello",
+        "dear",
+        "yeah",
+        "ok",
+        "okay",
+        "amen",
+        "friends",
+        "folks",
+        "bye",
+        "welcome",
+        "sorry",
+        "greetings",
+        "congratulations",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror).
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    for written in [
+        "St.", "Mt.", "Mr.", "Mrs.", "Ms.", "Dr.", "Rev.", "Fr.", "Br.", "Sr.", "Jr.",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({written} November 1)"),
+            format!("(November 1, cancelled) (November 1 {written})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+    }
+    // The task's witnesses verbatim, undotted
+    // head and trailing dotted alike.
+    for groups in [
+        "(November 1, cancelled) (St November 1)",
+        "(November 1, cancelled) (November 1 St.)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: reads nothing");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{groups}: keep-through reads nothing");
+    }
+}
+
+#[test]
+fn r25a_token_cleaning_strips_format_chars() {
+    // Round 25 (R25-A, M6 = review R25-10):
+    // token cleaning strips Unicode format
+    // characters (category Cf), so a governor
+    // word carrying one governs again.
+    for glue in ["\u{200b}", "\u{200d}", "\u{feff}", "\u{00ad}"] {
+        let groups = format!("(November 1, cancel{glue}led) (November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{groups}: the glued governor governs its sibling restatement"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{groups}: keep-through");
+        let line = format!("November 1, 2026, cancel{glue}led, November 1, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the plain twin governs too");
+    }
+    // A format character glued inside the date
+    // token itself does not poison its parse:
+    // the cancelled sibling still governs.
+    let groups = "(Novem\u{200b}ber 1, cancelled) (November 1)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{groups}: the glued date still reads");
+}
+
+#[test]
+fn r25a_phrase_unit_does_not_span_the_date() {
+    // Round 25 (R25-A, M7 = review R25-5): a
+    // phrase unit is not matched across the
+    // date span — the before-date and
+    // after-date words are separate sequences.
+    // The lane's witnesses assert November 1
+    // again beside the cancelled sibling.
+    for groups in [
+        "(November 1, cancelled) (gone November 1 tomorrow)",
+        "(November 1, cancelled) (care November 1 of)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{groups}: the split unit does not consume the date"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{groups}: keep-through asserts"
+        );
+    }
+    // Held: the same units standing whole on
+    // one side of the date still consume it.
+    for groups in [
+        "(November 1, cancelled) (gone tomorrow November 1)",
+        "(November 1, cancelled) (November 1 gone tomorrow)",
+        "(November 1, cancelled) (care of November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: the whole unit stays governed");
+    }
+}
+
+#[test]
+fn r25a_fence_verb_form_judges_its_head() {
+    // Round 25 (R25-A, F4 = review R25-1): the
+    // fence's verb-form branch judges the
+    // phrase's HEAD against GARNISH_NOUNS, as
+    // the bare-shape branch does. The lane's
+    // witnesses read nothing; garnish-headed
+    // verb-form phrases still assert.
+    for line in [
+        "Sunday baked rehearsal, November 8, 2026",
+        "Sunday printed rehearsal, November 8, 2026",
+        "Sunday baked beans rehearsal, November 8, 2026",
+        "our Sunday baked beans rehearsal, November 8, 2026",
+        // The bare-shape control, standing.
+        "Sunday morning rehearsal, November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: For Sunday reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: Keep-through reads nothing");
+    }
+    for (line, want) in [
+        ("Sunday baked bulletins, November 8, 2026", nov(8)),
+        ("Sunday printed sheets, November 8, 2026", nov(8)),
+        ("Sunday baked beans bulletins, November 8, 2026", nov(8)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{line}: garnish head asserts");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{line}: keep-through asserts");
+    }
+}
+
+#[test]
+fn r25a_bare_partition_single_chars_and_bracket_spans() {
+    // Round 25 (R25-A, M4 part 1 = review
+    // R25-8 + RT25-8): in the bare partition a
+    // cleaned single-character token is
+    // garnish, and a multi-token bracket span
+    // cleans to garnish as a wholly bracketed
+    // token already does. The witnesses no
+    // longer resurrect the governed date.
+    for groups in [
+        "(November 1, cancelled) (November 1 1)",
+        "(November 1, cancelled) (1 November 1)",
+        "(November 1, cancelled) (November 1 x)",
+        "(November 1, cancelled) (x November 1)",
+        "(November 1, cancelled) (November 1 [our choir])",
+        "(November 1, cancelled) (November 1 [x y])",
+        "(November 1, cancelled) ([our choir] November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // Held: "[choir]"-style single-token
+    // behaviour is unchanged, and the
+    // unbracketed twin still asserts.
+    let groups = "(November 1, cancelled) (November 1 [choir])";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{groups}: the single-token span stands");
+    let groups = "(November 1, cancelled) (November 1 choir)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{groups}: unbracketed choir is still content"
+    );
+}
+
+#[test]
+fn r24a_fence_judges_the_phrase_head() {
+    // Round 24 (R24-3, review F2 + M2 = red team
+    // RT24-6 part): the lone-framed fence judges
+    // the weekday phrase's HEAD — its final noun —
+    // against the garnish set, and the set gains
+    // the printed-matter kin (bulletin, papers,
+    // newsletter, leaflet, sheets).
+    for line in [
+        "Sunday morning rehearsal, November 8, 2026",
+        "Sunday school picnic, November 8, 2026",
+        "Sunday morning service, November 8, 2026",
+        "Sunday morning picnic, November 8, 2026",
+        "Sunday bulletins rehearsal, November 8, 2026",
+        "Sunday morning meeting, November 8, 2026",
+        "Sunday school rehearsal, November 1, 2026",
+        "Sunday morning choir, November 8, 2026",
+        "Monday morning meeting, November 15, 2026",
+        // Held: "Sunday service" reads nothing —
+        // service is an event head, not garnish.
+        "Sunday service, November 8, 2026",
+        // FLAGGED PIN CHANGE (round 25, R25-A,
+        // F4): "Sunday left luggage" pinned
+        // asserting in the list below under the
+        // R23-6 shape pass; the fence now judges
+        // the verb-form phrase's HEAD ("luggage",
+        // not garnish) exactly as the bare-shape
+        // branch does, so it reads nothing here.
+        "Sunday left luggage, November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: For Sunday reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: Keep-through reads nothing");
+    }
+    for (line, want) in [
+        // The pinned garnish heads: the final noun
+        // is garnish.
+        ("Sunday morning, November 8, 2026", nov(8)),
+        ("Sunday school, November 8, 2026", nov(8)),
+        ("Sunday bulletins, November 8, 2026", nov(8)),
+        ("Sunday school bulletin, November 8, 2026", nov(8)),
+        ("Sunday morning bulletins, November 8, 2026", nov(8)),
+        ("Sunday morning bulletin, November 8, 2026", nov(8)),
+        // The printed-matter kin as shipped.
+        ("Sunday bulletin, November 1, 2026", nov(1)),
+        ("Sunday bulletin, November 8, 2026", nov(8)),
+        ("Sunday papers, November 8, 2026", nov(8)),
+        ("Sunday newsletter, November 8, 2026", nov(8)),
+        ("Sunday newsletter, November 1, 2026", nov(1)),
+        ("Sunday leaflet, November 8, 2026", nov(8)),
+        ("Sunday sheets, November 8, 2026", nov(8)),
+        // Held pin: "Monday bulletins" asserts.
+        ("Monday bulletins, November 8, 2026", nov(8)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{line}: For Sunday asserts");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{line}: Keep-through asserts");
+    }
+}
+
+#[test]
+fn r24a_boundary_token_rule() {
+    // Round 24 (R24-4, review F4/F5/F6 + M5 part
+    // = red team RT24-3): the boundary rule is a
+    // token rule — any standalone token containing
+    // no letters and no digits is a boundary token
+    // at every site (governor scope, weekday
+    // check, relative-shape memory, group
+    // composition, postposed composition), and
+    // bracketed tokens count as boundary/garnish
+    // tokens in group cleaning and in date spans.
+    //
+    // (F4) The postposed composition: a separator
+    // between a postposed governor and its target
+    // reads as its comma twin.
+    for sep in ["*", "|", "~", "_", "\u{2022}", "\u{1f389}"] {
+        let line = format!("November 1, 2026, cancelled {sep} November 8, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: November 1 is named governed"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+        // Inside a group too.
+        let groups = format!("(November 1, cancelled {sep} November 8)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{groups}: November 8 asserts");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{groups}");
+        // The same-date restatement reads nothing,
+        // in both separator positions.
+        for line in [
+            format!("November 1, 2026, cancelled {sep} November 1, 2026"),
+            format!("November 1, 2026 {sep} cancelled, November 1, 2026"),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the governed date stays governed");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through");
+        }
+    }
+    // (F5) The wrong-weekday bypass stays closed
+    // behind a leading group and any of these
+    // separators: the mismatch is recorded.
+    for sep in ["*", "\u{2022}", "|", "~", "_", "\u{1f389}"] {
+        let line = format!("(November 1) {sep} Monday November 15, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the contradicted date never asserts"
+        );
+        let mismatch = c
+            .named_weekday_mismatch
+            .clone()
+            .expect("the mismatch is recorded");
+        assert_eq!(mismatch.named, "Monday", "{line}");
+        assert_eq!(mismatch.date, nov(15), "{line}");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through asserts nothing");
+        let mismatch = c
+            .keep_through_weekday_mismatch
+            .clone()
+            .expect("the keep-through mismatch is recorded");
+        assert_eq!(mismatch.date, nov(15), "{line}");
+    }
+    // (F6) Relative-shape memory keeps the
+    // in-words reading across these tokens.
+    for sep in ["*", "|", "\u{2022}", "~", "\u{1f389}"] {
+        for (line, remembered) in [
+            (format!("next Sunday {sep} (November 8)"), nov(8)),
+            (format!("(November 8) {sep} next Sunday"), nov(8)),
+            (
+                format!("next Sunday (November 1) {sep} (November 8)"),
+                nov(8),
+            ),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert!(
+                c.for_sunday_in_words.is_some(),
+                "{line}: the Sunday is remembered in words"
+            );
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(remembered),
+                "{line}: the parenthesized date is remembered"
+            );
+        }
+        let line = format!("(November 8) {sep} next Sunday");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{line}: keep-through reads the remembered date"
+        );
+    }
+    // (RT24-3) Boundary and bracketed tokens
+    // standing inside a group beside its date are
+    // garnish: the group restates bare and the
+    // sibling governance binds it.
+    for shape in [
+        "(November 1 *)",
+        "(* November 1)",
+        "(November 1 |)",
+        "(| November 1)",
+        "(November 1 \u{2022})",
+        "(\u{2022} November 1)",
+        "(November 1 [x])",
+        "(November 1 {x})",
+    ] {
+        let groups = format!("(November 1, cancelled) {shape}");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // (M5) A "[" before a date does not poison its
+    // parse: the date reads or not on its own
+    // merits.
+    for (line, want, named) in [
+        (
+            "[November 8, 2026], November 15, 2026",
+            Some(nov(8)),
+            vec![nov(15)],
+        ),
+        (
+            "November 15, 2026, [November 8, 2026]",
+            Some(nov(15)),
+            vec![nov(8)],
+        ),
+        (
+            "{November 8, 2026}, November 15, 2026",
+            Some(nov(8)),
+            vec![nov(15)],
+        ),
+        ("Sunday bulletins, [November 8, 2026]", Some(nov(8)), vec![]),
+        ("cancelled [November 8, 2026]", None, vec![]),
+        (
+            "[November 1, cancelled] [November 8]",
+            Some(nov(8)),
+            vec![nov(1)],
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, want, "{line}: For Sunday");
+        assert_eq!(c.for_sunday_second_dates, named, "{line}: second dates");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, want, "{line}: Keep-through");
+        assert_eq!(
+            c.keep_through_second_dates, named,
+            "{line}: keep second dates"
+        );
+    }
+    // Held: brackets are NOT group delimiters — a
+    // bracketed date alone stays unread, the
+    // recorded limitation.
+    for line in ["[November 8]", "{November 8}"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: a bracketed date alone stays unread"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through stays unread");
+    }
+}
+
+#[test]
+fn r24b_weekday_pp_inside_object_continuation() {
+    // Round 24 (R24-5, review F3): a weekday
+    // standing as a PP object inside a target
+    // claim's OBJECT continuation is consumed
+    // wholly — no signal, no naming — exactly as
+    // in a subject PP. Before this round the
+    // "on Sunday" PP spawned a relative signal
+    // inside the continuation: in one order the
+    // line claimed November 8 naming a phantom
+    // October 18, and in the swapped order the
+    // phantom was the group's date outright.
+    // Both orders now read nothing and name
+    // nothing, by the standing "from" governance
+    // — the held twin without the weekday PP,
+    // re-checked below, reads the same.
+    for group in [
+        "(moved November 1, and baked beans from Kent on Sunday to November 8)",
+        "(moved November 1, and baked beans on Sunday from Kent to November 8)",
+        "(moved November 1, and the baked beans from Kent on Sunday to November 8)",
+        // Held: the object-continuation PP with
+        // no weekday in it — "from" governance
+        // silences the line, as pinned in R23-B.
+        "(moved November 1, baked beans from Kent to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named — no phantom October 18"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // The plain twins of both orders read
+    // nothing and name nothing the same way.
+    for line in [
+        "moved November 1, 2026, and baked beans from Kent on Sunday to November 8, 2026",
+        "moved November 1, 2026, and baked beans on Sunday from Kent to November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the plain twin reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: no phantom is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through reads nothing");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: keep-through names nothing"
+        );
+    }
+    // The continuation without the list
+    // conjunction is the same continuation: the
+    // weekday is consumed, the ungoverned target
+    // asserts, and November 1 stays governed.
+    let group = "(moved November 1, baked beans on Sunday to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: the target asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: no phantom is named"
+    );
+    // The full-date object list ("moved the
+    // meeting, November 1, 2026, and …") reads
+    // as its standing twins do — the no-weekday
+    // twin and the "on Sunday morning" twin both
+    // read November 1 alone: the phantom used to
+    // collapse this shape into alternatives
+    // naming all three dates, and it now asserts
+    // its occasion cleanly, naming nothing.
+    let group =
+        "(moved the meeting, November 1, 2026, and baked beans from Kent on Sunday to November 8)";
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(1)),
+        "{group}: the occasion asserts on the relative path, as its twins do"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "{group}: paren-only");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: paren-only note is empty"
+    );
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    assert_eq!(
+        c.keep_through_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: keep-through note is empty"
+    );
+    // The boundary this batch implements: a
+    // weekday PP standing in a SECOND clause —
+    // its own subject and finite verb between
+    // the claim's phrase and the preposition —
+    // is a clause, not a PP inside the
+    // continuation, so its weekday keeps its
+    // signal; and a weekday PP with no target
+    // phrase behind it is no claim's object
+    // continuation. Both shapes keep their
+    // standing readings: nothing asserts, and
+    // both dates stand as alternatives.
+    for group in [
+        "(moved November 1, beans were served on Sunday to November 8)",
+        "(moved November 1, choir sang on Sunday to November 8)",
+        "(baked beans on Sunday to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: outside the continuation, nothing asserts"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18), nov(8)],
+            "{group}: the weekday's signal stands, both dates offered"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{group}: keep-through asserts nothing"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![oct(18), nov(8)],
+            "{group}: keep-through offers both dates"
+        );
+    }
+    // Held re-checks: the subject-PP weekday
+    // consumption (R22-5/R23-5) is unchanged, and
+    // the "Sunday morning" modifier shape inside
+    // the continuation still claims its target
+    // with its from-date named, as before.
+    let group = "(moved November 1, the choir on Sunday sang to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the subject PP still ends the reach"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+    let group = "(moved November 1, and baked beans on Sunday morning to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the modifier shape claims"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: November 1 is named, no phantom"
+    );
+}
+
+#[test]
+fn r24b_passive_for_complement_crosses_adverbs_as_detection_does() {
+    // Round 24 (R24-6, review M3 = red team
+    // RT24-5): detection and spending disagreed
+    // on the passive-for complement — detection
+    // crosses two unlisted adverbs in the
+    // auxiliary's slot ("choir was softly gently
+    // singing" is one clause), while the
+    // passive-for scan crossed an unlisted adverb
+    // only beside a negation, so the claim's own
+    // passive "(it was softly gently moved for
+    // November 1)" asserted nothing. The
+    // passive-for scan's complement now crosses
+    // adverbs as detection does, under the same
+    // two-slot-word cap (a negation counts as one
+    // slot word): the occasions assert.
+    for group in [
+        "(it was softly gently moved for November 1)",
+        "(it was gently loudly moved for November 1)",
+        "(it was loudly moved for November 1)",
+        "(it was softly moved for November 1)",
+        "(it was not softly moved for November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{group}: the November 1 occasion asserts, spent through the slot"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    }
+    // The detection twin of the witness slot, as
+    // pinned in R23-B: the clause is detected and
+    // the target reads alone.
+    let group = "(moved November 1, the choir was softly gently singing to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the clause reads its target"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+    // Held: three-word slots still do not spend
+    // on the passive-for surface either (three
+    // adverbs, or a negation carrying two more
+    // slot words), the GOVERNOR scans' caps are
+    // unchanged — the comma twins are judged by
+    // the spent-predicate scan and read nothing
+    // as they always have — and the claim scan's
+    // own passive keeps the shared walk: a
+    // three-word slot in a claim's passive still
+    // kills the claim.
+    for group in [
+        "(it was softly gently quietly moved for November 1)",
+        "(it was not really ever moved for November 1)",
+        "(it was not really truly moved for November 1)",
+        "(it was just very plain moved for November 1)",
+        "(it was softly gently moved, November 1)",
+        "(it was loudly moved, November 1)",
+        "(moved November 1, it was not really ever moved to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: no spending, the date is governed"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+}
+
+#[test]
+fn r25b_full_clause_claim_object_continuation() {
+    // Round 25 (R25-B, F5a = red team RT25-4):
+    // the object-continuation consumption of
+    // R24-5 reached only subjectless claims —
+    // written as a full sentence ("the choir sang
+    // baked beans from Kent on Sunday to November
+    // 8"), the claim's own subject and verb stood
+    // between the target phrase and the PP, the
+    // backward walk read the verb as a second
+    // clause's, and the Sunday spawned a phantom
+    // October 18 (named beside the target, or
+    // asserting outright in the weekday-first
+    // order). The walk now crosses the claim's
+    // own clause verb — and its auxiliaries —
+    // when object material stands behind them,
+    // and crosses the verb's subject like any
+    // other continuation material: every
+    // full-clause witness reads exactly as its
+    // subjectless twin, nothing and naming
+    // nothing, for bare and relative PP objects
+    // alike.
+    for group in [
+            "(moved November 1, the choir sang hymns from Kent on Sunday to November 8)",
+            "(moved November 1, the choir sang baked beans from Kent on Sunday to November 8)",
+            "(moved November 1, the choir sang baked beans on Sunday from Kent to November 8)",
+            "(moved November 1, and the choir sang baked beans from Kent on Sunday to November 8)",
+            "(moved November 1, the choir sang baked beans from Kent on the Sunday to November 8)",
+            "(moved November 1, the choir sang baked beans on Sunday in the hall from Kent to November 8)",
+            "(moved November 1, the choir sang baked beans from Kent on next Sunday to November 8)",
+            "(moved November 1, the choir sang baked beans from Kent before this Sunday to November 8)",
+            "(moved November 1, the choir sang baked beans from next Sunday in Kent to November 8)",
+            "(moved November 1, the choir sang baked beans from Kent after next Sunday to November 8)",
+            "(moved November 1, the choir sang baked beans from Kent on the next Sunday to November 8)",
+            "(moved November 1, the choir sang baked beans on next Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang baked beans on next Sunday in the hall from Kent to November 8)",
+        ] {
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named — no phantom"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: paren-only reads nothing");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: paren-only note is empty"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: keep-through note is empty"
+            );
+        }
+    // The plain twins read nothing the same way.
+    for line in [
+            "moved November 1, 2026, the choir sang baked beans from Kent on Sunday to November 8, 2026",
+            "moved November 1, 2026, the choir sang baked beans on Sunday from Kent to November 8, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the plain twin reads nothing");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: no phantom is named"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through reads nothing");
+        }
+    // BOUNDARY THAT STANDS (R24-5/R24-B): a
+    // weekday PP in a genuinely second clause —
+    // its verb standing directly before the PP,
+    // no object material behind it — keeps its
+    // signal: both dates stay on offer as
+    // alternatives. The claim-free shape is the
+    // same standing shape.
+    for group in [
+        "(moved November 1, beans were served on Sunday to November 8)",
+        "(moved November 1, choir sang on Sunday to November 8)",
+        "(baked beans on Sunday to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: nothing asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18), nov(8)],
+            "{group}: the second clause's Sunday keeps its signal"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{group}: keep-through asserts nothing"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![oct(18), nov(8)],
+            "{group}: keep-through names both alternatives"
+        );
+    }
+}
+
+#[test]
+fn r25b_relative_pp_object_consulted() {
+    // Round 25 (R25-B, F5b = review R25-2): the
+    // object-continuation consultation was asked
+    // only about bare weekdays — a RELATIVE PP
+    // object inside the continuation was never
+    // consulted, so "on next Sunday" spawned its
+    // signal and the line asserted its target
+    // naming a phantom October 25. The relative
+    // signal sites now ask the same consultation
+    // (at the phrase's weekday word), and the
+    // forward arm accepts a relative phrase as
+    // the claim's target after "to"/"until".
+    for group in [
+        "(moved November 1, and baked beans from Kent on next Sunday to November 8)",
+        "(moved November 1, and baked beans from Kent on this Sunday to November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named — no phantom October 25"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: paren-only reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // The plain twin reads nothing the same way.
+    let line =
+        "moved November 1, 2026, and baked beans from Kent on next Sunday to November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: the plain twin reads nothing");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: no phantom is named"
+    );
+    // Without the list conjunction, the relative
+    // PP object is consumed exactly as the bare
+    // one is (R24-B's no-conjunction pin): the
+    // ungoverned target asserts and nothing is
+    // named — each line below reads as its twin.
+    for group in [
+        "(moved November 1, baked beans on next Sunday to November 8)",
+        "(moved November 1, baked beans on Sunday to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the target asserts, the PP object consumed"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+    }
+    // The forward arm's relative target: with
+    // the Sunday consumed, the line reads as the
+    // machinery's own Sunday-free twin reads —
+    // the "from Kent" governance silences the
+    // "to" target, so both read nothing and name
+    // nothing (the phantom October 18 the Sunday
+    // used to be named as is gone).
+    for group in [
+        "(moved November 1, baked beans from Kent on Sunday to next Sunday)",
+        "(moved November 1, baked beans from Kent to next Sunday)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: reads as its twin");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom October 18 is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{group}: keep-through reads as its twin"
+        );
+    }
+    // The "until" form's standing reading is
+    // untouched: the relative target asserts and
+    // November 1 is named, twin and witness alike.
+    for group in [
+        "(moved November 1, baked beans on Sunday until next Sunday)",
+        "(moved November 1, baked beans until next Sunday)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(oct(25)),
+            "{group}: the relative target asserts"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named"
+        );
+    }
+    // A relative PP object deeper in the stack
+    // is consumed the same way: the line reads
+    // nothing, as its subjectless stack twin
+    // with a place PP does.
+    let group = "(moved November 1, baked beans on Sunday from next Sunday to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{group}: the stack's relative object is consumed"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+}
+
+#[test]
+fn r25b_trailing_weekday_pp() {
+    // Round 25 (R25-B, F5c = review R25-3): a
+    // weekday PP standing AFTER the claim's
+    // target date was never consulted — it
+    // asserted a phantom October 18 and demoted
+    // the claimed November 8 to the note. The
+    // consultation's trailing arm re-judges the
+    // PP in its forward-twin position (at the
+    // end of the continuation, just before the
+    // claim's "to"), so the trailing shape reads
+    // exactly as the twin without the trailing
+    // PP reads: nothing, naming nothing.
+    for group in [
+        "(moved November 1, baked beans from Kent to November 8 on Sunday)",
+        "(moved November 1, baked beans from Kent to November 8)",
+        "(moved November 1, baked beans from Kent to November 8 on next Sunday)",
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named — no phantom"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: reads as the twin without the PP"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: paren-only note is empty"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{group}: keep-through reads as its twin"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+    }
+    // The plain twin behaves the same.
+    let line = "moved November 1, 2026, baked beans from Kent to November 8, 2026 on Sunday";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{line}: the plain trailing shape reads nothing"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: no phantom is named"
+    );
+    // BOUNDARY THAT STANDS (R24-B): with no
+    // claim construction on the line, a weekday
+    // PP after a "to" date is NOT consumed —
+    // both dates stay on offer as alternatives.
+    let group = "(baked beans to November 8 on Sunday)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: nothing asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8), oct(18)],
+        "{group}: both dates stay on offer"
+    );
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through, None,
+        "{group}: keep-through asserts nothing"
+    );
+    assert_eq!(
+        c.keep_through_second_dates,
+        vec![nov(8), oct(18)],
+        "{group}: keep-through names both alternatives"
+    );
+}
+
+#[test]
+fn r27a_auxiliary_stack_crossings() {
+    // Round 27 (R27-A, F1 mechanisms 1+2 =
+    // review R27-1, red team RT27-W2): the
+    // auxiliary stack's crossing tolerated at
+    // most one slot adverb and no negation, so
+    // a second adverb or a "not" in the stack
+    // judged the clause as no stack at all and
+    // the phantom Sunday asserted (passive) or
+    // was named beside the target (active). The
+    // stack crossing is now the full slot
+    // pattern the pinned families imply — any
+    // number of listed adverbs AND the negation,
+    // in active and passive stacks alike,
+    // wherever a stack is crossed — and the
+    // walk and `passive_aux_before` share the
+    // one rule (`aux_slot_word`). Every variant
+    // reads as its clean twin: nothing, naming
+    // nothing.
+    for group in [
+            "(moved November 1, beans were still just served on Sunday from Kent to November 8)",
+            "(moved November 1, beans were just still served on Sunday from Kent to November 8)",
+            "(moved November 1, beans were not served on Sunday from Kent to November 8)",
+            "(moved November 1, beans were not still served on Sunday from Kent to November 8)",
+            "(moved November 1, beans were still not served on Sunday from Kent to November 8)",
+            "(moved November 1, the choir was not singing hymns from Kent on Sunday to November 8)",
+            "(moved November 1, the choir was not singing hymns from Kent on Sunday until November 8)",
+            "(moved November 1, the choir was still not singing hymns from Kent on Sunday to November 8)",
+            "(moved November 1, the choir was not still singing hymns from Kent on Sunday to November 8)",
+            "(moved November 1, the choir was singing hymns from Kent on Sunday to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads as its clean twin");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: keep-through note is empty"
+            );
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named on the relative path"
+            );
+        }
+    // BOUNDARY THAT STANDS: a passive stack
+    // whose verb stands directly before the PP
+    // with NO further PP intervening keeps the
+    // pinned alternatives, stack or no stack.
+    for group in [
+        "(moved November 1, beans were not served on Sunday to November 8)",
+        "(moved November 1, beans were still just served on Sunday to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: nothing asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18), nov(8)],
+            "{group}: both dates stay on offer as alternatives"
+        );
+    }
+}
+
+#[test]
+fn r27a_post_pp_slot_adverbs() {
+    // Round 27 (R27-A, F1 mechanism 3 = red
+    // team RT27-W4): a flat adverb immediately
+    // AFTER the weekday PP was invisible to the
+    // forward arm — it judged the token
+    // immediately behind the next PP, and a
+    // flat adverb there (invisible because the
+    // noun crossing excludes the tolerated
+    // class) ended the arm, so the Sunday
+    // asserted for 8/8 flat adverbs. The post-PP
+    // slot is now judged by the same class as
+    // the stack (`aux_slot_word`), and the
+    // stack's slot words cross wherever in the
+    // stack they stand.
+    for adv in [
+        "still", "really", "never", "just", "already", "soon", "also", "now",
+    ] {
+        let group = format!(
+            "(moved November 1, the choir sang hymns on Sunday {adv} from Kent to November 8)"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: reads as its -ly twin");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+    }
+    for group in [
+        "(moved November 1, the choir sang hymns on Sunday softly from Kent to November 8)",
+        "(moved November 1, the choir sang hymns on Sunday from Kent still to November 8)",
+        "(moved November 1, beans were served on Sunday still from Kent to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+    }
+}
+
+#[test]
+fn r27a_destination_and_accompaniment_pp() {
+    // Round 27 (R27-A, F1 mechanism 4 = red
+    // team RT27-W1): a destination or
+    // accompaniment PP inside the continuation
+    // defeated the walk — the forward PP-object
+    // run swallowed the next PP's preposition
+    // (noun-like by the word test) and died at
+    // its determiner, and a destination "to"
+    // was read as the claim's target "to" and
+    // failed its date test. Each PP of the
+    // stack is now crossed by its own iteration,
+    // and a "to" heading a determiner-headed
+    // place NP with a target construction after
+    // it is crossed as a destination PP. Every
+    // variant reads as the static-PP twin does:
+    // nothing, naming nothing.
+    for group in [
+            "(moved November 1, the choir sang hymns on Sunday from Kent to the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent into the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent toward the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent towards the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent past the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent through the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent with the choir to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent without the choir to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday to the hall from Kent to November 8)",
+            "(moved November 1, baked beans on Sunday from Kent into the hall to November 8)",
+            "(moved November 1, baked beans on Sunday from Kent with the choir to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads as its static twin");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named on the relative path"
+            );
+        }
+    // The destination PP standing as the ONLY
+    // PP after a passive verb: the Sunday is
+    // consumed and the claim's target asserts,
+    // exactly as the consumed "for them" shape
+    // asserts its target (R26-C mechanism 4).
+    for group in [
+        "(moved November 1, beans were served on Sunday to the hall to November 8)",
+        "(moved November 1, beans were served on Sunday into the hall to November 8)",
+        "(moved November 1, baked beans on Sunday to the hall to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the target asserts, the Sunday consumed"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+    }
+    // BOUNDARY THAT STANDS: static-PP stacks
+    // keep their standing silence (48/48 per
+    // shape in the lane's sweep), and the
+    // claim-free destination shape keeps its
+    // standing reading.
+    let group =
+        "(moved November 1, the choir sang hymns on Sunday in the hall from Kent to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: the static stack reads nothing");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+}
+
+#[test]
+fn r27a_conjoined_boundary_every_subject_kind() {
+    // Round 27 (R27-A, F1 mechanism 5 = review
+    // R27-2): the conjoined-clause boundary
+    // armed only on determiner/possessive
+    // subject runs, so a pronoun, bare-noun, or
+    // proper-name subject heading the second
+    // clause silently swallowed the phantom and
+    // the target asserted with an empty note.
+    // The boundary now arms on any subject run
+    // that heads a clause: a determiner /
+    // possessive head or a subject pronoun arms
+    // at once, and a bare or proper noun run
+    // arms when the conjunction joining the
+    // clauses is crossed behind it (the same
+    // run standing as a conjoined verb's object
+    // crosses no conjunction there, and the
+    // verb-list reading below stands). Every
+    // subject kind keeps both dates as
+    // alternatives, as "and the band played"
+    // always has.
+    for group in [
+            "(moved November 1, the choir sang hymns and they played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and we played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and she played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and choir played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and Pastor Lee played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and Lee played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and their band played songs on Sunday to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: nothing asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![oct(18), nov(8)],
+                "{group}: both dates stay on offer as alternatives"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through asserts nothing");
+            assert_eq!(
+                c.keep_through_second_dates,
+                vec![oct(18), nov(8)],
+                "{group}: keep-through names both alternatives"
+            );
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![oct(18), nov(8)],
+                "{group}: both dates stay on offer on the relative path"
+            );
+        }
+    // BOUNDARY THAT STANDS: a conjoined VERB
+    // list under one subject is no second
+    // clause — its objects arm nothing, and the
+    // continuation consumes the Sunday exactly
+    // as round 26 pinned.
+    let group = "(moved November 1, the choir sang hymns, played songs, and rehearsed pieces from Kent on Sunday to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: the verb list reads nothing");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+}
+
+#[test]
+fn r27a_boundary_at_every_conjunct() {
+    // Round 27 (R27-A, F1 mechanism 6 = red
+    // team RT27-W3): with the weekday PP in a
+    // non-initial conjunct and a further full
+    // clause after it carrying the target, the
+    // boundary the backward walk hit ended the
+    // consultation outright and the phantom
+    // asserted. The boundary judgment now runs
+    // at every conjunct: when the backward walk
+    // ends on the boundary, the forward arm is
+    // consulted, and a target reached only by
+    // crossing a further full conjunct means
+    // the PP stands inside the continuation —
+    // the Sunday is consumed and the line reads
+    // exactly as its first-conjunct twin does
+    // (silence under "from" governance; the
+    // target asserting without it).
+    let group = "(moved November 1, the choir sang hymns and the band played songs on Sunday and the singers rehearsed pieces from Kent to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{group}: reads as its first-conjunct twin"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: no phantom is named"
+    );
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date, None,
+        "{group}: nothing asserts on the relative path"
+    );
+    // The subjectless first conjunct variant
+    // the lane led with reads the same way.
+    let group = "(moved November 1, sang hymns and the band played songs on Sunday and the singers rehearsed pieces from Kent to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{group}: the subjectless twin reads nothing"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+    // Without "from", the consumed Sunday
+    // leaves the target asserting — the
+    // first-conjunct twin's own reading, pinned
+    // beside it.
+    for group in [
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday and the singers rehearsed pieces to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday and the band played songs to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{group}: the target asserts, the Sunday consumed"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named"
+            );
+        }
+    // BOUNDARY THAT STANDS: the target standing
+    // in the Sunday's OWN conjunct keeps the
+    // alternatives, a further clause after the
+    // target notwithstanding.
+    let group = "(moved November 1, the choir sang hymns and the band played songs on Sunday to November 8 and the singers rehearsed pieces)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: nothing asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(18), nov(8)],
+        "{group}: both dates stay on offer as alternatives"
+    );
+}
+
+#[test]
+fn r27a_trailing_until_runs() {
+    // Round 27 (R27-A, F1 mechanism 7 = review
+    // R27-3): a trailing PP after an "until"
+    // target escaped the trailing-run arm — the
+    // backward walk crossed "until" and its
+    // date as noun-like material and reached
+    // the claim phrase by the wrong road, and
+    // the arm's own run walk-back ate the
+    // "until" + date as a PP of the run. Runs
+    // after an "until" target are now judged
+    // exactly as after a "to" target: the
+    // backward walk never crosses "until", and
+    // the run walk-back never crosses an
+    // "until" target standing before the run.
+    for group in [
+            "(moved November 1, baked beans from Kent until November 8 on Sunday)",
+            "(moved November 1, baked beans from Kent until November 8 on Sunday on Sunday)",
+            "(moved November 1, baked beans from Kent until November 8 on Sunday on Sunday on Sunday)",
+            "(moved November 1, baked beans from Kent until November 8 on the next Sunday)",
+            "(moved November 1, baked beans from Kent until November 8 on the next Sunday on the next Sunday)",
+            "(moved November 1, baked beans from Kent to November 8 on the next Sunday on the next Sunday)",
+            "(moved November 1, baked beans from Kent to November 8 on Sunday on Sunday on Sunday)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads as its \"to\" twin");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named, the target not demoted"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: keep-through note is empty"
+            );
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named on the relative path"
+            );
+        }
+    // PARITY THAT STANDS: the claim-free twins
+    // read identically in both orders — the
+    // Sunday asserts its own date, the
+    // from-governed target naming nothing.
+    for group in [
+        "(baked beans from Kent until November 8 on Sunday)",
+        "(baked beans from Kent to November 8 on Sunday)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(oct(18)),
+            "{group}: the claim-free twin asserts the Sunday"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+    }
+    // BOUNDARY THAT STANDS: the base-order
+    // "until" readings are untouched — the
+    // 1-PP "until" shape still asserts its
+    // target naming the from-date.
+    let group = "(moved November 1, baked beans on Sunday until November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the 1-PP until target asserts as it always has"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: the from-date is named, as the until rule names it"
+    );
+}
+
+#[test]
+fn r27a_cf_only_tokens_at_every_site() {
+    // Round 27 (R27-A, F3 = review R27-4/R27-5):
+    // a token that cleans to nothing (Cf-only /
+    // zero-width content) is nothing at EVERY
+    // site that reads tokens — round 26 covered
+    // the claim scan's sites; this round's
+    // enumeration (in the batch's shipped
+    // addendum) covered the rest: the
+    // for-machinery's slot walk and participle
+    // detection and active-for object scan, the
+    // shared auxiliary walk and its slot
+    // lookahead, detection's complement walk,
+    // the positional preposition detection at
+    // the consultation and the subject-PP
+    // readers, the clause-break classification
+    // the governor windows feed on, the date
+    // reader's own span, the governor phrase
+    // matchers, the claim reach's from-date
+    // test, the weekday-modifier and
+    // contradiction readers, the subject walks,
+    // the signal scans' relative and
+    // Sunday-after shapes, the lone-framed
+    // fence, and the date line's Sunday-after
+    // reader. Every shape below reads exactly
+    // as its clean twin.
+    for (group, want, seconds) in [
+        (
+            "(it was \u{200b} moved for November 1)",
+            Some(nov(1)),
+            vec![],
+        ),
+        (
+            "(it was \u{feff} moved for November 1)",
+            Some(nov(1)),
+            vec![],
+        ),
+        ("(moved \u{200b} for November 1)", Some(nov(1)), vec![]),
+        (
+            "(we moved it \u{200b} for November 1)",
+            Some(nov(1)),
+            vec![],
+        ),
+        (
+            "(it was moved \u{200b} for November 1)",
+            Some(nov(1)),
+            vec![],
+        ),
+        (
+            "(it was \u{200b} moved to November 8)",
+            Some(nov(8)),
+            vec![],
+        ),
+        ("(put \u{200b} back November 1)", None, vec![]),
+        ("(Monday \u{200b} November 1)", None, vec![]),
+        ("(next \u{200b} Sunday)", Some(oct(25)), vec![]),
+        ("(Sunday \u{200b} after next Sunday)", Some(nov(1)), vec![]),
+        (
+            "(moved from \u{200b} November 1 to November 8)",
+            Some(nov(8)),
+            vec![nov(1)],
+        ),
+        (
+            "(moved November 1, baked beans on \u{200b} Sunday to November 8)",
+            Some(nov(8)),
+            vec![],
+        ),
+        (
+            "(moved November 1, baked beans on Sunday to \u{200b} November 8)",
+            Some(nov(8)),
+            vec![],
+        ),
+        (
+            "(moved November 1, baked beans on next \u{200b} Sunday to November 8)",
+            Some(nov(8)),
+            vec![],
+        ),
+        (
+            "(moved November 1, printed Sunday \u{200b} bulletins to November 8)",
+            Some(nov(8)),
+            vec![nov(1)],
+        ),
+        (
+            "(moved November 1, the choir on \u{200b} Sunday sang hymns to November 8)",
+            Some(nov(8)),
+            vec![],
+        ),
+        (
+            "(moved November 1, baked beans from Kent \u{200b} to November 8)",
+            None,
+            vec![],
+        ),
+        (
+            "(moved November \u{200b} 1, baked beans to November 8)",
+            Some(nov(8)),
+            vec![nov(1)],
+        ),
+        (
+            "(moved November 1, the choir sang hymns on Sunday to November \u{200b} 8)",
+            Some(nov(8)),
+            vec![],
+        ),
+        (
+            "(moved November 1, beans were \u{200b} served on Sunday from Kent to November 8)",
+            None,
+            vec![],
+        ),
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, want, "{group}: reads as its clean twin");
+        assert_eq!(
+            c.for_sunday_second_dates, seconds,
+            "{group}: the note reads as its clean twin's"
+        );
+        let clean = group.replace(['\u{200b}', '\u{feff}'], "");
+        let text2 = format!("For Sunday: {clean}\n\n## Announcement\n\nHi.\n");
+        let c2 = parse_contribution(&text2, today()).expect("parses");
+        assert_eq!(
+            (c.for_date, &c.for_sunday_second_dates),
+            (c2.for_date, &c2.for_sunday_second_dates),
+            "{group}: the Cf line reads exactly as its clean twin"
+        );
+    }
+    // The date line's own Sunday-after reader.
+    let text = "For Sunday: the Sunday \u{200b} after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the Sunday after the Cf-split base reads as its clean twin"
+    );
+    // The plain surface: the weekday-modifier
+    // phrase wearing a Cf token.
+    let line = "Sunday \u{200b} bulletins, November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the plain Cf line reads as its clean twin"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: no phantom is named"
+    );
+}
+
+#[test]
+fn r26c_passive_intervening_pp() {
+    // Round 26 (R26-C, F2 mechanism 1 = review
+    // R26-1): a passive claim whose weekday PP
+    // carries a further PP inside the
+    // continuation ("beans were served on Sunday
+    // from Kent to …", and the base order "…
+    // served from Kent on Sunday to …") spawned
+    // the phantom: crossing the intervening
+    // preposition reset the backward walk's
+    // object-crossed flag, so the passive verb
+    // misread as standing directly before the PP
+    // and the Sunday asserted (weekday-first
+    // order) or the target asserted with the
+    // Sunday named (base order). PPs inside the
+    // continuation are now crossed without
+    // resetting the object material already
+    // crossed, and a passive verb standing
+    // directly before the PP is crossed when a
+    // further PP intervenes between the weekday
+    // PP and the target: both orders read
+    // nothing and name nothing, exactly as the
+    // active full-clause twins do.
+    for group in [
+        "(moved November 1, beans were served on Sunday from Kent to November 8)",
+        "(moved November 1, beans were served from Kent on Sunday to November 8)",
+        "(moved November 1, hymns were sung on Sunday from Kent to November 8)",
+        "(moved November 1, hymns were sung from Kent on Sunday to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the passive twin reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named on the relative path"
+        );
+    }
+    // BOUNDARIES THAT STAND: the passive verb
+    // standing directly before the PP with NO
+    // further PP intervening keeps the pinned
+    // alternatives (the R25-B pin in
+    // `r25b_full_clause_claim_object_continuation`),
+    // and a "by"-phrase alone does not flip them
+    // either — the agent phrase is not object
+    // material, and the preposition reset the
+    // walk keeps for "by" is what holds it.
+    for group in [
+        "(moved November 1, beans were served on Sunday to November 8)",
+        "(moved November 1, beans were served by Kent on Sunday to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: nothing asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18), nov(8)],
+            "{group}: both dates stay on offer as alternatives"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{group}: keep-through asserts nothing"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![oct(18), nov(8)],
+            "{group}: keep-through names both alternatives"
+        );
+    }
+}
+
+#[test]
+fn r26c_flat_adverbs_in_auxiliary_stack() {
+    // Round 26 (R26-C, F2 mechanism 2 = review
+    // R26-1): the flat adverbs (still / really /
+    // never / just / already / soon / also / now)
+    // standing in the claim's auxiliary stack
+    // broke the backward walk where their -ly
+    // twins and "ever" crossed — the walk's
+    // adverb crossing now covers the flat class
+    // as it covers the -ly forms, so every
+    // variant reads as its subjectless twin:
+    // nothing, naming nothing.
+    for adv in [
+        "still", "really", "never", "just", "already", "soon", "also", "now",
+    ] {
+        let group = format!(
+                "(moved November 1, the choir was {adv} singing hymns from Kent on Sunday to November 8)"
+            );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: reads as its subjectless twin");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named on the relative path"
+        );
+    }
+    // The -ly and "ever" twins that already held,
+    // re-pinned beside the flat class.
+    for group in [
+        "(moved November 1, the choir was softly singing hymns from Kent on Sunday to November 8)",
+        "(moved November 1, the choir was ever singing hymns from Kent on Sunday to November 8)",
+        "(moved November 1, singing hymns from Kent on Sunday to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+    }
+}
+
+#[test]
+fn r26c_trailing_pp_run() {
+    // Round 26 (R26-C, F2 mechanism 3 = review
+    // R26-3): a trailing PP RUN after the claim's
+    // target date escaped the R25-B trailing arm,
+    // which judged only the single PP the claimed
+    // date ended directly before — the run's
+    // second PP asserted its resolution and the
+    // claimed date was demoted to the note. The
+    // arm now walks back over the whole run
+    // (bare, comma-separated, and mixed
+    // bare+relative pairs) and re-judges it in
+    // its forward-twin position, as it judges
+    // one trailing PP: every run shape reads
+    // nothing and names nothing.
+    for group in [
+        "(moved November 1, baked beans from Kent to November 8 on Sunday on Sunday)",
+        "(moved November 1, baked beans from Kent to November 8 on Sunday, on Sunday)",
+        "(moved November 1, baked beans from Kent to November 8 on Sunday, on next Sunday)",
+        "(moved November 1, baked beans from Kent to November 8 on next Sunday, on Sunday)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the trailing run reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named on the relative path"
+        );
+    }
+    // BOUNDARIES THAT STAND: the claim-free
+    // trailing shapes still offer both dates as
+    // alternatives (the R24-B pin, both orders),
+    // and a different second weekday keeps its
+    // standing reading — it is no part of any
+    // Sunday's run.
+    for (group, seconds) in [
+        (
+            "(baked beans on Sunday to November 8)",
+            vec![oct(18), nov(8)],
+        ),
+        (
+            "(baked beans to November 8 on Sunday)",
+            vec![nov(8), oct(18)],
+        ),
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: nothing asserts");
+        assert_eq!(
+            c.for_sunday_second_dates, seconds,
+            "{group}: both dates stay on offer"
+        );
+    }
+    let group = "(moved November 1, baked beans from Kent to November 8 on Sunday on Monday)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{group}: a different second weekday reads as it did"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: the standing reading names nothing"
+    );
+}
+
+#[test]
+fn r26c_for_pp_in_continuation() {
+    // Round 26 (R26-C, F2 mechanism 4 = review
+    // R26-4, adjudicated): a "for" PP inside the
+    // continuation broke the walk — "for" is
+    // deliberately excluded from
+    // `is_subject_preposition` (the passive-for
+    // naming rule stands on that exclusion), so
+    // the walk now carries its OWN crossing set
+    // in which "for" is crossed when a target
+    // construction follows, and the subject set
+    // is untouched. The Sunday is consumed: the
+    // phantom October 18 is neither asserted nor
+    // named, and November 1 is no longer demoted
+    // beside it. The target asserts with an empty
+    // note — exactly the reading of the pinned
+    // consumed-PP twin "(moved November 1, baked
+    // beans on Sunday to November 8)"
+    // (`r25b_relative_pp_object_consulted`: the PP
+    // object consumed, the target asserts, the
+    // note empty) and of the Sunday-free twin
+    // "(moved November 1, baked beans for them to
+    // November 8)" up to the from-date's naming.
+    for group in [
+        "(moved November 1, baked beans for them on Sunday to November 8)",
+        "(moved November 1, baked beans for him on Sunday to November 8)",
+        "(moved November 1, baked beans for the choir on Sunday to November 8)",
+        "(moved November 1, baked beans for Kent on Sunday to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the target asserts, the Sunday consumed"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named and nothing is demoted"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{group}: keep-through asserts the target"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named on the relative path"
+        );
+    }
+    // BOUNDARY THAT STANDS (the adjudication):
+    // the passive-for family is untouched — a
+    // date named by a passive "for" still asserts
+    // as it always has.
+    let group = "(it was moved for November 1)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{group}: the passive-for date still asserts"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: the passive-for note is empty"
+    );
+}
+
+#[test]
+fn r26c_until_targets_and_conjoined_clauses() {
+    // Round 26 (R26-C, F2 mechanism 5 = red team
+    // RT26-7): "until" consumed only where the
+    // weekday PP stood directly before it — at
+    // every other stack depth the forward arm
+    // crossed "until" as noun-like object
+    // material and died past it, so the target
+    // asserted with the Sunday named (or the
+    // Sunday asserted outright, weekday-first).
+    // "until" now terminates the forward crossing
+    // exactly as "to" does, at every depth and
+    // order, for bare and relative objects alike;
+    // a conjoined clause inside the continuation
+    // is crossed the same way, its target in the
+    // second conjunct. Every witness reads
+    // nothing and names nothing.
+    for group in [
+            "(moved November 1, the choir sang hymns from Kent on Sunday in the hall until November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent in the hall until November 8)",
+            "(moved November 1, the choir sang hymns on Sunday in the hall from Kent until November 8)",
+            "(moved November 1, baked beans from Kent on Sunday in the hall until November 8)",
+            "(moved November 1, baked beans from Kent on Sunday in the hall until November 8)",
+            "(moved November 1, the choir sang hymns on next Sunday from Kent until November 8)",
+            "(moved November 1, the choir sang hymns from Kent on next Sunday until November 8)",
+            "(moved November 1, the choir sang hymns on the next Sunday from Kent until November 8)",
+            "(moved November 1, the choir sang hymns from next Sunday on Sunday until November 8)",
+            "(moved November 1, baked beans on next Sunday from Kent until November 8)",
+            "(moved November 1, baked beans from Kent on next Sunday until November 8)",
+            "(moved November 1, baked beans from Kent on Sunday in the hall until next Sunday)",
+            "(moved November 1, the choir sang hymns from Kent on Sunday in the hall until next Sunday)",
+            "(moved November 1, the choir sang hymns on Sunday and the band played from Kent to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent and played songs to November 8)",
+            "(moved November 1, the choir sang hymns, played songs, and rehearsed pieces from Kent on Sunday to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads nothing");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: keep-through note is empty"
+            );
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named on the relative path"
+            );
+        }
+    // The plain twin of the deep-stack "until"
+    // witness reads nothing the same way.
+    let line = "moved November 1, 2026, the choir sang hymns on Sunday from Kent in the hall until November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{line}: the plain until twin reads nothing"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: no phantom is named"
+    );
+    // BOUNDARIES THAT STAND (red team Held): a
+    // finite verb standing directly before the
+    // PP keeps its pinned alternatives; a second
+    // clause standing AFTER a completed claim
+    // asserts its own Sunday (standing
+    // composition); the 1-PP weekday "until"
+    // shape and the 1-PP relative "until" shape
+    // keep their standing readings — the target
+    // asserts naming the from-date, the until
+    // target's own naming rule — and the
+    // base-order 2-PP "until" shape reads nothing
+    // as its "to" twin does.
+    let group = "(moved November 1, the choir sang on Sunday to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: nothing asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(18), nov(8)],
+        "{group}: both dates stay on offer as alternatives"
+    );
+    let group =
+        "(moved November 1, baked beans from Kent to November 8, the choir sang hymns on Sunday)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(18)),
+        "{group}: the second clause's Sunday asserts its own date"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8)],
+        "{group}: the completed claim's target is named"
+    );
+    for group in [
+        "(moved November 1, baked beans on Sunday until November 8)",
+        "(moved November 1, baked beans on next Sunday until November 8)",
+        "(moved November 1, and baked beans on next Sunday until November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the 1-PP until target asserts as it always has"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the from-date is named, as the until rule names it"
+        );
+    }
+    let group = "(moved November 1, baked beans from Kent on Sunday until November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{group}: the base-order until shape reads nothing"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+}
+
+#[test]
+fn r26c_abbreviation_period_inside_pp() {
+    // Round 26 (R26-C, F8 = review R26-2): the
+    // period of an abbreviation inside a PP
+    // ("from Mt. Kent") acted as a clause
+    // boundary at every site the bare
+    // classification feeds, the clause split,
+    // and the from-governance of the
+    // continuation's target was lost — the line
+    // asserted its target where the unperioded
+    // twin reads nothing. An abbreviation of the
+    // R25-A class now keeps its period from
+    // acting as a boundary when it stands inside
+    // a PP before a name word; the general
+    // period-boundary rule is otherwise
+    // untouched. Every twin reads nothing and
+    // names nothing.
+    for abbr in ["Mt.", "St.", "Dr."] {
+        for group in [
+            format!("(moved November 1, baked beans from {abbr} Kent on Sunday to November 8)"),
+            format!(
+                "(moved November 1, the choir sang hymns from {abbr} Kent on Sunday to November 8)"
+            ),
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads as its unperioded twin");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named on the relative path"
+            );
+        }
+        let line = format!(
+            "moved November 1, 2026, baked beans from {abbr} Kent on Sunday to November 8, 2026"
+        );
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the plain twin reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: no phantom is named"
+        );
+    }
+}
+
+#[test]
+fn r26c_cf_only_tokens_at_claim_sites() {
+    // Round 26 (R26-C, M1 = review R26-6): a token
+    // carrying only format characters (U+200B,
+    // U+FEFF; the "*" token behaves identically)
+    // standing between "moved" and its date broke
+    // the claim wherever the claim scan met the
+    // token that cleans to nothing — the line
+    // named a phantom where its clean twin names
+    // the claim's own from-date, or lost the
+    // from-governance outright. A token that
+    // cleans to nothing is now nothing at every
+    // site the claim scan reads (the consultation
+    // walks, the claim's bounded reach), so every
+    // Cf shape reads exactly as its clean twin.
+    for tok in ["\u{200b}", "\u{feff}", "*"] {
+        let group = format!("(moved {tok} November 1, baked beans to November 8)");
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the claim reads as its clean twin"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the from-date is named, no phantom"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{group}: keep-through asserts the target"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{group}: keep-through names the from-date"
+        );
+        let group = format!("(moved {tok}November 1, baked beans from Kent to November 8)");
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the governed twin reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+        let group = format!("(moved {tok} November 1, baked beans on Sunday to November 8)");
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the Sunday is consumed as in the clean twin"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+    }
+    // The plain twins read as their clean twins.
+    for line in [
+        "moved \u{200b}November 1, 2026, baked beans from Kent to November 8, 2026",
+        "moved \u{200b} November 1, 2026, the choir sang hymns on Sunday to November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        let clean = line.replace('\u{200b}', "");
+        let text2 = format!("For Sunday: {clean}\n\n## Announcement\n\nHi.\n");
+        let c2 = parse_contribution(&text2, today()).expect("parses");
+        assert_eq!(
+            (c.for_date, c.for_sunday_second_dates.clone()),
+            (c2.for_date, c2.for_sunday_second_dates),
+            "{line}: the Cf line reads exactly as its clean twin"
+        );
+    }
+}
+
+#[test]
+fn r26c_unclosed_bracket_spans() {
+    // Round 26 (R26-C, M2 = review R26-7): an
+    // unclosed bracket span beside a governed
+    // sibling asserted where the closed bracketed
+    // restatement reads nothing — the span mask
+    // marked only closed spans, and the
+    // line-level restatement test demanded a
+    // closing bracket. An unclosed span now binds
+    // as a closed one does in composition: it
+    // runs to the end of the token run. The
+    // alone-unread limitation stands.
+    for line in [
+        "(November 1, cancelled) [November 1",
+        "(November 1, cancelled) [our choir) November 1",
+        "(November 1, cancelled) [our choir November 1",
+        "(November 1, cancelled) {November 1",
+        "(November 1, cancelled) [November 1]",
+        "(November 1, cancelled) [our choir November 1]",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the bracketed restatement reads nothing"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through reads nothing");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: keep-through note is empty"
+        );
+    }
+    // The alone-unread limitation stands: a line
+    // carrying nothing but the unclosed span
+    // still reads nothing.
+    let line = "[November 1";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{line}: the lone unclosed span stays unread"
+    );
+    // BOUNDARY THAT STANDS: a span that CLOSED
+    // before the date opens nothing over it —
+    // "[our choir] November 1" beside the
+    // governed sibling is content standing
+    // beside it, not a restatement of it, and
+    // the date asserts as it always has.
+    let line = "(November 1, cancelled) [our choir] November 1";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{line}: a span closed before the date binds nothing"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: nothing else is named"
+    );
+}
+
+#[test]
+fn r26c_second_clause_object_material_names_nothing() {
+    // Round 26 (R26-C, M3 = review R26-8): a
+    // second clause carrying object material,
+    // standing between the claimed date and the
+    // claim's own target phrase, names nothing —
+    // the object material is the claim's own
+    // continuation material, and the target
+    // asserts with an empty note, on every
+    // surface. (The review's witness string was
+    // lost with its report; the shape is pinned
+    // as re-derived from the synthesis's
+    // mechanism description. The direction note
+    // is in the round's shipped addendum: in
+    // every probed family it is the WITHOUT-
+    // object twin whose verb stands directly
+    // before the PP — the pinned R25-B boundary
+    // below — that offers the phantom as an
+    // alternative, and the with-object shape was
+    // inert before this round and stays inert.)
+    for group in [
+        "(moved November 1, the choir sang hymns on Sunday, to November 8)",
+        "(moved November 1, the choir sang hymns on Sunday, baked beans to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the claim's target asserts"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: the second clause names nothing — no phantom"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{group}: keep-through asserts the target"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: keep-through note is empty"
+        );
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named on the relative path"
+        );
+    }
+    // BOUNDARY THAT STANDS (R25-B): the same
+    // clause WITHOUT object material — its verb
+    // standing directly before the PP — keeps
+    // its pinned alternatives; and the standing
+    // composition for a second clause AFTER a
+    // completed claim (its Sunday asserting,
+    // naming the target) is a different shape
+    // and stands, re-pinned in
+    // `r26c_until_targets_and_conjoined_clauses`.
+    let group = "(moved November 1, the choir sang on Sunday, to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: nothing asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(18), nov(8)],
+        "{group}: both dates stay on offer as alternatives"
+    );
+}
+
+#[test]
+fn r25b_claim_scan_passive_uses_shared_slot_walk() {
+    // Round 25 (R25-B, M8 = review R25-6): the
+    // claim scan's zone extension crossed an
+    // unlisted adverb in a passive's slot only
+    // beside a negation (its own bounded walk),
+    // while detection and the passive-for scan
+    // cross one on the shared slot walk — so a
+    // claim written with an unlisted adverb in
+    // its own passive ("it was softly moved to
+    // November 8") lost its zone and read
+    // nothing, where its passive-for twin
+    // asserted. The claim scan now prefers the
+    // shared slot walk's reach whenever that
+    // reach starts nearer the auxiliary. The
+    // three-word death is held by both walks
+    // together, and the pinned claims beside
+    // negations read as they always have.
+    for group in [
+        "(moved November 1, it was softly moved to November 8)",
+        "(moved November 1, it was loudly moved to November 8)",
+        "(moved November 1, it was really softly moved to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the claim's target asserts through its own passive"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: November 1 is named"
+        );
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the relative path agrees"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the relative path names November 1"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{group}: keep-through asserts"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{group}: keep-through names November 1"
+        );
+    }
+    // Held: the three-word slot still kills the
+    // claim (also pinned in the R24-B test).
+    let group = "(moved November 1, it was not really ever moved to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{group}: the three-word slot still kills the claim"
+    );
+}
+
+#[test]
+fn r25b_so_too_slot_vocabulary() {
+    // Round 25 (R25-B, M9 = red team RT25-9):
+    // "so" and "too" are intensifiers of the
+    // same family as the slot's standing "ever/
+    // yet" vocabulary, and every slot walk now
+    // carries them, so the scans stay aligned:
+    // the passive-for complement and detection's
+    // complement cross them, and a claim's own
+    // passive spends through them (M8's shared
+    // walk). The two-word cap stands.
+    for group in [
+        "(it was so gently moved for November 1)",
+        "(it was too loudly moved for November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{group}: the November 1 occasion asserts through the slot"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through");
+    }
+    // The detection twins agree: the clause is
+    // one clause and its target reads alone.
+    for group in [
+        "(moved November 1, the choir was so gently singing to November 8)",
+        "(moved November 1, the choir was too loudly singing to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the clause reads its target"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+    }
+    // A claim's own passive spends through the
+    // new slot words as well.
+    let group = "(moved November 1, it was so gently moved to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{group}: the claim asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{group}: November 1 is named"
+    );
+    // Recorded, NOT fixed (synthesis M9): the
+    // phrasal adverbials would need unit slots,
+    // and the two-word cap is not extended for
+    // them — these keep reading nothing.
+    for group in [
+        "(it was not at all moved for November 1)",
+        "(it was at once moved for November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: phrasal adverbials stay unread, as recorded"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through");
+    }
+}
+
+#[test]
+fn r25b_date_token_edge_garnish() {
+    // Round 25 (R25-B, M2 = red team RT25-6): a
+    // date token wearing sender garnish at its
+    // head or tail — a star, a party emoji, a
+    // bullet — poisoned `parse_date_prefix`, so
+    // a governed first date escaped its governor
+    // and asserted. The parse's edge trim is by
+    // character class now: any character that is
+    // not a letter or a digit (the garnish class
+    // of the token rule) trims at a token's head
+    // and tail, stopping only at the two
+    // parentheses, the system's structural group
+    // delimiters. Every witness reads exactly as
+    // its clean twin reads: nothing.
+    for line in [
+        "*November 1, 2026, cancelled (November 1)",
+        "🎉November 1, 2026, cancelled (November 1)",
+        "•November 1, 2026, cancelled (November 1)",
+        "November 1, 2026, cancelled, November 1, 2026*",
+        // The clean twin and the held standalone
+        // form, re-checked.
+        "November 1, 2026, cancelled (November 1)",
+        "** November 1, 2026, cancelled",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the governed date stays governed, garnish or not"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named on the For Sunday surface"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: keep-through names nothing"
+        );
+    }
+}
+
+#[test]
+fn r25b_bracketed_restatement_bound_by_governance() {
+    // Round 25 (R25-B, M3 = red team RT25-7): a
+    // bracketed restatement standing beside a
+    // group that governs the same value escaped
+    // the whole-line composition — the core's
+    // lone-signal assertion was never bound
+    // against the sibling groups' governed
+    // values — so "(November 1, cancelled)
+    // [November 1]" asserted the governed date
+    // on the group surfaces while the plain
+    // surface read its twin as nothing. A
+    // bracketed BARE restatement of a directly
+    // governed value is now bound in the Assert
+    // arm, in every bracket dress the lane
+    // probed.
+    for line in [
+        "(November 1, cancelled) [November 1]",
+        "(November 1, cancelled) [November 1, 2026]",
+        "(November 1, cancelled) {November 1, 2026}",
+        "(November 1, cancelled) [ November 1 ]",
+        "(November 1, cancelled) [[November 1]]",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the bracketed restatement is bound by the governance"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{line}: keep-through is bound the same"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: keep-through names nothing"
+        );
+    }
+    // Held: the alone-unread limitation stands —
+    // a bracketed date with no governing group
+    // beside it still reads nothing.
+    for line in ["[November 1]", "[choir November 1]"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: alone stays unread");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{line}: keep-through alone stays unread"
+        );
+    }
+    // Held (R24-4): a bracketed GOVERNED group
+    // beside a bracketed assertion still reads
+    // the assertion naming the governed date.
+    let line = "[November 1, cancelled] [November 8]";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{line}: the R24-4 pin stands");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{line}: November 1 is named"
+    );
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(8)),
+        "{line}: keep-through pin stands"
+    );
+    assert_eq!(
+        c.keep_through_second_dates,
+        vec![nov(1)],
+        "{line}: keep-through names November 1"
+    );
+}
+
+#[test]
+fn r25b_digit_tokens_are_not_boundaries() {
+    // Round 25 (R25-B, M4 part 2 = review R25-8):
+    // the boundary test is the R24-4 rule at
+    // every site — a token is a boundary only
+    // when it has no letters AND no digits — so
+    // "#1" and the keycap digit, which carry a
+    // digit, are content, not phantom clause
+    // boundaries. They reach the date parse as
+    // the digit they carry (the R25-B M2 class
+    // trim in `parse_date_prefix`), and every
+    // shape below reads exactly as its plain
+    // digit twin reads, where a true boundary
+    // ("#", "*") reads differently. The ordinal
+    // form is the brief's named witness: the
+    // "1st" no longer swallows the date's span.
+    let group = "(November 1 1st)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{group}: the date asserts past its ordinal"
+    );
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(1)),
+        "{group}: the relative path agrees"
+    );
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)), "{group}: keep-through agrees");
+    // The separator family: a digit-bearing
+    // token between a governor and its date does
+    // not break the governance, on the plain and
+    // group surfaces alike; a true boundary does.
+    for line in [
+        "November 1, 2026, cancelled #1 November 8, 2026",
+        "November 1, 2026, cancelled 1\u{fe0f}\u{20e3} November 8, 2026",
+        "November 1, 2026, cancelled 1 November 8, 2026",
+        "November 1, 2026, cancelled 1st November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the digit token is content — the governance reaches across it"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through agrees");
+    }
+    for group in [
+        "(November 1, cancelled #1 November 8)",
+        "(November 1, cancelled 1\u{fe0f}\u{20e3} November 8)",
+        "(November 1, cancelled 1 November 8)",
+        // The restatement shapes: a digit-bearing
+        // token does not resurrect a governed date.
+        "(November 1, cancelled) (#1 November 1)",
+        "(November 1, cancelled, #1 November 1)",
+        "(November 1, cancelled, 1 November 1)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: no phantom boundary, no resurrection"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through agrees");
+    }
+    // The true boundaries still bound: the date
+    // after "#" asserts, naming the governed one.
+    for line in [
+        "November 1, 2026, cancelled # November 8, 2026",
+        "(November 1, cancelled # November 8)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: a true boundary still ends the governance"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: November 1 is named"
+        );
+    }
+}
+
+#[test]
+fn r24b_relative_phrase_as_subject_pp_object() {
+    // Round 24 (R24-7, review M4 = red team
+    // RT24-4): a relative phrase standing as a
+    // subject-PP object is consumed by the
+    // subject exactly as a framed date object is
+    // (R23-5) — the target asserts (not
+    // alternatives), and the PP object's
+    // resolution is named exactly as the framed
+    // twin's PP object is named. Before this
+    // round the finite forms named the phantom
+    // beside the target anyway, but the
+    // auxiliary forms demoted the target to
+    // alternatives; the whole family now reads
+    // one way.
+    for (group, named) in [
+        (
+            "(moved November 1, the choir from next Sunday sang to November 8)",
+            oct(25),
+        ),
+        (
+            "(moved November 1, the choir from this Sunday sang to November 8)",
+            oct(18),
+        ),
+        (
+            "(moved November 1, the choir on next Sunday sang to November 8)",
+            oct(25),
+        ),
+        (
+            "(moved November 1, the choir after next Sunday sang to November 8)",
+            oct(25),
+        ),
+        (
+            "(moved November 1, the choir from next Sunday in the hall sang to November 8)",
+            oct(25),
+        ),
+        (
+            "(moved November 1, the choir before this Sunday sang to November 8)",
+            oct(18),
+        ),
+        (
+            "(moved November 1, the choir before this Sunday was singing to November 8)",
+            oct(18),
+        ),
+        (
+            "(moved November 1, the choir before this Sunday had sung to November 8)",
+            oct(18),
+        ),
+        (
+            "(moved November 1, the choir before this Sunday was played to November 8)",
+            oct(18),
+        ),
+    ] {
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{group}: the target asserts on the relative path, not alternatives"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![named],
+            "{group}: the PP object's resolution is named, as the framed twin's is"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{group}: paren-only");
+        assert_eq!(c.for_sunday_second_dates, vec![named], "{group}");
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{group}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![named], "{group}");
+    }
+    // The plain twins: the relative PP object no
+    // longer takes first-signal primacy over the
+    // clause's framed date after "on" / "after"
+    // — November 8 asserts and the resolution is
+    // named, exactly as after "from".
+    for (line, named) in [
+        ("the choir from next Sunday sang November 8, 2026", oct(25)),
+        ("the choir on next Sunday sang November 8, 2026", oct(25)),
+        ("the choir after next Sunday sang November 8, 2026", oct(25)),
+        (
+            "the choir before this Sunday was singing to November 8",
+            oct(18),
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+        assert_eq!(c.for_sunday_second_dates, vec![named], "{line}");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through");
+        assert_eq!(c.keep_through_second_dates, vec![named], "{line}");
+    }
+    // Held: the framed twin's pin stands (the
+    // PP's date is named beside the assertion);
+    // the bare-weekday subject PP still consumes
+    // to silence; and a relative phrase with no
+    // subject PP around it — no subject head
+    // before a preposition, no clause verb after
+    // it — keeps its standing primacy reading.
+    let line = "the team after November 1 sang November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{line}: the framed twin stands");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let line = "the choir from Sunday sang November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{line}: the bare weekday is consumed, the lone line stays silent"
+    );
+    let line = "next Sunday sang November 8, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(25)),
+        "{line}: no subject PP — the relative keeps its primacy"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(8)], "{line}");
+}
+
+#[test]
+fn r24b_fence_possessive_determiner() {
+    // Round 24 (R24-8, red team RT24-6 part): a
+    // possessive determiner before the weekday
+    // phrase does not block the lone-framed
+    // fence — "our Sunday bulletins" asserts its
+    // framed date like the bare shape, and the
+    // phrase's head is judged exactly as before
+    // (R24-3): the possessive stands before the
+    // phrase, it is not part of the head test.
+    for line in [
+        "our Sunday bulletins, November 8, 2026",
+        "my Sunday bulletins, November 8, 2026",
+        "their Sunday bulletins, November 8, 2026",
+        "his Sunday bulletins, November 8, 2026",
+        "her Sunday bulletins, November 8, 2026",
+        "your Sunday bulletins, November 8, 2026",
+        "its Sunday bulletins, November 8, 2026",
+        "our Sunday school, November 8, 2026",
+        "our Sunday morning, November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: For Sunday asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: Keep-through asserts");
+    }
+    // Held: the head test is unchanged under a
+    // possessive — an off-garnish head still
+    // silences the line — and conjoined garnish
+    // stays silent (accepted, recorded in the
+    // round-24 synthesis; not changed here).
+    for line in [
+        "our Sunday picnic, November 8, 2026",
+        "Sunday bulletins and Sunday school, November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: For Sunday reads nothing");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: Keep-through reads nothing");
+    }
+}
+
+#[test]
+fn r26a_bare_restatement_spans_do_not_panic() {
+    // Round 26 (R26-A, F1 = red team RT26-1): the
+    // parser PANICKED on a content head + a framed
+    // date + a parenthesized same-date governor
+    // group + a trailing Sunday/date signal. Root
+    // cause (bisected to R25-B, M3):
+    // `core_bracketed_bare_restatement` built its
+    // spans as (date, start, END) — the next
+    // signal's start or the line's length — and
+    // passed them to `occurrence_is_bare`, whose
+    // convention is (date, start, USED); the bare
+    // test placed the occurrence's end at
+    // start + end, past the next occurrence's
+    // start whenever the occurrence did not stand
+    // at token 0, and the after-region slice
+    // inverted ("slice index starts at 6 but ends
+    // at 5"). The spans now carry the signal's own
+    // count, as every other caller passes. The
+    // eleven minimized witnesses read their framed
+    // date (the November 8 witness its own), the
+    // trailing signal named on the note; the five
+    // controls — each ingredient removed — keep
+    // the November 1 readings the lane recorded.
+    for (line, want, second) in [
+        (
+            "service November 1, 2026 (November 1, cancelled) next Sunday",
+            nov(1),
+            vec![oct(25)],
+        ),
+        (
+            "service November 1, 2026 (November 1, cancelled) Sunday",
+            nov(1),
+            vec![oct(18)],
+        ),
+        (
+            "service November 1, 2026 (November 1, cancelled) this Sunday",
+            nov(1),
+            vec![oct(18)],
+        ),
+        (
+            "service November 1, 2026 (November 1, cancelled) November 8",
+            nov(1),
+            vec![nov(8)],
+        ),
+        (
+            "choir November 1, 2026 (November 1, cancelled) Sunday",
+            nov(1),
+            vec![oct(18)],
+        ),
+        (
+            "a November 1, 2026 (November 1, cancelled) Sunday",
+            nov(1),
+            vec![oct(18)],
+        ),
+        (
+            "service November 8, 2026 (November 8, cancelled) Sunday",
+            nov(8),
+            vec![oct(18)],
+        ),
+        (
+            "service November 1, 2026 (cancelled November 1) Sunday",
+            nov(1),
+            vec![oct(18)],
+        ),
+        (
+            "service November 1, 2026 (November 1 cancelled) Sunday",
+            nov(1),
+            vec![oct(18)],
+        ),
+        (
+            "service November 1, 2026 (November 1, postponed) next Sunday",
+            nov(1),
+            vec![oct(25)],
+        ),
+        (
+            "service November 1, 2026 (November 1, moved) next Sunday",
+            nov(1),
+            vec![oct(25)],
+        ),
+        // Controls: each ingredient removed.
+        (
+            "November 1, 2026 (November 1, cancelled) Sunday",
+            nov(1),
+            vec![oct(18)],
+        ),
+        (
+            "service November 1, 2026 (November 1) Sunday",
+            nov(1),
+            vec![oct(18)],
+        ),
+        (
+            "service November 1, 2026 (November 1, cancelled)",
+            nov(1),
+            Vec::new(),
+        ),
+        (
+            "service November 1, 2026 (November 1, cancelled) Monday",
+            nov(1),
+            Vec::new(),
+        ),
+        (
+            "service November 1, 2026 (November 1, cancelled) (next Sunday)",
+            nov(1),
+            Vec::new(),
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{line}: For Sunday reads, no panic");
+        assert_eq!(
+            c.for_sunday_second_dates, second,
+            "{line}: For Sunday names the trailing signal"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(want),
+            "{line}: Keep-through reads, no panic"
+        );
+        assert_eq!(
+            c.keep_through_second_dates, second,
+            "{line}: Keep-through names the trailing signal"
+        );
+    }
+    // Neighbours on the corrected spans (the M3
+    // shapes `core_bracketed_bare_restatement`
+    // exists for; also pinned in
+    // `r25b_bracketed_restatement_bound_by_governance`):
+    // the bracketed restatement of a governed
+    // value stays bound, and a bracketed
+    // assertion beside a bracketed governed group
+    // still asserts, naming the governed date.
+    let line = "(November 1, cancelled) [November 1]";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: the restatement stays bound");
+    let line = "[November 1, cancelled] [November 8]";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{line}: the assertion stands");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{line}: November 1 is named"
+    );
+    // The lane's fuzz-shaped samples of the same
+    // shape (RT26-1): pinned for panic-freedom —
+    // the parse completes; no reading is asserted
+    // for these composite lines.
+    for line in [
+            "(November 1, cancelled) next Sunday, cancelled (November 8) (we will November 1) November 1, 2026",
+            "it was scheduled for November 1, 2026 [November 1] (November 1, cancelled); (November 8)",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let _ = parse_contribution(&text, today()).expect("parses without panicking");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let _ = parse_contribution(&text, today()).expect("parses without panicking");
+        }
+}
+
+#[test]
+fn r26b_spatial_prepositions() {
+    // Round 26 (R26-B, F3 = RT26-2): the spatial-
+    // preposition remainder joins the bare
+    // inventory — 11 words, 22 of 22 lane slots
+    // resurrected, mirrors asserting (bare26x).
+    // Every witness reads nothing on every path;
+    // the mirror held.
+    for word in [
+        "above",
+        "below",
+        "inside",
+        "outside",
+        "beneath",
+        "underneath",
+        "throughout",
+        "opposite",
+        "alongside",
+        "round",
+        "notwithstanding",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // The plain twins, head and trailing.
+        for line in [
+            format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+            format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        for groups in [
+            format!("(November 1, cancelled) ({word} choir November 1)"),
+            format!("(November 1, cancelled) ({word} service November 1)"),
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+    }
+}
+
+#[test]
+fn r26b_phrase_units_ring2() {
+    // Round 26 (R26-B, F4 = RT26-3): the complex-
+    // preposition phrase ring, second turn — the
+    // resurrecting units of the lane's sweep join
+    // BARE_PHRASE_UNITS (51 units in both slots;
+    // "thanks to" head-only, pinned separately
+    // below). Every unit witness reads nothing on
+    // every path, head and trailing alike.
+    for unit in [
+        "in addition to",
+        "in addition",
+        "in accordance with",
+        "in connection with",
+        "in relation to",
+        "with respect to",
+        "in respect to",
+        "in response to",
+        "in reference to",
+        "by means of",
+        "in exchange for",
+        "in place of",
+        "in favor of",
+        "in favour of",
+        "on account of",
+        "by reason of",
+        "as a result of",
+        "in the event of",
+        "due to",
+        "owing to",
+        "prior to",
+        "subsequent to",
+        "contrary to",
+        "as opposed to",
+        "close to",
+        "at best",
+        "at worst",
+        "at first",
+        "at present",
+        "for good",
+        "so far",
+        "up until",
+        "up till",
+        "down to",
+        "day after day",
+        "week by week",
+        "month by month",
+        "year by year",
+        "one at a time",
+        "two by two",
+        "first of all",
+        "last of all",
+        "above all",
+        "in the end",
+        "at the end",
+        "in the meantime",
+        "for the time being",
+        "at the time",
+        "at times",
+        "in good time",
+        "in the long run",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({unit} November 1)"),
+            format!("(November 1, cancelled) (November 1 {unit})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+    }
+    // The plain twins of the lead units (the two
+    // largest composition drivers of the round:
+    // "due to" 979, "in addition to" 950).
+    for line in [
+        "November 1, 2026, cancelled, due to November 1, 2026",
+        "November 1, 2026, cancelled, in addition to November 1, 2026",
+        "November 1, 2026, cancelled, prior to November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 in the end",
+        "November 1, 2026, cancelled, November 1, 2026 on account of",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+    }
+    // Held (the mirror): a content label standing
+    // with a unit still asserts, and a content
+    // word standing INSIDE a unit's span breaks
+    // the partition exactly as for the round-25
+    // units (RT26-11's D5 shape).
+    for groups in [
+        "(November 1, cancelled) (due to choir November 1)",
+        "(November 1, cancelled) (in addition to choir November 1)",
+        "(November 1, cancelled) (prior to service November 1)",
+        "(November 1, cancelled) (in addition to the choir November 1)",
+        "(November 1, cancelled) (due to the choir November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // "thanks to" (F4, head slot only): the unit
+    // matches as a unit in head position, so the
+    // head witness governs on every path. The
+    // trailing witness also governs — it already
+    // did before this batch, word by word
+    // (trailing "thanks" is bare by the R20-3
+    // rule and "to" is bare); the unit changes
+    // nothing there. (Round 27, R27-B / B2:
+    // "thanks" itself joins the bare inventory
+    // as a sign-off single, so the lone-head
+    // reading pinned at the end of this test in
+    // round 26 flips — see the flagged pin
+    // there and the R27-B addendum.)
+    for groups in [
+        "(November 1, cancelled) (thanks to November 1)",
+        "(November 1, cancelled) (November 1 thanks to)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // FLAGGED PIN (R27-B): this assertion stood
+    // in round 26 as "a lone head thanks still
+    // asserts (R20-3)". Round 27's synthesis
+    // (F2 / B2) joins the sign-off singles —
+    // "thank" and "thanks" named in the graded
+    // core — so a lone head "thanks" is now a
+    // bare sign-off fragment and the governed
+    // sibling's reading governs it. The R20-3
+    // adjudication is superseded for this word
+    // by the round-27 disposition.
+    let groups = "(November 1, cancelled) (thanks November 1)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{groups}: a lone head thanks is governed (R27-B, B2)"
+    );
+    // Held: a unit's member standing alone keeps
+    // its reading.
+    for groups in [
+        "(November 1, cancelled) (addition November 1)",
+        "(November 1, cancelled) (accordance November 1)",
+        "(November 1, cancelled) (meantime November 1)",
+        "(November 1, cancelled) (favour November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a lone member still asserts"
+        );
+    }
+}
+
+#[test]
+fn r26b_general_adverb_class() {
+    // Round 26 (R26-B, F5 = RT26-4): the general
+    // adverb class joins the bare inventory — 47
+    // words, 94 of 94 lane slots resurrected
+    // (bare26; bare26x re-verifies "usually" and
+    // "sometimes"). Bare inventory only: the
+    // aux-slot tolerated list is not widened.
+    for word in [
+        "usually",
+        "generally",
+        "typically",
+        "frequently",
+        "sometimes",
+        "sometime",
+        "seldom",
+        "rarely",
+        "daily",
+        "weekly",
+        "monthly",
+        "annually",
+        "lately",
+        "presently",
+        "momentarily",
+        "instantly",
+        "directly",
+        "altogether",
+        "somehow",
+        "henceforth",
+        "forthwith",
+        "heretofore",
+        "thereby",
+        "hereby",
+        "wherein",
+        "thereafter",
+        "somewhere",
+        "anywhere",
+        "everywhere",
+        "nowhere",
+        "indoors",
+        "outdoors",
+        "upstairs",
+        "downstairs",
+        "aboard",
+        "abroad",
+        "ahead",
+        "aside",
+        "apart",
+        "overnight",
+        "underway",
+        "backwards",
+        "forwards",
+        "firstly",
+        "secondly",
+        "thirdly",
+        "lastly",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // The plain twins of the class
+    // representatives.
+    for line in [
+        "November 1, 2026, cancelled, usually November 1, 2026",
+        "November 1, 2026, cancelled, sometimes November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 directly",
+        "November 1, 2026, cancelled, November 1, 2026 somewhere",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+    }
+}
+
+#[test]
+fn r26b_do_paradigm() {
+    // Round 26 (R26-B, F6 = RT26-5): the
+    // do-paradigm joins the auxiliary class for
+    // the bare test — 10 of 10 lane slots
+    // resurrected, and the lane's 736-cell
+    // pronoun × modal/auxiliary matrix
+    // resurrected in exactly the do / does / did
+    // columns (96 cells); every other cell holds
+    // then as now (spot cells pinned below).
+    for word in ["do", "does", "did", "done", "doing"] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror).
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // The matrix's do columns, governed after the
+    // fix (bare26x witnesses first), head and
+    // trailing — and the held cells outside the
+    // do columns, exactly as today.
+    for groups in [
+        "(November 1, cancelled) (we do November 1)",
+        "(November 1, cancelled) (they did November 1)",
+        "(November 1, cancelled) (she does November 1)",
+        "(November 1, cancelled) (one does November 1)",
+        "(November 1, cancelled) (it did November 1)",
+        "(November 1, cancelled) (November 1 we do)",
+        "(November 1, cancelled) (November 1 they did)",
+        "(November 1, cancelled) (we will be November 1)",
+        "(November 1, cancelled) (one is November 1)",
+        "(November 1, cancelled) (they have November 1)",
+        "(November 1, cancelled) (will have November 1)",
+        "(November 1, cancelled) (we are November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: the cell stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{groups}: keep-through cell");
+    }
+    // The plain twins of the lane witnesses.
+    for line in [
+        "November 1, 2026, cancelled, do November 1, 2026",
+        "November 1, 2026, cancelled, did November 1, 2026",
+        "November 1, 2026, cancelled, we do November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+    }
+    // Held (the mirror, with a verb): a pronoun
+    // and do-auxiliary with their verb carry
+    // content and assert.
+    for groups in [
+        "(November 1, cancelled) (we do sing November 1)",
+        "(November 1, cancelled) (they did sing November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: the verb still asserts");
+    }
+}
+
+#[test]
+fn r26b_singletons_and_ago_phrases() {
+    // Round 26 (R26-B, F7 in part = RT26-6): the
+    // six recorded singleton words join the
+    // inventory — the lane's pairs resurrected
+    // 60 of 60 and triples 120 of 120; pairs and
+    // triples now partition word by word
+    // (representatives pinned). The "… ago"
+    // family (22 of 22 lane slots) partitions
+    // through M5's number / time words and the
+    // "long time ago" / "bit ago" phrase units.
+    for word in ["ago", "out", "up", "down", "away", "home"] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror).
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // Representative pairs and triples, head and
+    // trailing (the lane's bare26x witnesses
+    // first).
+    for groups in [
+        "(November 1, cancelled) (ago out November 1)",
+        "(November 1, cancelled) (up away November 1)",
+        "(November 1, cancelled) (home away November 1)",
+        "(November 1, cancelled) (out down November 1)",
+        "(November 1, cancelled) (November 1 ago out)",
+        "(November 1, cancelled) (November 1 up away)",
+        "(November 1, cancelled) (up down away November 1)",
+        "(November 1, cancelled) (ago out home November 1)",
+        "(November 1, cancelled) (November 1 up down away)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: the combination stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{groups}: keep-through combination");
+    }
+    // The time-unit words M5 adds for the ago
+    // phrases, each pinned on its own.
+    for word in [
+        "day", "days", "week", "weeks", "month", "months", "year", "years", "hour", "hours", "time",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // The "… ago" phrase family beside a
+    // cancelled sibling, head and trailing.
+    for phrase in [
+        "two days ago",
+        "three days ago",
+        "four hours ago",
+        "a week ago",
+        "a day ago",
+        "long time ago",
+        "a long time ago",
+        "years ago",
+        "months ago",
+        "weeks ago",
+        "days ago",
+        "hours ago",
+        "a while ago",
+        "a bit ago",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({phrase} November 1)"),
+            format!("(November 1, cancelled) (November 1 {phrase})"),
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+    }
+    // The plain twin of the lead ago witness.
+    let line = "November 1, 2026, cancelled, two days ago November 1, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+    // Held before this batch and still held:
+    // "away from home" / "working from home"
+    // govern by from-governance.
+    for groups in [
+        "(November 1, cancelled) (away from home November 1)",
+        "(November 1, cancelled) (working from home November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: from-governance holds");
+    }
+    // Recorded, NOT fixed (coordinator
+    // adjudication on RT26-6): the verb + home
+    // family is a content clause fragment — the
+    // phrases do NOT join, and these shapes still
+    // assert, as the lane recorded.
+    for groups in [
+        "(November 1, cancelled) (come home November 1)",
+        "(November 1, cancelled) (went home November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: verb + home still asserts (recorded, not fixed)"
+        );
+    }
+}
+
+#[test]
+fn r26b_reflexives_and_nor() {
+    // Round 26 (R26-B, M4 = RT26-8): the reflexive
+    // remainder and "nor" join — 14 of 28 lane
+    // slots resurrected for the reflexives, 2 of
+    // 2 for "nor"; the shipped reflexives
+    // (himself / herself / itself / themselves)
+    // already held and are not duplicated.
+    for word in [
+        "myself",
+        "yourself",
+        "ourselves",
+        "yourselves",
+        "oneself",
+        "whatsoever",
+        "whosoever",
+        "nor",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror).
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+}
+
+#[test]
+fn r26b_quantifier_number_remainder() {
+    // Round 26 (R26-B, M5 = RT26-9): the
+    // quantifier / determiner remainder and the
+    // number / ordinal words join, both slots
+    // (bare26x re-verifies "various" and "first").
+    // The number words also serve F7's ago
+    // phrases (pinned in
+    // `r26b_singletons_and_ago_phrases`).
+    for word in [
+        "plenty",
+        "various",
+        "numerous",
+        "countless",
+        "fewer",
+        "lots",
+        "lot",
+        "first",
+        "second",
+        "third",
+        "two",
+        "three",
+        "four",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror).
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // The plain twins.
+    for line in [
+        "November 1, 2026, cancelled, various November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 first",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+    }
+}
+
+#[test]
+fn r26b_determiner_adjectives() {
+    // Round 26 (R26-B, M6 = RT26-10): the
+    // determiner-adjectives join — 24 of 24 lane
+    // slots resurrected, mirrors asserting.
+    for word in [
+        "whole",
+        "entire",
+        "certain",
+        "particular",
+        "specific",
+        "additional",
+        "extra",
+        "further",
+        "single",
+        "sole",
+        "half",
+        "double",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror): "(whole choir
+        // November 1)" and kin still assert.
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+}
+
+#[test]
+fn r26b_claim_zone_spot_checks() {
+    // Round 26 (R26-B): the bare test governs
+    // restatement regions only — a real claim
+    // wearing a new inventory word still claims.
+    // The control is the over-consumption hunt's
+    // named family (RT26-3 Held): "given the
+    // choir moved …" asserts November 8 naming
+    // November 1; the worn variant wears M6's
+    // "whole" inside the claim's subject.
+    for line in [
+        "given the choir moved November 1, 2026 to November 8, 2026",
+        "given the whole choir moved November 1, 2026 to November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the claim asserts its target"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: the claim names its source date"
+        );
+    }
+    // A group claim wearing F3's "round" as the
+    // preposition of its object continuation and
+    // M6's "whole" inside its subject: the claim
+    // still asserts its target (the standing
+    // "(moved November 1, choir sang to
+    // November 8)" reading asserts November 8;
+    // its governed source is not named on this
+    // surface, as the control shows).
+    for groups in [
+        "(moved November 1, choir sang to November 8)",
+        "(moved November 1, the whole choir sang to November 8)",
+        "(moved November 1, choir sang hymns round the hall to November 8)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{groups}: the claim asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{groups}: the governed source is not named"
+        );
+    }
+}
+
+#[test]
+fn r27b_time_companions() {
+    // Round 27 (R27-B, B1 = RT27-B1): the time-
+    // companion class joins the bare inventory —
+    // 32 words, 64 of 64 lane slots resurrected,
+    // mirrors asserting (bare27), plus the rest
+    // sweep's five strong singles. Every witness
+    // reads nothing on every path; the mirror
+    // held.
+    for word in [
+        "noon",
+        "midnight",
+        "tonight",
+        "morning",
+        "afternoon",
+        "evening",
+        "night",
+        "weekend",
+        "dawn",
+        "dusk",
+        "sunrise",
+        "sunset",
+        "daytime",
+        "nighttime",
+        "weekday",
+        "minute",
+        "moment",
+        "lunchtime",
+        "bedtime",
+        "daybreak",
+        "nightfall",
+        "twilight",
+        "mealtime",
+        "teatime",
+        "suppertime",
+        "dinnertime",
+        "spring",
+        "summer",
+        "autumn",
+        "fall",
+        "winter",
+        "season",
+        "midday",
+        "midweek",
+        "nightly",
+        "hourly",
+        "yearly",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // The plain twins, head and trailing.
+        for line in [
+            format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+            format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        for groups in [
+            format!("(November 1, cancelled) ({word} choir November 1)"),
+            format!("(November 1, cancelled) ({word} service November 1)"),
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+    }
+    // The phrase ring: the swept units read
+    // nothing in both slots — most partition
+    // word by word once the bare words join;
+    // "after lunch" stands as a listed unit.
+    // "coming sunday" is NOT a listed unit:
+    // "coming" joins the bare words under the
+    // coordinator adjudication recorded
+    // below, so the phrase partitions word by
+    // word and its reading is pinned there.
+    for unit in [
+        "at noon",
+        "at midnight",
+        "by noon",
+        "by midnight",
+        "before noon",
+        "at night",
+        "tomorrow morning",
+        "tomorrow night",
+        "tomorrow evening",
+        "tomorrow afternoon",
+        "this morning",
+        "this evening",
+        "this afternoon",
+        "last night",
+        "last week",
+        "in the morning",
+        "in the evening",
+        "in the afternoon",
+        "tonight only",
+        "after lunch",
+        "previous sunday",
+        "last sunday",
+        "every night",
+        "every morning",
+        "every evening",
+        "all night",
+        "sunday noon",
+        "sunday morning",
+        "sunday evening",
+        "sunday night",
+        "monday morning",
+        "every sunday morning",
+        "noon today",
+        "midnight tonight",
+        "tomorrow noon",
+        "after noon",
+        "for tonight",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({unit} November 1)"),
+            format!("(November 1, cancelled) (November 1 {unit})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror): a content label
+        // standing with the unit still asserts.
+        let groups = format!("(November 1, cancelled) ({unit} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // COORDINATOR ADJUDICATION (R27-B,
+    // recorded in the round-27 close —
+    // binding, cited loudly): the B1 pair
+    // sweep listed the PAIR "coming sunday"
+    // as resurrecting under a FIX
+    // disposition, not the lone word. The
+    // phrase-unit mechanism provably cannot
+    // reach the head-slot shape (probed with
+    // the unit listed: the head group still
+    // asserted on every surface, because
+    // "coming sunday" is itself a relative
+    // date phrase in the machinery and
+    // "coming" can stand alone in a
+    // weekday-framed date's region). The
+    // adjudication therefore amends R27-B's
+    // membership sourcing for this one
+    // word: "coming" joins the BARE words,
+    // the "&["coming", "sunday"]" unit is
+    // removed (BARE_PHRASE_UNITS 166), and
+    // the pair partitions word by word. The
+    // governed pins below replace the
+    // superseded STOP ITEM pins that
+    // recorded the unit's split reading.
+    // The weekday-framed witness pinned
+    // here is exactly the group "(coming
+    // Sunday, November 1)": "Sunday, November
+    // 1" is the framed date, and "coming"
+    // stands alone in that date's
+    // before-region apart from the framing
+    // weekday — the shape the unit could
+    // not reach (probed in this batch; the
+    // group reads governed on all three
+    // surfaces).
+    for groups in [
+        "(November 1, cancelled) (coming sunday November 1)",
+        "(November 1, cancelled) (November 1 coming sunday)",
+        "(November 1, cancelled) (coming November 1)",
+        "(November 1, cancelled) (November 1 coming)",
+        "(November 1, cancelled) (coming Sunday, November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed (adjudication)"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{groups}: paren-only stays governed (adjudication)"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed (adjudication)"
+        );
+    }
+    // The plain twins of "coming" standing
+    // alone, head and trailing: governed,
+    // as every bare word's plain twins are.
+    for line in [
+        "November 1, 2026, cancelled, coming November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 coming",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: plain twin stays governed (adjudication)"
+        );
+    }
+    // Held (the mirror): a content label
+    // standing with the pair still asserts.
+    {
+        let groups = "(November 1, cancelled) (coming sunday choir November 1)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // The plain twins of the PAIR, recorded
+    // as the machinery actually reads them
+    // (probed in this batch): on the plain
+    // surface a weekday-bearing phrase is a
+    // relative signal, not a bare
+    // restatement — the same standing
+    // reading as the shipped "last sunday" /
+    // "previous sunday" phrases, whose B1
+    // ring pins above carry no plain twins
+    // for exactly this reason. The head
+    // plain twin asserts its November 1
+    // date; the trailing plain twin asserts
+    // October 18, the coming Sunday's own
+    // resolution. The bare test governs
+    // the groups; it does not rewrite the
+    // plain relative-signal machinery.
+    for (line, want) in [
+        (
+            "November 1, 2026, cancelled, coming sunday November 1, 2026",
+            nov(1),
+        ),
+        (
+            "November 1, 2026, cancelled, November 1, 2026 coming sunday",
+            oct(18),
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(want),
+            "{line}: plain weekday-phrase twin keeps its relative reading"
+        );
+    }
+    // Not joining (recorded, binding): the
+    // timeword tail and the event-label nouns
+    // swept in the same class still assert.
+    for groups in [
+        "(November 1, cancelled) (eve November 1)",
+        "(November 1, cancelled) (morn November 1)",
+        "(November 1, cancelled) (fortnight November 1)",
+        "(November 1, cancelled) (century November 1)",
+        "(November 1, cancelled) (o'clock November 1)",
+        "(November 1, cancelled) (pm November 1)",
+        "(November 1, cancelled) (holiday November 1)",
+        "(November 1, cancelled) (christmas November 1)",
+        "(November 1, cancelled) (lunch November 1)",
+        "(November 1, cancelled) (dinner November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a recorded non-member still asserts"
+        );
+    }
+}
+
+#[test]
+fn r27b_signoff_fragments() {
+    // Round 27 (R27-B, B2 = RT27-B2): the
+    // sign-off singles of the graded core join
+    // the bare inventory (17 words; the class
+    // resurrected 75 of 98 lane slots, mirrors
+    // asserting) and the core's pairs join —
+    // word by word where the singles partition
+    // them, as listed units where they do not
+    // (44 of 62 pair slots).
+    for word in [
+        "sincerely",
+        "regards",
+        "faithfully",
+        "cordially",
+        "warmly",
+        "kindly",
+        "respectfully",
+        "gratefully",
+        "cheerfully",
+        "prayerfully",
+        "farewell",
+        "goodbye",
+        "goodnight",
+        "wishes",
+        "best",
+        "thank",
+        "thanks",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    for unit in [
+        "kind regards",
+        "best regards",
+        "warm regards",
+        "sincerely yours",
+        "yours faithfully",
+        "thank you",
+        "thanks again",
+        "many thanks",
+        "with thanks",
+        "god bless",
+        "bless you",
+        "see you",
+        "see you sunday",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({unit} November 1)"),
+            format!("(November 1, cancelled) (November 1 {unit})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror): a content label
+        // standing with the unit still asserts.
+        let groups = format!("(November 1, cancelled) ({unit} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // Not joining (recorded, binding): the
+    // abstract tail and the recorded letter
+    // tail still assert.
+    for groups in [
+        "(November 1, cancelled) (grace November 1)",
+        "(November 1, cancelled) (mercy November 1)",
+        "(November 1, cancelled) (faith November 1)",
+        "(November 1, cancelled) (hope November 1)",
+        "(November 1, cancelled) (joy November 1)",
+        "(November 1, cancelled) (good morning November 1)",
+        "(November 1, cancelled) (dear friend November 1)",
+        "(November 1, cancelled) (with love November 1)",
+        "(November 1, cancelled) (in prayer November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a recorded non-member still asserts"
+        );
+    }
+    // Partition correction (R27-B): "your
+    // pastor", listed in the recorded letter
+    // tail above, is not pinned as standing —
+    // it partitions word by word once B3 joins
+    // "pastor" ("your" was already bare), so it
+    // reads governed in both slots even though
+    // no unit joins for it. The correction is
+    // recorded in the R27-B report.
+    for groups in [
+        "(November 1, cancelled) (your pastor November 1)",
+        "(November 1, cancelled) (November 1 your pastor)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{groups}: partitions word by word and stays governed"
+        );
+    }
+}
+
+#[test]
+fn r27b_lone_titles() {
+    // Round 27 (R27-B, B3 = RT27-B3): the lone
+    // title words join the bare inventory — 46
+    // words, 92 of 106 lane slots resurrected,
+    // mirrors asserting (bare27).
+    for word in [
+        "pastor",
+        "reverend",
+        "father",
+        "brother",
+        "sister",
+        "deacon",
+        "elder",
+        "bishop",
+        "chaplain",
+        "rabbi",
+        "priest",
+        "minister",
+        "missionary",
+        "professor",
+        "doctor",
+        "captain",
+        "major",
+        "colonel",
+        "general",
+        "sir",
+        "madam",
+        "madame",
+        "lord",
+        "lady",
+        "king",
+        "queen",
+        "prince",
+        "princess",
+        "saint",
+        "pope",
+        "president",
+        "chairman",
+        "secretary",
+        "treasurer",
+        "director",
+        "manager",
+        "coach",
+        "teacher",
+        "nurse",
+        "officer",
+        "judge",
+        "mayor",
+        "senator",
+        "miss",
+        "hon",
+        "esq",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // The plain twins, head and trailing.
+        for line in [
+            format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+            format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // Not joining (binding split disposition):
+    // title + name pairs do NOT join as units —
+    // a named person is the corpus's canonical
+    // content label, and the pair asserting is
+    // the accepted mirror direction.
+    for groups in [
+        "(November 1, cancelled) (pastor lee November 1)",
+        "(November 1, cancelled) (pastor johnson November 1)",
+        "(November 1, cancelled) (dr lee November 1)",
+        "(November 1, cancelled) (mr lee November 1)",
+        "(November 1, cancelled) (rev lee November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a title + name pair still asserts"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{groups}: keep-through still asserts"
+        );
+    }
+}
+
+#[test]
+fn r27b_direction_set() {
+    // Round 27 (R27-B, B4 = RT27-B4): the
+    // direction set joins the bare inventory —
+    // 11 words (the address ring resurrected 98
+    // of 100 lane slots; the direction members
+    // are the ones that cannot head an event).
+    for word in [
+        "north",
+        "south",
+        "east",
+        "west",
+        "northeast",
+        "northwest",
+        "southeast",
+        "southwest",
+        "uptown",
+        "downtown",
+        "midtown",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // Not joining (recorded, binding): the
+    // street/place remainder still asserts,
+    // including the pair sweep's shipped-form
+    // phrases that do not partition under
+    // B6's phrase disposition.
+    for groups in [
+        "(November 1, cancelled) (church November 1)",
+        "(November 1, cancelled) (street November 1)",
+        "(November 1, cancelled) (hall November 1)",
+        "(November 1, cancelled) (school November 1)",
+        "(November 1, cancelled) (main street November 1)",
+        "(November 1, cancelled) (in town November 1)",
+        "(November 1, cancelled) (north side November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: a place-noun fragment still asserts"
+        );
+    }
+}
+
+#[test]
+fn r27b_number_paradigm_remainder() {
+    // Round 27 (R27-B, B5 = RT27-B5): the
+    // number paradigm remainder joins to its
+    // end — ordinals fourth…hundredth + last /
+    // previous / preceding / thrice / triple /
+    // quarter (54 of 68 lane slots) and
+    // cardinals five…million + dozen / zero
+    // (56 of 58 lane slots), mirrors asserting.
+    for word in [
+        "fourth",
+        "fifth",
+        "sixth",
+        "seventh",
+        "eighth",
+        "ninth",
+        "tenth",
+        "eleventh",
+        "twelfth",
+        "thirteenth",
+        "fourteenth",
+        "fifteenth",
+        "sixteenth",
+        "seventeenth",
+        "eighteenth",
+        "nineteenth",
+        "twentieth",
+        "thirtieth",
+        "fortieth",
+        "fiftieth",
+        "hundredth",
+        "last",
+        "previous",
+        "preceding",
+        "thrice",
+        "triple",
+        "quarter",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+        "thirty",
+        "forty",
+        "fifty",
+        "sixty",
+        "seventy",
+        "eighty",
+        "ninety",
+        "hundred",
+        "thousand",
+        "million",
+        "dozen",
+        "zero",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // The plain twins, head and trailing.
+        for line in [
+            format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+            format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+}
+
+#[test]
+fn r27b_closed_tails() {
+    // Round 27 (R27-B, B6 = RT27-B6): the
+    // closed tails join — the pronoun tail
+    // (10 of 98 lane slots; the shipped matrix
+    // held behind it) and the connective /
+    // phrase tail (88 of 174 lane slots),
+    // mirrors asserting.
+    for word in ["noone", "anymore", "anyways", "elsewhere"] {
+        for groups in [
+            format!("(November 1, cancelled) ({word} November 1)"),
+            format!("(November 1, cancelled) (November 1 {word})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror): a content label
+        // standing with the word still asserts.
+        let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    for unit in [
+        "anyone else",
+        "sooner than",
+        "other words",
+        "other hand",
+        "last time",
+        "fourth time",
+        "long time",
+        "short time",
+        "part of",
+        "rest of",
+        "end of",
+        "top of",
+        "back of",
+        "front of",
+        "side of",
+        "middle of",
+        "bottom of",
+        "on top",
+        "at top",
+        "in front",
+        "in back",
+        "at church",
+        "at school",
+        "at work",
+        "at rest",
+        "at peace",
+        "in peace",
+        "in love",
+        "in faith",
+        "in hope",
+        "in grace",
+        "by faith",
+        "by grace",
+        "by heart",
+        "by hand",
+        "by mail",
+        "by phone",
+        "by email",
+        "by name",
+        "by night",
+        "for christmas",
+        "for easter",
+        "at christmas",
+        "at easter",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) ({unit} November 1)"),
+            format!("(November 1, cancelled) (November 1 {unit})"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // Held (the mirror): a content label
+        // standing with the unit still asserts.
+        let groups = format!("(November 1, cancelled) ({unit} choir November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // Not joining (recorded, binding): a
+    // phrase unit's event-label member standing
+    // alone keeps its reading — "(christmas
+    // November 1)" is an event label and still
+    // asserts.
+    for groups in [
+        "(November 1, cancelled) (christmas November 1)",
+        "(November 1, cancelled) (easter November 1)",
+        "(November 1, cancelled) (potluck November 1)",
+        "(November 1, cancelled) (meeting November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: an event label still asserts"
+        );
+    }
+}
+
+#[test]
+fn r27b_above_all_else() {
+    // Round 27 (R27-B): "above all else" joins
+    // as a phrase unit — M7's first plausible
+    // member, a one-word extension of the
+    // shipped "above all"; the synthesis amends
+    // M7's disposition accordingly. M7's
+    // remaining merged forms stay recorded.
+    for groups in [
+        "(November 1, cancelled) (above all else November 1)",
+        "(November 1, cancelled) (November 1 above all else)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // The plain twins, head and trailing.
+    for line in [
+        "November 1, 2026, cancelled, above all else November 1, 2026",
+        "November 1, 2026, cancelled, November 1, 2026 above all else",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+    }
+    // Held (the mirror): a content label
+    // standing with the unit still asserts, and
+    // the unit's last member standing alone
+    // keeps its reading.
+    for groups in [
+        "(November 1, cancelled) (above all else choir November 1)",
+        "(November 1, cancelled) (else November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
+    }
+    // Standing (recorded, NOT fixed): one of
+    // the sweep's other two resurrecting
+    // overlaps, "come home tomorrow", is the
+    // R26-B verb + home family — it does not
+    // join here, and the shape still asserts in
+    // both slots, as the lane recorded.
+    for groups in [
+        "(November 1, cancelled) (come home tomorrow November 1)",
+        "(November 1, cancelled) (November 1 come home tomorrow)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: verb + home still asserts (recorded, not fixed)"
+        );
+    }
+    // Partition correction (R27-B): the other
+    // overlap, "gone home tomorrow night", no
+    // longer resurrects once this batch lands —
+    // "gone home" is a shipped unit, "tomorrow"
+    // was already bare, and B1 joins "night",
+    // so the whole form partitions word by
+    // word and reads governed in both slots.
+    // The lane's recorded reading predates B1;
+    // the correction is recorded in the R27-B
+    // report.
+    for groups in [
+        "(November 1, cancelled) (gone home tomorrow night November 1)",
+        "(November 1, cancelled) (November 1 gone home tomorrow night)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{groups}: partitions word by word and stays governed"
+        );
+    }
+}
+
+#[test]
+fn r27c_segment_head_governance_plain_segments() {
+    // Round 27 (R27-C, F4 = red team RT27-C1):
+    // a trailing bare negated date across a
+    // `*` / `|` segment boundary did not govern
+    // — the separator glued to the governor
+    // word ("*not", "|never") cleaned to a word
+    // no governor family knows, so the negated
+    // date asserted, in the worst witness
+    // undoing an expressly cancelled core. A
+    // governor word standing at a segment head
+    // now governs with its segment, glued
+    // separator or not (`segment_tokens`), and
+    // every witness reads as its spaced twin.
+    for line in [
+        // The lane's witnesses verbatim.
+        "(back together November 1) *not November 1, 2026",
+        "(please) (while November 1) |not November 1, 2026",
+        "(November 1; cancelled) (while November 1) |not November 1, 2026",
+        // The worst witness: the trailing
+        // fragment's date is the expressly
+        // cancelled core's own date, and the
+        // cancelled core stays cancelled.
+        "November 1, 2026, cancelled (while November 1) |not November 1, 2026",
+        // The sized family: `*not` / `|no` /
+        // `|never`, in both separator and
+        // negation pairings, and the doubled
+        // separator.
+        "(back together November 1) *no November 1, 2026",
+        "(back together November 1) |not November 1, 2026",
+        "(back together November 1) *never November 1, 2026",
+        "(while November 1) |no November 1, 2026",
+        "(while November 1) |never November 1, 2026",
+        "(back together November 1) **not November 1, 2026",
+        // Phrasal heads govern whole: the head
+        // word alone is no governor, its phrase
+        // is.
+        "(back together November 1) *no longer November 1, 2026",
+        "(back together November 1) |hold off November 1, 2026",
+        // The rule is the governor word's, not
+        // the negation's alone: a cancellation
+        // or displacement word at the same
+        // head governs the same way.
+        "(back together November 1) *cancelled November 1, 2026",
+        "(back together November 1) *moved November 1, 2026",
+        // A glued head governs its own segment's
+        // date, not only a restated core date.
+        "November 1, 2026, cancelled (while November 1) |not November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the glued head governs");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: keep-through note is empty"
+        );
+    }
+}
+
+#[test]
+fn r27c_segment_head_governance_groups() {
+    // Round 27 (R27-C, F4): the same rule at a
+    // group's own segment heads — a group
+    // opening on a glued governor, a segment
+    // inside a group after its comma, and a
+    // trailing cancellation glued inside its
+    // group — on the established three
+    // surfaces.
+    for groups in [
+        "(November 1, cancelled) (*not November 1)",
+        "(November 1, cancelled) (|no November 1)",
+        "(November 1, cancelled) (|never November 1)",
+        "(November 1, cancelled) (**not November 1)",
+        "(*not November 1) (back together November 1)",
+        "(November 1, cancelled) (*cancelled November 1)",
+        "(November 1, cancelled) (November 1, *cancelled)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path stays governed"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed"
+        );
+    }
+    // A glued head governs only its own
+    // segment's date: the group's other date
+    // asserts clean, exactly as the spaced
+    // twin's does.
+    for groups in [
+        "(November 1, *not November 8)",
+        "(November 1, |never November 8)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{groups}: November 1 asserts on the relative path"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: November 1 asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{groups}: the governed date is not named"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{groups}: keep-through asserts November 1"
+        );
+    }
+    // A glued displacement head is visible to
+    // the target machinery too: the claim
+    // asserts its target and names its
+    // from-date, as the spaced twin does.
+    let groups = "(November 1, *moved to November 8)";
+    let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(8)),
+        "{groups}: the target asserts on the relative path"
+    );
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{groups}: the target asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "{groups}: the from-date is named"
+    );
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(8)),
+        "{groups}: keep-through target"
+    );
+    assert_eq!(
+        c.keep_through_second_dates,
+        vec![nov(1)],
+        "{groups}: keep-through names the from-date"
+    );
+}
+
+#[test]
+fn r27c_segment_head_boundaries_stand() {
+    // Round 27 (R27-C, F4): the boundaries the
+    // disposition names as standing, re-asserted
+    // beside the fix — a leading negation
+    // governs, and a trailing cancelled segment
+    // governs backward across the same `*` /
+    // `|` boundaries — together with the
+    // spaced twins of the glued witnesses and
+    // the governor-scoping guard.
+    for line in [
+        // Leading negation governs (standing).
+        "not November 1, 2026 (back together November 1)",
+        "no November 1, 2026 (back together November 1)",
+        "never November 1, 2026 (back together November 1)",
+        // The leading position is a segment
+        // head too: its glued form now reads
+        // as the standing form above does.
+        "*not November 1, 2026 (back together November 1)",
+        // Trailing cancelled governs backward
+        // (standing), separator spaced or the
+        // cancellation standing after the
+        // date it governs.
+        "(back together November 1) * November 1, 2026, cancelled",
+        "(while November 1) |November 1, 2026, cancelled",
+        "(back together November 1) *not November 1, 2026, cancelled",
+        // Across a comma, a dash, or bare
+        // spaces the same trailing negation
+        // has always governed (standing).
+        "(back together November 1), not November 1, 2026",
+        "(back together November 1) not November 1, 2026",
+        "(back together November 1) - not November 1, 2026",
+        // The spaced twins of the glued
+        // witnesses (standing).
+        "(back together November 1) * not November 1, 2026",
+        "(back together November 1) | not November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the boundary reading stands");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through stands");
+    }
+    // Held (the governor-scoping guard): a
+    // glued head that heads no governor phrase
+    // is not unglued — a glued content word and
+    // a glued date word keep their standing
+    // readings, on the plain and group
+    // surfaces alike.
+    for line in [
+        "(back together November 1) *choir November 1, 2026",
+        "(back together November 1) *November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: a non-governor head still asserts"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{line}: keep-through still asserts"
+        );
+    }
+    let groups = "(November 1, cancelled) (*choir November 1)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{groups}: content asserts beside a sibling cancellation"
+    );
+}
+
+#[test]
+fn r28a_ungluing_is_a_token_property() {
+    // Round 28 (R28-A, F1 = review MAJOR-1 +
+    // red team §1): ungluing is a property of
+    // the token, not of the phrase head — a
+    // `*` / `|` glued to ANY word of a governor
+    // phrase is the separator plus that word,
+    // so governor phrases are judged on the
+    // unglued token vector at every phrase
+    // position (`segment_tokens`). Every line
+    // below reads as its spaced twin: nothing
+    // asserts, nothing is named.
+    for line in [
+        // All words glued.
+        "(back together November 1) *hold *off November 1, 2026",
+        "(back together November 1) *instead *of November 1, 2026",
+        "(November 1, cancelled) (*hold *off November 1)",
+        // The worst witness: an expressly
+        // cancelled core stays cancelled behind
+        // a fully glued trailing phrase.
+        "November 1, 2026, cancelled (while November 1) *used *to *be November 1, 2026",
+        // Second/third-word glue.
+        "(back together November 1) hold *off November 1, 2026",
+        "(November 1, cancelled) (put *off November 1)",
+        "(November 1, cancelled) (put *back November 1)",
+        "(November 1, cancelled) (call *off November 1)",
+        "(back together November 1) used *to be November 1, 2026",
+        "(back together November 1) used to *be November 1, 2026",
+        "(November 1, cancelled) (instead *of November 1)",
+        "(November 1, cancelled) (rather *than November 1)",
+        "(November 1, cancelled) (old *date November 1)",
+        // A glued bare-unit word: the unit is
+        // judged on the unglued vector too.
+        "(back *together November 1) not November 1, 2026",
+        // Glued `off` alone in group/trailing
+        // positions reaches the spaced reading.
+        "(November 1, cancelled) (*off November 1)",
+        // The glued walk words inside walk
+        // lines read as the spaced readings.
+        "(moved November 1, beans were not served *on Sunday from Kent to November 8)",
+        "(moved November 1, beans were not served on Sunday from Kent *to November 8)",
+        "(moved November 1, beans *were served on Sunday from Kent to November 8)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the glued form reads as its spaced twin"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through twin");
+        assert_eq!(
+            c.keep_through_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: keep-through note is empty"
+        );
+    }
+    // The trailing glued `off` beside a
+    // cancellation: both dates are named,
+    // neither asserts.
+    let groups = "(November 1, cancelled) (November 1, *off November 8)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{groups}: nothing asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1), nov(8)],
+        "{groups}: both dates are named governed"
+    );
+}
+
+#[test]
+fn r28a_ungluing_relative_surface() {
+    // Round 28 (R28-A, F1): the REL-path
+    // phrasal divergence is routed through the
+    // same ungluing — the relative-shape
+    // readers read the trailing segment through
+    // `segment_tokens`, so a fully glued
+    // cancellation phrase in the trailing
+    // fragment governs on the relative surface
+    // exactly as its spaced twin does.
+    for line in [
+        "(back together November 1) *never *mind November 1, 2026",
+        "(back together November 1) *cancel *it November 1, 2026",
+        "(back together November 1) *drop *it November 1, 2026",
+        "(back together November 1) *scratch *that November 1, 2026",
+        "(back together November 1) *forget *about November 1, 2026",
+    ] {
+        let text = format!("For Sunday: next Sunday {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the glued phrase governs on the REL surface"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{line}: no parenthesized date is remembered"
+        );
+    }
+}
+
+#[test]
+fn r28a_nothing_tokens_at_positional_readers() {
+    // Round 28 (R28-A, F2 = review MAJOR-1 /
+    // MINOR-1 / MINOR-2): a nothing-token is
+    // nothing at positional readers too —
+    // trailing-arm walk-backs, forward
+    // destination crossings, `use` adjacency,
+    // and phrase slices all skip it, and every
+    // line reads as its clean twin.
+    for (line, want, named) in [
+            // (1) The trailing-arm re-judgment:
+            // the claim-"to" walk-back and the
+            // run-start adjacency skip nothings.
+            (
+                "(moved November 1, baked beans from Kent until \u{200b} November 8 on Sunday)",
+                None,
+                Vec::new(),
+            ),
+            (
+                "(moved November 1, baked beans from Kent until November 8 \u{200b} on Sunday)",
+                None,
+                Vec::new(),
+            ),
+            // The two-PP variant: the claimed date
+            // asserts, the phantom Sunday is named
+            // nowhere.
+            (
+                "(moved November 1, baked beans to November 8 \u{200b} on Sunday on Sunday)",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            // (2) The forward destination crossing:
+            // the place-NP noun run skips nothings.
+            (
+                "(moved November 1, baked beans on Sunday from Kent to the hall \u{200b} to November 8)",
+                None,
+                Vec::new(),
+            ),
+            // (3) `use` adjacency, in a group and on
+            // a plain line alike.
+            (
+                "(it was moved for November 1, use \u{200b} November 8)",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            (
+                "it was moved for November 1, use \u{200b} November 8",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            // (4) Phrase slices count words: a
+            // three-word governor phrase with an
+            // interior nothing matches.
+            ("(used \u{200b} to be November 1)", None, Vec::new()),
+            ("(used to \u{200b} be November 1)", None, Vec::new()),
+            (
+                "(back together November 1) *used \u{200b} to be November 1, 2026",
+                None,
+                Vec::new(),
+            ),
+            // The `was` + Cf + participle silence:
+            // the one-word "was" narrowing judges
+            // the word-count slice, so the target
+            // asserts as its clean twin's does.
+            (
+                "(moved November 1, the choir was \u{200b} singing hymns on Sunday to November 8)",
+                Some(nov(8)),
+                Vec::new(),
+            ),
+            // The same narrowing, forward: a bare
+            // "was" with a participle after the
+            // nothing keeps its past-marker
+            // governance of nothing — the date it
+            // names asserts, as the clean twin's
+            // does.
+            ("(was \u{200b} singing November 1)", Some(nov(1)), Vec::new()),
+            // The Sunday-after base scan starts on
+            // the first token that is something.
+            ("the Sunday after \u{200b} November 1, 2026", Some(nov(8)), Vec::new()),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, want, "{line}: reads as its clean twin");
+            assert_eq!(c.for_sunday_second_dates, named, "{line}: the note matches the twin");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, want, "{line}: keep-through twin");
+        }
+    // MINOR-2: a trailing nothing in the raw
+    // text does not defeat trailing-group
+    // extraction on the REL surface.
+    let line = "(moved November 1, baked beans on Sunday to November 8) \u{200b}";
+    let text = format!("For Sunday: next Sunday {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(8)),
+        "{line}: the group is extracted past the trailing nothing"
+    );
+    assert_eq!(
+        c.for_date, None,
+        "{line}: nothing asserts on the REL surface"
+    );
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the main surface reads its twin"
+    );
+}
+
+#[test]
+fn r28a_separator_only_nothings() {
+    // Round 28 (R28-A, F2 = review MINOR-3):
+    // separator-only tokens are nothings —
+    // between a prospective and its date at
+    // the governance sites, inside a date's
+    // own span, and between a phrase's words.
+    // Each glued form is pinned beside its
+    // spaced/Cf form with the same reading.
+    for line in [
+        "(November 1, cancelled) (November 1, not * November 8)",
+        "(November 1, cancelled) (November 1, not | November 8)",
+        "(back together November 1) hold * off November 1, 2026",
+        "(back together November 1) hold | off November 1, 2026",
+        // A separator inside the date's own
+        // span, the date governed in its group.
+        "(November * 1, cancelled) (November 1, not November 8)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the separator-only form governs as its twins"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through twin");
+    }
+    // The prospective spends forward: in the
+    // single group the earlier date asserts
+    // and the governed date is silent, for the
+    // separator-only form as for its twins.
+    for line in [
+        "(November 1, not * November 8)",
+        "(November 1, not | November 8)",
+        "(choir November 1, not * November 8)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{line}: November 1 asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: the governed date is not named"
+        );
+    }
+    // A separator inside a date's own span in
+    // an asserting group: the date reads
+    // across it.
+    let groups = "(November 1, cancelled) (choir November * 1)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{groups}: the date reads across the separator"
+    );
+}
+
+#[test]
+fn r28a_nothing_boundaries_stand() {
+    // Round 28 (R28-A, F1/F2): the boundaries
+    // the batch does not move, re-asserted
+    // beside the fixes.
+    // The spent-cancellation break stands
+    // (R24-4): a separator between a postposed
+    // cancellation and the next date bounds
+    // its scope exactly as its comma twin
+    // does, on the plain and group surfaces.
+    for line in [
+        "November 1, 2026, cancelled * November 8, 2026",
+        "(November 1, cancelled * November 8)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: November 1 is named governed"
+        );
+    }
+    // A standalone bullet is not a nothing:
+    // its boundary reading stands.
+    let line = "(back together November 1) hold \u{2022} off November 1, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{line}: the bullet form keeps its reading"
+    );
+    // Glued content/date words keep their
+    // standing readings (R27-C boundary).
+    let line = "(November 1, cancelled) (*November 1)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{line}: the glued date group is the date, bare"
+    );
+    let line = "(November 1, cancelled) (*choir November 1)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{line}: a glued content word asserts"
+    );
+    // The keep-plain readers' own glued forms
+    // stand (R27-C documented choice): a glued
+    // relative phrase and a glued weekday
+    // before a date keep their readings.
+    let line = "November 1, 2026, cancelled (*next Sunday) (November 8, 2026)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the standing reading holds"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+    let line = "(November 8) *Monday November 15, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(15)),
+        "{line}: the glued weekday reading stands"
+    );
+}
+
+#[test]
+fn r28b_bare_finite_verb_from_crossing() {
+    // Round 28 (R28-B, F4 = red team RT28-W1):
+    // a bare finite verb between the subject
+    // and the weekday PP defeated the
+    // from-crossing — the walk crossed the
+    // clause's verb only when an object stood
+    // behind it (or an auxiliary before it), so
+    // the ordinary intransitive sentence
+    // asserted the phantom October 18 while its
+    // object and auxiliary twins read silence.
+    // The verb-slot rule (stated once in
+    // `weekday_in_object_continuation_pp`): a
+    // finite verb in the verb slot is the
+    // claim's own clause verb whatever its
+    // shape, when the forward stack reaches the
+    // target through a "from" PP. The breaking
+    // grid's representatives, the two verbs
+    // that already held ("drove" / "rode" —
+    // they stand in no finite-form list, the
+    // accident that showed the rule's shape),
+    // and the object/auxiliary twins all read
+    // silence on every surface.
+    for verb in [
+        "sang",
+        "played",
+        "travelled",
+        "walked",
+        "went",
+        "met",
+        "spoke",
+        "taught",
+        "left",
+        "drove",
+        "rode",
+    ] {
+        let group =
+            format!("(moved November 1, the choir {verb} on Sunday from Kent to November 8)");
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: the bare verb reads as its twins"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+    }
+    for group in [
+        // The object and auxiliary twins.
+        "(moved November 1, the choir sang hymns on Sunday from Kent to November 8)",
+        "(moved November 1, the choir was travelling on Sunday from Kent to November 8)",
+        "(moved November 1, the choir has travelled on Sunday from Kent to November 8)",
+        "(moved November 1, the choir did travel on Sunday from Kent to November 8)",
+        // The until form and the accompaniment
+        // continuation break identically and
+        // consume identically.
+        "(moved November 1, the choir sang on Sunday from Kent until November 8)",
+        "(moved November 1, the choir sang on Sunday from Kent with the choir to November 8)",
+        // A "from" deeper in the stack — behind
+        // a static PP or a destination PP — is
+        // the same from-scope.
+        "(moved November 1, the choir sang on Sunday in the hall from Kent to November 8)",
+        "(moved November 1, the choir sang on Sunday to the hall from Kent to November 8)",
+        // The verb-less fragment in the slot has
+        // always consumed.
+        "(moved November 1, baked beans on Sunday from Kent to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: reads silence");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+    }
+    // BOUNDARIES THAT STAND: with no "from" in
+    // the stack, the bare verb's standing
+    // readings do not move — a destination-only
+    // or static-PP stack offers both dates as
+    // alternatives, exactly as the bare shape
+    // always has (its object twins assert the
+    // target there, as pinned since R27-A).
+    for group in [
+        "(moved November 1, the choir sang on Sunday to November 8)",
+        "(moved November 1, the choir sang on Sunday in the hall to November 8)",
+        "(moved November 1, the choir sang on Sunday to the hall to November 8)",
+    ] {
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: nothing asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18), nov(8)],
+            "{group}: both dates stay on offer as alternatives"
+        );
+    }
+    // "from" BEFORE the weekday consumes by its
+    // standing route and is untouched.
+    let group = "(moved November 1, the choir sang from Kent on Sunday to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{group}: the from-before shape reads silence"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+}
+
+#[test]
+fn r28b_conjoined_second_clause_from_crossing() {
+    // Round 28 (R28-B, F5a = red team RT28-W2):
+    // a from-PP after the weekday in a conjoined
+    // second clause defeated the mechanism-5/6
+    // boundary for every subject kind — the
+    // backward walk died on the boundary and the
+    // forward arm's target reach was never
+    // consulted for its from-scope. The boundary
+    // now falls when the forward arm reaches the
+    // target through a "from" PP in the weekday's
+    // own conjunct: the single-clause crossing
+    // composed across the clause boundary.
+    for group in [
+            // The subject-kind grid, from form.
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and band played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and they played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and Pastor Lee played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and our band played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and singers played songs on Sunday from Kent to November 8)",
+            // from+destination and from+accompaniment.
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday from Kent to the hall to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday from Kent with the choir to November 8)",
+            // The until twin, the comma variant, the
+            // doubled from.
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday from Kent until November 8)",
+            "(moved November 1, the choir sang hymns, and the band played songs on Sunday from Kent to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday from Kent from Kent to November 8)",
+            // The F4 composition: a bare verb in the
+            // second clause crosses the same way.
+            "(moved November 1, the choir sang hymns and the band played on Sunday from Kent to November 8)",
+            // The single-clause twin of the second
+            // clause, pinned beside its composition.
+            "(moved November 1, the band played songs on Sunday from Kent to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: the from-crossing composes");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+        }
+    // BOUNDARIES THAT STAND (mechanisms 5/6's
+    // pinned readings in the same grid): no
+    // continuation, a destination alone, and
+    // static PPs offer both dates as
+    // alternatives; an accompaniment alone
+    // asserts the target clean, as it always
+    // has.
+    for group in [
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday to the hall to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday in the hall to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday at school to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday for the choir to November 8)",
+            // A third full conjunct after the target
+            // restores the alternatives (R27-A
+            // mechanism 6's pinned form).
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday to November 8 and the singers rehearsed pieces)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: nothing asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![oct(18), nov(8)],
+                "{group}: both dates stay on offer as alternatives"
+            );
+        }
+    let group = "(moved November 1, the choir sang hymns and the band played songs on Sunday with the choir to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the accompaniment-only target asserts clean"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+    // The weekday in the FIRST conjunct with
+    // the from-PP consumes (the forward arm, as
+    // it always has).
+    let group = "(moved November 1, the choir sang hymns on Sunday from Kent and the band played songs to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{group}: the first-conjunct shape reads silence"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+    // "from" BEFORE the weekday in the second
+    // conjunct keeps the pinned G2-C1 reading:
+    // the target asserts, the Sunday named.
+    let group = "(moved November 1, the choir sang hymns and the band played songs from Kent on Sunday to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the G2-C1 target asserts"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(18)],
+        "{group}: the Sunday stays named, as pinned"
+    );
+}
+
+#[test]
+fn r28b_destination_to_place_shaped_np() {
+    // Round 28 (R28-B, F5b = red team RT28-W3,
+    // review Q4 observation): mechanism 4's
+    // destination crossing required a
+    // determiner-headed NP under "to" alone, so
+    // a bare or possessive-headed destination
+    // object asserted the phantom while the
+    // same objects under into / past / toward /
+    // towards / through consumed. The crossing
+    // is now the shared place-shaped rule
+    // (`destination_to_end`): determiner-headed,
+    // possessive-headed, and bare place
+    // noun/name objects under "to" cross, with
+    // a further target construction after them.
+    for object in [
+        // Bare itinerary objects (the witnesses).
+        "Kent",
+        "there",
+        "church",
+        "school",
+        "town",
+        "Seattle",
+        "hall",
+        "home",
+        "London",
+        // Possessive-headed.
+        "our hall",
+        "my hall",
+        "their hall",
+        // Determiner-headed (the standing rule).
+        "the hall",
+        "a hall",
+    ] {
+        let group = format!(
+                "(moved November 1, the choir sang hymns on Sunday from Kent to {object} to November 8)"
+            );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the destination crosses");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+    }
+    // The control: the other destination
+    // prepositions cross the same bare and
+    // possessive objects, unchanged.
+    for prep in ["into", "past", "toward", "towards", "through"] {
+        for object in ["church", "our hall"] {
+            let group = format!(
+                    "(moved November 1, the choir sang hymns on Sunday from Kent {prep} {object} to November 8)"
+                );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: the control crossing stands");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named"
+            );
+        }
+    }
+    // A "to" naming the target date itself is
+    // never a destination: the plain target
+    // shape keeps its standing reading.
+    let group = "(moved November 1, the choir sang hymns on Sunday from Kent to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{group}: the from-governed target reads silence"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+}
+
+#[test]
+fn r28b_destination_stack_second_sunday_naming() {
+    // Round 28 (R28-B, F5 tail = red team
+    // RT28-W4): a second weekday PP after a
+    // destination PP named the phantom in the
+    // note while the target asserted correctly.
+    // The Sunday in that position is the
+    // destination stack's own material — its
+    // occurrence bounds the target's governor
+    // window, which is why the target asserts —
+    // so the naming is silenced and the
+    // assertion stands, exactly as the from and
+    // accompaniment twins already silence both
+    // Sundays.
+    let group = "(moved November 1, the choir sang hymns on Sunday from Kent to the hall on Sunday to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the target keeps asserting"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: the phantom is named nowhere"
+    );
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(8)),
+        "{group}: keep-through asserts the target"
+    );
+    assert_eq!(
+        c.keep_through_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: keep-through note is empty"
+    );
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(8)),
+        "{group}: the target asserts on the relative path"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named on the relative path"
+    );
+    // The bare-destination twin (F5b) reads
+    // identically to its determiner twin.
+    let group = "(moved November 1, the choir sang hymns on Sunday from Kent to church on Sunday to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the bare twin asserts its target"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: the bare twin names nothing"
+    );
+    // The twins that silence both Sundays.
+    for group in [
+            "(moved November 1, the choir sang hymns on Sunday from Kent on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent with the choir on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent in the hall on Sunday to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: both Sundays are silent");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named"
+            );
+        }
+}
+
+#[test]
+fn r28c_bare_unit_weekday_signal_is_part_of_the_span() {
+    // Round 28 (R28-C, F3 = review R28
+    // MAJOR-2): a bare unit's own weekday
+    // signal is part of the bare span. The
+    // shipped unit &["see", "you", "sunday"]
+    // made the plain witness below read FOR
+    // 2026-10-18 [2026-11-01] at the audited
+    // HEAD — the restated November 1 read
+    // bare and was suppressed, while the
+    // Sunday inside the unit still spawned
+    // its weekday signal and the phantom won
+    // the segment. The witness reads as it
+    // read before the unit shipped: November
+    // 1 asserts, the Sunday named beside it.
+    // (Fixtures: today is Friday 2026-10-16;
+    // November 1, 2026 is a Sunday; the
+    // phantom Sunday is October 18, 2026.)
+    let line = "November 1, 2026, cancelled, November 1, 2026 see you sunday";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{line}: the restated date asserts again"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(18)],
+        "{line}: the unit's Sunday is named, not asserted"
+    );
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(1)),
+        "{line}: keep-through asserts the restated date"
+    );
+    assert_eq!(
+        c.keep_through_second_dates,
+        vec![oct(18)],
+        "{line}: keep-through names the Sunday"
+    );
+    // The relative-prefixed reading of the
+    // witness is unchanged at both trees: the
+    // prefix's own Sunday asserts and both
+    // line dates are named.
+    let text = format!("For Sunday: next Sunday {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(25)),
+        "{line}: the relative path stands"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1), oct(18)],
+        "{line}: the relative path naming stands"
+    );
+    // The glued twin reads as the spaced one
+    // (R28-A's ungluing reaches the unit, and
+    // this rule judges the unit as written).
+    let line = "November 1, 2026, cancelled, November 1, 2026 *see *you sunday";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{line}: the glued twin asserts the restated date"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(18)],
+        "{line}: the glued twin names the Sunday"
+    );
+    // The group twin stands, as it read at
+    // both trees: the group offers both of its
+    // signals as alternatives and asserts
+    // none — its reading never turned on
+    // bareness, and this batch does not move
+    // it. The single-group form, whose second
+    // November 1 WAS bound by value at the
+    // audited HEAD (the group contributed the
+    // phantom), offers the same alternatives.
+    for groups in [
+        "(November 1, cancelled) (November 1 see you sunday)",
+        "(November 1, cancelled, November 1 see you sunday)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path offers alternatives"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), oct(18)],
+            "{groups}: relative path names both signals"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only offers alternatives");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1), oct(18)],
+            "{groups}: paren-only names both signals"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through offers alternatives"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1), oct(18)],
+            "{groups}: keep-through names both signals"
+        );
+    }
+    // The unit's head-slot group stands
+    // governed: standing before the framed
+    // date, its Sunday is that date's framing
+    // weekday and spawns no signal, so the
+    // span is judged bare exactly as shipped.
+    let groups = "(November 1, cancelled) (see you sunday November 1)";
+    let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date, None,
+        "{groups}: relative path stays governed"
+    );
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+    let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through, None,
+        "{groups}: keep-through stays governed"
+    );
+    // The family boundary: exactly one listed
+    // unit carries a weekday word ("see you
+    // sunday"); the weekday phrases that
+    // partition word by word spawn their
+    // signals without any unit and keep their
+    // pinned plain readings — the trailing
+    // "coming sunday" / "last sunday" twins
+    // assert the coming Sunday, as R27-B's
+    // adjudication recorded — and a unit
+    // carrying a weekday word that spawns no
+    // signal at all ("see you monday": this
+    // machinery's signals are Sundays) binds
+    // its restatement exactly as shipped.
+    for (line, want, secs) in [
+        (
+            "November 1, 2026, cancelled, November 1, 2026 coming sunday",
+            Some(oct(18)),
+            vec![nov(1)],
+        ),
+        (
+            "November 1, 2026, cancelled, November 1, 2026 last sunday",
+            Some(oct(18)),
+            vec![nov(1)],
+        ),
+        (
+            "November 1, 2026, cancelled, November 1, 2026 see you monday",
+            None,
+            Vec::new(),
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, want, "{line}: the standing reading holds");
+        assert_eq!(
+            c.for_sunday_second_dates, secs,
+            "{line}: the standing naming holds"
+        );
+    }
+}
+
+#[test]
+fn r28c_determiner_headed_inventory_noun_is_content() {
+    // Round 28 (R28-C, F6 = red team RT28-B1,
+    // coordinator-adjudicated): a determiner-
+    // headed group whose head noun is an
+    // inventory word reads as content in the
+    // mirror/bare test. At the audited HEAD
+    // all 19 ring III nouns below flipped both
+    // adjudicated mirror constructions to
+    // silence where choir / rain / hall assert;
+    // they assert now, on every surface, as
+    // the choir twins do.
+    for word in [
+        // Titles.
+        "pastor", "father", "sister", "brother", "doctor", "elder", "deacon", "saint",
+        // Time nouns.
+        "night", "morning", "evening", "season", "winter", "summer", "noon", "weekend",
+        // Direction, ordinals.
+        "north", "fifth", "last", // The standing controls.
+        "choir", "rain", "hall",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) (in spite of the {word}, November 1)"),
+            format!("(November 1, cancelled) (thanks to the {word}, November 1)"),
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{groups}: relative path asserts"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{groups}: keep-through asserts"
+            );
+        }
+    }
+    // The determiner-headed forms of the
+    // batch's own templates assert, in both
+    // slots, for a representative of each
+    // head-noun class.
+    for word in [
+        "pastor", "morning", "week", "north", "fifth", "last", "first",
+    ] {
+        for groups in [
+            format!("(November 1, cancelled) (the {word} November 1)"),
+            format!("(November 1, cancelled) (November 1 the {word})"),
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: the determiner-headed form asserts"
+            );
+        }
+    }
+    // The boundaries that do not move: a LONE
+    // title with no determiner governs, as B3
+    // shipped it; a title standing with its
+    // name asserts, as adjudicated; a
+    // possessive before a title is R27-B's
+    // recorded partition correction and stays
+    // governed; a temporal phrase whose
+    // preposition stands alone before the
+    // article ("in the morning") and a
+    // determiner-class word after the article
+    // ("the same") keep their standing bare
+    // readings.
+    for (groups, want) in [
+        ("(November 1, cancelled) (pastor November 1)", None),
+        ("(November 1, cancelled) (November 1 pastor)", None),
+        (
+            "(November 1, cancelled) (pastor lee November 1)",
+            Some(nov(1)),
+        ),
+        ("(November 1, cancelled) (your pastor November 1)", None),
+        ("(November 1, cancelled) (in the morning November 1)", None),
+        ("(November 1, cancelled) (November 1 in the morning)", None),
+        ("(November 1, cancelled) (the same November 1)", None),
+        ("(November 1, cancelled) (a week ago November 1)", None),
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, want,
+            "{groups}: relative path boundary stands"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, want, "{groups}: paren-only boundary stands");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, want,
+            "{groups}: keep-through boundary stands"
+        );
+    }
+}
+
+#[test]
+fn r29a_double_boundary_after_cancellation_governs() {
+    // Round 29 (R29-A, F1a = red team RT29-C1a):
+    // two boundary tokens in a row after a
+    // cancellation phrase defeated the governor
+    // window's reach-back — the clause standing
+    // between the two breaks cleans to nothing,
+    // and the walk treated that empty clause as
+    // its end, so the governed date asserted
+    // where its comma and clean twins govern.
+    // The reach-back now skips a clause that
+    // cleans to nothing. All 88 shapes (11
+    // cancellation phrases x 8 double-boundary
+    // forms) read as their twins: nothing
+    // asserts, nothing is named, on every
+    // surface.
+    for phrase in [
+        "cancelled",
+        "postponed",
+        "removed",
+        "dropped",
+        "cancel it",
+        "drop it",
+        "hold off",
+        "put off",
+        "never mind",
+        "forget about",
+        "called off",
+    ] {
+        for boundary in ["* *", "* |", ", *", "* ,", "* ;", "; *", "* -", "- *"] {
+            let groups = format!("(November 1, cancelled) ({phrase} {boundary} November 8)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{groups}: the governed date stays governed"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{groups}: nothing is named"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{groups}: keep-through twin");
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path twin"
+            );
+        }
+    }
+    // On the plain trailing surface a single
+    // added star suffices, because the comma is
+    // already there: the star form now reads as
+    // its comma twin and its single-star twin.
+    for line in [
+        "(back together November 1) cancelled, * November 1, 2026",
+        "(back together November 1) cancelled, November 1, 2026",
+        "(back together November 1) cancelled * November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the trailing date stays governed");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: keep-through twin");
+    }
+    // The boundaries that do not move. The
+    // R24-4 arm: a separator between a postposed
+    // cancellation and the next date still
+    // bounds its scope, as its comma twin does.
+    for line in [
+        "November 1, 2026, cancelled * November 8, 2026",
+        "(November 1, cancelled * November 8)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: November 1 is named governed"
+        );
+    }
+    // The MINOR-3 arm: a separator after a
+    // prospective still does not bound the
+    // window, and the prospective spends forward.
+    let line = "(November 1, not * November 8)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "{line}: November 1 asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: the governed date is not named"
+    );
+    // "scratch that" / "was cancelled" are not
+    // in this family — their comma readings
+    // stand, and the double-boundary forms read
+    // exactly as those twins do.
+    for (star, comma) in [
+        (
+            "(November 1, cancelled) (scratch that * * November 8)",
+            "(November 1, cancelled) (scratch that, November 8)",
+        ),
+        (
+            "(November 1, cancelled) (was cancelled * * November 8)",
+            "(November 1, cancelled) (was cancelled, November 8)",
+        ),
+    ] {
+        let text = format!("For Sunday: {star}\n\n## Announcement\n\nHi.\n");
+        let a = parse_contribution(&text, today()).expect("parses");
+        let text = format!("For Sunday: {comma}\n\n## Announcement\n\nHi.\n");
+        let b = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(a.for_date, b.for_date, "{star}: reads as its comma twin");
+        assert_eq!(
+            a.for_sunday_second_dates, b.for_sunday_second_dates,
+            "{star}: the note matches its comma twin"
+        );
+    }
+    // Prospective phrases with double boundaries
+    // read as their clean twins, and double
+    // nothings inside a two-word phrase hold.
+    for (star, clean) in [
+        (
+            "(November 1, cancelled) (not * * November 8)",
+            "(November 1, cancelled) (not November 8)",
+        ),
+        (
+            "(back together November 1) hold * * off November 1, 2026",
+            "(back together November 1) hold off November 1, 2026",
+        ),
+    ] {
+        let text = format!("For Sunday: {star}\n\n## Announcement\n\nHi.\n");
+        let a = parse_contribution(&text, today()).expect("parses");
+        let text = format!("For Sunday: {clean}\n\n## Announcement\n\nHi.\n");
+        let b = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(a.for_date, b.for_date, "{star}: reads as its clean twin");
+        assert_eq!(
+            a.for_sunday_second_dates, b.for_sunday_second_dates,
+            "{star}: the note matches its clean twin"
+        );
+    }
+}
+
+#[test]
+fn r29a_used_to_be_second_gap_is_seen() {
+    // Round 29 (R29-A, F1b = red team RT29-C1b):
+    // a nothing in the SECOND gap of "used to
+    // be" was invisible to the scoped exception,
+    // which checked phrases starting only at the
+    // word before the nothing: "(used to * be
+    // November 8)" asserted its governed date on
+    // every surface, where its comma and clean
+    // twins govern. The exception's phrase check
+    // now judges phrases at every gap position.
+    for groups in [
+        "(November 1, cancelled) (used to * be November 8)",
+        "(November 1, cancelled) (used * to * be November 8)",
+        // The first gap, which already held.
+        "(November 1, cancelled) (used * to be November 8)",
+        // The other three-word phrase, at both
+        // gaps.
+        "(November 1, cancelled) (do * not use November 8)",
+        "(November 1, cancelled) (do not * use November 8)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{groups}: the governed date stays governed"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{groups}: nothing is named"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{groups}: keep-through twin");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path twin"
+        );
+    }
+    // The plain surface: the governed November 8
+    // is named beside the standing November 1,
+    // exactly as the clean twin reads.
+    let line = "(back together November 1) used to * be November 8";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "{line}: November 1 stands");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8)],
+        "{line}: the governed date is named"
+    );
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)), "{line}: keep-through twin");
+}
+
+#[test]
+fn r29a_parse_flexible_date_drops_nothings() {
+    // Round 29 (R29-A, F2 = review MAJOR-1):
+    // `parse_flexible_date` (ob-model) tokenized
+    // the raw line text and never dropped
+    // nothing-tokens, so a Cf-only or
+    // separator-only token at ANY position of an
+    // unframed month-name date line made the
+    // For Sunday / Keep-through line read no
+    // date at all. That reader now drops
+    // nothing-tokens like every other date
+    // reader. (Fixtures: November 1, 2026 is a
+    // Sunday; October 18, 2026 is a Sunday.)
+    for (line, want) in [
+        ("November \u{200b} 1, 2026", nov(1)),
+        ("\u{200b} November 1, 2026", nov(1)),
+        ("November 1, \u{200b} 2026", nov(1)),
+        ("November 1, 2026 \u{200b}", nov(1)),
+        ("November * 1, 2026", nov(1)),
+        ("November | 1, 2026", nov(1)),
+        ("October \u{200b} 18, 2026", oct(18)),
+        ("Nov \u{200b} 1, 2026", nov(1)),
+        ("1 November \u{200b} 2026", nov(1)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{line}: the date line reads");
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(want), "{line}: keep-through reads");
+    }
+    // The bounds that already survived do not
+    // move: the weekday-framed form, the
+    // trailing-garnish form, and the group form.
+    for (line, want) in [
+        ("Sunday November \u{200b} 1, 2026", nov(1)),
+        ("November 1, 2026 \u{200b} (Sunday)", nov(1)),
+        ("(November \u{200b} 1, 2026)", nov(1)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{line}: the surviving form stands");
+    }
+}
+
+#[test]
+fn r29a_bare_unit_continuation_glue() {
+    // Round 29 (R29-A, F3 = red team RT29-T1):
+    // glue on a bare unit's CONTINUATION words
+    // broke R28-C's F3 protection, which keys on
+    // the unit as written and the signal standing
+    // on its token: "see you sunday" with glue on
+    // "sunday" (or on "you" + "sunday") ate the
+    // restated date on the worst-witness surface
+    // and let the relative Sunday win the
+    // relative surface. Bare-unit membership and
+    // the F3 signal span are now judged on the
+    // unglued token vector at every position.
+    // Glue on "see" alone already held and holds.
+    for unit in [
+        "see you sunday",
+        "*see you sunday",
+        "see *you sunday",
+        "see you *sunday",
+        "*see *you sunday",
+        "see *you *sunday",
+        "*see you *sunday",
+        "*see *you *sunday",
+        "|see |you |sunday",
+    ] {
+        // The worst witness (P7): the glued
+        // farewell no longer eats the restated
+        // date.
+        let line =
+            format!("November 1, 2026, cancelled (while November 1) {unit} November 1, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the restated date asserts as its twins"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: nothing else is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{line}: keep-through twin");
+        // The relative surface (P1): the unit
+        // standing before the date no longer lets
+        // the relative Sunday win the line.
+        let line = format!("(back together November 1) {unit} November 1, 2026");
+        let text = format!("For Sunday: next Sunday {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the date wins the relative surface as its twins"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: the relative Sunday is not named"
+        );
+        // The trailing form: the unit after the
+        // restated date, glued at each word —
+        // the R28-C witness's own shape, whose
+        // Sunday is named beside the assertion.
+        let line = format!("November 1, 2026, cancelled, November 1, 2026 {unit}");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the restated date asserts as its twins"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18)],
+            "{line}: the unit's Sunday is named, not asserted"
+        );
+    }
+}
+
+#[test]
+fn r29a_sunday_after_phrase_glue() {
+    // Round 29 (R29-A, F8 = review MINOR-1):
+    // Sunday-after phrases were never judged
+    // unglued — plain glue on either word lost
+    // the phrase (FOR None where the clean line
+    // resolves November 8), and group glue on
+    // the head let the base assert instead of
+    // the resolved Sunday. The phrase is now
+    // judged on the unglued vector in the
+    // readers `segment_tokens` serves, at the
+    // shared phrase-run reader, and on the
+    // whole-line Sunday-after reader.
+    for line in [
+        "the Sunday after November 1, 2026",
+        "the *Sunday *after November 1, 2026",
+        "the *Sunday after November 1, 2026",
+        "the Sunday *after November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the resolved Sunday reads as its clean twin"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through twin");
+    }
+    for groups in [
+        "(November 1, cancelled) (the Sunday after November 1)",
+        "(November 1, cancelled) (the *Sunday after November 1)",
+        "(November 1, cancelled) (the Sunday *after November 1)",
+        "(November 1, cancelled) (the *Sunday *after November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{groups}: the resolved Sunday asserts, not its base"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{groups}: keep-through twin");
+    }
+    // The boundary that does not move: the
+    // standalone glued weekday garnish before a
+    // date keeps its standing reading.
+    let line = "(November 8) *Monday November 15, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(15)),
+        "{line}: the glued weekday reading stands"
+    );
+}
+#[test]
+fn r29b_conjoined_bare_verbs_consume() {
+    // Round 29 (R29-B, F4(a) = red team
+    // RT29-W1): R28-B's verb-slot rule read a
+    // single bare verb as the clause's verb,
+    // but a conjunction of bare finite verbs
+    // ("sang and danced") still asserted the
+    // phantom October 18 in the canonical
+    // frame, in both "to" and "until" forms.
+    // The slot's judgment now covers its whole
+    // verbal material: a further bare verb
+    // crossed behind a crossed verb with
+    // nothing but the conjunction and its slot
+    // words between them is another conjunct
+    // of the same slot. Every shape reads
+    // silence on every surface.
+    for verbs in [
+        "sang and danced",
+        "sang or danced",
+        "worked and prayed",
+        "rose and sang",
+        "sang and danced and prayed",
+        "sang and then danced",
+        // The subject-less second conjunct: the
+        // second "sang" has no subject of its
+        // own and is still the same slot.
+        "sang and sang",
+        // "sat" as a conjunct, in both seats.
+        "sat and sang",
+        "sang and sat",
+    ] {
+        for target in ["to November 8", "until November 8"] {
+            let group =
+                format!("(moved November 1, the choir {verbs} on Sunday from Kent {target})");
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{group}: the conjoined bare verbs consume"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through twin");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+        }
+    }
+    // BOUNDARIES THAT STAND: an object anywhere
+    // in the slot consumes by the object rule,
+    // and a participle standing in the slot
+    // consumes, exactly as they did before.
+    for verbs in [
+        "sang and played songs",
+        "sang hymns and danced",
+        "sang while dancing",
+    ] {
+        let group =
+            format!("(moved November 1, the choir {verbs} on Sunday from Kent to November 8)");
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the standing consumption holds");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+    }
+}
+
+#[test]
+fn r29b_verb_particles_consume() {
+    // Round 29 (R29-B, F4(b) = red team
+    // RT29-W1): a phrasal verb whose particle
+    // is a continuation preposition ("sat
+    // down", "went on", "came in") lost the
+    // verb slot — the particle was read as the
+    // head of the next PP and the phantom
+    // asserted. The particle standing directly
+    // after a finite verb, directly before the
+    // weekday PP, is now part of the verb. The
+    // controls (particles that are not
+    // continuation prepositions) consume as
+    // they always have.
+    for verbs in [
+        // The breaking shapes.
+        "sat down",
+        "sat up",
+        "sat together",
+        "went on",
+        "carried on",
+        "came in",
+        "went in",
+        "came over",
+        // The standing controls.
+        "sang out",
+        "met up",
+        "got up",
+        "stood up",
+        "lay down",
+        "went out",
+        "came back",
+    ] {
+        let group =
+            format!("(moved November 1, the choir {verbs} on Sunday from Kent to November 8)");
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the particle verb consumes");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through twin");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+    }
+}
+
+#[test]
+fn r29b_sat_weekday_object_boundary_stands() {
+    // Round 29 (R29-B, F4 boundary): "sat" is
+    // the one weekday-abbreviation word that
+    // is also a finite verb form. Standing in
+    // the verb slot it is now the clause's
+    // verb (the two tests above), but standing
+    // as a weekday object inside a PP stack —
+    // no subject before it in that position —
+    // it keeps its weekday reading: this shape
+    // reads exactly as it read before the
+    // batch (verified twin-identical against
+    // the R29-A tree).
+    let group = "(moved November 1, the choir sang hymns on sat from Kent on Sunday to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{group}: the weekday-object reading stands"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing is named"
+    );
+    let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "{group}: keep-through twin");
+    let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_sunday_parenthesized_date, None,
+        "{group}: nothing asserts on the relative path"
+    );
+}
+
+#[test]
+fn r29b_destination_verb_form_nouns_cross() {
+    // Round 29 (R29-B, F5 = review MAJOR-2):
+    // the destination noun run excluded any
+    // word that is also a finite verb form, so
+    // genuine itinerary vocabulary whose
+    // spelling is a verb form ("to work", "to
+    // Rose", "to Reading") was no destination
+    // at all and the phantom asserted. The run
+    // is now judged as an NP — verb-form
+    // membership does not remove a word
+    // standing as the object of "to" in the
+    // destination position, in the bare arm and
+    // the determiner-headed arm alike. The
+    // non-verb-form controls consume as they
+    // always have.
+    for x in [
+        // The breaking shapes.
+        "work",
+        "the work",
+        "Rose",
+        "the Rose",
+        "Reading",
+        "reading",
+        "the Reading",
+        // The standing controls.
+        "rehearsal",
+        "bed",
+        "tears",
+        "lunch",
+        "pieces",
+        "church",
+        "sleep",
+        "camp",
+        "Mark",
+        "the tears",
+        "the hall",
+    ] {
+        for target in ["to November 8", "until November 8"] {
+            let group = format!(
+                "(moved November 1, the choir sang hymns on Sunday from Kent to {x} {target})"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: the destination NP crosses");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through twin");
+        }
+    }
+}
+
+#[test]
+fn r29b_destination_abbreviation_periods_cross() {
+    // Round 29 (R29-B, F5 tail = red team
+    // RT29-W2): an abbreviation period inside
+    // a destination name ("to St. Mary") ended
+    // the destination's noun run and the
+    // crossing was lost — the target asserted
+    // clean where the unperioded twin read
+    // silence. The abbreviation shape in the
+    // destination position is now judged by
+    // its form, with the same name-after
+    // requirement the PP arm has always
+    // carried. The unperioded twins are
+    // unchanged.
+    for x in [
+        "St. Mary",
+        "St. Paul",
+        "Mt. Vernon",
+        "Dr. Lee's",
+        "the Rev. Lee's",
+        "Rev. Lee's",
+        "the Dr. Lee's",
+        "Ft. Worth",
+        "Ste. Marie",
+        // The unperioded twins.
+        "St Mary",
+        "Mount Vernon",
+        "Fort Worth",
+    ] {
+        let group = format!(
+            "(moved November 1, the choir sang hymns on Sunday from Kent to {x} to November 8)"
+        );
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the destination name crosses");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through twin");
+    }
+}
+
+#[test]
+fn r29b_destination_trailing_naming_silenced() {
+    // Round 29 (R29-B, F7 = red team RT29-N1;
+    // review MINOR-2): the phantom naming was
+    // systematic across the destination +
+    // trailing family — the target asserted
+    // correctly in every row, but the Sundays
+    // the destination stack consumed were
+    // still named beside it, on the group
+    // surface and the plain assembly alike,
+    // and a relative-phrase Sunday standing in
+    // the stack's second PP was named where
+    // its bare twin was silenced. The naming
+    // consultation now covers what the stack
+    // consumed on every surface it feeds: the
+    // consumed Sunday resolutions (October 18,
+    // October 25) are named nowhere below. The
+    // explicit moved date (November 1) is not
+    // stack material and keeps its standing
+    // naming in the subjectless and plain
+    // shapes, as the family's
+    // accompaniment-closing rows always read.
+    for (group, named) in [
+            (
+                "(moved November 1, baked beans to the hall to November 8 on Sunday)",
+                vec![nov(1)],
+            ),
+            (
+                "(moved November 1, baked beans to the hall until November 8 on Sunday)",
+                vec![nov(1)],
+            ),
+            (
+                "(moved November 1, baked beans to Des Moines to November 8 with the choir on Sunday)",
+                vec![nov(1)],
+            ),
+            (
+                "(moved November 1, baked beans to the hall to November 8 on next Sunday)",
+                vec![nov(1)],
+            ),
+            (
+                "(moved November 1, baked beans to the hall to church to November 8 on Sunday)",
+                vec![nov(1)],
+            ),
+            (
+                "(moved November 1, the choir sang hymns on Sunday from Kent to the hall on Sunday to November 8)",
+                Vec::new(),
+            ),
+            (
+                "(moved November 1, the choir sang hymns on Sunday from Kent to the hall on next Sunday to November 8)",
+                Vec::new(),
+            ),
+            (
+                "(moved November 1, the choir sang hymns on Sunday from Kent to the hall on this Sunday to November 8)",
+                Vec::new(),
+            ),
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{group}: the target asserts"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates, named,
+                "{group}: the consumed Sundays are not named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(8)),
+                "{group}: keep-through target asserts"
+            );
+            assert_eq!(
+                c.keep_through_second_dates, named,
+                "{group}: keep-through consumed Sundays are not named"
+            );
+        }
+    // The plain assembly reads the same rule.
+    for line in [
+            "moved November 1, the choir sang hymns on Sunday from Kent to the hall on Sunday to November 8",
+            "moved November 1, baked beans to the hall to November 8 on Sunday",
+            "moved November 1, the choir sang hymns on Sunday from Kent to the hall on next Sunday to November 8",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{line}: the target asserts"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1)],
+                "{line}: the consumed Sunday is not named"
+            );
+        }
+}
+
+#[test]
+fn r29b_genuine_alternatives_naming_stands() {
+    // Round 29 (R29-B, F7 boundary): genuine
+    // alternatives naming — a Sunday named
+    // beside a target in a reading with no
+    // destination stack — is not the F7 family
+    // and does not move. Every reading below is
+    // twin-identical to the R29-A tree
+    // (verified against HEAD during the
+    // batch).
+    let group = "(November 8, the choir sang hymns on Sunday)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{group}: nothing asserts");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8), oct(18)],
+        "{group}: both alternatives stay named"
+    );
+    let line = "the choir sang hymns on Sunday, or November 8";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(18)),
+        "{line}: the genuine Sunday reading stands"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8)],
+        "{line}: the alternative stays named"
+    );
+    // The no-PP / no-destination-stack target
+    // shapes keep their standing readings.
+    let group = "(moved November 1, the choir sang hymns on Sunday to November 8)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{group}: the target asserts as it always has"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{group}: nothing else is named"
+    );
+    // The subjectful trailing shape stands as
+    // shipped: a trailing Sunday standing
+    // after the target in this order asserts
+    // as the reading, with the target named —
+    // twin-identical to the R29-A tree, and
+    // outside F7's naming family (whose rows
+    // all assert their target).
+    let group =
+            "(moved November 1, the choir sang hymns on Sunday from Kent to the hall to November 8 on Sunday)";
+    let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(18)),
+        "{group}: the trailing Sunday reading stands"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8)],
+        "{group}: the target stays named"
+    );
+}
+
+#[test]
+fn r29c_non_unit_complex_prepositions_assert() {
+    // Round 29 (R29-C, F6 arm 1 = review
+    // MAJOR-3 + red team RT29-D1): an article
+    // reached through a complex preposition's
+    // tail heads the reference, unit member or
+    // not. At the audited HEAD the fifteen
+    // complex prepositions that are not
+    // `BARE_PHRASE_UNITS` members flipped every
+    // head class to silence while their choir
+    // twins asserted; the reach is now judged
+    // as a phrase shape, and the unit list
+    // stays at 166. Every phrase below asserts
+    // November 1 beside the cancelled sibling,
+    // on every surface, in the before slot.
+    for prep in [
+        "because of",
+        "as for",
+        "apart from",
+        "aside from",
+        "instead of",
+        "except for",
+        "but for",
+        "save for",
+        "as of",
+        "off of",
+        "inside of",
+        "outside of",
+        "in between",
+        "in need of",
+        "at the time of",
+    ] {
+        let groups = format!("(November 1, cancelled) ({prep} the pastor, November 1)");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{groups}: relative path asserts"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{groups}: keep-through asserts"
+        );
+    }
+    // The after slot and the plain surface,
+    // for the eleven of the fifteen whose
+    // tails stand outside the shipped governor
+    // families (the remaining four are pinned
+    // standing in the boundary test below:
+    // "from" and "except" are single governors
+    // and "instead of" is a governor pair, so
+    // a date standing next to them is governed
+    // by that machinery, choir twins alike).
+    for prep in [
+        "because of",
+        "as for",
+        "but for",
+        "save for",
+        "as of",
+        "off of",
+        "inside of",
+        "outside of",
+        "in between",
+        "in need of",
+        "at the time of",
+    ] {
+        let groups = format!("(November 1, cancelled) (November 1, {prep} the pastor)");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{groups}: relative path after slot asserts"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: after slot asserts");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{groups}: keep-through after slot asserts"
+        );
+        // The plain surface, both slots.
+        for line in [
+            format!("November 1, 2026, cancelled, {prep} the pastor November 1, 2026"),
+            format!("November 1, 2026, cancelled, November 1, 2026 {prep} the pastor"),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{line}: the plain surface asserts"
+            );
+        }
+    }
+    // The unit-headed controls stand as they
+    // always have ("due to" is a unit; "in
+    // spite of" is a unit).
+    for prep in ["due to", "in spite of", "thanks to", "on behalf of"] {
+        let groups = format!("(November 1, cancelled) ({prep} the pastor, November 1)");
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: the unit-headed control asserts"
+        );
+    }
+}
+
+#[test]
+fn r29c_complex_prepositions_spread_of_heads() {
+    // Round 29 (R29-C, F6 arm 1): the shape
+    // reach is not a title rule — a spread of
+    // head classes (titles, time nouns,
+    // directions, ordinals) asserts through
+    // the non-unit complex prepositions, as
+    // the same heads do through the units in
+    // the R28-C pins.
+    for (prep, head) in [
+        ("because of", "elder"),
+        ("as for", "doctor"),
+        ("instead of", "morning"),
+        ("off of", "winter"),
+        ("inside of", "season"),
+        ("outside of", "weekend"),
+        ("in between", "week"),
+        ("save for", "north"),
+        ("but for", "south"),
+        ("as of", "fifth"),
+        ("in need of", "last"),
+        ("at the time of", "season"),
+        ("except for", "pastor"),
+        ("apart from", "sister"),
+    ] {
+        let groups = format!("(November 1, cancelled) ({prep} the {head}, November 1)");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{groups}: relative path asserts"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{groups}: keep-through asserts"
+        );
+    }
+}
+
+#[test]
+fn r29c_demonstrative_determiners_assert() {
+    // Round 29 (R29-C, F6 arm 2 = review
+    // MAJOR-3, coordinator-adjudicated): the
+    // definite determiners are "the" / "this"
+    // / "that". A demonstrative heading an
+    // inventory noun, reached through a
+    // complex preposition's tail, is a
+    // complete definite reference of the same
+    // grammatical object as "the pastor" and
+    // asserts beside the cancelled sibling, on
+    // every surface. At the audited HEAD every
+    // phrase below read silence.
+    for phrase in [
+        "in spite of this pastor",
+        "in spite of that pastor",
+        "thanks to this pastor",
+        "thanks to that pastor",
+        "in spite of this winter",
+        "in spite of this season",
+        "in spite of this weekend",
+        "in spite of that morning",
+        "thanks to that season",
+        // The demonstrative through a NON-unit
+        // complex tail: the two arms compose.
+        "because of this pastor",
+        "because of that morning",
+        "due to this elder",
+    ] {
+        let groups = format!("(November 1, cancelled) ({phrase}, November 1)");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{groups}: relative path asserts"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{groups}: keep-through asserts"
+        );
+    }
+    // The after slot and the plain surface.
+    let groups = "(November 1, cancelled) (November 1, in spite of this pastor)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "{groups}: the after slot asserts");
+    let line = "November 1, 2026, cancelled, in spite of this pastor November 1, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{line}: the plain surface asserts"
+    );
+}
+
+#[test]
+fn r29c_bare_modifier_between_determiner_and_head() {
+    // Round 29 (R29-C, F6 arm 3 = review
+    // MAJOR-3): a bare-class MODIFIER between
+    // determiner and head does not defeat the
+    // head — the head governs the reading.
+    // Edge 1 of the shipped rule excluded "the
+    // same" standing AS a head; in "the same
+    // morning" the head is "morning" and
+    // "same" is its modifier, a shape that was
+    // never adjudicated. At the audited HEAD
+    // the "same" / "other" forms below read
+    // silence; the controls ("the old pastor"
+    // and kin, whose modifiers are not bare
+    // words) asserted already and still do.
+    for phrase in [
+        "in spite of the same morning",
+        "the other morning",
+        "the same pastor",
+        "the other pastor",
+        "the same morning",
+        "in spite of the other winter",
+        "because of the same pastor",
+        // The controls, standing as shipped.
+        "the old pastor",
+        "the senior pastor",
+        "the last pastor",
+    ] {
+        let groups = format!("(November 1, cancelled) ({phrase}, November 1)");
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(1)),
+            "{groups}: relative path asserts"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{groups}: paren-only asserts");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{groups}: keep-through asserts"
+        );
+    }
+    // The after slot: the determiner phrase
+    // standing after the restated date.
+    let groups = "(November 1, cancelled) (November 1 the other pastor)";
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "{groups}: the after slot asserts");
+}
+
+#[test]
+fn r29c_determiner_boundaries_stand() {
+    // Round 29 (R29-C, F6 boundaries): the
+    // edges that stand as shipped, pinned
+    // beside the restated reach.
+    //
+    // (a) Lone-preposition objects, recorded
+    // as standing in the round-29 adjudication:
+    // an article standing as the object of a
+    // lone bare preposition stays excluded —
+    // the mechanical line stands, for the
+    // article and for a demonstrative alike,
+    // in both slots.
+    for groups in [
+        "(November 1, cancelled) (with the pastor, November 1)",
+        "(November 1, cancelled) (for the pastor, November 1)",
+        "(November 1, cancelled) (on the pastor, November 1)",
+        "(November 1, cancelled) (at the pastor, November 1)",
+        "(November 1, cancelled) (by the pastor, November 1)",
+        "(November 1, cancelled) (with the morning, November 1)",
+        "(November 1, cancelled) (in the morning November 1)",
+        "(November 1, cancelled) (November 1 with the pastor)",
+        "(November 1, cancelled) (with this pastor, November 1)",
+        // A preposition preceded only by a
+        // governor word, a conjunction, or a
+        // consumed unit stands just as alone:
+        // none of those forms a complex
+        // preposition with it.
+        "(November 1, cancelled) (and with the pastor, November 1)",
+        "(November 1, cancelled) (back together with the pastor, November 1)",
+        "(November 1, cancelled) (at noon with the pastor, November 1)",
+    ] {
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{groups}: relative path boundary stands"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: paren-only boundary stands");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through boundary stands"
+        );
+    }
+    // (b) "the same" standing AS a head keeps
+    // its shipped exclusion (edge 1 stands),
+    // and a demonstrative standing at its
+    // side's head keeps the deictic bare
+    // reading of the B1 ring ("this morning").
+    for groups in [
+        "(November 1, cancelled) (the same November 1)",
+        "(November 1, cancelled) (the other November 1)",
+        "(November 1, cancelled) (this morning November 1)",
+        "(November 1, cancelled) (this evening November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: the standing exclusion holds");
+    }
+    // (c) Possessive and indefinite heads stay
+    // excluded, and a lone title with no
+    // determiner governs, as shipped.
+    for groups in [
+        "(November 1, cancelled) (your pastor November 1)",
+        "(November 1, cancelled) (a pastor November 1)",
+        "(November 1, cancelled) (an elder November 1)",
+        "(November 1, cancelled) (a week ago November 1)",
+        "(November 1, cancelled) (pastor November 1)",
+    ] {
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{groups}: the standing exclusion holds");
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through exclusion holds"
+        );
+    }
+    // (d) The governor-tainted tails: in the
+    // after slot and on the plain surface, a
+    // date standing next to "apart from" /
+    // "aside from" / "instead of" / "except
+    // for" is governed by the shipped governor
+    // machinery ("from" and "except" are
+    // single governors; "instead of" is a
+    // governor pair) — for the choir twins
+    // exactly as for the inventory heads, so
+    // those slots are not the determiner
+    // line's to move. Their before-slot
+    // assertions are pinned in the first
+    // r29c test above.
+    for prep in ["apart from", "aside from", "instead of", "except for"] {
+        for groups in [
+            format!("(November 1, cancelled) (November 1, {prep} the pastor)"),
+            format!("(November 1, cancelled) (November 1, {prep} the choir)"),
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: the governor reading stands");
+        }
+        let line = format!("November 1, 2026, cancelled, {prep} the choir November 1, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the plain governor reading stands"
+        );
+    }
+}

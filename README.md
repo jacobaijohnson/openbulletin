@@ -159,7 +159,7 @@ desktop app, CLI, or (someday) web.
 | `ob-pdfium-helper` | A small separate program that reads PDFs with the PDFium library and hands the words and pictures back as data. |
 | `ob-verovio-helper` | A small separate program that talks to the Verovio music engraver, draws the music at a measured staff size, and refuses anything drawn too small to sing from. |
 | `openbulletin-cli` | The same engine with no window: create, export (PDF, IDML, Scribus, Markdown, web page), next-sunday, info, fonts, trace. |
-| `openbulletin` | The egui desktop app. A thin shell over the crates above, on purpose. |
+| `openbulletin` | The egui desktop app: the guided weekly flow, organized into named modules (settings/journal, Check findings, preview layout, contribution application, inserts, step windows) over the crates above. The engines that are GUI-bound live here; everything headless lives in the crates and the CLI. |
 
 ## Imports and conversions
 

@@ -1,7 +1,8 @@
 # Contributing
 
-- The engine crates (`ob-*`) must build and test headless. The GUI shell
-  stays thin; features land in the engine and the CLI first.
+- The engine crates (`ob-*`) must build and test headless. Features land
+  in the engine and the CLI first; what is GUI-bound lives in the desktop
+  app (`ob-app`), organized into named modules beside its `main.rs`.
 - Every feature PR answers one question in its description: does a church
   secretary need this before v1.0? See docs/NEVER.md for the standing no's.
 - Imposition and file-format changes require new unit tests in the same PR.

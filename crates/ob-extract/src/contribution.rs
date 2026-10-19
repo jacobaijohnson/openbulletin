@@ -5850,6 +5850,20 @@ fn governed_before_target(window: &[String], window_start: usize, claim: &Target
 /// "specific", "additional", "extra", "further",
 /// "single", "sole", "half", "double"). The mirror
 /// held for every class.
+///
+/// Round 27 (R27-B): inventory ring III, on the
+/// same rule. B1: the time companions ("noon",
+/// "midnight", "tonight", 29 kin, and the rest
+/// sweep's strong singles). B2: the sign-off
+/// singles of the graded core. B3: the lone title
+/// words (title + name pairs do NOT join). B4:
+/// the direction set only (the street/place
+/// remainder is recorded, not fixed). B5: the
+/// number paradigm remainder, both paradigms to
+/// their end. B6: the pronoun tail's bare
+/// singles. The mirror held for every class
+/// (mirror_both_fail = 0 in every resurrecting
+/// class of the lane's sweeps).
 fn bare_filler_word(w: &str) -> bool {
     weekday_word(w).is_some()
         || AUXILIARY_WORDS.contains(&w)
@@ -6343,6 +6357,274 @@ fn bare_filler_word(w: &str) -> bool {
                 | "sole"
                 | "half"
                 | "double"
+                // Round 27 (R27-B, B1 = RT27-B1): the
+                // time-companion class joins — noon /
+                // midnight / tonight and their kin,
+                // the seasons included; 32 words, 64
+                // of 64 lane slots resurrected, mirrors
+                // asserting (bare27). The rest-sweep
+                // strong singles join with them
+                // (midday, midweek, nightly, hourly,
+                // yearly). The timeword tail (eve,
+                // morn, o'clock, pm, fortnight,
+                // century, …) does NOT join — recorded
+                // under B1's family. The event-label
+                // nouns swept in the same class
+                // (holiday, christmas, breakfast,
+                // lunch, dinner, supper, …) do NOT
+                // join — they are event labels.
+                | "noon"
+                | "midnight"
+                | "tonight"
+                | "morning"
+                | "afternoon"
+                | "evening"
+                | "night"
+                | "weekend"
+                | "dawn"
+                | "dusk"
+                | "sunrise"
+                | "sunset"
+                | "daytime"
+                | "nighttime"
+                | "weekday"
+                | "minute"
+                | "moment"
+                | "lunchtime"
+                | "bedtime"
+                | "daybreak"
+                | "nightfall"
+                | "twilight"
+                | "mealtime"
+                | "teatime"
+                | "suppertime"
+                | "dinnertime"
+                | "spring"
+                | "summer"
+                | "autumn"
+                | "fall"
+                | "winter"
+                | "season"
+                | "midday"
+                | "midweek"
+                | "nightly"
+                | "hourly"
+                | "yearly"
+                // "coming" joins for the swept
+                // phrase "coming sunday": "Sunday
+                // November 1" is a weekday-framed
+                // occurrence whose region carries
+                // "coming" alone, so no phrase unit
+                // can reach that shape — the word
+                // itself joins, as the R26-B F7
+                // singletons did for their pairs.
+                // Its mirror holds (bare27 re-run:
+                // "(coming sunday choir November 1)"
+                // still asserts). Membership
+                // source, recorded honestly: the
+                // B1 pair sweep listed the PAIR
+                // "coming sunday" as resurrecting
+                // under a FIX disposition, not the
+                // lone word; the lone word joins
+                // by coordinator adjudication
+                // recorded in the round-27 close,
+                // amending R27-B's membership
+                // sourcing for this one word,
+                // because the phrase-unit mechanism
+                // cannot reach the shape above
+                // (probed with the unit listed:
+                // the head slot still asserted on
+                // every surface). The unit is
+                // therefore replaced by the bare
+                // word (BARE_PHRASE_UNITS 166).
+                | "coming"
+                // Round 27 (R27-B, B2 = RT27-B2): the
+                // sign-off singles of the graded core
+                // join — 17 words (bare27: the class
+                // resurrected 75 of 98 slots; the
+                // abstract tail — grace, mercy, joy,
+                // hope, faith, love, peace, prayers,
+                // blessings, praise, glory, blessed,
+                // hallelujah, hosanna, alleluia,
+                // maranatha, shalom, and the "good
+                // morning / afternoon / evening"
+                // greetings — does NOT join: names
+                // and labels in this corpus). "thanks"
+                // joins for the head slot it
+                // resurrected in; its trailing slot
+                // already governed by the R20-3 rule.
+                // This flips the R26-B pin's lone-head
+                // "thanks" reading — flagged in the
+                // R27-B addendum.
+                | "sincerely"
+                | "regards"
+                | "faithfully"
+                | "cordially"
+                | "warmly"
+                | "kindly"
+                | "respectfully"
+                | "gratefully"
+                | "cheerfully"
+                | "prayerfully"
+                | "farewell"
+                | "goodbye"
+                | "goodnight"
+                | "wishes"
+                | "best"
+                | "thank"
+                | "thanks"
+                // Round 27 (R27-B, B3 = RT27-B3): the
+                // lone title words join — 46 words, 92
+                // of 106 lane slots resurrected,
+                // mirrors asserting (bare27). Title +
+                // name PAIRS do NOT join as units
+                // (binding split disposition): a named
+                // person is the corpus's canonical
+                // content label, and "(pastor lee
+                // November 1)" asserting is the
+                // accepted mirror direction.
+                | "pastor"
+                | "reverend"
+                | "father"
+                | "brother"
+                | "sister"
+                | "deacon"
+                | "elder"
+                | "bishop"
+                | "chaplain"
+                | "rabbi"
+                | "priest"
+                | "minister"
+                | "missionary"
+                | "professor"
+                | "doctor"
+                | "captain"
+                | "major"
+                | "colonel"
+                | "general"
+                | "sir"
+                | "madam"
+                | "madame"
+                | "lord"
+                | "lady"
+                | "king"
+                | "queen"
+                | "prince"
+                | "princess"
+                | "saint"
+                | "pope"
+                | "president"
+                | "chairman"
+                | "secretary"
+                | "treasurer"
+                | "director"
+                | "manager"
+                | "coach"
+                | "teacher"
+                | "nurse"
+                | "officer"
+                | "judge"
+                | "mayor"
+                | "senator"
+                | "miss"
+                | "hon"
+                | "esq"
+                // Round 27 (R27-B, B4 = RT27-B4): the
+                // direction set joins — 11 words (the
+                // RT26-4 locative family in noun
+                // form). The street/place remainder
+                // (street, road, avenue, church,
+                // chapel, school, hall, …) does NOT
+                // join — recorded, not fixed
+                // (binding): "(church November 1)" is
+                // an event-label fragment.
+                | "north"
+                | "south"
+                | "east"
+                | "west"
+                | "northeast"
+                | "northwest"
+                | "southeast"
+                | "southwest"
+                | "uptown"
+                | "downtown"
+                | "midtown"
+                // Round 27 (R27-B, B5 = RT27-B5): the
+                // number paradigm remainder joins to
+                // its end — ordinals fourth…
+                // hundredth + last / previous /
+                // preceding / thrice / triple /
+                // quarter (27 words, 54 of 68 lane
+                // slots) and cardinals five…million
+                // + dozen / zero (28 words, 56 of 58
+                // lane slots), mirrors asserting.
+                | "fourth"
+                | "fifth"
+                | "sixth"
+                | "seventh"
+                | "eighth"
+                | "ninth"
+                | "tenth"
+                | "eleventh"
+                | "twelfth"
+                | "thirteenth"
+                | "fourteenth"
+                | "fifteenth"
+                | "sixteenth"
+                | "seventeenth"
+                | "eighteenth"
+                | "nineteenth"
+                | "twentieth"
+                | "thirtieth"
+                | "fortieth"
+                | "fiftieth"
+                | "hundredth"
+                | "last"
+                | "previous"
+                | "preceding"
+                | "thrice"
+                | "triple"
+                | "quarter"
+                | "five"
+                | "six"
+                | "seven"
+                | "eight"
+                | "nine"
+                | "ten"
+                | "eleven"
+                | "twelve"
+                | "thirteen"
+                | "fourteen"
+                | "fifteen"
+                | "sixteen"
+                | "seventeen"
+                | "eighteen"
+                | "nineteen"
+                | "twenty"
+                | "thirty"
+                | "forty"
+                | "fifty"
+                | "sixty"
+                | "seventy"
+                | "eighty"
+                | "ninety"
+                | "hundred"
+                | "thousand"
+                | "million"
+                | "dozen"
+                | "zero"
+                // Round 27 (R27-B, B6 = RT27-B6): the
+                // pronoun tail's bare singles join —
+                // noone, anymore, anyways, elsewhere
+                // (the tail's fifth member, "anyone
+                // else", joins as a phrase unit
+                // below). The shipped pronoun matrix
+                // held behind this tail; it is closed
+                // by inspection.
+                | "noone"
+                | "anymore"
+                | "anyways"
+                | "elsewhere"
         )
 }
 
@@ -6515,8 +6797,10 @@ const BARE_PHRASE_UNITS: &[&[&str]] = &[
     // checked). "thanks to" joins for the head slot
     // it resurrected in; its trailing behaviour is
     // unchanged (trailing "thanks" was already bare
-    // by the R20-3 rule, "to" already bare, and a
-    // lone head "thanks" still asserts).
+    // by the R20-3 rule, "to" already bare).
+    // (Round 27, R27-B / B2: "thanks" joins the
+    // bare inventory itself, superseding the
+    // lone-head reading recorded here in round 26.)
     &["in", "addition", "to"],
     &["in", "addition"],
     &["in", "accordance", "with"],
@@ -6581,6 +6865,105 @@ const BARE_PHRASE_UNITS: &[&[&str]] = &[
     // as a unit for "a bit ago" — "bit" standing
     // alone keeps its reading.
     &["bit", "ago"],
+    // Round 27 (R27-B, B1 = RT27-B1): the time
+    // companions' phrase ring. Most of the swept
+    // units partition word by word once the B1
+    // bare words above join ("at noon", "tomorrow
+    // morning", "last night", "in the morning",
+    // "by midnight", "every morning", "last
+    // sunday", "previous sunday", "sunday noon",
+    // "for tonight", …); the units whose members
+    // do not join bare are listed here — "after
+    // lunch" ("lunch" is an event label and keeps
+    // its reading standing alone). "coming
+    // sunday" needs no unit: "coming" joins the
+    // bare words above and "sunday" is a weekday
+    // word, so the phrase partitions word by word
+    // — including in the weekday-framed shape,
+    // where the date's region carries "coming"
+    // alone.
+    &["after", "lunch"],
+    // Round 27 (R27-B, B2 = RT27-B2): the sign-off
+    // pairs of the graded core whose members do
+    // not partition word by word. The rest of the
+    // core's pairs partition once the singles join
+    // ("best regards", "sincerely yours", "yours
+    // faithfully", "thank you", "thanks again",
+    // "many thanks", "with thanks"). The recorded
+    // letter tail ("dear friend", "with love",
+    // "in christ", "in prayer", "your pastor",
+    // "your friend", …) does NOT join.
+    &["kind", "regards"],
+    &["warm", "regards"],
+    &["god", "bless"],
+    &["bless", "you"],
+    &["see", "you"],
+    &["see", "you", "sunday"],
+    // Round 27 (R27-B, B6 = RT27-B6): the closed
+    // connective / phrase tail — the pronoun
+    // tail's phrase member, the partitives, the
+    // locative / devotional phrases, the time and
+    // feast phrases, and the "other …" pair.
+    // Members standing alone keep their readings:
+    // "christmas" and "easter" are event labels
+    // and "(christmas November 1)" still asserts.
+    // "last time" / "fourth time" / "by night" /
+    // "for tonight" partition word by word once
+    // B5 / B1 join and are not listed. The B4
+    // pair sweep's phrases join exactly where
+    // they partition under this disposition —
+    // "at church", "at school", and the partitives
+    // below — while "main street", "in town",
+    // and the "… side" phrases stay recorded with
+    // B4's place-noun remainder.
+    &["anyone", "else"],
+    &["sooner", "than"],
+    &["other", "words"],
+    &["other", "hand"],
+    &["long", "time"],
+    &["short", "time"],
+    &["part", "of"],
+    &["rest", "of"],
+    &["end", "of"],
+    &["top", "of"],
+    &["back", "of"],
+    &["front", "of"],
+    &["side", "of"],
+    &["middle", "of"],
+    &["bottom", "of"],
+    &["on", "top"],
+    &["at", "top"],
+    &["in", "front"],
+    &["in", "back"],
+    &["at", "church"],
+    &["at", "school"],
+    &["at", "work"],
+    &["at", "rest"],
+    &["at", "peace"],
+    &["in", "peace"],
+    &["in", "love"],
+    &["in", "faith"],
+    &["in", "hope"],
+    &["in", "grace"],
+    &["by", "faith"],
+    &["by", "grace"],
+    &["by", "heart"],
+    &["by", "hand"],
+    &["by", "mail"],
+    &["by", "phone"],
+    &["by", "email"],
+    &["by", "name"],
+    &["for", "christmas"],
+    &["for", "easter"],
+    &["at", "christmas"],
+    &["at", "easter"],
+    // Round 27 (R27-B): "above all else" joins as
+    // a phrase unit — the synthesis amends M7's
+    // disposition: this is M7's first plausible
+    // member (a one-word extension of the shipped
+    // "above all"); M7's remaining merged forms
+    // stay recorded.
+    &["above", "all", "else"],
 ];
 
 /// The token span of a listed phrase unit standing
@@ -19953,12 +20336,16 @@ Youth group meets Wednesday at 6 PM.
         }
         // Held (the R20-3 adjudication, not
         // moved): the label heads stay content and
-        // assert — "thanks" in HEAD position among
-        // them — and a possessive-headed event
-        // asserts as it always has.
+        // assert, and a possessive-headed event
+        // asserts as it always has. (Round 27,
+        // R27-B / B2: "thanks" in head position —
+        // this list's R20-3 example in rounds
+        // 21–26 — joins the bare inventory as a
+        // sign-off single, so its entry is removed
+        // here and its flipped reading is pinned
+        // below; flagged in the R27-B addendum.)
         for groups in [
             "(November 1, cancelled) (reminder November 1)",
-            "(November 1, cancelled) (thanks November 1)",
             "(November 1, cancelled) (our choir November 1)",
         ] {
             let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
@@ -19972,6 +20359,27 @@ Youth group meets Wednesday at 6 PM.
             let c = parse_contribution(&text, today()).expect("parses");
             assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
         }
+        // FLAGGED PIN (R27-B): this test's held list
+        // stood in rounds 21–26 with "(thanks
+        // November 1)" asserting under the R20-3
+        // adjudication. Round 27's synthesis (F2 /
+        // B2) joins "thanks" as a sign-off single,
+        // superseding R20-3 for this word, so the
+        // witness now reads governed on both paths
+        // the held list checks.
+        let groups = "(November 1, cancelled) (thanks November 1)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{groups}: a lone head thanks is governed (R27-B, B2)"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed (R27-B, B2)"
+        );
     }
 
     #[test]
@@ -21009,13 +21417,17 @@ Youth group meets Wednesday at 6 PM.
             assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
         }
         // Held (the standing adjudications, not
-        // moved): "thanks" in head position stays
-        // content, content labels assert, and a
+        // moved): content labels assert, and a
         // possessive- or quantifier-headed event
         // asserts — the new classes eat no real
-        // event.
+        // event. (Round 27, R27-B / B2: "thanks"
+        // in head position — this list's standing
+        // example in rounds 22–26 — joins the bare
+        // inventory as a sign-off single, so its
+        // entry is removed here and its flipped
+        // reading is pinned below; flagged in the
+        // R27-B addendum.)
         for groups in [
-            "(November 1, cancelled) (thanks November 1)",
             "(November 1, cancelled) (reminder November 1)",
             "(November 1, cancelled) (our choir November 1)",
             "(November 1, cancelled) (our own choir November 1)",
@@ -21033,6 +21445,27 @@ Youth group meets Wednesday at 6 PM.
             let c = parse_contribution(&text, today()).expect("parses");
             assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
         }
+        // FLAGGED PIN (R27-B): this test's held list
+        // stood in rounds 22–26 with "(thanks
+        // November 1)" asserting under the R20-3
+        // adjudication. Round 27's synthesis (F2 /
+        // B2) joins "thanks" as a sign-off single,
+        // superseding R20-3 for this word, so the
+        // witness now reads governed on both paths
+        // the held list checks.
+        let groups = "(November 1, cancelled) (thanks November 1)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{groups}: a lone head thanks is governed (R27-B, B2)"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed (R27-B, B2)"
+        );
     }
 
     #[test]
@@ -21225,9 +21658,15 @@ Youth group meets Wednesday at 6 PM.
         // Held (the mirror, R23-1/R23-2): the widened
         // inventory eats no real event — a member of
         // each new class standing before a content
-        // label still asserts, "thanks" in head
-        // position stays content, and a
+        // label still asserts, and a
         // possessive-headed event still asserts.
+        // (Round 27, R27-B / B2: "thanks" in head
+        // position — this list's standing example
+        // in round 23 — joins the bare inventory as
+        // a sign-off single, so its entry is
+        // removed here and its flipped reading is
+        // pinned below; flagged in the R27-B
+        // addendum.)
         for groups in [
             "(November 1, cancelled) (yesterday choir November 1)",
             "(November 1, cancelled) (past choir November 1)",
@@ -21235,7 +21674,6 @@ Youth group meets Wednesday at 6 PM.
             "(November 1, cancelled) (which choir November 1)",
             "(November 1, cancelled) (later service November 1)",
             "(November 1, cancelled) (once choir November 1)",
-            "(November 1, cancelled) (thanks November 1)",
             "(November 1, cancelled) (our choir November 1)",
         ] {
             let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
@@ -21249,6 +21687,27 @@ Youth group meets Wednesday at 6 PM.
             let c = parse_contribution(&text, today()).expect("parses");
             assert_eq!(c.keep_through, Some(nov(1)), "{groups}: keep-through");
         }
+        // FLAGGED PIN (R27-B): this test's held list
+        // stood in round 23 with "(thanks
+        // November 1)" asserting under the R20-3
+        // adjudication. Round 27's synthesis (F2 /
+        // B2) joins "thanks" as a sign-off single,
+        // superseding R20-3 for this word, so the
+        // witness now reads governed on both paths
+        // the held list checks.
+        let groups = "(November 1, cancelled) (thanks November 1)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{groups}: a lone head thanks is governed (R27-B, B2)"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{groups}: keep-through stays governed (R27-B, B2)"
+        );
     }
 
     #[test]
@@ -26031,9 +26490,12 @@ Youth group meets Wednesday at 6 PM.
         // did before this batch, word by word
         // (trailing "thanks" is bare by the R20-3
         // rule and "to" is bare); the unit changes
-        // nothing there. What the R20-3 adjudication
-        // still governs: a LONE head "thanks" is a
-        // content label and still asserts.
+        // nothing there. (Round 27, R27-B / B2:
+        // "thanks" itself joins the bare inventory
+        // as a sign-off single, so the lone-head
+        // reading pinned at the end of this test in
+        // round 26 flips — see the flagged pin
+        // there and the R27-B addendum.)
         for groups in [
             "(November 1, cancelled) (thanks to November 1)",
             "(November 1, cancelled) (November 1 thanks to)",
@@ -26054,13 +26516,22 @@ Youth group meets Wednesday at 6 PM.
                 "{groups}: keep-through stays governed"
             );
         }
+        // FLAGGED PIN (R27-B): this assertion stood
+        // in round 26 as "a lone head thanks still
+        // asserts (R20-3)". Round 27's synthesis
+        // (F2 / B2) joins the sign-off singles —
+        // "thank" and "thanks" named in the graded
+        // core — so a lone head "thanks" is now a
+        // bare sign-off fragment and the governed
+        // sibling's reading governs it. The R20-3
+        // adjudication is superseded for this word
+        // by the round-27 disposition.
         let groups = "(November 1, cancelled) (thanks November 1)";
         let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
         let c = parse_contribution(&text, today()).expect("parses");
         assert_eq!(
-            c.for_date,
-            Some(nov(1)),
-            "{groups}: a lone head thanks still asserts (R20-3)"
+            c.for_date, None,
+            "{groups}: a lone head thanks is governed (R27-B, B2)"
         );
         // Held: a unit's member standing alone keeps
         // its reading.
@@ -26645,6 +27116,1008 @@ Youth group meets Wednesday at 6 PM.
                 c.for_sunday_second_dates,
                 Vec::<SimpleDate>::new(),
                 "{groups}: the governed source is not named"
+            );
+        }
+    }
+
+    #[test]
+    fn r27b_time_companions() {
+        // Round 27 (R27-B, B1 = RT27-B1): the time-
+        // companion class joins the bare inventory —
+        // 32 words, 64 of 64 lane slots resurrected,
+        // mirrors asserting (bare27), plus the rest
+        // sweep's five strong singles. Every witness
+        // reads nothing on every path; the mirror
+        // held.
+        for word in [
+            "noon",
+            "midnight",
+            "tonight",
+            "morning",
+            "afternoon",
+            "evening",
+            "night",
+            "weekend",
+            "dawn",
+            "dusk",
+            "sunrise",
+            "sunset",
+            "daytime",
+            "nighttime",
+            "weekday",
+            "minute",
+            "moment",
+            "lunchtime",
+            "bedtime",
+            "daybreak",
+            "nightfall",
+            "twilight",
+            "mealtime",
+            "teatime",
+            "suppertime",
+            "dinnertime",
+            "spring",
+            "summer",
+            "autumn",
+            "fall",
+            "winter",
+            "season",
+            "midday",
+            "midweek",
+            "nightly",
+            "hourly",
+            "yearly",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // The plain twins, head and trailing.
+            for line in [
+                format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+                format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+            ] {
+                let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+            }
+            // Held (the mirror): a content label
+            // standing with the word still asserts.
+            for groups in [
+                format!("(November 1, cancelled) ({word} choir November 1)"),
+                format!("(November 1, cancelled) ({word} service November 1)"),
+            ] {
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_date,
+                    Some(nov(1)),
+                    "{groups}: content asserts beside a sibling cancellation"
+                );
+            }
+        }
+        // The phrase ring: the swept units read
+        // nothing in both slots — most partition
+        // word by word once the bare words join;
+        // "after lunch" stands as a listed unit.
+        // "coming sunday" is NOT a listed unit:
+        // "coming" joins the bare words under the
+        // coordinator adjudication recorded
+        // below, so the phrase partitions word by
+        // word and its reading is pinned there.
+        for unit in [
+            "at noon",
+            "at midnight",
+            "by noon",
+            "by midnight",
+            "before noon",
+            "at night",
+            "tomorrow morning",
+            "tomorrow night",
+            "tomorrow evening",
+            "tomorrow afternoon",
+            "this morning",
+            "this evening",
+            "this afternoon",
+            "last night",
+            "last week",
+            "in the morning",
+            "in the evening",
+            "in the afternoon",
+            "tonight only",
+            "after lunch",
+            "previous sunday",
+            "last sunday",
+            "every night",
+            "every morning",
+            "every evening",
+            "all night",
+            "sunday noon",
+            "sunday morning",
+            "sunday evening",
+            "sunday night",
+            "monday morning",
+            "every sunday morning",
+            "noon today",
+            "midnight tonight",
+            "tomorrow noon",
+            "after noon",
+            "for tonight",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({unit} November 1)"),
+                format!("(November 1, cancelled) (November 1 {unit})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror): a content label
+            // standing with the unit still asserts.
+            let groups = format!("(November 1, cancelled) ({unit} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // COORDINATOR ADJUDICATION (R27-B,
+        // recorded in the round-27 close —
+        // binding, cited loudly): the B1 pair
+        // sweep listed the PAIR "coming sunday"
+        // as resurrecting under a FIX
+        // disposition, not the lone word. The
+        // phrase-unit mechanism provably cannot
+        // reach the head-slot shape (probed with
+        // the unit listed: the head group still
+        // asserted on every surface, because
+        // "coming sunday" is itself a relative
+        // date phrase in the machinery and
+        // "coming" can stand alone in a
+        // weekday-framed date's region). The
+        // adjudication therefore amends R27-B's
+        // membership sourcing for this one
+        // word: "coming" joins the BARE words,
+        // the "&["coming", "sunday"]" unit is
+        // removed (BARE_PHRASE_UNITS 166), and
+        // the pair partitions word by word. The
+        // governed pins below replace the
+        // superseded STOP ITEM pins that
+        // recorded the unit's split reading.
+        // The weekday-framed witness pinned
+        // here is exactly the group "(coming
+        // Sunday, November 1)": "Sunday, November
+        // 1" is the framed date, and "coming"
+        // stands alone in that date's
+        // before-region apart from the framing
+        // weekday — the shape the unit could
+        // not reach (probed in this batch; the
+        // group reads governed on all three
+        // surfaces).
+        for groups in [
+            "(November 1, cancelled) (coming sunday November 1)",
+            "(November 1, cancelled) (November 1 coming sunday)",
+            "(November 1, cancelled) (coming November 1)",
+            "(November 1, cancelled) (November 1 coming)",
+            "(November 1, cancelled) (coming Sunday, November 1)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed (adjudication)"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{groups}: paren-only stays governed (adjudication)"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed (adjudication)"
+            );
+        }
+        // The plain twins of "coming" standing
+        // alone, head and trailing: governed,
+        // as every bare word's plain twins are.
+        for line in [
+            "November 1, 2026, cancelled, coming November 1, 2026",
+            "November 1, 2026, cancelled, November 1, 2026 coming",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{line}: plain twin stays governed (adjudication)"
+            );
+        }
+        // Held (the mirror): a content label
+        // standing with the pair still asserts.
+        {
+            let groups = "(November 1, cancelled) (coming sunday choir November 1)";
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // The plain twins of the PAIR, recorded
+        // as the machinery actually reads them
+        // (probed in this batch): on the plain
+        // surface a weekday-bearing phrase is a
+        // relative signal, not a bare
+        // restatement — the same standing
+        // reading as the shipped "last sunday" /
+        // "previous sunday" phrases, whose B1
+        // ring pins above carry no plain twins
+        // for exactly this reason. The head
+        // plain twin asserts its November 1
+        // date; the trailing plain twin asserts
+        // October 18, the coming Sunday's own
+        // resolution. The bare test governs
+        // the groups; it does not rewrite the
+        // plain relative-signal machinery.
+        for (line, want) in [
+            (
+                "November 1, 2026, cancelled, coming sunday November 1, 2026",
+                nov(1),
+            ),
+            (
+                "November 1, 2026, cancelled, November 1, 2026 coming sunday",
+                oct(18),
+            ),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(want),
+                "{line}: plain weekday-phrase twin keeps its relative reading"
+            );
+        }
+        // Not joining (recorded, binding): the
+        // timeword tail and the event-label nouns
+        // swept in the same class still assert.
+        for groups in [
+            "(November 1, cancelled) (eve November 1)",
+            "(November 1, cancelled) (morn November 1)",
+            "(November 1, cancelled) (fortnight November 1)",
+            "(November 1, cancelled) (century November 1)",
+            "(November 1, cancelled) (o'clock November 1)",
+            "(November 1, cancelled) (pm November 1)",
+            "(November 1, cancelled) (holiday November 1)",
+            "(November 1, cancelled) (christmas November 1)",
+            "(November 1, cancelled) (lunch November 1)",
+            "(November 1, cancelled) (dinner November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: a recorded non-member still asserts"
+            );
+        }
+    }
+
+    #[test]
+    fn r27b_signoff_fragments() {
+        // Round 27 (R27-B, B2 = RT27-B2): the
+        // sign-off singles of the graded core join
+        // the bare inventory (17 words; the class
+        // resurrected 75 of 98 lane slots, mirrors
+        // asserting) and the core's pairs join —
+        // word by word where the singles partition
+        // them, as listed units where they do not
+        // (44 of 62 pair slots).
+        for word in [
+            "sincerely",
+            "regards",
+            "faithfully",
+            "cordially",
+            "warmly",
+            "kindly",
+            "respectfully",
+            "gratefully",
+            "cheerfully",
+            "prayerfully",
+            "farewell",
+            "goodbye",
+            "goodnight",
+            "wishes",
+            "best",
+            "thank",
+            "thanks",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror): a content label
+            // standing with the word still asserts.
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        for unit in [
+            "kind regards",
+            "best regards",
+            "warm regards",
+            "sincerely yours",
+            "yours faithfully",
+            "thank you",
+            "thanks again",
+            "many thanks",
+            "with thanks",
+            "god bless",
+            "bless you",
+            "see you",
+            "see you sunday",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({unit} November 1)"),
+                format!("(November 1, cancelled) (November 1 {unit})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror): a content label
+            // standing with the unit still asserts.
+            let groups = format!("(November 1, cancelled) ({unit} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // Not joining (recorded, binding): the
+        // abstract tail and the recorded letter
+        // tail still assert.
+        for groups in [
+            "(November 1, cancelled) (grace November 1)",
+            "(November 1, cancelled) (mercy November 1)",
+            "(November 1, cancelled) (faith November 1)",
+            "(November 1, cancelled) (hope November 1)",
+            "(November 1, cancelled) (joy November 1)",
+            "(November 1, cancelled) (good morning November 1)",
+            "(November 1, cancelled) (dear friend November 1)",
+            "(November 1, cancelled) (with love November 1)",
+            "(November 1, cancelled) (in prayer November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: a recorded non-member still asserts"
+            );
+        }
+        // Partition correction (R27-B): "your
+        // pastor", listed in the recorded letter
+        // tail above, is not pinned as standing —
+        // it partitions word by word once B3 joins
+        // "pastor" ("your" was already bare), so it
+        // reads governed in both slots even though
+        // no unit joins for it. The correction is
+        // recorded in the R27-B report.
+        for groups in [
+            "(November 1, cancelled) (your pastor November 1)",
+            "(November 1, cancelled) (November 1 your pastor)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{groups}: partitions word by word and stays governed"
+            );
+        }
+    }
+
+    #[test]
+    fn r27b_lone_titles() {
+        // Round 27 (R27-B, B3 = RT27-B3): the lone
+        // title words join the bare inventory — 46
+        // words, 92 of 106 lane slots resurrected,
+        // mirrors asserting (bare27).
+        for word in [
+            "pastor",
+            "reverend",
+            "father",
+            "brother",
+            "sister",
+            "deacon",
+            "elder",
+            "bishop",
+            "chaplain",
+            "rabbi",
+            "priest",
+            "minister",
+            "missionary",
+            "professor",
+            "doctor",
+            "captain",
+            "major",
+            "colonel",
+            "general",
+            "sir",
+            "madam",
+            "madame",
+            "lord",
+            "lady",
+            "king",
+            "queen",
+            "prince",
+            "princess",
+            "saint",
+            "pope",
+            "president",
+            "chairman",
+            "secretary",
+            "treasurer",
+            "director",
+            "manager",
+            "coach",
+            "teacher",
+            "nurse",
+            "officer",
+            "judge",
+            "mayor",
+            "senator",
+            "miss",
+            "hon",
+            "esq",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // The plain twins, head and trailing.
+            for line in [
+                format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+                format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+            ] {
+                let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+            }
+            // Held (the mirror): a content label
+            // standing with the word still asserts.
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // Not joining (binding split disposition):
+        // title + name pairs do NOT join as units —
+        // a named person is the corpus's canonical
+        // content label, and the pair asserting is
+        // the accepted mirror direction.
+        for groups in [
+            "(November 1, cancelled) (pastor lee November 1)",
+            "(November 1, cancelled) (pastor johnson November 1)",
+            "(November 1, cancelled) (dr lee November 1)",
+            "(November 1, cancelled) (mr lee November 1)",
+            "(November 1, cancelled) (rev lee November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: a title + name pair still asserts"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{groups}: keep-through still asserts"
+            );
+        }
+    }
+
+    #[test]
+    fn r27b_direction_set() {
+        // Round 27 (R27-B, B4 = RT27-B4): the
+        // direction set joins the bare inventory —
+        // 11 words (the address ring resurrected 98
+        // of 100 lane slots; the direction members
+        // are the ones that cannot head an event).
+        for word in [
+            "north",
+            "south",
+            "east",
+            "west",
+            "northeast",
+            "northwest",
+            "southeast",
+            "southwest",
+            "uptown",
+            "downtown",
+            "midtown",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror): a content label
+            // standing with the word still asserts.
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // Not joining (recorded, binding): the
+        // street/place remainder still asserts,
+        // including the pair sweep's shipped-form
+        // phrases that do not partition under
+        // B6's phrase disposition.
+        for groups in [
+            "(November 1, cancelled) (church November 1)",
+            "(November 1, cancelled) (street November 1)",
+            "(November 1, cancelled) (hall November 1)",
+            "(November 1, cancelled) (school November 1)",
+            "(November 1, cancelled) (main street November 1)",
+            "(November 1, cancelled) (in town November 1)",
+            "(November 1, cancelled) (north side November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: a place-noun fragment still asserts"
+            );
+        }
+    }
+
+    #[test]
+    fn r27b_number_paradigm_remainder() {
+        // Round 27 (R27-B, B5 = RT27-B5): the
+        // number paradigm remainder joins to its
+        // end — ordinals fourth…hundredth + last /
+        // previous / preceding / thrice / triple /
+        // quarter (54 of 68 lane slots) and
+        // cardinals five…million + dozen / zero
+        // (56 of 58 lane slots), mirrors asserting.
+        for word in [
+            "fourth",
+            "fifth",
+            "sixth",
+            "seventh",
+            "eighth",
+            "ninth",
+            "tenth",
+            "eleventh",
+            "twelfth",
+            "thirteenth",
+            "fourteenth",
+            "fifteenth",
+            "sixteenth",
+            "seventeenth",
+            "eighteenth",
+            "nineteenth",
+            "twentieth",
+            "thirtieth",
+            "fortieth",
+            "fiftieth",
+            "hundredth",
+            "last",
+            "previous",
+            "preceding",
+            "thrice",
+            "triple",
+            "quarter",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+            "twenty",
+            "thirty",
+            "forty",
+            "fifty",
+            "sixty",
+            "seventy",
+            "eighty",
+            "ninety",
+            "hundred",
+            "thousand",
+            "million",
+            "dozen",
+            "zero",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // The plain twins, head and trailing.
+            for line in [
+                format!("November 1, 2026, cancelled, {word} November 1, 2026"),
+                format!("November 1, 2026, cancelled, November 1, 2026 {word}"),
+            ] {
+                let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+            }
+            // Held (the mirror): a content label
+            // standing with the word still asserts.
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+    }
+
+    #[test]
+    fn r27b_closed_tails() {
+        // Round 27 (R27-B, B6 = RT27-B6): the
+        // closed tails join — the pronoun tail
+        // (10 of 98 lane slots; the shipped matrix
+        // held behind it) and the connective /
+        // phrase tail (88 of 174 lane slots),
+        // mirrors asserting.
+        for word in ["noone", "anymore", "anyways", "elsewhere"] {
+            for groups in [
+                format!("(November 1, cancelled) ({word} November 1)"),
+                format!("(November 1, cancelled) (November 1 {word})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror): a content label
+            // standing with the word still asserts.
+            let groups = format!("(November 1, cancelled) ({word} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        for unit in [
+            "anyone else",
+            "sooner than",
+            "other words",
+            "other hand",
+            "last time",
+            "fourth time",
+            "long time",
+            "short time",
+            "part of",
+            "rest of",
+            "end of",
+            "top of",
+            "back of",
+            "front of",
+            "side of",
+            "middle of",
+            "bottom of",
+            "on top",
+            "at top",
+            "in front",
+            "in back",
+            "at church",
+            "at school",
+            "at work",
+            "at rest",
+            "at peace",
+            "in peace",
+            "in love",
+            "in faith",
+            "in hope",
+            "in grace",
+            "by faith",
+            "by grace",
+            "by heart",
+            "by hand",
+            "by mail",
+            "by phone",
+            "by email",
+            "by name",
+            "by night",
+            "for christmas",
+            "for easter",
+            "at christmas",
+            "at easter",
+        ] {
+            for groups in [
+                format!("(November 1, cancelled) ({unit} November 1)"),
+                format!("(November 1, cancelled) (November 1 {unit})"),
+            ] {
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path stays governed"
+                );
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{groups}: keep-through stays governed"
+                );
+            }
+            // Held (the mirror): a content label
+            // standing with the unit still asserts.
+            let groups = format!("(November 1, cancelled) ({unit} choir November 1)");
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // Not joining (recorded, binding): a
+        // phrase unit's event-label member standing
+        // alone keeps its reading — "(christmas
+        // November 1)" is an event label and still
+        // asserts.
+        for groups in [
+            "(November 1, cancelled) (christmas November 1)",
+            "(November 1, cancelled) (easter November 1)",
+            "(November 1, cancelled) (potluck November 1)",
+            "(November 1, cancelled) (meeting November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: an event label still asserts"
+            );
+        }
+    }
+
+    #[test]
+    fn r27b_above_all_else() {
+        // Round 27 (R27-B): "above all else" joins
+        // as a phrase unit — M7's first plausible
+        // member, a one-word extension of the
+        // shipped "above all"; the synthesis amends
+        // M7's disposition accordingly. M7's
+        // remaining merged forms stay recorded.
+        for groups in [
+            "(November 1, cancelled) (above all else November 1)",
+            "(November 1, cancelled) (November 1 above all else)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // The plain twins, head and trailing.
+        for line in [
+            "November 1, 2026, cancelled, above all else November 1, 2026",
+            "November 1, 2026, cancelled, November 1, 2026 above all else",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: plain twin stays governed");
+        }
+        // Held (the mirror): a content label
+        // standing with the unit still asserts, and
+        // the unit's last member standing alone
+        // keeps its reading.
+        for groups in [
+            "(November 1, cancelled) (above all else choir November 1)",
+            "(November 1, cancelled) (else November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: content asserts beside a sibling cancellation"
+            );
+        }
+        // Standing (recorded, NOT fixed): one of
+        // the sweep's other two resurrecting
+        // overlaps, "come home tomorrow", is the
+        // R26-B verb + home family — it does not
+        // join here, and the shape still asserts in
+        // both slots, as the lane recorded.
+        for groups in [
+            "(November 1, cancelled) (come home tomorrow November 1)",
+            "(November 1, cancelled) (November 1 come home tomorrow)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{groups}: verb + home still asserts (recorded, not fixed)"
+            );
+        }
+        // Partition correction (R27-B): the other
+        // overlap, "gone home tomorrow night", no
+        // longer resurrects once this batch lands —
+        // "gone home" is a shipped unit, "tomorrow"
+        // was already bare, and B1 joins "night",
+        // so the whole form partitions word by
+        // word and reads governed in both slots.
+        // The lane's recorded reading predates B1;
+        // the correction is recorded in the R27-B
+        // report.
+        for groups in [
+            "(November 1, cancelled) (gone home tomorrow night November 1)",
+            "(November 1, cancelled) (November 1 gone home tomorrow night)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{groups}: partitions word by word and stays governed"
             );
         }
     }

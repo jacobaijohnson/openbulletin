@@ -530,3 +530,170 @@ pins as the sender's own words).
 `r27a_cf_only_tokens_at_every_site` — each witness with
 its clean twin and the standing boundary it neighbours,
 on the established three surfaces.
+
+## Shipped addendum, R27-B
+
+Shipped on main over baseline `55a2b46` (R27-A close, 824
+tests). Full unpiped suite **831 passed / 0 failed** (824
+baseline + 7 new pins; log `/tmp/r27b_full2.log`, cargo
+exit 0 embedded in the log), clippy `--workspace
+--all-targets -D warnings` exit 0
+(`/tmp/r27b_clippy2.log`), booklet baseline reproduced
+in-suite — imposed 31,717 / reader 34,977 (the
+`booklet_export_size_stays_down` measurement). All code
+work in `crates/ob-extract/src/contribution.rs`.
+
+### Per-class shipped membership (F2, inventory ring III)
+
+- **B1 — time companions.** 37 bare words from the
+  sweeps join (the 32-word class: noon, midnight,
+  tonight, morning, afternoon, evening, night, weekend,
+  dawn, dusk, sunrise, sunset, daytime, nighttime,
+  weekday, minute, moment, lunchtime, bedtime, daybreak,
+  nightfall, twilight, mealtime, teatime, suppertime,
+  dinnertime, spring, summer, autumn, fall, winter,
+  season — 64 of 64 lane slots; plus the rest sweep's
+  five strong singles: midday, midweek, nightly, hourly,
+  yearly), and `coming` joins beside them under the
+  adjudication below (38 words in the block in total).
+  One phrase unit is listed, `after lunch`; the rest of
+  the swept phrase ring partitions word by word. The
+  non-joining timeword tail is pinned as asserting,
+  with `o'clock` and `pm` added to those tail pins in
+  this batch; the event-label nouns swept in the same
+  class do not join.
+- **B2 — sign-off fragments.** 17 bare singles join
+  (sincerely, regards, faithfully, cordially, warmly,
+  kindly, respectfully, gratefully, cheerfully,
+  prayerfully, farewell, goodbye, goodnight, wishes,
+  best, thank, thanks; the class resurrected 75 of 98
+  single slots) and 6 phrase units are listed (kind
+  regards, warm regards, god bless, bless you, see
+  you, see you sunday); the rest of the core's pairs
+  partition word by word (44 of 62 pair slots). The
+  abstract tail and the recorded letter tail do not
+  join.
+- **B3 — lone titles.** 46 bare words join (92 of 106
+  lane slots). Title + name pairs do **not** join as
+  units, per the binding split disposition in F2.
+- **B4 — direction set.** 11 bare words join (north,
+  south, east, west, northeast, northwest, southeast,
+  southwest, uptown, downtown, midtown; the address
+  ring resurrected 98 of 100 lane slots). The
+  street/place remainder does not join and is pinned
+  as asserting.
+- **B5 — number paradigm remainder.** 55 bare words
+  join to the paradigm's end: ordinals fourth…
+  hundredth + last / previous / preceding / thrice /
+  triple / quarter (27 words, 54 of 68 lane slots) and
+  cardinals five…million + dozen / zero (28 words, 56
+  of 58 lane slots).
+- **B6 — closed tails.** 4 bare pronoun-tail singles
+  join (noone, anymore, anyways, elsewhere) and 41
+  phrase units are listed (`anyone else`, the
+  partitives, the locative / devotional phrases, and
+  the `for` / `at christmas` / `easter` forms among
+  them; pronoun tail 10 of 98 lane slots, connective /
+  phrase tail 88 of 174). Members standing alone keep
+  their readings: `christmas` and `easter` are event
+  labels and still assert alone.
+- **`above all else`** joins as 1 phrase unit, M7's
+  first plausible member, per F2.
+
+`BARE_PHRASE_UNITS` counted in source at exactly
+**166** (117 at the round-26 close + 50 dispositioned
+in this batch − 1: the `coming sunday` unit replaced
+by the bare word, below; net +49 listed units:
+1 B1 + 6 B2 + 41 B6 + 1 `above all else`). No other
+count or enumeration in the tree disagrees.
+
+### The `coming` adjudication (coordinator, recorded here)
+
+This addendum is the round-27 close record the code
+comments cite. The red team's B1 pair/rest sweep
+listed the **pair** `coming sunday` as a resurrecting
+member under a FIX disposition; it did not list the
+lone word. The phrase-unit mechanism provably cannot
+reach the head-slot shape: probed with the unit
+listed, `(November 1, cancelled) (coming sunday
+November 1)` still asserted on all three group
+surfaces and both plain twins, because `coming
+sunday` is itself a relative date phrase in the
+machinery and `coming` can stand alone in a
+weekday-framed date's region. **Coordinator
+adjudication, accepted for this batch: `coming` joins
+as a bare word, amending R27-B's membership sourcing
+for this one word, and the `&["coming", "sunday"]`
+unit is removed.** The bare word reaches every group
+shape and the mirror holds: `(coming sunday November
+1)` and `(November 1 coming sunday)` read governed
+beside the cancelled sibling on all three surfaces,
+`(coming November 1)` (and its trailing twin) read
+governed, `(coming sunday choir November 1)` still
+asserts, and the weekday-framed witness — pinned in
+exactly the group shape `(coming Sunday, November
+1)`, where `coming` stands alone in the framed date's
+before-region apart from the framing weekday — reads
+governed on all three surfaces. Acceptance was
+conditional on the final full suite and clippy above
+being green; they are. One plain-surface record,
+pinned as the machinery actually reads it: the plain
+twins of `coming` alone read governed, while the
+plain twins of the pair keep the standing
+weekday-phrase relative reading (head asserts
+November 1; trailing asserts October 18, the coming
+Sunday's own resolution) — the same reading the
+shipped `last sunday` / `previous sunday` phrases
+carry on the plain surface, whose ring pins likewise
+govern the groups only.
+
+### Flagged pins (the only pre-existing test bodies changed)
+
+Four **FLAGGED** thanks-pin flips, all the same
+witness: a lone head `(thanks November 1)` stood as
+asserting under the R20-3 adjudication and now reads
+governed because B2 joins `thanks` as a sign-off
+single, superseding R20-3 for this word. Named:
+
+- `r26b_phrase_units_ring2` — the round-26 pin at the
+  end of the test ("a lone head thanks still asserts
+  (R20-3)") flipped to governed.
+- `r21b_bare_inventory_function_words` — `(thanks
+  November 1)` removed from the held list (rounds
+  21–26) and its flipped reading pinned separately.
+- `r22b_bare_inventory_function_classes_round_three`
+  — the same removal and flip (rounds 22–26).
+- `r23a_bare_inventory_deictics_and_remainders` —
+  the same removal and flip (round 23).
+
+**No other pre-existing test body changed.**
+
+### Partition corrections (pins in the new R27-B tests)
+
+Two foundation pins were repinned with comments in
+the new tests, as corrections to the foundation's own
+readings rather than membership changes:
+
+- **`your pastor` governs** (in
+  `r27b_signoff_fragments`): listed in the recorded
+  letter tail as not joining, it in fact partitions
+  word by word once B3 joins `pastor` (`your` was
+  already bare), so it reads governed in both slots
+  with no unit joining for it.
+- **`gone home tomorrow night` governs** (in
+  `r27b_above_all_else`): the sweep overlap recorded
+  as resurrecting partitions once B1 joins `night`
+  (`gone home` is a shipped unit, `tomorrow` was
+  already bare), so it reads governed in both slots.
+  Its twin stands as recorded: `come home tomorrow`
+  still asserts in both slots — the R26-B verb +
+  home family, recorded-not-fixed.
+
+### Pins added
+
+`r27b_time_companions`, `r27b_signoff_fragments`,
+`r27b_lone_titles`, `r27b_direction_set`,
+`r27b_number_paradigm_remainder`, `r27b_closed_tails`,
+`r27b_above_all_else` — each witness on the
+established three surfaces with its plain twins where
+the established pattern carries them, and its mirror.

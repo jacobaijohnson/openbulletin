@@ -1008,3 +1008,73 @@ written, or from a choir twin, whose reading
 this batch's diff cannot reach (the determiner
 rule is only ever consulted for an inventory
 head noun).
+
+## Coordinator close, round 29 (2026-10-19)
+
+All three fix batches shipped and were independently
+re-verified by the coordinator on their exact committed
+trees (full unpiped suite + clippy `-D warnings`, counts
+read from cargo's own output in on-disk logs): **862
+passed / 0 failed across 28 test-result lines, cargo exit
+0; clippy exit 0; booklet baseline reproduced byte-exact
+— imposed 31,717 / reader 34,977** at the final tree
+`0080121`.
+
+- **R29-A `a2d8a54`** — 845 → 850 tests, 5 new `r29a_*`
+  pins. No coordinator verification of this batch was on
+  record when this coordinator inherited the loop, so it
+  was re-verified first, on the clean committed tree,
+  before any recovery work: 850 passed / 0 failed, clippy
+  exit 0, booklet byte-exact. F1 + F2 + F3 + F8 shipped
+  as dispositioned, per the batch's addendum above.
+- **R29-B `5b95320`** — 850 → 857 tests, 7 new `r29b_*`
+  pins, zero pre-existing test bodies changed.
+  **Recovery record:** the original writer's session was
+  interrupted with the batch's implementation complete
+  in the uncommitted tree (+407/−16 in
+  `contribution.rs`) and its scratch witness probe
+  (`tmp_probe29b.rs`, modes f4a/f4b/f5/f7) standing
+  beside it. The coordinator read the full diff against
+  the disposition and adjudicated it sound and in
+  scope — F4's verb-slot completion, F5's destination
+  NP judgment scoped to `destination_to_end`'s run,
+  F5's abbreviation tail, F7's naming consultation on
+  the group and plain surfaces — and completed the
+  batch from that state rather than resetting. The
+  completing writer probe-verified every witness family
+  against HEAD baselines (stash-cycle, byte-compared):
+  no witness failed and no implementation fix was
+  needed; the only readings that changed are the
+  consumed Sundays F7 silences. The probe file was
+  deleted before commit. One environment incident is
+  recorded in the batch's addendum (a service restart
+  flipped file state once mid-batch; every cited number
+  is from the re-run).
+- **R29-C `0080121`** — 857 → 862 tests, 5 new `r29c_*`
+  pins, zero pre-existing test bodies changed. F6's
+  reach restated as adjudicated: definite determiners
+  `the` / `this` / `that`; article reach through any
+  complex preposition's tail judged as a phrase shape;
+  bare-class modifiers do not defeat the head.
+  `BARE_PHRASE_UNITS` unchanged at 166. Two lines drawn
+  by the batch are accepted as recorded in its
+  addendum: a demonstrative heads a reference only when
+  reached through a complex preposition's tail (a
+  blanket demonstrative rule would have broken the
+  shipped B1 pin `(this morning November 1)` ⇒ None),
+  and the four governor-tainted tails (apart from /
+  aside from / instead of / except for) are governed in
+  the after slot and on the plain surface by the
+  shipped R12 governor machinery, for choir twins
+  exactly as for inventory heads — a boundary
+  observation, not a defect. The lone-preposition
+  block stands, as the synthesis adjudication recorded
+  it.
+
+The trend over the loop's last three rounds: 10 MAJOR
+(round 27) → 6 (round 28) → 6 (round 29), every finding
+in the contribution date-reader family. Round 30 audits
+this close against the same bar (zero BLOCKER + zero
+MAJOR over the close, MINORs fixed or dispositioned).
+The Tier-2 final gate remains unstarted and is not the
+coordinator's to start.

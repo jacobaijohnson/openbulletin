@@ -621,3 +621,113 @@ close against the same bar (zero BLOCKER + zero MAJOR
 over the close, MINORs fixed or dispositioned). The
 Tier-2 final gate remains unstarted and is not the
 coordinator's to start.
+
+## Shipped addendum, R29-A (F1 + F2 + F3 + F8)
+
+Shipped as one batch on the round-29 synthesis tree
+(5842128). Files: `crates/ob-extract/src/contribution.rs`
+and `crates/ob-model/src/lib.rs` (the one cross-crate
+site F2 names), plus this addendum. Suite **850 passed
+/ 0 failed** (845 + 5 new `r29a_*` pins, zero
+pre-existing test bodies changed), clippy
+`--workspace --all-targets -- -D warnings` exit 0,
+booklet **31,717 / 34,977** byte-exact.
+`BARE_PHRASE_UNITS` unchanged at 166 (byte-identical
+block).
+
+- **F1(a) — double boundaries.** In
+  `governor_window_start`'s reach-back, a clause that
+  cleans to nothing (the empty clause standing
+  between two consecutive breaks) is now skipped
+  (`continue`) instead of ending the walk, so the
+  cancellation clause behind it is examined. All 88
+  shapes (11 phrases × 8 double-boundary forms) and
+  the plain `cancelled, * November 1, 2026` form are
+  pinned governing on FOR / KEEP / REL. Boundaries
+  pinned standing: the R24-4 arm (`cancelled *
+  November 8` ⇒ Nov 8 [Nov 1]) and the MINOR-3 arm
+  (`not * November 8` ⇒ Nov 1); "scratch that" /
+  "was cancelled" double-boundary forms read exactly
+  as their comma twins; prospective phrases with
+  double boundaries and double nothings inside a
+  two-word phrase (`hold * * off`) read as their
+  clean twins. `governed_after` was not touched by
+  this arm and holds.
+- **F1(b) — second gap.** `window_break_after_nothing`'s
+  inside-phrase check now tries phrase starts at
+  both of the two nearest words before the nothing
+  (a phrase of at most three words straddles a
+  nothing only from one of those starts), so a
+  phrase is seen when any of its words stands before
+  the nothing with the remainder after it. Pinned:
+  `used to * be` and `used * to * be` govern on all
+  surfaces; the first gap and "do not use" at both
+  gaps hold as controls; the plain `used to * be`
+  twin reads Nov 1 [Nov 8] as its clean twin does.
+- **F2 — `parse_flexible_date` (ob-model).** The
+  reader now drops nothing-tokens at tokenization.
+  The nothing-token class is **restated minimally in
+  ob-model**, not shared by reference: ob-model
+  cannot read ob-extract's statement, so `lib.rs`
+  carries its own `is_format_char` (the same Cf
+  ranges contribution.rs states) and its own
+  `nothing_token` (Cf-only, separator-only, or a
+  separator glued to nothing, with the same edge-trim
+  set) — the two statements name the same class, and
+  the addendum records the duplication so a future
+  lane checks both if the class ever changes.
+  Pinned: Cf-only tokens at all four positions and
+  separator-only forms across the month-name forms
+  (`November` / `October` / `Nov` / `1 November`),
+  on FOR and KEEP; the weekday-framed, trailing-
+  garnish, and group bounds read as before.
+- **F3 — bare-unit continuation glue.** Traced to
+  the decisive reader: on the P7 / P1 surfaces the
+  restated date is salvaged by `date_line_inner`'s
+  weekday-before-a-trailing-date fallback, which
+  read the unit's weekday word off the raw token —
+  a glued `"*sunday"` was not the weekday the check
+  reads, the salvage failed, and the composition
+  governed the date (P7) or let the relative Sunday
+  win (P1 REL). `segment_tokens` already unglues the
+  unit in all forms (verified in isolation: its
+  output is byte-identical for the clean and glued
+  forms), and `occurrence_is_bare`'s membership and
+  signal-span checks read that vector, so they
+  needed no change. The fix is scoped to that
+  reader: the fallback now also accepts a weekday
+  word that ends a bare phrase unit judged on the
+  unglued token vector (`bare_unit_weekday_at` —
+  unit membership by `bare_phrase_unit_span` over
+  unglued, `group_token`-cleaned words). A glued
+  weekday ending no unit (the standalone `*Monday`
+  garnish) is untouched by construction. Pinned:
+  the unit glued at each word and in combination
+  (star and pipe forms) across the P7, P1-REL, and
+  trailing surfaces, with the R28-C originals
+  standing (the trailing forms name Oct 18 beside
+  Nov 1, as shipped).
+- **F8 — Sunday-after glue.** The phrase is judged
+  unglued at three sites, all inside contribution.rs:
+  `segment_tokens` unglues "sunday" + "after" when
+  they stand as consecutive words (the phrase block
+  beside the governor / cancellation / bare-unit
+  blocks); the shared phrase-run reader
+  (`sunday_after_phrase_run`) reads its two words
+  unglued, which also covers the readers that clean
+  with `group_token` only (the second-date scan,
+  `sunday_after_consumed_bases`); and the whole-line
+  reader (`sunday_after_outcome`) judges its two
+  candidate words unglued, which is what the plain
+  witness reads through. Pinned: plain glue on
+  either or both words ⇒ Nov 8 on FOR / KEEP; group
+  glue on the head, on "after", or on both ⇒ Nov 8
+  (the resolved Sunday, not its base). Boundaries:
+  the `*Monday` garnish pin stands (asserted in the
+  F8 test), and the keep-plain whole-line relative
+  readers (`relative_sunday_shape`,
+  `sunday_after_relative_shape`) are untouched.
+
+Flagged items: none. No pre-existing pin was hit;
+no boundary in the disposition moved; no
+stop-and-report condition triggered.

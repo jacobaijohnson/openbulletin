@@ -601,7 +601,19 @@ fn sunday_after_outcome(text: &str, today: SimpleDate) -> Option<SundayAfter> {
     while start + 1 < tokens.len() {
         let first = tokens[start].trim_matches(['(', ')', '[', ']', ',', '.']);
         let second = tokens[start + 1].trim_matches(['(', ')', '[', ']', ',', '.']);
-        if weekday_word(first) == Some(0) && second.eq_ignore_ascii_case("after") {
+        // Round 29 (R29-A, F8 = review MINOR-1): the
+        // phrase's two words are judged unglued on
+        // this whole-line reader too — "the *Sunday
+        // *after November 1, 2026" is the Sunday-after
+        // phrase, exactly as its spaced twin is, and
+        // glue on either word alone loses nothing.
+        // The keep-plain whole-line relative readers
+        // (`relative_sunday_shape`,
+        // `sunday_after_relative_shape`) are a
+        // different shape family and are untouched.
+        let first = unglued_word(first);
+        let second = unglued_word(second);
+        if weekday_word(&first) == Some(0) && second.eq_ignore_ascii_case("after") {
             if let Some(outcome) = sunday_after_base(&tokens[start + 2..], today) {
                 return Some(outcome);
             }
@@ -1265,18 +1277,22 @@ fn group_token(raw: &str) -> String {
 /// and subject-PP narrowings, the determiner-headed
 /// -s rule, the for-zones) still runs exactly as
 /// it runs on the spaced twin.
+/// One cleaned token with its glued separators
+/// taken off (round 29, R29-A, F8): the unglued
+/// form `segment_tokens` judges phrases on — a
+/// separator glued to a word is the separator plus
+/// that word, so "*sunday" unglued is "sunday".
+fn unglued_word(w: &str) -> String {
+    w.trim_start_matches(['*', '|'])
+        .trim_end_matches(['*', '|'])
+        .to_string()
+}
+
 fn segment_tokens(raw_tokens: &[&str]) -> Vec<String> {
     let mut tokens: Vec<String> = raw_tokens.iter().map(|t| group_token(t)).collect();
     // The unglued view of the whole run: each token
     // with its glued separators taken off.
-    let unglued: Vec<String> = tokens
-        .iter()
-        .map(|t| {
-            t.trim_start_matches(['*', '|'])
-                .trim_end_matches(['*', '|'])
-                .to_string()
-        })
-        .collect();
+    let unglued: Vec<String> = tokens.iter().map(|t| unglued_word(t)).collect();
     // The run's word positions in the unglued view.
     let word_pos: Vec<usize> = (0..tokens.len())
         .filter(|&i| !unglued[i].is_empty())
@@ -1319,6 +1335,30 @@ fn segment_tokens(raw_tokens: &[&str]) -> Vec<String> {
                     unglue[p] = true;
                 }
             }
+        }
+    }
+    // Sunday-after phrases, judged on the unglued
+    // vector like the phrases above (round 29,
+    // R29-A, F8 = review MINOR-1): "sunday" standing
+    // directly before "after" — the next word that
+    // is something — is a Sunday-after phrase's
+    // head, and the phrase is a phrase family like
+    // the others this function judges, so both of
+    // its words are read unglued ("the *Sunday
+    // *after November 1, 2026" is the phrase, in a
+    // segment exactly as on the spaced twin). A
+    // glued weekday word standing anywhere else —
+    // the standalone "*Monday" garnish before a
+    // date, a glued "sunday" with no "after" after
+    // it — is not this phrase and keeps its
+    // standing cleaned form.
+    for s in 0..word_pos.len() {
+        if unglued[word_pos[s]] == "sunday"
+            && s + 1 < word_pos.len()
+            && unglued[word_pos[s + 1]] == "after"
+        {
+            unglue[word_pos[s]] = true;
+            unglue[word_pos[s + 1]] = true;
         }
     }
     // The structural words: an auxiliary, a
@@ -1647,13 +1687,29 @@ fn window_break_after_nothing(tokens: &[String], j: usize) -> bool {
     let Some(&p) = prev_nonempty(tokens, j, 1).first() else {
         return true;
     };
-    // A phrase starting at the word before the
+    // A phrase starting at a word before the
     // nothing and completing after it: the nothing
-    // stands inside the phrase.
-    for len in 2..=3usize {
-        if let Some((phrase, end)) = word_phrase(tokens, p, len) {
-            if end - 1 > j && (is_governor_phrase(&phrase) || is_cancellation_phrase(&phrase)) {
-                return false;
+    // stands inside the phrase. Round 29 (R29-A,
+    // F1b = red team RT29-C1b): the phrase is judged
+    // at EVERY gap position, not only from the word
+    // immediately before the nothing — a three-word
+    // phrase whose first word stands two positions
+    // back ("used to * be") has its nothing in its
+    // second gap, and a phrase starting only at the
+    // immediately preceding word ("to be") is no
+    // phrase at all, so the second gap was invisible
+    // here. A phrase is seen when any of its words
+    // stands before the nothing with the phrase's
+    // remainder after it: the candidate starts are
+    // the two nearest words before the nothing (a
+    // phrase of at most three words straddles the
+    // nothing only from one of those starts).
+    for &s in &prev_nonempty(tokens, j, 2) {
+        for len in 2..=3usize {
+            if let Some((phrase, end)) = word_phrase(tokens, s, len) {
+                if end - 1 > j && (is_governor_phrase(&phrase) || is_cancellation_phrase(&phrase)) {
+                    return false;
+                }
             }
         }
     }
@@ -1741,10 +1797,28 @@ fn governor_window_start(
             if matches!(tokens.get(b).map(String::as_str), Some("" | "-" | "--")) {
                 clause_end = b;
             }
-            if clause_start >= clause_end {
-                break;
+            let clause = &tokens[clause_start..clause_end.max(clause_start)];
+            // Round 29 (R29-A, F1a = red team
+            // RT29-C1a): a clause that cleans to
+            // nothing is not the end of the walk.
+            // Two boundary tokens in a row after a
+            // cancellation phrase ("cancelled * *
+            // November 8", "cancelled, * November 1,
+            // 2026") leave an empty clause standing
+            // between the two breaks; the walk used
+            // to stop at that empty clause and never
+            // examine the cancellation clause behind
+            // it, so the governed date asserted. The
+            // reach-back skips a clause that cleans
+            // to nothing and examines the clause
+            // behind it, exactly as it crosses the
+            // filler and spent clauses below. A
+            // single break leaves no empty clause
+            // behind it, so the standing readings
+            // are untouched.
+            if clause.iter().all(|w| w.is_empty()) {
+                continue;
             }
-            let clause = &tokens[clause_start..clause_end];
             let clause_follows_a_date = has_prev_date && clause_start == lo;
             // Round 15 (R15-3): a clause that is a
             // cancellation and nothing else, standing
@@ -9665,6 +9739,31 @@ fn framed_date_outcome(
 /// it stands directly in front of still reads. A date
 /// that does not read yields None for the date, never
 /// a guess.
+/// Whether the token at `i` in `tokens` is the
+/// weekday word of a bare phrase unit ending at
+/// `i`, judged on the unglued token vector (round
+/// 29, R29-A, F3 = red team RT29-T1): the unit's
+/// words are read unglued, as governor phrases are
+/// in `segment_tokens`, so a unit whose weekday
+/// word itself wears the glue ("see you *sunday")
+/// still ends on its weekday word, exactly as the
+/// forms R28-C pinned (glue on the unit's earlier
+/// words, its weekday clean) do. A glued weekday
+/// word that ends no bare unit — the standalone
+/// "*Monday" garnish before a date — is not this
+/// shape and keeps its standing reading.
+fn bare_unit_weekday_at(tokens: &[&str], i: usize) -> bool {
+    let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.']);
+    if weekday_word(&unglued_word(word)).is_none() {
+        return false;
+    }
+    let words: Vec<String> = tokens[..=i]
+        .iter()
+        .map(|t| unglued_word(&group_token(t)))
+        .collect();
+    (0..=i).any(|s| bare_phrase_unit_span(&words, s).is_some_and(|span| s + span == i + 1))
+}
+
 fn date_line_inner(
     raw: &Option<String>,
     today: SimpleDate,
@@ -9738,7 +9837,18 @@ fn date_line_inner(
     // stands in front of clean.
     for i in 1..tokens.len() {
         let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.']);
-        if weekday_word(word).is_none() {
+        // Round 29 (R29-A, F3 = red team RT29-T1):
+        // the weekday word of a bare phrase unit is
+        // judged on the unglued token vector, as
+        // the unit's membership is — a unit whose
+        // weekday word wears the glue ("see you
+        // *sunday November 1, 2026") stands in front
+        // of the date it trails exactly as its
+        // clean twin's weekday does, so the date
+        // reads. A glued weekday ending no unit
+        // keeps its standing reading (see
+        // `bare_unit_weekday_at`).
+        if weekday_word(word).is_none() && !bare_unit_weekday_at(&tokens, i) {
             continue;
         }
         if weekday_is_framed(&tokens, i) {
@@ -10024,14 +10134,21 @@ fn sunday_after_phrase_run(
     i: usize,
     today: SimpleDate,
 ) -> Option<(SimpleDate, usize)> {
-    if weekday_word(&cleaned[i]) != Some(0) {
+    // Round 29 (R29-A, F8 = review MINOR-1): the
+    // phrase is judged on the unglued vector, as
+    // in `segment_tokens` — this run is also read
+    // off cleanings that never unglued it (the
+    // second-date scan's `group_token` cleaning),
+    // so the phrase's two words are read unglued
+    // here, at the shared reader itself.
+    if weekday_word(&unglued_word(&cleaned[i])) != Some(0) {
         return None;
     }
     // Round 27 (R27-A, F3): the "after" is the
     // next word that is something after the
     // weekday, as at the scans that call here.
     let after_at = next_nonempty(cleaned, i + 1)?;
-    if cleaned[after_at].as_str() != "after" {
+    if unglued_word(&cleaned[after_at]) != "after" {
         return None;
     }
     // Round 18 (R18-1): the one shared cleaning.
@@ -30536,5 +30653,397 @@ Youth group meets Wednesday at 6 PM.
                 "{groups}: keep-through boundary stands"
             );
         }
+    }
+
+    #[test]
+    fn r29a_double_boundary_after_cancellation_governs() {
+        // Round 29 (R29-A, F1a = red team RT29-C1a):
+        // two boundary tokens in a row after a
+        // cancellation phrase defeated the governor
+        // window's reach-back — the clause standing
+        // between the two breaks cleans to nothing,
+        // and the walk treated that empty clause as
+        // its end, so the governed date asserted
+        // where its comma and clean twins govern.
+        // The reach-back now skips a clause that
+        // cleans to nothing. All 88 shapes (11
+        // cancellation phrases x 8 double-boundary
+        // forms) read as their twins: nothing
+        // asserts, nothing is named, on every
+        // surface.
+        for phrase in [
+            "cancelled",
+            "postponed",
+            "removed",
+            "dropped",
+            "cancel it",
+            "drop it",
+            "hold off",
+            "put off",
+            "never mind",
+            "forget about",
+            "called off",
+        ] {
+            for boundary in ["* *", "* |", ", *", "* ,", "* ;", "; *", "* -", "- *"] {
+                let groups = format!("(November 1, cancelled) ({phrase} {boundary} November 8)");
+                let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_date, None,
+                    "{groups}: the governed date stays governed"
+                );
+                assert_eq!(
+                    c.for_sunday_second_dates,
+                    Vec::<SimpleDate>::new(),
+                    "{groups}: nothing is named"
+                );
+                let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.keep_through, None, "{groups}: keep-through twin");
+                let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.for_sunday_parenthesized_date, None,
+                    "{groups}: relative path twin"
+                );
+            }
+        }
+        // On the plain trailing surface a single
+        // added star suffices, because the comma is
+        // already there: the star form now reads as
+        // its comma twin and its single-star twin.
+        for line in [
+            "(back together November 1) cancelled, * November 1, 2026",
+            "(back together November 1) cancelled, November 1, 2026",
+            "(back together November 1) cancelled * November 1, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the trailing date stays governed");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through twin");
+        }
+        // The boundaries that do not move. The
+        // R24-4 arm: a separator between a postposed
+        // cancellation and the next date still
+        // bounds its scope, as its comma twin does.
+        for line in [
+            "November 1, 2026, cancelled * November 8, 2026",
+            "(November 1, cancelled * November 8)",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(8)), "{line}: November 8 asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![nov(1)],
+                "{line}: November 1 is named governed"
+            );
+        }
+        // The MINOR-3 arm: a separator after a
+        // prospective still does not bound the
+        // window, and the prospective spends forward.
+        let line = "(November 1, not * November 8)";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{line}: November 1 asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: the governed date is not named"
+        );
+        // "scratch that" / "was cancelled" are not
+        // in this family — their comma readings
+        // stand, and the double-boundary forms read
+        // exactly as those twins do.
+        for (star, comma) in [
+            (
+                "(November 1, cancelled) (scratch that * * November 8)",
+                "(November 1, cancelled) (scratch that, November 8)",
+            ),
+            (
+                "(November 1, cancelled) (was cancelled * * November 8)",
+                "(November 1, cancelled) (was cancelled, November 8)",
+            ),
+        ] {
+            let text = format!("For Sunday: {star}\n\n## Announcement\n\nHi.\n");
+            let a = parse_contribution(&text, today()).expect("parses");
+            let text = format!("For Sunday: {comma}\n\n## Announcement\n\nHi.\n");
+            let b = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(a.for_date, b.for_date, "{star}: reads as its comma twin");
+            assert_eq!(
+                a.for_sunday_second_dates, b.for_sunday_second_dates,
+                "{star}: the note matches its comma twin"
+            );
+        }
+        // Prospective phrases with double boundaries
+        // read as their clean twins, and double
+        // nothings inside a two-word phrase hold.
+        for (star, clean) in [
+            (
+                "(November 1, cancelled) (not * * November 8)",
+                "(November 1, cancelled) (not November 8)",
+            ),
+            (
+                "(back together November 1) hold * * off November 1, 2026",
+                "(back together November 1) hold off November 1, 2026",
+            ),
+        ] {
+            let text = format!("For Sunday: {star}\n\n## Announcement\n\nHi.\n");
+            let a = parse_contribution(&text, today()).expect("parses");
+            let text = format!("For Sunday: {clean}\n\n## Announcement\n\nHi.\n");
+            let b = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(a.for_date, b.for_date, "{star}: reads as its clean twin");
+            assert_eq!(
+                a.for_sunday_second_dates, b.for_sunday_second_dates,
+                "{star}: the note matches its clean twin"
+            );
+        }
+    }
+
+    #[test]
+    fn r29a_used_to_be_second_gap_is_seen() {
+        // Round 29 (R29-A, F1b = red team RT29-C1b):
+        // a nothing in the SECOND gap of "used to
+        // be" was invisible to the scoped exception,
+        // which checked phrases starting only at the
+        // word before the nothing: "(used to * be
+        // November 8)" asserted its governed date on
+        // every surface, where its comma and clean
+        // twins govern. The exception's phrase check
+        // now judges phrases at every gap position.
+        for groups in [
+            "(November 1, cancelled) (used to * be November 8)",
+            "(November 1, cancelled) (used * to * be November 8)",
+            // The first gap, which already held.
+            "(November 1, cancelled) (used * to be November 8)",
+            // The other three-word phrase, at both
+            // gaps.
+            "(November 1, cancelled) (do * not use November 8)",
+            "(November 1, cancelled) (do not * use November 8)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date, None,
+                "{groups}: the governed date stays governed"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{groups}: nothing is named"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{groups}: keep-through twin");
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path twin"
+            );
+        }
+        // The plain surface: the governed November 8
+        // is named beside the standing November 1,
+        // exactly as the clean twin reads.
+        let line = "(back together November 1) used to * be November 8";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{line}: November 1 stands");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(8)],
+            "{line}: the governed date is named"
+        );
+        let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{line}: keep-through twin");
+    }
+
+    #[test]
+    fn r29a_parse_flexible_date_drops_nothings() {
+        // Round 29 (R29-A, F2 = review MAJOR-1):
+        // `parse_flexible_date` (ob-model) tokenized
+        // the raw line text and never dropped
+        // nothing-tokens, so a Cf-only or
+        // separator-only token at ANY position of an
+        // unframed month-name date line made the
+        // For Sunday / Keep-through line read no
+        // date at all. That reader now drops
+        // nothing-tokens like every other date
+        // reader. (Fixtures: November 1, 2026 is a
+        // Sunday; October 18, 2026 is a Sunday.)
+        for (line, want) in [
+            ("November \u{200b} 1, 2026", nov(1)),
+            ("\u{200b} November 1, 2026", nov(1)),
+            ("November 1, \u{200b} 2026", nov(1)),
+            ("November 1, 2026 \u{200b}", nov(1)),
+            ("November * 1, 2026", nov(1)),
+            ("November | 1, 2026", nov(1)),
+            ("October \u{200b} 18, 2026", oct(18)),
+            ("Nov \u{200b} 1, 2026", nov(1)),
+            ("1 November \u{200b} 2026", nov(1)),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(want), "{line}: the date line reads");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(want), "{line}: keep-through reads");
+        }
+        // The bounds that already survived do not
+        // move: the weekday-framed form, the
+        // trailing-garnish form, and the group form.
+        for (line, want) in [
+            ("Sunday November \u{200b} 1, 2026", nov(1)),
+            ("November 1, 2026 \u{200b} (Sunday)", nov(1)),
+            ("(November \u{200b} 1, 2026)", nov(1)),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(want), "{line}: the surviving form stands");
+        }
+    }
+
+    #[test]
+    fn r29a_bare_unit_continuation_glue() {
+        // Round 29 (R29-A, F3 = red team RT29-T1):
+        // glue on a bare unit's CONTINUATION words
+        // broke R28-C's F3 protection, which keys on
+        // the unit as written and the signal standing
+        // on its token: "see you sunday" with glue on
+        // "sunday" (or on "you" + "sunday") ate the
+        // restated date on the worst-witness surface
+        // and let the relative Sunday win the
+        // relative surface. Bare-unit membership and
+        // the F3 signal span are now judged on the
+        // unglued token vector at every position.
+        // Glue on "see" alone already held and holds.
+        for unit in [
+            "see you sunday",
+            "*see you sunday",
+            "see *you sunday",
+            "see you *sunday",
+            "*see *you sunday",
+            "see *you *sunday",
+            "*see you *sunday",
+            "*see *you *sunday",
+            "|see |you |sunday",
+        ] {
+            // The worst witness (P7): the glued
+            // farewell no longer eats the restated
+            // date.
+            let line =
+                format!("November 1, 2026, cancelled (while November 1) {unit} November 1, 2026");
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{line}: the restated date asserts as its twins"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: nothing else is named"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(1)), "{line}: keep-through twin");
+            // The relative surface (P1): the unit
+            // standing before the date no longer lets
+            // the relative Sunday win the line.
+            let line = format!("(back together November 1) {unit} November 1, 2026");
+            let text = format!("For Sunday: next Sunday {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{line}: the date wins the relative surface as its twins"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: the relative Sunday is not named"
+            );
+            // The trailing form: the unit after the
+            // restated date, glued at each word —
+            // the R28-C witness's own shape, whose
+            // Sunday is named beside the assertion.
+            let line = format!("November 1, 2026, cancelled, November 1, 2026 {unit}");
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{line}: the restated date asserts as its twins"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![oct(18)],
+                "{line}: the unit's Sunday is named, not asserted"
+            );
+        }
+    }
+
+    #[test]
+    fn r29a_sunday_after_phrase_glue() {
+        // Round 29 (R29-A, F8 = review MINOR-1):
+        // Sunday-after phrases were never judged
+        // unglued — plain glue on either word lost
+        // the phrase (FOR None where the clean line
+        // resolves November 8), and group glue on
+        // the head let the base assert instead of
+        // the resolved Sunday. The phrase is now
+        // judged on the unglued vector in the
+        // readers `segment_tokens` serves, at the
+        // shared phrase-run reader, and on the
+        // whole-line Sunday-after reader.
+        for line in [
+            "the Sunday after November 1, 2026",
+            "the *Sunday *after November 1, 2026",
+            "the *Sunday after November 1, 2026",
+            "the Sunday *after November 1, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{line}: the resolved Sunday reads as its clean twin"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{line}: keep-through twin");
+        }
+        for groups in [
+            "(November 1, cancelled) (the Sunday after November 1)",
+            "(November 1, cancelled) (the *Sunday after November 1)",
+            "(November 1, cancelled) (the Sunday *after November 1)",
+            "(November 1, cancelled) (the *Sunday *after November 1)",
+        ] {
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{groups}: the resolved Sunday asserts, not its base"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, Some(nov(8)), "{groups}: keep-through twin");
+        }
+        // The boundary that does not move: the
+        // standalone glued weekday garnish before a
+        // date keeps its standing reading.
+        let line = "(November 8) *Monday November 15, 2026";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(15)),
+            "{line}: the glued weekday reading stands"
+        );
     }
 }

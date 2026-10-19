@@ -612,6 +612,66 @@ fn year_number(word: &str) -> Option<i32> {
     }
 }
 
+/// Whether `c` is a Unicode format character
+/// (general category Cf): the invisible clipboard
+/// characters — zero-width spaces and joiners, the
+/// soft hyphen, bidi controls, the byte-order mark,
+/// and their kin. Round 29 (R29-A, F2 = review
+/// MAJOR-1): this is ob-model's own statement of the
+/// class `ob-extract` states as `is_format_char` in
+/// contribution.rs; the two statements name the same
+/// ranges, and the nothing-token class below is the
+/// same class contribution.rs states as
+/// `nothing_token` — restated here, minimally,
+/// because this crate cannot read that one.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061c}'
+            | '\u{06dd}'
+            | '\u{070f}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d182}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
+    )
+}
+
+/// Whether a raw token is a NOTHING token (round 29,
+/// R29-A, F2): a token that is nothing but format
+/// characters, a token that is nothing but the
+/// bulletin's own separators standing alone ("*",
+/// "|", "**", "*|"), or a separator glued to nothing
+/// ("|\u{200b}", "*,"). The same class
+/// contribution.rs states as `nothing_token`; other
+/// boundary tokens (a standalone "•", "~", an emoji,
+/// a dash) are NOT nothings and keep their standing
+/// readings.
+fn nothing_token(raw: &str) -> bool {
+    let stripped: String = raw.chars().filter(|c| !is_format_char(*c)).collect();
+    if stripped.len() < raw.len() && !stripped.chars().any(|c| c.is_alphanumeric()) {
+        return true;
+    }
+    let core = stripped.trim_matches([
+        '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}', '/',
+    ]);
+    !core.is_empty() && core.chars().all(|c| c == '*' || c == '|')
+}
+
 /// Read a date the way an office worker writes it
 /// (docs/planning/occasions.md): ISO (2026-10-18), US
 /// numeric (10/18/2026, 10/18/26, 10-18-2026, also without
@@ -634,6 +694,18 @@ pub fn parse_flexible_date(text: &str, today: SimpleDate) -> Option<SimpleDate> 
     let mut weekday: Option<u32> = None;
     let mut tokens: Vec<String> = Vec::new();
     for raw in cleaned.split_whitespace() {
+        // Round 29 (R29-A, F2 = review MAJOR-1): a
+        // nothing-token is nothing on this reader
+        // too — a Cf-only or separator-only token at
+        // any position of an unframed month-name date
+        // line used to make the whole line read no
+        // date, where every other date reader drops
+        // nothings. The token is dropped here, at
+        // tokenization, so no position of the line
+        // can be poisoned by it.
+        if nothing_token(raw) {
+            continue;
+        }
         if weekday.is_none() && tokens.is_empty() {
             if let Some(w) = weekday_number(raw) {
                 weekday = Some(w);

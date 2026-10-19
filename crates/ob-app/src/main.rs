@@ -701,6 +701,7 @@ fn write_journal_to(
     meta: &std::path::Path,
     doc: &Document,
     source: &Option<std::path::PathBuf>,
+    token: &str,
 ) -> Result<(), String> {
     ob_format::save(doc, obd)?;
     let when = std::time::SystemTime::now()
@@ -718,7 +719,7 @@ fn write_journal_to(
     // wrote this journal (S-MIN-3), so retirement can tell its
     // own journal from another live instance's. Older notes
     // have no third line and read as tokenless.
-    let note_text = format!("{when}\n{source_line}\n{}\n", instance_token());
+    let note_text = format!("{when}\n{source_line}\n{token}\n");
     write_file_atomically(meta, note_text.as_bytes())
         .map_err(|e| format!("cannot write the autosave note: {e}"))
 }
@@ -768,6 +769,106 @@ fn read_journal_from(
 fn clear_journal_from(obd: &std::path::Path, meta: &std::path::Path) {
     let _ = std::fs::remove_file(obd);
     let _ = std::fs::remove_file(meta);
+}
+
+/// One job for the journal worker (HF-4). A job carries
+/// everything the work needs — the journal paths, the
+/// document clone and the instance token for a write; the
+/// journal paths, the lock path and the token for a
+/// retire — so the worker thread never touches App state.
+enum JournalJob {
+    // Boxed: a write job carries a whole document clone,
+    // and the retire job must not grow to match it.
+    Write(Box<JournalWriteJob>),
+    Retire(JournalRetireJob),
+}
+
+struct JournalWriteJob {
+    obd: std::path::PathBuf,
+    meta: std::path::PathBuf,
+    doc: Document,
+    source: Option<std::path::PathBuf>,
+    token: String,
+    /// The canonical snapshot this write carries: when
+    /// the write lands, the journal holds exactly this
+    /// state, and `poll_journal` records it.
+    snapshot: String,
+}
+
+struct JournalRetireJob {
+    obd: std::path::PathBuf,
+    meta: std::path::PathBuf,
+    lock: std::path::PathBuf,
+    token: String,
+}
+
+/// What the journal worker reports back, one per job, in
+/// the order the jobs ran.
+enum JournalResult {
+    Written {
+        snapshot: String,
+        outcome: Result<(), String>,
+    },
+    Retired,
+}
+
+/// The journal worker: one dedicated thread doing the
+/// journal's file work (the full `ob_format::save` zip and
+/// the guarded retirement) off the egui frame thread, on
+/// the same job/result channel shape as the import and
+/// catalog workers. Jobs run one at a time, in the order
+/// they were sent, so a retire sent after a write lands
+/// after it, and no write sent before a retire can land
+/// behind it.
+struct JournalWorker {
+    jobs: std::sync::mpsc::Sender<JournalJob>,
+    results: std::sync::mpsc::Receiver<JournalResult>,
+}
+
+impl JournalWorker {
+    fn spawn() -> JournalWorker {
+        let (job_tx, job_rx) = std::sync::mpsc::channel::<JournalJob>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<JournalResult>();
+        std::thread::spawn(move || {
+            while let Ok(job) = job_rx.recv() {
+                let result = match job {
+                    JournalJob::Write(job) => {
+                        let outcome = write_journal_to(
+                            &job.obd,
+                            &job.meta,
+                            &job.doc,
+                            &job.source,
+                            &job.token,
+                        );
+                        JournalResult::Written {
+                            snapshot: job.snapshot,
+                            outcome,
+                        }
+                    }
+                    JournalJob::Retire(job) => {
+                        retire_journal_from(&job.obd, &job.meta, &job.lock, &job.token);
+                        JournalResult::Retired
+                    }
+                };
+                if result_tx.send(result).is_err() {
+                    break;
+                }
+            }
+        });
+        JournalWorker {
+            jobs: job_tx,
+            results: result_rx,
+        }
+    }
+}
+
+/// Which kind of journal job is in flight, if any: the
+/// single-flight gate that keeps journal file mutations
+/// from ever racing each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JournalFlight {
+    Write,
+    Retire,
 }
 
 /// A journal that exists but cannot be read (audit Batch 3):
@@ -2716,6 +2817,25 @@ struct App {
     /// journal keeps retrying quietly after that, rather
     /// than raising the banner every two seconds.
     journal_failure_noted: bool,
+    /// The journal worker (HF-4): the thread that does the
+    /// journal's save and its retirement off the frame
+    /// thread. Spawned lazily on the first journal job;
+    /// None until then (startup's own journal handling runs
+    /// before it exists, on the startup path).
+    journal_worker: Option<JournalWorker>,
+    /// The journal job currently with the worker, if any.
+    /// One flight at a time: journal file mutations never
+    /// race.
+    journal_flight: Option<JournalFlight>,
+    /// The one journal job waiting behind the flight, if
+    /// any: for writes only the newest snapshot is kept
+    /// (coalesced, never an unbounded backlog), and a
+    /// retire replaces a waiting write outright.
+    journal_pending: Option<JournalJob>,
+    /// A retirement has been requested and has not landed
+    /// yet: the frame thread sends no new write jobs until
+    /// it does, so no write can land after the retire.
+    journal_retiring: bool,
     /// The hymn memory has failed to write this session and
     /// the user has already been told once (S-MIN-2): later
     /// failures stay quiet, like the journal's.
@@ -3346,6 +3466,10 @@ impl Default for App {
             discard_armed: false,
             peer_alive: false,
             journal_failure_noted: false,
+            journal_worker: None,
+            journal_flight: None,
+            journal_pending: None,
+            journal_retiring: false,
             hymn_memory_failure_noted: false,
             import_rx: None,
             analyzer_rx: None,
@@ -6766,7 +6890,173 @@ impl App {
         // Retire only a journal this instance may retire
         // (S-MIN-3): another live instance's safety copy is
         // not ours to clear just because this file saved.
-        retire_journal_from(&obd, &meta, &instance_lock_path(), instance_token());
+        // The retirement goes through the journal worker
+        // (HF-4), ordered behind any write already sent, so
+        // it behaves exactly as the direct call did, just
+        // asynchronously.
+        self.request_journal_retire(&obd, &meta);
+    }
+
+    /// Ask the journal worker to retire the journal at
+    /// these paths, through the token-guarded path
+    /// (`retire_journal_from`, run on the worker). Every
+    /// in-session retirement goes through here, so it is
+    /// serialized with the journal's writes on the one
+    /// worker channel: a write enqueued before the retire
+    /// lands first, and none can land after it.
+    fn request_journal_retire(&mut self, obd: &std::path::Path, meta: &std::path::Path) {
+        let lock = instance_lock_path();
+        let token = instance_token().to_string();
+        self.enqueue_journal_job(JournalJob::Retire(JournalRetireJob {
+            obd: obd.to_path_buf(),
+            meta: meta.to_path_buf(),
+            lock,
+            token,
+        }));
+    }
+
+    /// Hand one job to the journal worker under the
+    /// single-flight discipline: at most one job in flight
+    /// and at most one waiting behind it. A waiting write
+    /// is replaced by the newest write (coalesced — the
+    /// backlog never grows), and a retire replaces a
+    /// waiting write outright, because that write was
+    /// enqueued before the retirement was requested and
+    /// must never land after it. Once a retirement is
+    /// requested, write jobs are not sent at all until it
+    /// lands; a write that comes due in that window is not
+    /// lost, because the journal snapshot still differs
+    /// and a later tick sends it once retirement completes.
+    fn enqueue_journal_job(&mut self, job: JournalJob) {
+        if self.journal_retiring && matches!(job, JournalJob::Write(_)) {
+            return;
+        }
+        if matches!(job, JournalJob::Retire(_)) {
+            self.journal_retiring = true;
+        }
+        if self.journal_flight.is_some() {
+            self.journal_pending = Some(job);
+        } else {
+            self.send_journal_job(job);
+        }
+    }
+
+    /// Send one job to the worker now, spawning the worker
+    /// on first use. A send that fails means the worker
+    /// thread is gone: a lost write is spoken once per
+    /// session, like any other journal write failure; a
+    /// lost retire just reopens the gate, leaving the
+    /// journal in place (the safe direction).
+    fn send_journal_job(&mut self, job: JournalJob) {
+        if self.journal_worker.is_none() {
+            self.journal_worker = Some(JournalWorker::spawn());
+        }
+        let flight = match &job {
+            JournalJob::Write(_) => JournalFlight::Write,
+            JournalJob::Retire(_) => JournalFlight::Retire,
+        };
+        let outcome = self
+            .journal_worker
+            .as_ref()
+            .expect("worker ensured above")
+            .jobs
+            .send(job);
+        match outcome {
+            Ok(()) => {
+                self.journal_flight = Some(flight);
+            }
+            Err(sent) => {
+                self.journal_worker = None;
+                match sent.0 {
+                    JournalJob::Write(_) => self.note_journal_failure(),
+                    JournalJob::Retire(_) => {
+                        self.journal_retiring = false;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Send the waiting job, if one is waiting and nothing
+    /// is in flight.
+    fn dispatch_pending_journal_job(&mut self) {
+        if self.journal_flight.is_none() {
+            if let Some(job) = self.journal_pending.take() {
+                self.send_journal_job(job);
+            }
+        }
+    }
+
+    /// A journal write failure, spoken once per session
+    /// (S-MIN-5): dead autosave is never silent, and never
+    /// a banner every two seconds either. Later ticks keep
+    /// retrying quietly.
+    fn note_journal_failure(&mut self) {
+        if !self.journal_failure_noted {
+            self.journal_failure_noted = true;
+            self.fail(
+                "The safety copy could not be written, so your unsaved \
+                 work is not being kept safe. Save your bulletin to a \
+                 file to keep it safe."
+                    .into(),
+            );
+        }
+    }
+
+    /// Collect the journal worker's results, if any landed
+    /// (HF-4): called from `update` beside `poll_import`.
+    /// Never blocks: an empty channel just asks for another
+    /// frame soon while a job is in flight.
+    fn poll_journal(&mut self, ctx: &egui::Context) {
+        let Some(worker) = &self.journal_worker else {
+            return;
+        };
+        match worker.results.try_recv() {
+            Ok(JournalResult::Written { snapshot, outcome }) => {
+                self.journal_flight = None;
+                match outcome {
+                    Ok(()) => {
+                        // The journal on disk now holds this
+                        // snapshot — unless a retirement was
+                        // requested after the write was sent:
+                        // then the snapshot belongs to the
+                        // retirement's callers, who already
+                        // recorded it, and must not be
+                        // regressed to the written state.
+                        if !self.journal_retiring {
+                            self.journal_snapshot = snapshot;
+                        }
+                    }
+                    Err(_) => self.note_journal_failure(),
+                }
+                self.dispatch_pending_journal_job();
+            }
+            Ok(JournalResult::Retired) => {
+                self.journal_flight = None;
+                self.journal_retiring = false;
+                self.dispatch_pending_journal_job();
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if self.journal_flight.is_some() {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(120));
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // The worker thread stopped. A write lost
+                // with it is a journal write failure, spoken
+                // once; a retire lost with it leaves the
+                // journal in place and stays quiet, as
+                // retirements always have.
+                let flight = self.journal_flight;
+                self.journal_worker = None;
+                self.journal_flight = None;
+                self.journal_pending = None;
+                self.journal_retiring = false;
+                if flight == Some(JournalFlight::Write) {
+                    self.note_journal_failure();
+                }
+            }
+        }
     }
 
     /// Remember the bulletin file this office just opened or
@@ -6850,6 +7140,9 @@ impl App {
                     self.recovery = Some((doc, source, when));
                 }
             } else if !self.peer_alive {
+                // Startup runs before the journal worker
+                // exists (HF-4): this retirement, and the
+                // set-aside below, stay on the startup path.
                 retire_journal_from(&obd, &meta, &instance_lock_path(), instance_token());
             }
         } else if !self.peer_alive && (obd.exists() || meta.exists()) {
@@ -6872,6 +7165,20 @@ impl App {
     /// The autosave tick: about every two seconds, if the work on
     /// screen differs from the last save, write the journal.
     fn journal_tick(&mut self) {
+        let (obd, meta) = journal_paths();
+        self.journal_tick_to(&obd, &meta);
+    }
+
+    /// The tick itself, against named journal paths (the
+    /// app passes `journal_paths()`; tests pass a scratch
+    /// folder's). The frame thread keeps only the throttle
+    /// and the changed-snapshot decision (HF-4): the save
+    /// itself is a job for the journal worker, and its
+    /// outcome lands through `poll_journal`. The snapshot
+    /// recorded for a write is set when the write lands,
+    /// not here, so a failed write is retried by a later
+    /// tick, exactly as the synchronous write was.
+    fn journal_tick_to(&mut self, obd: &std::path::Path, meta: &std::path::Path) {
         if self.last_journal_check.elapsed() < std::time::Duration::from_secs(2) {
             return;
         }
@@ -6887,11 +7194,9 @@ impl App {
             JournalAction::Hold => {}
             JournalAction::Clear => {
                 self.journal_snapshot = snap;
-                let (obd, meta) = journal_paths();
-                retire_journal_from(&obd, &meta, &instance_lock_path(), instance_token());
+                self.request_journal_retire(obd, meta);
             }
             JournalAction::Write => {
-                let (obd, meta) = journal_paths();
                 // The journal is a file like any other: it
                 // holds the bulletin whole, never the
                 // inside-out shape of a sheet on the canvas
@@ -6900,21 +7205,16 @@ impl App {
                 // R3-7), so the bytes written and the state
                 // they are compared against agree.
                 let doc = self.canonical_document();
-                if write_journal_to(&obd, &meta, &doc, &self.path).is_ok() {
-                    self.journal_snapshot = snap;
-                } else if !self.journal_failure_noted {
-                    // A journal that cannot be written is dead
-                    // autosave for the whole session: say so
-                    // once, in plain words (S-MIN-5), then keep
-                    // retrying quietly as before.
-                    self.journal_failure_noted = true;
-                    self.fail(
-                        "The safety copy could not be written, so your unsaved \
-                         work is not being kept safe. Save your bulletin to a \
-                         file to keep it safe."
-                            .into(),
-                    );
-                }
+                let source = self.path.clone();
+                let token = instance_token().to_string();
+                self.enqueue_journal_job(JournalJob::Write(Box::new(JournalWriteJob {
+                    obd: obd.to_path_buf(),
+                    meta: meta.to_path_buf(),
+                    doc,
+                    source,
+                    token,
+                    snapshot: snap,
+                })));
             }
         }
     }
@@ -7092,7 +7392,7 @@ impl App {
         if throw_away {
             self.recovery = None;
             let (obd, meta) = journal_paths();
-            retire_journal_from(&obd, &meta, &instance_lock_path(), instance_token());
+            self.request_journal_retire(&obd, &meta);
             self.journal_snapshot = self.saved_snapshot.clone();
             self.status = "Threw away the unsaved copy.".into();
         }
@@ -14750,6 +15050,7 @@ impl eframe::App for App {
         if !self.fonts_loaded {
             self.refresh_fonts(ctx);
         }
+        self.poll_journal(ctx);
         self.poll_import(ctx);
         self.import_review_window(ctx);
         self.contribution_review_window(ctx);
@@ -19747,7 +20048,7 @@ mod settings_tests {
             "Sunday",
         );
         let source = Some(std::path::PathBuf::from("/tmp/church/bulletin.obd"));
-        write_journal_to(&obd, &meta, &doc, &source).expect("write journal");
+        write_journal_to(&obd, &meta, &doc, &source, instance_token()).expect("write journal");
         let (back, back_source, when) = read_journal_from(&obd, &meta).expect("read journal");
         assert_eq!(snapshot(&back), snapshot(&doc));
         assert_eq!(back_source, source);
@@ -19840,7 +20141,7 @@ mod settings_tests {
             chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
             "Sunday",
         );
-        write_journal_to(&obd, &meta, &doc, &None).expect("write journal");
+        write_journal_to(&obd, &meta, &doc, &None, instance_token()).expect("write journal");
         assert_eq!(
             journal_token_from(&meta).as_deref(),
             Some(instance_token()),
@@ -19876,7 +20177,7 @@ mod settings_tests {
         );
         // A foreign instance's journal, with the lock still
         // naming that foreign instance.
-        write_journal_to(&obd, &meta, &doc, &None).expect("write journal");
+        write_journal_to(&obd, &meta, &doc, &None, instance_token()).expect("write journal");
         std::fs::write(&meta, "1729000000\n\nforeign-token\n").expect("foreign note");
         std::fs::write(&lock, format!("{}\nforeign-token\n", std::process::id()))
             .expect("foreign lock");
@@ -19894,7 +20195,7 @@ mod settings_tests {
         );
         assert!(!obd.exists() && !meta.exists(), "the journal is cleared");
         // Own-token retirement always works.
-        write_journal_to(&obd, &meta, &doc, &None).expect("write own journal");
+        write_journal_to(&obd, &meta, &doc, &None, instance_token()).expect("write own journal");
         assert!(retire_journal_from(&obd, &meta, &lock, instance_token()));
         assert!(!obd.exists() && !meta.exists());
         // The pure rule: a provably gone owner may always be
@@ -19905,6 +20206,155 @@ mod settings_tests {
             Some("foreign-token"),
             true
         ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Poll the journal worker until no job is in flight,
+    /// none is waiting, and no retirement is outstanding.
+    fn poll_journal_until_idle(app: &mut App) {
+        let ctx = egui::Context::default();
+        for _ in 0..500 {
+            app.poll_journal(&ctx);
+            if app.journal_flight.is_none()
+                && app.journal_pending.is_none()
+                && !app.journal_retiring
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the journal worker did not go idle");
+    }
+
+    /// An app whose current document reads as saved and
+    /// journaled, so the next edit is exactly one Write
+    /// decision.
+    fn clean_app_with_template() -> App {
+        let mut app = App::default();
+        app.doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        app.saved_snapshot = app.canonical_snapshot();
+        app.journal_snapshot = app.saved_snapshot.clone();
+        app
+    }
+
+    fn tick_journal_now(app: &mut App, obd: &std::path::Path, meta: &std::path::Path) {
+        app.last_journal_check = std::time::Instant::now() - std::time::Duration::from_secs(3);
+        app.journal_tick_to(obd, meta);
+    }
+
+    #[test]
+    fn journal_write_lands_through_the_worker() {
+        // HF-4 pin (a): a dirty document ticked and polled
+        // lands a journal bulletin and note that load back
+        // through the journal read path, carrying this
+        // session's token, and the journal snapshot follows
+        // the landed write.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-journal-worker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let obd = dir.join("autosave.obd");
+        let meta = dir.join("autosave.txt");
+        let mut app = clean_app_with_template();
+        app.doc.title = "Work from the worker".into();
+        tick_journal_now(&mut app, &obd, &meta);
+        poll_journal_until_idle(&mut app);
+        let (back, _source, when) = read_journal_from(&obd, &meta).expect("journal read back");
+        assert!(when > 0);
+        assert_eq!(snapshot(&back), app.canonical_snapshot());
+        assert_eq!(
+            journal_token_from(&meta).as_deref(),
+            Some(instance_token()),
+            "the note carries the session token"
+        );
+        assert_eq!(
+            app.journal_snapshot,
+            app.canonical_snapshot(),
+            "the landed write is the journaled state"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn journal_write_failure_is_noted_once_per_session() {
+        // HF-4 pin (b): an unwritable journal destination
+        // sets the once-per-session failure note through
+        // the worker path (H-C's behavior, off the frame
+        // thread), and a second failure does not re-note.
+        let dir = std::env::temp_dir().join(format!("ob-app-journal-fails-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // A folder that does not exist: the save cannot land.
+        let obd = dir.join("missing").join("autosave.obd");
+        let meta = dir.join("missing").join("autosave.txt");
+        let mut app = clean_app_with_template();
+        app.doc.title = "Nowhere to land".into();
+        tick_journal_now(&mut app, &obd, &meta);
+        poll_journal_until_idle(&mut app);
+        assert!(app.journal_failure_noted, "the failure is noted");
+        assert!(app.status_error, "the note is a failure banner");
+        assert!(
+            app.status.contains("safety copy could not be written"),
+            "spoken in plain words: {}",
+            app.status
+        );
+        // A second failure stays quiet: replace the banner
+        // with a marker and fail again.
+        app.status = "a later, unrelated note".into();
+        app.status_error = false;
+        app.doc.title = "Still nowhere to land".into();
+        tick_journal_now(&mut app, &obd, &meta);
+        poll_journal_until_idle(&mut app);
+        assert!(app.journal_failure_noted);
+        assert_eq!(
+            app.status, "a later, unrelated note",
+            "the second failure does not re-note"
+        );
+        assert!(!app.status_error);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn journal_retirement_after_a_queued_write_leaves_no_journal() {
+        // HF-4 pin (c): retirement requested after a queued
+        // write leaves no live journal behind. The first
+        // write is in flight, a second write is the
+        // coalesced pending job, and the retire replaces
+        // that pending write and lands after the flight:
+        // the serialized-order property, driven at the App
+        // level through the worker.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-journal-retire-q-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let obd = dir.join("autosave.obd");
+        let meta = dir.join("autosave.txt");
+        let mut app = clean_app_with_template();
+        app.doc.title = "First unsaved state".into();
+        tick_journal_now(&mut app, &obd, &meta);
+        assert!(app.journal_flight.is_some(), "the first write is in flight");
+        app.doc.title = "Second unsaved state".into();
+        tick_journal_now(&mut app, &obd, &meta);
+        assert!(
+            app.journal_pending.is_some(),
+            "the second write waits as the one pending job"
+        );
+        app.request_journal_retire(&obd, &meta);
+        poll_journal_until_idle(&mut app);
+        assert!(!obd.exists(), "no journal bulletin remains");
+        assert!(!meta.exists(), "no journal note remains");
+        assert!(read_journal_from(&obd, &meta).is_none());
+        // The gate reopens when the retirement lands: new
+        // unsaved work journals again.
+        app.doc.title = "Work after the retirement".into();
+        tick_journal_now(&mut app, &obd, &meta);
+        poll_journal_until_idle(&mut app);
+        assert!(
+            read_journal_from(&obd, &meta).is_some(),
+            "journaling resumes after retirement"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -1345,13 +1345,33 @@ pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
         // in the map is written, whether or not its metadata
         // row survived an edit: bytes without a row get one
         // on load, never a silent drop here.
+        //
+        // Compression is per entry (HF-4): an entry holding
+        // an already-compressed picture (JPEG, PNG, GIF or
+        // WebP) is Stored, not Deflated. Deflating those
+        // bytes costs about 62 ms per MiB (measured, release)
+        // and buys about 0-3% size, because the picture
+        // formats already compressed them; text-shaped
+        // assets (SVG, MusicXML, anything else) still
+        // Deflate, where compression earns its time. The
+        // zip reader reads Stored and Deflated entries
+        // transparently, so old readers read new files and
+        // new readers read old files; no format-version
+        // change rides with this.
+        let stored_options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         let mut hashes: Vec<&String> = doc.asset_bytes.keys().collect();
         hashes.sort();
         for hash in hashes {
-            zip.start_file(format!("assets/{hash}"), options)
+            let bytes = &doc.asset_bytes[hash];
+            let entry_options = if asset_entry_stored(&doc.assets, hash, bytes) {
+                stored_options
+            } else {
+                options
+            };
+            zip.start_file(format!("assets/{hash}"), entry_options)
                 .map_err(|e| e.to_string())?;
-            zip.write_all(&doc.asset_bytes[hash])
-                .map_err(|e| e.to_string())?;
+            zip.write_all(bytes).map_err(|e| e.to_string())?;
         }
         zip.finish().map_err(|e| e.to_string())?;
     }
@@ -2054,6 +2074,25 @@ fn read_insert_archive<R: Read + Seek>(
 /// "picture" bigger than this is not one (audit Batch 1).
 const MAX_SIDECAR_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Should this asset entry be Stored (written
+/// uncompressed) at save time? (HF-4.) The asset record's
+/// media type decides when a row exists for the hash: one
+/// of the four already-compressed picture types is Stored.
+/// Rows can be missing — save writes bytes without a row
+/// too — so the fallback is the bytes' own magic, through
+/// the same sniff `picture_media_type` applies: picture
+/// bytes are Stored, everything else (SVG, MusicXML, any
+/// other shape) is Deflated by the caller.
+fn asset_entry_stored(assets: &[Asset], hash: &str, bytes: &[u8]) -> bool {
+    if let Some(record) = assets.iter().find(|a| a.sha256 == hash) {
+        return matches!(
+            record.media_type.as_str(),
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+        );
+    }
+    picture_media_type(bytes).is_some()
+}
+
 /// The media type a picture's own first bytes state, or
 /// None when the bytes are none of the four: a text file
 /// renamed .png is not a picture and is never gathered
@@ -2272,6 +2311,86 @@ mod tests {
         assert_eq!(&head[..4], b"PK\x03\x04", "v1 files are zips");
         let back = load(&path).unwrap();
         assert_eq!(doc, back);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn picture_assets_are_stored_and_text_assets_deflated() {
+        // HF-4 pin: at save, an already-compressed picture
+        // entry is Stored and a text-shaped entry is
+        // Deflated, and document.json stays Deflated. The
+        // picture decision comes from the asset record's
+        // media type when a row exists, and from the
+        // bytes' own magic when no row exists (rows can be
+        // missing; the bytes are still written). Both
+        // kinds round-trip byte-equal.
+        fn compression_of(path: &std::path::Path, name: &str) -> zip::CompressionMethod {
+            let file = std::fs::File::open(path).expect("open saved file");
+            let mut archive = zip::ZipArchive::new(file).expect("saved file is a zip");
+            let entry = archive.by_name(name).expect("entry present");
+            entry.compression()
+        }
+        let mut doc = test_doc();
+        let mut jpeg_bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        jpeg_bytes.extend_from_slice(b"a photographed bulletin cover, already compressed");
+        let jpeg_hash = doc.add_asset(
+            &jpeg_bytes,
+            AssetKind::Picture,
+            "image/jpeg",
+            RightsRecord::default(),
+        );
+        let svg_bytes: &[u8] =
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"9\" height=\"9\"/></svg>";
+        let svg_hash = doc.add_asset(
+            svg_bytes,
+            AssetKind::Picture,
+            "image/svg+xml",
+            RightsRecord::default(),
+        );
+        // No metadata row for these two: the magic decides.
+        let mut rowless_jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
+        rowless_jpeg.extend_from_slice(b"rowless but plainly a jpeg by its first bytes");
+        let rowless_jpeg_hash = ob_model::sha256_hex(&rowless_jpeg);
+        doc.asset_bytes
+            .insert(rowless_jpeg_hash.clone(), rowless_jpeg.clone());
+        let rowless_text: &[u8] = b"rowless words, no picture magic in them at all";
+        let rowless_text_hash = ob_model::sha256_hex(rowless_text);
+        doc.asset_bytes
+            .insert(rowless_text_hash.clone(), rowless_text.to_vec());
+
+        let dir = scratch("stored");
+        let path = dir.join("stored.obd");
+        save(&doc, &path).unwrap();
+        assert_eq!(
+            compression_of(&path, "document.json"),
+            zip::CompressionMethod::Deflated,
+            "document.json keeps Deflated"
+        );
+        assert_eq!(
+            compression_of(&path, &format!("assets/{jpeg_hash}")),
+            zip::CompressionMethod::Stored,
+            "a JPEG asset is Stored, not re-deflated"
+        );
+        assert_eq!(
+            compression_of(&path, &format!("assets/{svg_hash}")),
+            zip::CompressionMethod::Deflated,
+            "an SVG asset keeps Deflated"
+        );
+        assert_eq!(
+            compression_of(&path, &format!("assets/{rowless_jpeg_hash}")),
+            zip::CompressionMethod::Stored,
+            "a rowless JPEG is Stored by its magic"
+        );
+        assert_eq!(
+            compression_of(&path, &format!("assets/{rowless_text_hash}")),
+            zip::CompressionMethod::Deflated,
+            "rowless text bytes keep Deflated"
+        );
+        let back = load(&path).unwrap();
+        assert_eq!(back.asset_bytes[&jpeg_hash], jpeg_bytes);
+        assert_eq!(back.asset_bytes[&svg_hash], svg_bytes);
+        assert_eq!(back.asset_bytes[&rowless_jpeg_hash], rowless_jpeg);
+        assert_eq!(back.asset_bytes[&rowless_text_hash], rowless_text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

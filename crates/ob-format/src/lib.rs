@@ -69,16 +69,19 @@ fn read_entry_capped(
     cap: u64,
     too_large: &str,
 ) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    entry
-        .by_ref()
-        .take(cap + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > cap {
-        return Err(too_large.to_string());
-    }
-    Ok(bytes)
+    // The mechanism is ob-model's one capped read
+    // (health audit E-9); this door's judgment is
+    // Refuse, in the caller's words.
+    let read = ob_model::read_capped(
+        entry,
+        cap,
+        ob_model::CapOverflow::Refuse(too_large.to_string()),
+    )
+    .map_err(|e| match e {
+        ob_model::CappedReadError::Refused(words) => words,
+        ob_model::CappedReadError::Unreadable(e) => e.to_string(),
+    })?;
+    Ok(read.bytes)
 }
 
 /// The text variant of `read_entry_capped`, for the

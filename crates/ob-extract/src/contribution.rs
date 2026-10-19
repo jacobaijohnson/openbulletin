@@ -47,7 +47,9 @@
 //! lines together would mangle both.
 
 use ob_model::markdown::markdown_to_paragraphs;
-use ob_model::{default_styles, parse_flexible_date, Paragraph, SimpleDate};
+use ob_model::{
+    default_styles, parse_flexible_date, Paragraph, SimpleDate, MONTH_NAMES, WEEKDAY_NAMES,
+};
 
 /// Which part of the bulletin a piece of a contribution
 /// belongs to, named the way the sender's card names it.
@@ -349,16 +351,7 @@ pub fn second_date_sentence(second: SimpleDate) -> String {
 /// The note when a For Sunday line named second dates
 /// (round 10, R10-6): every distinct one is named.
 pub fn second_dates_sentence(seconds: &[SimpleDate]) -> String {
-    if seconds.len() == 1 {
-        let second = format_date_long(seconds[0]);
-        return format!("This file named another date too: {second}. Check which date was meant.");
-    }
-    let listed = seconds
-        .iter()
-        .map(|d| format_date_long(*d))
-        .collect::<Vec<String>>()
-        .join(" and ");
-    format!("This file named other dates too: {listed}. Check which date was meant.")
+    second_dates_sentence_with_lead(seconds, "This file named")
 }
 
 /// The same note for the Keep-through line.
@@ -369,22 +362,25 @@ pub fn keep_through_second_date_sentence(second: SimpleDate) -> String {
 /// The Keep-through note naming every distinct second
 /// date (round 10, R10-6).
 pub fn keep_through_second_dates_sentence(seconds: &[SimpleDate]) -> String {
+    second_dates_sentence_with_lead(seconds, "The Keep-through line named")
+}
+
+/// The one second-dates note (health audit E-8): the
+/// For Sunday and Keep-through sentences are the same
+/// judgment — name the other dates the line carried,
+/// and say to check which was meant — differing only
+/// in the lead that says which line carried them.
+fn second_dates_sentence_with_lead(seconds: &[SimpleDate], lead: &str) -> String {
     if seconds.len() == 1 {
         let second = format_date_long(seconds[0]);
-        return format!(
-            "The Keep-through line named another date too: {second}. \
-             Check which date was meant."
-        );
+        return format!("{lead} another date too: {second}. Check which date was meant.");
     }
     let listed = seconds
         .iter()
         .map(|d| format_date_long(*d))
         .collect::<Vec<String>>()
         .join(" and ");
-    format!(
-        "The Keep-through line named other dates too: {listed}. \
-         Check which date was meant."
-    )
+    format!("{lead} other dates too: {listed}. Check which date was meant.")
 }
 
 /// A For Sunday line whose weekday disagrees with its
@@ -403,34 +399,48 @@ pub struct WeekdayMismatch {
 impl WeekdayMismatch {
     /// The review's first line for such a part.
     pub fn sentence(&self) -> String {
-        let actual = WEEKDAYS[(self.date.weekday() % 7) as usize];
-        format!(
-            "This part names {}, {}, but that date is a {}. \
-             Check the date with the sender.",
-            self.named,
-            format_date_short(self.date),
-            actual
-        )
+        self.mismatch_sentence("This part names")
     }
 
     /// The same sentence for the Keep-through line
     /// (round 4, R4-7): the same shape, saying which
     /// line carried the mistake.
     pub fn keep_through_sentence(&self) -> String {
-        let actual = WEEKDAYS[(self.date.weekday() % 7) as usize];
+        self.mismatch_sentence("This part says keep through")
+    }
+
+    /// The one weekday-mismatch sentence (health audit
+    /// E-8): the For Sunday and Keep-through forms are
+    /// the same judgment, differing only in the lead
+    /// that says how the line carried the mistake.
+    fn mismatch_sentence(&self, lead: &str) -> String {
+        let actual = WEEKDAY_NAMES[(self.date.weekday() % 7) as usize];
+        let short = format_date_short(self.date);
         format!(
-            "This part says keep through {}, {}, but that date is a {}. \
+            "{lead} {}, {short}, but that date is a {actual}. \
              Check the date with the sender.",
-            self.named,
-            format_date_short(self.date),
-            actual
+            self.named
         )
     }
 }
 
 /// A weekday word as an office writes one, full or
 /// shortened, to its number (0 = Sunday .. 6 =
-/// Saturday): the same table the date reader uses.
+/// Saturday): the same sun..sat alias table the date
+/// reader states as `weekday_number` in ob-model —
+/// twins, recorded on both sides (health audit E-6).
+/// The CLEANING differs on purpose: this reader first
+/// strips format characters and trims five boundary
+/// endings ('.', ',', ':', ';', '/'), because its
+/// tokens arrive raw from a sender's text and rounds
+/// 23/25 gave boundary-wearing and Cf-glued weekday
+/// words a reading here, while ob-model's twin trims
+/// only a trailing '.' — the flexible-date reader's
+/// narrower contract (refuse what it does not plainly
+/// read, on tokens whose commas are already spaces).
+/// Unifying the cleaning either way would move a
+/// reading, so the tables stay twins and the
+/// cleanings stay each reader's own.
 fn weekday_word(word: &str) -> Option<u32> {
     // Round 23 (R23-3): a weekday wearing a boundary
     // ending (colon, semicolon, slash — the one
@@ -10277,6 +10287,15 @@ fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(SimpleDate, 
     })
 }
 
+/// A token with its wrapping brackets and sentence
+/// punctuation off: the cleaning the framing readers
+/// share, stated once (health audit E-8 — it used to
+/// be defined verbatim inside both `weekday_is_framed`
+/// and `framed_date_outcome`).
+fn clean(t: &str) -> &str {
+    t.trim_matches(['(', ')', '[', ']', ',', '.'])
+}
+
 /// Whether the weekday at `i` in `core` wears the
 /// framing garnish stack (round 8, R8-6): an optional
 /// "on" and an optional "the" in front of it — the
@@ -10286,9 +10305,6 @@ fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(SimpleDate, 
 /// the line's start, frames nothing and stays
 /// ordinary text (round 5, R5-D).
 fn weekday_is_framed(core: &[&str], i: usize) -> bool {
-    fn clean(t: &str) -> &str {
-        t.trim_matches(['(', ')', '[', ']', ',', '.'])
-    }
     if i == 0 {
         return true;
     }
@@ -10351,9 +10367,6 @@ fn framed_date_outcome(
     text: &str,
     today: SimpleDate,
 ) -> Option<(Option<SimpleDate>, Option<WeekdayMismatch>)> {
-    fn clean(t: &str) -> &str {
-        t.trim_matches(['(', ')', '[', ']', ',', '.'])
-    }
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let last = tokens
         .iter()
@@ -13439,36 +13452,14 @@ pub fn parse_contribution_anchored(
     })
 }
 
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-
-const WEEKDAYS: [&str; 7] = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-];
-
 /// "October 25, 2026": the date without its weekday, for
 /// sentences that already say the day ("the bulletin for
-/// Sunday, ...").
+/// Sunday, ..."). The month and weekday names are
+/// ob-model's one table ([`MONTH_NAMES`] /
+/// [`WEEKDAY_NAMES`], health audit E-7), shared with
+/// the chrono date type's formatters.
 pub fn format_date_short(d: SimpleDate) -> String {
-    let month = MONTHS
+    let month = MONTH_NAMES
         .get((d.month as usize).wrapping_sub(1))
         .copied()
         .unwrap_or("");
@@ -13478,7 +13469,7 @@ pub fn format_date_short(d: SimpleDate) -> String {
 /// "Sunday, October 25, 2026": the date in full, the way
 /// the steps speak of a service day.
 pub fn format_date_long(d: SimpleDate) -> String {
-    let weekday = WEEKDAYS[(d.weekday() % 7) as usize];
+    let weekday = WEEKDAY_NAMES[(d.weekday() % 7) as usize];
     format!("{weekday}, {}", format_date_short(d))
 }
 

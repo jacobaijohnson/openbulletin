@@ -9,7 +9,6 @@ use crate::{ExtractionDump, PageInfo, SourceKind, Span, SpanRun, SpanTrust, DUMP
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashMap;
-use std::io::Read;
 
 // ---------- a tiny XML tree over quick-xml ----------
 
@@ -469,23 +468,34 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
         // cut is still rescued; the loss is counted in
         // the dump's loss notes and surfaces in the
         // draft's review.
-        let mut raw = Vec::new();
-        entry
-            .by_ref()
-            .take(MAX_ENTRY + 1)
-            .read_to_end(&mut raw)
-            .map_err(|e| format!("cannot read a part of that IDML package: {e}"))?;
-        total_read += raw.len() as u64;
+        // The read goes through ob-model's one capped
+        // read (health audit E-9). This door's judgment
+        // is Note: a part past its cap is cut to the
+        // cap and named in `cut_parts` below, and its
+        // loss is counted in the dump's loss notes.
+        let read = ob_model::read_capped(&mut entry, MAX_ENTRY, ob_model::CapOverflow::Note)
+            .map_err(|e| match e {
+                ob_model::CappedReadError::Unreadable(e) => {
+                    format!("cannot read a part of that IDML package: {e}")
+                }
+                // The Note judgment never refuses; this
+                // arm only completes the match.
+                ob_model::CappedReadError::Refused(words) => words,
+            })?;
+        // The total counts raw bytes as they arrived:
+        // a noted part arrived as cap + 1 bytes, the
+        // probe byte included, exactly as the inline
+        // read this replaces counted it.
+        total_read += read.bytes.len() as u64 + u64::from(read.overflowed);
         if total_read > MAX_TOTAL {
             return Err("that IDML file's insides are too large to read safely".into());
         }
-        let text = if raw.len() as u64 > MAX_ENTRY {
+        let text = if read.overflowed {
             // The loss note is written after the walk,
             // not here (round 3, RT3-C): only then is it
             // known whether the rescue kept any of this
             // part's words, and the note must say which.
             cut_parts.push(name.clone());
-            raw.truncate(MAX_ENTRY as usize);
             // The cut can land inside a character; the
             // tail is already counted as lost, so a
             // lossy read of what is left is honest. The
@@ -493,9 +503,9 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
             // so everything complete before the cut is
             // still rescued instead of the whole part
             // reading as one unclosed, empty subtree.
-            close_off_cut(&String::from_utf8_lossy(&raw))
+            close_off_cut(&String::from_utf8_lossy(&read.bytes))
         } else {
-            String::from_utf8(raw).map_err(|_| {
+            String::from_utf8(read.bytes).map_err(|_| {
                 "cannot read a part of that IDML package: it is not text we can read".to_string()
             })?
         };

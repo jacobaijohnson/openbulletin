@@ -298,8 +298,12 @@ pub fn build_template(
 }
 
 /// "October 18, 2026" style long date, portable across platforms.
+/// The month name is ob-model's one table ([`MONTH_NAMES`],
+/// health audit E-7), shared with the `SimpleDate`
+/// formatters, so the two date types can never drift apart.
 pub fn long_date(d: NaiveDate) -> String {
-    format!("{} {}, {}", d.format("%B"), d.day(), d.year())
+    let month = MONTH_NAMES[(d.month() - 1) as usize];
+    format!("{} {}, {}", month, d.day(), d.year())
 }
 
 /// What Next Sunday did to announcements that carry a

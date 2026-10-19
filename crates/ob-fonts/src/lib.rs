@@ -16,7 +16,6 @@ pub mod resolve;
 pub mod ttc;
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 /// What the font's own permission bits say about embedding it in
@@ -112,8 +111,6 @@ pub fn inspect(bytes: &[u8], file_name: &str) -> Result<FontInfo, String> {
         }
         None => (EmbeddingRights::Unknown, false),
     };
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
     Ok(FontInfo {
         family,
         full_name,
@@ -122,7 +119,9 @@ pub fn inspect(bytes: &[u8], file_name: &str) -> Result<FontInfo, String> {
         rights,
         no_subsetting,
         file_name: file_name.to_string(),
-        sha256: format!("{:x}", hasher.finalize()),
+        // The one SHA-256 statement (health audit
+        // E-10): ob-model's, as every other crate uses.
+        sha256: ob_model::sha256_hex(bytes),
         bytes: bytes.len(),
     })
 }
@@ -421,12 +420,21 @@ impl FontLibrary {
             let name = entry.name().to_string();
             let lower = name.to_lowercase();
             let file_name = sanitize_file_name(&name);
-            let mut content = Vec::new();
-            let mut limited = std::io::Read::take(&mut entry, MAX_ENTRY_BYTES + 1);
-            let read = std::io::Read::read_to_end(&mut limited, &mut content);
-            if read.is_err() || content.len() as u64 > MAX_ENTRY_BYTES {
-                continue;
-            }
+            // The read goes through ob-model's one
+            // capped read (health audit E-9). This
+            // door's judgment is Skip: a file that
+            // fails to read, or runs past the
+            // per-entry cap, is passed by and the
+            // pack goes on without it.
+            let read = match ob_model::read_capped(
+                &mut entry,
+                MAX_ENTRY_BYTES,
+                ob_model::CapOverflow::Skip,
+            ) {
+                Ok(read) if !read.overflowed => read,
+                _ => continue,
+            };
+            let content = read.bytes;
             total += content.len() as u64;
             if total > MAX_TOTAL_BYTES {
                 results.push(Err(

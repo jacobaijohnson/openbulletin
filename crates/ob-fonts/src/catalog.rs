@@ -401,16 +401,17 @@ fn read_pack_entry(
     name: &str,
     total: &mut u64,
 ) -> Option<Vec<u8>> {
-    use std::io::Read as _;
+    // The read goes through ob-model's one capped read
+    // (health audit E-9). This door's judgment is Skip:
+    // an entry that fails to read, or runs past the
+    // per-entry cap, is simply not given up.
     let mut f = archive.by_name(name).ok()?;
-    let mut data = Vec::new();
-    f.by_ref()
-        .take(PACK_MAX_ENTRY_BYTES + 1)
-        .read_to_end(&mut data)
-        .ok()?;
-    if data.len() as u64 > PACK_MAX_ENTRY_BYTES {
+    let read =
+        ob_model::read_capped(&mut f, PACK_MAX_ENTRY_BYTES, ob_model::CapOverflow::Skip).ok()?;
+    if read.overflowed {
         return None;
     }
+    let data = read.bytes;
     *total += data.len() as u64;
     if *total > PACK_MAX_TOTAL_BYTES {
         return None;

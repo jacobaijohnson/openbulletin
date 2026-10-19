@@ -1047,14 +1047,13 @@ impl App {
                     "occasion_date".to_string(),
                     nd.format("%Y-%m-%d").to_string(),
                 );
-                self.doc.fields.insert(
-                    "occasion_date_long".to_string(),
-                    nd.format("%A, %B %-d, %Y").to_string(),
-                );
+                self.doc
+                    .fields
+                    .insert("occasion_date_long".to_string(), long_form(nd));
                 if before != snapshot(&self.doc) {
                     self.record_undo(before);
                 }
-                self.note(format!("Date set to {}.", nd.format("%A, %B %-d, %Y")));
+                self.note(format!("Date set to {}.", long_form(nd)));
             }
             None => {
                 self.fail("That date does not read. Try year-month-day, like 2026-10-18, or write it out, like October 18, 2026.".into());
@@ -1116,7 +1115,7 @@ impl App {
                         chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d").expect("just formatted");
                     format!(
                         "These announcements stay in the bulletin through {}.",
-                        d.format("%B %-d, %Y")
+                        ob_layout::long_date(d)
                     )
                 }
                 None => "Announcements are for this Sunday only.".into(),
@@ -1636,7 +1635,7 @@ struct MusicProofCounts {
 fn music_proof_document(doc: &Document) -> (Document, MusicProofCounts) {
     use ob_model::hymns::{compose_hymn_value, is_hymn_label, parse_hymn_value};
     let (base, spoken_only_left_out) = doc.without_spoken_only();
-    let page = ob_model::Size::new(612_000, 792_000); // US Letter portrait
+    let page = ob_model::Size::LETTER_PORTRAIT;
     let margin: ob_model::Mpt = 54_000; // 3/4 inch
     let usable_w = page.w - 2 * margin;
     let usable_h = page.h - 2 * margin;
@@ -1964,7 +1963,6 @@ fn announcements_check(announcements_empty: bool, none_marked: bool) -> String {
 /// its hand; these are facts, not problems, so the lines
 /// never start with "Check:".
 fn carried_lines(doc: &Document) -> Vec<String> {
-    use chrono::Datelike;
     let Some(bulletin) = doc
         .fields
         .get("occasion_date")
@@ -2005,7 +2003,7 @@ fn carried_lines(doc: &Document) -> Vec<String> {
             .chars()
             .take(40)
             .collect();
-        let through = format!("{} {}, {}", until.format("%B"), until.day(), until.year());
+        let through = ob_layout::long_date(until);
         out.push(format!(
             "Carried into this week: \"{first}\" (kept through {through})."
         ));
@@ -2023,8 +2021,13 @@ fn date_differs(input: &str, stored: Option<&str>) -> bool {
 
 /// "Sunday, October 18, 2026": the long form with the
 /// weekday, the way dates are spoken on the steps.
+/// The weekday name is ob-model's one table
+/// ([`WEEKDAY_NAMES`], health audit E-7), shared with
+/// the `SimpleDate` formatters.
 fn long_form(d: chrono::NaiveDate) -> String {
-    format!("{}, {}", d.format("%A"), ob_layout::long_date(d))
+    use chrono::Datelike;
+    let weekday = ob_model::WEEKDAY_NAMES[d.weekday().num_days_from_sunday() as usize];
+    format!("{}, {}", weekday, ob_layout::long_date(d))
 }
 
 /// Today's date in the model's own date type, for the
@@ -11817,9 +11820,9 @@ impl App {
                             if let (Some(l), Some(t)) = (left, top) {
                                 self.push_undo_now();
                                 let fr = &mut self.doc.panels[idx].frames[fi];
-                                fr.rect.x = ob_model::inches_to_mpt(l)
+                                fr.rect.x = ob_model::inch(l)
                                     .clamp(0, panel.size.w - fr.rect.w);
-                                fr.rect.y = ob_model::inches_to_mpt(t)
+                                fr.rect.y = ob_model::inch(t)
                                     .clamp(0, panel.size.h - fr.rect.h);
                                 self.status = "Box moved.".into();
                                 ui.close_menu();
@@ -11846,7 +11849,7 @@ impl App {
                         if parsed.iter().all(|v| v.is_some()) {
                             let v: Vec<ob_model::Mpt> = parsed
                                 .iter()
-                                .map(|o| ob_model::inches_to_mpt(o.unwrap()))
+                                .map(|o| ob_model::inch(o.unwrap()))
                                 .collect();
                             self.push_undo_now();
                             let fr = &mut self.doc.panels[idx].frames[fi];
@@ -12029,7 +12032,7 @@ impl App {
                                 };
                                 self.push_undo_now();
                                 self.doc.panels[idx].guides[gi].pos =
-                                    ob_model::inches_to_mpt(inches).clamp(0, extent);
+                                    ob_model::inch(inches).clamp(0, extent);
                                 self.status = "Guide moved.".into();
                                 ui.close_menu();
                             }
@@ -17803,11 +17806,12 @@ fn paper_name(w: ob_model::Mpt, h: ob_model::Mpt) -> String {
     } else {
         "upright (portrait)"
     };
-    let name = match (lw, lh) {
-        (792_000, 612_000) => "Letter (11 x 8.5 in)".to_string(),
-        (1_008_000, 612_000) => "Legal (14 x 8.5 in)".to_string(),
-        (1_224_000, 792_000) => "Tabloid (17 x 11 in)".to_string(),
-        _ => format!(
+    // The paper names are ob-model's one sheet-name
+    // table (health audit E-13), keyed by the landscape
+    // form this lookup has just normalized to.
+    let name = match ob_model::sheet_name(ob_model::Size::new(lw, lh)) {
+        Some(name) => name.to_string(),
+        None => format!(
             "{:.1} x {:.1} in",
             lw as f32 / 72_000.0,
             lh as f32 / 72_000.0

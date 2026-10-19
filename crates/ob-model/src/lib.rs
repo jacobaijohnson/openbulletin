@@ -17,7 +17,10 @@ pub mod markdown;
 pub type Mpt = i64;
 pub const MPT_PER_INCH: Mpt = 72_000;
 
-/// Convert inches (e.g. 5.5) to milli-points.
+/// Convert inches (e.g. 5.5) to milli-points: the one
+/// inches-to-mpt conversion in the workspace (an editor
+/// that speaks inches on screen calls this too; the file
+/// stores milli-points). Its inverse is `mpt_to_inches`.
 pub fn inch(v: f64) -> Mpt {
     (v * MPT_PER_INCH as f64).round() as Mpt
 }
@@ -31,6 +34,52 @@ impl Size {
     pub fn new(w: Mpt, h: Mpt) -> Self {
         Self { w, h }
     }
+
+    /// US Letter, upright: 8.5 x 11 in. The one statement
+    /// of this geometry; the duplex test sheet, the
+    /// large-print transform, and the music proof all
+    /// build on it rather than restating the literals.
+    pub const LETTER_PORTRAIT: Size = Size {
+        w: 612_000,
+        h: 792_000,
+    };
+    /// US Letter, turned sideways: 11 x 8.5 in.
+    pub const LETTER_LANDSCAPE: Size = Size {
+        w: 792_000,
+        h: 612_000,
+    };
+    /// US Legal, turned sideways: 14 x 8.5 in.
+    pub const LEGAL_LANDSCAPE: Size = Size {
+        w: 1_008_000,
+        h: 612_000,
+    };
+    /// US Tabloid, turned sideways: 17 x 11 in.
+    pub const TABLOID_LANDSCAPE: Size = Size {
+        w: 1_224_000,
+        h: 792_000,
+    };
+}
+
+/// The office's paper names for the sheet sizes it
+/// stocks, keyed by the size in landscape form (the
+/// app's paper-name lookup normalizes a sheet to
+/// landscape before asking, so a portrait letter sheet
+/// and a landscape one carry the same name). The one
+/// statement of this table; the app used to restate the
+/// pairs as literals of its own.
+pub const SHEET_NAMES: [(Size, &str); 3] = [
+    (Size::LETTER_LANDSCAPE, "Letter (11 x 8.5 in)"),
+    (Size::LEGAL_LANDSCAPE, "Legal (14 x 8.5 in)"),
+    (Size::TABLOID_LANDSCAPE, "Tabloid (17 x 11 in)"),
+];
+
+/// The paper name [`SHEET_NAMES`] gives a sheet size,
+/// when it names one.
+pub fn sheet_name(size: Size) -> Option<&'static str> {
+    SHEET_NAMES
+        .iter()
+        .find(|(s, _)| *s == size)
+        .map(|(_, name)| *name)
 }
 
 /// Rectangle in panel space: origin top-left, y grows downward (screen convention).
@@ -461,12 +510,6 @@ pub fn snap_to(value: Mpt, targets: &[Mpt], threshold: Mpt) -> Mpt {
     best.map(|(t, _)| t).unwrap_or(value)
 }
 
-/// Inches to milli-points (the editor speaks inches on screen;
-/// the file stores milli-points).
-pub fn inches_to_mpt(inches: f64) -> Mpt {
-    (inches * 72_000.0).round() as Mpt
-}
-
 /// Milli-points to inches, for display.
 pub fn mpt_to_inches(m: Mpt) -> f64 {
     m as f64 / 72_000.0
@@ -554,6 +597,42 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
+/// The month names, in calendar order: the one table
+/// behind every long date the program prints, for both
+/// date types the workspace carries (this crate's
+/// `SimpleDate`, formatted by ob-extract's contribution
+/// sentences, and chrono's `NaiveDate`, formatted by
+/// ob-layout / ob-app). A format change lands here once.
+pub const MONTH_NAMES: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// The weekday names, Sunday first (the order
+/// `SimpleDate::weekday` and chrono's
+/// `num_days_from_sunday` both count in): the one table
+/// behind every long date the program prints, for both
+/// date types (see [`MONTH_NAMES`]).
+pub const WEEKDAY_NAMES: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+
 fn month_number(word: &str) -> Option<u32> {
     let w = word.trim_end_matches('.').to_ascii_lowercase();
     Some(match w.as_str() {
@@ -573,6 +652,28 @@ fn month_number(word: &str) -> Option<u32> {
     })
 }
 
+/// A weekday word, full or shortened, to its number
+/// (0 = Sunday .. 6 = Saturday). This is ob-model's own
+/// statement of the alias table `ob-extract` states as
+/// `weekday_word` in contribution.rs — the same sun..sat
+/// aliases, restated here because this crate cannot read
+/// that one. The CLEANING differs on purpose, and the
+/// difference is recorded on both sides (health audit
+/// E-6): this reader trims only a trailing '.', as
+/// `month_number` above does — the flexible-date
+/// reader's contract is to refuse what it does not
+/// plainly read, and its tokens have already had commas
+/// turned to spaces by `parse_flexible_date` — while
+/// contribution's twin first strips format characters
+/// and trims five boundary endings ('.', ',', ':', ';',
+/// '/'), because its tokens arrive raw from a sender's
+/// text and rounds 23/25 gave boundary-wearing and
+/// Cf-glued weekday words a reading there. Unifying the
+/// cleaning either way would move a reading: narrowing
+/// contribution's breaks those rounds, and widening this
+/// one would let the shared date reader accept weekday
+/// words it has always refused. The tables stay twins;
+/// the cleanings stay each reader's own.
 fn weekday_number(word: &str) -> Option<u32> {
     let w = word.trim_end_matches('.').to_ascii_lowercase();
     Some(match w.as_str() {
@@ -964,6 +1065,108 @@ pub const FORMAT_VERSION: u32 = 1;
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let digest = sha2::Sha256::digest(bytes);
     digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// What a capped read does when its entry runs past
+/// the cap: the overflow judgment, named by each door
+/// at its call site (health audit E-9). The caps
+/// themselves are each door's own; the judgment is the
+/// part that used to be an accident of whichever
+/// private copy of the read a door happened to carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapOverflow {
+    /// Refuse the whole read, in the door's own words
+    /// (the .obd loader, the .mxl reader, the clipart
+    /// intake).
+    Refuse(String),
+    /// Keep the first `cap` bytes and say the entry ran
+    /// over, so the caller can count the loss (the IDML
+    /// importer, whose cut parts are named in the dump's
+    /// loss notes).
+    Note,
+    /// Pass the entry by entirely and go on with the
+    /// rest (the font-pack readers: a bad or oversized
+    /// file never sinks the pack).
+    Skip,
+}
+
+/// The outcome of a capped read that did not refuse:
+/// the bytes the door keeps, and whether the entry ran
+/// past the cap to earn them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CappedRead {
+    /// The kept bytes: the whole entry when it fit;
+    /// under [`CapOverflow::Note`] the first `cap` bytes
+    /// of an entry that ran over; under
+    /// [`CapOverflow::Skip`] empty when it ran over.
+    pub bytes: Vec<u8>,
+    /// Whether the entry ran past the cap. A read that
+    /// overflows has read exactly `cap + 1` bytes when
+    /// this is set, so a door counting raw bytes (the
+    /// IDML total) counts `bytes.len() + 1` for a noted
+    /// entry.
+    pub overflowed: bool,
+}
+
+/// How a capped read can fail: the door's own refusal
+/// words, or the reader's own error, carried whole so
+/// the door can quote it in its own sentence.
+#[derive(Debug)]
+pub enum CappedReadError {
+    /// The entry ran past the cap and the door's
+    /// judgment was [`CapOverflow::Refuse`].
+    Refused(String),
+    /// The reader itself failed.
+    Unreadable(std::io::Error),
+}
+
+/// Read one entry (or any reader) through a cap,
+/// counting ACTUAL bytes as they arrive (round 3,
+/// RT3-B: declared sizes lie, so the reading itself is
+/// the count). One byte past the cap is read, so an
+/// entry exactly at the cap still counts as inside;
+/// memory never holds more than the cap plus that one
+/// byte. This is the one statement of that mechanism —
+/// every zip door in the workspace (.obd, IDML, .mxl,
+/// font packs, clipart packs) reads through it, each
+/// naming its own cap and its own [`CapOverflow`]
+/// judgment. It lives here because ob-model is the
+/// lowest crate every one of those doors can reach,
+/// and it is stated over `Read`, so this crate needs
+/// no zip dependency to hold it.
+pub fn read_capped(
+    reader: &mut impl std::io::Read,
+    cap: u64,
+    overflow: CapOverflow,
+) -> Result<CappedRead, CappedReadError> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(cap + 1)
+        .read_to_end(&mut bytes)
+        .map_err(CappedReadError::Unreadable)?;
+    if bytes.len() as u64 > cap {
+        match overflow {
+            CapOverflow::Refuse(words) => Err(CappedReadError::Refused(words)),
+            CapOverflow::Note => {
+                bytes.truncate(cap as usize);
+                Ok(CappedRead {
+                    bytes,
+                    overflowed: true,
+                })
+            }
+            CapOverflow::Skip => Ok(CappedRead {
+                bytes: Vec::new(),
+                overflowed: true,
+            }),
+        }
+    } else {
+        Ok(CappedRead {
+            bytes,
+            overflowed: false,
+        })
+    }
 }
 
 /// What an asset in the document's store is for.
@@ -2162,7 +2365,7 @@ pub fn insert_sheet_size(preset: &str) -> Option<Size> {
     // Milli-points: 72,000 to the inch.
     Some(match preset {
         "half-letter" => Size::new(396_000, 612_000), // 5.5 x 8.5
-        "letter" => Size::new(612_000, 792_000),      // 8.5 x 11
+        "letter" => Size::LETTER_PORTRAIT,            // 8.5 x 11
         "card" => Size::new(306_000, 396_000),        // 4.25 x 5.5
         _ => return None,
     })
@@ -2237,7 +2440,7 @@ impl Insert {
             preset: self.sheet.preset.clone(),
             size: insert_sheet_size(&self.sheet.preset)
                 .or_else(|| self.panels.first().map(|p| p.size))
-                .unwrap_or_else(|| Size::new(612_000, 792_000)),
+                .unwrap_or(Size::LETTER_PORTRAIT),
         };
         doc.inserts = Vec::new();
         doc.no_announcements = false;
@@ -6568,9 +6771,51 @@ mod guide_tests {
 
     #[test]
     fn inches_round_trip() {
-        assert_eq!(inches_to_mpt(1.25), 90_000);
+        assert_eq!(inch(1.25), 90_000);
         assert_eq!(mpt_to_inches(90_000), 1.25);
-        assert_eq!(inches_to_mpt(0.0), 0);
+        assert_eq!(inch(0.0), 0);
+    }
+
+    #[test]
+    fn capped_read_names_each_overflow_judgment() {
+        // Exactly at the cap counts as inside, under
+        // every judgment.
+        for judgment in [
+            CapOverflow::Refuse("too large".to_string()),
+            CapOverflow::Note,
+            CapOverflow::Skip,
+        ] {
+            let read = read_capped(&mut std::io::Cursor::new(vec![7u8; 100]), 100, judgment)
+                .expect("at the cap reads");
+            assert_eq!(read.bytes.len(), 100);
+            assert!(!read.overflowed);
+        }
+        // Past the cap, each judgment does what its
+        // name says.
+        match read_capped(
+            &mut std::io::Cursor::new(vec![7u8; 101]),
+            100,
+            CapOverflow::Refuse("too large".to_string()),
+        ) {
+            Err(CappedReadError::Refused(words)) => assert_eq!(words, "too large"),
+            other => panic!("refuse refuses: {other:?}"),
+        }
+        let noted = read_capped(
+            &mut std::io::Cursor::new(vec![7u8; 101]),
+            100,
+            CapOverflow::Note,
+        )
+        .expect("note keeps the kept bytes");
+        assert_eq!(noted.bytes.len(), 100);
+        assert!(noted.overflowed);
+        let skipped = read_capped(
+            &mut std::io::Cursor::new(vec![7u8; 101]),
+            100,
+            CapOverflow::Skip,
+        )
+        .expect("skip passes the entry by");
+        assert!(skipped.bytes.is_empty());
+        assert!(skipped.overflowed);
     }
 
     #[test]

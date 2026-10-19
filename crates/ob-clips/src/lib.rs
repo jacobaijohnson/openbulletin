@@ -458,7 +458,6 @@ impl ClipLibrary {
         notes: &CollectionNotes,
         convert: Option<&MetafileConverter>,
     ) -> Result<AddReport, String> {
-        use std::io::Read as _;
         let name = zip_name
             .rsplit(['/', '\\'])
             .next()
@@ -499,20 +498,27 @@ impl ClipLibrary {
             if entry.is_dir() {
                 continue;
             }
-            let mut buf = Vec::new();
-            entry
-                .by_ref()
-                .take(MAX_TOTAL_UNCOMPRESSED + 1 - total)
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("a file in that zip cannot be read: {e}"))?;
-            total += buf.len() as u64;
-            if total > MAX_TOTAL_UNCOMPRESSED {
-                return Err(
+            // The read goes through ob-model's one
+            // capped read (health audit E-9), capped at
+            // what is left of the shared total. This
+            // door's judgment is Refuse, in the words
+            // below.
+            let read = ob_model::read_capped(
+                &mut entry,
+                MAX_TOTAL_UNCOMPRESSED - total,
+                ob_model::CapOverflow::Refuse(
                     "that zip holds more than 512 MB unzipped; a clipart pack is not that big"
-                        .into(),
-                );
-            }
-            files.push((entry.name().to_string(), buf));
+                        .to_string(),
+                ),
+            )
+            .map_err(|e| match e {
+                ob_model::CappedReadError::Refused(words) => words,
+                ob_model::CappedReadError::Unreadable(e) => {
+                    format!("a file in that zip cannot be read: {e}")
+                }
+            })?;
+            total += read.bytes.len() as u64;
+            files.push((entry.name().to_string(), read.bytes));
         }
         self.add_collection(&name, &files, notes, convert)
     }

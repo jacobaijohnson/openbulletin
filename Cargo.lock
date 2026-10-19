@@ -2886,7 +2886,6 @@ dependencies = [
  "rustls-native-certs",
  "serde",
  "serde_json",
- "sha2",
  "ttf-parser",
  "ureq",
  "webpki-roots 0.26.11",

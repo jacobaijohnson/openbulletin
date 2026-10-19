@@ -9,7 +9,6 @@ description = "OpenBulletin font library: one app-managed folder of fonts, ident
 [dependencies]
 serde.workspace = true
 ob-model = { path = "../ob-model" }
-sha2 = "0.10"
 serde_json.workspace = true
 ureq = { version = "2", features = ["json", "tls"] }
 rustls = { version = "0.23", features = ["ring"] }

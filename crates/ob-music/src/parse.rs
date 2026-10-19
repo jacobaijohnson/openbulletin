@@ -12,7 +12,6 @@
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use std::io::Read as _;
 
 /// The structural counts of one score, taken from the file
 /// itself. The engraving is checked against these on every
@@ -179,22 +178,23 @@ const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
 /// generous headroom.
 const MAX_XML_DEPTH: usize = 256;
 
-/// Read one zip entry's text under the cap. One byte past
-/// it is read, so an entry exactly at the cap still counts
+/// Read one zip entry's text under the cap, through
+/// ob-model's one capped read (health audit E-9). This
+/// door's judgment is Refuse: one byte past the cap is
+/// read, so an entry exactly at the cap still counts
 /// as inside; anything larger refuses in plain words.
 fn read_entry_text(entry: &mut zip::read::ZipFile, what: &str) -> Result<String, String> {
-    let mut buf = Vec::new();
-    entry
-        .by_ref()
-        .take(MAX_ENTRY_BYTES + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("{what} cannot be read ({e})"))?;
-    if buf.len() as u64 > MAX_ENTRY_BYTES {
-        return Err(format!(
-            "{what} is too large to read (past 32 MB of music text)"
-        ));
-    }
-    String::from_utf8(buf).map_err(|_| format!("{what} is not text we can read"))
+    let too_large = format!("{what} is too large to read (past 32 MB of music text)");
+    let read = ob_model::read_capped(
+        entry,
+        MAX_ENTRY_BYTES,
+        ob_model::CapOverflow::Refuse(too_large),
+    )
+    .map_err(|e| match e {
+        ob_model::CappedReadError::Refused(words) => words,
+        ob_model::CappedReadError::Unreadable(e) => format!("{what} cannot be read ({e})"),
+    })?;
+    String::from_utf8(read.bytes).map_err(|_| format!("{what} is not text we can read"))
 }
 
 /// The score's XML out of a .mxl zip: the container's

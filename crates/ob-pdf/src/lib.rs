@@ -1641,7 +1641,7 @@ pub fn export_duplex_test_pdf() -> Vec<u8> {
     use ob_model::{
         Align, ContentRole, Frame, FrameKind, Panel, Paragraph, ParagraphStyle, Rect, Size, Story,
     };
-    let page = Size::new(612_000, 792_000); // US Letter portrait
+    let page = Size::LETTER_PORTRAIT;
     let frame_rect = Rect::new(54_000, 54_000, page.w - 108_000, page.h - 108_000);
     let side = |id: &str, big: &str, last: &str| -> (Panel, Story) {
         let story = Story {
@@ -1865,7 +1865,7 @@ fn large_print_document_with_library(
     // Fit is measured on the words that will print: the
     // publication copy, spoken-only paragraphs already out.
     let (base, _) = doc.without_spoken_only();
-    let page = ob_model::Size::new(612_000, 792_000); // US Letter portrait
+    let page = ob_model::Size::LETTER_PORTRAIT;
     let margin: ob_model::Mpt = 54_000; // 3/4 inch
     let usable_w = page.w - 2 * margin;
     let usable_h = page.h - 2 * margin;

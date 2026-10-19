@@ -366,3 +366,167 @@ this must not move.
   `*` / `|` boundaries. The leading-negation and
   trailing-cancelled pins are the boundaries this must not
   move.
+
+## Shipped addendum, R27-A
+
+Shipped on main over baseline `9a2e97d`. Full unpiped suite
+**824 passed / 0 failed** (817 baseline + 7 new pins; logs
+`/tmp/r27a_full.log`, cargo exit 0 embedded), clippy
+`--workspace --all-targets -D warnings` exit 0
+(`/tmp/r27a_clippy.log`), booklet baseline reproduced
+byte-exact — imposed 31,717 / reader 34,977 (the in-suite
+`booklet_export_size_stays_down` measurement). All work in
+`crates/ob-extract/src/contribution.rs`; no pre-existing
+test body changed; no pin flagged.
+
+### F1 — the seven mechanisms, as shipped
+
+- **Mechanisms 1+2 (auxiliary stacks, incl. the
+  negation).** One shared slot predicate, `aux_slot_word`
+  (tolerated adverbs, adverbial words, `never`, `ever`,
+  `not`), now used by every stack crossing: the backward
+  walk, the forward arm's conjunction crossing, the
+  intervening-PP arm, and detection's auxiliary walk.
+  `passive_aux_before` is rewritten on it, looping back
+  over any number of slot words to the auxiliary — the
+  walk and the participle test share the one rule, as
+  the brief required.
+- **Mechanism 3 (post-PP slot).** The forward arm skips
+  `aux_slot_word` tokens at the post-PP slot and at every
+  loop top; `forward_has_intervening_pp` skips them the
+  same way. All eight flat adverbs now read as their -ly
+  twins, and slot words standing mid-stack cross too.
+- **Mechanism 4 (PP crossing).** "past" joins the
+  continuation preposition set (the subject-preposition
+  twin is untouched). The forward arm's PP object run no
+  longer swallows a following continuation preposition,
+  so each PP of a stack is crossed by its own iteration; a "to" heading a determiner-headed
+  place NP with a target construction after it is
+  crossed as a destination PP (in the forward arm and
+  in `forward_has_intervening_pp`). Accompaniment PPs
+  cross by the same iteration. Static-PP readings are
+  unchanged (the suite's static-stack pins stand; the
+  destination-only passive shape asserts its target,
+  exactly as the consumed "for them" shape does).
+- **Mechanism 5 (boundary, every subject kind).** The
+  backward walk arms the boundary at once on determiner /
+  possessive heads and subject pronouns
+  (`SUBJECT_PRONOUNS`); a bare or proper noun run is held
+  as a pending subject and arms when the conjunction
+  joining the clauses is crossed behind it. The
+  pending-subject distinction is what keeps the pinned
+  conjoined-verb-list reading (a noun run standing as a
+  conjoined verb's object crosses no conjunction there).
+  All eight subject kinds now give the alternatives.
+- **Mechanism 6 (boundary at every conjunct).** The
+  backward walk records when it ended on the boundary
+  (`boundary_break`); the consultation then consults the
+  forward arm — extracted as `forward_walk_continuation`,
+  which counts the full conjuncts it crosses — and the
+  Sunday is consumed exactly when the target is reached
+  only by crossing a further full conjunct. Reading
+  note: for the lane's witness ("… rehearsed pieces from
+  Kent to November 8") the consumed reading is silence,
+  parity with its first-conjunct from-twin; without
+  "from", the target asserts with an empty note, parity
+  with its first-conjunct twin (the standing R26-C
+  forward-conjunct reading). An alternatives reading is
+  unreachable for the witness itself: "from" governance
+  silences the target the alternatives would name.
+- **Mechanism 7 (trailing "until" runs).** The backward
+  walk never crosses "until" (it crosses "to", whose
+  framed date is the claim's target standing inside the
+  walk); the trailing arm's run walk-back excludes
+  "until" as a run preposition and refuses a run slice
+  containing it; and the weekday-object test behind the
+  walk gained the 4-deep framed pattern (next/this,
+  determiner, preposition) for the doubled relative form
+  ("on the next Sunday on the next Sunday"). "until"
+  runs now judge exactly as "to" runs at lengths 1–3 and
+  in the relative forms; the claim-free twins read
+  identically in both orders (pinned as parity), and the
+  base-order 1-PP "until" reading stands.
+
+### F3 — the site enumeration
+
+A token that cleans to nothing is nothing at every site
+that reads tokens. The enumeration covered every reader
+of cleaned tokens in `contribution.rs`; sites are grouped
+by what they needed.
+
+**Fixed in this batch** (each pinned against its clean
+twin in `r27a_cf_only_tokens_at_every_site`):
+
+- The for-machinery: `passive_for_slot_walk` (empty
+  tokens crossed uncounted), `passive_for_zone_start`
+  (participle / phrasal pair read over the two nearest
+  non-empty words; the "for" is the window's last
+  non-empty word), `active_for_zone_start` (same "for";
+  the object scan treats empty object words as nothing).
+- The shared auxiliary walk: `aux_adverb_walk_bounded`
+  (empty crossed uncounted), `aux_beyond_slot`,
+  `aux_complement`.
+- Positional preposition detection:
+  `continuation_prep_before` and `subject_prep_before`
+  now read the nearest non-empty words, and serve the
+  consultation's detection, `weekday_in_subject_pp`,
+  `relative_in_subject_pp`, and `date_in_subject_pp`.
+- Subject-PP weekday patterns:
+  `weekday_is_subject_pp_object` (the four patterns over
+  nearest non-empty words), now serving both subject
+  walks; `segment_subject_before` and
+  `subject_head_before` also cross empty tokens outright,
+  and `verb_after_pp_objects` crosses them in its object
+  runs.
+- `clause_break_after_at`: a Cf-only token is not a
+  clause boundary (marker characters that are not
+  format characters keep their standing boundary
+  readings — `cf_only_token` requires a stripped format
+  character, so "*" / "|" are untouched).
+- The date reader: `parse_date_prefix` drops interior
+  Cf-only tokens from the normalized run while the
+  reported span still covers them; a Cf-only token at
+  the span head keeps the boundary return.
+- The governor phrase matchers (`is_governor_phrase`,
+  `is_cancellation_phrase`, `is_displacement_phrase`,
+  `is_target_phrase`) match over non-empty words, and
+  the three governed scans judge a phrase's start at
+  its first real word.
+- The claim machinery: `target_claim`'s from-before-date
+  test reads the date at the next non-empty position;
+  `contradicted_before` reads the nearest non-empty
+  token; `verb_form_is_finite` judges the noun-phrase
+  test over the next two non-empty tokens;
+  `weekday_modifier_at` and `weekday_is_framed` judge
+  over nearest non-empty / non-Cf tokens.
+- The signal scans: `dates_inside_group_signals` and
+  `scan_plain_signals` detect the relative phrase and
+  the Sunday-after head over non-empty tokens, with
+  spans covering the empties; `sunday_after_phrase_run`
+  finds its "after" over non-empty tokens;
+  `sunday_after_outcome` filters Cf-only tokens at
+  entry.
+
+**Examined, already insensitive** (probed against clean
+twins; readings unchanged, no code change): the claim
+consultation's own walks and `target_claim`'s
+clause-bounded and between-token checks (empties
+exempted in round 26); `bare_phrase_unit_span` and
+`occurrence_is_bare` (built on the same exempted
+machinery); `fronted_stack_ok` (an empty token truncates
+its stack scan in the conservative direction);
+date-line relative-shape readers (they echo the sender's
+words into `for_sunday_in_words`, which round 26 already
+pins as the sender's own words).
+
+### Pins added
+
+`r27a_auxiliary_stack_crossings`,
+`r27a_post_pp_slot_adverbs`,
+`r27a_destination_and_accompaniment_pp`,
+`r27a_conjoined_boundary_every_subject_kind`,
+`r27a_boundary_at_every_conjunct`,
+`r27a_trailing_until_runs`,
+`r27a_cf_only_tokens_at_every_site` — each witness with
+its clean twin and the standing boundary it neighbours,
+on the established three surfaces.

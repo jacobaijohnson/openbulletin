@@ -579,7 +579,16 @@ enum SundayAfter {
 /// R7-4) — the base is never salvaged as the line's
 /// own date.
 fn sunday_after_outcome(text: &str, today: SimpleDate) -> Option<SundayAfter> {
-    let tokens: Vec<&str> = text.split_whitespace().collect();
+    // Round 27 (R27-A, F3): a token that is
+    // nothing but format characters is nothing on
+    // this reader too — it stands neither in the
+    // shape nor between its words ("the Sunday
+    // \u{200b} after November 1, 2026" reads its
+    // base exactly as the clean line does).
+    let tokens: Vec<&str> = text
+        .split_whitespace()
+        .filter(|t| !cf_only_token(t))
+        .collect();
     // The shape may stand anywhere in the line (round
     // 8, R8-4): words before it are the line's lead-in
     // ("words for Sunday after ..."), and its opening
@@ -831,14 +840,27 @@ fn dates_inside_group_signals(
     let mut last_framed_sunday = false;
     let mut i = 0;
     while i < tokens.len() {
-        if tokens[i] == "sunday" && tokens.get(i + 1).map(String::as_str) == Some("after") {
-            let (which_at, used) = if tokens.get(i + 2).map(String::as_str) == Some("the") {
-                (i + 3, 5)
-            } else {
-                (i + 2, 4)
+        // Round 27 (R27-A, F3): the "after" and the
+        // base phrase's words are the next words
+        // that are something — a token that cleans
+        // to nothing inside the shape ("Sunday
+        // \u{200b} after next Sunday") leaves the
+        // shape standing, and the span it reports
+        // covers the nothing it crossed.
+        let after_at = next_nonempty(tokens, i + 1);
+        if tokens[i] == "sunday" && after_at.is_some_and(|a| tokens[a].as_str() == "after") {
+            let after_at = after_at.unwrap_or(i + 1);
+            let first_at = next_nonempty(tokens, after_at + 1);
+            let (which_at, base_at) = match first_at {
+                Some(f) if tokens[f].as_str() == "the" => (
+                    next_nonempty(tokens, f + 1),
+                    next_nonempty(tokens, f + 1).and_then(|w| next_nonempty(tokens, w + 1)),
+                ),
+                other => (other, other.and_then(|w| next_nonempty(tokens, w + 1))),
             };
-            let which = tokens.get(which_at).map(String::as_str);
-            let base_day = tokens.get(which_at + 1).map(String::as_str);
+            let used = base_at.map(|b| b - i + 1).unwrap_or(0);
+            let which = which_at.and_then(|w| tokens.get(w)).map(String::as_str);
+            let base_day = base_at.and_then(|b| tokens.get(b)).map(String::as_str);
             if (which == Some("next") || which == Some("this")) && base_day == Some("sunday") {
                 let base = relative_sunday_date(which == Some("next"), today);
                 let date = first_sunday_after(base);
@@ -870,19 +892,27 @@ fn dates_inside_group_signals(
                 continue;
             }
         }
-        if (tokens[i] == "next" || tokens[i] == "this")
-            && tokens.get(i + 1).map(String::as_str) == Some("sunday")
-        {
+        // Round 27 (R27-A, F3): the phrase's Sunday
+        // is the next word that is something after
+        // the relative word ("next \u{200b}
+        // Sunday" is the phrase, its span covering
+        // the nothing between its words).
+        let rel_sunday = if tokens[i] == "next" || tokens[i] == "this" {
+            next_nonempty(tokens, i + 1).filter(|&j| tokens[j].as_str() == "sunday")
+        } else {
+            None
+        };
+        if let Some(rel_i) = rel_sunday {
             // Round 25 (R25-B, F5b = review R25-2):
             // a relative phrase standing as a PP
             // object inside a target claim's object
             // continuation is consumed exactly as
             // the bare weekday is (R24-5): it spawns
             // no signal here.
-            if weekday_in_object_continuation_pp(raw_tokens, tokens, i + 1, today) {
-                last_end = i + 2;
+            if weekday_in_object_continuation_pp(raw_tokens, tokens, rel_i, today) {
+                last_end = rel_i + 1;
                 last_framed_sunday = false;
-                i += 2;
+                i = rel_i + 1;
                 continue;
             }
             let date = relative_sunday_date(tokens[i] == "next", today);
@@ -890,12 +920,12 @@ fn dates_inside_group_signals(
             out.push(GroupSignal {
                 date,
                 start: i,
-                used: 2,
+                used: rel_i - i + 1,
                 anchored: Some(anchored),
             });
-            last_end = i + 2;
+            last_end = rel_i + 1;
             last_framed_sunday = false;
-            i += 2;
+            i = rel_i + 1;
             continue;
         }
         match parse_date_prefix(&raw_tokens[i..], today) {
@@ -1082,6 +1112,21 @@ fn strip_format_chars(text: &str) -> String {
     }
 }
 
+/// Whether a raw token is nothing but format
+/// characters and the punctuation they rode in on
+/// (round 27, R27-A, F3): stripping the format
+/// characters leaves no letter and no digit, and
+/// at least one format character was there to
+/// strip. Such a token cleans to nothing AND is
+/// nothing — it is not the boundary punctuation a
+/// standalone "*" or "|" is (those carry no format
+/// character and keep their standing boundary
+/// readings wherever those stand).
+fn cf_only_token(raw: &str) -> bool {
+    let stripped = strip_format_chars(raw);
+    stripped.len() < raw.len() && !stripped.chars().any(|c| c.is_alphanumeric())
+}
+
 /// One group token with its wrapping punctuation off,
 /// lowercased: the shape the governor and weekday
 /// checks read.
@@ -1155,6 +1200,15 @@ fn clause_break_after_at(raw_tokens: &[&str], tokens: &[String], j: usize) -> bo
     let Some(raw) = raw_tokens.get(j) else {
         return false;
     };
+    // Round 27 (R27-A, F3): a token that is nothing
+    // but format characters (see `cf_only_token`)
+    // breaks no clause — its raw form trips the
+    // no-letters classification below, but there is
+    // no punctuation there to break on; the token
+    // is nothing, and nothing breaks nothing.
+    if cf_only_token(raw) {
+        return false;
+    }
     if !clause_break_after(raw) {
         return false;
     }
@@ -1805,25 +1859,60 @@ fn is_subject_preposition(word: &str) -> bool {
 /// November 1)" and its family keep their
 /// readings exactly.
 fn is_continuation_preposition(word: &str) -> bool {
-    is_subject_preposition(word) || word == "for"
+    // Round 27 (R27-A, F1 mechanism 4): "past" joins
+    // the continuation set — a destination
+    // preposition of the same family as "through" /
+    // "toward" ("… from Kent past the hall to
+    // November 8") — in THIS set only: it is not a
+    // subject preposition, and `is_subject_preposition`
+    // is untouched.
+    is_subject_preposition(word) || word == "for" || word == "past"
+}
+
+/// Round 27 (R27-A, F1 mechanism 1): ONE word
+/// class for the auxiliary stack's slot — the
+/// tolerated adverbs, the adverbial (-ly) class,
+/// "never" / "ever", and the negation "not". Every
+/// site that crosses an auxiliary stack judges its
+/// slot words by this one predicate: the passive
+/// test below, the object-continuation walk's own
+/// adverb branch and post-PP slot, and the forward
+/// arm's conjunct auxiliary crossing.
+fn aux_slot_word(word: &str) -> bool {
+    is_tolerated_adverb(word) || adverbial_word(word) || matches!(word, "never" | "ever" | "not")
 }
 
 /// Round 26 (R26-C, F2 mechanism 1): whether the
 /// finite verb form at `verb` in `tokens` heads a
 /// PASSIVE construction — an auxiliary standing
-/// directly before it, across at most one slot
-/// adverb ("were served", "was still sung"): the
-/// auxiliary stack the backward walk's own
-/// auxiliary branch already crosses.
+/// before it across its slot ("were served", "was
+/// still sung"): the auxiliary stack the backward
+/// walk's own auxiliary branch already crosses.
+/// Round 27 (R27-A, F1 mechanism 1): the slot is
+/// the FULL stack pattern the pinned families
+/// imply — any number of slot words (`aux_slot_
+/// word`: listed adverbs and the negation, in any
+/// order), not at most one: "were still just
+/// served" and "were not served" head passive
+/// constructions exactly as "were still served"
+/// does. A token that cleans to nothing is nothing
+/// in the stack, as at every site the walk reads.
+/// The walk and this test share the rule through
+/// `aux_slot_word`; there are not two copies of it.
 fn passive_aux_before(tokens: &[String], verb: usize) -> bool {
-    if verb >= 1 && AUXILIARY_WORDS.contains(&tokens[verb - 1].as_str()) {
-        return true;
+    let mut j = verb;
+    while j > 0 {
+        let w = tokens[j - 1].as_str();
+        if AUXILIARY_WORDS.contains(&w) {
+            return true;
+        }
+        if w.is_empty() || aux_slot_word(w) {
+            j -= 1;
+            continue;
+        }
+        return false;
     }
-    verb >= 2
-        && (is_tolerated_adverb(tokens[verb - 1].as_str())
-            || adverbial_word(tokens[verb - 1].as_str())
-            || matches!(tokens[verb - 1].as_str(), "never" | "ever"))
-        && AUXILIARY_WORDS.contains(&tokens[verb - 2].as_str())
+    false
 }
 
 /// Round 26 (R26-C, F2 mechanism 1): whether a
@@ -1837,18 +1926,69 @@ fn forward_has_intervening_pp(tokens: &[String], i: usize) -> bool {
     let mut k = i + 1;
     let mut intervening = false;
     loop {
+        // Round 27 (R27-A, F1 mechanisms 2 and 4):
+        // the post-PP slot words cross as in the
+        // main forward arm, and the noun crossing
+        // stops at a PP's preposition, as there.
+        while tokens.get(k).is_some_and(|w| aux_slot_word(w)) {
+            k += 1;
+        }
         while tokens.get(k).is_some_and(|w| {
-            w.is_empty() || (noun_like_word(w) && !is_finite_verb_form(w) && w.as_str() != "until")
+            w.is_empty()
+                || (noun_like_word(w)
+                    && !is_finite_verb_form(w)
+                    && w.as_str() != "until"
+                    && !is_continuation_preposition(w))
         }) {
             k += 1;
         }
         match tokens.get(k).map(String::as_str) {
-            Some("to") | Some("until") => return intervening,
+            Some("to") | Some("until") => {
+                // Round 27 (R27-A, F1 mechanism 4): a
+                // destination "to" — determiner-headed
+                // place NP, a further target
+                // construction after it — is an
+                // intervening PP, not the claim's
+                // target, exactly as the main forward
+                // arm crosses it.
+                if tokens[k] == "to" {
+                    let mut m = k + 1;
+                    let mut det_seen = false;
+                    while tokens
+                        .get(m)
+                        .is_some_and(|w| w.is_empty() || matches!(w.as_str(), "the" | "a" | "an"))
+                    {
+                        det_seen = det_seen || matches!(tokens[m].as_str(), "the" | "a" | "an");
+                        m += 1;
+                    }
+                    let mut n = m;
+                    while tokens.get(n).is_some_and(|w| {
+                        noun_like_word(w)
+                            && !is_finite_verb_form(w)
+                            && w.as_str() != "until"
+                            && !is_continuation_preposition(w)
+                    }) {
+                        n += 1;
+                    }
+                    let next = tokens.get(n).map(String::as_str);
+                    if det_seen
+                        && n > m
+                        && (matches!(next, Some("to") | Some("until") | Some("and") | Some("or"))
+                            || next.is_some_and(is_continuation_preposition))
+                    {
+                        intervening = true;
+                        k = n;
+                        continue;
+                    }
+                }
+                return intervening;
+            }
             Some(w) if is_continuation_preposition(w) => {
                 intervening = true;
                 let mut m = k + 1;
                 while tokens.get(m).is_some_and(|w| {
-                    matches!(w.as_str(), "the" | "a" | "an")
+                    w.is_empty()
+                        || matches!(w.as_str(), "the" | "a" | "an")
                         || POSSESSIVE_DETERMINERS.contains(&w.as_str())
                 }) {
                     m += 1;
@@ -1899,6 +2039,14 @@ fn segment_subject_before(segment: &[String], off: usize) -> bool {
     // pinned.
     let mut pp_object_crossed = false;
     while i > 0 {
+        // Round 27 (R27-A, F3): a token that cleans
+        // to nothing inside the run is nothing —
+        // crossed without judging it, as in the
+        // claim walk.
+        if segment[i - 1].is_empty() {
+            i -= 1;
+            continue;
+        }
         let w = segment[i - 1].as_str();
         if matches!(w, "the" | "a" | "an") || POSSESSIVE_DETERMINERS.contains(&w) {
             i -= 1;
@@ -1908,32 +2056,7 @@ fn segment_subject_before(segment: &[String], off: usize) -> bool {
             }
             pp_object_crossed = true;
             i -= 1;
-        } else if weekday_word(w).is_some()
-            && ((i >= 2 && is_subject_preposition(segment[i - 2].as_str()))
-                // Round 23 (R23-5): the PP's weekday
-                // object may wear its own determiner
-                // — "the choir on the Sunday sang":
-                // the determiner stands between the
-                // preposition and the weekday, and
-                // the run crosses it the same way.
-                || (i >= 3
-                    && matches!(segment[i - 2].as_str(), "the" | "a" | "an")
-                    && is_subject_preposition(segment[i - 3].as_str()))
-                // Round 24 (R24-7): the PP's object
-                // may be a relative phrase — "the
-                // choir from next Sunday sang": the
-                // relative word stands between the
-                // preposition (or its determiner) and
-                // the weekday, and the run crosses
-                // the phrase the same way.
-                || (i >= 3
-                    && matches!(segment[i - 2].as_str(), "next" | "this")
-                    && is_subject_preposition(segment[i - 3].as_str()))
-                || (i >= 4
-                    && matches!(segment[i - 2].as_str(), "next" | "this")
-                    && matches!(segment[i - 3].as_str(), "the" | "a" | "an")
-                    && is_subject_preposition(segment[i - 4].as_str())))
-        {
+        } else if weekday_word(w).is_some() && weekday_is_subject_pp_object(segment, i - 1) {
             pp_object_crossed = true;
             i -= 1;
         } else if is_subject_preposition(w) && pp_object_crossed {
@@ -1969,12 +2092,26 @@ fn segment_subject_before(segment: &[String], off: usize) -> bool {
 /// plain signal scans, the claim reach's
 /// between-words test, and the lone-framed fence.
 fn weekday_modifier_at(tokens: &[String], i: usize) -> bool {
+    // Round 27 (R27-A, F3): the words the weekday
+    // would modify are the next words that are
+    // something — a token that cleans to nothing
+    // between the weekday and its noun ("Sunday
+    // \u{200b} bulletins") leaves the modifier
+    // phrase exactly as it stands without it.
+    let mut next: Vec<usize> = Vec::new();
+    let mut j = i + 1;
+    while j < tokens.len() && next.len() < 2 {
+        if !tokens[j].is_empty() {
+            next.push(j);
+        }
+        j += 1;
+    }
     weekday_word(&tokens[i]).is_some()
-        && (tokens.get(i + 1).is_some_and(|next| noun_like_word(next))
-            || (tokens
-                .get(i + 1)
-                .is_some_and(|next| is_finite_verb_form(next))
-                && tokens.get(i + 2).is_some_and(|next| noun_like_word(next))))
+        && (next.first().is_some_and(|&n| noun_like_word(&tokens[n]))
+            || (next
+                .first()
+                .is_some_and(|&n| is_finite_verb_form(&tokens[n]))
+                && next.get(1).is_some_and(|&n| noun_like_word(&tokens[n]))))
 }
 
 /// Whether the weekday word at `i` in `tokens` is
@@ -1999,14 +2136,7 @@ fn weekday_in_subject_pp(tokens: &[String], i: usize) -> bool {
     // one word further back, behind that
     // determiner. A determiner inside the PP does
     // not block consumption.
-    let prep = if i >= 1 && is_subject_preposition(tokens[i - 1].as_str()) {
-        i - 1
-    } else if i >= 2
-        && matches!(tokens[i - 1].as_str(), "the" | "a" | "an")
-        && is_subject_preposition(tokens[i - 2].as_str())
-    {
-        i - 2
-    } else {
+    let Some(prep) = subject_prep_before(tokens, i) else {
         return false;
     };
     if !subject_head_before(tokens, prep) {
@@ -2036,6 +2166,10 @@ fn subject_head_before(tokens: &[String], pos: usize) -> bool {
     let mut object_crossed = false;
     let mut j = pos;
     while j > 0 {
+        if tokens[j - 1].is_empty() {
+            j -= 1;
+            continue;
+        }
         let w = tokens[j - 1].as_str();
         if matches!(w, "the" | "a" | "an") || POSSESSIVE_DETERMINERS.contains(&w) {
             j -= 1;
@@ -2045,24 +2179,7 @@ fn subject_head_before(tokens: &[String], pos: usize) -> bool {
             }
             object_crossed = true;
             j -= 1;
-        } else if weekday_word(w).is_some()
-            && ((j >= 2 && is_subject_preposition(tokens[j - 2].as_str()))
-                || (j >= 3
-                    && matches!(tokens[j - 2].as_str(), "the" | "a" | "an")
-                    && is_subject_preposition(tokens[j - 3].as_str()))
-                // Round 24 (R24-7): a relative phrase
-                // standing as an earlier PP's object
-                // in the stack ("the choir from next
-                // Sunday on November 1 sang") crosses
-                // the same way a weekday object does.
-                || (j >= 3
-                    && matches!(tokens[j - 2].as_str(), "next" | "this")
-                    && is_subject_preposition(tokens[j - 3].as_str()))
-                || (j >= 4
-                    && matches!(tokens[j - 2].as_str(), "next" | "this")
-                    && matches!(tokens[j - 3].as_str(), "the" | "a" | "an")
-                    && is_subject_preposition(tokens[j - 4].as_str())))
-        {
+        } else if weekday_word(w).is_some() && weekday_is_subject_pp_object(tokens, j - 1) {
             object_crossed = true;
             j -= 1;
         } else if is_subject_preposition(w) && object_crossed {
@@ -2093,6 +2210,12 @@ fn subject_head_before(tokens: &[String], pos: usize) -> bool {
 fn verb_after_pp_objects(tokens: &[String], start: usize) -> bool {
     let mut k = start;
     loop {
+        // Round 27 (R27-A, F3): tokens that clean
+        // to nothing in the object material are
+        // crossed as nothing.
+        while tokens.get(k).is_some_and(|w| w.is_empty()) {
+            k += 1;
+        }
         while tokens
             .get(k)
             .is_some_and(|w| noun_like_word(w) && !is_finite_verb_form(w))
@@ -2107,7 +2230,9 @@ fn verb_after_pp_objects(tokens: &[String], start: usize) -> bool {
         // object itself.
         let mut m = k + 1;
         while tokens.get(m).is_some_and(|w| {
-            matches!(w.as_str(), "the" | "a" | "an") || POSSESSIVE_DETERMINERS.contains(&w.as_str())
+            w.is_empty()
+                || matches!(w.as_str(), "the" | "a" | "an")
+                || POSSESSIVE_DETERMINERS.contains(&w.as_str())
         }) {
             m += 1;
         }
@@ -2166,10 +2291,19 @@ fn verb_after_pp_objects(tokens: &[String], start: usize) -> bool {
 /// no head before it, or no clause verb after it —
 /// keeps its standing readings.
 fn date_in_subject_pp(tokens: &[String], start: usize, used: usize) -> bool {
-    if start == 0 || !is_subject_preposition(tokens[start - 1].as_str()) {
+    // Round 27 (R27-A, F3): the preposition is the
+    // nearest word that is something before the
+    // date — an empty token standing between it
+    // and the date ("from \u{200b} November 1")
+    // is nothing, as at every positional site.
+    let prev = prev_nonempty(tokens, start, 1);
+    let Some(&prep) = prev.first() else {
+        return false;
+    };
+    if !is_subject_preposition(tokens[prep].as_str()) {
         return false;
     }
-    if !subject_head_before(tokens, start - 1) {
+    if !subject_head_before(tokens, prep) {
         return false;
     }
     verb_after_pp_objects(tokens, start + used)
@@ -2211,20 +2345,153 @@ fn relative_in_subject_pp(tokens: &[String], start: usize) -> bool {
     {
         return false;
     }
-    let prep = if start >= 1 && is_subject_preposition(tokens[start - 1].as_str()) {
-        start - 1
-    } else if start >= 2
-        && matches!(tokens[start - 1].as_str(), "the" | "a" | "an")
-        && is_subject_preposition(tokens[start - 2].as_str())
-    {
-        start - 2
-    } else {
+    let Some(prep) = subject_prep_before(tokens, start) else {
         return false;
     };
     if !subject_head_before(tokens, prep) {
         return false;
     }
     verb_after_pp_objects(tokens, start + 2)
+}
+
+/// The indices of the nearest `count` non-empty
+/// tokens before `i` in `tokens`, in ascending
+/// order (round 27, R27-A, F3): a token that
+/// cleans to nothing is nothing, so a positional
+/// judgment that reads the words standing before
+/// a position reads the nearest words that ARE
+/// something — an empty token standing between a
+/// preposition and its object ("on \u{200b}
+/// Sunday") no more defeats the preposition's
+/// detection than one standing anywhere else the
+/// parser reads.
+fn prev_nonempty(tokens: &[String], mut i: usize, count: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    while i > 0 && out.len() < count {
+        i -= 1;
+        if !tokens[i].is_empty() {
+            out.push(i);
+        }
+    }
+    out.reverse();
+    out
+}
+
+/// The index of the nearest non-empty token at
+/// or after `i` in `tokens` (round 27, R27-A, F3):
+/// the forward twin of `prev_nonempty`.
+fn next_nonempty(tokens: &[String], mut i: usize) -> Option<usize> {
+    while i < tokens.len() {
+        if !tokens[i].is_empty() {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The preposition heading the phrase whose
+/// object stands at `i` in `tokens`, judged over
+/// the nearest non-empty words (round 27, R27-A,
+/// F3 = review R27-5): the consultation's own
+/// positional detection — [preposition],
+/// [determiner / relative word, preposition],
+/// [determiner, relative word, preposition] —
+/// read through any tokens that clean to nothing
+/// standing among the pattern's words.
+fn continuation_prep_before(tokens: &[String], i: usize) -> Option<usize> {
+    let prev = prev_nonempty(tokens, i, 3);
+    let n = prev.len();
+    if n == 0 {
+        return None;
+    }
+    let a = prev[n - 1];
+    if is_continuation_preposition(tokens[a].as_str()) {
+        return Some(a);
+    }
+    if n >= 2 {
+        let b = prev[n - 2];
+        if matches!(tokens[a].as_str(), "the" | "a" | "an" | "next" | "this")
+            && is_continuation_preposition(tokens[b].as_str())
+        {
+            return Some(b);
+        }
+    }
+    if n >= 3 {
+        let c = prev[n - 3];
+        if matches!(tokens[a].as_str(), "next" | "this")
+            && matches!(tokens[prev[n - 2]].as_str(), "the" | "a" | "an")
+            && is_continuation_preposition(tokens[c].as_str())
+        {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// Whether the weekday word at `i` in `tokens`
+/// stands as a subject PP's object, judged by the
+/// words before it (round 27, R27-A, F3): the
+/// four standing patterns — [preposition],
+/// [determiner, preposition], [relative word,
+/// preposition], [determiner, relative word,
+/// preposition] — read over the nearest non-empty
+/// words, so a token that cleans to nothing among
+/// them ("the choir on \u{200b} Sunday sang")
+/// defeats none of them. The subject walks'
+/// weekday crossings share this one judgment.
+fn weekday_is_subject_pp_object(tokens: &[String], i: usize) -> bool {
+    let prev = prev_nonempty(tokens, i, 3);
+    let n = prev.len();
+    if n == 0 {
+        return false;
+    }
+    let a = tokens[prev[n - 1]].as_str();
+    if is_subject_preposition(a) {
+        return true;
+    }
+    if n >= 2 {
+        let b = tokens[prev[n - 2]].as_str();
+        if (matches!(a, "the" | "a" | "an" | "next" | "this") && is_subject_preposition(b)) {
+            return true;
+        }
+    }
+    if n >= 3 {
+        let b = tokens[prev[n - 2]].as_str();
+        let c = tokens[prev[n - 3]].as_str();
+        if matches!(a, "next" | "this")
+            && matches!(b, "the" | "a" | "an")
+            && is_subject_preposition(c)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The subject-PP twin of `continuation_prep_
+/// before` (round 27, R27-A, F3): [preposition] or
+/// [determiner, preposition] over the nearest
+/// non-empty words, against the subject set.
+fn subject_prep_before(tokens: &[String], i: usize) -> Option<usize> {
+    let prev = prev_nonempty(tokens, i, 2);
+    let n = prev.len();
+    if n == 0 {
+        return None;
+    }
+    let a = prev[n - 1];
+    if is_subject_preposition(tokens[a].as_str()) {
+        return Some(a);
+    }
+    if n >= 2 {
+        let b = prev[n - 2];
+        if matches!(tokens[a].as_str(), "the" | "a" | "an")
+            && is_subject_preposition(tokens[b].as_str())
+        {
+            return Some(b);
+        }
+    }
+    None
 }
 
 /// Whether the weekday word at `i` in `tokens` is
@@ -2285,35 +2552,18 @@ fn weekday_in_object_continuation_pp(
     i: usize,
     today: SimpleDate,
 ) -> bool {
-    let prep = if i >= 1 && is_continuation_preposition(tokens[i - 1].as_str()) {
-        i - 1
-    } else if i >= 2
-        && matches!(tokens[i - 1].as_str(), "the" | "a" | "an")
-        && is_continuation_preposition(tokens[i - 2].as_str())
-    {
-        i - 2
-    } else if i >= 2
-        && matches!(tokens[i - 1].as_str(), "next" | "this")
-        && is_continuation_preposition(tokens[i - 2].as_str())
-    {
-        // Round 25 (R25-B, F5b = review R25-2): the
-        // weekday word at `i` is the object word of
-        // a RELATIVE phrase standing as the PP's
-        // object ("on next Sunday", "before this
-        // Sunday"): the same consultation judges
-        // it — the relative word stands between the
-        // preposition and the weekday, and neither
-        // walk needs to cross it.
-        i - 2
-    } else if i >= 3
-        && matches!(tokens[i - 1].as_str(), "next" | "this")
-        && matches!(tokens[i - 2].as_str(), "the" | "a" | "an")
-        && is_continuation_preposition(tokens[i - 3].as_str())
-    {
-        // "on the next Sunday": preposition,
-        // determiner, relative word, weekday.
-        i - 3
-    } else {
+    // Round 25 (R25-B, F5b = review R25-2): the
+    // weekday word at `i` may be the object word of
+    // a RELATIVE phrase standing as the PP's object
+    // ("on next Sunday", "on the next Sunday"): the
+    // same consultation judges it. Round 27
+    // (R27-A, F3 = review R27-5): the detection is
+    // `continuation_prep_before` — the pattern read
+    // over the nearest non-empty words, so a token
+    // that cleans to nothing standing between the
+    // preposition and the weekday ("on \u{200b}
+    // Sunday") defeats nothing.
+    let Some(prep) = continuation_prep_before(tokens, i) else {
         return false;
     };
     // Backward: reach the claim's target phrase
@@ -2335,6 +2585,29 @@ fn weekday_in_object_continuation_pp(
     // band played …": its own subject stands
     // between the two verbs).
     let mut subject_since_verb = false;
+    // Round 27 (R27-A, F1 mechanism 5): a bare or
+    // proper noun run crossed behind a crossed verb
+    // is only a CANDIDATE subject — the same run is
+    // the next verb's object in a conjoined verb
+    // list ("sang hymns, played songs, and
+    // rehearsed pieces": "hymns" stands between
+    // "played" and "sang" in this walk and heads no
+    // clause). The candidate arms the boundary when
+    // the conjunction that joins the clauses is
+    // crossed behind it: a subject stands between
+    // its verb and the conjunction ("... and they
+    // played songs ..."), an object stands between
+    // the conjunction and its verb. Determiner /
+    // possessive heads and subject pronouns arm
+    // immediately, as the determiner branch always
+    // has — they cannot head an object run in this
+    // walk's position.
+    let mut pending_subject = false;
+    // Round 27 (R27-A, F1 mechanism 6): whether the
+    // walk ended on the second-clause boundary
+    // specifically — the one ending the forward
+    // arm's every-conjunct judgment below revisits.
+    let mut boundary_break = false;
     let reached_target = loop {
         if j == 0 {
             break false;
@@ -2365,8 +2638,16 @@ fn weekday_in_object_continuation_pp(
             }
             j -= 1;
         } else if matches!(w, "and" | "or") {
+            // Round 27 (R27-A, F1 mechanism 5): the
+            // conjunction confirms a candidate
+            // subject crossed behind the last verb —
+            // see `pending_subject` above.
+            if pending_subject {
+                subject_since_verb = true;
+                pending_subject = false;
+            }
             j -= 1;
-        } else if is_tolerated_adverb(w) || matches!(w, "never" | "ever") {
+        } else if is_tolerated_adverb(w) || matches!(w, "never" | "ever" | "not") {
             // Round 26 (R26-C, F2 mechanism 2 =
             // review R26-2): the auxiliary stack's
             // adverbs cross as the -ly forms cross
@@ -2381,6 +2662,22 @@ fn weekday_in_object_continuation_pp(
             // immediately behind the verb form.
             j -= 1;
         } else if is_continuation_preposition(w) {
+            // Round 27 (R27-A, F1 mechanism 7):
+            // "until" is the claim's target
+            // preposition, never object material —
+            // the forward arm learned this in round
+            // 26, and the backward walk crosses it
+            // the same way: never. A weekday PP
+            // standing after an "until" target is
+            // judged by the trailing arm below, which
+            // this break reaches; crossing "until"
+            // and its date as noun-like material
+            // reached the claim phrase by the wrong
+            // road and the trailing judgment never
+            // ran.
+            if w == "until" {
+                break false;
+            }
             if !object_crossed {
                 break false;
             }
@@ -2412,7 +2709,23 @@ fn weekday_in_object_continuation_pp(
             let object_ok = (j >= 2 && is_continuation_preposition(tokens[j - 2].as_str()))
                 || (j >= 3
                     && matches!(tokens[j - 2].as_str(), "the" | "a" | "an" | "next" | "this")
-                    && is_continuation_preposition(tokens[j - 3].as_str()));
+                    && is_continuation_preposition(tokens[j - 3].as_str()))
+                // Round 27 (R27-A, F1 mechanism 7):
+                // the relative object wearing its
+                // determiner — "on the next Sunday"
+                // standing as an earlier PP's object
+                // in the stack — crosses by the same
+                // pattern the subject walks have
+                // always carried (prep at j - 4,
+                // determiner at j - 3, relative word
+                // at j - 2); without it a trailing
+                // run of two relative PPs escaped the
+                // re-judgment its bare and mixed
+                // twins pass.
+                || (j >= 4
+                    && matches!(tokens[j - 2].as_str(), "next" | "this")
+                    && matches!(tokens[j - 3].as_str(), "the" | "a" | "an")
+                    && is_continuation_preposition(tokens[j - 4].as_str()));
             if !object_ok {
                 break false;
             }
@@ -2428,6 +2741,28 @@ fn weekday_in_object_continuation_pp(
             // relative-phrase object, or a noun-like
             // object word: the continuation's own
             // material either way.
+            // Round 27 (R27-A, F1 mechanism 5): a
+            // noun-like word crossed behind a crossed
+            // verb is a candidate subject (see
+            // `pending_subject`) — except the
+            // relative word itself, which is an
+            // earlier PP's object word, never a
+            // subject. A subject PRONOUN arms the
+            // boundary at once: in this walk's
+            // position a pronoun heads the clause it
+            // stands in ("and they played"), it does
+            // not object a verb of the claim's list.
+            let relative_word = matches!(w, "next" | "this")
+                && tokens
+                    .get(j)
+                    .is_some_and(|next| weekday_word(next).is_some());
+            if verb_crossed && !relative_word {
+                if SUBJECT_PRONOUNS.contains(&w) {
+                    subject_since_verb = true;
+                } else {
+                    pending_subject = true;
+                }
+            }
             object_crossed = true;
             j -= 1;
         } else if AUXILIARY_WORDS.contains(&w) {
@@ -2533,11 +2868,13 @@ fn weekday_in_object_continuation_pp(
                     break false;
                 }
                 if verb_crossed && subject_since_verb {
+                    boundary_break = true;
                     break false;
                 }
                 verb_crossed = true;
                 object_crossed = false;
                 subject_since_verb = false;
+                pending_subject = false;
                 j -= 1;
             } else {
                 object_crossed = true;
@@ -2553,11 +2890,67 @@ fn weekday_in_object_continuation_pp(
         // instead of inside the continuation before
         // it — the backward walk dies at that date's
         // "to", so the trailing arm is tried here.
-        return weekday_pp_after_claimed_target(raw_tokens, tokens, prep, i, today);
+        if weekday_pp_after_claimed_target(raw_tokens, tokens, prep, i, today) {
+            return true;
+        }
+        // Round 27 (R27-A, F1 mechanism 6): the walk
+        // ended on the conjoined-clause boundary — a
+        // subject run armed behind a crossed verb —
+        // which is the pinned alternatives reading when
+        // the claim's target stands in the weekday's
+        // own conjunct. But a boundary arms at EVERY
+        // conjunct: when the forward arm reaches the
+        // target only by crossing a further full
+        // conjunct (conjunction + subject run + verb)
+        // standing after the weekday PP, the PP stands
+        // inside the continuation the same way — the
+        // clause after it is the claim's continuation
+        // carrying its target, and the Sunday is
+        // consumed. Without that crossing the boundary
+        // stands and the alternatives reading holds.
+        if boundary_break {
+            let (ok, conjuncts) = forward_walk_continuation(raw_tokens, tokens, i, today);
+            return ok && conjuncts >= 1;
+        }
+        return false;
     }
-    // Forward: cross the rest of the PP stack to
-    // the claim's "to" / "until" and its framed date.
+    forward_walk_continuation(raw_tokens, tokens, i, today).0
+}
+
+/// The consultation's forward arm, standing alone
+/// (round 27, R27-A): cross the rest of the PP
+/// stack after the weekday at `i` to the claim's
+/// "to" / "until" and the framed date (or relative
+/// phrase) it names. Returns whether the target
+/// was reached, and how many FULL conjoined
+/// clauses (conjunction + subject run + verb) the
+/// crossing had to cross to reach it — the count
+/// the mechanism-6 boundary fallback in
+/// `weekday_in_object_continuation_pp` reads.
+/// Round 27 (R27-A, F1 mechanisms 2 and 4): the
+/// slot immediately after the weekday PP is
+/// judged by the auxiliary stack's own word class
+/// (`aux_slot_word`) — a flat adverb standing
+/// there ("on Sunday still from Kent …") is the
+/// stack's adverb one position later, and it
+/// crosses as its -ly twin does; and the stack's
+/// PP crossings cover the destination and
+/// accompaniment prepositions (see the arms
+/// below), without disturbing the static-PP
+/// readings.
+fn forward_walk_continuation(
+    raw_tokens: &[&str],
+    tokens: &[String],
+    i: usize,
+    today: SimpleDate,
+) -> (bool, usize) {
+    let mut conjuncts_crossed = 0usize;
     let mut k = i + 1;
+    // The post-PP slot: the auxiliary stack's slot
+    // words, judged by the stack's own class.
+    while tokens.get(k).is_some_and(|w| aux_slot_word(w)) {
+        k += 1;
+    }
     let forward_ok = loop {
         // Round 26 (R26-C, F2 mechanism 5 = red
         // team RT26-7): "until" is the claim's
@@ -2577,8 +2970,19 @@ fn weekday_in_object_continuation_pp(
         // Round 26 (R26-C, M1): a token that cleans
         // to nothing is crossed without judging it,
         // on this arm too.
+        // The stack's slot words cross wherever in
+        // the stack they stand (the post-PP slot
+        // above is their first position, not their
+        // only one).
+        while tokens.get(k).is_some_and(|w| aux_slot_word(w)) {
+            k += 1;
+        }
         while tokens.get(k).is_some_and(|w| {
-            w.is_empty() || (noun_like_word(w) && !is_finite_verb_form(w) && w.as_str() != "until")
+            w.is_empty()
+                || (noun_like_word(w)
+                    && !is_finite_verb_form(w)
+                    && w.as_str() != "until"
+                    && !is_continuation_preposition(w))
         }) {
             k += 1;
         }
@@ -2587,7 +2991,7 @@ fn weekday_in_object_continuation_pp(
                 let mut m = k + 1;
                 while tokens
                     .get(m)
-                    .is_some_and(|w| matches!(w.as_str(), "the" | "a" | "an"))
+                    .is_some_and(|w| w.is_empty() || matches!(w.as_str(), "the" | "a" | "an"))
                 {
                     m += 1;
                 }
@@ -2605,14 +3009,55 @@ fn weekday_in_object_continuation_pp(
                 {
                     break true;
                 }
-                break raw_tokens
+                if raw_tokens
                     .get(m..)
-                    .is_some_and(|rest| parse_date_prefix(rest, today).is_some());
+                    .is_some_and(|rest| parse_date_prefix(rest, today).is_some())
+                {
+                    break true;
+                }
+                // Round 27 (R27-A, F1 mechanism 4): a
+                // "to" that names no date may head a
+                // DESTINATION PP instead of the
+                // claim's target — "… from Kent to
+                // the hall to November 8": the
+                // discriminator is the determiner-
+                // headed place NP after it, with a
+                // further target construction after
+                // that. Cross the PP and judge what
+                // follows by the same arms; a "to"
+                // with no determiner-headed NP, or
+                // nothing after its NP, ends the arm
+                // exactly as before.
+                if tokens[k] == "to"
+                    && tokens[k + 1..m]
+                        .iter()
+                        .any(|w| matches!(w.as_str(), "the" | "a" | "an"))
+                {
+                    let mut n = m;
+                    while tokens.get(n).is_some_and(|w| {
+                        noun_like_word(w)
+                            && !is_finite_verb_form(w)
+                            && w.as_str() != "until"
+                            && !is_continuation_preposition(w)
+                    }) {
+                        n += 1;
+                    }
+                    let next = tokens.get(n).map(String::as_str);
+                    if n > m
+                        && (matches!(next, Some("to") | Some("until") | Some("and") | Some("or"))
+                            || next.is_some_and(is_continuation_preposition))
+                    {
+                        k = n;
+                        continue;
+                    }
+                }
+                break false;
             }
             Some(w) if is_continuation_preposition(w) => {
                 let mut m = k + 1;
                 while tokens.get(m).is_some_and(|w| {
-                    matches!(w.as_str(), "the" | "a" | "an")
+                    w.is_empty()
+                        || matches!(w.as_str(), "the" | "a" | "an")
                         || POSSESSIVE_DETERMINERS.contains(&w.as_str())
                 }) {
                     m += 1;
@@ -2636,10 +3081,24 @@ fn weekday_in_object_continuation_pp(
                     k = m + used.max(1);
                     continue;
                 }
+                // Round 27 (R27-A, F1 mechanism 4):
+                // the object run stops at the next
+                // PP's preposition — "into" / "with"
+                // / "through" and their kin are
+                // noun-like by the word test, so the
+                // run used to swallow a following
+                // destination or accompaniment PP's
+                // preposition and head noun and die
+                // at its determiner. Each PP of the
+                // stack is now crossed by its own
+                // iteration of this arm.
                 let object_start = m;
                 while tokens.get(m).is_some_and(|w| {
                     w.is_empty()
-                        || (noun_like_word(w) && !is_finite_verb_form(w) && w.as_str() != "until")
+                        || (noun_like_word(w)
+                            && !is_finite_verb_form(w)
+                            && w.as_str() != "until"
+                            && !is_continuation_preposition(w))
                 }) {
                     m += 1;
                 }
@@ -2680,15 +3139,19 @@ fn weekday_in_object_continuation_pp(
                     m += 1;
                 }
                 let mut v = m;
-                while tokens.get(v).is_some_and(|w| {
-                    AUXILIARY_WORDS.contains(&w.as_str())
-                        || is_tolerated_adverb(w)
-                        || adverbial_word(w)
-                        || matches!(w.as_str(), "never" | "ever")
-                }) {
+                while tokens
+                    .get(v)
+                    .is_some_and(|w| AUXILIARY_WORDS.contains(&w.as_str()) || aux_slot_word(w))
+                {
                     v += 1;
                 }
                 if tokens.get(v).is_some_and(|w| is_finite_verb_form(w)) {
+                    // Round 27 (R27-A, F1 mechanism
+                    // 6): a FULL conjunct crossed —
+                    // subject run and verb — counted
+                    // for the boundary fallback in the
+                    // consultation.
+                    conjuncts_crossed += 1;
                     k = v + 1;
                     continue;
                 }
@@ -2701,7 +3164,7 @@ fn weekday_in_object_continuation_pp(
             _ => break false,
         }
     };
-    forward_ok
+    (forward_ok, conjuncts_crossed)
 }
 
 /// Round 25 (R25-B, F5c = review R25-3): a weekday
@@ -2788,9 +3251,20 @@ fn weekday_pp_after_claimed_target(
             }
         }
         if found.is_none() {
-            // A framed-date object.
+            // A framed-date object. Round 27
+            // (R27-A, F1 mechanism 7): "until" is
+            // never a run PP's preposition — an
+            // "until" + framed date ending at `cur`
+            // is the claim's own target standing
+            // before the run, not a PP of the run;
+            // crossing it as one made the arm look
+            // for a second date before the "from"
+            // phrase and die, so every "until"
+            // trailing shape escaped the judgment
+            // its "to" twin passes.
             for q in (0..cur).rev() {
-                if !is_continuation_preposition(tokens[q].as_str()) {
+                if !is_continuation_preposition(tokens[q].as_str()) || tokens[q].as_str() == "until"
+                {
                     continue;
                 }
                 if let Some((_, used)) = parse_date_prefix(&raw_tokens[q + 1..], today) {
@@ -2804,19 +3278,24 @@ fn weekday_pp_after_claimed_target(
         if found.is_none() {
             // A noun-run object: the nearest
             // preposition whose object slice is
-            // determiners and noun-like words.
+            // determiners and noun-like words. An
+            // "until" inside the slice ends it, as
+            // above (R27-A mechanism 7): the slice
+            // "Kent until November 8" is a target
+            // construction, not a noun run.
             for q in (0..cur).rev() {
                 if q + 1 >= cur {
                     continue;
                 }
-                if !is_continuation_preposition(tokens[q].as_str()) {
+                if !is_continuation_preposition(tokens[q].as_str()) || tokens[q].as_str() == "until"
+                {
                     continue;
                 }
                 let obj = &tokens[q + 1..cur];
                 if obj.iter().all(|w| {
                     matches!(w.as_str(), "the" | "a" | "an")
                         || POSSESSIVE_DETERMINERS.contains(&w.as_str())
-                        || (noun_like_word(w) && !is_finite_verb_form(w))
+                        || (noun_like_word(w) && !is_finite_verb_form(w) && w.as_str() != "until")
                 }) {
                     found = Some(q);
                     break;
@@ -2933,15 +3412,16 @@ fn verb_form_is_finite(segment: &[String], off: usize) -> bool {
     // reading): "printed Sunday bulletins" heads
     // the same noun phrase "printed bulletins"
     // does.
-    let heads_noun_phrase = segment
-        .get(off + 1)
-        .is_some_and(|next| noun_phrase_word(next))
-        || (segment
-            .get(off + 1)
-            .is_some_and(|next| weekday_word(next).is_some())
-            && segment
-                .get(off + 2)
-                .is_some_and(|next| noun_phrase_word(next)));
+    // Round 27 (R27-A, F3): the phrase's words are
+    // the next words that are something after the
+    // verb form — a token that cleans to nothing
+    // standing inside the phrase ("printed Sunday
+    // \u{200b} bulletins") is nothing in it.
+    let next1 = next_nonempty(segment, off + 1);
+    let next2 = next1.and_then(|n| next_nonempty(segment, n + 1));
+    let heads_noun_phrase = next1.is_some_and(|n| noun_phrase_word(&segment[n]))
+        || (next1.is_some_and(|n| weekday_word(&segment[n]).is_some())
+            && next2.is_some_and(|n| noun_phrase_word(&segment[n])));
     // Round 22 (R22-6): the determiner shield
     // spans its noun phrase — an irregular
     // PARTICIPLE form heading a noun phrase is
@@ -3143,7 +3623,11 @@ fn aux_complement(segment: &[String], off: usize) -> Option<usize> {
     let mut unlisted_used = 0usize;
     while let Some(w) = segment.get(j) {
         let w = w.as_str();
-        if is_tolerated_adverb(w) {
+        if w.is_empty() {
+            // Round 27 (R27-A, F3): nothing in the
+            // slot is crossed as nothing, uncounted.
+            j += 1;
+        } else if is_tolerated_adverb(w) {
             j += 1;
         } else if adverbial_word(w) || matches!(w, "not" | "never" | "ever" | "yet" | "so" | "too")
         {
@@ -3297,6 +3781,17 @@ fn passive_for_slot_walk(tokens: &[String], start: usize) -> Option<(usize, usiz
     let mut adverbs_used = 0usize;
     while j > 0 {
         let prev = tokens[j - 1].as_str();
+        if prev.is_empty() {
+            // Round 27 (R27-A, F3 = review R27-4):
+            // a token that cleans to nothing in the
+            // slot ("it was \u{200b} moved for
+            // November 1") is nothing — crossed
+            // without counting toward the cap, as
+            // the claim scan's sites already cross
+            // it.
+            j -= 1;
+            continue;
+        }
         if AUXILIARY_WORDS.contains(&prev) {
             aux_seen = true;
             j -= 1;
@@ -3330,23 +3825,43 @@ fn passive_for_slot_walk(tokens: &[String], start: usize) -> Option<(usize, usiz
 }
 
 fn passive_for_zone_start(before: &[String], window: &[String]) -> Option<usize> {
-    if window.len() < 3 || window.last().map(String::as_str) != Some("for") {
+    // Round 27 (R27-A, F3): the construction's
+    // "for" is the window's last word that is
+    // something — a token that cleans to nothing
+    // standing between it and the date is nothing.
+    let for_pos = window.iter().rposition(|w| !w.is_empty())?;
+    if window.len() < 3 || window[for_pos].as_str() != "for" {
         return None;
     }
-    let for_pos = window.len() - 1;
     // The participle phrase ends just before "for":
     // a phrasal pair ("put back"), or one word.
-    let participle_start = if for_pos >= 2
-        && is_phrasal_governor_pair(&window[for_pos - 2], &window[for_pos - 1])
+    // Round 27 (R27-A, F3): tokens that clean to
+    // nothing between the participle and the "for"
+    // ("it was moved \u{200b} for November 1") are
+    // nothing — the participle is the nearest word
+    // that is something before the "for", and the
+    // phrasal pair is read over the two nearest.
+    let mut prev_words: Vec<usize> = Vec::new();
+    let mut scan = for_pos;
+    while scan > 0 && prev_words.len() < 2 {
+        scan -= 1;
+        if !window[scan].is_empty() {
+            prev_words.push(scan);
+        }
+    }
+    let participle_start = if prev_words.len() == 2
+        && is_phrasal_governor_pair(&window[prev_words[1]], &window[prev_words[0]])
     {
-        for_pos - 2
-    } else {
-        let word = window[for_pos - 1].as_str();
+        prev_words[1]
+    } else if let Some(&pp) = prev_words.first() {
+        let word = window[pp].as_str();
         let is_participle = is_cancellation_verb(word) || word.ends_with("ed") || word == "held";
         if !is_participle {
             return None;
         }
-        for_pos - 1
+        pp
+    } else {
+        return None;
     };
     // Round 18 (R18-10): the tolerance is up to TWO
     // consecutive listed adverbs — "(it was just
@@ -3414,10 +3929,10 @@ fn passive_for_zone_start(before: &[String], window: &[String]) -> Option<usize>
 /// determiner shield reaches across the object's
 /// modifiers.
 fn active_for_zone_start(window: &[String]) -> Option<usize> {
-    if window.len() < 2 || window.last().map(String::as_str) != Some("for") {
+    let for_pos = window.iter().rposition(|w| !w.is_empty())?;
+    if window.len() < 2 || window[for_pos].as_str() != "for" {
         return None;
     }
-    let for_pos = window.len() - 1;
     // The nearest displacement phrase ending at or
     // before the "for": try the phrase that ends
     // closest to the "for" first, so an object that
@@ -3437,13 +3952,23 @@ fn active_for_zone_start(window: &[String]) -> Option<usize> {
             let object = &window[end..for_pos];
             let object_ok = !active_for_object_has_finite_verb(object)
                 && object.iter().all(|w| {
-                    !w.is_empty()
-                        && !direct_single_governor(w)
-                        && !is_cancellation_verb(w)
-                        && !AUXILIARY_WORDS.contains(&w.as_str())
-                        && weekday_word(w).is_none()
-                        && w.as_str() != "to"
-                        && w.as_str() != "for"
+                    // Round 27 (R27-A, F3 = review
+                    // R27-4): an object word that
+                    // cleans to nothing ("moved
+                    // \u{200b} for November 1",
+                    // "moved it \u{200b} for
+                    // November 1") is nothing in the
+                    // object — it passes as the
+                    // object's other words pass,
+                    // judged on the words that are
+                    // something.
+                    w.is_empty()
+                        || (!direct_single_governor(w)
+                            && !is_cancellation_verb(w)
+                            && !AUXILIARY_WORDS.contains(&w.as_str())
+                            && weekday_word(w).is_none()
+                            && w.as_str() != "to"
+                            && w.as_str() != "for")
                 });
             if object_ok {
                 return Some(end - len);
@@ -3474,6 +3999,16 @@ fn governed_before(before: &[String], window: &[String]) -> bool {
         });
     }
     for i in 0..window.len() {
+        // Round 27 (R27-A, F3): a phrase never
+        // STARTS on a token that cleans to nothing
+        // — the phrase matchers read through an
+        // interior nothing, but the phrase's start
+        // is its first word that is something, and
+        // the scans judge positions (the for-zone,
+        // the "to" adjacency) by that start.
+        if window[i].is_empty() {
+            continue;
+        }
         for len in 1..=3usize {
             let Some(phrase) = window.get(i..i + len) else {
                 break;
@@ -3510,6 +4045,14 @@ fn governed_before(before: &[String], window: &[String]) -> bool {
 
 /// The possessive determiners (round 14, R14-5).
 const POSSESSIVE_DETERMINERS: [&str; 7] = ["his", "her", "their", "my", "our", "your", "its"];
+
+/// The subject pronouns (round 27, R27-A, F1
+/// mechanism 5): the pronoun forms that head a
+/// clause — "they / we / she / he / it / you / i".
+/// The object forms (them / us / him) are not
+/// here: they cannot head the conjoined clause
+/// the boundary arms on.
+const SUBJECT_PRONOUNS: [&str; 7] = ["they", "we", "she", "he", "it", "you", "i"];
 
 /// Whether the phrase standing at `i` in `slice`
 /// governs, in its context (round 11–14): the
@@ -3797,7 +4340,11 @@ fn is_phrasal_governor_pair(a: &str, b: &str) -> bool {
 /// pair. These are the phrases a "to" after them
 /// turns into a from/to shape.
 fn is_displacement_phrase(phrase: &[String]) -> bool {
-    let words: Vec<&str> = phrase.iter().map(String::as_str).collect();
+    let words: Vec<&str> = phrase
+        .iter()
+        .map(String::as_str)
+        .filter(|w| !w.is_empty())
+        .collect();
     match words.as_slice() {
         [w] => is_displacement_verb(w),
         [a, b] => (is_verb_form(a, "put") || is_verb_form(a, "push")) && *b == "back",
@@ -3959,7 +4506,18 @@ fn direct_single_governor(w: &str) -> bool {
 /// "hold off"; the label word "wrong" (its colon
 /// stripped by `group_token`) disowns its date.
 fn is_governor_phrase(phrase: &[String]) -> bool {
-    let words: Vec<&str> = phrase.iter().map(String::as_str).collect();
+    // Round 27 (R27-A, F3): a phrase's words are
+    // its words that are something — a token that
+    // cleans to nothing standing inside a two-word
+    // governor ("put \u{200b} back") does not
+    // unmake the phrase, at this matcher or at the
+    // cancellation / displacement / target
+    // matchers below, which filter the same way.
+    let words: Vec<&str> = phrase
+        .iter()
+        .map(String::as_str)
+        .filter(|w| !w.is_empty())
+        .collect();
     match words.as_slice() {
         [w] => is_single_governor(w),
         [a, b] => {
@@ -4017,7 +4575,11 @@ fn hyphenated_cancellation(parts: &[String]) -> bool {
 /// as the before position, so "(remove November 1)"
 /// and "(November 1, removed)" disqualify alike.
 fn is_cancellation_phrase(phrase: &[String]) -> bool {
-    let words: Vec<&str> = phrase.iter().map(String::as_str).collect();
+    let words: Vec<&str> = phrase
+        .iter()
+        .map(String::as_str)
+        .filter(|w| !w.is_empty())
+        .collect();
     match words.as_slice() {
         [w] => {
             is_cancellation_verb(w)
@@ -4259,6 +4821,12 @@ fn aux_beyond_slot(tokens: &[String], pos: usize) -> bool {
     let mut k = pos;
     while k > 0 {
         let w = tokens[k - 1].as_str();
+        if w.is_empty() {
+            // Round 27 (R27-A, F3): nothing stands
+            // in the slot — crossed as nothing.
+            k -= 1;
+            continue;
+        }
         if AUXILIARY_WORDS.contains(&w) {
             return true;
         }
@@ -4305,6 +4873,15 @@ fn aux_adverb_walk_bounded(
     let mut negation_seen = false;
     while j > 0 {
         let prev = tokens[j - 1].as_str();
+        if prev.is_empty() {
+            // Round 27 (R27-A, F3): a token that
+            // cleans to nothing in the auxiliary's
+            // slot ("it was \u{200b} moved to
+            // November 8") is nothing — crossed
+            // without counting toward the cap.
+            j -= 1;
+            continue;
+        }
         if AUXILIARY_WORDS.contains(&prev) {
             aux_seen = true;
             j -= 1;
@@ -4499,6 +5076,9 @@ fn governed_after(
     }
     let after = &tokens[seg_start..seg_end];
     for i in 0..after.len() {
+        if after[i].is_empty() {
+            continue;
+        }
         for len in 1..=3usize {
             let Some(phrase) = after.get(i..i + len) else {
                 break;
@@ -4617,10 +5197,16 @@ fn governed_after(
 /// impossible day, since November 1, 2026 is a
 /// Sunday, and contributes nothing.
 fn contradicted_before(tokens: &[String], date_start: usize, date: SimpleDate) -> bool {
-    if date_start == 0 {
+    // Round 27 (R27-A, F3): the weekday word
+    // standing before the date is the nearest word
+    // that is something before it — "(Monday
+    // \u{200b} November 1)" contradicts exactly as
+    // "(Monday November 1)" does.
+    let prev = prev_nonempty(tokens, date_start, 1);
+    let Some(&idx) = prev.first() else {
         return false;
-    }
-    match weekday_word(&tokens[date_start - 1]) {
+    };
+    match weekday_word(&tokens[idx]) {
         Some(named) => named != date.weekday(),
         None => false,
     }
@@ -4678,7 +5264,8 @@ fn partial_or_alternative(
 /// the phrases whose whole meaning is a move to
 /// another date.
 fn is_target_phrase(phrase: &[String]) -> bool {
-    is_displacement_phrase(phrase) || (phrase.len() == 1 && is_verb_form(&phrase[0], "postpone"))
+    let words: Vec<&String> = phrase.iter().filter(|w| !w.is_empty()).collect();
+    is_displacement_phrase(phrase) || (words.len() == 1 && is_verb_form(words[0], "postpone"))
 }
 
 /// The group-level target claim standing for the
@@ -4860,8 +5447,18 @@ fn target_claim(
         let between_ok = clause_bounded
             && between.iter().enumerate().all(|(off, w)| {
                 let j = pe + off;
-                let from_before_date =
-                    w.as_str() == "from" && positional.iter().any(|(_, s, _)| *s == j + 1);
+                // Round 27 (R27-A, F3): the date the
+                // "from" stands before is the next
+                // word that is something after it — a
+                // token that cleans to nothing
+                // between "from" and its date ("moved
+                // from \u{200b} November 1 to
+                // November 8") does not detach the
+                // "from" from the date it governs.
+                let next_nonempty = (j + 1..tokens.len()).find(|&p| !tokens[p].is_empty());
+                let from_before_date = w.as_str() == "from"
+                    && next_nonempty
+                        .is_some_and(|ns| positional.iter().any(|(_, st, _)| *st == ns));
                 // Round 18 (R18-3): a word standing
                 // inside an intervening SIGNAL's own
                 // span — an earlier target in the same
@@ -5060,6 +5657,9 @@ fn target_claim(
 /// still governs.
 fn governed_before_target(window: &[String], window_start: usize, claim: &TargetClaim) -> bool {
     for i in 0..window.len() {
+        if window[i].is_empty() {
+            continue;
+        }
         for len in 1..=3usize {
             let Some(phrase) = window.get(i..i + len) else {
                 break;
@@ -7369,8 +7969,29 @@ fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(SimpleDate, 
     // semicolon must be indistinguishable from the
     // composition's internal group marker, which the
     // date readers never absorb into a date run.
-    let normalized: Vec<String> = tokens
+    // Round 27 (R27-A, F3): a token that is nothing
+    // but format characters standing INSIDE a
+    // date's own span ("November \u{200b} 1", "to
+    // November \u{200b} 8") is nothing — the date
+    // is read across it, and the span it reports
+    // (`used`) still covers it, so every reader
+    // that steps by the span steps over the token
+    // too. A Cf-only token at the span's head keeps
+    // the boundary rule above (the caller's scan
+    // steps over it and starts the run on the
+    // date's own first word, as for any boundary
+    // token), and a token of real garnish ("*", a
+    // standalone ";") is never dropped here: only
+    // `cf_only_token` tokens are.
+    let kept: Vec<usize> = tokens
         .iter()
+        .enumerate()
+        .filter(|(idx, t)| *idx == 0 || !cf_only_token(t))
+        .map(|(idx, _)| idx)
+        .collect();
+    let normalized: Vec<String> = kept
+        .iter()
+        .map(|&idx| tokens[idx])
         .map(|t| {
             // A token of nothing but the punctuation
             // (a standalone ";" — the composition's own
@@ -7438,10 +8059,9 @@ fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(SimpleDate, 
             }
         })
         .collect();
-    let refs: Vec<&str> = normalized.iter().map(String::as_str).collect();
-    (1..=refs.len())
-        .rev()
-        .find_map(|end| parse_flexible_date(&refs[..end].join(" "), today).map(|d| (d, end)))
+    (1..=normalized.len()).rev().find_map(|end| {
+        parse_flexible_date(&normalized[..end].join(" "), today).map(|d| (d, kept[end - 1] + 1))
+    })
 }
 
 /// Whether the weekday at `i` in `core` wears the
@@ -7459,13 +8079,33 @@ fn weekday_is_framed(core: &[&str], i: usize) -> bool {
     if i == 0 {
         return true;
     }
-    if clean(core[i - 1]).eq_ignore_ascii_case("on") {
+    // Round 27 (R27-A, F3): the framing words are
+    // the nearest words that are something before
+    // the weekday — a Cf-only token ("on \u{200b}
+    // Sunday") stands between them and the weekday
+    // as nothing.
+    let mut prev: Vec<usize> = Vec::new();
+    let mut j = i;
+    while j > 0 && prev.len() < 2 {
+        j -= 1;
+        if !cf_only_token(core[j]) {
+            prev.push(j);
+        }
+    }
+    let Some(&p1) = prev.first() else {
+        return false;
+    };
+    if clean(core[p1]).eq_ignore_ascii_case("on") {
         return true;
     }
-    if clean(core[i - 1]).eq_ignore_ascii_case("the") {
+    if clean(core[p1]).eq_ignore_ascii_case("the") {
         // "on the Monday", or the line's own opening
-        // "the" standing in front of the weekday.
-        return i == 1 || clean(core[i - 2]).eq_ignore_ascii_case("on");
+        // "the" standing in front of the weekday
+        // (no word that is something before it).
+        return match prev.get(1) {
+            None => true,
+            Some(&p2) => clean(core[p2]).eq_ignore_ascii_case("on"),
+        };
     }
     false
 }
@@ -7915,18 +8555,23 @@ fn sunday_after_phrase_run(
     i: usize,
     today: SimpleDate,
 ) -> Option<(SimpleDate, usize)> {
-    if weekday_word(&cleaned[i]) != Some(0)
-        || cleaned.get(i + 1).map(String::as_str) != Some("after")
-    {
+    if weekday_word(&cleaned[i]) != Some(0) {
+        return None;
+    }
+    // Round 27 (R27-A, F3): the "after" is the
+    // next word that is something after the
+    // weekday, as at the scans that call here.
+    let after_at = next_nonempty(cleaned, i + 1)?;
+    if cleaned[after_at].as_str() != "after" {
         return None;
     }
     // Round 18 (R18-1): the one shared cleaning.
     fn clean(t: &str) -> String {
         group_token(t)
     }
-    let rest = &tokens[i + 2..];
+    let rest = &tokens[after_at + 1..];
     if let Some((base, used)) = parse_date_prefix(rest, today) {
-        return Some((base, i + 2 + used));
+        return Some((base, after_at + 1 + used));
     }
     // The base's own leading weekday, wearing an
     // optional "on": strip it and read what it framed.
@@ -7941,7 +8586,7 @@ fn sunday_after_phrase_run(
         return None;
     };
     let (base, used) = parse_date_prefix(&rest[offset..], today)?;
-    Some((base, i + 2 + offset + used))
+    Some((base, after_at + 1 + offset + used))
 }
 
 /// The Sunday a bare relative phrase names,
@@ -8257,19 +8902,29 @@ fn scan_plain_signals(
         // A Sunday-after phrase consumes its run
         // first, as the second-date scan has it:
         // its base is never a separate signal.
-        if cleaned[i] == "sunday" && cleaned.get(i + 1).map(String::as_str) == Some("after") {
+        // Round 27 (R27-A, F3): the shape's words
+        // are read over the nearest non-empty
+        // tokens, as in the group scan above.
+        let plain_after_at = next_nonempty(cleaned, i + 1);
+        if cleaned[i] == "sunday" && plain_after_at.is_some_and(|a| cleaned[a].as_str() == "after")
+        {
             // "Sunday after next/this Sunday", the
             // relative base wearing an optional
             // "the": the resolution is the first
             // Sunday strictly after the relative
             // base's own resolution.
-            let (which_at, used) = if cleaned.get(i + 2).map(String::as_str) == Some("the") {
-                (i + 3, 5)
-            } else {
-                (i + 2, 4)
+            let plain_after_at = plain_after_at.unwrap_or(i + 1);
+            let first_at = next_nonempty(cleaned, plain_after_at + 1);
+            let (which_at, base_at) = match first_at {
+                Some(f) if cleaned[f].as_str() == "the" => (
+                    next_nonempty(cleaned, f + 1),
+                    next_nonempty(cleaned, f + 1).and_then(|w| next_nonempty(cleaned, w + 1)),
+                ),
+                other => (other, other.and_then(|w| next_nonempty(cleaned, w + 1))),
             };
-            let which = cleaned.get(which_at).map(String::as_str);
-            let base_day = cleaned.get(which_at + 1).map(String::as_str);
+            let used = base_at.map(|b| b - i + 1).unwrap_or(0);
+            let which = which_at.and_then(|w| cleaned.get(w)).map(String::as_str);
+            let base_day = base_at.and_then(|b| cleaned.get(b)).map(String::as_str);
             if (which == Some("next") || which == Some("this")) && base_day == Some("sunday") {
                 let base = relative_sunday_date(which == Some("next"), today);
                 let date = first_sunday_after(base);
@@ -8305,16 +8960,19 @@ fn scan_plain_signals(
         // A bare relative phrase: "next Sunday" /
         // "this Sunday" (a framed date cannot stand
         // at "next"/"this", so no order is lost).
-        if (cleaned[i] == "next" || cleaned[i] == "this")
-            && cleaned.get(i + 1).map(String::as_str) == Some("sunday")
-        {
+        let plain_rel_sunday = if cleaned[i] == "next" || cleaned[i] == "this" {
+            next_nonempty(cleaned, i + 1).filter(|&j| cleaned[j].as_str() == "sunday")
+        } else {
+            None
+        };
+        if let Some(rel_i) = plain_rel_sunday {
             // Round 25 (R25-B, F5b = review R25-2):
             // the object-continuation consultation,
             // as on the group surface above.
-            if weekday_in_object_continuation_pp(tokens, cleaned, i + 1, today) {
-                last_end = i + 2;
+            if weekday_in_object_continuation_pp(tokens, cleaned, rel_i, today) {
+                last_end = rel_i + 1;
                 last_framed_sunday = false;
-                i += 2;
+                i = rel_i + 1;
                 continue;
             }
             let date = relative_sunday_date(cleaned[i] == "next", today);
@@ -8324,11 +8982,11 @@ fn scan_plain_signals(
                 framed: false,
                 anchored: Some(anchored),
                 start: i,
-                end: i + 2,
+                end: rel_i + 1,
             });
-            last_end = i + 2;
+            last_end = rel_i + 1;
             last_framed_sunday = false;
-            i += 2;
+            i = rel_i + 1;
             continue;
         }
         match parse_date_prefix(&tokens[i..], today) {
@@ -8543,17 +9201,28 @@ fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usi
                 // the head test ("Sunday baked beans
                 // rehearsal" reads nothing, as
                 // "Sunday morning rehearsal" does).
-                if cleaned
-                    .get(i + 1)
-                    .is_some_and(|next| is_finite_verb_form(next))
-                    && cleaned.get(i + 2).is_some_and(|next| noun_like_word(next))
-                    && i + 2 < ce
-                    && outside_date(i + 2)
+                // Round 27 (R27-A, F3): the
+                // phrase's words are the next words
+                // that are something after the
+                // weekday — a token that cleans to
+                // nothing inside the phrase is
+                // nothing in it, here and in the
+                // bare shape below.
+                let f1 = next_nonempty(cleaned, i + 1);
+                let f2 = f1.and_then(|n| next_nonempty(cleaned, n + 1));
+                if f1.is_some_and(|n| is_finite_verb_form(&cleaned[n]))
+                    && f2.is_some_and(|n| noun_like_word(&cleaned[n]))
+                    && f2.is_some_and(|n| n < ce && outside_date(n))
                 {
-                    let mut head = i + 2;
-                    let mut k = i + 3;
-                    while k < ce && outside_date(k) && noun_like_word(&cleaned[k]) {
-                        head = k;
+                    let mut head = f2.unwrap_or(i + 2);
+                    let mut k = head + 1;
+                    while k < ce
+                        && outside_date(k)
+                        && (cleaned[k].is_empty() || noun_like_word(&cleaned[k]))
+                    {
+                        if noun_like_word(&cleaned[k]) {
+                            head = k;
+                        }
                         k += 1;
                     }
                     if !GARNISH_NOUNS.contains(&cleaned[head].as_str()) {
@@ -8584,11 +9253,16 @@ fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usi
                 // adjective shape above is routed
                 // through the same garnish-head test
                 // since round 25 (R25-A, F4).
-                if cleaned.get(i + 1).is_some_and(|next| noun_like_word(next)) {
-                    let mut head = i + 1;
-                    let mut k = i + 2;
-                    while k < ce && outside_date(k) && noun_like_word(&cleaned[k]) {
-                        head = k;
+                if f1.is_some_and(|n| noun_like_word(&cleaned[n])) {
+                    let mut head = f1.unwrap_or(i + 1);
+                    let mut k = head + 1;
+                    while k < ce
+                        && outside_date(k)
+                        && (cleaned[k].is_empty() || noun_like_word(&cleaned[k]))
+                    {
+                        if noun_like_word(&cleaned[k]) {
+                            head = k;
+                        }
                         k += 1;
                     }
                     if !GARNISH_NOUNS.contains(&cleaned[head].as_str()) {
@@ -8603,10 +9277,12 @@ fn lone_framed_fence(tokens: &[&str], cleaned: &[String], start: usize, end: usi
             // ("left" in "Sunday left luggage"):
             // the phrase's own material.
             if i > cs
-                && weekday_word(&cleaned[i - 1]).is_some()
+                && prev_nonempty(cleaned, i, 1)
+                    .first()
+                    .is_some_and(|&p| weekday_word(&cleaned[p]).is_some())
                 && is_finite_verb_form(w)
-                && cleaned.get(i + 1).is_some_and(|next| noun_like_word(next))
-                && outside_date(i + 1)
+                && next_nonempty(cleaned, i + 1)
+                    .is_some_and(|n| noun_like_word(&cleaned[n]) && outside_date(n))
             {
                 continue;
             }
@@ -23056,6 +23732,634 @@ Youth group meets Wednesday at 6 PM.
             c.keep_through_second_dates,
             vec![nov(8), oct(18)],
             "{group}: keep-through names both alternatives"
+        );
+    }
+
+    #[test]
+    fn r27a_auxiliary_stack_crossings() {
+        // Round 27 (R27-A, F1 mechanisms 1+2 =
+        // review R27-1, red team RT27-W2): the
+        // auxiliary stack's crossing tolerated at
+        // most one slot adverb and no negation, so
+        // a second adverb or a "not" in the stack
+        // judged the clause as no stack at all and
+        // the phantom Sunday asserted (passive) or
+        // was named beside the target (active). The
+        // stack crossing is now the full slot
+        // pattern the pinned families imply — any
+        // number of listed adverbs AND the negation,
+        // in active and passive stacks alike,
+        // wherever a stack is crossed — and the
+        // walk and `passive_aux_before` share the
+        // one rule (`aux_slot_word`). Every variant
+        // reads as its clean twin: nothing, naming
+        // nothing.
+        for group in [
+            "(moved November 1, beans were still just served on Sunday from Kent to November 8)",
+            "(moved November 1, beans were just still served on Sunday from Kent to November 8)",
+            "(moved November 1, beans were not served on Sunday from Kent to November 8)",
+            "(moved November 1, beans were not still served on Sunday from Kent to November 8)",
+            "(moved November 1, beans were still not served on Sunday from Kent to November 8)",
+            "(moved November 1, the choir was not singing hymns from Kent on Sunday to November 8)",
+            "(moved November 1, the choir was not singing hymns from Kent on Sunday until November 8)",
+            "(moved November 1, the choir was still not singing hymns from Kent on Sunday to November 8)",
+            "(moved November 1, the choir was not still singing hymns from Kent on Sunday to November 8)",
+            "(moved November 1, the choir was singing hymns from Kent on Sunday to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads as its clean twin");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: keep-through note is empty"
+            );
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named on the relative path"
+            );
+        }
+        // BOUNDARY THAT STANDS: a passive stack
+        // whose verb stands directly before the PP
+        // with NO further PP intervening keeps the
+        // pinned alternatives, stack or no stack.
+        for group in [
+            "(moved November 1, beans were not served on Sunday to November 8)",
+            "(moved November 1, beans were still just served on Sunday to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: nothing asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![oct(18), nov(8)],
+                "{group}: both dates stay on offer as alternatives"
+            );
+        }
+    }
+
+    #[test]
+    fn r27a_post_pp_slot_adverbs() {
+        // Round 27 (R27-A, F1 mechanism 3 = red
+        // team RT27-W4): a flat adverb immediately
+        // AFTER the weekday PP was invisible to the
+        // forward arm — it judged the token
+        // immediately behind the next PP, and a
+        // flat adverb there (invisible because the
+        // noun crossing excludes the tolerated
+        // class) ended the arm, so the Sunday
+        // asserted for 8/8 flat adverbs. The post-PP
+        // slot is now judged by the same class as
+        // the stack (`aux_slot_word`), and the
+        // stack's slot words cross wherever in the
+        // stack they stand.
+        for adv in [
+            "still", "really", "never", "just", "already", "soon", "also", "now",
+        ] {
+            let group = format!(
+                "(moved November 1, the choir sang hymns on Sunday {adv} from Kent to November 8)"
+            );
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads as its -ly twin");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+        }
+        for group in [
+            "(moved November 1, the choir sang hymns on Sunday softly from Kent to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent still to November 8)",
+            "(moved November 1, beans were served on Sunday still from Kent to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads nothing");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+        }
+    }
+
+    #[test]
+    fn r27a_destination_and_accompaniment_pp() {
+        // Round 27 (R27-A, F1 mechanism 4 = red
+        // team RT27-W1): a destination or
+        // accompaniment PP inside the continuation
+        // defeated the walk — the forward PP-object
+        // run swallowed the next PP's preposition
+        // (noun-like by the word test) and died at
+        // its determiner, and a destination "to"
+        // was read as the claim's target "to" and
+        // failed its date test. Each PP of the
+        // stack is now crossed by its own iteration,
+        // and a "to" heading a determiner-headed
+        // place NP with a target construction after
+        // it is crossed as a destination PP. Every
+        // variant reads as the static-PP twin does:
+        // nothing, naming nothing.
+        for group in [
+            "(moved November 1, the choir sang hymns on Sunday from Kent to the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent into the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent toward the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent towards the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent past the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent through the hall to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent with the choir to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday from Kent without the choir to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday to the hall from Kent to November 8)",
+            "(moved November 1, baked beans on Sunday from Kent into the hall to November 8)",
+            "(moved November 1, baked beans on Sunday from Kent with the choir to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads as its static twin");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named on the relative path"
+            );
+        }
+        // The destination PP standing as the ONLY
+        // PP after a passive verb: the Sunday is
+        // consumed and the claim's target asserts,
+        // exactly as the consumed "for them" shape
+        // asserts its target (R26-C mechanism 4).
+        for group in [
+            "(moved November 1, beans were served on Sunday to the hall to November 8)",
+            "(moved November 1, beans were served on Sunday into the hall to November 8)",
+            "(moved November 1, baked beans on Sunday to the hall to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{group}: the target asserts, the Sunday consumed"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named"
+            );
+        }
+        // BOUNDARY THAT STANDS: static-PP stacks
+        // keep their standing silence (48/48 per
+        // shape in the lane's sweep), and the
+        // claim-free destination shape keeps its
+        // standing reading.
+        let group = "(moved November 1, the choir sang hymns on Sunday in the hall from Kent to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the static stack reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+    }
+
+    #[test]
+    fn r27a_conjoined_boundary_every_subject_kind() {
+        // Round 27 (R27-A, F1 mechanism 5 = review
+        // R27-2): the conjoined-clause boundary
+        // armed only on determiner/possessive
+        // subject runs, so a pronoun, bare-noun, or
+        // proper-name subject heading the second
+        // clause silently swallowed the phantom and
+        // the target asserted with an empty note.
+        // The boundary now arms on any subject run
+        // that heads a clause: a determiner /
+        // possessive head or a subject pronoun arms
+        // at once, and a bare or proper noun run
+        // arms when the conjunction joining the
+        // clauses is crossed behind it (the same
+        // run standing as a conjoined verb's object
+        // crosses no conjunction there, and the
+        // verb-list reading below stands). Every
+        // subject kind keeps both dates as
+        // alternatives, as "and the band played"
+        // always has.
+        for group in [
+            "(moved November 1, the choir sang hymns and they played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and we played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and she played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and choir played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and Pastor Lee played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and Lee played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday to November 8)",
+            "(moved November 1, the choir sang hymns and their band played songs on Sunday to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: nothing asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![oct(18), nov(8)],
+                "{group}: both dates stay on offer as alternatives"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through asserts nothing");
+            assert_eq!(
+                c.keep_through_second_dates,
+                vec![oct(18), nov(8)],
+                "{group}: keep-through names both alternatives"
+            );
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                vec![oct(18), nov(8)],
+                "{group}: both dates stay on offer on the relative path"
+            );
+        }
+        // BOUNDARY THAT STANDS: a conjoined VERB
+        // list under one subject is no second
+        // clause — its objects arm nothing, and the
+        // continuation consumes the Sunday exactly
+        // as round 26 pinned.
+        let group = "(moved November 1, the choir sang hymns, played songs, and rehearsed pieces from Kent on Sunday to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: the verb list reads nothing");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+    }
+
+    #[test]
+    fn r27a_boundary_at_every_conjunct() {
+        // Round 27 (R27-A, F1 mechanism 6 = red
+        // team RT27-W3): with the weekday PP in a
+        // non-initial conjunct and a further full
+        // clause after it carrying the target, the
+        // boundary the backward walk hit ended the
+        // consultation outright and the phantom
+        // asserted. The boundary judgment now runs
+        // at every conjunct: when the backward walk
+        // ends on the boundary, the forward arm is
+        // consulted, and a target reached only by
+        // crossing a further full conjunct means
+        // the PP stands inside the continuation —
+        // the Sunday is consumed and the line reads
+        // exactly as its first-conjunct twin does
+        // (silence under "from" governance; the
+        // target asserting without it).
+        let group = "(moved November 1, the choir sang hymns and the band played songs on Sunday and the singers rehearsed pieces from Kent to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: reads as its first-conjunct twin"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: no phantom is named"
+        );
+        let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+        let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date, None,
+            "{group}: nothing asserts on the relative path"
+        );
+        // The subjectless first conjunct variant
+        // the lane led with reads the same way.
+        let group = "(moved November 1, sang hymns and the band played songs on Sunday and the singers rehearsed pieces from Kent to November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{group}: the subjectless twin reads nothing"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{group}: nothing is named"
+        );
+        // Without "from", the consumed Sunday
+        // leaves the target asserting — the
+        // first-conjunct twin's own reading, pinned
+        // beside it.
+        for group in [
+            "(moved November 1, the choir sang hymns and the band played songs on Sunday and the singers rehearsed pieces to November 8)",
+            "(moved November 1, the choir sang hymns on Sunday and the band played songs to November 8)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{group}: the target asserts, the Sunday consumed"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named"
+            );
+        }
+        // BOUNDARY THAT STANDS: the target standing
+        // in the Sunday's OWN conjunct keeps the
+        // alternatives, a further clause after the
+        // target notwithstanding.
+        let group = "(moved November 1, the choir sang hymns and the band played songs on Sunday to November 8 and the singers rehearsed pieces)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{group}: nothing asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![oct(18), nov(8)],
+            "{group}: both dates stay on offer as alternatives"
+        );
+    }
+
+    #[test]
+    fn r27a_trailing_until_runs() {
+        // Round 27 (R27-A, F1 mechanism 7 = review
+        // R27-3): a trailing PP after an "until"
+        // target escaped the trailing-run arm — the
+        // backward walk crossed "until" and its
+        // date as noun-like material and reached
+        // the claim phrase by the wrong road, and
+        // the arm's own run walk-back ate the
+        // "until" + date as a PP of the run. Runs
+        // after an "until" target are now judged
+        // exactly as after a "to" target: the
+        // backward walk never crosses "until", and
+        // the run walk-back never crosses an
+        // "until" target standing before the run.
+        for group in [
+            "(moved November 1, baked beans from Kent until November 8 on Sunday)",
+            "(moved November 1, baked beans from Kent until November 8 on Sunday on Sunday)",
+            "(moved November 1, baked beans from Kent until November 8 on Sunday on Sunday on Sunday)",
+            "(moved November 1, baked beans from Kent until November 8 on the next Sunday)",
+            "(moved November 1, baked beans from Kent until November 8 on the next Sunday on the next Sunday)",
+            "(moved November 1, baked beans from Kent to November 8 on the next Sunday on the next Sunday)",
+            "(moved November 1, baked beans from Kent to November 8 on Sunday on Sunday on Sunday)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{group}: reads as its \"to\" twin");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: no phantom is named, the target not demoted"
+            );
+            let text = format!("Keep-through: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{group}: keep-through reads nothing");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: keep-through note is empty"
+            );
+            let text = format!("For Sunday: next Sunday {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{group}: nothing asserts on the relative path"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named on the relative path"
+            );
+        }
+        // PARITY THAT STANDS: the claim-free twins
+        // read identically in both orders — the
+        // Sunday asserts its own date, the
+        // from-governed target naming nothing.
+        for group in [
+            "(baked beans from Kent until November 8 on Sunday)",
+            "(baked beans from Kent to November 8 on Sunday)",
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(oct(18)),
+                "{group}: the claim-free twin asserts the Sunday"
+            );
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{group}: nothing is named"
+            );
+        }
+        // BOUNDARY THAT STANDS: the base-order
+        // "until" readings are untouched — the
+        // 1-PP "until" shape still asserts its
+        // target naming the from-date.
+        let group = "(moved November 1, baked beans on Sunday until November 8)";
+        let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{group}: the 1-PP until target asserts as it always has"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{group}: the from-date is named, as the until rule names it"
+        );
+    }
+
+    #[test]
+    fn r27a_cf_only_tokens_at_every_site() {
+        // Round 27 (R27-A, F3 = review R27-4/R27-5):
+        // a token that cleans to nothing (Cf-only /
+        // zero-width content) is nothing at EVERY
+        // site that reads tokens — round 26 covered
+        // the claim scan's sites; this round's
+        // enumeration (in the batch's shipped
+        // addendum) covered the rest: the
+        // for-machinery's slot walk and participle
+        // detection and active-for object scan, the
+        // shared auxiliary walk and its slot
+        // lookahead, detection's complement walk,
+        // the positional preposition detection at
+        // the consultation and the subject-PP
+        // readers, the clause-break classification
+        // the governor windows feed on, the date
+        // reader's own span, the governor phrase
+        // matchers, the claim reach's from-date
+        // test, the weekday-modifier and
+        // contradiction readers, the subject walks,
+        // the signal scans' relative and
+        // Sunday-after shapes, the lone-framed
+        // fence, and the date line's Sunday-after
+        // reader. Every shape below reads exactly
+        // as its clean twin.
+        for (group, want, seconds) in [
+            (
+                "(it was \u{200b} moved for November 1)",
+                Some(nov(1)),
+                vec![],
+            ),
+            (
+                "(it was \u{feff} moved for November 1)",
+                Some(nov(1)),
+                vec![],
+            ),
+            ("(moved \u{200b} for November 1)", Some(nov(1)), vec![]),
+            (
+                "(we moved it \u{200b} for November 1)",
+                Some(nov(1)),
+                vec![],
+            ),
+            (
+                "(it was moved \u{200b} for November 1)",
+                Some(nov(1)),
+                vec![],
+            ),
+            (
+                "(it was \u{200b} moved to November 8)",
+                Some(nov(8)),
+                vec![],
+            ),
+            ("(put \u{200b} back November 1)", None, vec![]),
+            ("(Monday \u{200b} November 1)", None, vec![]),
+            ("(next \u{200b} Sunday)", Some(oct(25)), vec![]),
+            ("(Sunday \u{200b} after next Sunday)", Some(nov(1)), vec![]),
+            (
+                "(moved from \u{200b} November 1 to November 8)",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            (
+                "(moved November 1, baked beans on \u{200b} Sunday to November 8)",
+                Some(nov(8)),
+                vec![],
+            ),
+            (
+                "(moved November 1, baked beans on Sunday to \u{200b} November 8)",
+                Some(nov(8)),
+                vec![],
+            ),
+            (
+                "(moved November 1, baked beans on next \u{200b} Sunday to November 8)",
+                Some(nov(8)),
+                vec![],
+            ),
+            (
+                "(moved November 1, printed Sunday \u{200b} bulletins to November 8)",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            (
+                "(moved November 1, the choir on \u{200b} Sunday sang hymns to November 8)",
+                Some(nov(8)),
+                vec![],
+            ),
+            (
+                "(moved November 1, baked beans from Kent \u{200b} to November 8)",
+                None,
+                vec![],
+            ),
+            (
+                "(moved November \u{200b} 1, baked beans to November 8)",
+                Some(nov(8)),
+                vec![nov(1)],
+            ),
+            (
+                "(moved November 1, the choir sang hymns on Sunday to November \u{200b} 8)",
+                Some(nov(8)),
+                vec![],
+            ),
+            (
+                "(moved November 1, beans were \u{200b} served on Sunday from Kent to November 8)",
+                None,
+                vec![],
+            ),
+        ] {
+            let text = format!("For Sunday: {group}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, want, "{group}: reads as its clean twin");
+            assert_eq!(
+                c.for_sunday_second_dates, seconds,
+                "{group}: the note reads as its clean twin's"
+            );
+            let clean = group.replace(['\u{200b}', '\u{feff}'], "");
+            let text2 = format!("For Sunday: {clean}\n\n## Announcement\n\nHi.\n");
+            let c2 = parse_contribution(&text2, today()).expect("parses");
+            assert_eq!(
+                (c.for_date, &c.for_sunday_second_dates),
+                (c2.for_date, &c2.for_sunday_second_dates),
+                "{group}: the Cf line reads exactly as its clean twin"
+            );
+        }
+        // The date line's own Sunday-after reader.
+        let text =
+            "For Sunday: the Sunday \u{200b} after November 1, 2026\n\n## Announcement\n\nHi.\n";
+        let c = parse_contribution(text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "the Sunday after the Cf-split base reads as its clean twin"
+        );
+        // The plain surface: the weekday-modifier
+        // phrase wearing a Cf token.
+        let line = "Sunday \u{200b} bulletins, November 8, 2026";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the plain Cf line reads as its clean twin"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: no phantom is named"
         );
     }
 

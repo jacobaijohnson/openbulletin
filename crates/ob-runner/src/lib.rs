@@ -267,13 +267,22 @@ fn spawn_pipe_reader<R: std::io::Read + Send + 'static>(
 /// after the run is over. On Windows the child
 /// alone is stopped; the helpers there are single
 /// programs, not wrappers.
+#[allow(unsafe_code)]
 fn stop_child(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         let pgid = child.id() as libc::pid_t;
         // SAFETY: killpg on the group this child leads;
         // it exists because process_group(0) was set
-        // before spawn. A group already gone answers
+        // before spawn. That spawn site is the one spawn
+        // this runner performs: `cmd.process_group(0)`
+        // immediately before `cmd.spawn()` in
+        // `run_with_timeout` in this file, which makes
+        // the child a process-group leader whose group
+        // id is its own pid, so killpg(pgid, ...) (the
+        // group form of kill, targeting that group and
+        // no other) reaches exactly the family that
+        // spawn started. A group already gone answers
         // ESRCH, which is fine.
         unsafe {
             libc::killpg(pgid, libc::SIGKILL);

@@ -157,7 +157,7 @@ pub fn render_music(xml: &str, width_mm: f64, staff_mm: f64) -> Result<RenderOut
         width_mm,
         staff_mm,
         &candidates,
-        ob_extract::runner::HELPER_TIMEOUT,
+        ob_runner::HELPER_TIMEOUT,
     )
 }
 
@@ -186,34 +186,33 @@ fn render_with_candidates(
     let mut last_spawn_err: Option<std::io::Error> = None;
     for cand in candidates {
         let mut cmd = Command::new(cand);
-        let output =
-            match ob_extract::runner::run_with_timeout(&mut cmd, Some(payload.as_bytes()), timeout)
-            {
-                Ok(o) => o,
-                Err(ob_extract::runner::RunFault::Spawn(e)) => {
-                    last_spawn_err = Some(e);
-                    continue;
-                }
-                Err(ob_extract::runner::RunFault::TimedOut) => {
-                    return Err(RenderError::Failed(format!(
-                        "the music engraver helper did not answer in {}, so the music \
+        let output = match ob_runner::run_with_timeout(&mut cmd, Some(payload.as_bytes()), timeout)
+        {
+            Ok(o) => o,
+            Err(ob_runner::RunFault::Spawn(e)) => {
+                last_spawn_err = Some(e);
+                continue;
+            }
+            Err(ob_runner::RunFault::TimedOut) => {
+                return Err(RenderError::Failed(format!(
+                    "the music engraver helper did not answer in {}, so the music \
                      was not drawn",
-                        ob_extract::runner::describe_timeout(timeout)
-                    )));
-                }
-                Err(ob_extract::runner::RunFault::TooMuchOutput) => {
-                    return Err(RenderError::Failed(
-                        "the music engraver helper answered with more than we can hold, \
+                    ob_runner::describe_timeout(timeout)
+                )));
+            }
+            Err(ob_runner::RunFault::TooMuchOutput) => {
+                return Err(RenderError::Failed(
+                    "the music engraver helper answered with more than we can hold, \
                          so the music was not drawn"
-                            .to_string(),
-                    ));
-                }
-                Err(ob_extract::runner::RunFault::Wait(e)) => {
-                    return Err(RenderError::Failed(format!(
-                        "the music engraver helper stopped unexpectedly ({e})"
-                    )));
-                }
-            };
+                        .to_string(),
+                ));
+            }
+            Err(ob_runner::RunFault::Wait(e)) => {
+                return Err(RenderError::Failed(format!(
+                    "the music engraver helper stopped unexpectedly ({e})"
+                )));
+            }
+        };
         let text = String::from_utf8_lossy(&output.stdout);
         let resp: Response = serde_json::from_str(&text).map_err(|_| {
             RenderError::Failed(
@@ -357,7 +356,7 @@ mod tests {
         );
         assert!(draft.items.iter().any(|i| {
             i.label == "Every note in the file is in the printed music"
-                && i.badge == ob_extract::draft::Badge::Matched
+                && i.badge == ob_model::draft::Badge::Matched
         }));
         let music_boxes = draft
             .doc

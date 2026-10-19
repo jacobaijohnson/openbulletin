@@ -1,0 +1,14 @@
+[package]
+name = "ob-runner"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenBulletin helper runner: spawn a helper program with a deadline, collected pipes with a size ceiling, and a process-group kill on timeout (the workspace's one unsafe block)."
+
+# The runner stops a timed-out helper's whole process
+# group on Unix, so a helper that is itself a wrapper
+# script cannot leave its own children holding the
+# pipes open.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

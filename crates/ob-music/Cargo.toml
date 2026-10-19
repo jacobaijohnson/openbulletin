@@ -8,7 +8,7 @@ description = "OpenBulletin music (Phase A): our own MusicXML parse, the engrave
 
 [dependencies]
 ob-model = { path = "../ob-model" }
-ob-extract = { path = "../ob-extract" }
+ob-runner = { path = "../ob-runner" }
 ob-image = { path = "../ob-image" }
 serde.workspace = true
 serde_json.workspace = true

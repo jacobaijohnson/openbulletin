@@ -16,7 +16,7 @@
 
 use crate::parse::MusicInfo;
 use crate::render::{RenderOutcome, FLOOR_STAFF_MM, TARGET_STAFF_MM};
-use ob_extract::draft::{Badge, DraftOutcome, ImportItem};
+use ob_model::draft::{Badge, DraftOutcome, ImportItem};
 use ob_model::{
     default_styles, AssetKind, ChurchProfile, ContentRole, Document, Frame, FrameKind, LicenseKind,
     MusicFrame, Panel, Paragraph, PictureFit, PicturePlacement, Rect, RightsRecord, SheetSpec,

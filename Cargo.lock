@@ -2863,7 +2863,6 @@ dependencies = [
  "base64",
  "chrono",
  "html5ever",
- "libc",
  "lopdf",
  "markup5ever_rcdom",
  "ob-fonts",
@@ -2871,6 +2870,7 @@ dependencies = [
  "ob-layout",
  "ob-model",
  "ob-pdf",
+ "ob-runner",
  "quick-xml 0.36.2",
  "serde",
  "serde_json",
@@ -2941,10 +2941,10 @@ dependencies = [
 name = "ob-music"
 version = "0.1.0"
 dependencies = [
- "ob-extract",
  "ob-image",
  "ob-model",
  "ob-pdf",
+ "ob-runner",
  "quick-xml 0.36.2",
  "serde",
  "serde_json",
@@ -2976,6 +2976,13 @@ dependencies = [
  "ob-extract",
  "pdfium-render",
  "serde_json",
+]
+
+[[package]]
+name = "ob-runner"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

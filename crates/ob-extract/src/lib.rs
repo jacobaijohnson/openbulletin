@@ -26,7 +26,11 @@ pub mod idml;
 pub mod pub_bridge;
 pub mod pub_layout;
 pub mod pub_text;
-pub mod runner;
+// The process runner lives in its own crate (ob-runner,
+// health audit HF-13); it is re-exported here under its
+// old name so every existing `ob_extract::runner::` path
+// in the workspace keeps resolving unchanged.
+pub use ob_runner as runner;
 
 use serde::{Deserialize, Serialize};
 

@@ -13,31 +13,12 @@ use crate::{ExtractionDump, SpanTrust};
 use ob_model::*;
 use std::collections::{BTreeMap, HashMap};
 
-/// How sure the rescue is about one piece of the draft, in the
-/// words the review screen uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Badge {
-    /// Words and a matching (or metric-twin) font.
-    Matched,
-    /// Words are here, but something needs the admin's eye.
-    CheckThis,
-    /// No readable words: the page rides along as a picture.
-    PictureOnly,
-}
-
-/// One line of the review list.
-#[derive(Debug, Clone)]
-pub struct ImportItem {
-    pub panel: usize,
-    pub label: String,
-    pub badge: Badge,
-    pub detail: String,
-}
-
-pub struct DraftOutcome {
-    pub doc: Document,
-    pub items: Vec<ImportItem>,
-}
+// The draft vocabulary (Badge, DraftOutcome, ImportItem)
+// lives in ob-model's `draft` module (health audit HF-13),
+// so crates that only speak about a draft need not link
+// this import stack; it is re-exported here so every
+// existing `ob_extract::draft::` path keeps resolving.
+pub use ob_model::draft::{Badge, DraftOutcome, ImportItem};
 
 fn pt(v: f32) -> Mpt {
     (v * 1000.0).round() as Mpt

@@ -113,7 +113,7 @@ fn run_capture(
     cmd: &mut Command,
     stdin: Option<&[u8]>,
 ) -> Result<(bool, String, String), CaptureFault> {
-    run_capture_with_timeout(cmd, stdin, ob_extract::runner::HELPER_TIMEOUT)
+    run_capture_with_timeout(cmd, stdin, ob_runner::HELPER_TIMEOUT)
 }
 
 fn run_capture_with_timeout(
@@ -121,16 +121,16 @@ fn run_capture_with_timeout(
     stdin: Option<&[u8]>,
     timeout: std::time::Duration,
 ) -> Result<(bool, String, String), CaptureFault> {
-    match ob_extract::runner::run_with_timeout(cmd, stdin, timeout) {
+    match ob_runner::run_with_timeout(cmd, stdin, timeout) {
         Ok(out) => Ok((
             out.status.success(),
             String::from_utf8_lossy(&out.stdout).into_owned(),
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )),
-        Err(ob_extract::runner::RunFault::Spawn(e)) => Err(CaptureFault::Start(e.to_string())),
-        Err(ob_extract::runner::RunFault::Wait(e)) => Err(CaptureFault::Start(e.to_string())),
-        Err(ob_extract::runner::RunFault::TimedOut) => Err(CaptureFault::TimedOut),
-        Err(ob_extract::runner::RunFault::TooMuchOutput) => Err(CaptureFault::TooMuchOutput),
+        Err(ob_runner::RunFault::Spawn(e)) => Err(CaptureFault::Start(e.to_string())),
+        Err(ob_runner::RunFault::Wait(e)) => Err(CaptureFault::Start(e.to_string())),
+        Err(ob_runner::RunFault::TimedOut) => Err(CaptureFault::TimedOut),
+        Err(ob_runner::RunFault::TooMuchOutput) => Err(CaptureFault::TooMuchOutput),
     }
 }
 
@@ -374,7 +374,7 @@ fn render_via_cli(
     if !ok {
         // One trimmed line of the engraver's own words
         // is quoted, never the whole wall.
-        let tail = ob_extract::runner::stderr_for_user(stderr.as_bytes());
+        let tail = ob_runner::stderr_for_user(stderr.as_bytes());
         return Err(EngineResponse::fail(
             "failed",
             format!("the engraver could not draw that file ({tail})"),
@@ -408,7 +408,7 @@ fn render_via_python(
     let (ok, stdout, stderr) =
         run_capture(Command::new(py).arg(&driver), Some(&payload)).map_err(start_failure)?;
     if !ok {
-        let tail = ob_extract::runner::stderr_for_user(stderr.as_bytes());
+        let tail = ob_runner::stderr_for_user(stderr.as_bytes());
         return Err(EngineResponse::fail(
             "failed",
             format!("the engraver stopped unexpectedly ({tail})"),

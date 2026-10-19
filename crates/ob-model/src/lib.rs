@@ -10,10 +10,13 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::BTreeMap;
 
+pub mod draft;
 pub mod hymns;
 pub mod markdown;
 pub mod rights;
 pub mod serving;
+
+pub use draft::{Badge, DraftOutcome, ImportItem};
 
 pub use rights::{
     fold_duplicate_asset_records, merge_rights_records, Asset, AssetKind, LicenseKind, RightsRecord,

@@ -541,3 +541,70 @@ reading and was re-pinned in the boundary block, per
 above). Suite: **817 tests (808 + 9 new), 0 failed**,
 full unpiped `cargo test --workspace --no-fail-fast`
 exit 0; clippy `-D warnings` clean.
+
+## Coordinator close, round 26 (2026-10-18)
+
+All three fix batches shipped and were independently re-verified
+on the exact committed tree (full unpiped suite + clippy
+`-D warnings`, counts read from cargo's own output): **817 passed /
+0 failed across 28 test-result lines, cargo exit 0; clippy exit 0;
+booklet baseline reproduced byte-exact — imposed 31,717 / reader
+34,977** (the `booklet_export_size_stays_down` measurement line).
+This close was executed by a successor coordinator instance after
+the previous instance ended; the handover state (HEAD, tree, disk)
+was re-measured before verification and matched.
+
+- **R26-A `466bb8f`** — 798 → 799 tests. F1's root fix is present
+  at the site: the bracketed-restatement spans now carry each
+  signal's own token count (`(s.date, s.start, s.end - s.start)`
+  feeding `occurrence_is_bare`), no clamp at the slice; the pin
+  `r26a_bare_restatement_spans_do_not_panic` stands with its 11
+  witnesses, 5 controls, M3 neighbours, and 2 fuzz-shaped lines.
+- **R26-B `8c78177`** — 799 → 808 tests. Ring II as dispositioned:
+  `BARE_PHRASE_UNITS` counted in source at exactly **117** (63 +
+  54); the eleven spatial prepositions, the 47-word general adverb
+  class, the do-paradigm in the bare test's auxiliary class, the
+  six singletons with the ago phrases covered by M5's number/time
+  words and the two units "long time ago" / "bit ago", M4's
+  reflexives + "nor", M5's quantifier/number remainder, M6's
+  determiner-adjectives; nine `r26b_*` pins. The one flagged
+  pre-existing change stands as shipped: three shapes in
+  `r25a_bare_phrase_units_round25`'s recorded-singleton block now
+  govern under F7 and moved to the r26b pin; the block's other
+  members are unchanged.
+- **R26-C `ae230a7`** — 808 → 817 tests, **zero flagged changes to
+  pre-existing tests**. The F5 walk judges the whole span: PP
+  crossing without object reset (the "by" agent exception holds),
+  the eight flat adverbs crossed, trailing PP runs re-judged as
+  one, "until" consuming as "to" at every depth, conjoined clauses
+  crossed without resetting the walk; its own crossing set
+  `is_continuation_preposition` (13 source references) carries
+  "for" while `is_subject_preposition` and the passive-for naming
+  rule stand untouched. F8's contextual boundary
+  (`clause_break_after_at`), M1's Cf-only tokens, M2's unclosed
+  spans, and M3's pinned no-code-change outcome all stand as the
+  addendum records. The F2-4 deviation stands as adjudicated in
+  the batch: the for-witness asserts November 8 with an empty note
+  — the phantom is gone, and the reading is the pinned consumed-PP
+  twin's, not a nothing reading no standing rule supports.
+
+Round totals: 798 → **817 tests, all passing, clippy clean** at the
+close tree. Every finding in this synthesis is dispositioned: F1–F8
+and M1–M6 fixed and shipped; M7 (one-word-overlap unit merges)
+recorded, not fixed, as word salad no office writes; M8 (rights
+license-only permutation flips) under its standing adjudication,
+byte-identical for the fourth consecutive round. The F2 pinned
+boundaries stand: a verb directly before the PP keeps its
+alternatives, and a second clause after a completed claim asserts
+its own Sunday.
+
+Carried to round 27, recorded: the verify lane's brief **must**
+re-run the unchanged verdict and composition fuzz bins as claims —
+the gap that let F1 ship behind round 25's PASS is closed by that
+re-run, not by intention. M7's pattern stays on record if a
+plausible overlap ever appears. Environment at this close: disk
+13G free of 100G (88%), the repo `target/` at 11G, the cargo
+registry at 1.2G (reported per the adopted practice, not pruned).
+Jacob's clean follows this close and its bundle: the build cache
+comes out for maximum headroom, then a fresh cold build proves the
+clean tree reproduces green before round 27's lanes dispatch.

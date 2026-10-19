@@ -1,6 +1,5 @@
 //! Real text shaping on parley (HarfBuzz-class shaping + line breaking).
 //!
-//! The estimator in the parent module exists for quick, fontless checks.
 //! Anything that decides whether text fits a frame (preflight, import
 //! honesty labels, the PDF writer) must come through here: real advances,
 //! real line breaks, real overflow.

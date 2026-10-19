@@ -98,7 +98,10 @@ Method: 8-word shingles over normalized text (whole-line matching was
 tried first and found almost nothing; producers chunk text too
 differently for line equality to survive). A passage is "standing"
 when it appears in at least 80% of the bulletins being compared.
-Tool: `crates/ob-extract/examples/consensus.rs`. Full example passages
+Tool: a standalone prototype example, since retired. The method it
+proved — 8-word shingles, standing passages, clustering first — is
+the production Template Analyzer's, implemented in-crate at
+`crates/ob-extract/src/analyzer.rs`. Full example passages
 stay in the private fixtures folder; aggregates only here.
 
 - **Whole pile mixed (17 bulletins):** 116 standing passages, but only
@@ -119,7 +122,7 @@ stay in the private fixtures folder; aggregates only here.
 
 ## Automatic clustering + a hard limit of the scaffold (2026-10-15)
 
-The consensus tool now clusters on its own (Jaccard similarity over
+The consensus prototype now clusters on its own (Jaccard similarity over
 shingle sets, no filename peeking). On the 17-bulletin pile it found:
 one big 12-bulletin family (417 standing passages, 21% median standing
 share), one ELW pair (595 passages, 35%), and three ELW singletons.

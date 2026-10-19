@@ -473,7 +473,14 @@ impl Cfb {
         &self.entries
     }
 
-    pub fn stream_names(&self) -> Vec<String> {
+    /// The names of every stream in the file. This exists
+    /// for tests and probes, not as production API:
+    /// production reads streams by their full path
+    /// (`read_stream_path`), because leaf names repeat
+    /// across storages. Its only callers are this file's
+    /// tests, so it is compiled for tests only.
+    #[cfg(test)]
+    pub(crate) fn stream_names(&self) -> Vec<String> {
         self.entries
             .iter()
             .filter(|e| e.object_type == 2)

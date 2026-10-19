@@ -320,7 +320,20 @@ impl ExtractionDump {
 }
 
 /// Extract a dump from PDF bytes using lopdf (structural pass).
+///
+/// This is the in-process lopdf path, used by the crate's
+/// probes (`examples/probe.rs`) and tests. It is NOT the
+/// production PDF door: production reads PDFs through the
+/// PDFium helper (`helper::dump_pdf`), which runs the
+/// native parser in its own process under the runner's
+/// deadline and output caps. Because this path parses in
+/// process, it refuses a byte slice longer than the
+/// standing open-door limit at entry, in plain words,
+/// before lopdf sees a byte.
 pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, String> {
+    if bytes.len() as u64 > MAX_OPEN_DOOR_BYTES {
+        return Err(open_door_too_large());
+    }
     let doc = lopdf::Document::load_mem(bytes).map_err(|e| format!("not a readable PDF: {e}"))?;
     let mut pages = Vec::new();
     let mut spans = Vec::new();
@@ -697,6 +710,16 @@ mod tests {
     #[test]
     fn garbage_is_an_error_not_a_panic() {
         assert!(extract_pdf(b"this is not a pdf", "x.pdf").is_err());
+    }
+
+    #[test]
+    fn extract_pdf_refuses_bytes_past_the_open_door_limit() {
+        // S-11: the in-process lopdf path is capped like
+        // every other door, at entry, in plain words,
+        // before any parsing happens.
+        let bytes = vec![0u8; (MAX_OPEN_DOOR_BYTES + 1) as usize];
+        let err = extract_pdf(&bytes, "big.pdf").expect_err("over the door limit");
+        assert!(err.contains("too large"), "{err}");
     }
 
     fn geom_span(text: &str, x: f32, y: f32, w: f32) -> Span {

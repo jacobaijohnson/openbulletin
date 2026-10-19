@@ -9476,12 +9476,29 @@ impl App {
                     Ok(bytes) => {
                         let lib2 =
                             ob_clips::ClipLibrary::open(ob_clips::default_library_dir()).ok();
-                        let license = lib2
+                        let coll = lib2.as_ref().and_then(|l| l.collection(&collection));
+                        // A piece with a record of its own
+                        // (the starter set's pieces, from the
+                        // manifest) places with that record:
+                        // its own license, author, and source
+                        // page ride into the bulletin's rights
+                        // record. Other pieces place with
+                        // their collection's notes, as before.
+                        let own = coll
                             .as_ref()
-                            .and_then(|l| l.collection(&collection))
-                            .and_then(|c| c.notes)
+                            .and_then(|c| c.pieces.get(&file_name).cloned());
+                        let license = own
+                            .as_ref()
                             .map(|n| n.license_kind())
+                            .or_else(|| {
+                                coll.as_ref()
+                                    .and_then(|c| c.notes.as_ref())
+                                    .map(|n| n.license_kind())
+                            })
                             .unwrap_or(ob_model::LicenseKind::Unknown);
+                        let piece_creator =
+                            own.as_ref().map(|n| n.creator.clone()).unwrap_or_default();
+                        let piece_source_url = own.as_ref().map(|n| n.source.clone());
                         let media = format
                             .map(|f| f.media_type().to_string())
                             .unwrap_or_else(|| "application/octet-stream".into());
@@ -9495,8 +9512,10 @@ impl App {
                             &media,
                             ob_model::RightsRecord {
                                 source: collection.clone(),
+                                source_url: piece_source_url,
                                 license,
                                 title,
+                                creator: piece_creator,
                                 ..Default::default()
                             },
                         );
@@ -12315,8 +12334,10 @@ impl App {
 
     /// Make sure the bundled starter set is in the Clipart
     /// Library (first open of the window only): the set's
-    /// own collection, installed from the files and manifest
-    /// shipped with the app.
+    /// own collection, installed from the files shipped with
+    /// the app, each piece recorded with its own row of the
+    /// manifest shipped beside them (source page, author,
+    /// license, retrieval date).
     fn ensure_starter_clips(&mut self) {
         if self.clips_ensured {
             return;
@@ -12331,16 +12352,7 @@ impl App {
         if lib.collection("Starter set").is_some() {
             return;
         }
-        let files: Vec<(String, Vec<u8>)> = starter_clips::STARTER_FILES
-            .iter()
-            .map(|(name, text)| (name.to_string(), text.as_bytes().to_vec()))
-            .collect();
-        let notes = ob_clips::CollectionNotes {
-            source: "OpenBulletin starter set (bundled with the program)".into(),
-            license: "CC0".into(),
-            added: String::new(),
-        };
-        let _ = lib.add_collection("Starter set", &files, &notes, None);
+        let _ = starter_clips::install_into(&lib);
     }
 
     /// Begin a PDF rescue on a worker thread: read the old

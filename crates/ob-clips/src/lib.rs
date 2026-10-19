@@ -95,6 +95,12 @@ pub struct CollectionNotes {
     /// When the collection was added (ISO date).
     #[serde(default)]
     pub added: String,
+    /// Who made the piece, when the record names a maker
+    /// (a per-piece record in a provenance map; a whole
+    /// collection rarely has one maker, so collection
+    /// notes leave this empty).
+    #[serde(default)]
+    pub creator: String,
 }
 
 impl CollectionNotes {
@@ -143,7 +149,24 @@ pub struct Collection {
     pub name: String,
     pub path: PathBuf,
     pub notes: Option<CollectionNotes>,
+    /// Per-piece records (file name -> notes), for a
+    /// collection whose pieces carry different rights: the
+    /// bundled starter set, whose manifest states each
+    /// piece's own source page, author, and license.
+    /// Stored as `provenance.json` inside the collection
+    /// folder; a collection without one has an empty map
+    /// and its pieces share the collection notes.
+    pub pieces: std::collections::BTreeMap<String, CollectionNotes>,
     pub items: Vec<ClipItem>,
+}
+
+impl Collection {
+    /// The record one piece carries: its own per-piece
+    /// record when the collection keeps one, else the
+    /// collection's notes.
+    pub fn piece_notes(&self, file_name: &str) -> Option<&CollectionNotes> {
+        self.pieces.get(file_name).or(self.notes.as_ref())
+    }
 }
 
 impl Collection {
@@ -261,6 +284,10 @@ impl ClipLibrary {
         let notes = std::fs::read_to_string(path.join("notes.json"))
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok());
+        let pieces = std::fs::read_to_string(path.join("provenance.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
         let mut items = Vec::new();
         collect_items(&path, &path, &mut items);
         items.sort_by_key(|a| a.file_name.to_lowercase());
@@ -268,6 +295,7 @@ impl ClipLibrary {
             name,
             path,
             notes,
+            pieces,
             items,
         }
     }
@@ -299,6 +327,34 @@ impl ClipLibrary {
         name: &str,
         files: &[(String, Vec<u8>)],
         notes: &CollectionNotes,
+        convert: Option<&MetafileConverter>,
+    ) -> Result<AddReport, String> {
+        self.add_collection_with_piece_notes(
+            name,
+            files,
+            notes,
+            &std::collections::BTreeMap::new(),
+            convert,
+        )
+    }
+
+    /// The same funnel, for a collection whose pieces
+    /// carry their own records: `piece_notes` maps a
+    /// piece's file name to the record that piece states
+    /// (its own source, author, license, and added date),
+    /// and the map is written beside the pieces as
+    /// `provenance.json`, so the per-piece facts install
+    /// with the set instead of flattening into the one
+    /// collection note. Pieces named in the map but not
+    /// among the files are not written; a piece with no
+    /// entry in the map falls back to the collection
+    /// notes when its record is read.
+    pub fn add_collection_with_piece_notes(
+        &self,
+        name: &str,
+        files: &[(String, Vec<u8>)],
+        notes: &CollectionNotes,
+        piece_notes: &std::collections::BTreeMap<String, CollectionNotes>,
         convert: Option<&MetafileConverter>,
     ) -> Result<AddReport, String> {
         let clean = ob_fonts::sanitize_file_name(name);
@@ -344,6 +400,22 @@ impl ClipLibrary {
                 .map_err(|e| format!("cannot write the collection's notes: {e}"))?;
             std::fs::write(target.join("notes.json"), text)
                 .map_err(|e| format!("cannot write the collection's notes: {e}"))?;
+        }
+        if !piece_notes.is_empty() {
+            // Only the records of pieces that actually
+            // came through the funnel are written, keyed
+            // by the name the piece lands under.
+            let landed: std::collections::BTreeMap<String, CollectionNotes> = piece_notes
+                .iter()
+                .filter(|(file, _)| files.iter().any(|(name, _)| name == *file))
+                .map(|(file, notes)| (ob_fonts::sanitize_file_name(file), notes.clone()))
+                .collect();
+            if !landed.is_empty() {
+                let text = serde_json::to_string_pretty(&landed)
+                    .map_err(|e| format!("cannot write the pieces' records: {e}"))?;
+                std::fs::write(target.join("provenance.json"), text)
+                    .map_err(|e| format!("cannot write the pieces' records: {e}"))?;
+            }
         }
         Ok(report)
     }
@@ -459,7 +531,7 @@ fn collect_items(root: &Path, dir: &Path, out: &mut Vec<ClipItem>) {
             collect_items(root, &path, out);
         } else if path.is_file() {
             let base = entry.file_name().to_string_lossy().to_string();
-            if base == "notes.json" {
+            if base == "notes.json" || base == "provenance.json" {
                 continue;
             }
             let rel = path
@@ -677,6 +749,7 @@ mod tests {
             source: "a folder from the office".into(),
             license: "CC0".into(),
             added: "2026-10-16".into(),
+            creator: String::new(),
         };
         let files = vec![
             ("cross.png".to_string(), tiny_png()),
@@ -849,6 +922,68 @@ mod tests {
             )
             .expect("small pack with lying declarations loads");
         assert_eq!(report.added, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn piece_notes_install_with_the_pieces_and_read_back() {
+        let dir = temp_dir("piece-notes");
+        let lib = ClipLibrary::open(dir.clone()).expect("open");
+        let notes = CollectionNotes {
+            source: "a mixed set".into(),
+            license: String::new(),
+            added: "2026-10-16".into(),
+            creator: String::new(),
+        };
+        let cross = CollectionNotes {
+            source: "https://example.org/cross".into(),
+            license: "Public domain".into(),
+            added: "2026-10-16".into(),
+            creator: "Boris23".into(),
+        };
+        let candle = CollectionNotes {
+            source: "https://example.org/candle".into(),
+            license: "CC0".into(),
+            added: "2026-10-16".into(),
+            creator: "Quincy Morgan".into(),
+        };
+        let mut pieces = std::collections::BTreeMap::new();
+        pieces.insert("cross.svg".to_string(), cross.clone());
+        pieces.insert("candle.svg".to_string(), candle.clone());
+        // A record for a piece that is not installed is
+        // not written.
+        pieces.insert(
+            "ghost.svg".to_string(),
+            CollectionNotes {
+                source: "nowhere".into(),
+                ..Default::default()
+            },
+        );
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0h10v10z"/></svg>"#.to_vec();
+        let files = vec![
+            ("cross.svg".to_string(), svg.clone()),
+            ("candle.svg".to_string(), svg),
+            ("star.svg".to_string(), tiny_png()),
+        ];
+        let report = lib
+            .add_collection_with_piece_notes("Mixed set", &files, &notes, &pieces, None)
+            .expect("add");
+        assert_eq!(report.added, 3);
+        let collections = lib.collections();
+        assert_eq!(collections.len(), 1);
+        let set = &collections[0];
+        // The record files are not pieces.
+        assert_eq!(set.items.len(), 3);
+        assert_eq!(set.piece_notes("cross.svg"), Some(&cross));
+        assert_eq!(set.piece_notes("candle.svg"), Some(&candle));
+        assert_eq!(
+            set.piece_notes("cross.svg").map(|n| n.license_kind()),
+            Some(LicenseKind::PublicDomain)
+        );
+        // A piece with no record of its own falls back to
+        // the collection's notes.
+        assert_eq!(set.piece_notes("star.svg"), set.notes.as_ref());
+        assert!(!set.pieces.contains_key("ghost.svg"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

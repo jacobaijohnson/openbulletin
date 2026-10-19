@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "OpenBulletin text helpers: measurement estimate, wrapping, dot-leader lines."
+description = "OpenBulletin text engine: real shaping and layout on parley (measurement, wrapping, dot leaders), plus story threading."
 
 [dependencies]
 ob-model = { path = "../ob-model" }

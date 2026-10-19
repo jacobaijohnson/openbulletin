@@ -177,9 +177,9 @@ pub fn extract_pub_text(
 
 struct Chunk<'a> {
     name: String,
-    /// The directory entry's chunk id: carried for phase
-    /// 2c, which joins chunks (tables, cells) by id.
-    #[allow(dead_code)]
+    /// The directory entry's chunk id: the TCD table-cell
+    /// join reads it — a TCD chunk's id is the index of
+    /// the story whose cell ends it carries.
     id: u16,
     bytes: &'a [u8],
     /// Offset of the chunk within the Quill stream: FDPP/FDPC

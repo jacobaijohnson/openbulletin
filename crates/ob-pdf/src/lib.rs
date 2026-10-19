@@ -1811,14 +1811,10 @@ pub fn export_imposed_pdf_report(
 pub const LARGE_PRINT_SUBJECT: &str = "Large print. The same words, bigger.";
 
 /// The large-print copy (docs/planning/beyond-print.md
-/// section 4): the same words, bigger, for the readers who
-/// need them. A reader-layout PDF of single Letter-portrait
-/// pages; the imposed booklet flow is untouched.
-pub fn export_large_print_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
-    export_large_print_pdf_report(doc, purpose).0
-}
-
-/// Large-print copy with its export report.
+/// section 4) with its export report: the same words,
+/// bigger, for the readers who need them. A reader-layout
+/// PDF of single Letter-portrait pages; the imposed
+/// booklet flow is untouched.
 pub fn export_large_print_pdf_report(
     doc: &Document,
     purpose: ExportPurpose,
@@ -1839,8 +1835,13 @@ pub fn export_large_print_pdf_report(
 /// machine's real Font Library: styles scaled so the body
 /// style reaches at least 17pt, content reflowed onto
 /// Letter-portrait pages in reading order (see
-/// [`large_print_document_with_library`]).
-pub fn large_print_document(doc: &Document) -> Document {
+/// [`large_print_document_with_library`]). This entry
+/// point exists for tests and probes, not as production
+/// API: production reaches the transformation through
+/// `export_large_print_pdf_report`. Its only callers are
+/// this crate's tests, so it is compiled for tests only.
+#[cfg(test)]
+pub(crate) fn large_print_document(doc: &Document) -> Document {
     large_print_document_with_library(doc, &library_font_bytes())
 }
 

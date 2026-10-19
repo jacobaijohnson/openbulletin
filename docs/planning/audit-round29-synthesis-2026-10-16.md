@@ -731,3 +731,142 @@ block).
 Flagged items: none. No pre-existing pin was hit;
 no boundary in the disposition moved; no
 stop-and-report condition triggered.
+
+## Shipped addendum, R29-B (F4 + F5 + F7)
+
+Shipped as one batch on the round-29 synthesis tree,
+completing the recovered interrupted tree: a previous
+writer was interrupted mid-batch with the implementation
+standing uncommitted in `contribution.rs`; the
+coordinator inspected the full recovered diff and
+adjudicated it sound and in-scope, and this writer
+verified it against the synthesis witnesses (probe
+families F4a / F4b / F5 / F7, with HEAD baselines taken
+for every boundary reading), added the pin set, and
+shipped it. Files: `crates/ob-extract/src/contribution.rs`
+plus this addendum. Suite **857 passed / 0 failed**
+(850 + 7 new `r29b_*` pins, append-only at the test
+tail, zero pre-existing test bodies changed), clippy
+`--workspace --all-targets -- -D warnings` exit 0,
+booklet **31,717 / 34,977** byte-exact.
+`BARE_PHRASE_UNITS` unchanged at 166 (the block does
+not appear in the diff).
+
+- **F4(a) — conjoined bare verbs.** In
+  `weekday_in_object_continuation_pp_crossing`'s
+  backward walk, `conjunction_only_since_verb`
+  tracks whether nothing but the conjunction and
+  its slot words has been crossed since the last
+  verb; a further bare verb crossed in that state
+  (with no subject run crossed since) is another
+  conjunct of the same verb slot and crosses under
+  the same from-scope as one bare verb
+  (`conjoined_bare_cross`). Pinned: "sang and
+  danced", "sang or danced", "worked and prayed",
+  "rose and sang", triples, "sang and then
+  danced", the subject-less second conjunct ("sang
+  and sang"), and "sat" in both conjunct seats, in
+  "to" and "until" forms, on FOR / KEEP / REL.
+  Boundaries pinned standing: an object anywhere
+  in the slot ("sang and played songs", "sang
+  hymns and danced") consumes by the object rule;
+  a participle ("sang while dancing") consumes.
+- **F4(b) — verb particles.** The particle is
+  pre-judged before the walk: a continuation-
+  preposition word directly after a finite verb,
+  directly before the weekday PP, is the verb's
+  own particle (`particle_crossed` /
+  `verb_particle_crossed`), judged by the new
+  helpers `verb_segment_start` / `finite_verb_at`
+  / `subject_verb_at` / `verb_slot_finite_at`, which
+  factor out the finite-verb branch's own segment
+  judgment. The "sat" arm stands in the same
+  crossing: a weekday-abbreviation word that is
+  also a finite verb form, standing in the verb
+  slot behind a subject, is the clause's verb, not
+  an earlier PP's weekday object. Pinned: "sat
+  down", "sat up", "sat together", "went on",
+  "carried on", "came in", "went in", "came over"
+  consume; the controls ("sang out", "met up",
+  "got up", "stood up", "lay down", "went out",
+  "came back") consume as before. Boundary pinned
+  standing, verified twin-identical against the
+  R29-A tree: a weekday object in a PP stack
+  ("... sang hymns on sat from Kent on Sunday")
+  keeps its weekday reading.
+- **F5 — the destination noun run judged as an
+  NP.** `destination_noun_word` admits a noun-like
+  word or a finite verb form whose spelling is a
+  noun in this position (the `noun_like_word`
+  exclusions — auxiliaries, governor words,
+  possessive determiners, weekday words, tolerated
+  adverbs — apply to the verb-form arm alike), and
+  `destination_to_end`'s run reads it in the bare
+  arm and the determiner-headed arm alike (both
+  read this one run). Pinned: X = work / the work /
+  Rose / the Rose / Reading / reading / the
+  Reading cross (read silence) in "to" and "until"
+  forms; the controls (rehearsal, bed, tears,
+  lunch, pieces, church, sleep, camp, Mark, the
+  tears, the hall) cross as before. Scope, as
+  dispositioned: the fix is scoped to
+  `destination_to_end`'s run; the same
+  noun-plus-verb-form pattern at other sites
+  judges non-destination runs (object and
+  continuation material) and is untouched, no
+  other site being named by F5's witnesses.
+- **F5 tail — abbreviation-period destinations.**
+  `clause_break_after_at` now judges the
+  abbreviation shape in the destination position
+  (the object of a "to", directly or behind its
+  determiner) by its form — a short alphabetic
+  word — with the same name-after requirement the
+  PP arm has always carried, so a period inside a
+  destination name does not end the run; a period
+  anywhere else still breaks the clause. Pinned:
+  St. Mary, St. Paul, Mt. Vernon, Dr. Lee's, the
+  Rev. Lee's, Ft. Worth, Ste. Marie cross; their
+  unperioded twins are unchanged.
+- **F7 — the naming consultation covers the
+  destination+trailing family.** The naming
+  reading (`cross_destination_to`) is threaded
+  into `weekday_pp_after_claimed_target`, so a
+  trailing Sunday standing after a target whose
+  construction carries a destination stack is
+  consumed for naming exactly as one inside the
+  stack is; the signal reading is unchanged (its
+  callers pass the flag unset). `stack_consumed`
+  in `analyze_group` is extended to relative-
+  phrase Sundays (asked at the Sunday word, the
+  last word of the entry's span), and
+  `plain_composition` computes the same set and
+  excludes it from `second_dates` on both its
+  assembly paths. Pinned: the target asserts
+  November 8 and the consumed Sunday resolutions
+  (October 18, October 25) are named nowhere in
+  the family — subjectless and subjectful group
+  forms (the subjectful forms name nothing at
+  all), the two-destination stack, the trailing
+  relative form, and the plain assembly.
+  Boundaries pinned standing, each verified
+  twin-identical against the R29-A tree: the
+  explicit moved date (November 1) is not stack
+  material and keeps its standing naming in the
+  subjectless and plain shapes, as the family's
+  accompaniment-closing rows always read; genuine
+  alternatives naming in readings with no
+  destination stack is unchanged; the subjectful
+  trailing shape (a trailing Sunday after the
+  target asserting as the reading, the target
+  named) stands as shipped, outside the family.
+
+Flagged items: none. No pre-existing pin was hit;
+no boundary in the disposition moved; no
+stop-and-report condition triggered. Environment
+note, recorded per standing practice: a service
+restart during this batch's verification killed the
+first full-suite run before its log persisted; the
+suite, clippy, and booklet numbers above are from
+the re-run, each redirected to a durable on-disk
+log with its exit marker appended and read after
+the producing process was confirmed gone.

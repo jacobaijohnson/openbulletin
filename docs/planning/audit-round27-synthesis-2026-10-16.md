@@ -697,3 +697,127 @@ readings rather than membership changes:
 `r27b_above_all_else` — each witness on the
 established three surfaces with its plain twins where
 the established pattern carries them, and its mirror.
+
+## Shipped addendum, R27-C
+
+Shipped on main over baseline `5733879` (R27-B close,
+831 tests). Full unpiped suite **834 passed / 0
+failed** (831 baseline + 3 new pins; log
+`/tmp/r27c_full.log`, cargo exit 0 embedded in the
+log), clippy `--workspace --all-targets -D warnings`
+exit 0 (`/tmp/r27c_clippy.log`), booklet baseline
+reproduced in-suite — imposed 31,717 / reader 34,977
+(the `booklet_export_size_stays_down` measurement).
+All work in `crates/ob-extract/src/contribution.rs`;
+**no pre-existing test body changed** (the diff's
+only removed lines are the nine token-construction
+lines in non-test code named below, each replaced
+by its `segment_tokens` form). The R27-B inventory,
+its pins, and `BARE_PHRASE_UNITS` are untouched, and
+the `coming sunday` plain-surface readings pinned by
+R27-B stand exactly as they stood — their acceptance
+is a round-27 close record item, not this batch's
+work, and nothing here reaches them.
+
+### F4 — the rule as shipped
+
+A governor word standing at a segment head governs
+with its segment, glued separator or not. The rule
+lives in one new reader, `segment_tokens`, which
+builds the cleaned token vector every segment
+reader reads: the shared cleaning (`group_token`)
+plus one segment-head step. `*` and `|` are this
+format's own structural separators, so a separator
+standing at a token's head IS the segment boundary
+— the segment it opens may open the run, follow a
+standalone separator token or a clause break, or be
+opened by the glued separator itself mid-run — and
+the word behind it is that segment's head word.
+When that head word heads a governor phrase (judged
+with the words that follow it in its segment, by
+the phrase matchers' own rule, so the phrasal heads
+`*no longer`, `|hold off`, `*used to be` unglue with
+the singles), the token is read as that word; every
+other token keeps its standing cleaned form byte for
+byte. Ungluing only makes the head word visible:
+every contextual judgment on it (the
+auxiliary-slot and subject-PP narrowings, the
+determiner-headed -s rule, the for-zones, the
+target-claim machinery) still runs exactly as it
+runs on the spaced twin, so a glued displacement
+head (`*moved to November 8` inside a group) claims
+its target as its spaced twin does.
+
+Boundaries of the fix, stated plainly: `group_token`
+itself is unchanged, and the separators are NOT
+format characters — `cf_only_token` and the Cf
+machinery are untouched, a standalone `*` / `|`
+token still cleans to nothing exactly as it always
+has, and the ungluing is governor-scoped, so a
+glued date word (`*November`) and a glued content
+word (`*choir`) keep their standing readings (both
+pinned standing in `r27c_segment_head_boundaries_stand`).
+
+The sites switched to `segment_tokens` are the
+segment readers: `analyze_group` and
+`group_has_target_claim` (a group's own segments),
+`chain_superseded_from_entries` (per-group chain
+tokens), `plain_multi_date_reading`,
+`plain_composition_reading`,
+`every_governed_core_values`,
+`core_composition_profile`,
+`core_bracketed_bare_restatement`, and the
+whole-line composition's de-grouped core scan. The
+readers that judge no governor (the second-date
+scan, the Sunday-after base scan, the relative-shape
+readers, `group_inner_is_relative`) keep the plain
+shared cleaning, as do the date readers.
+
+Evidence beyond the pins: with the code change alone
+and before any pin was added, the full unpiped suite
+reproduced the baseline exactly (831 passed / 0
+failed, `/tmp/r27c_suite_pre.log`) — no pre-existing
+reading moved. A glued/spaced twin probe run in this
+batch (32 pairs over the For, Keep-through, and
+relative-group surfaces, output
+`~/workspace/rt27-work/r27c_twin_out.txt`) shows 0
+differences: every glued form reads byte-identically
+to its spaced twin, the content mirrors included
+(`(service November 1) *not November 1, 2026`
+asserts as its spaced twin asserts; `*choir`,
+`*notes`, `*november` heads are unchanged), and the
+auxiliary-slot narrowing holds through the glue
+(`beans were *not served …` reads as its spaced
+twin).
+
+### Pins added
+
+`r27c_segment_head_governance_plain_segments` — the
+witnesses verbatim on the plain surfaces (the
+`(back together November 1) *not November 1, 2026`
+witness, its `(please)` / `(November 1; cancelled)`
+fuzz siblings, and the worst witness, whose
+expressly cancelled core stays cancelled), the
+`*not` / `|no` / `|never` family in both pairings,
+the doubled separator, the phrasal heads, the
+`*cancelled` / `*moved` governor heads, and a glued
+head governing a different date than the core's;
+each reads nothing and names nothing on both plain
+surfaces. `r27c_segment_head_governance_groups` —
+the same rule at a group's own segment heads on the
+established three surfaces (a group opening on a
+glued governor, a segment inside a group after its
+comma, a trailing glued cancellation inside its
+group), a glued head governing only its own
+segment's date (`(November 1, *not November 8)`
+asserts November 1 clean), and the glued
+displacement claim. `r27c_segment_head_boundaries_stand`
+— the boundaries that must not move, re-asserted as
+standing: a leading negation governs (`not` / `no` /
+`never`, plus its glued leading form), a trailing
+cancelled segment governs backward across the same
+`*` / `|` boundaries, the comma / dash / bare-space
+trailing negations and the spaced twins stand as
+they always have, and the governor-scoping guard
+(a glued content word and a glued date word still
+assert) holds on the plain and group surfaces.

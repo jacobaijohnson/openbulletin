@@ -1161,6 +1161,75 @@ fn group_token(raw: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// The cleaned tokens of one segment-bearing token
+/// run — a group's words, a plain core, a core
+/// segment — as every segment reader reads them
+/// (round 27, R27-C, F4 = red team RT27-C1): the
+/// shared cleaning (`group_token`), plus the
+/// segment-head rule. A governor word standing at
+/// a segment head governs with its segment, glued
+/// separator or not: `*` and `|` are this format's
+/// own structural separators (a shipped core is
+/// "November 1, 2026 * cancelled"), so a separator
+/// standing at a token's head IS the segment
+/// boundary — the segment it opens may open the
+/// run, follow a standalone separator token or a
+/// clause break, or be opened by the glued
+/// separator itself mid-run — and the word behind
+/// it is that segment's head word. Before this
+/// round the glued form ("*not", "|never",
+/// "*cancelled") cleaned to a word no governor
+/// family knows, so a trailing bare negated date
+/// across such a boundary asserted, and in the
+/// worst witness undid an expressly cancelled
+/// core. The ungluing is governor-scoped: only a
+/// head word that heads a governor phrase —
+/// judged with the words that follow it in its
+/// segment, by the phrase matchers' own rule —
+/// is read as that word; every other token (a
+/// glued date word, a glued content word) keeps
+/// its standing cleaned form byte for byte. The
+/// separators are NOT format characters: the Cf
+/// machinery (`cf_only_token`,
+/// `strip_format_chars`) is untouched, a
+/// standalone "*" / "|" token still cleans to
+/// nothing exactly as it always has, and
+/// `group_token` itself is unchanged — this rule
+/// lives here, where segment heads are read, not
+/// in the token cleaning. Ungluing only makes
+/// the head word visible; every contextual
+/// judgment on it (the auxiliary-slot and
+/// subject-PP narrowings, the determiner-headed
+/// -s rule, the for-zones) still runs exactly as
+/// it runs on the spaced twin.
+fn segment_tokens(raw_tokens: &[&str]) -> Vec<String> {
+    let mut tokens: Vec<String> = raw_tokens.iter().map(|t| group_token(t)).collect();
+    for i in 0..tokens.len() {
+        let head = tokens[i].trim_start_matches(['*', '|']);
+        if head.len() == tokens[i].len() || head.is_empty() {
+            continue;
+        }
+        let head = head.trim_end_matches(['*', '|']).to_string();
+        if head.is_empty() {
+            continue;
+        }
+        // The head word heads a governor phrase
+        // when a phrase starting on it — the word
+        // alone, or with its segment's following
+        // words — is one.
+        let governs = (1..=3usize).any(|len| {
+            let mut phrase: Vec<String> = Vec::with_capacity(len);
+            phrase.push(head.clone());
+            phrase.extend(tokens[i + 1..].iter().take(len - 1).cloned());
+            phrase.len() == len && is_governor_phrase(&phrase)
+        });
+        if governs {
+            tokens[i] = head;
+        }
+    }
+    tokens
+}
+
 /// Whether a raw group token ends a clause: a token
 /// wearing a trailing comma or semicolon closes the
 /// words it stands in, so a governor on the far side
@@ -7253,7 +7322,7 @@ fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) -> GroupAna
         return analysis;
     }
     let raw_tokens: Vec<&str> = unwrapped.split_whitespace().collect();
-    let tokens: Vec<String> = raw_tokens.iter().map(|t| group_token(t)).collect();
+    let tokens: Vec<String> = segment_tokens(&raw_tokens);
     // Round 18 (R18-6): the group's signals are the
     // plain line's signal set — framed dates and
     // relative phrases alike, in written order — so
@@ -7915,7 +7984,7 @@ fn group_has_target_claim(
 ) -> bool {
     let unwrapped = inner.replace(['(', ')'], " ");
     let raw_tokens: Vec<&str> = unwrapped.split_whitespace().collect();
-    let tokens: Vec<String> = raw_tokens.iter().map(|t| group_token(t)).collect();
+    let tokens: Vec<String> = segment_tokens(&raw_tokens);
     let signals = dates_inside_group_signals(&raw_tokens, &tokens, today, anchor);
     let positional: Vec<(SimpleDate, usize, usize)> = signals
         .iter()
@@ -8069,7 +8138,10 @@ fn chain_superseded_from_entries(
     // the claim itself (see `group_has_target_claim`).
     let group_tokens: Vec<Vec<String>> = entries
         .iter()
-        .map(|(inner, _)| inner.split_whitespace().map(group_token).collect())
+        .map(|(inner, _)| {
+            let raw: Vec<&str> = inner.split_whitespace().collect();
+            segment_tokens(&raw)
+        })
         .collect();
     let phrase_with_to = |toks: &[String]| {
         (0..toks.len()).any(|ps| {
@@ -9762,7 +9834,7 @@ fn plain_multi_date_reading(
     // The group set also strips "-" and the en/em
     // dashes, which the plain set left on.
     let tokens: Vec<&str> = core.split_whitespace().collect();
-    let cleaned: Vec<String> = tokens.iter().map(|t| group_token(t)).collect();
+    let cleaned: Vec<String> = segment_tokens(&tokens);
     let signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
     if signals.len() < 2 {
         // Round 21 (R21-7): a lone FRAMED signal
@@ -9889,7 +9961,7 @@ fn plain_composition_reading(
     alternatives: &[SimpleDate],
 ) -> Option<DateLineReading> {
     let tokens: Vec<&str> = core.split_whitespace().collect();
-    let cleaned: Vec<String> = tokens.iter().map(|t| group_token(t)).collect();
+    let cleaned: Vec<String> = segment_tokens(&tokens);
     let signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
     if signals.len() < 2 || !signals.iter().any(|s| s.framed) {
         return None;
@@ -9920,7 +9992,7 @@ fn every_governed_core_values(
     anchor: SimpleDate,
 ) -> Vec<SimpleDate> {
     let tokens: Vec<&str> = core.split_whitespace().collect();
-    let cleaned: Vec<String> = tokens.iter().map(|t| group_token(t)).collect();
+    let cleaned: Vec<String> = segment_tokens(&tokens);
     let mut signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
     if signals.is_empty() {
         return Vec::new();
@@ -10197,7 +10269,7 @@ fn core_composition_profile(
         return Some(profile);
     }
     let tokens: Vec<&str> = core.split_whitespace().collect();
-    let cleaned: Vec<String> = tokens.iter().map(|t| group_token(t)).collect();
+    let cleaned: Vec<String> = segment_tokens(&tokens);
     let signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
     if signals.len() != 1 || !signals[0].framed {
         return None;
@@ -10289,7 +10361,7 @@ fn core_bracketed_bare_restatement(
     anchor: SimpleDate,
 ) -> bool {
     let raw_tokens: Vec<&str> = core.split_whitespace().collect();
-    let cleaned: Vec<String> = raw_tokens.iter().map(|t| group_token(t)).collect();
+    let cleaned: Vec<String> = segment_tokens(&raw_tokens);
     let signals = scan_plain_signals(&raw_tokens, &cleaned, today, anchor);
     // Round 26 (R26-A, F1): the spans stand in
     // `occurrence_is_bare`'s own convention — (date,
@@ -10437,7 +10509,7 @@ fn whole_line_composition(
             // through `trailing_dates_after_core_governance`)
             // and the For Sunday reading agree on it.
             let core_tokens: Vec<&str> = core.split_whitespace().collect();
-            let core_cleaned: Vec<String> = core_tokens.iter().map(|t| group_token(t)).collect();
+            let core_cleaned: Vec<String> = segment_tokens(&core_tokens);
             let core_signals = scan_plain_signals(&core_tokens, &core_cleaned, today, anchor);
             if !core_signals.is_empty() {
                 return None;
@@ -28120,5 +28192,251 @@ Youth group meets Wednesday at 6 PM.
                 "{groups}: partitions word by word and stays governed"
             );
         }
+    }
+
+    #[test]
+    fn r27c_segment_head_governance_plain_segments() {
+        // Round 27 (R27-C, F4 = red team RT27-C1):
+        // a trailing bare negated date across a
+        // `*` / `|` segment boundary did not govern
+        // — the separator glued to the governor
+        // word ("*not", "|never") cleaned to a word
+        // no governor family knows, so the negated
+        // date asserted, in the worst witness
+        // undoing an expressly cancelled core. A
+        // governor word standing at a segment head
+        // now governs with its segment, glued
+        // separator or not (`segment_tokens`), and
+        // every witness reads as its spaced twin.
+        for line in [
+            // The lane's witnesses verbatim.
+            "(back together November 1) *not November 1, 2026",
+            "(please) (while November 1) |not November 1, 2026",
+            "(November 1; cancelled) (while November 1) |not November 1, 2026",
+            // The worst witness: the trailing
+            // fragment's date is the expressly
+            // cancelled core's own date, and the
+            // cancelled core stays cancelled.
+            "November 1, 2026, cancelled (while November 1) |not November 1, 2026",
+            // The sized family: `*not` / `|no` /
+            // `|never`, in both separator and
+            // negation pairings, and the doubled
+            // separator.
+            "(back together November 1) *no November 1, 2026",
+            "(back together November 1) |not November 1, 2026",
+            "(back together November 1) *never November 1, 2026",
+            "(while November 1) |no November 1, 2026",
+            "(while November 1) |never November 1, 2026",
+            "(back together November 1) **not November 1, 2026",
+            // Phrasal heads govern whole: the head
+            // word alone is no governor, its phrase
+            // is.
+            "(back together November 1) *no longer November 1, 2026",
+            "(back together November 1) |hold off November 1, 2026",
+            // The rule is the governor word's, not
+            // the negation's alone: a cancellation
+            // or displacement word at the same
+            // head governs the same way.
+            "(back together November 1) *cancelled November 1, 2026",
+            "(back together November 1) *moved November 1, 2026",
+            // A glued head governs its own segment's
+            // date, not only a restated core date.
+            "November 1, 2026, cancelled (while November 1) |not November 8, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the glued head governs");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: nothing is named"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through stays governed");
+            assert_eq!(
+                c.keep_through_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{line}: keep-through note is empty"
+            );
+        }
+    }
+
+    #[test]
+    fn r27c_segment_head_governance_groups() {
+        // Round 27 (R27-C, F4): the same rule at a
+        // group's own segment heads — a group
+        // opening on a glued governor, a segment
+        // inside a group after its comma, and a
+        // trailing cancellation glued inside its
+        // group — on the established three
+        // surfaces.
+        for groups in [
+            "(November 1, cancelled) (*not November 1)",
+            "(November 1, cancelled) (|no November 1)",
+            "(November 1, cancelled) (|never November 1)",
+            "(November 1, cancelled) (**not November 1)",
+            "(*not November 1) (back together November 1)",
+            "(November 1, cancelled) (*cancelled November 1)",
+            "(November 1, cancelled) (November 1, *cancelled)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date, None,
+                "{groups}: relative path stays governed"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{groups}: paren-only stays governed");
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{groups}: keep-through stays governed"
+            );
+        }
+        // A glued head governs only its own
+        // segment's date: the group's other date
+        // asserts clean, exactly as the spaced
+        // twin's does.
+        for groups in [
+            "(November 1, *not November 8)",
+            "(November 1, |never November 8)",
+        ] {
+            let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(1)),
+                "{groups}: November 1 asserts on the relative path"
+            );
+            let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{groups}: November 1 asserts");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::<SimpleDate>::new(),
+                "{groups}: the governed date is not named"
+            );
+            let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{groups}: keep-through asserts November 1"
+            );
+        }
+        // A glued displacement head is visible to
+        // the target machinery too: the claim
+        // asserts its target and names its
+        // from-date, as the spaced twin does.
+        let groups = "(November 1, *moved to November 8)";
+        let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{groups}: the target asserts on the relative path"
+        );
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{groups}: the target asserts");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{groups}: the from-date is named"
+        );
+        let text = format!("Keep-through: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{groups}: keep-through target"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(1)],
+            "{groups}: keep-through names the from-date"
+        );
+    }
+
+    #[test]
+    fn r27c_segment_head_boundaries_stand() {
+        // Round 27 (R27-C, F4): the boundaries the
+        // disposition names as standing, re-asserted
+        // beside the fix — a leading negation
+        // governs, and a trailing cancelled segment
+        // governs backward across the same `*` /
+        // `|` boundaries — together with the
+        // spaced twins of the glued witnesses and
+        // the governor-scoping guard.
+        for line in [
+            // Leading negation governs (standing).
+            "not November 1, 2026 (back together November 1)",
+            "no November 1, 2026 (back together November 1)",
+            "never November 1, 2026 (back together November 1)",
+            // The leading position is a segment
+            // head too: its glued form now reads
+            // as the standing form above does.
+            "*not November 1, 2026 (back together November 1)",
+            // Trailing cancelled governs backward
+            // (standing), separator spaced or the
+            // cancellation standing after the
+            // date it governs.
+            "(back together November 1) * November 1, 2026, cancelled",
+            "(while November 1) |November 1, 2026, cancelled",
+            "(back together November 1) *not November 1, 2026, cancelled",
+            // Across a comma, a dash, or bare
+            // spaces the same trailing negation
+            // has always governed (standing).
+            "(back together November 1), not November 1, 2026",
+            "(back together November 1) not November 1, 2026",
+            "(back together November 1) - not November 1, 2026",
+            // The spaced twins of the glued
+            // witnesses (standing).
+            "(back together November 1) * not November 1, 2026",
+            "(back together November 1) | not November 1, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{line}: the boundary reading stands");
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{line}: keep-through stands");
+        }
+        // Held (the governor-scoping guard): a
+        // glued head that heads no governor phrase
+        // is not unglued — a glued content word and
+        // a glued date word keep their standing
+        // readings, on the plain and group
+        // surfaces alike.
+        for line in [
+            "(back together November 1) *choir November 1, 2026",
+            "(back together November 1) *November 1, 2026",
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{line}: a non-governor head still asserts"
+            );
+            let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{line}: keep-through still asserts"
+            );
+        }
+        let groups = "(November 1, cancelled) (*choir November 1)";
+        let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{groups}: content asserts beside a sibling cancellation"
+        );
     }
 }

@@ -1184,6 +1184,68 @@ pub fn read_capped(
     }
 }
 
+/// The workspace's one durable write (round 31, F9):
+/// write `bytes` to the temp file at `tmp`, sync that
+/// file to disk, rename it over `target`, then sync
+/// the containing directory where the platform allows
+/// it. The temp file stands in the target's own folder
+/// (the caller names it, keeping each caller's temp
+/// naming convention), so the rename stays on one
+/// volume. The file sync is load-bearing: a failure
+/// there is the caller's error to report. The
+/// directory sync is best-effort — where a directory
+/// cannot be opened and synced that way, there is
+/// nothing to do and the write must not fail over it.
+/// A crash mid-write leaves the previous file whole,
+/// and on every failure path the temp file is removed
+/// before the error returns, so no stranded temp
+/// invites confusion about which file is the real one.
+///
+/// This is the one statement of that mechanism — the
+/// .obd/.obdi saves in ob-format and the app's atomic
+/// writes in ob-app both land through it — stated over
+/// `std::fs` / `Path` pieces, like [`read_capped`], so
+/// this crate needs no new dependency to hold it. It
+/// lives here because ob-model is the lowest crate
+/// both callers can reach; the two crate-local bodies
+/// it replaced had already drifted apart once and been
+/// re-synced by hand (round 30, F3).
+pub fn sync_and_rename(
+    tmp: &std::path::Path,
+    target: &std::path::Path,
+    bytes: &[u8],
+) -> Result<(), std::io::Error> {
+    use std::io::Write as _;
+    let outcome = (|| {
+        let mut file = std::fs::File::create(tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(tmp, target)
+    })();
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(tmp);
+    }
+    outcome?;
+    sync_directory_best_effort(target);
+    Ok(())
+}
+
+/// Sync the directory holding `path`, so a rename is
+/// durable across a power cut. Unix only: elsewhere
+/// this is a no-op, never an error (see
+/// [`sync_and_rename`]).
+pub fn sync_directory_best_effort(path: &std::path::Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        if let Ok(dir_file) = std::fs::File::open(dir) {
+            let _ = dir_file.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub format_version: u32,

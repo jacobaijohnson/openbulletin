@@ -627,41 +627,21 @@ pub fn settings_path() -> std::path::PathBuf {
 /// where a directory cannot be opened and synced that way,
 /// there is nothing to do and the write must not fail over
 /// it. A crash mid-write leaves the previous file whole.
+///
+/// The body is ob-model's one durable write,
+/// `ob_model::sync_and_rename` (round 31, F9) — the same
+/// body the .obd/.obdi saves land through, directory sync
+/// included. This adapter keeps only the app's own parts
+/// of the shape: its temp naming (the target's own name
+/// plus `.tmp`) and its `std::io::Error` surface.
 pub(crate) fn write_file_atomically(
     path: &std::path::Path,
     bytes: &[u8],
 ) -> Result<(), std::io::Error> {
-    use std::io::Write as _;
     let mut tmp_name = path.as_os_str().to_owned();
     tmp_name.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp_name);
-    let outcome = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&tmp, path)
-    })();
-    if outcome.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    outcome?;
-    sync_directory_best_effort(path);
-    Ok(())
-}
-
-/// Sync the directory holding `path`, so a rename is
-/// durable across a power cut. Unix only: elsewhere this
-/// is a no-op, never an error (see `write_file_atomically`).
-pub(crate) fn sync_directory_best_effort(path: &std::path::Path) {
-    #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        if let Ok(dir_file) = std::fs::File::open(dir) {
-            let _ = dir_file.sync_all();
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
+    ob_model::sync_and_rename(&tmp, path, bytes)
 }
 
 /// Where the autosave journal lives: beside settings.json.

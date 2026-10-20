@@ -6720,6 +6720,42 @@ mod settings_tests {
     }
 
     #[test]
+    fn atomic_write_failure_removes_the_temp_and_leaves_the_target() {
+        // Round 31, F9: the deepest failure path of the
+        // durable write, run against the shared body in
+        // ob-model (`ob_model::sync_and_rename`) through
+        // this adapter — the same rename-over-a-folder
+        // shape the format crate's re-pointed pin forces.
+        // The failure is forced by making the target a
+        // folder holding a file: renaming a file over a
+        // folder fails on every platform the suite runs
+        // on, after the temp file has been written and
+        // synced whole. The error must still surface, no
+        // `.tmp` file may remain beside the target, and
+        // what stood at the target must be untouched.
+        let dir = std::env::temp_dir().join(format!("ob-app-atomic-fail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("copy.pdf");
+        std::fs::create_dir_all(&path).expect("target folder");
+        let keep = path.join("keep.txt");
+        std::fs::write(&keep, b"the previous contents").expect("seed target contents");
+        let err = write_file_atomically(&path, b"the new copy")
+            .expect_err("renaming over a folder must fail");
+        let err_text = err.to_string();
+        assert!(!err_text.is_empty(), "the failure speaks: {err_text}");
+        assert!(
+            !dir.join("copy.pdf.tmp").exists(),
+            "no temp file remains beside the target after a failed write"
+        );
+        assert_eq!(
+            std::fs::read(&keep).expect("read target contents"),
+            b"the previous contents",
+            "the previous target contents are untouched"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn corrupt_hymn_memory_is_set_aside_and_missing_is_not() {
         // S-MIN-2 pin: a hymn-memory.json that exists but
         // does not parse is set aside with its damaged bytes

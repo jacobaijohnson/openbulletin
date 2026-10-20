@@ -752,6 +752,35 @@ fn duplicate_name_refusal(name: &str) -> String {
     )
 }
 
+/// The read-name space of the .obd / .obdi loaders,
+/// stated ONCE (round 31, F8): each door reads exactly
+/// one root entry — the bulletin door's
+/// [`BULLETIN_ROOT_NAME`], the sheet door's
+/// [`INSERT_ROOT_NAME`] — plus every entry under
+/// [`ASSET_ENTRY_PREFIX`]. The readers below read
+/// through these names (their `by_name` lookups, their
+/// `file_names` probes, their asset sweeps, and the
+/// root each passes to the duplicate walk), and the
+/// duplicate checker covers exactly this space through
+/// [`is_read_name`], so a name class enters the
+/// checker's coverage by entering this definition —
+/// the readers cannot read a class the checker does
+/// not count, because both sides name the same
+/// constants. The pin
+/// `duplicate_walk_counts_every_read_name_class_at_both_doors`
+/// exercises every class in this space at both doors.
+const BULLETIN_ROOT_NAME: &str = "document.json";
+const INSERT_ROOT_NAME: &str = "insert.json";
+const ASSET_ENTRY_PREFIX: &str = "assets/";
+
+/// Is `name` one of the names a loader reads, given
+/// that door's root? The whole coverage question of
+/// the duplicate checker (round 31, F8): the root
+/// itself, or an entry under the shared asset prefix.
+fn is_read_name(name: &str, root: &str) -> bool {
+    name == root || name.starts_with(ASSET_ENTRY_PREFIX)
+}
+
 /// Note one directory record among the names a loader
 /// reads — its root entry (`document.json` /
 /// `insert.json`) and every `assets/` entry — identified
@@ -799,7 +828,7 @@ fn note_read_name(
     facts: (u32, u32, u32),
     root: &str,
 ) -> Option<String> {
-    if name != root && !name.starts_with("assets/") {
+    if !is_read_name(name, root) {
         return None;
     }
     match seen.get(name) {
@@ -1686,57 +1715,17 @@ fn archive_from_candidate_file(
     zip::ZipArchive::new(reader).ok()
 }
 
-/// The durable half of every save in this crate (HF-5):
-/// write the bytes to the sibling temp file, sync that file
-/// to disk, rename it over the target, then sync the
-/// containing directory where the platform allows it. The
-/// file sync is load-bearing: a failure there is a save
-/// failure, never a "Saved". The directory sync is
-/// best-effort — on platforms where a directory cannot be
-/// opened and synced this way there is nothing to do, and
-/// the save must not fail over it. Rename alone survives an
-/// app crash; the syncs are what survive a power cut.
-fn sync_and_rename(tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
-    // On every failure path the temp file is removed
-    // before the error returns (round 30, F3): the
-    // app-side twin `write_file_atomically` has always
-    // cleaned up after itself, and a stranded
-    // `<name>.obd.tmp` / `<name>.obdi.tmp` beside a
-    // bulletin invites exactly the confusion about which
-    // file is the bulletin that the temp name exists to
-    // avoid. The cleanup is best-effort — the error that
-    // caused it is the one the caller hears, unchanged,
-    // and the target is never touched by a failed write.
-    let outcome = (|| {
-        let mut file = std::fs::File::create(tmp).map_err(|e| e.to_string())?;
-        file.write_all(bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        drop(file);
-        std::fs::rename(tmp, path).map_err(|e| e.to_string())
-    })();
-    if outcome.is_err() {
-        let _ = std::fs::remove_file(tmp);
-    }
-    outcome?;
-    sync_directory(path);
-    Ok(())
-}
-
-/// Sync the directory holding `path`, so the rename itself
-/// is durable. Unix only: elsewhere opening a directory for
-/// sync is not supported, and this stays a no-op rather
-/// than an error (see `sync_and_rename`).
-fn sync_directory(path: &Path) {
-    #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        if let Ok(dir_file) = std::fs::File::open(dir) {
-            let _ = dir_file.sync_all();
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-}
-
+/// The durable half of every save in this crate (HF-5)
+/// is ob-model's one durable write,
+/// [`ob_model::sync_and_rename`] (round 31, F9): the
+/// sibling temp file this crate names (`<name>.obd.tmp`
+/// / `<name>.obdi.tmp`), synced, renamed over the
+/// target, and removed again on every failure path
+/// (round 30, F3), so a stranded temp beside a bulletin
+/// never invites confusion about which file is the
+/// bulletin. Its io errors surface here in this crate's
+/// string form, exactly as the crate-local body they
+/// replace reported them.
 pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
     let mut doc = doc.clone();
     // Save what the document will say it is: the current
@@ -1750,7 +1739,7 @@ pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
         let mut zip = zip::ZipWriter::new(cursor);
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
-        zip.start_file("document.json", options)
+        zip.start_file(BULLETIN_ROOT_NAME, options)
             .map_err(|e| e.to_string())?;
         zip.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
         // Asset bytes ride under their hash. Every byte set
@@ -1781,7 +1770,7 @@ pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
             } else {
                 options
             };
-            zip.start_file(format!("assets/{hash}"), entry_options)
+            zip.start_file(format!("{ASSET_ENTRY_PREFIX}{hash}"), entry_options)
                 .map_err(|e| e.to_string())?;
             zip.write_all(bytes).map_err(|e| e.to_string())?;
         }
@@ -1791,7 +1780,7 @@ pub fn save(doc: &Document, path: &Path) -> Result<(), String> {
     // sync it, then rename over the target.
     // A bulletin lost on Saturday night is a trust-ending event.
     let tmp = path.with_extension("obd.tmp");
-    sync_and_rename(&tmp, path, &buf)
+    ob_model::sync_and_rename(&tmp, path, &buf).map_err(|e| e.to_string())
 }
 
 pub fn load(path: &Path) -> Result<Document, String> {
@@ -1907,10 +1896,10 @@ fn load_v1(path: &Path) -> Result<Document, String> {
             continue;
         };
         opened_any = true;
-        if !zip.file_names().any(|n| n == "document.json") {
+        if !zip.file_names().any(|n| n == BULLETIN_ROOT_NAME) {
             continue;
         }
-        let duplicate = duplicate_read_name_for_key(path, at, &key, "document.json");
+        let duplicate = duplicate_read_name_for_key(path, at, &key, BULLETIN_ROOT_NAME);
         match read_bulletin_archive(&mut zip, duplicate) {
             Ok(doc) => return Ok(doc),
             Err(e) => {
@@ -2012,7 +2001,7 @@ fn load_v1(path: &Path) -> Result<Document, String> {
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         match zip::ZipArchive::new(file) {
             Ok(mut zip) => {
-                if zip.file_names().any(|n| n == "document.json") {
+                if zip.file_names().any(|n| n == BULLETIN_ROOT_NAME) {
                     // The reader's chosen directory is the
                     // latest candidate's (round 30, F6): its
                     // duplicate count comes off that
@@ -2022,7 +2011,7 @@ fn load_v1(path: &Path) -> Result<Document, String> {
                             &bytes,
                             *at,
                             &resolution.key,
-                            "document.json",
+                            BULLETIN_ROOT_NAME,
                         ),
                         _ => None,
                     };
@@ -2089,11 +2078,11 @@ fn load_v1(path: &Path) -> Result<Document, String> {
         let Some(mut zip) = archive_from_candidate(&bytes, at, zip64_patch) else {
             continue;
         };
-        if !zip.file_names().any(|n| n == "document.json") {
+        if !zip.file_names().any(|n| n == BULLETIN_ROOT_NAME) {
             continue;
         }
         let duplicate =
-            duplicate_read_name_for_key_in(&bytes, at, &resolution.key, "document.json");
+            duplicate_read_name_for_key_in(&bytes, at, &resolution.key, BULLETIN_ROOT_NAME);
         match read_bulletin_archive(&mut zip, duplicate) {
             Ok(doc) => return Ok(doc),
             Err(e) => {
@@ -2149,7 +2138,7 @@ fn read_bulletin_archive<R: Read + Seek>(
     let mut total: u64 = 0;
     let mut doc: Document = {
         let mut entry = zip
-            .by_name("document.json")
+            .by_name(BULLETIN_ROOT_NAME)
             .map_err(|_| "that file has no bulletin inside it (no document.json)".to_string())?;
         let text = read_entry_text_capped(
             &mut entry,
@@ -2168,7 +2157,7 @@ fn read_bulletin_archive<R: Read + Seek>(
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().to_string();
-        let Some(hash) = name.strip_prefix("assets/") else {
+        let Some(hash) = name.strip_prefix(ASSET_ENTRY_PREFIX) else {
             continue;
         };
         let hash = hash.to_string();
@@ -2239,21 +2228,21 @@ pub fn save_insert(insert: &Insert, host: &Document, path: &Path) -> Result<(), 
         let mut zip = zip::ZipWriter::new(cursor);
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
-        zip.start_file("insert.json", options)
+        zip.start_file(INSERT_ROOT_NAME, options)
             .map_err(|e| e.to_string())?;
         zip.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
         for hash in &referenced {
             let Some(bytes) = host.asset_data(hash) else {
                 continue;
             };
-            zip.start_file(format!("assets/{hash}"), options)
+            zip.start_file(format!("{ASSET_ENTRY_PREFIX}{hash}"), options)
                 .map_err(|e| e.to_string())?;
             zip.write_all(bytes).map_err(|e| e.to_string())?;
         }
         zip.finish().map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("obdi.tmp");
-    sync_and_rename(&tmp, path, &buf)
+    ob_model::sync_and_rename(&tmp, path, &buf).map_err(|e| e.to_string())
 }
 
 /// Load an .obdi file: the sheet, the asset records it
@@ -2310,10 +2299,10 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
             continue;
         };
         opened_any = true;
-        if !zip.file_names().any(|n| n == "insert.json") {
+        if !zip.file_names().any(|n| n == INSERT_ROOT_NAME) {
             continue;
         }
-        let duplicate = duplicate_read_name_for_key(path, at, &key, "insert.json");
+        let duplicate = duplicate_read_name_for_key(path, at, &key, INSERT_ROOT_NAME);
         match read_insert_archive(&mut zip, duplicate) {
             Ok(loaded) => return Ok(loaded),
             Err(e) => {
@@ -2368,7 +2357,7 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         match zip::ZipArchive::new(file) {
             Ok(mut zip) => {
-                if zip.file_names().any(|n| n == "insert.json") {
+                if zip.file_names().any(|n| n == INSERT_ROOT_NAME) {
                     // The reader's chosen directory, counted
                     // as at the bulletin door (round 30, F6).
                     let duplicate = match (positions.first(), resolutions.first()) {
@@ -2376,7 +2365,7 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
                             &bytes,
                             *at,
                             &resolution.key,
-                            "insert.json",
+                            INSERT_ROOT_NAME,
                         ),
                         _ => None,
                     };
@@ -2428,10 +2417,11 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
         let Some(mut zip) = archive_from_candidate(&bytes, at, zip64_patch) else {
             continue;
         };
-        if !zip.file_names().any(|n| n == "insert.json") {
+        if !zip.file_names().any(|n| n == INSERT_ROOT_NAME) {
             continue;
         }
-        let duplicate = duplicate_read_name_for_key_in(&bytes, at, &resolution.key, "insert.json");
+        let duplicate =
+            duplicate_read_name_for_key_in(&bytes, at, &resolution.key, INSERT_ROOT_NAME);
         match read_insert_archive(&mut zip, duplicate) {
             Ok(loaded) => return Ok(loaded),
             Err(e) => {
@@ -2475,7 +2465,7 @@ fn read_insert_archive<R: Read + Seek>(
     let mut total: u64 = 0;
     let mut package: InsertPackage = {
         let mut entry = zip
-            .by_name("insert.json")
+            .by_name(INSERT_ROOT_NAME)
             .map_err(|_| "that file has no loose sheet inside it (no insert.json)".to_string())?;
         let text = read_entry_text_capped(
             &mut entry,
@@ -2489,7 +2479,7 @@ fn read_insert_archive<R: Read + Seek>(
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().to_string();
-        let Some(hash) = name.strip_prefix("assets/") else {
+        let Some(hash) = name.strip_prefix(ASSET_ENTRY_PREFIX) else {
             continue;
         };
         let hash = hash.to_string();
@@ -2719,17 +2709,20 @@ mod tests {
 
     #[test]
     fn sync_and_rename_lands_whole_and_leaves_no_temp() {
-        // HF-5 pin: the durable-write helper lands the new
-        // bytes whole at the target, replaces an existing
-        // target whole, and leaves no temp file behind. (The
-        // sync calls themselves are not observable from a
-        // test; they are verified by code inspection.)
+        // HF-5 pin, re-pointed by round 31, F9 at the
+        // shared body in ob-model (`ob_model::sync_and_rename`),
+        // which every save in this crate now lands through:
+        // the durable-write helper lands the new bytes
+        // whole at the target, replaces an existing target
+        // whole, and leaves no temp file behind. (The sync
+        // calls themselves are not observable from a test;
+        // they are verified by code inspection.)
         let dir = scratch("sync-rename");
         let path = dir.join("week.obd");
         let tmp = path.with_extension("obd.tmp");
         std::fs::write(&path, b"the previous bulletin, longer than the new one")
             .expect("seed target");
-        sync_and_rename(&tmp, &path, b"new").expect("durable write");
+        ob_model::sync_and_rename(&tmp, &path, b"new").expect("durable write");
         assert_eq!(std::fs::read(&path).expect("read target"), b"new");
         assert!(!tmp.exists(), "no temp file remains");
         let _ = std::fs::remove_dir_all(&dir);
@@ -2747,15 +2740,21 @@ mod tests {
         // helper has. The error must still surface, no
         // `.tmp` file may remain beside the target, and
         // what stood at the target must be untouched.
+        // Round 31, F9: re-pointed at the shared body in
+        // ob-model (`ob_model::sync_and_rename`), with
+        // every assertion intact — the shared body
+        // answers io errors, so the "failure speaks"
+        // check reads its text form.
         let dir = scratch("sync-rename-fail");
         let path = dir.join("week.obd");
         std::fs::create_dir_all(&path).expect("target folder");
         let keep = path.join("keep.txt");
         std::fs::write(&keep, b"the previous contents").expect("seed target contents");
         let tmp = path.with_extension("obd.tmp");
-        let err = sync_and_rename(&tmp, &path, b"the new bulletin")
+        let err = ob_model::sync_and_rename(&tmp, &path, b"the new bulletin")
             .expect_err("renaming over a folder must fail");
-        assert!(!err.is_empty(), "the failure speaks: {err}");
+        let err_text = err.to_string();
+        assert!(!err_text.is_empty(), "the failure speaks: {err_text}");
         assert!(
             !tmp.exists(),
             "no temp file remains beside the target after a failed write"
@@ -4230,6 +4229,106 @@ mod tests {
         let path = dir.join("ok.obd");
         std::fs::write(&path, &bytes).expect("write control");
         assert_eq!(load(&path).expect("loads").title, "Roundtrip");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_name_space_covers_exactly_the_roots_and_the_asset_prefix() {
+        // Round 31, F8: the checker's coverage question,
+        // pinned against the shared definition itself.
+        // Each door's root is covered at its own door and
+        // NOT at the other door (a bulletin root inside a
+        // sheet file is a name that door never reads);
+        // an entry under the asset prefix is covered at
+        // both doors; names outside the space — including
+        // near-misses of the prefix — are not covered.
+        for root in [BULLETIN_ROOT_NAME, INSERT_ROOT_NAME] {
+            assert!(is_read_name(root, root), "the root is covered: {root}");
+            assert!(
+                is_read_name("assets/abc123", root),
+                "an asset entry is covered at the {root} door"
+            );
+            assert!(!is_read_name("notes/shareA", root));
+            assert!(!is_read_name("assets", root), "the bare prefix is no entry");
+            assert!(!is_read_name("assetsx/abc123", root));
+        }
+        assert!(!is_read_name(BULLETIN_ROOT_NAME, INSERT_ROOT_NAME));
+        assert!(!is_read_name(INSERT_ROOT_NAME, BULLETIN_ROOT_NAME));
+    }
+
+    #[test]
+    fn duplicate_walk_counts_every_read_name_class_at_both_doors() {
+        // Round 31, F8: the drift alarm. Every name class
+        // in the shared read-name space — each door's root
+        // and an `assets/` entry — is counted by the
+        // duplicate walk at BOTH doors: two disagreeing
+        // copies under any of those names refuse with the
+        // duplicate words naming that part. The entry
+        // names here are built from the same constants the
+        // readers read through (`BULLETIN_ROOT_NAME`,
+        // `INSERT_ROOT_NAME`, `ASSET_ENTRY_PREFIX`), so
+        // this pin enumerates the coverage from the
+        // readers' side: the classes the readers read are
+        // the classes whose duplicates must refuse, by
+        // construction of the names on both sides.
+        let dir = scratch("dup-coverage");
+        let doc_json = serde_json::to_string(&test_doc()).expect("json");
+        let mut shadow_doc = test_doc();
+        shadow_doc.title = "Shadow Copy".into();
+        let shadow_json = serde_json::to_string(&shadow_doc).expect("json");
+        let sheet_json = lying_sheet_json();
+        let shadow_sheet_json = sheet_json.replace("Lying directory", "Shadow director");
+        assert_ne!(shadow_sheet_json, sheet_json, "the sheet copies differ");
+        let payload: &[u8] = b"the picture the name promises";
+        let hash = sha256_hex(payload);
+        let asset_name = format!("{ASSET_ENTRY_PREFIX}{hash}");
+        let asset_stand_in = format!("{ASSET_ENTRY_PREFIX}{}x", &hash[..63]);
+
+        // Bulletin door, root class.
+        let mut bytes = stored_zip(&[
+            (BULLETIN_ROOT_NAME, doc_json.as_bytes()),
+            ("document.jsoX", shadow_json.as_bytes()),
+        ]);
+        patch_entry_name(&mut bytes, "document.jsoX", BULLETIN_ROOT_NAME);
+        let path = dir.join("dup-root.obd");
+        std::fs::write(&path, &bytes).expect("write bulletin root witness");
+        let err = load(&path).expect_err("a duplicated bulletin root refuses");
+        assert_eq!(err, duplicate_name_refusal(BULLETIN_ROOT_NAME));
+
+        // Bulletin door, asset class.
+        let mut bytes = stored_zip(&[
+            (BULLETIN_ROOT_NAME, doc_json.as_bytes()),
+            (asset_name.as_str(), payload),
+            (asset_stand_in.as_str(), b"the shadow copy, other bytes"),
+        ]);
+        patch_entry_name(&mut bytes, &asset_stand_in, &asset_name);
+        let path = dir.join("dup-asset.obd");
+        std::fs::write(&path, &bytes).expect("write bulletin asset witness");
+        let err = load(&path).expect_err("a duplicated bulletin asset refuses");
+        assert_eq!(err, duplicate_name_refusal(&asset_name));
+
+        // Sheet door, root class.
+        let mut bytes = stored_zip(&[
+            (INSERT_ROOT_NAME, sheet_json.as_bytes()),
+            ("insert.jsoX", shadow_sheet_json.as_bytes()),
+        ]);
+        patch_entry_name(&mut bytes, "insert.jsoX", INSERT_ROOT_NAME);
+        let path = dir.join("dup-root.obdi");
+        std::fs::write(&path, &bytes).expect("write sheet root witness");
+        let err = load_insert(&path).expect_err("a duplicated sheet root refuses");
+        assert_eq!(err, duplicate_name_refusal(INSERT_ROOT_NAME));
+
+        // Sheet door, asset class.
+        let mut bytes = stored_zip(&[
+            (INSERT_ROOT_NAME, sheet_json.as_bytes()),
+            (asset_name.as_str(), payload),
+            (asset_stand_in.as_str(), b"the shadow copy, other bytes"),
+        ]);
+        patch_entry_name(&mut bytes, &asset_stand_in, &asset_name);
+        let path = dir.join("dup-asset.obdi");
+        std::fs::write(&path, &bytes).expect("write sheet asset witness");
+        let err = load_insert(&path).expect_err("a duplicated sheet asset refuses");
+        assert_eq!(err, duplicate_name_refusal(&asset_name));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

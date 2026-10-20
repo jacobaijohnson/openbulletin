@@ -19057,3 +19057,334 @@ fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
         "the conjoined-group witness took {elapsed:?}"
     );
 }
+
+#[test]
+fn r32b_glued_one_token_remainder_reads_the_sunday_it_names() {
+    // Round 32 (R32-B, F2 = review MAJOR-2): R31-C
+    // judged a remainder range on the header line's
+    // pre-cleaned tokens and re-cleaned a cut tail
+    // edge only when a second token stood in the
+    // range, so the one-token remainder left when a
+    // glued trailing group came off was judged on
+    // the token's FULL pre-cleaning. The witness:
+    // "Sunday(November 8, 2026)" — no space before
+    // the parenthesis is ordinary typing — left the
+    // remainder "Sunday" standing in the token
+    // "Sunday(November", was judged as
+    // "sunday(november", and read nothing at all.
+    // On the pre-R31-C tree (3722169) the line reads
+    // in-words Sunday plus the parenthesized
+    // November 8, and that reading is restored:
+    // the tail re-clean runs whenever the token is
+    // cut at the tail, one-token remainders
+    // included. Every reading below was taken from
+    // 3722169 through the public parser.
+    let text = "For Sunday: Sunday(November 8, 2026)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.named_weekday_mismatch, None);
+    assert_eq!(
+        c.for_sunday_in_words.as_deref(),
+        Some("Sunday(November 8, 2026)"),
+        "the witness: the Sunday stands in words"
+    );
+    assert_eq!(c.for_sunday_after_in_words, None);
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(8)));
+    assert_eq!(c.for_sunday_parenthesized_dates, vec![nov(8)]);
+    assert_eq!(
+        week_verdict(&c, Some(oct(25))),
+        WeekVerdict::DifferentSunday(nov(8)),
+        "the parenthesized date is named against the open bulletin"
+    );
+    assert_eq!(week_verdict(&c, None), WeekVerdict::NoSundayNamed);
+
+    // The family, generally: a bare Sunday glued
+    // to its group — any group the line's other
+    // machinery remembers or treats as garnish,
+    // lowercase, a separator standing in the glue,
+    // nested groups, a second group after the
+    // glued one, and a leading group (spaced or
+    // glued) standing before the glued Sunday.
+    // (line, remembered words, the line's
+    // parenthesized dates in written order, the
+    // verdict against the October 25 bulletin)
+    let cases: [(&str, &str, Vec<SimpleDate>, WeekVerdict); 18] = [
+        (
+            "Sunday(November 1)",
+            "Sunday(November 1)",
+            vec![nov(1)],
+            WeekVerdict::DifferentSunday(nov(1)),
+        ),
+        (
+            "Sunday(November 1, 2026)",
+            "Sunday(November 1, 2026)",
+            vec![nov(1)],
+            WeekVerdict::DifferentSunday(nov(1)),
+        ),
+        (
+            "Sunday(October 25)",
+            "Sunday(October 25)",
+            vec![oct(25)],
+            WeekVerdict::SundayInWords(oct(25)),
+        ),
+        (
+            "Sunday(October 25, 2026)",
+            "Sunday(October 25, 2026)",
+            vec![oct(25)],
+            WeekVerdict::SundayInWords(oct(25)),
+        ),
+        (
+            "Sunday(November 15, 2026)",
+            "Sunday(November 15, 2026)",
+            vec![nov(15)],
+            WeekVerdict::DifferentSunday(nov(15)),
+        ),
+        (
+            "Sunday(November 8)",
+            "Sunday(November 8)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "Sunday(Monday)",
+            "Sunday(Monday)",
+            vec![],
+            WeekVerdict::SundayInWords(oct(25)),
+        ),
+        (
+            "Sunday(October 32)",
+            "Sunday(October 32)",
+            vec![],
+            WeekVerdict::SundayInWords(oct(25)),
+        ),
+        (
+            "sunday(November 8, 2026)",
+            "sunday(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "Sunday,(November 8, 2026)",
+            "Sunday,(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "Sunday;(November 8, 2026)",
+            "Sunday;(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "Sunday((November 8, 2026))",
+            "Sunday((November 8, 2026))",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "Sunday(November 8, 2026).",
+            "Sunday(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "Sunday(November 8, 2026) (November 15, 2026)",
+            "Sunday(November 8, 2026) (November 15, 2026)",
+            vec![nov(8), nov(15)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "Sunday(November 8, 2026)(November 15, 2026)",
+            "Sunday(November 8, 2026)(November 15, 2026)",
+            vec![nov(8), nov(15)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "(November 1) Sunday(November 8, 2026)",
+            "(November 1) Sunday(November 8, 2026)",
+            vec![nov(1), nov(8)],
+            WeekVerdict::DifferentSunday(nov(1)),
+        ),
+        (
+            "(November 1)Sunday(November 8, 2026)",
+            "(November 1)Sunday(November 8, 2026)",
+            vec![nov(1), nov(8)],
+            WeekVerdict::DifferentSunday(nov(1)),
+        ),
+        (
+            "(October 25)Sunday(November 8, 2026)",
+            "(October 25)Sunday(November 8, 2026)",
+            vec![oct(25), nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+    ];
+    for (line, remembered, parens, verdict) in &cases {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date in the words alone");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(*remembered),
+            "{line}: the Sunday stands in words, as on 3722169"
+        );
+        assert_eq!(c.for_sunday_after_in_words, None, "{line}");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            parens.last().copied(),
+            "{line}: the last group stands as the parenthesized date"
+        );
+        assert_eq!(&c.for_sunday_parenthesized_dates, parens, "{line}");
+        assert_eq!(week_verdict(&c, Some(oct(25))), *verdict, "{line}");
+        assert_eq!(
+            week_verdict(&c, None),
+            WeekVerdict::NoSundayNamed,
+            "{line}: no bulletin date to read against"
+        );
+    }
+}
+
+#[test]
+fn r32b_glued_relative_twins_keep_their_readings() {
+    // The twins R32-B must not move: the spaced
+    // witness twin and every glued relative shape
+    // whose remainder holds more than one token
+    // read identically on 3722169 and on the
+    // R31-C tree, and read the same here. (line,
+    // the line's parenthesized dates, the verdict
+    // against the October 25 bulletin)
+    let in_words: [(&str, Vec<SimpleDate>, WeekVerdict); 9] = [
+        (
+            "Sunday (November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "next Sunday(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "next Sunday (November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "this Sunday(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "on Sunday(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "the Sunday(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "on the Sunday(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "on Sunday (November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "Sunday Monday(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+    ];
+    for (line, parens, verdict) in &in_words {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(*line),
+            "{line}: remembered as written, as before"
+        );
+        assert_eq!(c.for_sunday_after_in_words, None, "{line}");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            parens.last().copied(),
+            "{line}"
+        );
+        assert_eq!(&c.for_sunday_parenthesized_dates, parens, "{line}");
+        assert_eq!(week_verdict(&c, Some(oct(25))), *verdict, "{line}");
+        assert_eq!(week_verdict(&c, None), WeekVerdict::NoSundayNamed, "{line}");
+    }
+    // The Sunday-after shapes, glued and spaced:
+    // remembered in the after field, as before.
+    let after_words: [(&str, Vec<SimpleDate>, WeekVerdict); 4] = [
+        (
+            "Sunday after next Sunday(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "the Sunday after next Sunday(November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+        (
+            "Sunday after this Sunday(November 1, 2026)",
+            vec![nov(1)],
+            WeekVerdict::DifferentSunday(nov(1)),
+        ),
+        (
+            "the Sunday after next Sunday (November 8, 2026)",
+            vec![nov(8)],
+            WeekVerdict::DifferentSunday(nov(8)),
+        ),
+    ];
+    for (line, parens, verdict) in &after_words {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}");
+        assert_eq!(c.for_sunday_in_words, None, "{line}");
+        assert_eq!(
+            c.for_sunday_after_in_words.as_deref(),
+            Some(*line),
+            "{line}: remembered as written, as before"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            parens.last().copied(),
+            "{line}"
+        );
+        assert_eq!(&c.for_sunday_parenthesized_dates, parens, "{line}");
+        assert_eq!(week_verdict(&c, Some(oct(25))), *verdict, "{line}");
+        assert_eq!(week_verdict(&c, None), WeekVerdict::NoSundayNamed, "{line}");
+    }
+    // A longer word glued to the group is not a
+    // Sunday, on either tree: the in-range part of
+    // the token ("sundayx", "sundaymorning") is
+    // judged, not a prefix of it, and the line
+    // reads only the parenthesized date itself.
+    for line in [
+        "Sundayx(November 8, 2026)",
+        "Sundaymorning(November 8, 2026)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}");
+        assert_eq!(c.for_sunday_in_words, None, "{line}");
+        assert_eq!(c.for_sunday_after_in_words, None, "{line}");
+        assert_eq!(c.for_sunday_parenthesized_date, None, "{line}");
+        assert_eq!(c.for_sunday_parenthesized_dates, vec![], "{line}");
+    }
+    // A trailing weekday standing after the glued
+    // group names nothing, as on 3722169.
+    let text = "For Sunday: Sunday(November 8) Monday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.for_sunday_in_words, None);
+    assert_eq!(c.for_sunday_after_in_words, None);
+    assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
+}

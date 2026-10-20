@@ -721,15 +721,38 @@ fn relative_shape_words(
     }
     let t_last = t_past - 1;
     let head_cut = toks[t_first].0 < lo;
-    let tail_cut = toks[t_last].1 > hi && t_last > t_first;
+    // Round 32 (R32-B, F2): the tail edge is
+    // re-cleaned whenever the range cuts the token
+    // there, a one-token remainder included. R31-C
+    // gated the tail re-clean on a second token
+    // standing in the range, so the bare "Sunday"
+    // remainder left when a glued trailing group
+    // came off ("Sunday(November 8, 2026)") was
+    // judged on the token's full pre-cleaning
+    // ("sunday(november") and read nothing, where
+    // the pre-R31-C reader judged the remainder's
+    // own text. When the range's one token is cut
+    // at BOTH edges the head re-clean already holds
+    // exactly the in-range part, so no tail word
+    // stands beside it.
+    let tail_cut = toks[t_last].1 > hi && !(t_last == t_first && head_cut);
     let head: Option<String> = head_cut.then(|| group_token(&text[lo..toks[t_first].1.min(hi)]));
     let tail: Option<String> = tail_cut.then(|| group_token(&text[toks[t_last].0..hi]));
     let first_in = if head_cut { t_first + 1 } else { t_first };
-    let last_in = if tail_cut { t_last - 1 } else { t_last };
-    let (ne_lo, ne_hi) = if first_in <= last_in {
+    // The whole tokens between the cut edges, as
+    // the index range [first_in, past_in): a token
+    // cut at either edge contributes its re-cleaned
+    // part, never its pre-cleaning, and a one-token
+    // remainder has no whole token at all.
+    let past_in = if toks[t_last].1 > hi {
+        t_last
+    } else {
+        t_last + 1
+    };
+    let (ne_lo, ne_hi) = if first_in < past_in {
         (
             ne.partition_point(|&ti| ti < first_in),
-            ne.partition_point(|&ti| ti <= last_in),
+            ne.partition_point(|&ti| ti < past_in),
         )
     } else {
         let p = ne.partition_point(|&ti| ti < first_in);

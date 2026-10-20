@@ -525,15 +525,60 @@ fn install_dejavu(lib: &FontLibrary, detail: &serde_json::Value) -> Result<Vec<F
     Ok(installed)
 }
 
+/// The license file that lives beside a family's font
+/// files in each folder the install probe walks, in the
+/// probe's own order: OFL families carry OFL.txt,
+/// Apache families carry LICENSE.txt, and UFL families
+/// carry UFL.txt.
+const LICENSE_FETCH_FOLDERS: [(&str, &str); 3] = [
+    ("ofl", "OFL.txt"),
+    ("apache", "LICENSE.txt"),
+    ("ufl", "UFL.txt"),
+];
+
+/// Every license-text URL the fetch tries for one
+/// repository folder, in probe order (ofl, apache, ufl).
+fn license_fetch_urls(repo_id: &str) -> Vec<String> {
+    LICENSE_FETCH_FOLDERS
+        .iter()
+        .map(|(folder, file)| {
+            format!("https://raw.githubusercontent.com/google/fonts/main/{folder}/{repo_id}/{file}")
+        })
+        .collect()
+}
+
+/// The first license text `fetch` can read for one
+/// repository folder, trying each folder of
+/// `LICENSE_FETCH_FOLDERS` in turn. None when no folder
+/// answers: the caller falls back to the short note.
+fn fetch_license_text_with<F>(repo_id: &str, fetch: F) -> Option<String>
+where
+    F: Fn(&str) -> Result<String, String>,
+{
+    for url in license_fetch_urls(repo_id) {
+        if let Ok(text) = fetch(&url) {
+            return Some(text);
+        }
+    }
+    None
+}
+
 /// Write one family's license note beside its faces.
 /// `family_id` is the catalog id the install was asked
 /// for, and it names the note (see `license_note_name`);
 /// `repo_id` is the repository folder the family was
-/// actually found in, and it is used only to fetch the
-/// license text that lives beside the font files. The
-/// two differ exactly when a dashed family is found in
-/// its dash-less folder (foo-bar found in foobar/), and
-/// the note must be named for the family, not the
+/// actually found in, and it is used two ways: as the
+/// note's family name when the catalog detail lacks
+/// one, and to fetch the license text that lives beside
+/// the font files — the fetch tries the same folders
+/// the install probe walks (ofl, apache, and ufl, each
+/// with its own license file name; see
+/// `LICENSE_FETCH_FOLDERS`), so a family found under
+/// apache/ or ufl/ gets its full license text when one
+/// exists there, exactly as an ofl/ family does. The
+/// two ids differ exactly when a dashed family is found
+/// in its dash-less folder (foo-bar found in foobar/),
+/// and the note must be named for the family, not the
 /// folder: two distinct families can share one found
 /// folder name, and a note named for the folder would
 /// silently overwrite the other family's note.
@@ -543,21 +588,34 @@ fn write_license_note(
     repo_id: &str,
     detail: &serde_json::Value,
 ) {
+    write_license_note_with(lib, family_id, repo_id, detail, get_string);
+}
+
+/// `write_license_note` with the text fetch handed in:
+/// the seam the catalog tests drive, so the folder
+/// order and the full-text landing are pinned without
+/// a network.
+fn write_license_note_with<F>(
+    lib: &FontLibrary,
+    family_id: &str,
+    repo_id: &str,
+    detail: &serde_json::Value,
+    fetch: F,
+) where
+    F: Fn(&str) -> Result<String, String>,
+{
     let license = detail["license"].as_str().unwrap_or("unknown");
     let source = detail["source"].as_str().unwrap_or("Fontsource");
     let family = detail["family"].as_str().unwrap_or(repo_id);
-    // For Google-sourced OFL families the full license text lives in
-    // the google/fonts repo beside the font. Best effort: a failure
-    // leaves the note, which still names the license and its source.
-    let text = get_string(&format!(
-        "https://raw.githubusercontent.com/google/fonts/main/ofl/{repo_id}/OFL.txt"
-    ))
-    .ok()
-    .unwrap_or_else(|| {
-            format!(
-                "{family}\nLicense: {license}\nSource: {source}\nFull license text: see the family's entry in the Google Fonts catalog.\n"
-            )
-        });
+    // The full license text lives in the google/fonts
+    // repo beside the font files, in whichever license
+    // folder the family was found under. Best effort:
+    // a failure in every folder leaves the short note,
+    // which still names the family, license, and source.
+    let fallback = format!(
+        "{family}\nLicense: {license}\nSource: {source}\nFull license text: see the family's entry in the Google Fonts catalog.\n"
+    );
+    let text = fetch_license_text_with(repo_id, fetch).unwrap_or(fallback);
     let _ = std::fs::write(lib.dir().join(license_note_name(family_id)), text);
 }
 
@@ -578,8 +636,34 @@ fn write_license_note(
 /// folder (health audit S-4): separators and leading
 /// dots never reach the path, and the note always lands
 /// as one plain file inside the library.
+/// Sanitizing alone would still squash distinct ids
+/// onto one note — it keeps only the text after the
+/// last separator and strips leading dots, so "a/b/c"
+/// and "c" would both land as c-LICENSE.txt, and a
+/// later install would silently overwrite the earlier
+/// family's note (round 31, F7). When sanitizing
+/// changes the name at all, the note therefore also
+/// carries a short stable hash of the RAW id, after
+/// the LICENSE marker: c-LICENSE-<hash>.txt beside the
+/// plain c-LICENSE.txt. That hashed form is one a
+/// plain id can never produce (a plain name always
+/// ends in -LICENSE.txt), the hash is of the whole raw
+/// id so separator- and dot-differing ids hash apart,
+/// and the same raw id always hashes to the same name,
+/// so a repeat install lands on its one note again.
 fn license_note_name(family_id: &str) -> String {
-    crate::sanitize_file_name(&format!("{family_id}-LICENSE.txt"))
+    let raw_name = format!("{family_id}-LICENSE.txt");
+    let sanitized = crate::sanitize_file_name(&raw_name);
+    if sanitized == raw_name {
+        return sanitized;
+    }
+    let hash = ob_model::sha256_hex(family_id.as_bytes());
+    let short_hash: String = hash.chars().take(16).collect();
+    let stem = sanitized
+        .strip_suffix("-LICENSE.txt")
+        .unwrap_or(&sanitized)
+        .to_string();
+    format!("{stem}-LICENSE-{short_hash}.txt")
 }
 
 /// The Church Starter Pack: metric twins for the fonts church
@@ -716,19 +800,47 @@ mod tests {
             );
             assert!(!name.starts_with('.'), "no leading dots in {name:?}");
             assert!(
-                name.ends_with("-LICENSE.txt") || name == "font.ttf",
+                name.contains("-LICENSE") && name.ends_with(".txt"),
                 "{name:?}"
             );
         }
         assert_eq!(license_note_name("lato"), "lato-LICENSE.txt");
-        // End to end through the note writer itself: the
-        // note (best-effort license text and all) lands
-        // inside the library, and nothing appears outside.
+        // F7 pin (round 31): sanitizing must not squash
+        // distinct ids onto one note. The dot-differing
+        // pair lands as two distinct names — the hostile
+        // form carries the raw id's hash, the plain form
+        // keeps its plain name — and each name is stable
+        // across calls, so a repeat install of the same
+        // id lands on its one note again.
+        assert_eq!(
+            license_note_name("../../escaped-note"),
+            "escaped-note-LICENSE-9c2b070ec7208816.txt"
+        );
+        assert_eq!(
+            license_note_name("escaped-note"),
+            "escaped-note-LICENSE.txt"
+        );
+        assert_eq!(
+            license_note_name("../../escaped-note"),
+            license_note_name("../../escaped-note"),
+            "the same id names the same note every time"
+        );
+        // End to end through the note writer itself: both
+        // ids' notes (best-effort license text and all)
+        // land inside the library as two distinct files,
+        // each naming its own family, and nothing appears
+        // outside.
         let dir = std::env::temp_dir().join(format!("ob-fonts-note-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let lib = crate::FontLibrary::open(dir.clone()).expect("library opens");
-        let detail = serde_json::json!({"license": "OFL-1.1", "family": "X", "source": "test"});
-        write_license_note(&lib, "../../escaped-note", "escaped-note", &detail);
+        let hostile_detail = serde_json::json!({
+            "license": "OFL-1.1", "family": "Escaped Note", "source": "test"
+        });
+        let plain_detail = serde_json::json!({
+            "license": "OFL-1.1", "family": "Plain Escaped Note", "source": "test"
+        });
+        write_license_note(&lib, "../../escaped-note", "escaped-note", &hostile_detail);
+        write_license_note(&lib, "escaped-note", "escaped-note", &plain_detail);
         let mut landed: Vec<String> = std::fs::read_dir(&dir)
             .expect("read library")
             .flatten()
@@ -737,16 +849,190 @@ mod tests {
         landed.sort();
         assert_eq!(
             landed,
-            vec!["escaped-note-LICENSE.txt".to_string()],
-            "one plain note file inside the library"
+            vec![
+                "escaped-note-LICENSE-9c2b070ec7208816.txt".to_string(),
+                "escaped-note-LICENSE.txt".to_string(),
+            ],
+            "two distinct plain note files inside the library"
+        );
+        let hostile_note =
+            std::fs::read_to_string(dir.join("escaped-note-LICENSE-9c2b070ec7208816.txt"))
+                .expect("the hostile id's note is on disk");
+        let plain_note = std::fs::read_to_string(dir.join("escaped-note-LICENSE.txt"))
+            .expect("the plain id's note is on disk");
+        assert!(
+            hostile_note.contains("Escaped Note") && !hostile_note.contains("Plain"),
+            "the hostile id's note names its own family: {hostile_note}"
         );
         assert!(
-            !dir.parent()
-                .expect("parent")
-                .join("escaped-note-LICENSE.txt")
-                .exists(),
-            "nothing was written outside the library"
+            plain_note.contains("Plain Escaped Note"),
+            "the plain id's note names its own family: {plain_note}"
         );
+        for name in &landed {
+            assert!(
+                !dir.parent().expect("parent").join(name).exists(),
+                "nothing was written outside the library ({name})"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn separator_differing_ids_keep_both_license_notes() {
+        // F7 pin (round 31): "a/b/c" and "c" sanitized to
+        // the same base before this batch, so the second
+        // install silently overwrote the first's note.
+        // They now land as two distinct notes, each
+        // carrying its own family's contents, and a
+        // repeat install of the same id adds no third.
+        assert_eq!(license_note_name("a/b/c"), "c-LICENSE-d76a7b72669c9cec.txt");
+        assert_eq!(license_note_name("c"), "c-LICENSE.txt");
+        assert_ne!(license_note_name("a/b/c"), license_note_name("c"));
+        assert_ne!(
+            license_note_name("a\\b\\c"),
+            license_note_name("a/b/c"),
+            "backslash-differing ids hash apart too"
+        );
+        let dir = std::env::temp_dir().join(format!("ob-fonts-slash-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = crate::FontLibrary::open(dir.clone()).expect("library opens");
+        let slash_detail = serde_json::json!({
+            "license": "OFL-1.1", "family": "Slash Family", "source": "test"
+        });
+        let plain_detail = serde_json::json!({
+            "license": "OFL-1.1", "family": "Cee Family", "source": "test"
+        });
+        write_license_note(&lib, "a/b/c", "c", &slash_detail);
+        write_license_note(&lib, "c", "c", &plain_detail);
+        // The same id installed twice lands on the same
+        // single note name: no duplicates accumulate.
+        write_license_note(&lib, "a/b/c", "c", &slash_detail);
+        let mut landed: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read library")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        landed.sort();
+        assert_eq!(
+            landed,
+            vec![
+                "c-LICENSE-d76a7b72669c9cec.txt".to_string(),
+                "c-LICENSE.txt".to_string(),
+            ],
+            "two distinct notes, and the repeat added none"
+        );
+        let slash_note = std::fs::read_to_string(dir.join("c-LICENSE-d76a7b72669c9cec.txt"))
+            .expect("the slash id's note is on disk");
+        let plain_note = std::fs::read_to_string(dir.join("c-LICENSE.txt"))
+            .expect("the plain id's note is on disk");
+        assert!(
+            slash_note.contains("Slash Family"),
+            "the slash id's note names its own family: {slash_note}"
+        );
+        assert!(
+            plain_note.contains("Cee Family"),
+            "the plain id's note names its own family: {plain_note}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn license_fetch_tries_the_probed_folders_and_lands_the_full_text() {
+        // F10 pin (round 31): the license fetch tries the
+        // same folders the install probe walks — ofl,
+        // apache, ufl, each with its own license file —
+        // so an apache- or ufl-folder family lands the
+        // FULL license text from its folder, not the
+        // short catalog note, and an ofl family still
+        // lands its full text on the first try.
+        let dir = std::env::temp_dir().join(format!("ob-fonts-fetch-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = crate::FontLibrary::open(dir.clone()).expect("library opens");
+
+        // Apache: ofl misses, apache answers in full.
+        let attempted = std::cell::RefCell::new(Vec::new());
+        let apache_detail = serde_json::json!({
+            "license": "Apache-2.0", "family": "Apache Family", "source": "test"
+        });
+        write_license_note_with(
+            &lib,
+            "apache-family",
+            "apache-repo",
+            &apache_detail,
+            |url| {
+                attempted.borrow_mut().push(url.to_string());
+                if url
+                    == "https://raw.githubusercontent.com/google/fonts/main/apache/apache-repo/LICENSE.txt"
+                {
+                    Ok("THE FULL APACHE LICENSE TEXT".to_string())
+                } else {
+                    Err("not there".to_string())
+                }
+            },
+        );
+        let attempted_urls = attempted.borrow().clone();
+        assert_eq!(
+            attempted_urls,
+            vec![
+                "https://raw.githubusercontent.com/google/fonts/main/ofl/apache-repo/OFL.txt"
+                    .to_string(),
+                "https://raw.githubusercontent.com/google/fonts/main/apache/apache-repo/LICENSE.txt"
+                    .to_string(),
+            ],
+            "ofl is tried first, then apache, and the fetch stops at the hit"
+        );
+        let apache_note = std::fs::read_to_string(dir.join("apache-family-LICENSE.txt"))
+            .expect("the apache family's note is on disk");
+        assert_eq!(apache_note, "THE FULL APACHE LICENSE TEXT");
+
+        // UFL: ofl and apache both miss, ufl answers.
+        let attempted = std::cell::RefCell::new(Vec::new());
+        let ufl_detail = serde_json::json!({
+            "license": "UFL-1.0", "family": "Ufl Family", "source": "test"
+        });
+        write_license_note_with(&lib, "ufl-family", "ufl-repo", &ufl_detail, |url| {
+            attempted.borrow_mut().push(url.to_string());
+            if url == "https://raw.githubusercontent.com/google/fonts/main/ufl/ufl-repo/UFL.txt" {
+                Ok("THE FULL UFL LICENSE TEXT".to_string())
+            } else {
+                Err("not there".to_string())
+            }
+        });
+        let attempted_urls = attempted.borrow().clone();
+        assert_eq!(
+            attempted_urls.len(),
+            3,
+            "all three folders tried: {attempted_urls:?}"
+        );
+        assert!(
+            attempted_urls[2].ends_with("/ufl/ufl-repo/UFL.txt"),
+            "ufl is tried last, with UFL.txt: {attempted_urls:?}"
+        );
+        let ufl_note = std::fs::read_to_string(dir.join("ufl-family-LICENSE.txt"))
+            .expect("the ufl family's note is on disk");
+        assert_eq!(ufl_note, "THE FULL UFL LICENSE TEXT");
+
+        // OFL: the first folder answers, as before.
+        let attempted = std::cell::RefCell::new(Vec::new());
+        let ofl_detail = serde_json::json!({
+            "license": "OFL-1.1", "family": "Ofl Family", "source": "test"
+        });
+        write_license_note_with(&lib, "ofl-family", "ofl-repo", &ofl_detail, |url| {
+            attempted.borrow_mut().push(url.to_string());
+            if url == "https://raw.githubusercontent.com/google/fonts/main/ofl/ofl-repo/OFL.txt" {
+                Ok("THE FULL OFL LICENSE TEXT".to_string())
+            } else {
+                Err("not there".to_string())
+            }
+        });
+        assert_eq!(
+            attempted.borrow().len(),
+            1,
+            "an ofl hit ends the fetch on the first try"
+        );
+        let ofl_note = std::fs::read_to_string(dir.join("ofl-family-LICENSE.txt"))
+            .expect("the ofl family's note is on disk");
+        assert_eq!(ofl_note, "THE FULL OFL LICENSE TEXT");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

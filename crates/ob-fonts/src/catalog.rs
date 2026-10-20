@@ -356,7 +356,7 @@ pub fn install(lib: &FontLibrary, id: &str) -> Result<Vec<FontInfo>, String> {
     if installed.is_empty() {
         return Err(format!("no downloadable faces found for {id}"));
     }
-    write_license_note(lib, &repo_id, &detail);
+    write_license_note(lib, id, &repo_id, &detail);
     Ok(installed)
 }
 
@@ -525,7 +525,24 @@ fn install_dejavu(lib: &FontLibrary, detail: &serde_json::Value) -> Result<Vec<F
     Ok(installed)
 }
 
-fn write_license_note(lib: &FontLibrary, repo_id: &str, detail: &serde_json::Value) {
+/// Write one family's license note beside its faces.
+/// `family_id` is the catalog id the install was asked
+/// for, and it names the note (see `license_note_name`);
+/// `repo_id` is the repository folder the family was
+/// actually found in, and it is used only to fetch the
+/// license text that lives beside the font files. The
+/// two differ exactly when a dashed family is found in
+/// its dash-less folder (foo-bar found in foobar/), and
+/// the note must be named for the family, not the
+/// folder: two distinct families can share one found
+/// folder name, and a note named for the folder would
+/// silently overwrite the other family's note.
+fn write_license_note(
+    lib: &FontLibrary,
+    family_id: &str,
+    repo_id: &str,
+    detail: &serde_json::Value,
+) {
     let license = detail["license"].as_str().unwrap_or("unknown");
     let source = detail["source"].as_str().unwrap_or("Fontsource");
     let family = detail["family"].as_str().unwrap_or(repo_id);
@@ -541,19 +558,28 @@ fn write_license_note(lib: &FontLibrary, repo_id: &str, detail: &serde_json::Val
                 "{family}\nLicense: {license}\nSource: {source}\nFull license text: see the family's entry in the Google Fonts catalog.\n"
             )
         });
-    let _ = std::fs::write(lib.dir().join(license_note_name(repo_id)), text);
+    let _ = std::fs::write(lib.dir().join(license_note_name(family_id)), text);
 }
 
-/// The license note's file name for one catalog family:
-/// the repository id is remote-supplied (it comes from
+/// The license note's file name for one catalog family,
+/// from the family's catalog id — not the repository
+/// folder id it was found under. The two differ for a
+/// dashed family found in its dash-less folder
+/// (foo-bar in foobar/), and that family must not share
+/// a note file with a family whose own id is the
+/// dash-less name (foobar): naming the note from the
+/// catalog id keeps the two apart, foo-bar-LICENSE.txt
+/// beside foobar-LICENSE.txt. Ordinary ids are
+/// unchanged (lato → lato-LICENSE.txt).
+/// The catalog id is remote-supplied (it comes from
 /// the catalog server's answer), so the name goes
 /// through the same `sanitize_file_name` the sibling
 /// font writes use before it is joined to the library
 /// folder (health audit S-4): separators and leading
 /// dots never reach the path, and the note always lands
 /// as one plain file inside the library.
-fn license_note_name(repo_id: &str) -> String {
-    crate::sanitize_file_name(&format!("{repo_id}-LICENSE.txt"))
+fn license_note_name(family_id: &str) -> String {
+    crate::sanitize_file_name(&format!("{family_id}-LICENSE.txt"))
 }
 
 /// The Church Starter Pack: metric twins for the fonts church
@@ -702,7 +728,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let lib = crate::FontLibrary::open(dir.clone()).expect("library opens");
         let detail = serde_json::json!({"license": "OFL-1.1", "family": "X", "source": "test"});
-        write_license_note(&lib, "../../escaped-note", &detail);
+        write_license_note(&lib, "../../escaped-note", "escaped-note", &detail);
         let mut landed: Vec<String> = std::fs::read_dir(&dir)
             .expect("read library")
             .flatten()
@@ -720,6 +746,47 @@ mod tests {
                 .join("escaped-note-LICENSE.txt")
                 .exists(),
             "nothing was written outside the library"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dashed_and_squashed_twin_families_keep_both_license_notes() {
+        // F5 pin (round 30, MINOR-4 witness), route:
+        // collision-free naming. A dashed family
+        // (foo-bar) is found in the repository only in
+        // its dash-less folder form (foobar), and a
+        // second family whose own id is foobar is found
+        // in that same folder form. Both installs reach
+        // the note writer with repo_id "foobar"; the
+        // notes are named from the requested catalog ids
+        // instead, so both notes stay on disk, each
+        // naming its own family — the second install
+        // does not silently overwrite the first's note.
+        assert_eq!(license_note_name("foo-bar"), "foo-bar-LICENSE.txt");
+        assert_eq!(license_note_name("foobar"), "foobar-LICENSE.txt");
+        let dir = std::env::temp_dir().join(format!("ob-fonts-twin-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = crate::FontLibrary::open(dir.clone()).expect("library opens");
+        let dashed = serde_json::json!({
+            "license": "OFL-1.1", "family": "Foo Bar", "source": "test"
+        });
+        let squashed = serde_json::json!({
+            "license": "OFL-1.1", "family": "Foobar", "source": "test"
+        });
+        write_license_note(&lib, "foo-bar", "foobar", &dashed);
+        write_license_note(&lib, "foobar", "foobar", &squashed);
+        let dashed_note = std::fs::read_to_string(dir.join("foo-bar-LICENSE.txt"))
+            .expect("the dashed family's note is on disk");
+        let squashed_note = std::fs::read_to_string(dir.join("foobar-LICENSE.txt"))
+            .expect("the squashed family's note is on disk");
+        assert!(
+            dashed_note.contains("Foo Bar"),
+            "the dashed family's note names its own family: {dashed_note}"
+        );
+        assert!(
+            squashed_note.contains("Foobar"),
+            "the squashed family's note names its own family: {squashed_note}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

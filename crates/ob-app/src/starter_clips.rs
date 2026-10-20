@@ -90,13 +90,27 @@ pub fn starter_manifest() -> Option<StarterManifest> {
 /// public-domain and CC0 pieces, and each piece's own
 /// record (below) states its license; one collection-wide
 /// word would flatten that.
+///
+/// The claim that each piece's record is read from the
+/// shipped manifest is made only when it is true: the
+/// manifest is there and every starter piece has a row
+/// in it. In the fallback (no manifest, or a piece with
+/// no row) the note says only what is true — that the
+/// set is bundled with the program.
 pub fn collection_notes(manifest: Option<&StarterManifest>) -> ob_clips::CollectionNotes {
     let added = manifest.map(|m| m.retrieved.clone()).unwrap_or_default();
+    let every_piece_backed =
+        manifest.is_some_and(|m| STARTER_FILES.iter().all(|(name, _)| m.row(name).is_some()));
+    let source = if every_piece_backed {
+        "OpenBulletin starter set (bundled with the program). Each piece's own \
+         record — its source page, author, and license — is read from the \
+         manifest shipped with the program and kept with the piece."
+            .to_string()
+    } else {
+        "OpenBulletin starter set (bundled with the program).".to_string()
+    };
     ob_clips::CollectionNotes {
-        source: "OpenBulletin starter set (bundled with the program). Each piece's own \
-                 record — its source page, author, and license — is read from the \
-                 manifest shipped with the program and kept with the piece."
-            .into(),
+        source,
         license: String::new(),
         added,
         creator: String::new(),
@@ -234,6 +248,58 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collection_note_without_a_manifest_does_not_claim_per_piece_manifest_records() {
+        // F4(a) pin: with no manifest, no piece's record
+        // was read from one, and the collection note must
+        // not say it was.
+        let notes = collection_notes(None);
+        assert!(
+            !notes.source.contains("is read from the manifest"),
+            "the fallback note overclaims: {}",
+            notes.source
+        );
+        assert!(
+            !notes.source.contains("Each piece's own record"),
+            "the fallback note overclaims: {}",
+            notes.source
+        );
+    }
+
+    #[test]
+    fn collection_note_with_a_missing_row_does_not_claim_per_piece_manifest_records() {
+        // F4(a) pin: a manifest that lacks a row for one
+        // starter piece does not back every piece, so the
+        // collection note must not claim per-piece
+        // manifest records.
+        let mut manifest = starter_manifest().expect("the shipped manifest parses");
+        manifest.items.retain(|p| p.file != "cross.svg");
+        assert!(manifest.row("cross.svg").is_none());
+        let notes = collection_notes(Some(&manifest));
+        assert!(
+            !notes.source.contains("is read from the manifest"),
+            "the incomplete-manifest note overclaims: {}",
+            notes.source
+        );
+    }
+
+    #[test]
+    fn collection_note_with_the_complete_manifest_keeps_its_wording() {
+        // F4(a) pin: the shipped-manifest happy path
+        // keeps the current wording — every piece does
+        // have a row, so the claim is true as written.
+        let manifest = starter_manifest().expect("the shipped manifest parses");
+        let notes = collection_notes(Some(&manifest));
+        assert!(
+            notes
+                .source
+                .contains("is read from the manifest shipped with the program"),
+            "the complete-manifest note keeps its wording: {}",
+            notes.source
+        );
+        assert_eq!(notes.added, manifest.retrieved);
     }
 
     #[test]

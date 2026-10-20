@@ -375,6 +375,17 @@ impl ClipLibrary {
             .map_err(|e| format!("cannot create the collection folder: {e}"))?;
         let mut report = AddReport::default();
         let mut used_names: Vec<String> = Vec::new();
+        // The records of the pieces that actually land,
+        // keyed by the name each piece lands under: a
+        // piece's record is paired with its landed name
+        // here, while the landing is known, so it follows
+        // the piece through dedup renaming (two pieces
+        // sharing a basename land under different names,
+        // each with its own record) and through metafile
+        // conversion (a converted piece's record is kept
+        // under its converted name).
+        let mut landed_records: std::collections::BTreeMap<String, CollectionNotes> =
+            std::collections::BTreeMap::new();
         for (file_name, bytes) in files {
             let base = ob_fonts::sanitize_file_name(file_name);
             match classify_name(&base) {
@@ -386,6 +397,9 @@ impl ClipLibrary {
                     let landed = unique_name(&target, &base, &mut used_names);
                     std::fs::write(target.join(&landed), bytes)
                         .map_err(|e| format!("cannot save {landed} into the library: {e}"))?;
+                    if let Some(record) = piece_notes.get(file_name) {
+                        landed_records.insert(landed.clone(), record.clone());
+                    }
                     report.added += 1;
                 }
                 Candidate::Metafile => match convert.and_then(|c| c(&base, bytes)) {
@@ -394,6 +408,9 @@ impl ClipLibrary {
                         let landed = unique_name(&target, &format!("{stem}.png"), &mut used_names);
                         std::fs::write(target.join(&landed), &png)
                             .map_err(|e| format!("cannot save {landed} into the library: {e}"))?;
+                        if let Some(record) = piece_notes.get(file_name) {
+                            landed_records.insert(landed.clone(), record.clone());
+                        }
                         report.converted += 1;
                     }
                     None => report.skipped_metafiles += 1,
@@ -411,14 +428,12 @@ impl ClipLibrary {
         if !piece_notes.is_empty() {
             // Only the records of pieces that actually
             // came through the funnel are written, keyed
-            // by the name the piece lands under.
-            let landed: std::collections::BTreeMap<String, CollectionNotes> = piece_notes
-                .iter()
-                .filter(|(file, _)| files.iter().any(|(name, _)| name == *file))
-                .map(|(file, notes)| (ob_fonts::sanitize_file_name(file), notes.clone()))
-                .collect();
-            if !landed.is_empty() {
-                let text = serde_json::to_string_pretty(&landed)
+            // by the name the piece lands under (the
+            // `landed_records` map built in the loop
+            // above, where each landing was paired with
+            // the record of the piece that landed there).
+            if !landed_records.is_empty() {
+                let text = serde_json::to_string_pretty(&landed_records)
                     .map_err(|e| format!("cannot write the pieces' records: {e}"))?;
                 std::fs::write(target.join("provenance.json"), text)
                     .map_err(|e| format!("cannot write the pieces' records: {e}"))?;
@@ -1044,6 +1059,99 @@ mod tests {
         // the collection's notes.
         assert_eq!(set.piece_notes("star.svg"), set.notes.as_ref());
         assert!(!set.pieces.contains_key("ghost.svg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_basename_pieces_each_carry_their_own_record() {
+        // F4(b) pin (round 30, RT30-2 witness): two
+        // pieces share the basename dup.png but arrive
+        // under different paths with different records.
+        // They land as dup.png and dup-2.png, and each
+        // landed piece must carry its OWN record — the
+        // first piece's record is not overwritten by the
+        // second's, and the second piece is not left
+        // recordless.
+        let dir = temp_dir("dup-basename");
+        let lib = ClipLibrary::open(dir.clone()).expect("open");
+        let alice = CollectionNotes {
+            source: "alice-page".into(),
+            license: "CC0".into(),
+            added: "2026-10-16".into(),
+            creator: "Alice".into(),
+        };
+        let bob = CollectionNotes {
+            source: "bob-page".into(),
+            license: "Public Domain".into(),
+            added: "2026-10-16".into(),
+            creator: "Bob".into(),
+        };
+        let mut pieces = std::collections::BTreeMap::new();
+        pieces.insert("a/dup.png".to_string(), alice.clone());
+        pieces.insert("b/dup.png".to_string(), bob.clone());
+        let files = vec![
+            ("a/dup.png".to_string(), tiny_png()),
+            ("b/dup.png".to_string(), tiny_png()),
+        ];
+        let report = lib
+            .add_collection_with_piece_notes(
+                "Dup pack",
+                &files,
+                &CollectionNotes::default(),
+                &pieces,
+                None,
+            )
+            .expect("add");
+        assert_eq!(report.added, 2);
+        let set = lib.collection("Dup pack").expect("collection");
+        assert_eq!(set.items.len(), 2);
+        let first = set.piece_notes("dup.png").expect("first piece's record");
+        assert_eq!(first.creator, "Alice");
+        assert_eq!(first.license, "CC0");
+        assert_eq!(first.source, "alice-page");
+        assert_eq!(first, &alice);
+        let second = set.piece_notes("dup-2.png").expect("second piece's record");
+        assert_eq!(second.creator, "Bob");
+        assert_eq!(second.license, "Public Domain");
+        assert_eq!(second.source, "bob-page");
+        assert_eq!(second, &bob);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_converted_pieces_record_is_kept_under_its_converted_name() {
+        // F4(b) pin (round 30, RT30-2 witness): a piece
+        // converted from a metafile (art.wmf lands as
+        // art.png) keeps its record, keyed by the
+        // converted name it lands under, not the
+        // pre-conversion name.
+        let dir = temp_dir("converted-record");
+        let lib = ClipLibrary::open(dir.clone()).expect("open");
+        let record = CollectionNotes {
+            source: "art-page".into(),
+            license: "CC0".into(),
+            added: "2026-10-16".into(),
+            creator: "Carol".into(),
+        };
+        let mut pieces = std::collections::BTreeMap::new();
+        pieces.insert("art.wmf".to_string(), record.clone());
+        let convert = |_name: &str, _bytes: &[u8]| Some(tiny_png());
+        let files = vec![("art.wmf".to_string(), b"wmf".to_vec())];
+        let report = lib
+            .add_collection_with_piece_notes(
+                "Old art",
+                &files,
+                &CollectionNotes::default(),
+                &pieces,
+                Some(&convert),
+            )
+            .expect("add");
+        assert_eq!(report.converted, 1);
+        let set = lib.collection("Old art").expect("collection");
+        assert_eq!(set.items.len(), 1);
+        assert_eq!(set.items[0].file_name, "art.png");
+        assert_eq!(set.piece_notes("art.png"), Some(&record));
+        assert!(!set.pieces.contains_key("art.wmf"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

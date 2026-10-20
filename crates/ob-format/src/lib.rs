@@ -778,6 +778,21 @@ fn duplicate_name_refusal(name: &str) -> String {
 /// twice in that shape have always loaded, folding to
 /// one record (round 4, RT-2). What refuses is a name
 /// whose copies disagree: the shadow shape.
+///
+/// One refinement for the ROOT names (round 31, F1):
+/// checksum and sizes are directory CLAIMS, and a
+/// CRC32 can be forged — two different payloads of
+/// the same length can carry the same CRC32 — so for
+/// `document.json` / `insert.json` a repeat whose
+/// facts match is not yet an exact repeat. The walks
+/// below compare the copies' decompressed payload
+/// bytes themselves (see `record_spot` and
+/// `payload_bytes_in` / `payload_bytes_file`); only
+/// byte-identical payloads count as exact, and
+/// payloads that cannot be read back and proven
+/// identical refuse with the same words. Assets keep
+/// the facts-only treatment here: their bytes are
+/// sha256-checked against the entry name downstream.
 fn note_read_name(
     seen: &mut HashMap<String, (u32, u32, u32)>,
     name: &str,
@@ -805,6 +820,178 @@ fn record_facts(header: &[u8]) -> (u32, u32, u32) {
     (field(16), field(20), field(24))
 }
 
+/// Where one central record's entry payload stands and
+/// how it is packed: the compression method, the
+/// compressed and uncompressed sizes, and the local
+/// header's offset — the sizes and offset resolved
+/// through the record's zip64 extra field wherever a
+/// plain field carries the `0xFFFF…` sentinel, so for
+/// a root name the PAYLOAD is the authority, never the
+/// (possibly sentinel) size fields (round 31, F1).
+#[derive(Clone, Copy)]
+struct EntrySpot {
+    method: u16,
+    comp_size: u64,
+    uncomp_size: u64,
+    local_offset: u64,
+}
+
+/// Read one central record's spot out of its fixed
+/// header and its extra field. The zip64 extra field
+/// (id 0x0001) carries its values in a fixed order —
+/// uncompressed size, compressed size, local offset,
+/// disk number — one per plain field standing at its
+/// sentinel, so the walk consumes exactly those.
+fn record_spot(header: &[u8], extra: &[u8]) -> EntrySpot {
+    let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap_or([0; 4]));
+    let comp32 = field(20);
+    let uncomp32 = field(24);
+    let local32 = field(42);
+    let disk16 = u16::from_le_bytes([header[34], header[35]]);
+    let mut comp_size = u64::from(comp32);
+    let mut uncomp_size = u64::from(uncomp32);
+    let mut local_offset = u64::from(local32);
+    if comp32 == u32::MAX || uncomp32 == u32::MAX || local32 == u32::MAX || disk16 == u16::MAX {
+        let mut at = 0usize;
+        while at + 4 <= extra.len() {
+            let id = u16::from_le_bytes([extra[at], extra[at + 1]]);
+            let size = usize::from(u16::from_le_bytes([extra[at + 2], extra[at + 3]]));
+            let data = &extra[at + 4..(at + 4 + size).min(extra.len())];
+            if id == 0x0001 {
+                let mut pos = 0usize;
+                let take = |data: &[u8], pos: &mut usize| -> u64 {
+                    let value =
+                        u64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap_or([0; 8]));
+                    *pos += 8;
+                    value
+                };
+                if uncomp32 == u32::MAX && pos + 8 <= data.len() {
+                    uncomp_size = take(data, &mut pos);
+                }
+                if comp32 == u32::MAX && pos + 8 <= data.len() {
+                    comp_size = take(data, &mut pos);
+                }
+                if local32 == u32::MAX && pos + 8 <= data.len() {
+                    local_offset = take(data, &mut pos);
+                }
+                break;
+            }
+            at += 4 + size;
+        }
+    }
+    EntrySpot {
+        method: u16::from_le_bytes([header[10], header[11]]),
+        comp_size,
+        uncomp_size,
+        local_offset,
+    }
+}
+
+/// Decompress one entry's raw data region into its
+/// payload bytes, under the JSON cap: stored bytes are
+/// the payload as they stand; deflated bytes inflate
+/// through the raw deflate stream. None when the
+/// method is one this loader does not read, when the
+/// stream does not inflate, or when the payload does
+/// not weigh what its directory record declares — in
+/// each case the copy's bytes cannot be proven, so it
+/// cannot count as an exact repeat (round 31, F1).
+fn payload_from_raw(spot: &EntrySpot, raw: &[u8]) -> Option<Vec<u8>> {
+    match spot.method {
+        0 => {
+            if raw.len() as u64 == spot.uncomp_size {
+                Some(raw.to_vec())
+            } else {
+                None
+            }
+        }
+        8 => {
+            let mut decoder = flate2::read::DeflateDecoder::new(raw);
+            let mut out = Vec::new();
+            decoder
+                .by_ref()
+                .take(MAX_JSON_BYTES + 1)
+                .read_to_end(&mut out)
+                .ok()?;
+            if out.len() as u64 == spot.uncomp_size {
+                Some(out)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// One root entry's payload bytes out of the container
+/// standing in `bytes`, located from its central
+/// record's spot: the local header at the spot's
+/// offset names the data region that follows it. The
+/// archive reader is never involved (round 31, F1):
+/// its CRC check would refuse a forged-CRC copy in
+/// the reader's own words before the payloads could
+/// be compared, and it is the comparison — not the
+/// reader — that judges a repeat exact.
+fn payload_bytes_in(bytes: &[u8], spot: &EntrySpot) -> Option<Vec<u8>> {
+    let local = spot.local_offset as usize;
+    if local + 30 > bytes.len() || !bytes[local..].starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let name_len = usize::from(u16::from_le_bytes([bytes[local + 26], bytes[local + 27]]));
+    let extra_len = usize::from(u16::from_le_bytes([bytes[local + 28], bytes[local + 29]]));
+    let data_start = local + 30 + name_len + extra_len;
+    let data_end = data_start.checked_add(spot.comp_size as usize)?;
+    if data_end > bytes.len() {
+        return None;
+    }
+    payload_from_raw(spot, &bytes[data_start..data_end])
+}
+
+/// The file twin of `payload_bytes_in`: the same local
+/// header and data region read at their offsets in
+/// the file at hand.
+fn payload_bytes_file(file: &mut std::fs::File, spot: &EntrySpot) -> Option<Vec<u8>> {
+    if spot.comp_size > MAX_JSON_BYTES {
+        return None;
+    }
+    let mut local = [0u8; 30];
+    read_at(file, spot.local_offset, &mut local)?;
+    if !local.starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let name_len = u64::from(u16::from_le_bytes([local[26], local[27]]));
+    let extra_len = u64::from(u16::from_le_bytes([local[28], local[29]]));
+    let data_start = spot.local_offset.checked_add(30 + name_len + extra_len)?;
+    let mut raw = vec![0u8; spot.comp_size as usize];
+    read_at(file, data_start, &mut raw)?;
+    payload_from_raw(spot, &raw)
+}
+
+/// Judge a repeat of the root name against its FIRST
+/// copy: exact only when both copies' payload bytes
+/// are identical (round 31, F1). `first_payload` caches
+/// the first copy's payload across further repeats, so
+/// each copy past the first is read once and the first
+/// is read once however many copies stand. Answers
+/// true when the copies disagree (or when either
+/// payload cannot be read back to be proven the same).
+fn root_repeat_disagrees(
+    first_payload: &mut Option<Option<Vec<u8>>>,
+    current_payload: Option<Vec<u8>>,
+    read_first: impl FnOnce() -> Option<Vec<u8>>,
+) -> bool {
+    if first_payload.is_none() {
+        *first_payload = Some(read_first());
+    }
+    match (
+        first_payload.as_ref().and_then(|p| p.as_ref()),
+        &current_payload,
+    ) {
+        (Some(first_bytes), Some(current_bytes)) => first_bytes != current_bytes,
+        _ => true,
+    }
+}
+
 /// Walk the central directory records standing in
 /// `bytes` from `cd_start` to `dir_end` — one
 /// candidate's directory, as the count walk walks it —
@@ -815,6 +1002,8 @@ fn record_facts(header: &[u8]) -> (u32, u32, u32) {
 /// archive reader's error to report, in its own words.
 fn duplicate_read_name_in(bytes: &[u8], cd_start: u64, dir_end: u64, root: &str) -> Option<String> {
     let mut seen: HashMap<String, (u32, u32, u32)> = HashMap::new();
+    let mut first_root: Option<EntrySpot> = None;
+    let mut first_root_payload: Option<Option<Vec<u8>>> = None;
     let mut at = cd_start;
     let mut walked = 0usize;
     while at < dir_end && walked <= MAX_ENTRIES {
@@ -831,9 +1020,30 @@ fn duplicate_read_name_in(bytes: &[u8], cd_start: u64, dir_end: u64, root: &str)
         if name_end > bytes.len() {
             break;
         }
+        let extra_start = name_end;
+        let extra_end = extra_start + extra_len as usize;
+        if extra_end > bytes.len() {
+            break;
+        }
         let name = String::from_utf8_lossy(&bytes[name_start..name_end]).into_owned();
         if let Some(dup) = note_read_name(&mut seen, &name, record_facts(header), root) {
             return Some(dup);
+        }
+        if name == root {
+            let spot = record_spot(header, &bytes[extra_start..extra_end]);
+            match first_root {
+                None => first_root = Some(spot),
+                Some(first) => {
+                    let current_payload = payload_bytes_in(bytes, &spot);
+                    let disagrees =
+                        root_repeat_disagrees(&mut first_root_payload, current_payload, || {
+                            payload_bytes_in(bytes, &first)
+                        });
+                    if disagrees {
+                        return Some(name);
+                    }
+                }
+            }
         }
         walked += 1;
         at += 46 + name_len + extra_len + comment_len;
@@ -853,6 +1063,8 @@ fn duplicate_read_name_file(
 ) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut seen: HashMap<String, (u32, u32, u32)> = HashMap::new();
+    let mut first_root: Option<EntrySpot> = None;
+    let mut first_root_payload: Option<Option<Vec<u8>>> = None;
     let mut at = cd_start;
     let mut walked = 0usize;
     while at < dir_end && walked <= MAX_ENTRIES {
@@ -867,9 +1079,29 @@ fn duplicate_read_name_file(
         if read_at(&mut file, at + 46, &mut name_bytes).is_none() {
             break;
         }
+        let mut extra_bytes = vec![0u8; extra_len as usize];
+        if read_at(&mut file, at + 46 + name_len, &mut extra_bytes).is_none() {
+            break;
+        }
         let name = String::from_utf8_lossy(&name_bytes).into_owned();
         if let Some(dup) = note_read_name(&mut seen, &name, record_facts(&header), root) {
             return Some(dup);
+        }
+        if name == root {
+            let spot = record_spot(&header, &extra_bytes);
+            match first_root {
+                None => first_root = Some(spot),
+                Some(first) => {
+                    let current_payload = payload_bytes_file(&mut file, &spot);
+                    let disagrees =
+                        root_repeat_disagrees(&mut first_root_payload, current_payload, || {
+                            payload_bytes_file(&mut file, &first)
+                        });
+                    if disagrees {
+                        return Some(name);
+                    }
+                }
+            }
         }
         walked += 1;
         at += 46 + name_len + extra_len + comment_len;
@@ -3998,6 +4230,280 @@ mod tests {
         let path = dir.join("ok.obd");
         std::fs::write(&path, &bytes).expect("write control");
         assert_eq!(load(&path).expect("loads").title, "Roundtrip");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CRC-32 (the zip checksum, IEEE polynomial) over
+    /// `bytes`, computed bit by bit: slow, and exactly
+    /// the checksum the writer helpers record, which
+    /// the forged-twin pins below check against
+    /// `entry_crcs`.
+    fn crc32_ieee(bytes: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                if crc & 1 != 0 {
+                    crc = (crc >> 1) ^ 0xEDB8_8320;
+                } else {
+                    crc >>= 1;
+                }
+            }
+        }
+        !crc
+    }
+
+    /// Rewrite the four bytes of `shadow` at
+    /// `patch_off` so the shadow's CRC32 equals the
+    /// honest payload's, its other bytes and its
+    /// length untouched (round 31, F1): a CRC32 is a
+    /// linear function of the message over GF(2), so
+    /// the patch is a 32-by-32 solve — each patch bit's
+    /// effect on the checksum is a column, and
+    /// Gauss-Jordan over the columns finds the bits
+    /// that close the gap to the target checksum. The
+    /// two lanes' witnesses were built exactly this
+    /// way (`craft_dup.py` in the round-31 red team's
+    /// scratch).
+    fn forge_shadow_crc(honest: &[u8], shadow: &mut [u8], patch_off: usize) {
+        assert_eq!(honest.len(), shadow.len(), "the twin keeps the length");
+        assert!(patch_off + 4 <= shadow.len(), "the patch fits");
+        let target = crc32_ieee(honest);
+        let mut base = shadow.to_vec();
+        base[patch_off..patch_off + 4].fill(0);
+        let base_crc = crc32_ieee(&base);
+        let mut cols = [0u32; 32];
+        for (u, col) in cols.iter_mut().enumerate() {
+            let mut m = base.clone();
+            m[patch_off + u / 8] |= 1 << (u % 8);
+            *col = crc32_ieee(&m) ^ base_crc;
+        }
+        let rhs = target ^ base_crc;
+        let mut masks = [0u32; 32];
+        let mut vals = [0u32; 32];
+        for cb in 0..32 {
+            let mut mask = 0u32;
+            for (u, col) in cols.iter().enumerate() {
+                if (col >> cb) & 1 == 1 {
+                    mask |= 1 << u;
+                }
+            }
+            masks[cb] = mask;
+            vals[cb] = (rhs >> cb) & 1;
+        }
+        let mut pivots: Vec<(usize, usize)> = Vec::new();
+        let mut row = 0usize;
+        for c in 0..32 {
+            let Some(piv) = (row..32).find(|&i| (masks[i] >> c) & 1 == 1) else {
+                continue;
+            };
+            masks.swap(row, piv);
+            vals.swap(row, piv);
+            for i in 0..32 {
+                if i != row && (masks[i] >> c) & 1 == 1 {
+                    masks[i] ^= masks[row];
+                    vals[i] ^= vals[row];
+                }
+            }
+            pivots.push((row, c));
+            row += 1;
+        }
+        let mut sol = 0u32;
+        for (r, c) in pivots {
+            if vals[r] == 1 {
+                sol |= 1 << c;
+            }
+        }
+        for i in 0..4 {
+            shadow[patch_off + i] = (sol >> (8 * i)) as u8;
+        }
+        assert_eq!(
+            crc32_ieee(shadow),
+            target,
+            "the forged twin carries the honest checksum"
+        );
+    }
+
+    #[test]
+    fn a_forged_crc_document_json_twin_is_refused_never_shadow_read() {
+        // Round 31, F1 (review MAJOR-2, red team
+        // RT31-2): two Stored document.json copies of
+        // equal length whose CRC32s were FORGED equal
+        // by a GF(2) patch in the shadow's title. The
+        // directory facts call this an exact repeat;
+        // the payloads differ, and the loader used to
+        // serve the last copy silently. The repeat is
+        // judged on the payload bytes now and refuses
+        // with the F6 words.
+        let honest_json = serde_json::to_string(&test_doc()).expect("json");
+        let mut shadow_doc = test_doc();
+        shadow_doc.title = "Shadow!!!".into();
+        let mut shadow_json = serde_json::to_string(&shadow_doc)
+            .expect("json")
+            .into_bytes();
+        assert_eq!(shadow_json.len(), honest_json.len(), "equal lengths");
+        let title_at = shadow_json
+            .windows(9)
+            .position(|w| w == b"Shadow!!!")
+            .expect("the shadow title stands in the json");
+        forge_shadow_crc(honest_json.as_bytes(), &mut shadow_json, title_at + 5);
+        assert_ne!(shadow_json, honest_json.as_bytes(), "the bodies differ");
+        let mut bytes = stored_zip(&[
+            ("document.json", honest_json.as_bytes()),
+            ("document.jsoX", &shadow_json),
+        ]);
+        let crcs = entry_crcs(&bytes);
+        assert_eq!(crcs[0].1, crcs[1].1, "the directory facts match");
+        assert_eq!(crcs[0].1, crc32_ieee(honest_json.as_bytes()));
+        // Control: before the name patch, the same
+        // container is an ordinary bulletin.
+        let dir = scratch("forged-doc");
+        let control = dir.join("control.obd");
+        std::fs::write(&control, &bytes).expect("write control");
+        assert_eq!(load(&control).expect("control loads").title, "Roundtrip");
+        patch_entry_name(&mut bytes, "document.jsoX", "document.json");
+        let path = dir.join("forged.obd");
+        std::fs::write(&path, &bytes).expect("write witness");
+        let err = load(&path).expect_err("a forged-CRC twin refuses");
+        assert_eq!(err, duplicate_name_refusal("document.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_central_crc_patched_document_json_twin_is_refused() {
+        // Round 31, F1, the header-patch crafting of
+        // the same witness: differing Stored bodies of
+        // equal length, written honestly, then the
+        // second copy's CENTRAL directory CRC patched
+        // to the first's. The directory facts match;
+        // the local headers still carry each copy's own
+        // checksum, so a judgment routed through the
+        // archive reader would meet its checksum error
+        // instead. The payload comparison stands on the
+        // raw container, before the reader, and refuses
+        // with the duplicate words.
+        let honest_json = serde_json::to_string(&test_doc()).expect("json");
+        let mut shadow_doc = test_doc();
+        shadow_doc.title = "Shadow!!!".into();
+        let shadow_json = serde_json::to_string(&shadow_doc).expect("json");
+        assert_eq!(shadow_json.len(), honest_json.len(), "equal lengths");
+        let mut bytes = stored_zip(&[
+            ("document.json", honest_json.as_bytes()),
+            ("document.jsoX", shadow_json.as_bytes()),
+        ]);
+        patch_entry_name(&mut bytes, "document.jsoX", "document.json");
+        let honest_crc = entry_crcs(&bytes)[0].1;
+        let mut centrals: Vec<usize> = Vec::new();
+        let mut from = 0usize;
+        while let Some(found) = find_bytes(&bytes[from..], b"PK\x01\x02") {
+            centrals.push(from + found);
+            from += found + 1;
+        }
+        assert_eq!(centrals.len(), 2, "two central records stand");
+        bytes[centrals[1] + 16..centrals[1] + 20].copy_from_slice(&honest_crc.to_le_bytes());
+        let dir = scratch("central-patched-doc");
+        let path = dir.join("patched.obd");
+        std::fs::write(&path, &bytes).expect("write witness");
+        let err = load(&path).expect_err("a central-patched twin refuses");
+        assert_eq!(err, duplicate_name_refusal("document.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_forged_crc_insert_json_twin_is_refused_never_shadow_read() {
+        // Round 31, F1 at the sheet door: the same
+        // forgery against insert.json — equal length,
+        // CRC32 patched equal, different sheet inside.
+        let honest_json = lying_sheet_json();
+        let mut shadow_json = honest_json
+            .replace("Lying directory", "Shdow directory")
+            .into_bytes();
+        assert_eq!(shadow_json.len(), honest_json.len(), "equal lengths");
+        assert_ne!(shadow_json, honest_json.as_bytes(), "the bodies differ");
+        let patch_at = shadow_json
+            .windows(9)
+            .position(|w| w == b"directory")
+            .expect("the sheet name stands in the json")
+            + 5;
+        forge_shadow_crc(honest_json.as_bytes(), &mut shadow_json, patch_at);
+        let mut bytes = stored_zip(&[
+            ("insert.json", honest_json.as_bytes()),
+            ("insert.jsoX", &shadow_json),
+        ]);
+        let crcs = entry_crcs(&bytes);
+        assert_eq!(crcs[0].1, crcs[1].1, "the directory facts match");
+        patch_entry_name(&mut bytes, "insert.jsoX", "insert.json");
+        let dir = scratch("forged-insert");
+        let path = dir.join("forged.obdi");
+        std::fs::write(&path, &bytes).expect("write witness");
+        let err = load_insert(&path).expect_err("a forged-CRC twin refuses");
+        assert_eq!(err, duplicate_name_refusal("insert.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn byte_identical_root_repeats_still_load() {
+        // Round 31, F1, the other side of the boundary:
+        // a root repeat whose copies are byte-identical
+        // IS an exact repeat — whichever copy the
+        // reader serves, it serves the same bytes — at
+        // both root doors.
+        let json = serde_json::to_string(&test_doc()).expect("json");
+        let mut doc_bytes = stored_zip(&[
+            ("document.json", json.as_bytes()),
+            ("document.jsoX", json.as_bytes()),
+        ]);
+        patch_entry_name(&mut doc_bytes, "document.jsoX", "document.json");
+        let dir = scratch("identical-doc");
+        let doc_path = dir.join("same.obd");
+        std::fs::write(&doc_path, &doc_bytes).expect("write bulletin");
+        assert_eq!(
+            load(&doc_path).expect("identical repeats load").title,
+            "Roundtrip"
+        );
+        let sheet_json = lying_sheet_json();
+        let mut sheet_bytes = stored_zip(&[
+            ("insert.json", sheet_json.as_bytes()),
+            ("insert.jsoX", sheet_json.as_bytes()),
+        ]);
+        patch_entry_name(&mut sheet_bytes, "insert.jsoX", "insert.json");
+        let sheet_path = dir.join("same.obdi");
+        std::fs::write(&sheet_path, &sheet_bytes).expect("write sheet");
+        let (insert, _, _) = load_insert(&sheet_path).expect("identical repeats load");
+        assert_eq!(insert.id, "sheet-lying");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deflated_byte_identical_document_repeats_still_load() {
+        // Round 31, F1 on the compression real saves
+        // use: a deflated document.json carried twice,
+        // byte-identical. The payload comparison
+        // inflates both copies and finds them the same,
+        // so the repeat loads — the method-8 arm of the
+        // comparison, beside the Stored pins above.
+        let json = serde_json::to_string(&test_doc()).expect("json");
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            zip.start_file("document.json", options)
+                .expect("json entry");
+            zip.write_all(json.as_bytes()).expect("json bytes");
+            zip.start_file("document.jsoX", options)
+                .expect("repeat entry");
+            zip.write_all(json.as_bytes()).expect("repeat bytes");
+            zip.finish().expect("finish");
+        }
+        patch_entry_name(&mut buf, "document.jsoX", "document.json");
+        let dir = scratch("identical-deflated-doc");
+        let path = dir.join("same.obd");
+        std::fs::write(&path, &buf).expect("write bulletin");
+        assert_eq!(
+            load(&path).expect("identical repeats load").title,
+            "Roundtrip"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

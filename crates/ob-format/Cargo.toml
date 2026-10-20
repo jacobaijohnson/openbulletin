@@ -8,6 +8,7 @@ description = "OpenBulletin file format: .obd documents (v0: JSON; v1: zip conta
 
 [dependencies]
 ob-model = { path = "../ob-model" }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 serde.workspace = true
 serde_json.workspace = true
 zip = { version = "2", default-features = false, features = ["deflate"] }

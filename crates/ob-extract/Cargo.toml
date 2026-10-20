@@ -18,6 +18,7 @@ base64 = "0.22"
 quick-xml = "0.36"
 html5ever = "0.39"
 markup5ever_rcdom = "0.39"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 

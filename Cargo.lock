@@ -2862,6 +2862,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "chrono",
+ "flate2",
  "html5ever",
  "lopdf",
  "markup5ever_rcdom",
@@ -2897,6 +2898,7 @@ dependencies = [
 name = "ob-format"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "ob-model",
  "serde",
  "serde_json",
@@ -2942,6 +2944,7 @@ dependencies = [
 name = "ob-music"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "ob-image",
  "ob-model",
  "ob-pdf",

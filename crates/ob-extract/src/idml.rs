@@ -440,12 +440,217 @@ const MAX_ENTRY: u64 = 32 * 1024 * 1024;
 /// reading; a real package is a few megabytes.
 const MAX_TOTAL: u64 = 512 * 1024 * 1024;
 
+/// Where one central record's entry payload stands
+/// and how it is packed, its sizes and local offset
+/// resolved through the zip64 extra field wherever a
+/// plain field carries the sentinel — the same spot
+/// ob-format's duplicate walk reads (round 31, F1).
+struct RawSpot {
+    method: u16,
+    comp_size: u64,
+    local_offset: u64,
+}
+
+/// Read one central record's spot out of its fixed
+/// header and extra field (the zip64 values ride in
+/// the order uncompressed, compressed, local offset,
+/// disk, one per sentinel field).
+fn raw_spot(header: &[u8], extra: &[u8]) -> RawSpot {
+    let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap_or([0; 4]));
+    let comp32 = field(20);
+    let uncomp32 = field(24);
+    let local32 = field(42);
+    let disk16 = u16::from_le_bytes([header[34], header[35]]);
+    let mut comp_size = u64::from(comp32);
+    let mut local_offset = u64::from(local32);
+    if comp32 == u32::MAX || uncomp32 == u32::MAX || local32 == u32::MAX || disk16 == u16::MAX {
+        let mut at = 0usize;
+        while at + 4 <= extra.len() {
+            let id = u16::from_le_bytes([extra[at], extra[at + 1]]);
+            let size = usize::from(u16::from_le_bytes([extra[at + 2], extra[at + 3]]));
+            let data = &extra[at + 4..(at + 4 + size).min(extra.len())];
+            if id == 0x0001 {
+                let mut pos = 0usize;
+                if uncomp32 == u32::MAX {
+                    pos += 8;
+                }
+                if comp32 == u32::MAX && pos + 8 <= data.len() {
+                    comp_size = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
+                    pos += 8;
+                }
+                if local32 == u32::MAX && pos + 8 <= data.len() {
+                    local_offset =
+                        u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
+                }
+                break;
+            }
+            at += 4 + size;
+        }
+    }
+    RawSpot {
+        method: u16::from_le_bytes([header[10], header[11]]),
+        comp_size,
+        local_offset,
+    }
+}
+
+/// The (name, spot) pairs of the package's central
+/// directory, walked off the raw records: the zip
+/// reader's own map is keyed by name, so a duplicated
+/// name reaches the importer as only its last copy
+/// and the copies can only be counted here, before
+/// that map is trusted (round 31, F5). The directory
+/// is the one the latest end record names, through
+/// its zip64 record where the plain fields are
+/// sentinels. Empty when no end record stands — the
+/// archive reader reports that damage in its own
+/// words.
+fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
+    let mut eocd: Option<usize> = None;
+    if bytes.len() >= 22 {
+        for at in (0..=bytes.len() - 22).rev() {
+            if !bytes[at..].starts_with(b"PK\x05\x06") {
+                continue;
+            }
+            let comment = usize::from(u16::from_le_bytes([bytes[at + 20], bytes[at + 21]]));
+            if at + 22 + comment <= bytes.len() {
+                eocd = Some(at);
+                break;
+            }
+        }
+    }
+    let Some(eocd) = eocd else {
+        return Vec::new();
+    };
+    let field = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap_or([0; 4]));
+    let mut total = u64::from(u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]));
+    let mut cd_offset = u64::from(field(eocd + 16));
+    if (total == u64::from(u16::MAX) || cd_offset == u64::from(u32::MAX)) && eocd >= 20 {
+        let locator = &bytes[eocd - 20..eocd];
+        if locator.starts_with(b"PK\x06\x07") {
+            let record_at =
+                u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8])) as usize;
+            if record_at + 56 <= bytes.len() && bytes[record_at..].starts_with(b"PK\x06\x06") {
+                let record = &bytes[record_at..record_at + 56];
+                total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
+                cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+            }
+        }
+    }
+    let mut out: Vec<(String, RawSpot)> = Vec::new();
+    let mut at = cd_offset as usize;
+    for _ in 0..total {
+        if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
+            break;
+        }
+        let header = &bytes[at..at + 46];
+        let name_len = usize::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = usize::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = usize::from(u16::from_le_bytes([header[32], header[33]]));
+        let name_start = at + 46;
+        let name_end = name_start + name_len;
+        let extra_end = name_end + extra_len;
+        if extra_end > bytes.len() {
+            break;
+        }
+        let name = String::from_utf8_lossy(&bytes[name_start..name_end]).into_owned();
+        out.push((name, raw_spot(header, &bytes[name_end..extra_end])));
+        at = extra_end + comment_len;
+    }
+    out
+}
+
+/// One part's decompressed bytes off its raw spot,
+/// read one byte past the per-part cap: two copies
+/// are judged on the bytes the importer itself would
+/// read (a part past the cap is cut at the cap, so
+/// the comparison rides to the same point). None
+/// when the payload cannot be read back at all.
+fn raw_payload(bytes: &[u8], spot: &RawSpot) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let local = spot.local_offset as usize;
+    if local + 30 > bytes.len() || !bytes[local..].starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let name_len = usize::from(u16::from_le_bytes([bytes[local + 26], bytes[local + 27]]));
+    let extra_len = usize::from(u16::from_le_bytes([bytes[local + 28], bytes[local + 29]]));
+    let data_start = local + 30 + name_len + extra_len;
+    let data_end = data_start.checked_add(spot.comp_size as usize)?;
+    if data_end > bytes.len() {
+        return None;
+    }
+    let raw = &bytes[data_start..data_end];
+    match spot.method {
+        0 => Some(raw[..(raw.len() as u64).min(MAX_ENTRY + 1) as usize].to_vec()),
+        8 => {
+            let mut decoder = flate2::read::DeflateDecoder::new(raw);
+            let mut out = Vec::new();
+            decoder
+                .by_ref()
+                .take(MAX_ENTRY + 1)
+                .read_to_end(&mut out)
+                .ok()?;
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// The first XML part name the package carries more
+/// than once whose copies' decompressed bytes
+/// disagree (round 31, F5): the importer's map would
+/// serve only the last copy, so which story a draft
+/// was read from must never be the archive's quiet
+/// choice. Exact byte-identical repeats pass — the
+/// same words whichever copy is served — and a copy
+/// whose bytes cannot be read back cannot be proven
+/// identical, so it does not count as exact either.
+fn disagreeing_duplicate_part(bytes: &[u8]) -> Option<String> {
+    let spots = central_spots(bytes);
+    let mut checked: Vec<&str> = Vec::new();
+    for (name, _) in &spots {
+        if !name.ends_with(".xml") || checked.contains(&name.as_str()) {
+            continue;
+        }
+        checked.push(name.as_str());
+        let copies: Vec<&RawSpot> = spots
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, spot)| spot)
+            .collect();
+        if copies.len() < 2 {
+            continue;
+        }
+        let first_payload = raw_payload(bytes, copies[0]);
+        if first_payload.is_none() {
+            return Some(name.clone());
+        }
+        for spot in &copies[1..] {
+            if raw_payload(bytes, spot) != first_payload {
+                return Some(name.clone());
+            }
+        }
+    }
+    None
+}
+
 pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, String> {
     let cursor = std::io::Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(cursor)
         .map_err(|e| format!("that is not an IDML package (a zip of XML): {e}"))?;
     if zip.len() > MAX_ENTRIES {
         return Err("that IDML package has too many parts".into());
+    }
+    // A duplicated part whose copies disagree refuses
+    // before any part is read (round 31, F5), in the
+    // .obd door's words: the reader's map below has
+    // already collapsed each name to its last copy, so
+    // the count stands on the raw directory above.
+    if let Some(name) = disagreeing_duplicate_part(bytes) {
+        return Err(format!(
+            "that file has two parts named {name}, so the file was not opened; \
+             it may be damaged."
+        ));
     }
     let mut files: HashMap<String, String> = HashMap::new();
     let mut loss_notes: Vec<String> = Vec::new();
@@ -841,6 +1046,102 @@ mod tests {
     #[test]
     fn idml_rejects_non_packages() {
         assert!(dump_from_idml(b"not a zip", "x.idml").is_err());
+    }
+
+    fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// Rename one entry everywhere its name is written
+    /// (the local header and the central directory),
+    /// the two names the same length: the zip writer
+    /// refuses a duplicate name outright, so a package
+    /// carrying a repeated part is assembled by patch,
+    /// the same helper shape as ob-format's tests.
+    fn patch_entry_name(zip_bytes: &mut [u8], from_name: &str, to_name: &str) {
+        assert_eq!(from_name.len(), to_name.len(), "the patch keeps lengths");
+        let name = from_name.as_bytes();
+        let mut patched = 0;
+        let mut from = 0;
+        while let Some(found) = find_bytes(&zip_bytes[from..], name) {
+            let at = from + found;
+            let guarded = (at >= 30 && &zip_bytes[at - 30..at - 26] == b"PK\x03\x04")
+                || (at >= 46 && &zip_bytes[at - 46..at - 42] == b"PK\x01\x02");
+            if guarded {
+                zip_bytes[at..at + name.len()].copy_from_slice(to_name.as_bytes());
+                patched += 1;
+            }
+            from = at + 1;
+        }
+        assert_eq!(patched, 2, "both records for {from_name} were patched");
+    }
+
+    fn idml_with_duplicate_story(story_a: &str, story_b: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            let parts: &[(&str, &str)] = &[
+                (
+                    "designmap.xml",
+                    r#"<?xml version="1.0"?><Document><Spread src="Spreads/Spread_u1.xml"/></Document>"#,
+                ),
+                (
+                    "Resources/Styles.xml",
+                    r#"<?xml version="1.0"?><Root><ParagraphStyleGroup><ParagraphStyle Self="ParagraphStyle/Body" PointSize="11"><Properties><AppliedFont type="string">Calibri</AppliedFont></Properties></ParagraphStyle></ParagraphStyleGroup></Root>"#,
+                ),
+                ("Stories/Story_u9.xml", story_a),
+                ("Stories/Story_u9.xmX", story_b),
+                (
+                    "Spreads/Spread_u1.xml",
+                    r#"<?xml version="1.0"?><Spread><Page Self="u2" GeometricBounds="0 0 612 396" ItemTransform="1 0 0 1 0 0"/><TextFrame Self="u3" ParentStory="u9" ItemTransform="1 0 0 1 36 48"><Properties><PathGeometry><GeometryPathType><PathPointArray><PathPointType Anchor="0 0"/><PathPointType Anchor="324 0"/><PathPointType Anchor="324 200"/><PathPointType Anchor="0 200"/></PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame></Spread>"#,
+                ),
+            ];
+            for (name, body) in parts {
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(body.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        patch_entry_name(&mut buf, "Stories/Story_u9.xmX", "Stories/Story_u9.xml");
+        buf
+    }
+
+    fn one_paragraph_story(words: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?><Story><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Body"><CharacterStyleRange FontStyle="Regular"><Content>{words}</Content></CharacterStyleRange></ParagraphStyleRange></Story>"#
+        )
+    }
+
+    #[test]
+    fn idml_duplicate_story_entries_with_different_text_error() {
+        // Round 31, F5: two copies of one story part
+        // carrying different words; the importer used
+        // to keep the last copy quietly. It refuses
+        // now, naming the duplicated part.
+        let bytes = idml_with_duplicate_story(
+            &one_paragraph_story("First story words"),
+            &one_paragraph_story("Other story words"),
+        );
+        let err = dump_from_idml(&bytes, "dup.idml").expect_err("disagreeing duplicates refuse");
+        assert!(
+            err.contains("two parts named Stories/Story_u9.xml"),
+            "{err}"
+        );
+        assert!(err.contains("may be damaged"), "{err}");
+    }
+
+    #[test]
+    fn idml_exact_duplicate_story_entries_load() {
+        // Round 31, F5, the other side: a byte-identical
+        // story repeat loads — the same words whichever
+        // copy is served.
+        let story = one_paragraph_story("Words both copies carry");
+        let bytes = idml_with_duplicate_story(&story, &story);
+        let dump = dump_from_idml(&bytes, "same.idml").expect("exact repeats load");
+        assert_eq!(dump.spans.len(), 1);
+        assert_eq!(dump.spans[0].text, "Words both copies carry");
     }
 
     #[test]

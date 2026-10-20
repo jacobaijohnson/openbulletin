@@ -183,7 +183,7 @@ const MAX_XML_DEPTH: usize = 256;
 /// door's judgment is Refuse: one byte past the cap is
 /// read, so an entry exactly at the cap still counts
 /// as inside; anything larger refuses in plain words.
-fn read_entry_text(entry: &mut zip::read::ZipFile, what: &str) -> Result<String, String> {
+fn read_entry_bytes(entry: &mut zip::read::ZipFile, what: &str) -> Result<Vec<u8>, String> {
     let too_large = format!("{what} is too large to read (past 32 MB of music text)");
     let read = ob_model::read_capped(
         entry,
@@ -194,7 +194,210 @@ fn read_entry_text(entry: &mut zip::read::ZipFile, what: &str) -> Result<String,
         ob_model::CappedReadError::Refused(words) => words,
         ob_model::CappedReadError::Unreadable(e) => format!("{what} cannot be read ({e})"),
     })?;
-    String::from_utf8(read.bytes).map_err(|_| format!("{what} is not text we can read"))
+    Ok(read.bytes)
+}
+
+fn read_entry_text(entry: &mut zip::read::ZipFile, what: &str) -> Result<String, String> {
+    let bytes = read_entry_bytes(entry, what)?;
+    String::from_utf8(bytes).map_err(|_| format!("{what} is not text we can read"))
+}
+
+/// The plain words for a zip whose directory names one
+/// part twice with different bytes, in the .obd door's
+/// shape (round 31, F5).
+fn duplicate_name_refusal(name: &str) -> String {
+    format!(
+        "that file has two parts named {name}, so the file was not opened; \
+         it may be damaged."
+    )
+}
+
+/// Where one central record's entry payload stands
+/// and how it is packed, its sizes and local offset
+/// resolved through the zip64 extra field wherever a
+/// plain field carries the sentinel — the same spot
+/// ob-format's duplicate walk reads (round 31, F1).
+struct RawSpot {
+    method: u16,
+    comp_size: u64,
+    local_offset: u64,
+}
+
+/// Read one central record's spot out of its fixed
+/// header and extra field (the zip64 values ride in
+/// the order uncompressed, compressed, local offset,
+/// disk, one per sentinel field).
+fn raw_spot(header: &[u8], extra: &[u8]) -> RawSpot {
+    let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap_or([0; 4]));
+    let comp32 = field(20);
+    let uncomp32 = field(24);
+    let local32 = field(42);
+    let disk16 = u16::from_le_bytes([header[34], header[35]]);
+    let mut comp_size = u64::from(comp32);
+    let mut local_offset = u64::from(local32);
+    if comp32 == u32::MAX || uncomp32 == u32::MAX || local32 == u32::MAX || disk16 == u16::MAX {
+        let mut at = 0usize;
+        while at + 4 <= extra.len() {
+            let id = u16::from_le_bytes([extra[at], extra[at + 1]]);
+            let size = usize::from(u16::from_le_bytes([extra[at + 2], extra[at + 3]]));
+            let data = &extra[at + 4..(at + 4 + size).min(extra.len())];
+            if id == 0x0001 {
+                let mut pos = 0usize;
+                if uncomp32 == u32::MAX {
+                    pos += 8;
+                }
+                if comp32 == u32::MAX && pos + 8 <= data.len() {
+                    comp_size = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
+                    pos += 8;
+                }
+                if local32 == u32::MAX && pos + 8 <= data.len() {
+                    local_offset =
+                        u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
+                }
+                break;
+            }
+            at += 4 + size;
+        }
+    }
+    RawSpot {
+        method: u16::from_le_bytes([header[10], header[11]]),
+        comp_size,
+        local_offset,
+    }
+}
+
+/// The (name, spot) pairs of the container's central
+/// directory, walked off the raw records: the zip
+/// reader's own map is keyed by name, so a duplicated
+/// name reaches it as only its last copy and the
+/// copies can only be counted here, before that map
+/// is trusted (round 31, F5). The directory is the
+/// one the latest end record names, through its
+/// zip64 record where the plain fields are sentinels.
+/// Empty when no end record stands — the archive
+/// reader reports that damage in its own words.
+fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
+    let mut eocd: Option<usize> = None;
+    if bytes.len() >= 22 {
+        for at in (0..=bytes.len() - 22).rev() {
+            if !bytes[at..].starts_with(b"PK\x05\x06") {
+                continue;
+            }
+            let comment = usize::from(u16::from_le_bytes([bytes[at + 20], bytes[at + 21]]));
+            if at + 22 + comment <= bytes.len() {
+                eocd = Some(at);
+                break;
+            }
+        }
+    }
+    let Some(eocd) = eocd else {
+        return Vec::new();
+    };
+    let field = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap_or([0; 4]));
+    let mut total = u64::from(u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]));
+    let mut cd_offset = u64::from(field(eocd + 16));
+    if (total == u64::from(u16::MAX) || cd_offset == u64::from(u32::MAX)) && eocd >= 20 {
+        let locator = &bytes[eocd - 20..eocd];
+        if locator.starts_with(b"PK\x06\x07") {
+            let record_at =
+                u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8])) as usize;
+            if record_at + 56 <= bytes.len() && bytes[record_at..].starts_with(b"PK\x06\x06") {
+                let record = &bytes[record_at..record_at + 56];
+                total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
+                cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+            }
+        }
+    }
+    let mut out: Vec<(String, RawSpot)> = Vec::new();
+    let mut at = cd_offset as usize;
+    for _ in 0..total {
+        if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
+            break;
+        }
+        let header = &bytes[at..at + 46];
+        let name_len = usize::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = usize::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = usize::from(u16::from_le_bytes([header[32], header[33]]));
+        let name_start = at + 46;
+        let name_end = name_start + name_len;
+        let extra_end = name_end + extra_len;
+        if extra_end > bytes.len() {
+            break;
+        }
+        let name = String::from_utf8_lossy(&bytes[name_start..name_end]).into_owned();
+        out.push((name, raw_spot(header, &bytes[name_end..extra_end])));
+        at = extra_end + comment_len;
+    }
+    out
+}
+
+/// One entry's decompressed bytes off its raw spot,
+/// read one byte past this door's cap: two copies are
+/// judged on the bytes the door itself would read,
+/// and a score past the cap is the capped read's
+/// refusal to report, exactly as before. None when
+/// the payload cannot be read back at all.
+fn raw_payload(bytes: &[u8], spot: &RawSpot) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let local = spot.local_offset as usize;
+    if local + 30 > bytes.len() || !bytes[local..].starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let name_len = usize::from(u16::from_le_bytes([bytes[local + 26], bytes[local + 27]]));
+    let extra_len = usize::from(u16::from_le_bytes([bytes[local + 28], bytes[local + 29]]));
+    let data_start = local + 30 + name_len + extra_len;
+    let data_end = data_start.checked_add(spot.comp_size as usize)?;
+    if data_end > bytes.len() {
+        return None;
+    }
+    let raw = &bytes[data_start..data_end];
+    match spot.method {
+        0 => Some(raw[..(raw.len() as u64).min(MAX_ENTRY_BYTES + 1) as usize].to_vec()),
+        8 => {
+            let mut decoder = flate2::read::DeflateDecoder::new(raw);
+            let mut out = Vec::new();
+            decoder
+                .by_ref()
+                .take(MAX_ENTRY_BYTES + 1)
+                .read_to_end(&mut out)
+                .ok()?;
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Answer the name when the container holds more than
+/// one copy of `name` and the copies' decompressed
+/// bytes disagree (round 31, F5): the reader's map
+/// would serve only the LAST copy, so which container
+/// or score a file was read from must never be the
+/// archive's quiet choice. Exact byte-identical
+/// repeats pass — whichever copy is served, the same
+/// bytes are served — and a copy whose bytes cannot
+/// be read back cannot be proven identical, so it
+/// does not count as exact either. A name held once
+/// is never payload-read here, so single-copy
+/// behavior is untouched.
+fn disagreeing_duplicate(bytes: &[u8], spots: &[(String, RawSpot)], name: &str) -> Option<String> {
+    let copies: Vec<&RawSpot> = spots
+        .iter()
+        .filter(|(n, _)| n == name)
+        .map(|(_, spot)| spot)
+        .collect();
+    if copies.len() < 2 {
+        return None;
+    }
+    let first_payload = raw_payload(bytes, copies[0]);
+    if first_payload.is_none() {
+        return Some(name.to_string());
+    }
+    for spot in &copies[1..] {
+        if raw_payload(bytes, spot) != first_payload {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 /// The score's XML out of a .mxl zip: the container's
@@ -219,6 +422,16 @@ fn zip_score_text(bytes: &[u8]) -> Result<String, String> {
     let mut names: Vec<String> = (0..zip.len())
         .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
         .collect();
+    // A duplicated container whose copies disagree
+    // would redirect the score choice to its last
+    // copy; refuse before any copy is read (round 31,
+    // F5). The copies are counted off the raw central
+    // directory (central_spots): the archive's own map
+    // has already collapsed them to the last one.
+    let spots = central_spots(bytes);
+    if let Some(dup) = disagreeing_duplicate(bytes, &spots, "META-INF/container.xml") {
+        return Err(duplicate_name_refusal(&dup));
+    }
     let mut main: Option<String> = None;
     if let Ok(mut container) = zip.by_name("META-INF/container.xml") {
         // A container that cannot be read (or is past the
@@ -245,6 +458,12 @@ fn zip_score_text(bytes: &[u8]) -> Result<String, String> {
             "that zip holds no music score (a .mxl file carries one .musicxml inside)".to_string(),
         );
     };
+    // The same discipline for the score the door
+    // resolved: duplicated copies that disagree refuse
+    // instead of serving the last (round 31, F5).
+    if let Some(dup) = disagreeing_duplicate(bytes, &spots, &name) {
+        return Err(duplicate_name_refusal(&dup));
+    }
     let mut entry = zip
         .by_name(&name)
         .map_err(|e| format!("the score inside that zip cannot be read ({e})"))?;
@@ -657,6 +876,112 @@ mod tests {
         assert!(sniff_music(&buf));
         assert!(sniff_music(TINY_SCORE.as_bytes()));
         assert!(!sniff_music(b"<SCRIBUSUTF8NEW/>"));
+    }
+
+    fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// Rename one entry everywhere its name is written
+    /// (the local header and the central directory),
+    /// the two names the same length: the zip writer
+    /// refuses a duplicate name outright, so a file
+    /// carrying a repeated entry is assembled by patch,
+    /// the same helper shape as ob-format's tests.
+    fn patch_entry_name(zip_bytes: &mut [u8], from_name: &str, to_name: &str) {
+        assert_eq!(from_name.len(), to_name.len(), "the patch keeps lengths");
+        let name = from_name.as_bytes();
+        let mut patched = 0;
+        let mut from = 0;
+        while let Some(found) = find_bytes(&zip_bytes[from..], name) {
+            let at = from + found;
+            let guarded = (at >= 30 && &zip_bytes[at - 30..at - 26] == b"PK\x03\x04")
+                || (at >= 46 && &zip_bytes[at - 46..at - 42] == b"PK\x01\x02");
+            if guarded {
+                zip_bytes[at..at + name.len()].copy_from_slice(to_name.as_bytes());
+                patched += 1;
+            }
+            from = at + 1;
+        }
+        assert_eq!(patched, 2, "both records for {from_name} were patched");
+    }
+
+    fn mxl_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            for (name, body) in entries {
+                zw.start_file(*name, opts).unwrap();
+                zw.write_all(body).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        buf
+    }
+
+    const CONTAINER_FOR_SCORE: &[u8] = br#"<?xml version="1.0"?><container><rootfiles><rootfile full-path="score.musicxml"/></rootfiles></container>"#;
+
+    #[test]
+    fn duplicate_score_entries_with_different_bodies_error() {
+        // Round 31, F5: two score.musicxml entries with
+        // different scores inside; the door used to
+        // serve the last copy silently. It refuses now,
+        // naming the duplicated part.
+        let score_a = TINY_SCORE.replace("A Tiny Test Hymn", "First Test Hymn!");
+        let score_b = TINY_SCORE.replace("A Tiny Test Hymn", "Other Test Hymn!");
+        assert_ne!(score_a, score_b);
+        let mut buf = mxl_zip(&[
+            ("META-INF/container.xml", CONTAINER_FOR_SCORE),
+            ("score.musicxml", score_a.as_bytes()),
+            ("score.musicxmX", score_b.as_bytes()),
+        ]);
+        patch_entry_name(&mut buf, "score.musicxmX", "score.musicxml");
+        let err = load_music(&buf).expect_err("disagreeing duplicate scores refuse");
+        assert!(err.contains("two parts named score.musicxml"), "{err}");
+        assert!(err.contains("may be damaged"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_container_entries_naming_different_scores_error() {
+        // Round 31, F5: two container.xml entries naming
+        // different score files; the last container used
+        // to redirect the score choice quietly.
+        let container_a: &[u8] = br#"<?xml version="1.0"?><container><rootfiles><rootfile full-path="a.musicxml"/></rootfiles></container>"#;
+        let container_b: &[u8] = br#"<?xml version="1.0"?><container><rootfiles><rootfile full-path="b.musicxml"/></rootfiles></container>"#;
+        let score_a = TINY_SCORE.replace("A Tiny Test Hymn", "First Test Hymn!");
+        let score_b = TINY_SCORE.replace("A Tiny Test Hymn", "Other Test Hymn!");
+        let mut buf = mxl_zip(&[
+            ("META-INF/container.xml", container_a),
+            ("META-INF/container.xmX", container_b),
+            ("a.musicxml", score_a.as_bytes()),
+            ("b.musicxml", score_b.as_bytes()),
+        ]);
+        patch_entry_name(&mut buf, "META-INF/container.xmX", "META-INF/container.xml");
+        let err = load_music(&buf).expect_err("disagreeing duplicate containers refuse");
+        assert!(
+            err.contains("two parts named META-INF/container.xml"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn exact_duplicate_score_and_container_entries_load() {
+        // Round 31, F5, the other side: byte-identical
+        // repeats of both resolved names load — the same
+        // bytes whichever copy is served.
+        let mut buf = mxl_zip(&[
+            ("META-INF/container.xml", CONTAINER_FOR_SCORE),
+            ("META-INF/container.xmX", CONTAINER_FOR_SCORE),
+            ("score.musicxml", TINY_SCORE.as_bytes()),
+            ("score.musicxmX", TINY_SCORE.as_bytes()),
+        ]);
+        patch_entry_name(&mut buf, "META-INF/container.xmX", "META-INF/container.xml");
+        patch_entry_name(&mut buf, "score.musicxmX", "score.musicxml");
+        let (_xml, info) = load_music(&buf).expect("exact repeats load");
+        assert_eq!(info.title.as_deref(), Some("A Tiny Test Hymn"));
+        assert_eq!(info.counts.notes, 4);
     }
 
     #[test]

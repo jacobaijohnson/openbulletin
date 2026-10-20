@@ -16,8 +16,8 @@
 //! did not clearly mark.
 
 use crate::{
-    default_styles, normalize_runs, resolve_runs, ChurchProfile, ContentRole, Document, Frame,
-    FrameKind, Panel, Paragraph, ParagraphStyle, Run, SheetSpec, Size, Story, FORMAT_VERSION,
+    default_styles, normalize_runs, ChurchProfile, ContentRole, Document, Frame, FrameKind, Panel,
+    Paragraph, ParagraphStyle, Run, SheetSpec, Size, Story, FORMAT_VERSION,
 };
 
 /// Can this marker open a formatted span here? The marker
@@ -359,6 +359,8 @@ pub fn to_markdown_report(doc: &Document) -> (String, usize) {
 }
 
 fn to_markdown_filtered(doc: &Document) -> String {
+    // One field table for the whole document (see FieldTable).
+    let table = crate::FieldTable::for_document(doc);
     let mut out = String::new();
     let mut seen: Vec<&str> = Vec::new();
     for panel in &doc.panels {
@@ -372,7 +374,7 @@ fn to_markdown_filtered(doc: &Document) -> String {
                 continue;
             };
             for para in &story.paragraphs {
-                let resolved = resolve_runs(&para.runs, doc);
+                let resolved = table.resolve_runs(&para.runs);
                 let text: String = resolved.iter().map(run_markdown).collect();
                 let style = doc.style(&para.style);
                 let name = style.map(|s| s.name.as_str()).unwrap_or("");

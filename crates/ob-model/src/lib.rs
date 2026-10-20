@@ -1991,6 +1991,51 @@ fn field_tokens(doc: &Document) -> Vec<(String, String)> {
     out
 }
 
+/// The field-token table of one document state, built once
+/// and shared by every resolution against that state
+/// (health audit Efficiency MINOR-4, the `resolve_fields`
+/// half): building the table clones every profile field and
+/// mints every serving-line token, and the per-call entry
+/// points below used to pay that for every paragraph of
+/// every layout, Check pass, and export (≈23 µs before a
+/// single character was scanned, on the probe machine).
+/// Callers that resolve more than one text against the same
+/// document build one table and resolve through it; the
+/// substitutions are the table's alone, so a shared table
+/// and a per-call table can never disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldTable {
+    tokens: Vec<(String, String)>,
+}
+
+impl FieldTable {
+    /// The table for the document as it stands now. A later
+    /// edit to the profile, the fields, or the serving lines
+    /// is a new document state and wants a new table.
+    pub fn for_document(doc: &Document) -> FieldTable {
+        FieldTable {
+            tokens: field_tokens(doc),
+        }
+    }
+
+    /// Resolve `{...}` field tokens in text, remembering
+    /// where each token went (see `resolve_fields_mapped`).
+    pub fn resolve_mapped(&self, text: &str) -> ResolvedText {
+        resolve_mapped_with_tokens(text, &self.tokens)
+    }
+
+    /// Resolve `{...}` field tokens in text (see
+    /// `resolve_fields`).
+    pub fn resolve(&self, text: &str) -> String {
+        self.resolve_mapped(text).text
+    }
+
+    /// Resolve a paragraph's runs (see `resolve_runs`).
+    pub fn resolve_runs(&self, runs: &[Run]) -> Vec<Run> {
+        resolve_runs_with_table(runs, self)
+    }
+}
+
 /// Resolve `{...}` field tokens in text against the profile and
 /// field map, remembering where each token went.
 ///
@@ -2001,7 +2046,11 @@ fn field_tokens(doc: &Document) -> Vec<(String, String)> {
 /// every display surface now shares this one pass, so the
 /// canvas, the previews, and the PDF always agree.)
 pub fn resolve_fields_mapped(text: &str, doc: &Document) -> ResolvedText {
-    let tokens = field_tokens(doc);
+    FieldTable::for_document(doc).resolve_mapped(text)
+}
+
+/// The one resolution pass, over a built token table.
+fn resolve_mapped_with_tokens(text: &str, tokens: &[(String, String)]) -> ResolvedText {
     let mut out = String::with_capacity(text.len());
     let mut spans = Vec::new();
     let mut i = 0usize;
@@ -2047,6 +2096,12 @@ pub fn resolve_fields(text: &str, doc: &Document) -> String {
 /// runs is still one chip; it cannot wear two faces).
 /// Literal text keeps its runs, split only at token edges.
 pub fn resolve_runs(runs: &[Run], doc: &Document) -> Vec<Run> {
+    resolve_runs_with_table(runs, &FieldTable::for_document(doc))
+}
+
+/// `resolve_runs` over a table built once for the document
+/// state (see `FieldTable`).
+fn resolve_runs_with_table(runs: &[Run], table: &FieldTable) -> Vec<Run> {
     // Run boundaries over the concatenated raw text.
     let mut bounds: Vec<(usize, usize, Option<bool>, Option<bool>)> = Vec::new();
     let mut raw = String::new();
@@ -2058,7 +2113,7 @@ pub fn resolve_runs(runs: &[Run], doc: &Document) -> Vec<Run> {
     if raw.is_empty() {
         return vec![Run::plain("")];
     }
-    let mapped = resolve_fields_mapped(&raw, doc);
+    let mapped = table.resolve_mapped(&raw);
     let flags_at = |offset: usize| -> (Option<bool>, Option<bool>) {
         for &(s, e, b, i) in &bounds {
             if offset >= s && offset < e {
@@ -2563,6 +2618,43 @@ mod tests {
         let plain = resolve_fields_mapped("No tokens here.", &doc);
         assert_eq!(plain.text, "No tokens here.");
         assert!(plain.spans.is_empty());
+    }
+
+    #[test]
+    fn a_shared_field_table_resolves_exactly_like_the_per_call_entry_points() {
+        // MINOR-4 (resolve_fields half): the table built
+        // once for a document state and the per-call entry
+        // points (which build that same table per call) are
+        // two doors into the one pass; this pins that they
+        // can never disagree — text, spans, and runs alike,
+        // including a serving-line token and a value that
+        // itself looks like a token.
+        let mut doc = mapped_doc();
+        doc.participants.insert("acolytes".into(), "Sam, Jo".into());
+        let table = FieldTable::for_document(&doc);
+        for raw in [
+            "Sermon: {Church.pastor} on {Sunday.name}",
+            "Acolytes: {Sunday.acolytes}",
+            "No tokens here.",
+            "{Church.name}{Church.name}",
+            "At {Church.website} now",
+        ] {
+            assert_eq!(table.resolve(raw), resolve_fields(raw, &doc), "{raw}");
+            assert_eq!(
+                table.resolve_mapped(raw),
+                resolve_fields_mapped(raw, &doc),
+                "{raw}"
+            );
+        }
+        let runs = vec![
+            Run::plain("Readers: "),
+            Run {
+                text: "{Sunday.acolytes}".into(),
+                bold: Some(true),
+                italic: None,
+            },
+        ];
+        assert_eq!(table.resolve_runs(&runs), resolve_runs(&runs, &doc));
     }
 
     #[test]

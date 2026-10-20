@@ -610,6 +610,10 @@ pub(crate) fn music_proof_document(doc: &Document) -> (Document, MusicProofCount
 
 pub(crate) fn char_findings(doc: &Document) -> Vec<CharFinding> {
     let oracle = ob_pdf::FaceOracle::new(&ob_pdf::library_font_bytes());
+    // One field table for the whole pass (see
+    // ob_model::FieldTable): resolution used to rebuild it
+    // per paragraph.
+    let table = ob_model::FieldTable::for_document(doc);
     let mut out = Vec::new();
     for story in &doc.stories {
         let mut chars: Vec<char> = Vec::new();
@@ -638,7 +642,7 @@ pub(crate) fn char_findings(doc: &Document) -> Vec<CharFinding> {
                     font_family: "Liberation Sans".into(),
                     font_sha256: None,
                 });
-            for run in ob_model::resolve_runs(&para.runs, doc) {
+            for run in table.resolve_runs(&para.runs) {
                 let bold = run.bold.unwrap_or(style.bold);
                 let italic = run.italic.unwrap_or(style.italic);
                 for c in oracle.undrawable_chars(&run.text, &style.font_family, bold, italic) {

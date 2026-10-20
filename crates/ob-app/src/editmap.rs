@@ -88,6 +88,10 @@ impl BufferMap {
         doc: &Document,
         mut expand: impl FnMut(usize, &str) -> Option<String>,
     ) -> BufferMap {
+        // One field table for the whole buffer (see
+        // ob_model::FieldTable): resolution used to rebuild
+        // it per paragraph.
+        let table = ob_model::FieldTable::for_document(doc);
         let raw_paras = para_ranges(raw_text);
         let mut resolved_text = String::new();
         let mut display_text = String::new();
@@ -99,7 +103,7 @@ impl BufferMap {
                 display_text.push('\n');
             }
             let raw_para = &raw_text[raw_range.clone()];
-            let resolved = ob_model::resolve_fields_mapped(raw_para, doc);
+            let resolved = table.resolve_mapped(raw_para);
             let resolved_start = resolved_text.len();
             resolved_text.push_str(&resolved.text);
             let resolved_range = resolved_start..resolved_text.len();

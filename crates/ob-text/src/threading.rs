@@ -138,9 +138,9 @@ struct PrepPara {
     line_h: Mpt,
 }
 
-fn prepare(doc: &Document, para: &Paragraph) -> PrepPara {
+fn prepare(doc: &Document, para: &Paragraph, table: &ob_model::FieldTable) -> PrepPara {
     let style = style_or_body(doc, &para.style);
-    let resolved_runs = ob_model::resolve_runs(&para.runs, doc);
+    let resolved_runs = table.resolve_runs(&para.runs);
     let resolved: String = resolved_runs.iter().map(|r| r.text.as_str()).collect();
     let mut spans: Vec<RunSpan> = Vec::new();
     let mut at = 0usize;
@@ -238,6 +238,27 @@ pub fn layout_story_thread(
     story: &Story,
     frames: &[(usize, usize)],
 ) -> StoryThread {
+    layout_story_thread_tabled(
+        shaper,
+        doc,
+        story,
+        frames,
+        &ob_model::FieldTable::for_document(doc),
+    )
+}
+
+/// `layout_story_thread` with the document's field table
+/// built by the caller: `layout_document_threads` builds
+/// one table for the whole document instead of one per
+/// story (and resolution used to rebuild it per paragraph;
+/// health audit Efficiency MINOR-4).
+fn layout_story_thread_tabled(
+    shaper: &mut Shaper,
+    doc: &Document,
+    story: &Story,
+    frames: &[(usize, usize)],
+    table: &ob_model::FieldTable,
+) -> StoryThread {
     let mut refs: Vec<(usize, usize)> = Vec::new();
     let mut rects: Vec<Rect> = Vec::new();
     for &(pi, fi) in frames {
@@ -260,7 +281,11 @@ pub fn layout_story_thread(
             leftover_lines: 0,
         };
     }
-    let preps: Vec<PrepPara> = story.paragraphs.iter().map(|p| prepare(doc, p)).collect();
+    let preps: Vec<PrepPara> = story
+        .paragraphs
+        .iter()
+        .map(|p| prepare(doc, p, table))
+        .collect();
     let last_w = rects[rects.len() - 1].w;
     let mut leftover = 0usize;
     let mut entered = vec![false; rects.len()];
@@ -377,13 +402,15 @@ pub fn layout_document_threads(
     shaper: &mut Shaper,
     doc: &Document,
 ) -> HashMap<String, StoryThread> {
+    // One field table for the whole document's layout.
+    let table = ob_model::FieldTable::for_document(doc);
     let mut out = HashMap::new();
     for story in &doc.stories {
         let frames = doc.frames_of_story(&story.id);
         if frames.is_empty() {
             continue;
         }
-        let thread = layout_story_thread(shaper, doc, story, &frames);
+        let thread = layout_story_thread_tabled(shaper, doc, story, &frames, &table);
         out.insert(story.id.clone(), thread);
     }
     out

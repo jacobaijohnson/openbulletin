@@ -22,10 +22,7 @@
 //!   credit line the document already carries as text.
 
 use base64::Engine as _;
-use ob_model::{
-    resolve_fields, resolve_runs, Asset, Document, Frame, FrameKind, LicenseKind, Paragraph,
-    ParagraphStyle, Run,
-};
+use ob_model::{Asset, Document, Frame, FrameKind, LicenseKind, Paragraph, ParagraphStyle, Run};
 use std::collections::{HashMap, HashSet};
 
 /// What the export carried, and what it could not, in
@@ -267,10 +264,11 @@ fn paragraph_html(
     doc: &Document,
     para: &Paragraph,
     headings: &HashMap<String, u8>,
+    table: &ob_model::FieldTable,
     out: &mut String,
 ) {
     let style = doc.style(&para.style);
-    let resolved = resolve_runs(&para.runs, doc);
+    let resolved = table.resolve_runs(&para.runs);
     let text: String = resolved.iter().map(|r| r.text.as_str()).collect();
     if text.trim().is_empty() {
         return;
@@ -987,13 +985,17 @@ pub fn export_html(doc: &Document) -> Result<(Vec<u8>, HtmlExportReport), String
         ..HtmlExportReport::default()
     };
     let headings = heading_levels(doc);
+    // One field table for the whole export (see
+    // ob_model::FieldTable): resolution used to rebuild it
+    // per paragraph.
+    let table = ob_model::FieldTable::for_document(doc);
     // Every story's resolved words, for the credits
     // pass's "already in the bulletin" check.
     let doc_text: String = doc
         .stories
         .iter()
         .flat_map(|s| &s.paragraphs)
-        .map(|p| resolve_fields(&p.text(), doc))
+        .map(|p| table.resolve(&p.text()))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -1041,7 +1043,7 @@ pub fn export_html(doc: &Document) -> Result<(Vec<u8>, HtmlExportReport), String
                         continue;
                     };
                     for para in &story.paragraphs {
-                        paragraph_html(doc, para, &headings, &mut body);
+                        paragraph_html(doc, para, &headings, &table, &mut body);
                     }
                 }
                 FrameKind::Shape => {

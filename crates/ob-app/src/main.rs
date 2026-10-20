@@ -3498,6 +3498,11 @@ fn write_instance_lock_to(lock: &std::path::Path, token: &str) {
 /// failure to be rounded off: where liveness cannot be
 /// proven either way, callers fail toward treating the
 /// peer as alive.
+// On non-Unix the primitive below can only ever answer
+// `Unknown`, so `Alive` and `Dead` are never constructed
+// there; the variants exist on every platform because the
+// callers' decision table is shared.
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PeerLiveness {
     Alive,

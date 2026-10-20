@@ -3569,8 +3569,11 @@ impl App {
             .add_filter("PDF", &["pdf"])
             .save_file()
         {
-            let (bytes, report) =
-                ob_pdf::export_reader_pdf_report(&doc, ob_pdf::ExportPurpose::ForPrinting);
+            let (bytes, report) = ob_pdf::export_reader_pdf_report_with_cache(
+                &doc,
+                ob_pdf::ExportPurpose::ForPrinting,
+                &mut self.export_image_cache,
+            );
             match write_file_atomically(&path, &bytes) {
                 Ok(()) => {
                     self.note(format!(
@@ -7972,8 +7975,11 @@ impl App {
     /// print fingerprint, and its status line says what it
     /// is, with the usual counts beside it.
     pub(crate) fn save_large_print_copy(&mut self, path: &std::path::Path) {
-        let (bytes, report) =
-            ob_pdf::export_large_print_pdf_report(&self.doc, ob_pdf::ExportPurpose::ForPrinting);
+        let (bytes, report) = ob_pdf::export_large_print_pdf_report_with_cache(
+            &self.doc,
+            ob_pdf::ExportPurpose::ForPrinting,
+            &mut self.export_image_cache,
+        );
         match write_file_atomically(path, &bytes) {
             Ok(()) => {
                 self.status = format!(

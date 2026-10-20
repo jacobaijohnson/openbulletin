@@ -1418,59 +1418,182 @@ fn info_object(doc: &Document, purpose: ExportPurpose, subject: Option<&str>) ->
     .into_bytes()
 }
 
-/// Build a PDF from a set of sheet sides (each side becomes one page).
-/// Embed one decoded picture as an image XObject and return
-/// its object id. Opaque pictures ride as JPEG (the print
-/// path's photo encoding, quality 85); a picture with real
-/// transparency rides as FlateDecode samples with a
-/// grayscale SMask, so its see-through parts stay see-through.
-fn add_image_object(pdf: &mut Pdf, decoded: &ob_image::Decoded) -> Option<usize> {
+/// One picture decoded and encoded once, ready to embed in
+/// any number of PDFs: the payload `add_image_object` used
+/// to rebuild from the decoded pixels on every export
+/// (health audit Efficiency MINOR-3). Opaque pictures ride
+/// as JPEG (the print path's photo encoding, quality 85); a
+/// picture with real transparency rides as FlateDecode
+/// samples with a grayscale SMask, so its see-through parts
+/// stay see-through.
+#[derive(Clone)]
+enum ImagePayload {
+    Jpeg(Vec<u8>),
+    Alpha { rgb: Vec<u8>, alpha: Vec<u8> },
+    Rgb(Vec<u8>),
+}
+
+#[derive(Clone)]
+struct PreparedImage {
+    width: u32,
+    height: u32,
+    payload: ImagePayload,
+}
+
+impl PreparedImage {
+    /// The payload's byte size, for the cache's memory cap.
+    fn cost(&self) -> usize {
+        match &self.payload {
+            ImagePayload::Jpeg(bytes) => bytes.len(),
+            ImagePayload::Alpha { rgb, alpha } => rgb.len() + alpha.len(),
+            ImagePayload::Rgb(bytes) => bytes.len(),
+        }
+    }
+}
+
+/// Decode one picture and prepare its embed payload: the
+/// work the per-document image cache exists to do once.
+fn prepare_image(decoded: &ob_image::Decoded) -> PreparedImage {
     let (w, h) = (decoded.width, decoded.height);
-    if decoded.has_alpha {
+    let payload = if decoded.has_alpha {
         let mut rgb = Vec::with_capacity(decoded.rgba.len() / 4 * 3);
         let mut alpha = Vec::with_capacity(decoded.rgba.len() / 4);
         for px in decoded.rgba.chunks_exact(4) {
             rgb.extend_from_slice(&px[0..3]);
             alpha.push(px[3]);
         }
-        let smask = add_stream(
-            pdf,
-            &format!(
-                "/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 8"
-            ),
-            &alpha,
-        );
-        Some(add_stream(
-            pdf,
-            &format!(
-                "/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask {smask} 0 R"
-            ),
-            &rgb,
-        ))
+        ImagePayload::Alpha { rgb, alpha }
     } else {
         match ob_image::encode_jpeg(decoded, 85) {
-            Ok(jpeg) => {
-                let mut obj = format!(
-                    "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
-                    jpeg.len()
-                )
-                .into_bytes();
-                obj.extend_from_slice(&jpeg);
-                obj.extend_from_slice(b"\nendstream");
-                Some(pdf.add(obj))
-            }
-            Err(_) => Some(add_stream(
-                pdf,
-                &format!(
-                    "/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8"
-                ),
-                &decoded
+            Ok(jpeg) => ImagePayload::Jpeg(jpeg),
+            Err(_) => ImagePayload::Rgb(
+                decoded
                     .rgba
                     .chunks_exact(4)
                     .flat_map(|px| [px[0], px[1], px[2]])
                     .collect::<Vec<u8>>(),
-            )),
+            ),
         }
+    };
+    PreparedImage {
+        width: w,
+        height: h,
+        payload,
+    }
+}
+
+/// Embed one prepared picture as an image XObject and
+/// return its object id.
+fn add_image_object(pdf: &mut Pdf, image: &PreparedImage) -> Option<usize> {
+    let (w, h) = (image.width, image.height);
+    match &image.payload {
+        ImagePayload::Alpha { rgb, alpha } => {
+            let smask = add_stream(
+                pdf,
+                &format!(
+                    "/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 8"
+                ),
+                alpha,
+            );
+            Some(add_stream(
+                pdf,
+                &format!(
+                    "/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask {smask} 0 R"
+                ),
+                rgb,
+            ))
+        }
+        ImagePayload::Jpeg(jpeg) => {
+            let mut obj = format!(
+                "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
+                jpeg.len()
+            )
+            .into_bytes();
+            obj.extend_from_slice(jpeg);
+            obj.extend_from_slice(b"\nendstream");
+            Some(pdf.add(obj))
+        }
+        ImagePayload::Rgb(rgb) => Some(add_stream(
+            pdf,
+            &format!(
+                "/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8"
+            ),
+            rgb,
+        )),
+    }
+}
+
+/// The per-document image cache across exports (health
+/// audit Efficiency MINOR-3): the reading copy, the imposed
+/// print copy, and the large-print copy of one bulletin each
+/// used to re-decode, re-size, and re-encode every picture
+/// (≈170 ms per photo per export on the audit's machine).
+/// One cache handed to all three exports of a document pays
+/// that once per picture per size.
+///
+/// Keys are the export's own image keys: (asset id, target
+/// width, target height). The asset id is the SHA-256 of the
+/// picture's bytes — the asset store's content fingerprint
+/// (`Document::add_asset` keys assets by their hash, and the
+/// preview texture cache keys the same way) — so an entry
+/// can never serve stale pixels: a replaced picture has
+/// different bytes, a different id, and therefore a
+/// different key, whichever document asks. Callers still
+/// own the lifetime: the app keeps one cache for its
+/// session beside its preview texture cache, and the plain
+/// export entry points use a throwaway cache (one export,
+/// no sharing). Total payload is capped; past the cap the
+/// cache empties rather than growing without bound.
+pub struct ImageCache {
+    entries: std::collections::HashMap<ImageKey, std::sync::Arc<PreparedImage>>,
+    bytes: usize,
+}
+
+/// The most payload one cache holds before it empties
+/// itself: a handful of full-page photos, not an archive.
+const IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
+
+impl Default for ImageCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImageCache {
+    pub fn new() -> Self {
+        ImageCache {
+            entries: std::collections::HashMap::new(),
+            bytes: 0,
+        }
+    }
+
+    /// How many prepared pictures the cache currently holds.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn get(&self, key: &ImageKey) -> Option<std::sync::Arc<PreparedImage>> {
+        self.entries.get(key).cloned()
+    }
+
+    fn put(&mut self, key: ImageKey, image: std::sync::Arc<PreparedImage>) {
+        let cost = image.cost();
+        if cost > IMAGE_CACHE_MAX_BYTES {
+            return; // one picture bigger than the whole cap is never cached
+        }
+        if self.bytes + cost > IMAGE_CACHE_MAX_BYTES {
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes -= old.cost();
+        }
+        self.bytes += cost;
+        self.entries.insert(key, image);
     }
 }
 
@@ -1484,43 +1607,45 @@ fn prepare_images(
     pdf: &mut Pdf,
     doc: &Document,
     keys: &[ImageKey],
+    cache: &mut ImageCache,
 ) -> std::collections::HashMap<ImageKey, (String, usize)> {
     let mut names = std::collections::HashMap::new();
     for (i, key) in keys.iter().enumerate() {
-        let (sha, tw, th) = key;
-        let Some(bytes) = doc.asset_data(sha) else {
-            continue;
+        let prepared = match cache.get(key) {
+            Some(hit) => hit,
+            None => {
+                let (sha, tw, th) = key;
+                let Some(bytes) = doc.asset_data(sha) else {
+                    continue;
+                };
+                let Ok(decoded) = ob_image::decode_at(bytes, *tw, *th) else {
+                    continue;
+                };
+                let image = std::sync::Arc::new(prepare_image(&decoded));
+                cache.put(key.clone(), image.clone());
+                image
+            }
         };
-        let Ok(decoded) = ob_image::decode_at(bytes, *tw, *th) else {
-            continue;
-        };
-        if let Some(obj) = add_image_object(pdf, &decoded) {
+        if let Some(obj) = add_image_object(pdf, &prepared) {
             names.insert(key.clone(), (format!("Im{i}"), obj));
         }
     }
     names
 }
 
-fn build_pdf(
-    doc: &Document,
-    sides: &[SheetSide],
-    purpose: ExportPurpose,
-) -> (Vec<u8>, ExportReport) {
-    build_pdf_full(doc, sides, purpose, &library_font_bytes(), None)
-}
-
-/// The full build: [`build_pdf`] with the Font Library
-/// snapshot given (so tests can put a document in front of
-/// faces the machine's real library does not hold) plus an
-/// optional /Subject line that replaces the purpose's own
-/// words (the large-print copy names itself, whatever
-/// purpose's picture cap it rides with).
+/// The full build: the export entry points with the Font
+/// Library snapshot given (so tests can put a document in
+/// front of faces the machine's real library does not hold)
+/// plus an optional /Subject line that replaces the
+/// purpose's own words (the large-print copy names itself,
+/// whatever purpose's picture cap it rides with).
 fn build_pdf_full(
     doc: &Document,
     sides: &[SheetSide],
     purpose: ExportPurpose,
     library: &[(ob_fonts::FontInfo, Vec<u8>)],
     subject: Option<&str>,
+    image_cache: &mut ImageCache,
 ) -> (Vec<u8>, ExportReport) {
     // Spoken-only paragraphs never reach a PDF (the one
     // publication rule, ob_model::Document::without_spoken_only):
@@ -1591,7 +1716,7 @@ fn build_pdf_full(
             }
         }
     }
-    let images = prepare_images(&mut pdf, doc, &image_keys);
+    let images = prepare_images(&mut pdf, doc, &image_keys, image_cache);
     for pc in &drawn {
         for op in &pc.ops {
             if let ContentOp::Image { key, .. } = op {
@@ -1812,8 +1937,19 @@ pub fn export_reader_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
 
 /// Reader PDF with its export report.
 pub fn export_reader_pdf_report(doc: &Document, purpose: ExportPurpose) -> (Vec<u8>, ExportReport) {
+    export_reader_pdf_report_with_cache(doc, purpose, &mut ImageCache::new())
+}
+
+/// Reader PDF with its export report, sharing one
+/// [`ImageCache`] with the caller's other exports of the
+/// same document (see the cache's own note).
+pub fn export_reader_pdf_report_with_cache(
+    doc: &Document,
+    purpose: ExportPurpose,
+    cache: &mut ImageCache,
+) -> (Vec<u8>, ExportReport) {
     let sides = ob_impose::impose_single(doc);
-    build_pdf(doc, &sides, purpose)
+    build_pdf_full(doc, &sides, purpose, &library_font_bytes(), None, cache)
 }
 
 pub fn export_imposed_pdf(doc: &Document, purpose: ExportPurpose) -> Vec<u8> {
@@ -1826,12 +1962,23 @@ pub fn export_imposed_pdf_report(
     doc: &Document,
     purpose: ExportPurpose,
 ) -> (Vec<u8>, ExportReport) {
+    export_imposed_pdf_report_with_cache(doc, purpose, &mut ImageCache::new())
+}
+
+/// Imposed PDF with its export report, sharing one
+/// [`ImageCache`] with the caller's other exports of the
+/// same document (see the cache's own note).
+pub fn export_imposed_pdf_report_with_cache(
+    doc: &Document,
+    purpose: ExportPurpose,
+    cache: &mut ImageCache,
+) -> (Vec<u8>, ExportReport) {
     // Lay out the padded document so a file with the wrong
     // number of panels prints with blanks, never crashes and
     // never drops a page (closing audit).
     let padded = ob_impose::padded_document(doc);
     let sides = ob_impose::impose(&padded);
-    build_pdf(&padded, &sides, purpose)
+    build_pdf_full(&padded, &sides, purpose, &library_font_bytes(), None, cache)
 }
 
 /// The /Subject a large-print copy carries, in the file
@@ -1847,11 +1994,28 @@ pub fn export_large_print_pdf_report(
     doc: &Document,
     purpose: ExportPurpose,
 ) -> (Vec<u8>, ExportReport) {
+    export_large_print_pdf_report_with_cache(doc, purpose, &mut ImageCache::new())
+}
+
+/// The large-print copy with its export report, sharing one
+/// [`ImageCache`] with the caller's other exports of the
+/// same document (see the cache's own note).
+pub fn export_large_print_pdf_report_with_cache(
+    doc: &Document,
+    purpose: ExportPurpose,
+    cache: &mut ImageCache,
+) -> (Vec<u8>, ExportReport) {
     let library = library_font_bytes();
     let lp = large_print_document_with_library(doc, &library);
     let sides = ob_impose::impose_single(&lp);
-    let (bytes, mut report) =
-        build_pdf_full(&lp, &sides, purpose, &library, Some(LARGE_PRINT_SUBJECT));
+    let (bytes, mut report) = build_pdf_full(
+        &lp,
+        &sides,
+        purpose,
+        &library,
+        Some(LARGE_PRINT_SUBJECT),
+        cache,
+    );
     // The transform already worked from the publication
     // copy, so the build saw nothing spoken-only to leave
     // out; the report names the source document's count.
@@ -3065,7 +3229,14 @@ mod tests {
         doc.story_mut(&sid).expect("story").paragraphs =
             vec![ob_model::Paragraph::new("body", "Peace \u{271D}")];
         let sides = ob_impose::impose_single(&doc);
-        let (pdf, _) = build_pdf_full(&doc, &sides, ExportPurpose::ForPrinting, &library, None);
+        let (pdf, _) = build_pdf_full(
+            &doc,
+            &sides,
+            ExportPurpose::ForPrinting,
+            &library,
+            None,
+            &mut ImageCache::new(),
+        );
         let text = extracted_text(&pdf);
         assert!(
             text.contains('\u{271D}'),
@@ -3262,14 +3433,20 @@ mod tests {
                 gill,
             ),
         ];
-        let export = |doc: &Document,
-                      library: &[(ob_fonts::FontInfo, Vec<u8>)]|
-         -> (Vec<u8>, String) {
-            let sides = ob_impose::impose_single(doc);
-            let (pdf, _) = build_pdf_full(doc, &sides, ExportPurpose::ForPrinting, library, None);
-            let text = extracted_text(&pdf);
-            (pdf, text)
-        };
+        let export =
+            |doc: &Document, library: &[(ob_fonts::FontInfo, Vec<u8>)]| -> (Vec<u8>, String) {
+                let sides = ob_impose::impose_single(doc);
+                let (pdf, _) = build_pdf_full(
+                    doc,
+                    &sides,
+                    ExportPurpose::ForPrinting,
+                    library,
+                    None,
+                    &mut ImageCache::new(),
+                );
+                let text = extracted_text(&pdf);
+                (pdf, text)
+            };
         let doc = gill_doc("Gill Sans MT");
         // Stage 1: only the lookalike is in the library.
         // The export must draw exactly as the same words
@@ -3559,6 +3736,68 @@ mod tests {
             text.contains("/Width 1200 /Height 900"),
             "no cap, no shrink"
         );
+    }
+
+    #[test]
+    fn a_shared_image_cache_serves_the_same_bytes_and_never_stale_ones() {
+        // MINOR-3: one cache across the three exports of one
+        // document. The PDFs must be byte-identical to the
+        // uncached exports (the cache changes who pays for
+        // decode+encode, never what is embedded), the cache
+        // must actually hold the picture afterwards, and a
+        // different picture at the same target size must
+        // never be served the first picture's pixels: the
+        // key is the asset's content hash, so different
+        // bytes are a different key.
+        let (doc, _sha) = picture_doc(true);
+        let mut cache = ImageCache::new();
+        let (reader_cached, _) =
+            export_reader_pdf_report_with_cache(&doc, ExportPurpose::ForPrinting, &mut cache);
+        assert!(!cache.is_empty(), "the export filled the cache");
+        let entries_after_reader = cache.len();
+        let (reader_plain, _) = export_reader_pdf_report(&doc, ExportPurpose::ForPrinting);
+        assert_eq!(
+            reader_cached, reader_plain,
+            "cached bytes == uncached bytes"
+        );
+        let (imposed_cached, _) =
+            export_imposed_pdf_report_with_cache(&doc, ExportPurpose::ForPrinting, &mut cache);
+        let (imposed_plain, _) = export_imposed_pdf_report(&doc, ExportPurpose::ForPrinting);
+        assert_eq!(imposed_cached, imposed_plain);
+        assert_eq!(
+            cache.len(),
+            entries_after_reader,
+            "the imposed export at the same sizes added no new decode"
+        );
+        // A second document whose picture bytes differ (the
+        // same box, the same target size): its export must
+        // embed its own picture, not the cached one.
+        let (mut doc2, _sha2) = picture_doc(true);
+        let other_png = {
+            let decoded = ob_image::Decoded {
+                width: 1200,
+                height: 900,
+                rgba: vec![200u8; 1200 * 900 * 4],
+                has_alpha: false,
+            };
+            ob_image::encode_png(&decoded).expect("encode other png")
+        };
+        let sha2 = doc2.add_asset(
+            &other_png,
+            ob_model::AssetKind::Picture,
+            "image/png",
+            ob_model::RightsRecord::default(),
+        );
+        doc2.panels[0]
+            .frames
+            .last_mut()
+            .expect("picture frame")
+            .picture = Some(ob_model::PicturePlacement::new(sha2));
+        let (reader2_cached, _) =
+            export_reader_pdf_report_with_cache(&doc2, ExportPurpose::ForPrinting, &mut cache);
+        let (reader2_plain, _) = export_reader_pdf_report(&doc2, ExportPurpose::ForPrinting);
+        assert_eq!(reader2_cached, reader2_plain, "no stale pixels served");
+        assert_ne!(reader2_cached, reader_cached);
     }
 
     #[test]

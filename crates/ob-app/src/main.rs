@@ -482,6 +482,15 @@ struct App {
     /// happens once per key per class; the stored asset bytes
     /// themselves never change (G2).
     pic_tex: std::collections::HashMap<(String, u32), (egui::TextureHandle, u32, u32)>,
+    /// Prepared pictures for the PDF exports, shared across
+    /// this session's exports (ob_pdf::ImageCache, health
+    /// audit Efficiency MINOR-3): the print copy, the reading
+    /// copy, and the large-print copy decode and encode each
+    /// picture once between them, not once per copy. The
+    /// cache keys on the picture's content hash and target
+    /// size, like pic_tex above, so a replaced picture can
+    /// never serve its predecessor's pixels.
+    export_image_cache: ob_pdf::ImageCache,
     /// The picture box whose crop is being panned by a drag
     /// inside it, and where that drag began: (crop_x, crop_y,
     /// pointer x, pointer y) in milli-points.
@@ -845,6 +854,7 @@ impl Default for App {
             bg_tex_key: String::new(),
             bg_tex: None,
             pic_tex: std::collections::HashMap::new(),
+            export_image_cache: ob_pdf::ImageCache::new(),
             drag_pan: None,
             pan_origin: None,
             show_clips: false,
@@ -2511,9 +2521,10 @@ impl eframe::App for App {
                         if ui.button(egui::RichText::new("Open the print copy").strong()).clicked() {
                             self.commit_if_editing();
                             self.pin_fonts();
-                            let (bytes, report) = ob_pdf::export_imposed_pdf_report(
+                            let (bytes, report) = ob_pdf::export_imposed_pdf_report_with_cache(
                                 &self.doc,
                                 ob_pdf::ExportPurpose::ForPrinting,
+                                &mut self.export_image_cache,
                             );
                             let path = std::env::temp_dir().join(format!(
                                 "openbulletin-print-copy-{}.pdf",
@@ -2550,9 +2561,10 @@ impl eframe::App for App {
                                 .save_file()
                             {
                                 self.pin_fonts();
-                                let (bytes, report) = ob_pdf::export_imposed_pdf_report(
+                                let (bytes, report) = ob_pdf::export_imposed_pdf_report_with_cache(
                                     &self.doc,
                                     ob_pdf::ExportPurpose::ForPrinting,
+                                    &mut self.export_image_cache,
                                 );
                                 match write_file_atomically(&path, &bytes) {
                                     Ok(()) => {
@@ -2582,9 +2594,10 @@ impl eframe::App for App {
                                 .save_file()
                             {
                                 self.pin_fonts();
-                                let (bytes, report) = ob_pdf::export_reader_pdf_report(
+                                let (bytes, report) = ob_pdf::export_reader_pdf_report_with_cache(
                                     &self.doc,
                                     ob_pdf::ExportPurpose::ForEmailOrWeb,
+                                    &mut self.export_image_cache,
                                 );
                                 match write_file_atomically(&path, &bytes) {
                                     Ok(()) => {
@@ -2631,9 +2644,10 @@ impl eframe::App for App {
                             {
                                 self.pin_fonts();
                                 let (proof, counts) = music_proof_document(&self.doc);
-                                let (bytes, _report) = ob_pdf::export_reader_pdf_report(
+                                let (bytes, _report) = ob_pdf::export_reader_pdf_report_with_cache(
                                     &proof,
                                     ob_pdf::ExportPurpose::ForPrinting,
+                                    &mut self.export_image_cache,
                                 );
                                 self.status = match write_file_atomically(&path, &bytes) {
                                     Ok(()) => format!(

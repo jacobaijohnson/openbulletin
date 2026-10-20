@@ -563,3 +563,150 @@ timing through the helper remains unmeasured (no
 helper binary is staged on this box; efficiency
 appendix). The Tier-2 final gate remains unstarted
 and is not the coordinator's to start.
+
+## Health-fix coordinator close (2026-10-19)
+
+All ten fix batches shipped in the synthesis order and
+were independently re-verified by the coordinator on
+their exact committed trees — full unpiped suite plus
+clippy `-D warnings`, verdicts read from cargo's own
+exit codes in on-disk logs, never the builder's word.
+Final tree before this close: `1d0d226`, **896 passed /
+0 failed, clippy exit 0**. The booklet baseline
+reproduced byte-exact at every batch verification
+(imposed 31,717 / reader 34,977). Test count walked
+862 → 896 across the phase; every delta is a named pin
+or an explained relocation (H-H moved tests without
+changing the count).
+
+- **H-A `93a3e32` — the BLOCKER (HF-1).** The
+  Save-time tracing-picture absorb is fenced in
+  ob-format (canonicalize, inside-tree, 64 MB,
+  picture-magic), the app's unfenced gather deleted,
+  background textures decode through the guarded
+  helper. Coordinator: 864/0, clippy 0, both fence
+  pins green.
+- **H-B `814575e` — caps (HF-2, HF-3).** One 512 MB
+  door gate at every open door, HTML data-URI caps
+  (64 MB each / 2,000 / 512 MB total, dropped and
+  counted), catalog caps, zip entry-count caps,
+  MusicXML depth cap. Coordinator: 878/0, clippy 0,
+  14 pins green.
+- **H-C `a21fc5d` — durable writes (HF-5).**
+  sync-and-rename under document saves and the app's
+  kept copies; corrupt hymn memory set aside with a
+  one-time note; journal peer detection hardened
+  with a per-instance token and recycled-PID guard.
+  Coordinator: 884/0, clippy 0.
+- **H-D `c5f30e1` — journal off the frame thread,
+  stored pictures (HF-4).** Journal saves run on a
+  dedicated worker; picture assets are Stored, not
+  re-deflated, in the .obd (no format-version
+  change). Coordinator: 888/0, clippy 0. The batch's
+  own before/after save numbers never arrived, so
+  the coordinator measured the pair at close with one
+  harness on both trees (8 MiB incompressible picture
+  document, five saves, median): pre-H-D tree
+  `a21fc5d` 562.2 ms → final tree 13.0 ms. The audit
+  lane's independent pre-fix measure was 494.730 ms,
+  the same magnitude.
+- **H-E `1ba2bbc` — docs truth (HF-6).** The four
+  never-built TEMPLATE-ANALYZER behaviors marked not
+  built in place; FONTS.md, EXTRACT.md, LEGAL.md,
+  the crate manifests, and the reading-copy button
+  label made truthful. Coordinator: 888/0, clippy 0,
+  plus firsthand greps of each correction.
+- **H-F `9d9054b` — dead surface (HF-7, HF-8).**
+  The v0 estimator API deleted; the starter manifest
+  parsed at install so per-piece provenance (public
+  domain no longer flattened to CC0) reaches the
+  collection record; dead wrapper and prototype
+  deleted; test-only surfaces narrowed. Coordinator:
+  889/0, clippy 0.
+- **H-G `c3a1b5c` — one canonical helper (E-5..E-10,
+  E-13).** One inches conversion, one month/weekday
+  name source, one capped zip read with each door's
+  overflow judgment named, one sha256, letter
+  geometry and sheet names single-sourced. The
+  weekday tables stay recorded twins: unifying
+  either way would move a reading, and the reason is
+  written on both sides. Coordinator: 890/0,
+  clippy 0, and the fuzz bins re-run on the committed
+  tree — both stdouts byte-identical to the
+  pre-batch baselines, bin md5s unchanged.
+- **H-H `6f370ab` + `2ccb5a6` + `f7dff0b` — seams
+  (HF-9, HF-10, HF-11).** ob-model's rights and
+  serving engines moved beside hymns/markdown;
+  contribution.rs became four engine modules with
+  the public API at the top; main.rs split along its
+  section seams (its "thin shell" claim corrected in
+  the header, README, and CONTRIBUTING). Pure moves,
+  one file per commit, suite green between.
+  Coordinator: 890/0 at each gate and at the batch
+  close, clippy 0, and a dual-tree fuzz comparison
+  (baseline worktree at `c3a1b5c` against the final
+  tree): both bins byte-identical. One honest
+  partial: `settings_tests` (7,512 lines) stayed in
+  main.rs — it reaches across every seam — so
+  main.rs remains the app's largest file at ~11.7k
+  lines, most of it that test module and the App
+  core.
+- **H-I `b33973e` + `d355282` + `9caca41` —
+  boundaries and posture (HF-13, HF-14, E-15,
+  m-1..m-6, m-8, S-4, S-8, S-9, S-10).** The process
+  runner lives in its own crate (ob-runner) and
+  ob-music carries no ob-extract dependency;
+  ob-extract's public surface narrowed to its
+  contract; workspace version and lints adopted
+  with `unsafe_code` denied workspace-wide — exactly
+  one unsafe block remains (the runner's killpg),
+  under a scoped allow whose SAFETY comment names
+  the spawn site it protects. Catalog note names
+  sanitized; clipart intake refuses symlinks and
+  caps the batch; checkout pinned by SHA in all
+  workflows; the PDFium helper fails closed.
+  Coordinator: 894/0, clippy 0, manifest and
+  workflow checks firsthand, and all five preserved
+  fuzz bins still compile against the narrowed crate
+  (probe build exit 0) — round 30's net is intact.
+- **H-J `af080be` + `c803646` + `1d0d226` — the
+  performance tail (Efficiency MINOR-1..4),
+  measurement-led.** Landed: the font-scan memo
+  (repeat library scan 39.9 ms → 0.049 ms; repeat
+  system enumeration 19.5 ms → 0.002 ms on the probe
+  harness); a per-document image cache across
+  exports (imposed export 380 ms → 18 ms on a shared
+  cache; a warm three-export job 1,087–1,451 ms →
+  29–58 ms); the resolve_fields token table built
+  once per document state (full-document pass
+  marginal cost 14.3 ms → 0.76 ms; short call
+  12.5 µs → 0.09 µs). Recorded not worth the risk:
+  MINOR-4, contribution header tokenization —
+  re-tokenization proper measures 3.3 ms of a
+  169.2 ms parse-200 median (~2%; the realistic
+  count including index rebuilds is 3.3–6.6 ms,
+  2–4%), and the doubled clause re-walk it rides on
+  measured net-negative under default similarity.
+  No parser edit was landed. Coordinator: 896/0,
+  clippy 0, fuzz bins byte-identical on the
+  coordinator's own runs.
+
+**The standing fuzz condition held across the whole
+phase.** On the final tree the unchanged bins
+(verdict27 md5 `a9cac6c399d304bac853f2a64f683fca`,
+comp27 md5 `4f85c605a841329dabed1d9a2aa84f88`) read:
+verdict total_lines=40000, panics=0; composition
+D_TOTAL=497024, D_PANICS=0 — byte-identical stdout
+to the pre-fix-phase baselines. No existing date
+reading moved under any batch.
+
+**Held item.** HF-12 (the `Result<_, String>` error
+architecture) was not batched and not started, as
+the synthesis directs. It is Jacob's call, now
+taken with these results in hand: ten batches, one
+BLOCKER and thirteen MAJORs closed, 896 tests,
+clippy clean, readings unmoved.
+
+The parser convergence loop resumes from here:
+round 30 audits the round-29 close's successor tree
+— this close — under the next coordinator.

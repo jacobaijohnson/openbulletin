@@ -3483,9 +3483,168 @@ fn read_instance_lock_from(lock: &std::path::Path) -> Option<InstanceLock> {
     Some(InstanceLock { pid, token })
 }
 
-fn write_instance_lock_to(lock: &std::path::Path, token: &str) {
-    let text = format!("{}\n{token}\n", std::process::id());
-    let _ = std::fs::write(lock, text);
+/// The text a lock file carries for one holder: its pid on
+/// the first line, its instance token on the second.
+fn instance_lock_text(pid: u32, token: &str) -> String {
+    format!("{pid}\n{token}\n")
+}
+
+/// A lock whose pid field cannot name a process at all —
+/// missing or unparseable, 0 (which names a whole process
+/// group, not a process), or above the namable range — is
+/// corrupt, not a peer (R31-B, F6). The app's own writer
+/// always writes its real pid, so such a lock was never
+/// left by a healthy instance: it is a damaged file, and
+/// it has no owner whose journal needs protecting. The
+/// boundary is provability: a pid that *could* name a live
+/// process is never judged by this rule, however unknown
+/// its liveness is.
+fn lock_pid_cannot_name_a_process(info: &InstanceLock) -> bool {
+    match info.pid {
+        None => true,
+        Some(pid) => pid == 0 || pid > i32::MAX as u32,
+    }
+}
+
+/// Does the lock at this path name exactly this instance?
+/// The post-write re-read rides this: a claim is only as
+/// true as the lock file it leaves behind.
+fn lock_names_instance(lock: &std::path::Path, own_pid: u32, own_token: &str) -> bool {
+    let expected_token = own_token.to_string();
+    let expected = InstanceLock {
+        pid: Some(own_pid),
+        token: Some(expected_token),
+    };
+    read_instance_lock_from(lock) == Some(expected)
+}
+
+/// One step of the atomic claim: create the lock file
+/// new, write this instance's text into it, and re-read it
+/// before calling the create a win.
+enum LockCreate {
+    /// The file was created by this call and the re-read
+    /// names this instance.
+    Created,
+    /// A lock file already stood at the path; nothing was
+    /// written over it.
+    AlreadyExists,
+    /// The write itself failed, or the re-read did not
+    /// name this instance. Either way the claim must
+    /// answer false: it does not hold the lock.
+    Failed,
+}
+
+fn try_create_instance_lock_from(
+    lock: &std::path::Path,
+    own_pid: u32,
+    own_token: &str,
+) -> LockCreate {
+    use std::io::Write as _;
+    let text = instance_lock_text(own_pid, own_token);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = match options.open(lock) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return LockCreate::AlreadyExists;
+        }
+        Err(_) => return LockCreate::Failed,
+    };
+    if file.write_all(text.as_bytes()).is_err() || file.sync_all().is_err() {
+        return LockCreate::Failed;
+    }
+    drop(file);
+    if lock_names_instance(lock, own_pid, own_token) {
+        LockCreate::Created
+    } else {
+        LockCreate::Failed
+    }
+}
+
+/// Move a lock file that no live peer holds (dead owner,
+/// corrupt, or unreadable) aside in one rename, so the
+/// claim can take the path through the same create-new
+/// step an unheld lock takes. The old file is not
+/// deleted: it stays beside the lock as
+/// `openbulletin.lock.displaced`, the set-aside shape the
+/// journal and settings recovery paths already use.
+/// Renaming is the arbiter between two claimants who both
+/// judged the old lock takeable: the file can be moved
+/// only once, and the loser of the rename finds the path
+/// gone or already re-created and re-judges what stands
+/// there instead of proceeding.
+fn displace_instance_lock_from(lock: &std::path::Path) -> bool {
+    // Only a regular file is ever displaced: anything else
+    // standing at the lock path (a directory obstructing
+    // it, say) is not a lock this claim may move, and the
+    // claim answers false instead of clearing its way.
+    match std::fs::metadata(lock) {
+        Ok(metadata) if metadata.is_file() => {}
+        _ => return false,
+    }
+    let mut displaced_name = lock.as_os_str().to_owned();
+    displaced_name.push(".displaced");
+    let displaced = std::path::PathBuf::from(displaced_name);
+    // Only a previous displaced copy is ever removed, and
+    // only so the rename has somewhere to land on
+    // platforms whose rename will not replace a file.
+    let _ = std::fs::remove_file(&displaced);
+    std::fs::rename(lock, &displaced).is_ok()
+}
+
+/// The writing half of the claim (R31-B, F3): take the
+/// lock atomically and truthfully, answering true only
+/// when the lock file now names this instance. The check
+/// half is `peer_instance_alive_from`, re-run here at
+/// write time rather than trusted from an earlier read,
+/// so a claimant that arrives after a peer (or a winning
+/// claimant) judges what actually stands at the path:
+/// - no file: create-new, so exactly one of two
+///   simultaneous claimants creates it;
+/// - a file naming a live peer: refused, untouched;
+/// - a file naming this instance already: held;
+/// - a file no live peer holds (dead owner, corrupt, or
+///   unreadable): displaced in one rename, then taken
+///   through the same create-new step, and a claimant
+///   that loses that create race re-reads and proceeds
+///   only if the winner's lock names it (it does not).
+///
+/// This is the only production writer of the lock file,
+/// and no path deletes the lock.
+fn acquire_instance_lock_from(lock: &std::path::Path, own_pid: u32, own_token: &str) -> bool {
+    if peer_instance_alive_from(lock, own_pid, own_token) {
+        return false;
+    }
+    if lock_names_instance(lock, own_pid, own_token) {
+        return true;
+    }
+    match try_create_instance_lock_from(lock, own_pid, own_token) {
+        LockCreate::Created => true,
+        LockCreate::Failed => false,
+        LockCreate::AlreadyExists => {
+            // A lock stood at the path. Judge whoever
+            // holds it now, at write time: a live peer (or
+            // the winner of the create race) keeps it.
+            if peer_instance_alive_from(lock, own_pid, own_token) {
+                return false;
+            }
+            if lock_names_instance(lock, own_pid, own_token) {
+                return true;
+            }
+            // No live peer holds it: take over through
+            // the same atomic create-new step.
+            if !displace_instance_lock_from(lock) {
+                return false;
+            }
+            match try_create_instance_lock_from(lock, own_pid, own_token) {
+                LockCreate::Created => true,
+                // The create race was lost or the write
+                // failed: proceed only if the lock that
+                // stands there now names this instance.
+                _ => lock_names_instance(lock, own_pid, own_token),
+            }
+        }
+    }
 }
 
 /// What the platform can say about whether a process is
@@ -3494,10 +3653,10 @@ fn write_instance_lock_to(lock: &std::path::Path, token: &str) {
 /// failure to be rounded off: where liveness cannot be
 /// proven either way, callers fail toward treating the
 /// peer as alive.
-// On non-Unix the primitive below can only ever answer
-// `Unknown`, so `Alive` and `Dead` are never constructed
-// there; the variants exist on every platform because the
-// callers' decision table is shared.
+// On a platform with no primitive below, the answer can
+// only ever be `Unknown`, so `Alive` and `Dead` are never
+// constructed there; the variants exist on every platform
+// because the callers' decision table is shared.
 #[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PeerLiveness {
@@ -3512,12 +3671,18 @@ enum PeerLiveness {
 /// sends no signal and only reports whether the pid names
 /// a live process: success means alive, ESRCH means no
 /// such process, and EPERM means a live process owned by
-/// someone else. Pids that cannot name a single foreign
+/// someone else. On Windows the same question is asked
+/// through `OpenProcess` + `GetExitCodeProcess` (see
+/// below). Pids that cannot name a single foreign
 /// process (0 names a whole process group; anything above
 /// `i32::MAX` cannot be a pid at all) answer `Unknown`
-/// without any syscall. On non-Unix there is no primitive
-/// here, so the answer is always `Unknown` and callers
-/// keep their conservative posture.
+/// without any syscall, on every platform: the primitive
+/// cannot prove such a pid gone, and the corrupt-lock
+/// rule that judges lock files naming one lives at the
+/// lock layer (`lock_pid_cannot_name_a_process`), not
+/// here. On a platform with neither primitive the answer
+/// is always `Unknown` and callers keep their
+/// conservative posture.
 #[cfg(unix)]
 #[allow(unsafe_code)]
 fn peer_liveness(pid: u32) -> PeerLiveness {
@@ -3539,7 +3704,65 @@ fn peer_liveness(pid: u32) -> PeerLiveness {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+extern "system" {
+    fn OpenProcess(
+        desired_access: u32,
+        inherit_handle: i32,
+        process_id: u32,
+    ) -> *mut std::ffi::c_void;
+    fn GetExitCodeProcess(process: *mut std::ffi::c_void, exit_code: *mut u32) -> i32;
+    fn CloseHandle(object: *mut std::ffi::c_void) -> i32;
+}
+
+/// The Windows liveness primitive (R31-B, F2): open the
+/// process for querying and read its exit code. A process
+/// that does not exist fails the open with
+/// `ERROR_INVALID_PARAMETER` and is `Dead`; a process
+/// that exists but may not be opened fails with
+/// `ERROR_ACCESS_DENIED` and is `Alive`; an opened process
+/// still running reports `STILL_ACTIVE`, and one that has
+/// exited reports its exit code. Any other failure of the
+/// query itself is `Unknown`, which callers read as alive.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn peer_liveness(pid: u32) -> PeerLiveness {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return PeerLiveness::Unknown;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_INVALID_PARAMETER: i32 = 87;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    // SAFETY: the calls only ask the kernel about the
+    // process named by the plain integer pid checked
+    // above. The handle, when one is returned, is owned
+    // by this function and closed before it returns; the
+    // exit code is written through a pointer to a local
+    // this function owns. No other memory is read or
+    // written, and no handle is used after it is closed.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(code) if code == ERROR_INVALID_PARAMETER => PeerLiveness::Dead,
+            Some(code) if code == ERROR_ACCESS_DENIED => PeerLiveness::Alive,
+            _ => PeerLiveness::Unknown,
+        };
+    }
+    let mut exit_code: u32 = 0;
+    let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+    let _ = unsafe { CloseHandle(handle) };
+    if queried == 0 {
+        return PeerLiveness::Unknown;
+    }
+    if exit_code == STILL_ACTIVE {
+        PeerLiveness::Alive
+    } else {
+        PeerLiveness::Dead
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn peer_liveness(pid: u32) -> PeerLiveness {
     let _ = pid;
     PeerLiveness::Unknown
@@ -3590,23 +3813,29 @@ fn peer_provably_gone(pid: u32) -> bool {
     }
 }
 
-/// Is another OpenBulletin process alive? On Unix the
-/// answer rides the platform liveness primitive (with the
-/// recycled-pid guard above): a live pid that is not
+/// Is another OpenBulletin process alive? The answer
+/// rides the platform liveness primitive (with the
+/// recycled-pid guard above) on every platform, with one
+/// decision table (R31-B, F2): a live pid that is not
 /// provably a recycled stranger is a live peer, and an
 /// `Unknown` answer also reads as alive — muting a lone
 /// instance's autosave is recoverable, while retiring a
 /// live peer's journal is the loss this machinery exists
-/// to prevent. Elsewhere a foreign token in the lock
-/// cannot prove liveness on its own, so we answer no
-/// rather than mute a lone instance's autosave — on those
-/// platforms the token, not this check, is what protects
-/// the journal (see `journal_retirement_allowed`).
+/// to prevent. A lock naming a foreign token whose owner
+/// cannot be proven gone therefore reads as a live peer
+/// everywhere, for the claim, for the `peer_alive` flag
+/// startup derives from it, and for the journal hold.
+/// The one exception is a corrupt lock (F6): a pid field
+/// that cannot name a process at all names no owner, so
+/// the lock is no peer however unknown liveness is.
 fn peer_instance_alive_from(lock: &std::path::Path, own_pid: u32, own_token: &str) -> bool {
     let Some(info) = read_instance_lock_from(lock) else {
         return false;
     };
     if info.token.as_deref() == Some(own_token) {
+        return false;
+    }
+    if lock_pid_cannot_name_a_process(&info) {
         return false;
     }
     let Some(pid) = info.pid else {
@@ -3615,44 +3844,40 @@ fn peer_instance_alive_from(lock: &std::path::Path, own_pid: u32, own_token: &st
     if pid == own_pid {
         return false;
     }
-    #[cfg(unix)]
-    {
-        match peer_liveness(pid) {
-            PeerLiveness::Alive => !peer_provably_gone(pid),
-            PeerLiveness::Dead => false,
-            PeerLiveness::Unknown => true,
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        false
+    match peer_liveness(pid) {
+        PeerLiveness::Alive => !peer_provably_gone(pid),
+        PeerLiveness::Dead => false,
+        PeerLiveness::Unknown => true,
     }
 }
 
-/// Startup's claim on the instance lock (R30-A). Answers
-/// true when this instance took the lock and now holds it;
-/// false when a live peer holds it, in which case the lock
-/// file is left exactly as it was. Startup must never take
-/// the lock from a live peer: the lock naming the peer is
-/// what makes the journal token rules refuse this
-/// instance's later retirements of the peer's journal, so
-/// overwriting it at startup — the round-30 F1 hole —
-/// disarmed that protection with the peer still running,
-/// and this instance's next ordinary save then deleted
-/// the peer's live journal. When no live peer holds the lock
-/// (absent, unreadable, stale, or naming a dead owner, per
-/// `peer_instance_alive_from`'s rules), the lock is taken
-/// exactly as startup always took it.
+/// Startup's claim on the instance lock (R30-A, made
+/// atomic and truthful by R31-B F3). Answers true only
+/// when this instance took the lock and the lock file now
+/// names it — the claim is a create-new claim with a
+/// verified write and a post-write re-read, never a
+/// check-then-plain-write, so two instances launched
+/// together cannot both hold it, and a failed write
+/// answers false. It answers false when a live peer holds
+/// the lock, in which case the lock file is left exactly
+/// as it was. Startup must never take the lock from a
+/// live peer: the lock naming the peer is what makes the
+/// journal token rules refuse this instance's later
+/// retirements of the peer's journal, so overwriting it
+/// at startup — the round-30 F1 hole — disarmed that
+/// protection with the peer still running, and this
+/// instance's next ordinary save then deleted the peer's
+/// live journal. When no live peer holds the lock
+/// (absent, unreadable, corrupt, or naming a dead owner,
+/// per `peer_instance_alive_from`'s rules), the lock is
+/// taken through `acquire_instance_lock_from`'s atomic
+/// path.
 fn claim_instance_lock() -> bool {
     claim_instance_lock_from(&instance_lock_path(), instance_token())
 }
 
 fn claim_instance_lock_from(lock: &std::path::Path, own_token: &str) -> bool {
-    if peer_instance_alive_from(lock, std::process::id(), own_token) {
-        return false;
-    }
-    write_instance_lock_to(lock, own_token);
-    true
+    acquire_instance_lock_from(lock, std::process::id(), own_token)
 }
 
 /// May this instance retire (clear) a journal? (S-MIN-3.)
@@ -3698,15 +3923,29 @@ fn retire_journal_from(
 ) -> bool {
     let meta_token = journal_token_from(meta);
     let lock_info = read_instance_lock_from(lock);
-    let lock_token = lock_info.as_ref().and_then(|i| i.token.as_deref());
+    // A corrupt lock (F6) names no owner at all: its token
+    // does not hold the journal, and its "owner" counts as
+    // gone, so a journal left under one is retirable
+    // instead of wedged for as long as the damaged file
+    // stands.
+    let lock_is_corrupt = lock_info
+        .as_ref()
+        .map(lock_pid_cannot_name_a_process)
+        .unwrap_or(false);
+    let lock_token = if lock_is_corrupt {
+        None
+    } else {
+        lock_info.as_ref().and_then(|i| i.token.as_deref())
+    };
     // The owner is provably gone when the lock's pid names a
     // process that is dead or is plainly not this app. With
     // no pid to check, nothing is proven.
-    let owner_provably_gone = lock_info
-        .as_ref()
-        .and_then(|i| i.pid)
-        .map(peer_provably_gone)
-        .unwrap_or(false);
+    let owner_provably_gone = lock_is_corrupt
+        || lock_info
+            .as_ref()
+            .and_then(|i| i.pid)
+            .map(peer_provably_gone)
+            .unwrap_or(false);
     let allowed = journal_retirement_allowed(
         meta_token.as_deref(),
         own_token,
@@ -6571,7 +6810,9 @@ mod settings_tests {
         assert!(obd.exists() && meta.exists(), "the journal survives");
         // The lock no longer names that owner: it exited, and
         // the journal may be retired through the usual path.
-        write_instance_lock_to(&lock, instance_token());
+        // (The lock is taken through the claim itself, the
+        // only production writer since R31-B.)
+        assert!(claim_instance_lock_from(&lock, instance_token()));
         assert!(
             retire_journal_from(&obd, &meta, &lock, instance_token()),
             "an exited owner's journal may be retired"
@@ -6592,6 +6833,30 @@ mod settings_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A live peer process for the lock pins: a copy of
+    /// the system sleep binary under a name that reads as
+    /// this app, so the /proc identity refinement judges
+    /// it the way it judges a real OpenBulletin process
+    /// (alive, and not provably a recycled stranger). The
+    /// caller kills and reaps it. Modeled this way since
+    /// R31-B: a pid-0 lock is a corrupt lock under F6, not
+    /// a live peer — a healthy instance always writes its
+    /// real pid, so a live peer is modeled with one.
+    #[cfg(unix)]
+    fn spawn_live_peer(dir: &std::path::Path) -> std::process::Child {
+        let peer_exe = dir.join("openbulletin-peer");
+        let sleep_source = ["/bin/sleep", "/usr/bin/sleep"]
+            .into_iter()
+            .map(std::path::Path::new)
+            .find(|candidate| candidate.exists())
+            .expect("a system sleep binary to model the peer with");
+        std::fs::copy(sleep_source, &peer_exe).expect("peer binary copy");
+        std::process::Command::new(&peer_exe)
+            .arg("30")
+            .spawn()
+            .expect("spawn live peer")
+    }
+
     #[cfg(unix)]
     #[test]
     fn startup_claim_leaves_a_live_peers_lock_and_journal_alone() {
@@ -6602,17 +6867,15 @@ mod settings_tests {
         // startup overwrote the lock with B's token, and B's
         // save retired A's journal through the "lock no
         // longer names the owner" rule while A was still
-        // running. A's liveness is modeled the way the
-        // CI-FIX liveness pins model it: a foreign pid the
-        // platform cannot prove gone (here pid 0, which
-        // names no single process) reads as a live peer and
-        // is never provably gone — the same two answers a
-        // live OpenBulletin pid gives.
+        // running. A is a real live process (see
+        // `spawn_live_peer`): alive, and not provably gone.
         let dir = std::env::temp_dir().join(format!("ob-app-startup-claim-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let obd = dir.join("autosave.obd");
         let meta = dir.join("autosave.txt");
         let lock = dir.join("openbulletin.lock");
+        let mut peer = spawn_live_peer(&dir);
+        let peer_pid = peer.id();
         let doc = ob_layout::build_template(
             ob_layout::Preset::LetterBifold,
             ob_model::ChurchProfile::default(),
@@ -6621,7 +6884,8 @@ mod settings_tests {
         );
         // A writes its journal; the lock names A.
         write_journal_to(&obd, &meta, &doc, &None, "foreign-token").expect("A writes journal");
-        std::fs::write(&lock, "0\nforeign-token\n").expect("A's lock");
+        let peer_lock = format!("{peer_pid}\nforeign-token\n");
+        std::fs::write(&lock, peer_lock).expect("A's lock");
         assert!(
             peer_instance_alive_from(&lock, std::process::id(), instance_token()),
             "the lock reads as a live peer before B starts"
@@ -6646,6 +6910,8 @@ mod settings_tests {
             "B's save does not retire A's journal"
         );
         assert!(obd.exists() && meta.exists(), "A's journal survives");
+        let _ = peer.kill();
+        let _ = peer.wait();
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -6743,8 +7009,13 @@ mod settings_tests {
         // CI-FIX pins for peer_instance_alive_from's unix
         // decision table: a foreign lock naming a reaped
         // pid names no live peer; a foreign lock naming a
-        // pid that cannot name a process (0) is Unknown,
-        // which reads as alive — the conservative side.
+        // live process that is not provably a recycled
+        // stranger reads as a live peer. (The Unknown side
+        // of the table is pinned at the primitive by
+        // `liveness_never_proves_an_unnamable_pid_gone`;
+        // since R31-B a lock naming such a pid is corrupt
+        // under F6, not a peer, and the corrupt pins below
+        // pin that shape at this function.)
         let dir = std::env::temp_dir().join(format!("ob-app-peer-alive-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
@@ -6761,33 +7032,250 @@ mod settings_tests {
             !peer_instance_alive_from(&lock, own, instance_token()),
             "a reaped foreign pid is not a live peer"
         );
-        std::fs::write(&lock, "0\nforeign-token\n").expect("unnamable lock");
+        let mut peer = spawn_live_peer(&dir);
+        let live_pid = peer.id();
+        std::fs::write(&lock, format!("{live_pid}\nforeign-token\n")).expect("live lock");
         assert!(
             peer_instance_alive_from(&lock, own, instance_token()),
-            "an unprovable foreign pid reads as a live peer"
+            "a live foreign pid reads as a live peer"
         );
+        let _ = peer.kill();
+        let _ = peer.wait();
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(not(unix))]
     #[test]
-    fn peer_alive_stays_token_only_off_unix() {
-        // CI-FIX pin for the standing non-unix contract: a
-        // foreign token in the lock cannot prove liveness
-        // on its own, so no peer is reported alive there.
+    fn peer_alive_holds_for_a_foreign_lock_off_unix() {
+        // R31-B pin, rewriting the CI-FIX pin that asserted
+        // the defective token-only posture: off Unix the
+        // invariant holds too — a lock naming a foreign
+        // token whose owner cannot be proven gone reads as
+        // a live peer, and the claim refuses it and leaves
+        // it byte for byte. The owner is modeled with pid
+        // 4, the Windows System process: a process that
+        // always exists and cannot be proven gone (the
+        // query answers Alive, or Unknown where it may not
+        // be queried — both read as alive). On a non-Unix
+        // platform with no liveness primitive the answer is
+        // Unknown, which reads the same way.
         let dir = std::env::temp_dir().join(format!("ob-app-peer-alive-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
-        std::fs::write(
-            &lock,
-            format!("{}\nforeign-token\n", std::process::id() + 1),
-        )
-        .expect("foreign lock");
-        assert!(!peer_instance_alive_from(
-            &lock,
-            std::process::id(),
-            instance_token()
-        ));
+        std::fs::write(&lock, "4\nforeign-token\n").expect("foreign lock");
+        assert!(
+            peer_instance_alive_from(&lock, std::process::id(), instance_token()),
+            "a foreign lock of unprovable liveness reads as a live peer off Unix"
+        );
+        let lock_before = std::fs::read_to_string(&lock).expect("read foreign lock");
+        assert!(
+            !claim_instance_lock_from(&lock, instance_token()),
+            "the claim refuses a foreign lock it cannot prove ownerless off Unix"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&lock).expect("read lock after claim"),
+            lock_before,
+            "the lock file is untouched"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn claim_interleaving_on_an_unheld_lock_admits_exactly_one_claimant() {
+        // R31-B pin for F3, modeled on the red team's
+        // lockreplica: force the check-check-write-write
+        // interleaving at the `_from` seams — both
+        // claimants run the check while the lock is unheld
+        // (both see no live peer), then both run the write
+        // step. Exactly one holds: the first create-new
+        // wins, the loser's write step re-reads, judges the
+        // winner a live peer, answers false, and leaves the
+        // winner's lock byte for byte. Claimant A is this
+        // process, so a lock naming A reads as a live peer
+        // to B on every platform; B is a simulated second
+        // instance (a distinct pid and token) whose pid is
+        // only ever an identity, never a liveness subject.
+        let dir = std::env::temp_dir().join(format!("ob-app-claim-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let a_pid = std::process::id();
+        let a_token = "claimant-a-token";
+        let b_pid = a_pid + 1000;
+        let b_token = "claimant-b-token";
+        // Check, check.
+        assert!(
+            !peer_instance_alive_from(&lock, a_pid, a_token),
+            "A's check: no live peer on an unheld lock"
+        );
+        assert!(
+            !peer_instance_alive_from(&lock, b_pid, b_token),
+            "B's check: no live peer on an unheld lock"
+        );
+        // Write, write.
+        assert!(
+            acquire_instance_lock_from(&lock, a_pid, a_token),
+            "A's write step takes the unheld lock"
+        );
+        let winner_bytes = std::fs::read(&lock).expect("read winner's lock");
+        assert!(
+            !acquire_instance_lock_from(&lock, b_pid, b_token),
+            "B's write step loses the create race and answers false"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after B's write step"),
+            winner_bytes,
+            "the loser's write step leaves the winner's lock byte for byte"
+        );
+        let info = read_instance_lock_from(&lock).expect("the lock names the winner");
+        assert_eq!(info.pid, Some(a_pid));
+        assert_eq!(info.token.as_deref(), Some(a_token));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claim_interleaving_on_a_stale_lock_admits_exactly_one_claimant() {
+        // R31-B pin for F3's takeover half: the same
+        // check-check-write-write interleaving, but the
+        // lock already stands naming a dead owner. Both
+        // claimants judge it takeable; the first takes it
+        // through the atomic path (displace, create-new,
+        // re-read), and the second then faces a live peer's
+        // lock — not the stale one it checked — and refuses
+        // it, leaving the winner's lock byte for byte.
+        let dir = std::env::temp_dir().join(format!("ob-app-claim-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = child.id();
+        child.wait().expect("reap child");
+        let stale_lock = format!("{dead_pid}\nforeign-token\n");
+        std::fs::write(&lock, stale_lock).expect("stale lock");
+        let a_pid = std::process::id();
+        let a_token = "claimant-a-token";
+        let b_pid = a_pid + 1000;
+        let b_token = "claimant-b-token";
+        // Check, check.
+        assert!(
+            !peer_instance_alive_from(&lock, a_pid, a_token),
+            "A's check: the stale lock names no live peer"
+        );
+        assert!(
+            !peer_instance_alive_from(&lock, b_pid, b_token),
+            "B's check: the stale lock names no live peer"
+        );
+        // Write, write.
+        assert!(
+            acquire_instance_lock_from(&lock, a_pid, a_token),
+            "A's write step takes the stale lock over"
+        );
+        let winner_bytes = std::fs::read(&lock).expect("read winner's lock");
+        assert!(
+            !acquire_instance_lock_from(&lock, b_pid, b_token),
+            "B's write step now faces a live peer and answers false"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after B's write step"),
+            winner_bytes,
+            "the loser's write step leaves the winner's lock byte for byte"
+        );
+        let info = read_instance_lock_from(&lock).expect("the lock names the winner");
+        assert_eq!(info.pid, Some(a_pid));
+        assert_eq!(info.token.as_deref(), Some(a_token));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn claim_answers_false_when_the_lock_write_fails() {
+        // R31-B pin for F3's truthful half: the claim's
+        // contract ("answers true when this instance took
+        // the lock and now holds it") fails closed when the
+        // write cannot land — here the lock path is
+        // obstructed by a directory, and separately the
+        // lock's folder does not exist at all.
+        let dir = std::env::temp_dir().join(format!("ob-app-claim-fails-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        std::fs::create_dir(&lock).expect("obstruct the lock path");
+        assert!(
+            !claim_instance_lock_from(&lock, instance_token()),
+            "a claim whose write is obstructed answers false"
+        );
+        assert!(lock.is_dir(), "the obstruction is left standing");
+        let missing = dir.join("no-such-folder").join("openbulletin.lock");
+        assert!(
+            !claim_instance_lock_from(&missing, instance_token()),
+            "a claim into a missing folder answers false"
+        );
+        assert!(
+            !dir.join("no-such-folder").exists(),
+            "the failed claim created nothing"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_corrupt_lock_is_no_peer_and_its_journal_is_retirable() {
+        // R31-B pins for F6: a lock whose pid field cannot
+        // name a process — 0, an over-range pid (just past
+        // the boundary and at the u32 ceiling), a garbage
+        // pid field, and a missing pid line — is corrupt,
+        // not a peer: it does not read as a live peer, the
+        // claim takes it through the atomic path, and a
+        // journal held under it is retirable instead of
+        // wedged for as long as the damaged file stands.
+        let dir = std::env::temp_dir().join(format!("ob-app-corrupt-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        let shapes = [
+            ("pid zero", "0\nforeign-token\n"),
+            ("pid just over range", "2147483648\nforeign-token\n"),
+            ("pid at u32 ceiling", "4294967295\nforeign-token\n"),
+            ("garbage pid field", "garbage\nforeign-token\n"),
+            ("missing pid line", "\nforeign-token\n"),
+        ];
+        for (index, (shape, lock_text)) in shapes.into_iter().enumerate() {
+            let case = dir.join(format!("case-{index}"));
+            std::fs::create_dir_all(&case).expect("case dir");
+            let obd = case.join("autosave.obd");
+            let meta = case.join("autosave.txt");
+            let lock = case.join("openbulletin.lock");
+            std::fs::write(&lock, lock_text).expect("corrupt lock");
+            assert!(
+                !peer_instance_alive_from(&lock, std::process::id(), instance_token()),
+                "{shape}: a corrupt lock does not read as a live peer"
+            );
+            // A journal held under the corrupt lock: the
+            // note and the lock both name the foreign
+            // token, the shape that wedges when the lock
+            // reads as that token's live owner.
+            write_journal_to(&obd, &meta, &doc, &None, "foreign-token")
+                .expect("write foreign journal");
+            assert!(
+                retire_journal_from(&obd, &meta, &lock, instance_token()),
+                "{shape}: a journal under a corrupt lock is retirable"
+            );
+            assert!(
+                !obd.exists() && !meta.exists(),
+                "{shape}: the journal is cleared"
+            );
+            assert!(
+                claim_instance_lock_from(&lock, instance_token()),
+                "{shape}: the claim takes a corrupt lock"
+            );
+            let info = read_instance_lock_from(&lock).expect("the lock was rewritten");
+            assert_eq!(info.pid, Some(std::process::id()), "{shape}");
+            assert_eq!(info.token.as_deref(), Some(instance_token()), "{shape}");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

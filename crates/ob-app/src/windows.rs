@@ -980,7 +980,11 @@ impl App {
         // lock — the file is left untouched, so the peer stays
         // named on it and the journal token rules keep
         // protecting the peer's journal from this instance.
-        // A refused claim is exactly a live peer.
+        // A refused claim reads as a live peer here: the
+        // claim also refuses when its write fails or a
+        // racing claimant wins (R31-B), and both of those
+        // mean this instance does not hold the lock, so
+        // muting its journal is the safe direction.
         self.peer_alive = !claim_instance_lock();
         if self.peer_alive {
             // The journal belongs to the other window, so

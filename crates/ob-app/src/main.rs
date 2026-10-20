@@ -3871,55 +3871,40 @@ fn peer_liveness(pid: u32) -> PeerLiveness {
 }
 
 /// Whether the process with this pid is provably not a live
-/// OpenBulletin peer: the pid is dead, or the live process
-/// there is plainly some other program — a recycled pid.
-/// Where the process exists but its identity cannot be
-/// established, this answers false: fail toward treating
-/// the peer as alive and keeping its journal.
+/// OpenBulletin peer: the pid is dead. That is the only
+/// proof of gone-ness (R32-E, F9): the exe file-name test
+/// that used to refine this answer on Unix — a live pid
+/// whose exe name does not contain "openbulletin" counted
+/// as a recycled stranger — can only ever prove the safe
+/// direction. From outside a process, a renamed copy of
+/// the app (a renamed binary, a distro or wrapper name)
+/// is indistinguishable from another program, so absence
+/// of the substring cannot prove gone-ness; the identity
+/// evidence is demoted to proof-of-peer only, confirming
+/// that a live pid is the app, never that a peer is gone.
+/// This answer therefore rests on the tri-state's `Dead`
+/// answer alone, on every platform: a live pid, or one
+/// whose liveness is unknown, is not provably gone, and
+/// callers fail toward treating the peer as alive and
+/// keeping its journal.
+///
+/// Amended record (R32-E, F9, amending round-31 F6): the
+/// recycled-pid case — identity readable or not — joins
+/// the recorded-not-fixed family: it is indistinguishable
+/// from a live peer, and the wedge (a claim refused, a
+/// journal kept) is the safe direction working. That is
+/// also the posture Windows already has (no identity
+/// refinement there at all).
 fn peer_provably_gone(pid: u32) -> bool {
-    match peer_liveness(pid) {
-        PeerLiveness::Dead => true,
-        PeerLiveness::Alive => {
-            #[cfg(unix)]
-            {
-                // The /proc identity refinement, applied
-                // only where /proc is actually readable
-                // (Linux): the exe link names the running
-                // program; a name that is not this app means
-                // the pid was recycled by an unrelated
-                // process. Where /proc is absent or
-                // unreadable, identity is unproven and the
-                // peer is treated as alive.
-                let proc_dir = std::path::PathBuf::from(format!("/proc/{pid}"));
-                if let Ok(exe) = std::fs::read_link(proc_dir.join("exe")) {
-                    let names_app = exe
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_lowercase().contains("openbulletin"))
-                        .unwrap_or(false);
-                    return !names_app;
-                }
-                if let Ok(cmdline) = std::fs::read(proc_dir.join("cmdline")) {
-                    let text = String::from_utf8_lossy(&cmdline).to_lowercase();
-                    if !text.is_empty() {
-                        return !text.contains("openbulletin");
-                    }
-                }
-                false
-            }
-            #[cfg(not(unix))]
-            {
-                false
-            }
-        }
-        PeerLiveness::Unknown => false,
-    }
+    matches!(peer_liveness(pid), PeerLiveness::Dead)
 }
 
 /// Is another OpenBulletin process alive? The answer
-/// rides the platform liveness primitive (with the
-/// recycled-pid guard above) on every platform, with one
-/// decision table (R31-B, F2): a live pid that is not
-/// provably a recycled stranger is a live peer, and an
+/// rides the platform liveness primitive on every
+/// platform, with one decision table (R31-B, F2): a live
+/// pid is a live peer whatever its exe is named (R32-E,
+/// F9 — a recycled pid is indistinguishable from one, so
+/// no identity test refines this), and an
 /// `Unknown` answer also reads as alive — muting a lone
 /// instance's autosave is recoverable, while retiring a
 /// live peer's journal is the loss this machinery exists
@@ -3995,11 +3980,24 @@ fn claim_instance_lock_from(lock: &std::path::Path, own_token: &str) -> bool {
 /// - a tokenless note (written before tokens existed) is
 ///   retired only when the lock names no other live holder.
 ///
+/// A lock with no token line still names a holder: by its
+/// pid (R32-E, F8). `lock_names_live_holder_by_pid` carries
+/// that holder into this table — it is true when a tokenless
+/// lock's pid names a process other than this instance that
+/// is not provably gone (alive, or liveness unknown, which
+/// reads as alive at the claim too). A journal under such
+/// a lock — a foreign-token note or a tokenless note alike —
+/// is not retired, exactly as a token-carrying lock's
+/// holder's journal is not: the pid names the holder the
+/// token would have named, and "the lock names no holder"
+/// was never true of it.
+///
 /// Pure over its inputs, so the rules can be pinned directly.
 fn journal_retirement_allowed(
     meta_token: Option<&str>,
     own_token: &str,
     lock_token: Option<&str>,
+    lock_names_live_holder_by_pid: bool,
     owner_provably_gone: bool,
 ) -> bool {
     match meta_token {
@@ -4008,9 +4006,16 @@ fn journal_retirement_allowed(
             if owner_provably_gone {
                 return true;
             }
+            if lock_token.is_none() && lock_names_live_holder_by_pid {
+                return false;
+            }
             lock_token != Some(token)
         }
-        None => owner_provably_gone || lock_token.is_none() || lock_token == Some(own_token),
+        None => {
+            owner_provably_gone
+                || lock_token == Some(own_token)
+                || (lock_token.is_none() && !lock_names_live_holder_by_pid)
+        }
     }
 }
 
@@ -4040,18 +4045,32 @@ fn retire_journal_from(
         lock_info.as_ref().and_then(|i| i.token.as_deref())
     };
     // The owner is provably gone when the lock's pid names a
-    // process that is dead or is plainly not this app. With
-    // no pid to check, nothing is proven.
+    // process that is dead (R32-E, F9: dead is the only proof
+    // of gone-ness). With no pid to check, nothing is proven.
     let owner_provably_gone = lock_is_corrupt
         || lock_info
             .as_ref()
             .and_then(|i| i.pid)
             .map(peer_provably_gone)
             .unwrap_or(false);
+    // A tokenless lock's pid reaches the decision table as
+    // a holder (R32-E, F8): the lock carries no token line,
+    // but its pid names another process that is not provably
+    // gone, so the lock names a live holder all the same. A
+    // corrupt lock names no holder (its owner counts as gone
+    // above), and a pid naming this instance names this
+    // instance, not another holder.
+    let lock_names_live_holder_by_pid = !lock_is_corrupt
+        && lock_token.is_none()
+        && match lock_info.as_ref().and_then(|i| i.pid) {
+            Some(pid) => pid != std::process::id() && !owner_provably_gone,
+            None => false,
+        };
     let allowed = journal_retirement_allowed(
         meta_token.as_deref(),
         own_token,
         lock_token,
+        lock_names_live_holder_by_pid,
         owner_provably_gone,
     );
     if allowed {
@@ -6966,23 +6985,67 @@ mod settings_tests {
             Some("foreign-token"),
             "own-token",
             Some("foreign-token"),
+            false,
             true
         ));
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn journal_retirement_counts_a_tokenless_locks_pid_as_a_holder() {
+        // R32-E pure pins for F8: a tokenless lock's pid
+        // reaches the decision table as a holder
+        // (`lock_names_live_holder_by_pid`). With that
+        // holder standing, neither journal shape is
+        // retired: a foreign-token note is refused exactly
+        // as it is under a token-carrying lock naming its
+        // owner, and a tokenless note is refused because
+        // the lock does name another live holder. Without
+        // the holder, the standing tokenless readings are
+        // unchanged: a tokenless note under a tokenless
+        // lock naming no live holder is retired, and a
+        // foreign-token note is retired when the lock no
+        // longer names its owner.
+        assert!(
+            !journal_retirement_allowed(Some("foreign-token"), "own-token", None, true, false),
+            "a foreign journal under a tokenless lock naming a live holder by pid is not retired"
+        );
+        assert!(
+            !journal_retirement_allowed(None, "own-token", None, true, false),
+            "a tokenless journal under a tokenless lock naming a live holder by pid is not retired"
+        );
+        assert!(
+            journal_retirement_allowed(None, "own-token", None, false, false),
+            "a tokenless journal under a tokenless lock naming no live holder is retired"
+        );
+        assert!(
+            journal_retirement_allowed(Some("foreign-token"), "own-token", None, false, false),
+            "a foreign journal is retired when the lock no longer names its owner or a live holder"
+        );
+    }
+
     /// A live peer process for the lock pins: a copy of
     /// the system sleep binary under a name that reads as
-    /// this app, so the /proc identity refinement judges
-    /// it the way it judges a real OpenBulletin process
-    /// (alive, and not provably a recycled stranger). The
-    /// caller kills and reaps it. Modeled this way since
+    /// this app, so the peer is modeled the way a real
+    /// OpenBulletin process stands (alive, and not
+    /// provably gone). The caller kills and reaps it.
+    /// Modeled this way since
     /// R31-B: a pid-0 lock is a corrupt lock under F6, not
     /// a live peer — a healthy instance always writes its
     /// real pid, so a live peer is modeled with one.
     #[cfg(unix)]
     fn spawn_live_peer(dir: &std::path::Path) -> std::process::Child {
-        let peer_exe = dir.join("openbulletin-peer");
+        spawn_live_peer_named(dir, "openbulletin-peer")
+    }
+
+    /// A live peer process under an exact binary name:
+    /// the R32-E F9 pins spawn one whose name does not
+    /// contain "openbulletin" at all (a renamed copy),
+    /// which must be protected exactly as the app-named
+    /// one is.
+    #[cfg(unix)]
+    fn spawn_live_peer_named(dir: &std::path::Path, name: &str) -> std::process::Child {
+        let peer_exe = dir.join(name);
         let sleep_source = ["/bin/sleep", "/usr/bin/sleep"]
             .into_iter()
             .map(std::path::Path::new)
@@ -7147,8 +7210,7 @@ mod settings_tests {
         // CI-FIX pins for peer_instance_alive_from's unix
         // decision table: a foreign lock naming a reaped
         // pid names no live peer; a foreign lock naming a
-        // live process that is not provably a recycled
-        // stranger reads as a live peer. (The Unknown side
+        // live process reads as a live peer. (The Unknown side
         // of the table is pinned at the primitive by
         // `liveness_never_proves_an_unnamable_pid_gone`;
         // since R31-B a lock naming such a pid is corrupt
@@ -7177,6 +7239,164 @@ mod settings_tests {
             peer_instance_alive_from(&lock, own, instance_token()),
             "a live foreign pid reads as a live peer"
         );
+        let _ = peer.kill();
+        let _ = peer.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tokenless_lock_naming_a_live_peer_holds_both_journal_shapes() {
+        // R32-E pin for F8, the red team's witnesses
+        // `onlypid-live-peer` and
+        // `onlypid-live-peer-legacyjournal`: a tokenless
+        // (legacy-shape) lock naming a live peer by pid
+        // only — no token line. The claim already refused
+        // this lock (the lock reads as a live peer); before
+        // the fix, retirement allowed and cleared a foreign
+        // journal under it in both journal shapes, because
+        // the decision table read the lock as naming no
+        // holder. The lock names one, by pid: retirement
+        // refuses in both shapes, exactly as it refuses
+        // under a token-carrying lock. Once the peer is
+        // gone, the same tokenless lock holds nothing and
+        // both journals retire through the provably-gone
+        // rule.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-onlypid-live-peer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let mut peer = spawn_live_peer(&dir);
+        let peer_pid = peer.id();
+        let tokenless_lock = format!("{peer_pid}\n");
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        // Shape one: a journal note naming a foreign token.
+        let foreign = dir.join("foreign-journal");
+        std::fs::create_dir_all(&foreign).expect("case dir");
+        let f_obd = foreign.join("autosave.obd");
+        let f_meta = foreign.join("autosave.txt");
+        let f_lock = foreign.join("openbulletin.lock");
+        write_journal_to(&f_obd, &f_meta, &doc, &None, "foreign-token")
+            .expect("write foreign journal");
+        std::fs::write(&f_lock, &tokenless_lock).expect("tokenless lock");
+        assert!(
+            peer_instance_alive_from(&f_lock, std::process::id(), instance_token()),
+            "the tokenless lock reads as a live peer at the claim"
+        );
+        assert!(
+            !retire_journal_from(&f_obd, &f_meta, &f_lock, instance_token()),
+            "onlypid-live-peer: a foreign journal under a tokenless lock naming a live peer is not retired"
+        );
+        assert!(f_obd.exists() && f_meta.exists(), "the journal survives");
+        // Shape two: a tokenless (legacy) journal note.
+        let legacy = dir.join("legacy-journal");
+        std::fs::create_dir_all(&legacy).expect("case dir");
+        let l_obd = legacy.join("autosave.obd");
+        let l_meta = legacy.join("autosave.txt");
+        let l_lock = legacy.join("openbulletin.lock");
+        write_journal_to(&l_obd, &l_meta, &doc, &None, "foreign-token")
+            .expect("write journal before its note is made legacy");
+        std::fs::write(&l_meta, "1729000000\n\n").expect("tokenless legacy note");
+        assert_eq!(
+            journal_token_from(&l_meta),
+            None,
+            "the legacy note names no token"
+        );
+        std::fs::write(&l_lock, &tokenless_lock).expect("tokenless lock");
+        assert!(
+            peer_instance_alive_from(&l_lock, std::process::id(), instance_token()),
+            "the tokenless lock reads as a live peer at the claim"
+        );
+        assert!(
+            !retire_journal_from(&l_obd, &l_meta, &l_lock, instance_token()),
+            "onlypid-live-peer-legacyjournal: a tokenless journal under a tokenless lock naming a live peer is not retired"
+        );
+        assert!(l_obd.exists() && l_meta.exists(), "the journal survives");
+        // The peer gone: the same tokenless lock holds
+        // nothing, and both journals retire.
+        let _ = peer.kill();
+        let _ = peer.wait();
+        assert!(
+            retire_journal_from(&f_obd, &f_meta, &f_lock, instance_token()),
+            "a gone peer's foreign journal under a tokenless lock is retired"
+        );
+        assert!(
+            !f_obd.exists() && !f_meta.exists(),
+            "the journal is cleared"
+        );
+        assert!(
+            retire_journal_from(&l_obd, &l_meta, &l_lock, instance_token()),
+            "a gone peer's tokenless journal under a tokenless lock is retired"
+        );
+        assert!(
+            !l_obd.exists() && !l_meta.exists(),
+            "the journal is cleared"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renamed_live_peer_keeps_its_lock_and_journal() {
+        // R32-E pin for F9, the red team's witness
+        // `live-renamed-peer`: the same live peer process
+        // as the standing pins spawn, but its binary is
+        // named `bulletin` — its exe file name does not
+        // contain "openbulletin". Before the fix, the /proc
+        // exe substring test judged this live peer a
+        // recycled stranger: provably gone, its lock taken
+        // and its journal retirable while it ran. Absence
+        // of the substring proves nothing (a renamed copy
+        // is indistinguishable from another program), so
+        // the peer is protected exactly as the app-named
+        // one is: not provably gone, read as a live peer,
+        // the claim refuses and leaves its lock byte for
+        // byte, and retirement refuses its journal.
+        let dir = std::env::temp_dir().join(format!("ob-app-renamed-peer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let obd = dir.join("autosave.obd");
+        let meta = dir.join("autosave.txt");
+        let lock = dir.join("openbulletin.lock");
+        let mut peer = spawn_live_peer_named(&dir, "bulletin");
+        let peer_pid = peer.id();
+        assert_eq!(peer_liveness(peer_pid), PeerLiveness::Alive);
+        assert!(
+            !peer_provably_gone(peer_pid),
+            "a renamed live peer is not provably gone"
+        );
+        let peer_lock = format!("{peer_pid}\nforeign-token\n");
+        std::fs::write(&lock, peer_lock).expect("renamed peer's lock");
+        assert!(
+            peer_instance_alive_from(&lock, std::process::id(), instance_token()),
+            "a renamed live peer reads as a live peer"
+        );
+        let lock_before = std::fs::read_to_string(&lock).expect("read peer's lock");
+        assert!(
+            !claim_instance_lock_from(&lock, instance_token()),
+            "the claim does not take a renamed live peer's lock"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&lock).expect("read lock after claim"),
+            lock_before,
+            "the lock file is untouched"
+        );
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        write_journal_to(&obd, &meta, &doc, &None, "foreign-token")
+            .expect("renamed peer writes journal");
+        assert!(
+            !retire_journal_from(&obd, &meta, &lock, instance_token()),
+            "a renamed live peer's journal is not retired"
+        );
+        assert!(obd.exists() && meta.exists(), "the journal survives");
         let _ = peer.kill();
         let _ = peer.wait();
         std::fs::remove_dir_all(&dir).ok();
@@ -7601,7 +7821,7 @@ mod settings_tests {
         // lock names A's token and A is not provably gone,
         // and the seam refuses with it.
         assert!(
-            !journal_retirement_allowed(Some(a_token), b_token, Some(a_token), false),
+            !journal_retirement_allowed(Some(a_token), b_token, Some(a_token), false, false),
             "the pure rule refuses retirement of the winner's journal"
         );
         assert!(

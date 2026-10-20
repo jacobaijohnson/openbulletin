@@ -651,19 +651,51 @@ fn write_license_note_with<F>(
 /// id so separator- and dot-differing ids hash apart,
 /// and the same raw id always hashes to the same name,
 /// so a repeat install lands on its one note again.
+///
+/// The same routing fires for two further shapes the
+/// byte-exact name space calls distinct but the
+/// filesystems the app ships on do not (round 32,
+/// F10). On case-insensitive APFS and NTFS defaults,
+/// ids differing only in case (Lato / lato) are one
+/// file; and on normalization-insensitive volumes,
+/// ids differing only in unicode normalization (NFC
+/// vs NFD café) are one file. Injectivity is judged
+/// under those semantics: an id whose plain form
+/// could collide under case-folding — its lowercase
+/// form differs from it — takes the hashed form, and
+/// so does any id carrying a non-ASCII character,
+/// whose normalization or full case-fold twin this
+/// code does not carry the tables to rule out (real
+/// catalog ids are lowercase ASCII slugs, so no real
+/// family changes its note's name). The hash is of
+/// the raw id's own bytes, so the variants hash
+/// apart and each keeps its own note on any
+/// filesystem. Finally, a plain name past the
+/// 255-byte file-name limit could never land at all
+/// — the note's write failed in silence — so an
+/// over-long id takes the hashed form too, with the
+/// stem cut to leave the whole name inside the limit
+/// (short by construction, and still hash-distinct).
 fn license_note_name(family_id: &str) -> String {
     let raw_name = format!("{family_id}-LICENSE.txt");
     let sanitized = crate::sanitize_file_name(&raw_name);
-    if sanitized == raw_name {
+    let case_or_normalization_twin = family_id.to_lowercase() != family_id || !family_id.is_ascii();
+    if sanitized == raw_name && !case_or_normalization_twin && sanitized.len() <= 255 {
         return sanitized;
     }
     let hash = ob_model::sha256_hex(family_id.as_bytes());
     let short_hash: String = hash.chars().take(16).collect();
-    let stem = sanitized
+    let suffix = format!("-LICENSE-{short_hash}.txt");
+    let mut stem = sanitized
         .strip_suffix("-LICENSE.txt")
         .unwrap_or(&sanitized)
         .to_string();
-    format!("{stem}-LICENSE-{short_hash}.txt")
+    while stem.len() + suffix.len() > 255 {
+        if stem.pop().is_none() {
+            break;
+        }
+    }
+    format!("{stem}{suffix}")
 }
 
 /// The Church Starter Pack: metric twins for the fonts church
@@ -932,6 +964,164 @@ mod tests {
         assert!(
             plain_note.contains("Cee Family"),
             "the plain id's note names its own family: {plain_note}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn case_variant_ids_keep_both_license_notes() {
+        // Round 32, F10 (red team RT32-8): on the
+        // case-insensitive filesystems macOS and
+        // Windows ship by default, "Lato" and "lato"
+        // are one file, so the plain names collided
+        // and the later family's install silently
+        // overwrote the earlier family's note. The
+        // case-carrying id takes the hashed form now,
+        // judged under the shipped filesystems'
+        // semantics, so the pair lands as two notes on
+        // any filesystem.
+        assert_eq!(license_note_name("lato"), "lato-LICENSE.txt");
+        let hash = ob_model::sha256_hex("Lato".as_bytes());
+        let short_hash: String = hash.chars().take(16).collect();
+        assert_eq!(
+            license_note_name("Lato"),
+            format!("Lato-LICENSE-{short_hash}.txt")
+        );
+        assert_ne!(
+            license_note_name("Lato").to_lowercase(),
+            license_note_name("lato").to_lowercase(),
+            "the two names differ even read case-insensitively"
+        );
+        let dir = std::env::temp_dir().join(format!("ob-fonts-case-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = crate::FontLibrary::open(dir.clone()).expect("library opens");
+        let upper_detail = serde_json::json!({
+            "license": "OFL-1.1", "family": "Upper Lato", "source": "test"
+        });
+        let lower_detail = serde_json::json!({
+            "license": "OFL-1.1", "family": "Lower Lato", "source": "test"
+        });
+        write_license_note_with(&lib, "Lato", "lato", &upper_detail, |_| {
+            Err("no fetch in this test".to_string())
+        });
+        write_license_note_with(&lib, "lato", "lato", &lower_detail, |_| {
+            Err("no fetch in this test".to_string())
+        });
+        let mut landed: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read library")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        landed.sort();
+        assert_eq!(landed.len(), 2, "two distinct notes land: {landed:?}");
+        let upper_note = std::fs::read_to_string(dir.join(license_note_name("Lato")))
+            .expect("the case-carrying id's note is on disk");
+        let lower_note = std::fs::read_to_string(dir.join("lato-LICENSE.txt"))
+            .expect("the lowercase id's note is on disk");
+        assert!(
+            upper_note.contains("Upper Lato"),
+            "the case-carrying id's note names its own family: {upper_note}"
+        );
+        assert!(
+            lower_note.contains("Lower Lato"),
+            "the lowercase id's note names its own family: {lower_note}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalization_variant_ids_keep_both_license_notes() {
+        // Round 32, F10 (red team RT32-8): the NFC and
+        // NFD spellings of café are distinct ids whose
+        // plain note names are one file on a
+        // normalization-insensitive volume, so one
+        // family's note silently overwrote the other's.
+        // Both spellings take the hashed form now, and
+        // the hash is of each raw id's own bytes, so
+        // the variants hash apart and land as two notes
+        // on any filesystem.
+        let nfc = "caf\u{00e9}";
+        let nfd = "cafe\u{0301}";
+        assert_ne!(nfc, nfd, "the two spellings are distinct ids");
+        let nfc_name = license_note_name(nfc);
+        let nfd_name = license_note_name(nfd);
+        assert_ne!(nfc_name, nfd_name, "the variants name two notes");
+        let nfc_hash = ob_model::sha256_hex(nfc.as_bytes());
+        let nfc_short: String = nfc_hash.chars().take(16).collect();
+        assert_eq!(nfc_name, format!("{nfc}-LICENSE-{nfc_short}.txt"));
+        let dir = std::env::temp_dir().join(format!("ob-fonts-norm-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = crate::FontLibrary::open(dir.clone()).expect("library opens");
+        let nfc_detail = serde_json::json!({
+            "license": "OFL-1.1", "family": "Composed Cafe", "source": "test"
+        });
+        let nfd_detail = serde_json::json!({
+            "license": "OFL-1.1", "family": "Decomposed Cafe", "source": "test"
+        });
+        write_license_note_with(&lib, nfc, "cafe", &nfc_detail, |_| {
+            Err("no fetch in this test".to_string())
+        });
+        write_license_note_with(&lib, nfd, "cafe", &nfd_detail, |_| {
+            Err("no fetch in this test".to_string())
+        });
+        let landed: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read library")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(landed.len(), 2, "two distinct notes land: {landed:?}");
+        let nfc_note = std::fs::read_to_string(dir.join(&nfc_name))
+            .expect("the composed id's note is on disk");
+        let nfd_note = std::fs::read_to_string(dir.join(&nfd_name))
+            .expect("the decomposed id's note is on disk");
+        assert!(
+            nfc_note.contains("Composed Cafe"),
+            "the composed id's note names its own family: {nfc_note}"
+        );
+        assert!(
+            nfd_note.contains("Decomposed Cafe"),
+            "the decomposed id's note names its own family: {nfd_note}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_over_long_id_lands_its_license_note_via_the_hashed_form() {
+        // Round 32, F10 (red team RT32-8): an id whose
+        // plain note name passes the 255-byte file-name
+        // limit failed the note's write in silence —
+        // the note was lost, though nothing was
+        // overwritten. The over-long id takes the
+        // hashed form now, its stem cut so the whole
+        // name stands inside the limit, and the note
+        // lands.
+        let long_id = "a".repeat(300);
+        let name = license_note_name(&long_id);
+        assert!(
+            name.len() <= 255,
+            "the hashed form stands inside the limit: {} bytes",
+            name.len()
+        );
+        let hash = ob_model::sha256_hex(long_id.as_bytes());
+        let short_hash: String = hash.chars().take(16).collect();
+        assert!(
+            name.ends_with(&format!("-LICENSE-{short_hash}.txt")),
+            "the over-long id's note carries its hash: {name}"
+        );
+        let dir = std::env::temp_dir().join(format!("ob-fonts-long-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = crate::FontLibrary::open(dir.clone()).expect("library opens");
+        let detail = serde_json::json!({
+            "license": "OFL-1.1", "family": "Long Family", "source": "test"
+        });
+        write_license_note_with(&lib, &long_id, "long", &detail, |_| {
+            Err("no fetch in this test".to_string())
+        });
+        let note =
+            std::fs::read_to_string(dir.join(&name)).expect("the over-long id's note is on disk");
+        assert!(
+            note.contains("Long Family"),
+            "the landed note names its own family: {note}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

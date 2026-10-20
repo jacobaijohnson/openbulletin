@@ -981,6 +981,22 @@ fn payload_from_raw(spot: &EntrySpot, raw: &[u8]) -> Option<Vec<u8>> {
 /// be compared, and it is the comparison — not the
 /// reader — that judges a repeat exact.
 fn payload_bytes_in(bytes: &[u8], spot: &EntrySpot) -> Option<Vec<u8>> {
+    // The same cap discipline as the file twin below
+    // (round 32, F11): a copy whose compressed size
+    // passes MAX_JSON_BYTES is refused from the
+    // central facts, without being built in memory.
+    // The Stored arm of `payload_from_raw` materializes
+    // its whole data region, so an over-cap Stored
+    // copy checked here second — after a first over-cap
+    // copy was cached by `root_repeat_disagrees` —
+    // used to hold two over-cap payloads at once (the
+    // witness file peaked past three times its own
+    // size) to prove a repeat the capped reader then
+    // refused anyway. The deflated arm was capped in
+    // both paths; only Stored was asymmetric.
+    if spot.comp_size > MAX_JSON_BYTES {
+        return None;
+    }
     let local = spot.local_offset as usize;
     if local + 30 > bytes.len() || !bytes[local..].starts_with(b"PK\x03\x04") {
         return None;
@@ -4772,6 +4788,89 @@ mod tests {
         let err = load(&judged_path).expect_err("payloads that differ refuse");
         assert_eq!(err, duplicate_name_refusal("document.json"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn over_cap_stored_root_repeats_are_refused_from_the_facts_not_built() {
+        // Round 32, F11 (red team RT32-9): the file
+        // reader refused a root copy whose compressed
+        // size passes MAX_JSON_BYTES from the central
+        // facts, but the in-memory path had no such
+        // check — for a Stored copy it materialized the
+        // full data region before any length test, and
+        // the repeat judgment cached the first copy
+        // while the current one was built. The witness
+        // (two identical 80 MB Stored document.json
+        // copies in a 168 MB file) peaked at ~331,556 KB
+        // RSS against ~167,796 KB for its tail-differing
+        // twin. A true RSS assertion is not practical
+        // in-suite, so this pins the behavioral
+        // equivalent: an over-cap Stored copy is refused
+        // by `payload_bytes_in` itself — judged from the
+        // facts, never materialized — and two identical
+        // over-cap copies therefore read as a disagreeing
+        // repeat (a payload that cannot be proven) in
+        // the in-memory walk, exactly as the capped file
+        // reader already judged them. The fixture points
+        // both central records at ONE shared data region,
+        // so the test itself never holds two payloads
+        // either.
+        fn crafted(payload: &[u8]) -> (Vec<u8>, u64, u64, EntrySpot) {
+            let crc = crc32_ieee(payload);
+            let size = payload.len() as u32;
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"PK\x03\x04");
+            bytes.extend_from_slice(&20u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&crc.to_le_bytes());
+            bytes.extend_from_slice(&size.to_le_bytes());
+            bytes.extend_from_slice(&size.to_le_bytes());
+            bytes.extend_from_slice(&13u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(b"document.json");
+            bytes.extend_from_slice(payload);
+            let cd_start = bytes.len() as u64;
+            let record = shared_central_record("document.json", crc, size, 0);
+            bytes.extend_from_slice(&record);
+            bytes.extend_from_slice(&record);
+            let dir_end = bytes.len() as u64;
+            let spot = EntrySpot {
+                method: 0,
+                comp_size: payload.len() as u64,
+                uncomp_size: payload.len() as u64,
+                local_offset: 0,
+            };
+            (bytes, cd_start, dir_end, spot)
+        }
+        let payload = vec![b'x'; (MAX_JSON_BYTES + 1) as usize];
+        let (bytes, cd_start, dir_end, spot) = crafted(&payload);
+        assert!(
+            payload_bytes_in(&bytes, &spot).is_none(),
+            "an over-cap Stored copy is refused from the central facts, not built in memory"
+        );
+        assert_eq!(
+            duplicate_read_name_in(&bytes, cd_start, dir_end, "document.json"),
+            Some("document.json".to_string()),
+            "identical over-cap copies refuse in the in-memory walk, as in the file walk"
+        );
+        // The control at ordinary size: the same shape
+        // under the cap still materializes, and an exact
+        // repeat of it is no duplicate.
+        let small = b"a small root payload".to_vec();
+        let (bytes, cd_start, dir_end, spot) = crafted(&small);
+        assert_eq!(
+            payload_bytes_in(&bytes, &spot),
+            Some(small),
+            "an under-cap Stored copy still reads back whole"
+        );
+        assert_eq!(
+            duplicate_read_name_in(&bytes, cd_start, dir_end, "document.json"),
+            None,
+            "identical under-cap copies remain an exact repeat"
+        );
     }
 
     /// The end-of-directory record's position in a zip

@@ -731,8 +731,7 @@ impl FontLibrary {
         // silently change face). Write under a hashed name.
         let target = self.dir.join(&clean);
         let final_name = if target.exists() {
-            let short: String = info.sha256.chars().take(8).collect();
-            let hashed = format!("{}-{short}", clean);
+            let hashed = self.free_hashed_name(&clean, &info.sha256, bytes);
             info.file_name = hashed.clone();
             hashed
         } else {
@@ -742,6 +741,45 @@ impl FontLibrary {
             .map_err(|e| format!("cannot save font into the library: {e}"))?;
         known.insert(info.sha256.clone());
         Ok(info)
+    }
+
+    /// The hashed name an incoming font lands under when a
+    /// different font owns its clean name, checked for
+    /// occupancy (round 32, F7): the first hashed name can
+    /// itself already stand in the library — planted by
+    /// hand, or left by an earlier import — and the old
+    /// code wrote over whatever stood there, so a font
+    /// seeded at `plant.ttf-<hash of the incoming font>`
+    /// silently became the incoming font's bytes. A
+    /// candidate owned by DIFFERENT bytes is never
+    /// overwritten: the name disambiguates further, first
+    /// with a longer prefix of the incoming font's own
+    /// hash (8, then 16, then 32, then the whole hash),
+    /// then with a counter past the whole hash. A
+    /// candidate owned by the SAME bytes is the incoming
+    /// font already standing under that name, and it
+    /// lands there as it always has.
+    fn free_hashed_name(&self, clean: &str, sha256: &str, bytes: &[u8]) -> String {
+        let mut candidates: Vec<String> = [8usize, 16, 32, 64]
+            .iter()
+            .map(|take| {
+                let prefix: String = sha256.chars().take(*take).collect();
+                format!("{clean}-{prefix}")
+            })
+            .collect();
+        let mut n = 2;
+        loop {
+            if candidates.is_empty() {
+                candidates.push(format!("{clean}-{sha256}-{n}"));
+                n += 1;
+            }
+            let candidate = candidates.remove(0);
+            match std::fs::read(self.dir.join(&candidate)) {
+                Ok(existing) if existing == bytes => return candidate,
+                Ok(_) => continue,
+                Err(_) => return candidate,
+            }
+        }
     }
 
     /// Add a font from a file on disk (a download, a USB stick, a
@@ -1587,6 +1625,130 @@ mod tests {
         );
         assert_eq!(lib.read(first).expect("read first"), regular);
         assert_eq!(lib.read(second).expect("read second"), bold);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hashed_name_occupant_is_never_overwritten() {
+        // Round 32, F7 (red team RT32-5): the hashed-name
+        // fallback wrote over whatever already owned the
+        // hashed name — the witness library was seeded
+        // with one font standing at the incoming font's
+        // hashed name, and importing the incoming font
+        // under its clean name (owned by a third font)
+        // returned the hashed name with the occupant's
+        // file silently holding the incoming bytes. The
+        // fallback checks occupancy now: the incoming
+        // font disambiguates to the longer-hash name,
+        // and both standing files keep their own bytes.
+        let dir = temp_dir("hashed-occupant");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let regular = bundled("LiberationSans-Regular.ttf");
+        let bold = bundled("LiberationSans-Bold.ttf");
+        let occupant = bundled("LiberationSerif-Regular.ttf");
+        let owner = lib
+            .add_bytes(&regular, "plant.ttf")
+            .expect("the clean name's owner lands");
+        assert_eq!(owner.file_name, "plant.ttf");
+        let bold_info = inspect(&bold, "plant.ttf").expect("inspect bold");
+        let short: String = bold_info.sha256.chars().take(8).collect();
+        let hashed_name = format!("plant.ttf-{short}");
+        std::fs::write(dir.join(&hashed_name), &occupant).expect("seed the occupant");
+        let landed = lib
+            .add_bytes(&bold, "plant.ttf")
+            .expect("the incoming font lands");
+        let longer: String = bold_info.sha256.chars().take(16).collect();
+        assert_eq!(
+            landed.file_name,
+            format!("plant.ttf-{longer}"),
+            "the incoming font disambiguates past the occupied hashed name"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(&hashed_name)).expect("the occupant still stands"),
+            occupant,
+            "the occupant's file still holds its own bytes"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("plant.ttf")).expect("the owner still stands"),
+            regular,
+            "the clean name's owner is untouched"
+        );
+        assert_eq!(lib.read(&landed).expect("read the landed font"), bold);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hashed_name_holding_the_same_font_lands_as_before() {
+        // Round 32, F7, the other side of the occupancy
+        // check: a hashed name already holding the
+        // incoming font's own bytes is that font standing
+        // under its fallback name, and the import lands
+        // there exactly as it did before — no further
+        // disambiguation, no second copy.
+        let dir = temp_dir("hashed-same-bytes");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let regular = bundled("LiberationSans-Regular.ttf");
+        let bold = bundled("LiberationSans-Bold.ttf");
+        lib.add_bytes(&regular, "plant.ttf")
+            .expect("the clean name's owner lands");
+        let bold_info = inspect(&bold, "plant.ttf").expect("inspect bold");
+        let short: String = bold_info.sha256.chars().take(8).collect();
+        let hashed_name = format!("plant.ttf-{short}");
+        std::fs::write(dir.join(&hashed_name), &bold).expect("seed the same bytes");
+        let landed = lib
+            .add_bytes(&bold, "plant.ttf")
+            .expect("the incoming font lands");
+        assert_eq!(landed.file_name, hashed_name);
+        assert_eq!(
+            std::fs::read(dir.join(&hashed_name)).expect("the hashed file stands"),
+            bold
+        );
+        assert_eq!(
+            std::fs::read(dir.join("plant.ttf")).expect("the owner still stands"),
+            regular
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hashed_fallback_walks_past_every_occupied_hash_length_to_a_counter() {
+        // Round 32, F7, the end of the disambiguation
+        // ladder: when the hashed names at every hash
+        // length (8, 16, 32, and the whole hash) are all
+        // owned by different bytes, the incoming font
+        // lands under a counted name past the whole
+        // hash, and every occupant keeps its bytes.
+        let dir = temp_dir("hashed-counter");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let regular = bundled("LiberationSans-Regular.ttf");
+        let bold = bundled("LiberationSans-Bold.ttf");
+        lib.add_bytes(&regular, "plant.ttf")
+            .expect("the clean name's owner lands");
+        let bold_info = inspect(&bold, "plant.ttf").expect("inspect bold");
+        let mut occupants: Vec<(String, Vec<u8>)> = Vec::new();
+        for take in [8usize, 16, 32, 64] {
+            let prefix: String = bold_info.sha256.chars().take(take).collect();
+            let name = format!("plant.ttf-{prefix}");
+            let marker = format!("occupant at {take}").into_bytes();
+            std::fs::write(dir.join(&name), &marker).expect("seed an occupant");
+            occupants.push((name, marker));
+        }
+        let landed = lib
+            .add_bytes(&bold, "plant.ttf")
+            .expect("the incoming font lands");
+        assert_eq!(
+            landed.file_name,
+            format!("plant.ttf-{}-2", bold_info.sha256),
+            "past the whole hash, a counter disambiguates"
+        );
+        assert_eq!(lib.read(&landed).expect("read the landed font"), bold);
+        for (name, marker) in &occupants {
+            assert_eq!(
+                &std::fs::read(dir.join(name)).expect("an occupant still stands"),
+                marker,
+                "the occupant at {name} keeps its bytes"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -266,6 +266,53 @@ fn raw_spot(header: &[u8], extra: &[u8]) -> RawSpot {
     }
 }
 
+/// The CP437 characters for bytes 0x80..=0xFF, in byte
+/// order: the zip reader's own table, copied so a name
+/// the reader decodes as CP437 is keyed here by the
+/// characters the reader resolves it to (round 32, F4).
+const CP437_HIGH: &str = "\
+    \u{00c7}\u{00fc}\u{00e9}\u{00e2}\u{00e4}\u{00e0}\u{00e5}\u{00e7}\
+    \u{00ea}\u{00eb}\u{00e8}\u{00ef}\u{00ee}\u{00ec}\u{00c4}\u{00c5}\
+    \u{00c9}\u{00e6}\u{00c6}\u{00f4}\u{00f6}\u{00f2}\u{00fb}\u{00f9}\
+    \u{00ff}\u{00d6}\u{00dc}\u{00a2}\u{00a3}\u{00a5}\u{20a7}\u{0192}\
+    \u{00e1}\u{00ed}\u{00f3}\u{00fa}\u{00f1}\u{00d1}\u{00aa}\u{00ba}\
+    \u{00bf}\u{2310}\u{00ac}\u{00bd}\u{00bc}\u{00a1}\u{00ab}\u{00bb}\
+    \u{2591}\u{2592}\u{2593}\u{2502}\u{2524}\u{2561}\u{2562}\u{2556}\
+    \u{2555}\u{2563}\u{2551}\u{2557}\u{255d}\u{255c}\u{255b}\u{2510}\
+    \u{2514}\u{2534}\u{252c}\u{251c}\u{2500}\u{253c}\u{255e}\u{255f}\
+    \u{255a}\u{2554}\u{2569}\u{2566}\u{2560}\u{2550}\u{256c}\u{2567}\
+    \u{2568}\u{2564}\u{2565}\u{2559}\u{2558}\u{2552}\u{2553}\u{256b}\
+    \u{256a}\u{2518}\u{250c}\u{2588}\u{2584}\u{258c}\u{2590}\u{2580}\
+    \u{03b1}\u{00df}\u{0393}\u{03c0}\u{03a3}\u{03c3}\u{00b5}\u{03c4}\
+    \u{03a6}\u{0398}\u{03a9}\u{03b4}\u{221e}\u{03c6}\u{03b5}\u{2229}\
+    \u{2261}\u{00b1}\u{2265}\u{2264}\u{2320}\u{2321}\u{00f7}\u{2248}\
+    \u{00b0}\u{2219}\u{00b7}\u{221a}\u{207f}\u{00b2}\u{25a0}\u{00a0}";
+
+/// Key one raw central-directory name the way the zip
+/// reader resolves it (round 32, F4): with the entry's
+/// UTF-8 flag set, the name is UTF-8 text; with it
+/// clear, the reader decodes the bytes as CP437. The
+/// duplicate scan keyed names by lossy UTF-8, so a
+/// CP437-named pair keyed to a name the reader never
+/// serves and the check passed over it.
+fn decode_entry_name(raw: &[u8], flags: u16) -> String {
+    if flags & 0x0800 != 0 {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    raw.iter()
+        .map(|&byte| {
+            if byte < 0x80 {
+                byte as char
+            } else {
+                CP437_HIGH
+                    .chars()
+                    .nth(usize::from(byte - 0x80))
+                    .unwrap_or('\u{fffd}')
+            }
+        })
+        .collect()
+}
+
 /// The (name, spot) pairs of the container's central
 /// directory, walked off the raw records: the zip
 /// reader's own map is keyed by name, so a duplicated
@@ -299,17 +346,62 @@ fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
     if (total == u64::from(u16::MAX) || cd_offset == u64::from(u32::MAX)) && eocd >= 20 {
         let locator = &bytes[eocd - 20..eocd];
         if locator.starts_with(b"PK\x06\x07") {
-            let record_at =
-                u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8])) as usize;
-            if record_at + 56 <= bytes.len() && bytes[record_at..].starts_with(b"PK\x06\x06") {
-                let record = &bytes[record_at..record_at + 56];
-                total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
-                cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+            // The locator's record offset is declared
+            // relative to the archive's own start, like
+            // every offset here: the record itself
+            // stands at-or-after it, shifted by whatever
+            // junk precedes the archive, and the reader
+            // finds it by searching forward (round 32,
+            // F4). The search stops at the locator.
+            let declared = u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
+            let mut record_at = declared as usize;
+            let mut found = None;
+            while record_at + 4 <= eocd - 20 {
+                if bytes[record_at..].starts_with(b"PK\x06\x06") {
+                    found = Some(record_at);
+                    break;
+                }
+                record_at += 1;
+            }
+            if let Some(record_at) = found {
+                if record_at + 56 <= bytes.len() {
+                    let record = &bytes[record_at..record_at + 56];
+                    total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
+                    cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+                }
             }
         }
     }
-    let mut out: Vec<(String, RawSpot)> = Vec::new();
+    if total == 0 {
+        return Vec::new();
+    }
+    // The directory's first record stands at-or-after
+    // the declared offset, the reader's own derivation
+    // (round 32, F4): junk prepended before the archive
+    // shifts every declared offset by the same amount,
+    // and a scan that starts exactly at the declared
+    // offset starts inside the last entry's body,
+    // breaks on its first check, and counts nothing —
+    // no duplicate check happened at all. The distance
+    // from the declared offset to the first record that
+    // stands is the archive offset, and it applies to
+    // the local offsets in the records just as the
+    // reader applies it.
     let mut at = cd_offset as usize;
+    let mut cd_start = None;
+    while at + 4 <= eocd {
+        if bytes[at..].starts_with(b"PK\x01\x02") {
+            cd_start = Some(at);
+            break;
+        }
+        at += 1;
+    }
+    let Some(cd_start) = cd_start else {
+        return Vec::new();
+    };
+    let archive_offset = (cd_start as u64).saturating_sub(cd_offset);
+    let mut out: Vec<(String, RawSpot)> = Vec::new();
+    let mut at = cd_start;
     for _ in 0..total {
         if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
             break;
@@ -324,8 +416,11 @@ fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
         if extra_end > bytes.len() {
             break;
         }
-        let name = String::from_utf8_lossy(&bytes[name_start..name_end]).into_owned();
-        out.push((name, raw_spot(header, &bytes[name_end..extra_end])));
+        let flags = u16::from_le_bytes([header[8], header[9]]);
+        let name = decode_entry_name(&bytes[name_start..name_end], flags);
+        let mut spot = raw_spot(header, &bytes[name_end..extra_end]);
+        spot.local_offset = spot.local_offset.saturating_add(archive_offset);
+        out.push((name, spot));
         at = extra_end + comment_len;
     }
     out
@@ -982,6 +1077,84 @@ mod tests {
         let (_xml, info) = load_music(&buf).expect("exact repeats load");
         assert_eq!(info.title.as_deref(), Some("A Tiny Test Hymn"));
         assert_eq!(info.counts.notes, 4);
+    }
+
+    /// Patch ONE byte of one entry's name everywhere
+    /// the name is written (the local header and the
+    /// central directory), at `at_in_name` in the
+    /// name: the byte-level twin of patch_entry_name,
+    /// for names no Rust string can hold (a raw CP437
+    /// byte, round 32, F4).
+    fn patch_name_byte(zip_bytes: &mut [u8], name: &str, at_in_name: usize, byte: u8) {
+        let name_bytes = name.as_bytes();
+        let mut patched = 0;
+        let mut from = 0;
+        while let Some(found) = find_bytes(&zip_bytes[from..], name_bytes) {
+            let at = from + found;
+            let guarded = (at >= 30 && &zip_bytes[at - 30..at - 26] == b"PK\x03\x04")
+                || (at >= 46 && &zip_bytes[at - 46..at - 42] == b"PK\x01\x02");
+            if guarded {
+                zip_bytes[at + at_in_name] = byte;
+                patched += 1;
+            }
+            from = at + 1;
+        }
+        assert_eq!(patched, 2, "both records for {name} were patched");
+    }
+
+    const CONTAINER_FOR_CP437_SCORE: &str = "<?xml version=\"1.0\"?><container><rootfiles><rootfile full-path=\"sc\u{00fc}re.musicxml\"/></rootfiles></container>";
+
+    #[test]
+    fn duplicate_cp437_named_score_entries_with_different_bodies_error() {
+        // Round 32, F4 (review MINOR-1, witness
+        // cp437_dup.mxl): two differing scores under a
+        // raw name carrying byte 0x81 with the UTF-8
+        // flag clear. The reader resolves that name as
+        // CP437 ("scüre.musicxml", the name the
+        // container states); the duplicate scan keyed
+        // names by lossy UTF-8, so its key never equaled
+        // the resolved name, the check passed over the
+        // pair, and by_name served the last copy. The
+        // scan keys names the way the reader resolves
+        // them now, and the pair refuses.
+        let score_a = TINY_SCORE.replace("A Tiny Test Hymn", "First Test Hymn!");
+        let score_b = TINY_SCORE.replace("A Tiny Test Hymn", "Other Test Hymn!");
+        let mut buf = mxl_zip(&[
+            (
+                "META-INF/container.xml",
+                CONTAINER_FOR_CP437_SCORE.as_bytes(),
+            ),
+            ("scAre.musicxml", score_a.as_bytes()),
+            ("scBre.musicxml", score_b.as_bytes()),
+        ]);
+        patch_name_byte(&mut buf, "scAre.musicxml", 2, 0x81);
+        patch_name_byte(&mut buf, "scBre.musicxml", 2, 0x81);
+        let err = load_music(&buf).expect_err("disagreeing CP437 duplicates refuse");
+        assert!(
+            err.contains("two parts named sc\u{00fc}re.musicxml"),
+            "{err}"
+        );
+        assert!(err.contains("may be damaged"), "{err}");
+    }
+
+    #[test]
+    fn a_single_cp437_named_score_loads() {
+        // Round 32, F4, the control beside the witness:
+        // one CP437-named score on its own loads — the
+        // door genuinely reads such names, so the pair
+        // above is refused for its duplication, not for
+        // its encoding.
+        let score = TINY_SCORE.replace("A Tiny Test Hymn", "First Test Hymn!");
+        let mut buf = mxl_zip(&[
+            (
+                "META-INF/container.xml",
+                CONTAINER_FOR_CP437_SCORE.as_bytes(),
+            ),
+            ("scAre.musicxml", score.as_bytes()),
+        ]);
+        patch_name_byte(&mut buf, "scAre.musicxml", 2, 0x81);
+        let (_xml, info) = load_music(&buf).expect("a single CP437 score loads");
+        assert_eq!(info.title.as_deref(), Some("First Test Hymn!"));
     }
 
     #[test]

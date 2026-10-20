@@ -244,6 +244,275 @@ const MAX_CLIP_BYTES: usize = 64 * 1024 * 1024;
 /// like files past the per-file cap above.
 pub const MAX_CLIP_BATCH_BYTES: u64 = 512 * 1024 * 1024;
 
+/// The CP437 characters for bytes 0x80..=0xFF, in byte
+/// order: the zip reader's own table, copied so a name
+/// the reader decodes as CP437 is keyed here by the
+/// characters the reader resolves it to (round 32, F4).
+const CP437_HIGH: &str = "\
+    \u{00c7}\u{00fc}\u{00e9}\u{00e2}\u{00e4}\u{00e0}\u{00e5}\u{00e7}\
+    \u{00ea}\u{00eb}\u{00e8}\u{00ef}\u{00ee}\u{00ec}\u{00c4}\u{00c5}\
+    \u{00c9}\u{00e6}\u{00c6}\u{00f4}\u{00f6}\u{00f2}\u{00fb}\u{00f9}\
+    \u{00ff}\u{00d6}\u{00dc}\u{00a2}\u{00a3}\u{00a5}\u{20a7}\u{0192}\
+    \u{00e1}\u{00ed}\u{00f3}\u{00fa}\u{00f1}\u{00d1}\u{00aa}\u{00ba}\
+    \u{00bf}\u{2310}\u{00ac}\u{00bd}\u{00bc}\u{00a1}\u{00ab}\u{00bb}\
+    \u{2591}\u{2592}\u{2593}\u{2502}\u{2524}\u{2561}\u{2562}\u{2556}\
+    \u{2555}\u{2563}\u{2551}\u{2557}\u{255d}\u{255c}\u{255b}\u{2510}\
+    \u{2514}\u{2534}\u{252c}\u{251c}\u{2500}\u{253c}\u{255e}\u{255f}\
+    \u{255a}\u{2554}\u{2569}\u{2566}\u{2560}\u{2550}\u{256c}\u{2567}\
+    \u{2568}\u{2564}\u{2565}\u{2559}\u{2558}\u{2552}\u{2553}\u{256b}\
+    \u{256a}\u{2518}\u{250c}\u{2588}\u{2584}\u{258c}\u{2590}\u{2580}\
+    \u{03b1}\u{00df}\u{0393}\u{03c0}\u{03a3}\u{03c3}\u{00b5}\u{03c4}\
+    \u{03a6}\u{0398}\u{03a9}\u{03b4}\u{221e}\u{03c6}\u{03b5}\u{2229}\
+    \u{2261}\u{00b1}\u{2265}\u{2264}\u{2320}\u{2321}\u{00f7}\u{2248}\
+    \u{00b0}\u{2219}\u{00b7}\u{221a}\u{207f}\u{00b2}\u{25a0}\u{00a0}";
+
+/// Key one raw central-directory name the way the zip
+/// reader resolves it (round 32, F4): with the entry's
+/// UTF-8 flag set, the name is UTF-8 text; with it
+/// clear, the reader decodes the bytes as CP437.
+fn decode_entry_name(raw: &[u8], flags: u16) -> String {
+    if flags & 0x0800 != 0 {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    raw.iter()
+        .map(|&byte| {
+            if byte < 0x80 {
+                byte as char
+            } else {
+                CP437_HIGH
+                    .chars()
+                    .nth(usize::from(byte - 0x80))
+                    .unwrap_or('\u{fffd}')
+            }
+        })
+        .collect()
+}
+
+/// Where one central record's entry payload stands
+/// and how it is packed, its sizes and local offset
+/// resolved through the zip64 extra field wherever a
+/// plain field carries the sentinel — the same spot
+/// the sibling doors' duplicate walks read (round 31,
+/// F1).
+struct RawSpot {
+    method: u16,
+    comp_size: u64,
+    crc32: u32,
+    local_offset: u64,
+}
+
+/// Read one central record's spot out of its fixed
+/// header and extra field (the zip64 values ride in
+/// the order uncompressed, compressed, local offset,
+/// disk, one per sentinel field).
+fn raw_spot(header: &[u8], extra: &[u8]) -> RawSpot {
+    let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap_or([0; 4]));
+    let comp32 = field(20);
+    let uncomp32 = field(24);
+    let local32 = field(42);
+    let disk16 = u16::from_le_bytes([header[34], header[35]]);
+    let mut comp_size = u64::from(comp32);
+    let mut local_offset = u64::from(local32);
+    if comp32 == u32::MAX || uncomp32 == u32::MAX || local32 == u32::MAX || disk16 == u16::MAX {
+        let mut at = 0usize;
+        while at + 4 <= extra.len() {
+            let id = u16::from_le_bytes([extra[at], extra[at + 1]]);
+            let size = usize::from(u16::from_le_bytes([extra[at + 2], extra[at + 3]]));
+            let data = &extra[at + 4..(at + 4 + size).min(extra.len())];
+            if id == 0x0001 {
+                let mut pos = 0usize;
+                if uncomp32 == u32::MAX {
+                    pos += 8;
+                }
+                if comp32 == u32::MAX && pos + 8 <= data.len() {
+                    comp_size = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
+                    pos += 8;
+                }
+                if local32 == u32::MAX && pos + 8 <= data.len() {
+                    local_offset =
+                        u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
+                }
+                break;
+            }
+            at += 4 + size;
+        }
+    }
+    RawSpot {
+        method: u16::from_le_bytes([header[10], header[11]]),
+        comp_size,
+        crc32: field(16),
+        local_offset,
+    }
+}
+
+/// The CRC-32 (zip checksum, IEEE polynomial) table,
+/// built at compile time.
+const CRC_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+            k += 1;
+        }
+        table[i] = c;
+        i += 1;
+    }
+    table
+};
+
+/// CRC-32 over `bytes`, the checksum the central
+/// record declares for its entry: a raw-read copy is
+/// judged against it the way the archive reader
+/// judges the copies it serves (a declared SIZE is
+/// never trusted — round 3, RT3-B — but the checksum
+/// is the copy's own fingerprint).
+fn crc32_ieee(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in bytes {
+        let at = ((crc ^ u32::from(byte)) & 0xFF) as usize;
+        crc = CRC_TABLE[at] ^ (crc >> 8);
+    }
+    !crc
+}
+
+/// The (name, spot) pairs of a zip's central directory,
+/// walked off the raw records, in archive order and
+/// WITH duplicates standing (round 32, F6): the zip
+/// reader's own map is keyed by name, so a duplicated
+/// name reaches a door that enumerates through the
+/// reader as only its last copy. The directory is the
+/// one the latest end record names, through its zip64
+/// record where the plain fields are sentinels; its
+/// first record stands at-or-after the declared offset
+/// (junk prepended before the archive shifts every
+/// declared offset, the reader's own derivation,
+/// round 32, F4), and that archive offset applies to
+/// the local offsets in the records. Empty when no
+/// end record stands — the caller falls back to the
+/// reader's enumeration.
+fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
+    let mut eocd: Option<usize> = None;
+    if bytes.len() >= 22 {
+        for at in (0..=bytes.len() - 22).rev() {
+            if !bytes[at..].starts_with(b"PK\x05\x06") {
+                continue;
+            }
+            let comment = usize::from(u16::from_le_bytes([bytes[at + 20], bytes[at + 21]]));
+            if at + 22 + comment <= bytes.len() {
+                eocd = Some(at);
+                break;
+            }
+        }
+    }
+    let Some(eocd) = eocd else {
+        return Vec::new();
+    };
+    let field = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap_or([0; 4]));
+    let mut total = u64::from(u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]));
+    let mut cd_offset = u64::from(field(eocd + 16));
+    if (total == u64::from(u16::MAX) || cd_offset == u64::from(u32::MAX)) && eocd >= 20 {
+        let locator = &bytes[eocd - 20..eocd];
+        if locator.starts_with(b"PK\x06\x07") {
+            let declared = u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
+            let mut record_at = declared as usize;
+            let mut found = None;
+            while record_at + 4 <= eocd - 20 {
+                if bytes[record_at..].starts_with(b"PK\x06\x06") {
+                    found = Some(record_at);
+                    break;
+                }
+                record_at += 1;
+            }
+            if let Some(record_at) = found {
+                if record_at + 56 <= bytes.len() {
+                    let record = &bytes[record_at..record_at + 56];
+                    total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
+                    cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+                }
+            }
+        }
+    }
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut at = cd_offset as usize;
+    let mut cd_start = None;
+    while at + 4 <= eocd {
+        if bytes[at..].starts_with(b"PK\x01\x02") {
+            cd_start = Some(at);
+            break;
+        }
+        at += 1;
+    }
+    let Some(cd_start) = cd_start else {
+        return Vec::new();
+    };
+    let archive_offset = (cd_start as u64).saturating_sub(cd_offset);
+    let mut out: Vec<(String, RawSpot)> = Vec::new();
+    let mut at = cd_start;
+    for _ in 0..total {
+        if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
+            break;
+        }
+        let header = &bytes[at..at + 46];
+        let name_len = usize::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = usize::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = usize::from(u16::from_le_bytes([header[32], header[33]]));
+        let name_start = at + 46;
+        let name_end = name_start + name_len;
+        let extra_end = name_end + extra_len;
+        if extra_end > bytes.len() {
+            break;
+        }
+        let flags = u16::from_le_bytes([header[8], header[9]]);
+        let name = decode_entry_name(&bytes[name_start..name_end], flags);
+        let mut spot = raw_spot(header, &bytes[name_end..extra_end]);
+        spot.local_offset = spot.local_offset.saturating_add(archive_offset);
+        out.push((name, spot));
+        at = extra_end + comment_len;
+    }
+    out
+}
+
+/// One entry's decompressed bytes off its raw spot,
+/// read one byte past `cap` (so a copy past the cap is
+/// known to be past it). The caller judges: a result
+/// longer than the cap, or whose checksum is not the
+/// one its record declares, is not a readable copy.
+/// None when the payload cannot be read back at all.
+fn raw_payload(bytes: &[u8], spot: &RawSpot, cap: u64) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let local = spot.local_offset as usize;
+    if local + 30 > bytes.len() || !bytes[local..].starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let name_len = usize::from(u16::from_le_bytes([bytes[local + 26], bytes[local + 27]]));
+    let extra_len = usize::from(u16::from_le_bytes([bytes[local + 28], bytes[local + 29]]));
+    let data_start = local + 30 + name_len + extra_len;
+    let data_end = data_start.checked_add(spot.comp_size as usize)?;
+    if data_end > bytes.len() {
+        return None;
+    }
+    let raw = &bytes[data_start..data_end];
+    match spot.method {
+        0 => Some(raw[..(raw.len() as u64).min(cap + 1) as usize].to_vec()),
+        8 => {
+            let mut decoder = flate2::read::DeflateDecoder::new(raw);
+            let mut out = Vec::new();
+            decoder.by_ref().take(cap + 1).read_to_end(&mut out).ok()?;
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
 pub struct ClipLibrary {
     dir: PathBuf,
 }
@@ -500,48 +769,97 @@ impl ClipLibrary {
         // count is known from the archive's own directory
         // before any entry is read.
         const MAX_ENTRIES: usize = 512;
-        if archive.len() > MAX_ENTRIES {
-            return Err(format!(
-                "that zip holds {} files; a clipart pack may carry at most {}",
-                archive.len(),
-                MAX_ENTRIES
-            ));
-        }
         // Actual bytes, counted as they arrive; `total`
         // never passes the cap, so each read is capped at
         // what is left of it and memory stays bounded no
         // matter what the entries expand to.
         const MAX_TOTAL_UNCOMPRESSED: u64 = 512 * 1024 * 1024;
-        let mut total: u64 = 0;
+        // The pack's entries, in archive order, collected
+        // off the raw central directory (central_spots)
+        // so EVERY copy of a duplicated name arrives
+        // (round 32, F6): the reader's name-keyed map
+        // collapses a duplicated name to its last copy,
+        // so two pic.png entries with different bytes
+        // used to land as one item, the last copy,
+        // although add_collection's unique_name dedup
+        // exists to land both. Fed the whole list in
+        // archive order, the copies land as pic.png and
+        // pic-2.png, the first copy first. Only when no
+        // raw directory stands does the collection fall
+        // back to the reader's own enumeration.
+        let spots = central_spots(bytes);
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-        for i in 0..archive.len() {
-            let mut entry = archive
-                .by_index(i)
-                .map_err(|e| format!("that zip file cannot be read: {e}"))?;
-            if entry.is_dir() {
-                continue;
+        if !spots.is_empty() {
+            if spots.len() > MAX_ENTRIES {
+                return Err(format!(
+                    "that zip holds {} files; a clipart pack may carry at most {}",
+                    spots.len(),
+                    MAX_ENTRIES
+                ));
             }
-            // The read goes through ob-model's one
-            // capped read (health audit E-9), capped at
-            // what is left of the shared total. This
-            // door's judgment is Refuse, in the words
-            // below.
-            let read = ob_model::read_capped(
-                &mut entry,
-                MAX_TOTAL_UNCOMPRESSED - total,
-                ob_model::CapOverflow::Refuse(
-                    "that zip holds more than 512 MB unzipped; a clipart pack is not that big"
-                        .to_string(),
-                ),
-            )
-            .map_err(|e| match e {
-                ob_model::CappedReadError::Refused(words) => words,
-                ob_model::CappedReadError::Unreadable(e) => {
-                    format!("a file in that zip cannot be read: {e}")
+            let mut total: u64 = 0;
+            for (name, spot) in &spots {
+                if name.ends_with('/') || name.ends_with('\\') {
+                    continue;
                 }
-            })?;
-            total += read.bytes.len() as u64;
-            files.push((entry.name().to_string(), read.bytes));
+                let remaining = MAX_TOTAL_UNCOMPRESSED - total;
+                let content = raw_payload(bytes, spot, remaining).ok_or_else(|| {
+                    "a file in that zip cannot be read: its bytes could not be read back"
+                        .to_string()
+                })?;
+                if content.len() as u64 > remaining {
+                    return Err(
+                        "that zip holds more than 512 MB unzipped; a clipart pack is not that big"
+                            .to_string(),
+                    );
+                }
+                if crc32_ieee(&content) != spot.crc32 {
+                    return Err(
+                        "a file in that zip cannot be read: its bytes could not be read back"
+                            .to_string(),
+                    );
+                }
+                total += content.len() as u64;
+                files.push((name.clone(), content));
+            }
+        } else {
+            if archive.len() > MAX_ENTRIES {
+                return Err(format!(
+                    "that zip holds {} files; a clipart pack may carry at most {}",
+                    archive.len(),
+                    MAX_ENTRIES
+                ));
+            }
+            let mut total: u64 = 0;
+            for i in 0..archive.len() {
+                let mut entry = archive
+                    .by_index(i)
+                    .map_err(|e| format!("that zip file cannot be read: {e}"))?;
+                if entry.is_dir() {
+                    continue;
+                }
+                // The read goes through ob-model's one
+                // capped read (health audit E-9), capped at
+                // what is left of the shared total. This
+                // door's judgment is Refuse, in the words
+                // below.
+                let read = ob_model::read_capped(
+                    &mut entry,
+                    MAX_TOTAL_UNCOMPRESSED - total,
+                    ob_model::CapOverflow::Refuse(
+                        "that zip holds more than 512 MB unzipped; a clipart pack is not that big"
+                            .to_string(),
+                    ),
+                )
+                .map_err(|e| match e {
+                    ob_model::CappedReadError::Refused(words) => words,
+                    ob_model::CappedReadError::Unreadable(e) => {
+                        format!("a file in that zip cannot be read: {e}")
+                    }
+                })?;
+                total += read.bytes.len() as u64;
+                files.push((entry.name().to_string(), read.bytes));
+            }
         }
         self.add_collection(&name, &files, notes, convert)
     }
@@ -939,6 +1257,102 @@ mod tests {
             .iter()
             .all(|i| i.path.starts_with(&collection.path)));
         assert!(!dir.parent().expect("parent").join("evil.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// Rename one entry everywhere its name is written
+    /// (the local header and the central directory),
+    /// the two names the same length: the zip writer
+    /// refuses a duplicate name outright, so a pack
+    /// carrying a repeated entry is assembled by
+    /// patch, the same helper shape as the sibling
+    /// doors' tests.
+    fn patch_entry_name(zip_bytes: &mut [u8], from_name: &str, to_name: &str) {
+        assert_eq!(from_name.len(), to_name.len(), "the patch keeps lengths");
+        let name = from_name.as_bytes();
+        let mut patched = 0;
+        let mut from = 0;
+        while let Some(found) = find_bytes(&zip_bytes[from..], name) {
+            let at = from + found;
+            let guarded = (at >= 30 && &zip_bytes[at - 30..at - 26] == b"PK\x03\x04")
+                || (at >= 46 && &zip_bytes[at - 46..at - 42] == b"PK\x01\x02");
+            if guarded {
+                zip_bytes[at..at + name.len()].copy_from_slice(to_name.as_bytes());
+                patched += 1;
+            }
+            from = at + 1;
+        }
+        assert_eq!(patched, 2, "both records for {from_name} were patched");
+    }
+
+    fn png_filled(byte: u8) -> Vec<u8> {
+        let d = ob_image::Decoded {
+            width: 4,
+            height: 4,
+            rgba: vec![byte; 4 * 4 * 4],
+            has_alpha: false,
+        };
+        ob_image::encode_png(&d).expect("png")
+    }
+
+    #[test]
+    fn zip_with_two_pictures_under_one_name_lands_both() {
+        // Round 32, F6 (red team RT32-4, witness
+        // c01-dup-pic.zip): two pic.png entries with
+        // different bytes — the reader's name-keyed map
+        // collapsed the pair to the last copy, so the
+        // pack landed as ONE item although
+        // add_collection's unique_name dedup exists to
+        // land both. Every copy arrives now: the first
+        // lands as pic.png, the second as pic-2.png,
+        // each holding its own bytes.
+        let dir = temp_dir("zip-dup-pic");
+        let lib = ClipLibrary::open(dir.clone()).expect("open");
+        let first_png = png_filled(255);
+        let second_png = png_filled(0);
+        assert_ne!(first_png, second_png, "the copies really differ");
+        let mut zip_bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            let opts = zip::write::SimpleFileOptions::default();
+            writer.start_file("pic.png", opts).expect("start");
+            use std::io::Write as _;
+            writer.write_all(&first_png).expect("write first");
+            writer.start_file("pic.pnX", opts).expect("start 2");
+            writer.write_all(&second_png).expect("write second");
+            writer.finish().expect("finish");
+        }
+        patch_entry_name(&mut zip_bytes, "pic.pnX", "pic.png");
+        let report = lib
+            .add_collection_from_zip("pack.zip", &zip_bytes, &CollectionNotes::default(), None)
+            .expect("add zip");
+        assert_eq!(report.added, 2, "both copies land: {report:?}");
+        let collection = lib.collection("pack").expect("collection");
+        assert_eq!(collection.items.len(), 2);
+        let first = collection
+            .items
+            .iter()
+            .find(|i| i.file_name == "pic.png")
+            .expect("the first copy keeps the name");
+        let second = collection
+            .items
+            .iter()
+            .find(|i| i.file_name == "pic-2.png")
+            .expect("the second copy lands apart");
+        assert_eq!(
+            std::fs::read(&first.path).expect("read first"),
+            first_png,
+            "the first item holds the first copy's bytes"
+        );
+        assert_eq!(
+            std::fs::read(&second.path).expect("read second"),
+            second_png,
+            "the second item holds the second copy's bytes"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -2848,6 +2848,7 @@ dependencies = [
 name = "ob-clips"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "ob-fonts",
  "ob-image",
  "ob-model",
@@ -2882,6 +2883,7 @@ dependencies = [
 name = "ob-fonts"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "ob-model",
  "ob-text",
  "rustls",

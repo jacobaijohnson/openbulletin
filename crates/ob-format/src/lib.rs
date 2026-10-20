@@ -822,6 +822,20 @@ fn is_read_name(name: &str, root: &str) -> bool {
 /// identical refuse with the same words. Assets keep
 /// the facts-only treatment here: their bytes are
 /// sha256-checked against the entry name downstream.
+///
+/// A second refinement for the root names (round 32,
+/// F5): a repeat whose facts disagree ONLY in the
+/// compressed size — the same checksum and the same
+/// uncompressed size, packed two ways (one copy
+/// Stored, one Deflated) — is not judged here at all.
+/// Compressed size is a fact about the PACKAGING, not
+/// the payload, and the rule above states root
+/// repeats are judged on the payload bytes: the
+/// walks' payload comparison decides this pair, and
+/// the refusal words stand for copies whose payloads
+/// actually differ. Judging it here refused an exact
+/// repeat packed two ways before the payload
+/// comparison was ever reached.
 fn note_read_name(
     seen: &mut HashMap<String, (u32, u32, u32)>,
     name: &str,
@@ -837,6 +851,11 @@ fn note_read_name(
             None
         }
         Some(&earlier) if earlier == facts => None,
+        Some(&earlier) if name == root && earlier.0 == facts.0 && earlier.2 == facts.2 => {
+            // Only the compressed size differs: the
+            // payloads judge (see the doc above).
+            None
+        }
         Some(_) => Some(name.to_string()),
     }
 }
@@ -4603,6 +4622,155 @@ mod tests {
             load(&path).expect("identical repeats load").title,
             "Roundtrip"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A zip holding a root entry twice, the two
+    /// copies packed independently (each Stored or
+    /// Deflated), the second written under a stand-in
+    /// name and patched to the root's: the mixed-
+    /// packaging shape of round 32, F5.
+    fn mixed_packaging_root_zip(
+        root_name: &str,
+        stand_in: &str,
+        first: &[u8],
+        first_deflated: bool,
+        second: &[u8],
+        second_deflated: bool,
+    ) -> Vec<u8> {
+        let pick = |deflated: bool| {
+            let method = if deflated {
+                zip::CompressionMethod::Deflated
+            } else {
+                zip::CompressionMethod::Stored
+            };
+            zip::write::SimpleFileOptions::default().compression_method(method)
+        };
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            zip.start_file(root_name, pick(first_deflated))
+                .expect("first entry");
+            zip.write_all(first).expect("first bytes");
+            zip.start_file(stand_in, pick(second_deflated))
+                .expect("second entry");
+            zip.write_all(second).expect("second bytes");
+            zip.finish().expect("finish");
+        }
+        patch_entry_name(&mut buf, stand_in, root_name);
+        buf
+    }
+
+    #[test]
+    fn mixed_packaging_identical_root_repeats_load() {
+        // Round 32, F5 (red team RT32-3, witness
+        // t04-identical-mixed.obd): one identical
+        // document.json payload carried twice, one copy
+        // Stored and one Deflated. The copies agree on
+        // checksum and uncompressed size but differ in
+        // compressed size (the packaging, not the
+        // payload), and the facts check refused the
+        // file before the payload comparison was
+        // reached — although the batch's rule states
+        // root repeats are judged on the payload bytes.
+        // A compressed-size-only disagreement goes to
+        // the payloads now, in either packing order, at
+        // both root doors.
+        let json = serde_json::to_string(&test_doc()).expect("json");
+        let dir = scratch("identical-mixed-doc");
+        for (tag, first_deflated, second_deflated) in [
+            ("stored-deflated", false, true),
+            ("deflated-stored", true, false),
+        ] {
+            let bytes = mixed_packaging_root_zip(
+                "document.json",
+                "document.jsoX",
+                json.as_bytes(),
+                first_deflated,
+                json.as_bytes(),
+                second_deflated,
+            );
+            let path = dir.join(format!("{tag}.obd"));
+            std::fs::write(&path, &bytes).expect("write bulletin");
+            assert_eq!(
+                load(&path)
+                    .expect("a mixed-packaging exact repeat loads")
+                    .title,
+                "Roundtrip",
+                "{tag}"
+            );
+        }
+        let sheet_json = lying_sheet_json();
+        let sheet_bytes = mixed_packaging_root_zip(
+            "insert.json",
+            "insert.jsoX",
+            sheet_json.as_bytes(),
+            false,
+            sheet_json.as_bytes(),
+            true,
+        );
+        let sheet_path = dir.join("stored-deflated.obdi");
+        std::fs::write(&sheet_path, &sheet_bytes).expect("write sheet");
+        let (insert, _, _) = load_insert(&sheet_path).expect("a mixed sheet repeat loads");
+        assert_eq!(insert.id, "sheet-lying");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mixed_packaging_disagreeing_root_repeats_refuse() {
+        // Round 32, F5, the other side: copies whose
+        // payloads actually differ refuse in mixed
+        // packaging too — once plainly (different
+        // words, different checksum), and once through
+        // the payload judgment itself: an equal-length
+        // shadow packed Deflated against the honest
+        // Stored copy, its central checksum patched to
+        // the honest copy's, so the pair's facts
+        // disagree ONLY in compressed size and the
+        // payloads are the judge that refuses.
+        let honest_json = serde_json::to_string(&test_doc()).expect("json");
+        let mut shadow = test_doc();
+        shadow.title = "Shadow Copy".into();
+        let shadow_json = serde_json::to_string(&shadow).expect("json");
+        let dir = scratch("disagreeing-mixed-doc");
+        let plain = mixed_packaging_root_zip(
+            "document.json",
+            "document.jsoX",
+            honest_json.as_bytes(),
+            false,
+            shadow_json.as_bytes(),
+            true,
+        );
+        let plain_path = dir.join("plain.obd");
+        std::fs::write(&plain_path, &plain).expect("write plain witness");
+        let err = load(&plain_path).expect_err("disagreeing mixed copies refuse");
+        assert_eq!(err, duplicate_name_refusal("document.json"));
+
+        let mut twin = test_doc();
+        twin.title = "Shadow!!!".into();
+        let twin_json = serde_json::to_string(&twin).expect("json");
+        assert_eq!(twin_json.len(), honest_json.len(), "equal lengths");
+        let mut judged = mixed_packaging_root_zip(
+            "document.json",
+            "document.jsoX",
+            honest_json.as_bytes(),
+            false,
+            twin_json.as_bytes(),
+            true,
+        );
+        let honest_crc = entry_crcs(&judged)[0].1;
+        let mut centrals: Vec<usize> = Vec::new();
+        let mut from = 0usize;
+        while let Some(found) = find_bytes(&judged[from..], b"PK\x01\x02") {
+            centrals.push(from + found);
+            from += found + 1;
+        }
+        assert_eq!(centrals.len(), 2, "two central records stand");
+        judged[centrals[1] + 16..centrals[1] + 20].copy_from_slice(&honest_crc.to_le_bytes());
+        let judged_path = dir.join("judged.obd");
+        std::fs::write(&judged_path, &judged).expect("write judged witness");
+        let err = load(&judged_path).expect_err("payloads that differ refuse");
+        assert_eq!(err, duplicate_name_refusal("document.json"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -12,6 +12,7 @@ ob-image = { path = "../ob-image" }
 ob-fonts = { path = "../ob-fonts" }
 serde.workspace = true
 serde_json.workspace = true
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [lints]

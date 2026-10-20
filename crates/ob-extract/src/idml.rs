@@ -494,6 +494,54 @@ fn raw_spot(header: &[u8], extra: &[u8]) -> RawSpot {
     }
 }
 
+/// The CP437 characters for bytes 0x80..=0xFF, in byte
+/// order: the zip reader's own table, copied so a name
+/// the reader decodes as CP437 is keyed here by the
+/// characters the reader resolves it to (round 32, F4).
+const CP437_HIGH: &str = "\
+    \u{00c7}\u{00fc}\u{00e9}\u{00e2}\u{00e4}\u{00e0}\u{00e5}\u{00e7}\
+    \u{00ea}\u{00eb}\u{00e8}\u{00ef}\u{00ee}\u{00ec}\u{00c4}\u{00c5}\
+    \u{00c9}\u{00e6}\u{00c6}\u{00f4}\u{00f6}\u{00f2}\u{00fb}\u{00f9}\
+    \u{00ff}\u{00d6}\u{00dc}\u{00a2}\u{00a3}\u{00a5}\u{20a7}\u{0192}\
+    \u{00e1}\u{00ed}\u{00f3}\u{00fa}\u{00f1}\u{00d1}\u{00aa}\u{00ba}\
+    \u{00bf}\u{2310}\u{00ac}\u{00bd}\u{00bc}\u{00a1}\u{00ab}\u{00bb}\
+    \u{2591}\u{2592}\u{2593}\u{2502}\u{2524}\u{2561}\u{2562}\u{2556}\
+    \u{2555}\u{2563}\u{2551}\u{2557}\u{255d}\u{255c}\u{255b}\u{2510}\
+    \u{2514}\u{2534}\u{252c}\u{251c}\u{2500}\u{253c}\u{255e}\u{255f}\
+    \u{255a}\u{2554}\u{2569}\u{2566}\u{2560}\u{2550}\u{256c}\u{2567}\
+    \u{2568}\u{2564}\u{2565}\u{2559}\u{2558}\u{2552}\u{2553}\u{256b}\
+    \u{256a}\u{2518}\u{250c}\u{2588}\u{2584}\u{258c}\u{2590}\u{2580}\
+    \u{03b1}\u{00df}\u{0393}\u{03c0}\u{03a3}\u{03c3}\u{00b5}\u{03c4}\
+    \u{03a6}\u{0398}\u{03a9}\u{03b4}\u{221e}\u{03c6}\u{03b5}\u{2229}\
+    \u{2261}\u{00b1}\u{2265}\u{2264}\u{2320}\u{2321}\u{00f7}\u{2248}\
+    \u{00b0}\u{2219}\u{00b7}\u{221a}\u{207f}\u{00b2}\u{25a0}\u{00a0}";
+
+/// Key one raw central-directory name the way the zip
+/// reader resolves it (round 32, F4): with the entry's
+/// UTF-8 flag set, the name is UTF-8 text; with it
+/// clear, the reader decodes the bytes as CP437. The
+/// duplicate scan keyed names by lossy UTF-8, so a
+/// CP437-named pair grouped under a name the reader
+/// never serves and the refusal named that key, not
+/// the part.
+fn decode_entry_name(raw: &[u8], flags: u16) -> String {
+    if flags & 0x0800 != 0 {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    raw.iter()
+        .map(|&byte| {
+            if byte < 0x80 {
+                byte as char
+            } else {
+                CP437_HIGH
+                    .chars()
+                    .nth(usize::from(byte - 0x80))
+                    .unwrap_or('\u{fffd}')
+            }
+        })
+        .collect()
+}
+
 /// The (name, spot) pairs of the package's central
 /// directory, walked off the raw records: the zip
 /// reader's own map is keyed by name, so a duplicated
@@ -528,17 +576,63 @@ fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
     if (total == u64::from(u16::MAX) || cd_offset == u64::from(u32::MAX)) && eocd >= 20 {
         let locator = &bytes[eocd - 20..eocd];
         if locator.starts_with(b"PK\x06\x07") {
-            let record_at =
-                u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8])) as usize;
-            if record_at + 56 <= bytes.len() && bytes[record_at..].starts_with(b"PK\x06\x06") {
-                let record = &bytes[record_at..record_at + 56];
-                total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
-                cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+            // The locator's record offset is declared
+            // relative to the archive's own start, like
+            // every offset here: the record itself
+            // stands at-or-after it, shifted by whatever
+            // junk precedes the archive, and the reader
+            // finds it by searching forward (round 32,
+            // F4). The search stops at the locator.
+            let declared = u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
+            let mut record_at = declared as usize;
+            let mut found = None;
+            while record_at + 4 <= eocd - 20 {
+                if bytes[record_at..].starts_with(b"PK\x06\x06") {
+                    found = Some(record_at);
+                    break;
+                }
+                record_at += 1;
+            }
+            if let Some(record_at) = found {
+                if record_at + 56 <= bytes.len() {
+                    let record = &bytes[record_at..record_at + 56];
+                    total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
+                    cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+                }
             }
         }
     }
-    let mut out: Vec<(String, RawSpot)> = Vec::new();
+    if total == 0 {
+        return Vec::new();
+    }
+    // The directory's first record stands at-or-after
+    // the declared offset, the reader's own derivation
+    // (round 32, F4): junk prepended before the archive
+    // shifts every declared offset by the same amount,
+    // and a scan that starts exactly at the declared
+    // offset starts inside the last entry's body,
+    // breaks on its first check, and returns no spots —
+    // no duplicate check happened at all, and the
+    // importer's map served the last copy. The distance
+    // from the declared offset to the first record that
+    // stands is the archive offset, and it applies to
+    // the local offsets in the records just as the
+    // reader applies it.
     let mut at = cd_offset as usize;
+    let mut cd_start = None;
+    while at + 4 <= eocd {
+        if bytes[at..].starts_with(b"PK\x01\x02") {
+            cd_start = Some(at);
+            break;
+        }
+        at += 1;
+    }
+    let Some(cd_start) = cd_start else {
+        return Vec::new();
+    };
+    let archive_offset = (cd_start as u64).saturating_sub(cd_offset);
+    let mut out: Vec<(String, RawSpot)> = Vec::new();
+    let mut at = cd_start;
     for _ in 0..total {
         if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
             break;
@@ -553,8 +647,11 @@ fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
         if extra_end > bytes.len() {
             break;
         }
-        let name = String::from_utf8_lossy(&bytes[name_start..name_end]).into_owned();
-        out.push((name, raw_spot(header, &bytes[name_end..extra_end])));
+        let flags = u16::from_le_bytes([header[8], header[9]]);
+        let name = decode_entry_name(&bytes[name_start..name_end], flags);
+        let mut spot = raw_spot(header, &bytes[name_end..extra_end]);
+        spot.local_offset = spot.local_offset.saturating_add(archive_offset);
+        out.push((name, spot));
         at = extra_end + comment_len;
     }
     out
@@ -1142,6 +1239,57 @@ mod tests {
         let dump = dump_from_idml(&bytes, "same.idml").expect("exact repeats load");
         assert_eq!(dump.spans.len(), 1);
         assert_eq!(dump.spans[0].text, "Words both copies carry");
+    }
+
+    /// Prepend `junk` before a package's bytes without
+    /// touching any declared offset: the self-extracting
+    /// shape (round 32, F4), where every offset in the
+    /// archive is declared relative to the archive's own
+    /// start and the reader derives the shift itself.
+    fn shifted(bytes: &[u8], junk: &[u8]) -> Vec<u8> {
+        let mut out = junk.to_vec();
+        out.extend_from_slice(bytes);
+        out
+    }
+
+    #[test]
+    fn idml_shifted_duplicate_story_entries_with_different_text_error() {
+        // Round 32, F4 (review MINOR-1, witness
+        // shifted_idml_dup.idml): the unshifted package
+        // below refuses (the standing pin above), but
+        // with 16 junk bytes prepended the scan walked
+        // exactly the declared cd_offset — inside the
+        // last entry's body — broke on its first check,
+        // and returned no spots, so no duplicate check
+        // happened and the importer served the last
+        // copy ("Other story words"). The scan derives
+        // the archive offset the way the reader does
+        // now, and the shifted pair refuses in the same
+        // words.
+        let bytes = idml_with_duplicate_story(
+            &one_paragraph_story("First story words"),
+            &one_paragraph_story("Other story words"),
+        );
+        let bytes = shifted(&bytes, b"JUNKJUNKJUNKJUNK");
+        let err = dump_from_idml(&bytes, "shifted.idml").expect_err("shifted duplicates refuse");
+        assert!(
+            err.contains("two parts named Stories/Story_u9.xml"),
+            "{err}"
+        );
+        assert!(err.contains("may be damaged"), "{err}");
+    }
+
+    #[test]
+    fn idml_shifted_package_without_duplicates_loads() {
+        // Round 32, F4, the control beside the witness:
+        // the same prepended shape carrying no duplicate
+        // loads — the reader tolerates the shift, and so
+        // does the importer; the pair above is refused
+        // for its duplication, not for its shift.
+        let bytes = shifted(&tiny_idml(), b"JUNKJUNKJUNKJUNK");
+        let dump = dump_from_idml(&bytes, "shifted.idml").expect("a shifted package loads");
+        assert_eq!(dump.spans.len(), 2);
+        assert_eq!(dump.spans[0].text, "Welcome to worship this morning");
     }
 
     #[test]

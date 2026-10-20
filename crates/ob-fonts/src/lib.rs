@@ -217,6 +217,276 @@ pub fn sanitize_file_name(name: &str) -> String {
     }
 }
 
+/// The CP437 characters for bytes 0x80..=0xFF, in byte
+/// order: the zip reader's own table, copied so a name
+/// the reader decodes as CP437 is keyed here by the
+/// characters the reader resolves it to (round 32, F4).
+const CP437_HIGH: &str = "\
+    \u{00c7}\u{00fc}\u{00e9}\u{00e2}\u{00e4}\u{00e0}\u{00e5}\u{00e7}\
+    \u{00ea}\u{00eb}\u{00e8}\u{00ef}\u{00ee}\u{00ec}\u{00c4}\u{00c5}\
+    \u{00c9}\u{00e6}\u{00c6}\u{00f4}\u{00f6}\u{00f2}\u{00fb}\u{00f9}\
+    \u{00ff}\u{00d6}\u{00dc}\u{00a2}\u{00a3}\u{00a5}\u{20a7}\u{0192}\
+    \u{00e1}\u{00ed}\u{00f3}\u{00fa}\u{00f1}\u{00d1}\u{00aa}\u{00ba}\
+    \u{00bf}\u{2310}\u{00ac}\u{00bd}\u{00bc}\u{00a1}\u{00ab}\u{00bb}\
+    \u{2591}\u{2592}\u{2593}\u{2502}\u{2524}\u{2561}\u{2562}\u{2556}\
+    \u{2555}\u{2563}\u{2551}\u{2557}\u{255d}\u{255c}\u{255b}\u{2510}\
+    \u{2514}\u{2534}\u{252c}\u{251c}\u{2500}\u{253c}\u{255e}\u{255f}\
+    \u{255a}\u{2554}\u{2569}\u{2566}\u{2560}\u{2550}\u{256c}\u{2567}\
+    \u{2568}\u{2564}\u{2565}\u{2559}\u{2558}\u{2552}\u{2553}\u{256b}\
+    \u{256a}\u{2518}\u{250c}\u{2588}\u{2584}\u{258c}\u{2590}\u{2580}\
+    \u{03b1}\u{00df}\u{0393}\u{03c0}\u{03a3}\u{03c3}\u{00b5}\u{03c4}\
+    \u{03a6}\u{0398}\u{03a9}\u{03b4}\u{221e}\u{03c6}\u{03b5}\u{2229}\
+    \u{2261}\u{00b1}\u{2265}\u{2264}\u{2320}\u{2321}\u{00f7}\u{2248}\
+    \u{00b0}\u{2219}\u{00b7}\u{221a}\u{207f}\u{00b2}\u{25a0}\u{00a0}";
+
+/// Key one raw central-directory name the way the zip
+/// reader resolves it (round 32, F4): with the entry's
+/// UTF-8 flag set, the name is UTF-8 text; with it
+/// clear, the reader decodes the bytes as CP437.
+fn decode_entry_name(raw: &[u8], flags: u16) -> String {
+    if flags & 0x0800 != 0 {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    raw.iter()
+        .map(|&byte| {
+            if byte < 0x80 {
+                byte as char
+            } else {
+                CP437_HIGH
+                    .chars()
+                    .nth(usize::from(byte - 0x80))
+                    .unwrap_or('\u{fffd}')
+            }
+        })
+        .collect()
+}
+
+/// Where one central record's entry payload stands
+/// and how it is packed, its sizes and local offset
+/// resolved through the zip64 extra field wherever a
+/// plain field carries the sentinel — the same spot
+/// the sibling doors' duplicate walks read (round 31,
+/// F1).
+struct RawSpot {
+    method: u16,
+    comp_size: u64,
+    crc32: u32,
+    local_offset: u64,
+}
+
+/// Read one central record's spot out of its fixed
+/// header and extra field (the zip64 values ride in
+/// the order uncompressed, compressed, local offset,
+/// disk, one per sentinel field).
+fn raw_spot(header: &[u8], extra: &[u8]) -> RawSpot {
+    let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap_or([0; 4]));
+    let comp32 = field(20);
+    let uncomp32 = field(24);
+    let local32 = field(42);
+    let disk16 = u16::from_le_bytes([header[34], header[35]]);
+    let mut comp_size = u64::from(comp32);
+    let mut local_offset = u64::from(local32);
+    if comp32 == u32::MAX || uncomp32 == u32::MAX || local32 == u32::MAX || disk16 == u16::MAX {
+        let mut at = 0usize;
+        while at + 4 <= extra.len() {
+            let id = u16::from_le_bytes([extra[at], extra[at + 1]]);
+            let size = usize::from(u16::from_le_bytes([extra[at + 2], extra[at + 3]]));
+            let data = &extra[at + 4..(at + 4 + size).min(extra.len())];
+            if id == 0x0001 {
+                let mut pos = 0usize;
+                if uncomp32 == u32::MAX {
+                    pos += 8;
+                }
+                if comp32 == u32::MAX && pos + 8 <= data.len() {
+                    comp_size = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
+                    pos += 8;
+                }
+                if local32 == u32::MAX && pos + 8 <= data.len() {
+                    local_offset =
+                        u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
+                }
+                break;
+            }
+            at += 4 + size;
+        }
+    }
+    RawSpot {
+        method: u16::from_le_bytes([header[10], header[11]]),
+        comp_size,
+        crc32: field(16),
+        local_offset,
+    }
+}
+
+/// The CRC-32 (zip checksum, IEEE polynomial) table,
+/// built at compile time.
+const CRC_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+            k += 1;
+        }
+        table[i] = c;
+        i += 1;
+    }
+    table
+};
+
+/// CRC-32 over `bytes`, the checksum the central
+/// record declares for its entry: a raw-read copy is
+/// judged against it the way the archive reader
+/// judges the copies it serves (a declared SIZE is
+/// never trusted — round 3, RT3-B — but the checksum
+/// is the copy's own fingerprint).
+fn crc32_ieee(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in bytes {
+        let at = ((crc ^ u32::from(byte)) & 0xFF) as usize;
+        crc = CRC_TABLE[at] ^ (crc >> 8);
+    }
+    !crc
+}
+
+/// The (name, spot) pairs of a zip's central directory,
+/// walked off the raw records, in archive order and
+/// WITH duplicates standing (round 32, F6): the zip
+/// reader's own map is keyed by name, so a duplicated
+/// name reaches a door that enumerates through the
+/// reader as only its last copy, and the first copy is
+/// silently absent before the door's own defenses run.
+/// The directory is the one the latest end record
+/// names, through its zip64 record where the plain
+/// fields are sentinels; its first record stands
+/// at-or-after the declared offset (junk prepended
+/// before the archive shifts every declared offset,
+/// the reader's own derivation, round 32, F4), and
+/// that archive offset applies to the local offsets
+/// in the records. Empty when no end record stands —
+/// the caller falls back to the reader's enumeration.
+fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
+    let mut eocd: Option<usize> = None;
+    if bytes.len() >= 22 {
+        for at in (0..=bytes.len() - 22).rev() {
+            if !bytes[at..].starts_with(b"PK\x05\x06") {
+                continue;
+            }
+            let comment = usize::from(u16::from_le_bytes([bytes[at + 20], bytes[at + 21]]));
+            if at + 22 + comment <= bytes.len() {
+                eocd = Some(at);
+                break;
+            }
+        }
+    }
+    let Some(eocd) = eocd else {
+        return Vec::new();
+    };
+    let field = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap_or([0; 4]));
+    let mut total = u64::from(u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]));
+    let mut cd_offset = u64::from(field(eocd + 16));
+    if (total == u64::from(u16::MAX) || cd_offset == u64::from(u32::MAX)) && eocd >= 20 {
+        let locator = &bytes[eocd - 20..eocd];
+        if locator.starts_with(b"PK\x06\x07") {
+            let declared = u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
+            let mut record_at = declared as usize;
+            let mut found = None;
+            while record_at + 4 <= eocd - 20 {
+                if bytes[record_at..].starts_with(b"PK\x06\x06") {
+                    found = Some(record_at);
+                    break;
+                }
+                record_at += 1;
+            }
+            if let Some(record_at) = found {
+                if record_at + 56 <= bytes.len() {
+                    let record = &bytes[record_at..record_at + 56];
+                    total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
+                    cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
+                }
+            }
+        }
+    }
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut at = cd_offset as usize;
+    let mut cd_start = None;
+    while at + 4 <= eocd {
+        if bytes[at..].starts_with(b"PK\x01\x02") {
+            cd_start = Some(at);
+            break;
+        }
+        at += 1;
+    }
+    let Some(cd_start) = cd_start else {
+        return Vec::new();
+    };
+    let archive_offset = (cd_start as u64).saturating_sub(cd_offset);
+    let mut out: Vec<(String, RawSpot)> = Vec::new();
+    let mut at = cd_start;
+    for _ in 0..total {
+        if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
+            break;
+        }
+        let header = &bytes[at..at + 46];
+        let name_len = usize::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = usize::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = usize::from(u16::from_le_bytes([header[32], header[33]]));
+        let name_start = at + 46;
+        let name_end = name_start + name_len;
+        let extra_end = name_end + extra_len;
+        if extra_end > bytes.len() {
+            break;
+        }
+        let flags = u16::from_le_bytes([header[8], header[9]]);
+        let name = decode_entry_name(&bytes[name_start..name_end], flags);
+        let mut spot = raw_spot(header, &bytes[name_end..extra_end]);
+        spot.local_offset = spot.local_offset.saturating_add(archive_offset);
+        out.push((name, spot));
+        at = extra_end + comment_len;
+    }
+    out
+}
+
+/// One entry's decompressed bytes off its raw spot,
+/// read one byte past `cap` (so a copy past the cap is
+/// known to be past it). The caller judges: a result
+/// longer than the cap, or whose checksum is not the
+/// one its record declares, is not a readable copy.
+/// None when the payload cannot be read back at all.
+fn raw_payload(bytes: &[u8], spot: &RawSpot, cap: u64) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let local = spot.local_offset as usize;
+    if local + 30 > bytes.len() || !bytes[local..].starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let name_len = usize::from(u16::from_le_bytes([bytes[local + 26], bytes[local + 27]]));
+    let extra_len = usize::from(u16::from_le_bytes([bytes[local + 28], bytes[local + 29]]));
+    let data_start = local + 30 + name_len + extra_len;
+    let data_end = data_start.checked_add(spot.comp_size as usize)?;
+    if data_end > bytes.len() {
+        return None;
+    }
+    let raw = &bytes[data_start..data_end];
+    match spot.method {
+        0 => Some(raw[..(raw.len() as u64).min(cap + 1) as usize].to_vec()),
+        8 => {
+            let mut decoder = flate2::read::DeflateDecoder::new(raw);
+            let mut out = Vec::new();
+            decoder.by_ref().take(cap + 1).read_to_end(&mut out).ok()?;
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
 /// One folder listing's fingerprint: (file name, byte size,
 /// modification time, content hash) per entry, sorted by
 /// name. The content hash is computed for font files only
@@ -498,6 +768,45 @@ impl FontLibrary {
         vec![self.add_single(&bytes, name)]
     }
 
+    /// Land one license text in the library folder
+    /// under `file_name` (round 32, F6): the same
+    /// discipline as the fonts themselves. A name
+    /// already owned by the SAME text is an exact
+    /// repeat and collapses; a name owned by a
+    /// DIFFERENT text is never overwritten — the
+    /// incoming text lands under the hashed name (the
+    /// font door's own idiom), and under a counted
+    /// name past that when the hashed name is also
+    /// owned by different words.
+    fn land_license_text(&self, file_name: &str, content: &[u8]) {
+        let target = self.dir.join(file_name);
+        match std::fs::read(&target) {
+            Ok(existing) if existing == content => return,
+            Ok(_) => {}
+            Err(_) => {
+                let _ = std::fs::write(&target, content);
+                return;
+            }
+        }
+        let short: String = ob_model::sha256_hex(content).chars().take(8).collect();
+        let mut candidate = format!("{file_name}-{short}");
+        let mut n = 2;
+        loop {
+            let path = self.dir.join(&candidate);
+            match std::fs::read(&path) {
+                Ok(existing) if existing == content => return,
+                Ok(_) => {
+                    candidate = format!("{file_name}-{short}-{n}");
+                    n += 1;
+                }
+                Err(_) => {
+                    let _ = std::fs::write(&path, content);
+                    return;
+                }
+            }
+        }
+    }
+
     /// Add every font inside a zip archive (how font sites ship
     /// packs). License text files in the archive are copied into
     /// the library folder beside the fonts. Returns one result per
@@ -516,29 +825,66 @@ impl FontLibrary {
         };
         let mut known: std::collections::HashSet<String> =
             self.scan().iter().map(|f| f.sha256.clone()).collect();
+        // The pack's entries, in archive order, collected
+        // off the raw central directory (central_spots)
+        // so EVERY copy of a duplicated name arrives
+        // (round 32, F6): the reader's name-keyed map
+        // collapses a duplicated name to its last copy
+        // before this door's own defenses run, so two
+        // different fonts under one name used to land as
+        // only the last, the first silently absent. Fed
+        // one by one through the door's existing funnel
+        // below, the copies land the way the door lands
+        // any two fonts that share a name — the first
+        // under the clean name, the next under its
+        // hashed name — and an exact repeat collapses on
+        // its hash, as always. A file that fails to read
+        // back, or runs past the per-entry cap, is passed
+        // by and the pack goes on without it (this door's
+        // judgment is Skip, health audit E-9). Only when
+        // no raw directory stands does the collection
+        // fall back to the reader's own enumeration.
+        let spots = central_spots(bytes);
+        let (raw_count, entries): (usize, Vec<(String, Vec<u8>)>) = if !spots.is_empty() {
+            let entries = spots
+                .iter()
+                .take(MAX_ENTRIES)
+                .filter_map(|(name, spot)| {
+                    if name.ends_with('/') || name.ends_with('\\') {
+                        return None;
+                    }
+                    let content = raw_payload(bytes, spot, MAX_ENTRY_BYTES)?;
+                    if content.len() as u64 > MAX_ENTRY_BYTES || crc32_ieee(&content) != spot.crc32
+                    {
+                        return None;
+                    }
+                    Some((name.clone(), content))
+                })
+                .collect();
+            (spots.len(), entries)
+        } else {
+            let mut entries = Vec::new();
+            for i in 0..archive.len().min(MAX_ENTRIES) {
+                let Ok(mut entry) = archive.by_index(i) else {
+                    continue;
+                };
+                let name = entry.name().to_string();
+                let read = match ob_model::read_capped(
+                    &mut entry,
+                    MAX_ENTRY_BYTES,
+                    ob_model::CapOverflow::Skip,
+                ) {
+                    Ok(read) if !read.overflowed => read,
+                    _ => continue,
+                };
+                entries.push((name, read.bytes));
+            }
+            (archive.len(), entries)
+        };
         let mut total: u64 = 0;
-        for i in 0..archive.len().min(MAX_ENTRIES) {
-            let Ok(mut entry) = archive.by_index(i) else {
-                continue;
-            };
-            let name = entry.name().to_string();
+        for (name, content) in &entries {
             let lower = name.to_lowercase();
-            let file_name = sanitize_file_name(&name);
-            // The read goes through ob-model's one
-            // capped read (health audit E-9). This
-            // door's judgment is Skip: a file that
-            // fails to read, or runs past the
-            // per-entry cap, is passed by and the
-            // pack goes on without it.
-            let read = match ob_model::read_capped(
-                &mut entry,
-                MAX_ENTRY_BYTES,
-                ob_model::CapOverflow::Skip,
-            ) {
-                Ok(read) if !read.overflowed => read,
-                _ => continue,
-            };
-            let content = read.bytes;
+            let file_name = sanitize_file_name(name);
             total += content.len() as u64;
             if total > MAX_TOTAL_BYTES {
                 results.push(Err(
@@ -550,9 +896,9 @@ impl FontLibrary {
                 // A web font wearing a .ttf name is still a
                 // web font: the refusal names it, the pack
                 // goes on without it.
-                match format_refusal(&content, &file_name) {
+                match format_refusal(content, &file_name) {
                     Some(msg) => results.push(Err(msg)),
-                    None => results.push(self.add_bytes_known(&content, &file_name, &mut known)),
+                    None => results.push(self.add_bytes_known(content, &file_name, &mut known)),
                 }
             } else if lower.ends_with(".ttc") {
                 // A collection inside the pack: split it,
@@ -561,7 +907,7 @@ impl FontLibrary {
                     .rsplit_once('.')
                     .map(|(s, _)| s.to_string())
                     .unwrap_or_else(|| file_name.clone());
-                match ttc::split_collection(&content) {
+                match ttc::split_collection(content) {
                     Ok(faces) => {
                         for (i, face) in faces.iter().enumerate() {
                             let name = collection_face_name(face, &stem, i);
@@ -578,16 +924,20 @@ impl FontLibrary {
             {
                 // Named and refused, never silently skipped:
                 // the pack's result list is the count.
-                if let Some(msg) = format_refusal(&content, &file_name) {
+                if let Some(msg) = format_refusal(content, &file_name) {
                     results.push(Err(msg));
                 }
             } else if (lower.ends_with(".txt") || lower.ends_with(".md"))
                 && (lower.contains("license") || lower.contains("ofl") || lower.contains("copying"))
             {
-                let _ = std::fs::write(self.dir.join(&file_name), &content);
+                // License texts get the fonts' own
+                // treatment (round 32, F6): a repeated
+                // license name never silently collapses
+                // to the last text.
+                self.land_license_text(&file_name, content);
             }
         }
-        if archive.len() > MAX_ENTRIES {
+        if raw_count > MAX_ENTRIES {
             // Entries past the cap are counted and named,
             // never silently dropped (round 3, RT3-F): the
             // result list is what both the Fonts window and
@@ -596,7 +946,7 @@ impl FontLibrary {
             results.push(Err(format!(
                 "{} more files were in the pack than can be taken at once; \
                  add them in a second pass.",
-                archive.len() - MAX_ENTRIES
+                raw_count - MAX_ENTRIES
             )));
         }
         if results.is_empty() {
@@ -1144,6 +1494,222 @@ mod tests {
         assert!(results.iter().all(|r| r.is_ok()));
         assert!(dir.join("OFL.txt").exists(), "license text kept");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// Rename one entry everywhere its name is written
+    /// (the local header and the central directory),
+    /// the two names the same length: the zip writer
+    /// refuses a duplicate name outright, so a pack
+    /// carrying a repeated entry is assembled by
+    /// patch, the same helper shape as the sibling
+    /// doors' tests.
+    fn patch_entry_name(zip_bytes: &mut [u8], from_name: &str, to_name: &str) {
+        assert_eq!(from_name.len(), to_name.len(), "the patch keeps lengths");
+        let name = from_name.as_bytes();
+        let mut patched = 0;
+        let mut from = 0;
+        while let Some(found) = find_bytes(&zip_bytes[from..], name) {
+            let at = from + found;
+            let guarded = (at >= 30 && &zip_bytes[at - 30..at - 26] == b"PK\x03\x04")
+                || (at >= 46 && &zip_bytes[at - 46..at - 42] == b"PK\x01\x02");
+            if guarded {
+                zip_bytes[at..at + name.len()].copy_from_slice(to_name.as_bytes());
+                patched += 1;
+            }
+            from = at + 1;
+        }
+        assert_eq!(patched, 2, "both records for {from_name} were patched");
+    }
+
+    fn pack_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            for (name, body) in entries {
+                zw.start_file(*name, opts).expect("zip entry");
+                zw.write_all(body).expect("zip write");
+            }
+            zw.finish().expect("zip finish");
+        }
+        buf
+    }
+
+    #[test]
+    fn a_pack_with_two_fonts_under_one_name_lands_both() {
+        // Round 32, F6 (red team RT32-4, witness
+        // f03-dup-font-name.zip): two different fonts
+        // under one name — the reader's name-keyed map
+        // collapsed the pair to the last copy before
+        // the door's hashed-rename defense could run,
+        // so only the last font landed and the first
+        // was silently absent. Every copy arrives now:
+        // the first lands under the clean name, the
+        // second under its hashed name, each readable
+        // back as itself.
+        let regular = bundled("LiberationSans-Regular.ttf");
+        let bold = bundled("LiberationSans-Bold.ttf");
+        let mut buf = pack_zip(&[("MyFont.ttf", &regular), ("MyFont.ttX", &bold)]);
+        patch_entry_name(&mut buf, "MyFont.ttX", "MyFont.ttf");
+        let dir = temp_dir("dup-font-name");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let results = lib.add_zip_bytes(&buf);
+        assert_eq!(results.len(), 2, "one result per copy: {results:?}");
+        let first = results[0].as_ref().expect("the first copy lands");
+        let second = results[1].as_ref().expect("the second copy lands");
+        assert_eq!(first.file_name, "MyFont.ttf");
+        assert_eq!(
+            first.sha256,
+            inspect(&regular, "MyFont.ttf")
+                .expect("inspect regular")
+                .sha256
+        );
+        let bold_info = inspect(&bold, "MyFont.ttf").expect("inspect bold");
+        assert_eq!(second.sha256, bold_info.sha256);
+        let short: String = bold_info.sha256.chars().take(8).collect();
+        assert_eq!(second.file_name, format!("MyFont.ttf-{short}"));
+        // Both files stand in the library folder, each
+        // reading back as itself. (The scan's extension
+        // check does not pick up the hashed form — the
+        // door's long-standing shape for a renamed
+        // namesake, on every door that lands one; the
+        // pack door's promise is the two landings
+        // themselves, in its own idiom.)
+        assert!(dir.join(&first.file_name).exists(), "the first copy stands");
+        assert!(
+            dir.join(&second.file_name).exists(),
+            "the second copy stands"
+        );
+        assert_eq!(lib.read(first).expect("read first"), regular);
+        assert_eq!(lib.read(second).expect("read second"), bold);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pack_repeating_one_font_exactly_lands_it_once() {
+        // Round 32, F6, the other side: an exact repeat
+        // of one font under one name may collapse — the
+        // same bytes whichever copy is served, and the
+        // door's hash dedup lands it once.
+        let regular = bundled("LiberationSans-Regular.ttf");
+        let mut buf = pack_zip(&[("MyFont.ttf", &regular), ("MyFont.ttX", &regular)]);
+        patch_entry_name(&mut buf, "MyFont.ttX", "MyFont.ttf");
+        let dir = temp_dir("dup-font-exact");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let results = lib.add_zip_bytes(&buf);
+        assert_eq!(results.len(), 2, "one result per copy: {results:?}");
+        assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
+        let scanned = lib.scan();
+        assert_eq!(scanned.len(), 1, "the repeat lands as one font");
+        assert_eq!(scanned[0].file_name, "MyFont.ttf");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pack_with_two_license_texts_under_one_name_lands_both() {
+        // Round 32, F6 (red team RT32-4, witness
+        // f01-dup-license.zip): two LICENSE.txt entries
+        // with different texts used to land as the
+        // second text only, the first overwritten in
+        // silence. License files get the fonts' own
+        // treatment now: the first keeps the name, the
+        // second lands under its hashed name.
+        let font = bundled("LiberationSans-Regular.ttf");
+        let text_a: &[u8] = b"FIRST LICENSE TEXT AAA";
+        let text_b: &[u8] = b"SECOND LICENSE TEXT BBB";
+        let mut buf = pack_zip(&[
+            ("Lato-Regular.ttf", &font),
+            ("LICENSE.txt", text_a),
+            ("LICENSE.txX", text_b),
+        ]);
+        patch_entry_name(&mut buf, "LICENSE.txX", "LICENSE.txt");
+        let dir = temp_dir("dup-license");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let results = lib.add_zip_bytes(&buf);
+        assert_eq!(results.len(), 1, "only the font is a result: {results:?}");
+        assert_eq!(
+            std::fs::read(dir.join("LICENSE.txt")).expect("first license"),
+            text_a
+        );
+        let short: String = ob_model::sha256_hex(text_b).chars().take(8).collect();
+        let second_name = format!("LICENSE.txt-{short}");
+        assert_eq!(
+            std::fs::read(dir.join(&second_name)).expect("second license"),
+            text_b
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn license_files_flattened_from_two_folders_land_both() {
+        // Round 32, F6 (red team RT32-4, witness
+        // f02-flatten-license.zip): two folders' license
+        // files flatten through sanitize_file_name to
+        // one name — ofl/LICENSE.txt then
+        // apache/LICENSE.txt — and the second used to
+        // overwrite the first with no count and no
+        // note. Both texts land now, under distinct
+        // names.
+        let font = bundled("LiberationSans-Regular.ttf");
+        let text_a: &[u8] = b"FOLDER ONE LICENSE";
+        let text_b: &[u8] = b"FOLDER TWO LICENSE";
+        let buf = pack_zip(&[
+            ("Lato-Regular.ttf", &font),
+            ("ofl/LICENSE.txt", text_a),
+            ("apache/LICENSE.txt", text_b),
+        ]);
+        let dir = temp_dir("flatten-license");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let results = lib.add_zip_bytes(&buf);
+        assert_eq!(results.len(), 1, "only the font is a result: {results:?}");
+        assert_eq!(
+            std::fs::read(dir.join("LICENSE.txt")).expect("first folder's license"),
+            text_a
+        );
+        let short: String = ob_model::sha256_hex(text_b).chars().take(8).collect();
+        assert_eq!(
+            std::fs::read(dir.join(format!("LICENSE.txt-{short}")))
+                .expect("second folder's license"),
+            text_b
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pack_repeating_one_license_text_exactly_lands_it_once() {
+        // Round 32, F6, the exact side for licenses: the
+        // same text twice under one name collapses to
+        // the one file — nothing is renamed, nothing
+        // duplicated.
+        let font = bundled("LiberationSans-Regular.ttf");
+        let text: &[u8] = b"THE ONE LICENSE TEXT";
+        let mut buf = pack_zip(&[
+            ("Lato-Regular.ttf", &font),
+            ("LICENSE.txt", text),
+            ("LICENSE.txX", text),
+        ]);
+        patch_entry_name(&mut buf, "LICENSE.txX", "LICENSE.txt");
+        let dir = temp_dir("dup-license-exact");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let results = lib.add_zip_bytes(&buf);
+        assert_eq!(results.len(), 1, "only the font is a result: {results:?}");
+        assert_eq!(
+            std::fs::read(dir.join("LICENSE.txt")).expect("the license"),
+            text
+        );
+        let license_files: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read library")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("LICENSE"))
+            .collect();
+        assert_eq!(license_files, vec!["LICENSE.txt".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Two bundled fonts behind a collection header (the

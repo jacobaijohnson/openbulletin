@@ -3561,19 +3561,90 @@ fn try_create_instance_lock_from(
     }
 }
 
+/// The path a displaced lock file is set aside to: the
+/// lock path with `.displaced` appended, the set-aside
+/// shape the journal and settings recovery paths already
+/// use.
+fn displaced_instance_lock_path(lock: &std::path::Path) -> std::path::PathBuf {
+    let mut displaced_name = lock.as_os_str().to_owned();
+    displaced_name.push(".displaced");
+    std::path::PathBuf::from(displaced_name)
+}
+
+/// One step of a conditional displacement: move whatever
+/// file stands at the lock path aside in one rename, and
+/// name where it landed. On its own this step verifies
+/// nothing about the file it moves — the caller judges
+/// the move through `audit_displaced_instance_lock_from`
+/// before proceeding, and a move the audit refuses is
+/// restored there. Only a regular file is ever moved:
+/// anything else standing at the lock path (a directory
+/// obstructing it, say) is not a lock a claim may move.
+fn rename_instance_lock_to_displaced_from(lock: &std::path::Path) -> Option<std::path::PathBuf> {
+    match std::fs::metadata(lock) {
+        Ok(metadata) if metadata.is_file() => {}
+        _ => return None,
+    }
+    let displaced = displaced_instance_lock_path(lock);
+    // Only a previous displaced copy is ever removed, and
+    // only so the rename has somewhere to land on
+    // platforms whose rename will not replace a file.
+    let _ = std::fs::remove_file(&displaced);
+    if std::fs::rename(lock, &displaced).is_ok() {
+        Some(displaced)
+    } else {
+        None
+    }
+}
+
+/// The post-rename audit of a displacement: re-read the
+/// displaced file and answer true only when it names
+/// exactly the generation the claimant judged (`judged`
+/// is that generation's parsed pid and token, or `None`
+/// when the judged file had no parseable generation).
+/// When the displaced file names anyone else — a live
+/// peer whose lock landed at the path after the judgment,
+/// or a different generation entirely — the move took a
+/// lock this claimant never judged: restore it to the
+/// lock path and answer false, so the claim stands down
+/// instead of proceeding to create over it. The restore
+/// renames the file back only while the lock path stands
+/// vacant; when a newer lock already stands there, the
+/// displaced file is left standing at the displaced path
+/// rather than overwriting that lock or deleting a live
+/// one, and the answer is still false.
+fn audit_displaced_instance_lock_from(
+    lock: &std::path::Path,
+    displaced: &std::path::Path,
+    judged: Option<&InstanceLock>,
+) -> bool {
+    if read_instance_lock_from(displaced).as_ref() == judged {
+        return true;
+    }
+    if std::fs::metadata(lock).is_err() {
+        let _ = std::fs::rename(displaced, lock);
+    }
+    false
+}
+
 /// Move a lock file that no live peer holds (dead owner,
-/// corrupt, or unreadable) aside in one rename, so the
-/// claim can take the path through the same create-new
-/// step an unheld lock takes. The old file is not
-/// deleted: it stays beside the lock as
-/// `openbulletin.lock.displaced`, the set-aside shape the
-/// journal and settings recovery paths already use.
-/// Renaming is the arbiter between two claimants who both
-/// judged the old lock takeable: the file can be moved
-/// only once, and the loser of the rename finds the path
-/// gone or already re-created and re-judges what stands
-/// there instead of proceeding.
-fn displace_instance_lock_from(lock: &std::path::Path) -> bool {
+/// corrupt, or unreadable) aside, so the claim can take
+/// the path through the same create-new step an unheld
+/// lock takes. The old file is not deleted: it stays
+/// beside the lock as `openbulletin.lock.displaced`.
+///
+/// Displacement is conditional on generation (R32-A,
+/// F1): a claimant may displace only the exact lock
+/// generation it judged. The standing file is re-read
+/// immediately before the rename and must still parse to
+/// `judged`; if it changed, nothing is moved and the
+/// caller re-judges what stands there instead of
+/// proceeding. The rename itself is then audited by
+/// `audit_displaced_instance_lock_from`, which closes
+/// the window between that re-read and the rename: a
+/// displacement that nonetheless landed on an unjudged
+/// generation restores it and answers false.
+fn displace_instance_lock_from(lock: &std::path::Path, judged: Option<&InstanceLock>) -> bool {
     // Only a regular file is ever displaced: anything else
     // standing at the lock path (a directory obstructing
     // it, say) is not a lock this claim may move, and the
@@ -3582,14 +3653,18 @@ fn displace_instance_lock_from(lock: &std::path::Path) -> bool {
         Ok(metadata) if metadata.is_file() => {}
         _ => return false,
     }
-    let mut displaced_name = lock.as_os_str().to_owned();
-    displaced_name.push(".displaced");
-    let displaced = std::path::PathBuf::from(displaced_name);
-    // Only a previous displaced copy is ever removed, and
-    // only so the rename has somewhere to land on
-    // platforms whose rename will not replace a file.
-    let _ = std::fs::remove_file(&displaced);
-    std::fs::rename(lock, &displaced).is_ok()
+    // The generation check: the file standing at the path
+    // now must be the generation that was judged. A file
+    // that changed since the judgment — above all a live
+    // winner's lock, created after this claimant judged a
+    // stale one takeable — is not displaced at all.
+    if read_instance_lock_from(lock).as_ref() != judged {
+        return false;
+    }
+    let Some(displaced) = rename_instance_lock_to_displaced_from(lock) else {
+        return false;
+    };
+    audit_displaced_instance_lock_from(lock, &displaced, judged)
 }
 
 /// The writing half of the claim (R31-B, F3): take the
@@ -3609,42 +3684,69 @@ fn displace_instance_lock_from(lock: &std::path::Path) -> bool {
 ///   that loses that create race re-reads and proceeds
 ///   only if the winner's lock names it (it does not).
 ///
+/// Displacement is conditional on generation (R32-A,
+/// F1): the claimant captures the parsed generation it
+/// judged and may displace only that generation, and a
+/// displacement that is refused — the standing file
+/// changed, or the post-rename audit found an unjudged
+/// generation and restored it — re-enters the judge loop
+/// instead of proceeding. The loop is bounded (four
+/// passes), so two claimants re-judging changing
+/// generations cannot spin forever: when the passes run
+/// out, the claim answers by the final re-read of what
+/// stands at the path.
+///
 /// This is the only production writer of the lock file,
 /// and no path deletes the lock.
 fn acquire_instance_lock_from(lock: &std::path::Path, own_pid: u32, own_token: &str) -> bool {
-    if peer_instance_alive_from(lock, own_pid, own_token) {
-        return false;
-    }
-    if lock_names_instance(lock, own_pid, own_token) {
-        return true;
-    }
-    match try_create_instance_lock_from(lock, own_pid, own_token) {
-        LockCreate::Created => true,
-        LockCreate::Failed => false,
-        LockCreate::AlreadyExists => {
-            // A lock stood at the path. Judge whoever
-            // holds it now, at write time: a live peer (or
-            // the winner of the create race) keeps it.
-            if peer_instance_alive_from(lock, own_pid, own_token) {
-                return false;
-            }
-            if lock_names_instance(lock, own_pid, own_token) {
-                return true;
-            }
-            // No live peer holds it: take over through
-            // the same atomic create-new step.
-            if !displace_instance_lock_from(lock) {
-                return false;
-            }
-            match try_create_instance_lock_from(lock, own_pid, own_token) {
-                LockCreate::Created => true,
-                // The create race was lost or the write
-                // failed: proceed only if the lock that
-                // stands there now names this instance.
-                _ => lock_names_instance(lock, own_pid, own_token),
+    for _pass in 0..4 {
+        if peer_instance_alive_from(lock, own_pid, own_token) {
+            return false;
+        }
+        if lock_names_instance(lock, own_pid, own_token) {
+            return true;
+        }
+        match try_create_instance_lock_from(lock, own_pid, own_token) {
+            LockCreate::Created => return true,
+            LockCreate::Failed => return false,
+            LockCreate::AlreadyExists => {
+                // A lock stood at the path. Judge whoever
+                // holds it now, at write time: a live peer
+                // (or the winner of the create race) keeps
+                // it.
+                if peer_instance_alive_from(lock, own_pid, own_token) {
+                    return false;
+                }
+                if lock_names_instance(lock, own_pid, own_token) {
+                    return true;
+                }
+                // Capture the exact generation just
+                // judged takeable. No live peer holds it:
+                // take over through displacement of that
+                // generation only, then the same atomic
+                // create-new step.
+                let judged = read_instance_lock_from(lock);
+                if !displace_instance_lock_from(lock, judged.as_ref()) {
+                    // The standing file was not the judged
+                    // generation (or its displacement was
+                    // audited and restored): do not proceed
+                    // — re-judge what stands there now on
+                    // the next pass.
+                    continue;
+                }
+                match try_create_instance_lock_from(lock, own_pid, own_token) {
+                    LockCreate::Created => return true,
+                    LockCreate::Failed => return false,
+                    // The create race was lost: re-judge the
+                    // winner's lock on the next pass, and
+                    // proceed only if it names this
+                    // instance.
+                    LockCreate::AlreadyExists => continue,
+                }
             }
         }
     }
+    lock_names_instance(lock, own_pid, own_token)
 }
 
 /// What the platform can say about whether a process is
@@ -7222,6 +7324,356 @@ mod settings_tests {
         let info = read_instance_lock_from(&lock).expect("the lock names the winner");
         assert_eq!(info.pid, Some(a_pid));
         assert_eq!(info.token.as_deref(), Some(a_token));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claim_interleaving_check_check_displace_displace_admits_exactly_one_claimant() {
+        // R32-A pin for F1, forcing the
+        // check-check-displace-displace interleaving at
+        // the `_from` seams, the way the red team's
+        // instrumented replica interleaved the extracted
+        // steps: both claimants judge a stale lock takeable
+        // and capture the generation they judged; A then
+        // claims in full (its own displacement of the stale
+        // generation, create-new, post-write re-read); B's
+        // displacement attempt, still carrying the stale
+        // generation B judged, must not move A's live lock,
+        // because displacement is conditional on the judged
+        // generation. Exactly one claimant holds at the
+        // end, and the displaced file still holds the stale
+        // generation A set aside.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-claim-displace-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = child.id();
+        child.wait().expect("reap child");
+        let stale_token = "foreign-token";
+        let stale_lock = format!("{dead_pid}\n{stale_token}\n");
+        std::fs::write(&lock, &stale_lock).expect("stale lock");
+        let a_pid = std::process::id();
+        let a_token = "claimant-a-token";
+        let b_pid = a_pid + 1000;
+        let b_token = "claimant-b-token";
+        // Check, check: both claimants judge the stale lock
+        // takeable and capture the generation they judged.
+        assert!(
+            !peer_instance_alive_from(&lock, a_pid, a_token),
+            "A's check: the stale lock names no live peer"
+        );
+        assert!(
+            !peer_instance_alive_from(&lock, b_pid, b_token),
+            "B's check: the stale lock names no live peer"
+        );
+        let a_judged = read_instance_lock_from(&lock).expect("A judged a generation");
+        let b_judged = read_instance_lock_from(&lock).expect("B judged a generation");
+        assert_eq!(a_judged, b_judged, "both judged the same stale generation");
+        assert_eq!(b_judged.pid, Some(dead_pid));
+        assert_eq!(b_judged.token.as_deref(), Some(stale_token));
+        // A displaces the stale generation and claims in
+        // full.
+        assert!(
+            acquire_instance_lock_from(&lock, a_pid, a_token),
+            "A's claim takes the stale lock over"
+        );
+        let winner_bytes = std::fs::read(&lock).expect("read winner's lock");
+        assert_eq!(
+            std::fs::read_to_string(&displaced).expect("read displaced file"),
+            stale_lock,
+            "A's displacement set the judged stale generation aside"
+        );
+        // Displace, again: B attempts displacement with
+        // the generation it judged, which no longer stands
+        // at the path.
+        assert!(
+            !displace_instance_lock_from(&lock, Some(&b_judged)),
+            "B's displacement must not take A's live lock"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after B's displacement attempt"),
+            winner_bytes,
+            "B's refused displacement leaves A's lock byte for byte"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&displaced).expect("read displaced file again"),
+            stale_lock,
+            "B's refused displacement leaves the displaced file as A left it"
+        );
+        // Exactly one claimant holds: B's full claim also
+        // refuses A's live lock, and the lock still names
+        // A alone.
+        assert!(
+            !acquire_instance_lock_from(&lock, b_pid, b_token),
+            "B's claim refuses A's live lock"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after B's claim"),
+            winner_bytes,
+            "B's refused claim leaves A's lock byte for byte"
+        );
+        assert!(lock_names_instance(&lock, a_pid, a_token), "A holds");
+        assert!(
+            !lock_names_instance(&lock, b_pid, b_token),
+            "B does not hold"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn displacement_landing_on_an_unjudged_generation_restores_it_and_stands_down() {
+        // R32-A pin for F1's restore path. B judged a stale
+        // generation takeable; a different generation —
+        // A's live lock — lands at the path before B's
+        // displacement does. The steps are driven by name,
+        // as the race drives them: B's generation check
+        // passed against the stale lock in the window
+        // before A landed, so the rename step moves A's
+        // lock aside — and the post-rename audit must catch
+        // that the displaced file does not name the judged
+        // generation, restore it to the lock path, and
+        // answer false, so B's claim stands down and
+        // creates nothing over it.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-displace-restore-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let a_pid = std::process::id();
+        let a_token = "claimant-a-token";
+        let b_pid = a_pid + 1000;
+        let b_token = "claimant-b-token";
+        // The generation B judged: a stale lock. (No
+        // liveness is consulted at these steps; the judged
+        // generation is the parsed pid and token.)
+        std::fs::write(&lock, "424242\nforeign-token\n").expect("stale lock");
+        let b_judged = read_instance_lock_from(&lock).expect("B judged a generation");
+        assert_eq!(b_judged.pid, Some(424242));
+        assert_eq!(b_judged.token.as_deref(), Some("foreign-token"));
+        // A different generation lands at the path: A's
+        // live lock.
+        let a_lock = format!("{a_pid}\n{a_token}\n");
+        std::fs::write(&lock, &a_lock).expect("A's lock lands");
+        let a_info = read_instance_lock_from(&lock).expect("A's generation reads back");
+        let a_bytes = std::fs::read(&lock).expect("read A's lock");
+        // B's displacement lands on A's generation.
+        let landed = rename_instance_lock_to_displaced_from(&lock)
+            .expect("the rename step moves the standing file");
+        assert_eq!(landed, displaced, "the rename set the file aside");
+        assert!(
+            !lock.exists(),
+            "the lock path stands vacant after the rename step"
+        );
+        assert_eq!(
+            read_instance_lock_from(&displaced).expect("the displaced file reads back"),
+            a_info,
+            "the displaced file holds A's unjudged generation"
+        );
+        // The audit refuses the displacement and restores
+        // the file it took.
+        assert!(
+            !audit_displaced_instance_lock_from(&lock, &displaced, Some(&b_judged)),
+            "the audit refuses a displacement that landed on an unjudged generation"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read restored lock"),
+            a_bytes,
+            "the unjudged generation is restored byte for byte"
+        );
+        assert!(
+            !displaced.exists(),
+            "the restore moves the file back; nothing stays displaced"
+        );
+        // The claim stands down: B holds nothing, and B's
+        // full claim judges A's restored lock and refuses
+        // it, leaving it byte for byte.
+        assert!(
+            !lock_names_instance(&lock, b_pid, b_token),
+            "B does not hold"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, b_pid, b_token),
+            "B's claim stands down before A's restored live lock"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after B's claim"),
+            a_bytes,
+            "B's refused claim leaves A's restored lock byte for byte"
+        );
+        assert!(lock_names_instance(&lock, a_pid, a_token), "A holds");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claim_interleaving_loser_cannot_retire_the_winners_journal() {
+        // R32-A pin for F1's data-loss half, completing the
+        // check-check-displace-displace interleaving above:
+        // A is a spawned live peer (see `spawn_live_peer`)
+        // that displaced the stale generation both claimants
+        // judged, created its own lock, and journaled under
+        // its token. B's refused displacement and refused
+        // claim must leave not only A's lock but A's live
+        // journal intact: the retirement B's later saves
+        // would attempt answers false, because the lock
+        // still names A and A is not provably gone.
+        let dir = std::env::temp_dir().join(format!(
+            "ob-app-claim-displace-journal-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let obd = dir.join("autosave.obd");
+        let meta = dir.join("autosave.txt");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut stale_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = stale_child.id();
+        stale_child.wait().expect("reap child");
+        let stale_lock = format!("{dead_pid}\nforeign-token\n");
+        std::fs::write(&lock, &stale_lock).expect("stale lock");
+        let mut peer = spawn_live_peer(&dir);
+        let a_pid = peer.id();
+        let a_token = "winner-a-token";
+        let b_pid = std::process::id() + 2000;
+        let b_token = "loser-b-token";
+        // Check, check: both claimants judge the stale lock
+        // takeable and capture the generation they judged.
+        let a_judged = read_instance_lock_from(&lock).expect("A judged a generation");
+        let b_judged = read_instance_lock_from(&lock).expect("B judged a generation");
+        assert_eq!(a_judged, b_judged, "both judged the same stale generation");
+        // A displaces the judged generation, creates its
+        // own lock through the create-new step, and holds.
+        assert!(
+            displace_instance_lock_from(&lock, Some(&a_judged)),
+            "A's displacement of the judged stale generation lands"
+        );
+        assert!(
+            matches!(
+                try_create_instance_lock_from(&lock, a_pid, a_token),
+                LockCreate::Created
+            ),
+            "A's create-new step lands its lock"
+        );
+        assert!(lock_names_instance(&lock, a_pid, a_token), "A holds");
+        // A journals under its own token.
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        write_journal_to(&obd, &meta, &doc, &None, a_token).expect("A writes journal");
+        let winner_bytes = std::fs::read(&lock).expect("read winner's lock");
+        // Displace, again: B's displacement attempt with
+        // its stale judged generation refuses, and B's
+        // full claim answers false.
+        assert!(
+            !displace_instance_lock_from(&lock, Some(&b_judged)),
+            "B's displacement must not take A's live lock"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, b_pid, b_token),
+            "B's claim answers false before A's live lock"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after B's attempts"),
+            winner_bytes,
+            "B's refused attempts leave A's lock byte for byte"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&displaced).expect("read displaced file"),
+            stale_lock,
+            "the displaced file still holds the stale generation A set aside"
+        );
+        // The data-loss shape itself: B cannot retire A's
+        // live journal — the pure rule refuses while the
+        // lock names A's token and A is not provably gone,
+        // and the seam refuses with it.
+        assert!(
+            !journal_retirement_allowed(Some(a_token), b_token, Some(a_token), false),
+            "the pure rule refuses retirement of the winner's journal"
+        );
+        assert!(
+            !retire_journal_from(&obd, &meta, &lock, b_token),
+            "B cannot retire A's live journal"
+        );
+        assert!(obd.exists() && meta.exists(), "A's journal survives");
+        let _ = peer.kill();
+        let _ = peer.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn displacement_audit_leaves_the_displaced_file_standing_when_the_path_is_occupied() {
+        // R32-A pin for F1's restore path, occupied
+        // variant: B judged a stale generation; A's live
+        // lock (a spawned peer's) landed at the path before
+        // B's rename step ran, so the rename set A's lock
+        // aside — and before the audit runs, a newer lock
+        // already stands at the lock path. The audit still
+        // answers false, but the restore must not overwrite
+        // the occupying lock: the displaced file is left
+        // standing at the displaced path, byte for byte,
+        // and the occupant is untouched.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-displace-occupied-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        // The generation B judged: a stale lock.
+        std::fs::write(&lock, "424242\nforeign-token\n").expect("stale lock");
+        let b_judged = read_instance_lock_from(&lock).expect("B judged a generation");
+        assert_eq!(b_judged.pid, Some(424242));
+        // A's live lock lands at the path.
+        let mut peer = spawn_live_peer(&dir);
+        let a_pid = peer.id();
+        let a_token = "winner-a-token";
+        let a_lock = format!("{a_pid}\n{a_token}\n");
+        std::fs::write(&lock, &a_lock).expect("A's lock lands");
+        let a_bytes = std::fs::read(&lock).expect("read A's lock");
+        // B's rename step moves A's lock aside.
+        let landed = rename_instance_lock_to_displaced_from(&lock)
+            .expect("the rename step moves the standing file");
+        assert_eq!(landed, displaced, "the rename set the file aside");
+        assert!(
+            !lock.exists(),
+            "the lock path stands vacant after the rename"
+        );
+        // A newer lock already stands at the path when the
+        // audit runs.
+        let newer_lock = format!("{}\nnewer-token\n", std::process::id());
+        std::fs::write(&lock, &newer_lock).expect("newer lock lands");
+        let newer_bytes = std::fs::read(&lock).expect("read newer lock");
+        // The audit refuses, and restores nothing over the
+        // occupant.
+        assert!(
+            !audit_displaced_instance_lock_from(&lock, &displaced, Some(&b_judged)),
+            "the audit refuses a displacement that landed on an unjudged generation"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after the audit"),
+            newer_bytes,
+            "the occupying lock is untouched byte for byte"
+        );
+        assert_eq!(
+            std::fs::read(&displaced).expect("read displaced file after the audit"),
+            a_bytes,
+            "the displaced file is left standing at the displaced path byte for byte"
+        );
+        let _ = peer.kill();
+        let _ = peer.wait();
         std::fs::remove_dir_all(&dir).ok();
     }
 

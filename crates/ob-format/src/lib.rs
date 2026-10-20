@@ -743,6 +743,168 @@ fn check_entry_cap(path: &Path) -> Result<(), String> {
     }
 }
 
+/// The plain words for a container whose directory
+/// names one part twice (round 30, F6).
+fn duplicate_name_refusal(name: &str) -> String {
+    format!(
+        "that file has two parts named {name}, so the file was not opened; \
+         it may be damaged."
+    )
+}
+
+/// Note one directory record among the names a loader
+/// reads — its root entry (`document.json` /
+/// `insert.json`) and every `assets/` entry — identified
+/// by the facts its own directory record declares
+/// (checksum and both sizes), and answer the name when
+/// a record with DIFFERENT facts has already been seen
+/// under it. The zip reader keeps entries in a map
+/// keyed by name, so a duplicated read name reaches
+/// the loader as only its LAST copy: which copy a
+/// bulletin was read from must never be the archive's
+/// quiet choice (round 30, F6), which is why the names
+/// are counted here, off the raw directory records,
+/// before the reader's map is trusted.
+///
+/// Two boundaries, both pinned. A name the loader
+/// never reads is not noted: two of those shadow
+/// nothing the loader serves (the same-name filler
+/// entries the raw entry cap counts, round 5, RT5-5,
+/// are exactly such names, and they still open). And
+/// an EXACT repeat — the same name carrying the same
+/// checksum and sizes — is a repeat, not a shadow:
+/// whichever copy the reader serves, it serves the
+/// same bytes, and files that carry a picture's entry
+/// twice in that shape have always loaded, folding to
+/// one record (round 4, RT-2). What refuses is a name
+/// whose copies disagree: the shadow shape.
+fn note_read_name(
+    seen: &mut HashMap<String, (u32, u32, u32)>,
+    name: &str,
+    facts: (u32, u32, u32),
+    root: &str,
+) -> Option<String> {
+    if name != root && !name.starts_with("assets/") {
+        return None;
+    }
+    match seen.get(name) {
+        None => {
+            seen.insert(name.to_string(), facts);
+            None
+        }
+        Some(&earlier) if earlier == facts => None,
+        Some(_) => Some(name.to_string()),
+    }
+}
+
+/// The directory facts one central record declares
+/// about its entry: checksum, compressed size, and
+/// uncompressed size, at their fixed header offsets.
+fn record_facts(header: &[u8]) -> (u32, u32, u32) {
+    let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap_or([0; 4]));
+    (field(16), field(20), field(24))
+}
+
+/// Walk the central directory records standing in
+/// `bytes` from `cd_start` to `dir_end` — one
+/// candidate's directory, as the count walk walks it —
+/// and name the first read name (see `note_read_name`)
+/// whose copies disagree in it. None when no read name
+/// repeats, or when the records stop chaining before
+/// any repeat: a directory that does not chain is the
+/// archive reader's error to report, in its own words.
+fn duplicate_read_name_in(bytes: &[u8], cd_start: u64, dir_end: u64, root: &str) -> Option<String> {
+    let mut seen: HashMap<String, (u32, u32, u32)> = HashMap::new();
+    let mut at = cd_start;
+    let mut walked = 0usize;
+    while at < dir_end && walked <= MAX_ENTRIES {
+        let start = at as usize;
+        if start + 46 > bytes.len() || !bytes[start..].starts_with(b"PK\x01\x02") {
+            break;
+        }
+        let header = &bytes[start..start + 46];
+        let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
+        let name_start = start + 46;
+        let name_end = name_start + name_len as usize;
+        if name_end > bytes.len() {
+            break;
+        }
+        let name = String::from_utf8_lossy(&bytes[name_start..name_end]).into_owned();
+        if let Some(dup) = note_read_name(&mut seen, &name, record_facts(header), root) {
+            return Some(dup);
+        }
+        walked += 1;
+        at += 46 + name_len + extra_len + comment_len;
+    }
+    None
+}
+
+/// The file twin of `duplicate_read_name_in`: the same
+/// walk over one candidate's directory in the file at
+/// `path`, record headers and names read at their
+/// offsets, never the whole file.
+fn duplicate_read_name_file(
+    path: &Path,
+    cd_start: u64,
+    dir_end: u64,
+    root: &str,
+) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut seen: HashMap<String, (u32, u32, u32)> = HashMap::new();
+    let mut at = cd_start;
+    let mut walked = 0usize;
+    while at < dir_end && walked <= MAX_ENTRIES {
+        let mut header = [0u8; 46];
+        if read_at(&mut file, at, &mut header).is_none() || !header.starts_with(b"PK\x01\x02") {
+            break;
+        }
+        let name_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = u64::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = u64::from(u16::from_le_bytes([header[32], header[33]]));
+        let mut name_bytes = vec![0u8; name_len as usize];
+        if read_at(&mut file, at + 46, &mut name_bytes).is_none() {
+            break;
+        }
+        let name = String::from_utf8_lossy(&name_bytes).into_owned();
+        if let Some(dup) = note_read_name(&mut seen, &name, record_facts(&header), root) {
+            return Some(dup);
+        }
+        walked += 1;
+        at += 46 + name_len + extra_len + comment_len;
+    }
+    None
+}
+
+/// The duplicated read name in the directory ONE
+/// candidate describes, resolved from its key: the
+/// directory's start is the key's first field and its
+/// end is the candidate's own position, or the zip64
+/// record it resolves through where one stands — the
+/// same end the count walk measures to. None when the
+/// candidate resolves to no directory start (an
+/// honestly empty archive has no names to repeat).
+fn duplicate_read_name_for_key(path: &Path, at: u64, key: &DirKey, root: &str) -> Option<String> {
+    let cd_start = key.0?;
+    let dir_end = key.2.unwrap_or(at);
+    duplicate_read_name_file(path, cd_start, dir_end, root)
+}
+
+/// The in-memory twin of `duplicate_read_name_for_key`,
+/// for the loaders' fallback candidates, whose
+/// resolutions carry the same key over `bytes`.
+fn duplicate_read_name_for_key_in(
+    bytes: &[u8],
+    at: usize,
+    key: &DirKey,
+    root: &str,
+) -> Option<String> {
+    let cd_start = key.0?;
+    let dir_end = key.2.unwrap_or(at as u64);
+    duplicate_read_name_in(bytes, cd_start, dir_end, root)
+}
+
 /// Every end-record candidate position in `bytes`,
 /// latest first, under the same rule the count walk
 /// uses: a "PK\x05\x06" whose comment length fits
@@ -1303,12 +1465,27 @@ fn archive_from_candidate_file(
 /// the save must not fail over it. Rename alone survives an
 /// app crash; the syncs are what survive a power cut.
 fn sync_and_rename(tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
-    {
+    // On every failure path the temp file is removed
+    // before the error returns (round 30, F3): the
+    // app-side twin `write_file_atomically` has always
+    // cleaned up after itself, and a stranded
+    // `<name>.obd.tmp` / `<name>.obdi.tmp` beside a
+    // bulletin invites exactly the confusion about which
+    // file is the bulletin that the temp name exists to
+    // avoid. The cleanup is best-effort — the error that
+    // caused it is the one the caller hears, unchanged,
+    // and the target is never touched by a failed write.
+    let outcome = (|| {
         let mut file = std::fs::File::create(tmp).map_err(|e| e.to_string())?;
         file.write_all(bytes).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
+        std::fs::rename(tmp, path).map_err(|e| e.to_string())
+    })();
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(tmp);
     }
-    std::fs::rename(tmp, path).map_err(|e| e.to_string())?;
+    outcome?;
     sync_directory(path);
     Ok(())
 }
@@ -1501,7 +1678,8 @@ fn load_v1(path: &Path) -> Result<Document, String> {
         if !zip.file_names().any(|n| n == "document.json") {
             continue;
         }
-        match read_bulletin_archive(&mut zip) {
+        let duplicate = duplicate_read_name_for_key(path, at, &key, "document.json");
+        match read_bulletin_archive(&mut zip, duplicate) {
             Ok(doc) => return Ok(doc),
             Err(e) => {
                 if first_error.is_none() {
@@ -1603,7 +1781,20 @@ fn load_v1(path: &Path) -> Result<Document, String> {
         match zip::ZipArchive::new(file) {
             Ok(mut zip) => {
                 if zip.file_names().any(|n| n == "document.json") {
-                    match read_bulletin_archive(&mut zip) {
+                    // The reader's chosen directory is the
+                    // latest candidate's (round 30, F6): its
+                    // duplicate count comes off that
+                    // candidate's resolution, the first one.
+                    let duplicate = match (positions.first(), resolutions.first()) {
+                        (Some(at), Some(resolution)) => duplicate_read_name_for_key_in(
+                            &bytes,
+                            *at,
+                            &resolution.key,
+                            "document.json",
+                        ),
+                        _ => None,
+                    };
+                    match read_bulletin_archive(&mut zip, duplicate) {
                         Ok(doc) => return Ok(doc),
                         Err(e) => {
                             if first_error.is_none() {
@@ -1669,7 +1860,9 @@ fn load_v1(path: &Path) -> Result<Document, String> {
         if !zip.file_names().any(|n| n == "document.json") {
             continue;
         }
-        match read_bulletin_archive(&mut zip) {
+        let duplicate =
+            duplicate_read_name_for_key_in(&bytes, at, &resolution.key, "document.json");
+        match read_bulletin_archive(&mut zip, duplicate) {
             Ok(doc) => return Ok(doc),
             Err(e) => {
                 if first_error.is_none() {
@@ -1692,7 +1885,25 @@ fn load_v1(path: &Path) -> Result<Document, String> {
 /// cap counted in actual bytes as entries are read,
 /// and every asset entry's bytes checked against the
 /// hash in its name before anything is trusted.
-fn read_bulletin_archive<R: Read + Seek>(zip: &mut zip::ZipArchive<R>) -> Result<Document, String> {
+fn read_bulletin_archive<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    duplicate: Option<String>,
+) -> Result<Document, String> {
+    // A duplicated read name whose copies disagree
+    // refuses before any payload is read (round 30,
+    // F6): the reader's map would serve only the last
+    // copy, so which document.json or picture a
+    // bulletin was read from must never be settled by
+    // shadowing. The caller counted the names off this
+    // candidate's raw directory records (the reader's
+    // own view is already collapsed); every acceptance
+    // path through this function passes exactly one
+    // such count. The count's boundaries — names the
+    // loader never reads, and exact repeats — are
+    // pinned at `note_read_name`.
+    if let Some(name) = duplicate {
+        return Err(duplicate_name_refusal(&name));
+    }
     // The entry cap counts the archive's parts before
     // any payload is read (round 4, RT-2).
     if zip.len() > MAX_ENTRIES {
@@ -1870,7 +2081,8 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
         if !zip.file_names().any(|n| n == "insert.json") {
             continue;
         }
-        match read_insert_archive(&mut zip) {
+        let duplicate = duplicate_read_name_for_key(path, at, &key, "insert.json");
+        match read_insert_archive(&mut zip, duplicate) {
             Ok(loaded) => return Ok(loaded),
             Err(e) => {
                 if first_error.is_none() {
@@ -1925,7 +2137,18 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
         match zip::ZipArchive::new(file) {
             Ok(mut zip) => {
                 if zip.file_names().any(|n| n == "insert.json") {
-                    match read_insert_archive(&mut zip) {
+                    // The reader's chosen directory, counted
+                    // as at the bulletin door (round 30, F6).
+                    let duplicate = match (positions.first(), resolutions.first()) {
+                        (Some(at), Some(resolution)) => duplicate_read_name_for_key_in(
+                            &bytes,
+                            *at,
+                            &resolution.key,
+                            "insert.json",
+                        ),
+                        _ => None,
+                    };
+                    match read_insert_archive(&mut zip, duplicate) {
                         Ok(loaded) => return Ok(loaded),
                         Err(e) => {
                             if first_error.is_none() {
@@ -1976,7 +2199,8 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
         if !zip.file_names().any(|n| n == "insert.json") {
             continue;
         }
-        match read_insert_archive(&mut zip) {
+        let duplicate = duplicate_read_name_for_key_in(&bytes, at, &resolution.key, "insert.json");
+        match read_insert_archive(&mut zip, duplicate) {
             Ok(loaded) => return Ok(loaded),
             Err(e) => {
                 if first_error.is_none() {
@@ -2001,7 +2225,14 @@ pub fn load_insert(path: &Path) -> Result<LoadedInsert, String> {
 /// its name before anything is trusted.
 fn read_insert_archive<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
+    duplicate: Option<String>,
 ) -> Result<LoadedInsert, String> {
+    // A duplicated read name refuses before any payload
+    // is read (round 30, F6), exactly as at the bulletin
+    // door: see `read_bulletin_archive`.
+    if let Some(name) = duplicate {
+        return Err(duplicate_name_refusal(&name));
+    }
     // The entry cap counts the archive's parts before
     // any payload is read (round 4, RT-2).
     if zip.len() > MAX_ENTRIES {
@@ -2269,6 +2500,39 @@ mod tests {
         sync_and_rename(&tmp, &path, b"new").expect("durable write");
         assert_eq!(std::fs::read(&path).expect("read target"), b"new");
         assert!(!tmp.exists(), "no temp file remains");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sync_and_rename_failure_removes_the_temp_and_leaves_the_target() {
+        // Round 30, F3 (review MINOR-2): a failed durable
+        // write used to strand its temp file beside the
+        // target. The failure is forced by making the
+        // target a folder holding a file: renaming a file
+        // over a folder fails on every platform the suite
+        // runs on, after the temp file has been written
+        // and synced whole — the deepest failure path the
+        // helper has. The error must still surface, no
+        // `.tmp` file may remain beside the target, and
+        // what stood at the target must be untouched.
+        let dir = scratch("sync-rename-fail");
+        let path = dir.join("week.obd");
+        std::fs::create_dir_all(&path).expect("target folder");
+        let keep = path.join("keep.txt");
+        std::fs::write(&keep, b"the previous contents").expect("seed target contents");
+        let tmp = path.with_extension("obd.tmp");
+        let err = sync_and_rename(&tmp, &path, b"the new bulletin")
+            .expect_err("renaming over a folder must fail");
+        assert!(!err.is_empty(), "the failure speaks: {err}");
+        assert!(
+            !tmp.exists(),
+            "no temp file remains beside the target after a failed write"
+        );
+        assert_eq!(
+            std::fs::read(&keep).expect("read target contents"),
+            b"the previous contents",
+            "the previous target contents are untouched"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3629,6 +3893,111 @@ mod tests {
         )
         .expect("write at");
         load_insert(&at).expect("a sheet at the raw cap still opens");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_duplicated_document_json_is_refused_never_shadow_read() {
+        // Round 30, F6 (red team RT30-5): the zip reader
+        // keeps entries in a map keyed by name, so a
+        // bulletin holding document.json twice was read
+        // from its LAST copy, silently. The loader now
+        // counts the names it reads off the raw directory
+        // records and refuses a repeat. Two different
+        // bodies stand under the name here; neither may
+        // be the one a load serves.
+        let honest = test_doc();
+        let mut shadow = test_doc();
+        shadow.title = "Shadow Copy".into();
+        let honest_json = serde_json::to_string(&honest).expect("json");
+        let shadow_json = serde_json::to_string(&shadow).expect("json");
+        let mut bytes = stored_zip(&[
+            ("document.json", honest_json.as_bytes()),
+            ("document.jsoX", shadow_json.as_bytes()),
+        ]);
+        // Control: before the patch, the same container
+        // is an ordinary bulletin and loads as itself.
+        let dir = scratch("dup-doc");
+        let control = dir.join("control.obd");
+        std::fs::write(&control, &bytes).expect("write control");
+        assert_eq!(load(&control).expect("control loads").title, "Roundtrip");
+        patch_entry_name(&mut bytes, "document.jsoX", "document.json");
+        let path = dir.join("dup.obd");
+        std::fs::write(&path, &bytes).expect("write witness");
+        let err = load(&path).expect_err("a duplicated document.json refuses");
+        assert_eq!(err, duplicate_name_refusal("document.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_duplicated_asset_entry_is_refused_never_shadow_read() {
+        // Round 30, F6, the asset half: two copies of one
+        // `assets/<hash>` entry, the second holding
+        // different bytes. The reader's map would serve
+        // the second copy and the first would never be
+        // seen; the load refuses instead.
+        let json = serde_json::to_string(&test_doc()).expect("json");
+        let payload: &[u8] = b"the picture the name promises";
+        let hash = sha256_hex(payload);
+        let asset_name = format!("assets/{hash}");
+        let stand_in = format!("assets/{}x", &hash[..63]);
+        let mut bytes = stored_zip(&[
+            ("document.json", json.as_bytes()),
+            (asset_name.as_str(), payload),
+            (stand_in.as_str(), b"the shadow copy, other bytes"),
+        ]);
+        patch_entry_name(&mut bytes, &stand_in, &asset_name);
+        let dir = scratch("dup-asset");
+        let path = dir.join("dup.obd");
+        std::fs::write(&path, &bytes).expect("write witness");
+        let err = load(&path).expect_err("a duplicated asset entry refuses");
+        assert_eq!(err, duplicate_name_refusal(&asset_name));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_duplicated_insert_json_is_refused_never_shadow_read() {
+        // Round 30, F6 at the sheet door: the same
+        // shadowing shape against insert.json, two
+        // different sheets under one name.
+        let sheet_json = lying_sheet_json();
+        let shadow_json = sheet_json.replace("Lying directory", "Shadow director");
+        assert_ne!(shadow_json, sheet_json, "the copies really differ");
+        let mut bytes = stored_zip(&[
+            ("insert.json", sheet_json.as_bytes()),
+            ("insert.jsoX", shadow_json.as_bytes()),
+        ]);
+        patch_entry_name(&mut bytes, "insert.jsoX", "insert.json");
+        let dir = scratch("dup-insert");
+        let path = dir.join("dup.obdi");
+        std::fs::write(&path, &bytes).expect("write witness");
+        let err = load_insert(&path).expect_err("a duplicated insert.json refuses");
+        assert_eq!(err, duplicate_name_refusal("insert.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_duplicated_name_the_loader_never_reads_still_opens() {
+        // Round 30, F6, the boundary of the refusal,
+        // pinned explicitly: the check covers the names
+        // the loader reads (its root entry and the
+        // `assets/` entries), because those are the names
+        // whose shadowing could change what a load
+        // serves. A duplicated name the loader never
+        // reads shadows nothing it serves — the raw
+        // entry cap still counts both copies (round 5,
+        // RT5-5) — so the bulletin opens as before.
+        let json = serde_json::to_string(&test_doc()).expect("json");
+        let mut bytes = stored_zip(&[
+            ("document.json", json.as_bytes()),
+            ("notes/shareA", b"one"),
+            ("notes/shareB", b"two"),
+        ]);
+        patch_entry_name(&mut bytes, "notes/shareB", "notes/shareA");
+        let dir = scratch("dup-unread");
+        let path = dir.join("ok.obd");
+        std::fs::write(&path, &bytes).expect("write control");
+        assert_eq!(load(&path).expect("loads").title, "Roundtrip");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

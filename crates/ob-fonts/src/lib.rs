@@ -217,22 +217,44 @@ pub fn sanitize_file_name(name: &str) -> String {
     }
 }
 
-/// One folder listing's cheap fingerprint: (file name, byte
-/// size, modification time) per entry, sorted by name. Two
-/// listings with the same fingerprint hold the same files in
-/// the same states as far as metadata can tell; the font
-/// bytes themselves are never read to compute it.
-type DirFingerprint = Vec<(String, u64, Option<std::time::SystemTime>)>;
+/// One folder listing's fingerprint: (file name, byte size,
+/// modification time, content hash) per entry, sorted by
+/// name. The content hash is computed for font files only
+/// (the files a scan actually reads facts from): a
+/// replacement that preserves a font's size and modification
+/// time — `cp -p`, `touch -r`, an archive extraction with
+/// stored timestamps — still changes the hash, so the memo
+/// can never serve the replaced font's stale facts (round
+/// 30, F2). Hashing reads the font bytes but never parses
+/// them; a repeat scan pays one read + hash per font and
+/// still skips every parse, which is where a scan's cost
+/// lives. Non-font entries carry no hash: no fact the scan
+/// serves comes from them, so their metadata is identity
+/// enough, as before.
+type DirFingerprint = Vec<(String, u64, Option<std::time::SystemTime>, Option<String>)>;
 
 fn dir_fingerprint(dir: &Path) -> DirFingerprint {
     let mut out: DirFingerprint = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let md = entry.metadata().ok();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let ext = Path::new(&name)
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let content_hash = if ext == "ttf" || ext == "otf" {
+                std::fs::read(entry.path())
+                    .ok()
+                    .map(|bytes| ob_model::sha256_hex(&bytes))
+            } else {
+                None
+            };
             out.push((
-                entry.file_name().to_string_lossy().into_owned(),
+                name,
                 md.as_ref().map(|m| m.len()).unwrap_or(0),
                 md.and_then(|m| m.modified().ok()),
+                content_hash,
             ));
         }
     }
@@ -289,17 +311,22 @@ impl FontLibrary {
     /// Every readable font in the folder, sorted by family then face.
     ///
     /// The scan itself (read, parse, and SHA-256 every file) is
-    /// memoized per folder on a cheap metadata fingerprint —
-    /// file names, sizes, and modification times from one
-    /// directory listing, no font bytes read (health audit
-    /// Efficiency MINOR-1: a scan runs ≈0.5 ms per font and is
-    /// called from at least seven app sites, several times per
-    /// user action). A folder whose listing fingerprint is
-    /// unchanged since its last scan gets the memoized facts
-    /// back; any file added, removed, replaced, or resized
-    /// changes the fingerprint and the folder is scanned
-    /// again in full, so newly added fonts appear on the very
-    /// next scan, exactly as before the memo.
+    /// memoized per folder on a fingerprint of file names,
+    /// sizes, modification times, and — for font files — a
+    /// SHA-256 of the contents (health audit Efficiency
+    /// MINOR-1: a scan runs ≈0.5 ms per font and is called
+    /// from at least seven app sites, several times per
+    /// user action). A folder whose fingerprint is unchanged
+    /// since its last scan gets the memoized facts back; any
+    /// file added, removed, or resized changes the
+    /// fingerprint, and so does a font replaced in place with
+    /// its size and modification time preserved, because its
+    /// content hash changes (round 30, F2). The fingerprint's
+    /// hashing reads each font's bytes on every scan but
+    /// never parses them, so a repeat scan still skips the
+    /// parse cost the memo exists to save. A changed folder
+    /// is scanned again in full, so newly added fonts appear
+    /// on the very next scan, exactly as before the memo.
     pub fn scan(&self) -> Vec<FontInfo> {
         let fingerprint = dir_fingerprint(&self.dir);
         if let Some(hit) = scan_memo_get(&self.dir, &fingerprint) {
@@ -991,6 +1018,101 @@ mod tests {
         );
         assert_eq!(lib.read(&scanned[0]).expect("read back").len(), info.bytes);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_never_serves_stale_facts_after_a_preserved_stamp_replacement() {
+        // Round 30, F2 (review MINOR-1 / red team RT30-3):
+        // the scan memo used to key on (name, size, mtime)
+        // only, so a font replaced in place at the same
+        // length with its modification time restored was
+        // served its predecessor's family facts and SHA-256
+        // for the rest of the process, while style pinning
+        // and face lookup keyed on those stale facts. The
+        // fingerprint now carries a content hash, so this
+        // witness must read as the new font.
+        let dir = temp_dir("stale-memo");
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let original = bundled("LiberationSans-Regular.ttf");
+        let path = dir.join("Witness.ttf");
+        std::fs::write(&path, &original).expect("write font");
+        let stamp = std::fs::metadata(&path)
+            .expect("metadata")
+            .modified()
+            .expect("modification time");
+        let first = lib.scan();
+        assert_eq!(first.len(), 1, "one font scanned: {first:?}");
+        assert_eq!(
+            first[0].sha256,
+            inspect(&original, "Witness.ttf")
+                .expect("inspect original")
+                .sha256
+        );
+
+        // Flip ONE byte inside the font's name table: the
+        // 'L' of a UTF-16BE "Li…" name string becomes 'M'.
+        // The name table's place is read from the font's own
+        // table directory, so the flip is at a real
+        // name-table offset, not at the file head.
+        let num_tables = u16::from_be_bytes([original[4], original[5]]) as usize;
+        let mut name_range: Option<(usize, usize)> = None;
+        for i in 0..num_tables {
+            let rec = 12 + i * 16;
+            if &original[rec..rec + 4] == b"name" {
+                let off = u32::from_be_bytes([
+                    original[rec + 8],
+                    original[rec + 9],
+                    original[rec + 10],
+                    original[rec + 11],
+                ]) as usize;
+                let len = u32::from_be_bytes([
+                    original[rec + 12],
+                    original[rec + 13],
+                    original[rec + 14],
+                    original[rec + 15],
+                ]) as usize;
+                name_range = Some((off, off + len));
+            }
+        }
+        let (table_start, table_end) = name_range.expect("the font has a name table");
+        let needle = [0u8, b'L', 0u8, b'i'];
+        let hit = (table_start..table_end - needle.len())
+            .find(|&at| original[at..at + needle.len()] == needle)
+            .expect("a UTF-16BE name string stands in the name table");
+        let mut replaced = original.clone();
+        replaced[hit + 1] = b'M';
+        assert_eq!(replaced.len(), original.len(), "same length");
+        assert_ne!(replaced, original, "one byte flipped");
+
+        std::fs::write(&path, &replaced).expect("replace font in place");
+        let file = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open replaced font");
+        file.set_modified(stamp).expect("restore the stamp");
+        drop(file);
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("metadata")
+                .modified()
+                .expect("modification time"),
+            stamp,
+            "size and stamp both preserved: the old memo key would hit"
+        );
+
+        let fresh = inspect(&replaced, "Witness.ttf").expect("inspect replaced");
+        assert_ne!(fresh.sha256, first[0].sha256, "the bytes really changed");
+        let second = lib.scan();
+        assert_eq!(second.len(), 1, "one font scanned: {second:?}");
+        assert_eq!(
+            second[0].sha256, fresh.sha256,
+            "the second scan must serve the new font's hash, not the stale one"
+        );
+        assert_eq!(second[0].family, fresh.family);
+        assert_eq!(second[0].full_name, fresh.full_name);
+        // The corrected facts are what the memo now serves.
+        assert_eq!(lib.scan(), second);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

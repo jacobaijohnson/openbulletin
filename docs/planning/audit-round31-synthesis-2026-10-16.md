@@ -481,3 +481,118 @@ the close commit. After the close: the standing
 boundary hygiene (cargo clean + stale probe dirs,
 fuzz bins and reports kept, registry not pruned),
 disk numbers, and one cold full-suite run.
+
+## Coordinator close (round 31)
+
+All ten findings are fixed or dispositioned on the
+record. Batches, each verified by the coordinator on
+its committed tree (full unpiped suite + clippy
+`-D warnings` + booklet pin, run independently of
+the builder):
+
+- **R31-A** `4b6794f` (F1, F5): 925 tests. Root-name
+  repeats are judged on payload bytes (located from
+  each central record, zip64 resolved, read raw
+  never through the archive reader); the .mxl and
+  IDML doors refuse disagreeing duplicates found by
+  a raw central-directory scan (the zip crate's name
+  map collapses duplicates before either door's loop
+  could see them). Ten new pins, including an
+  in-test GF(2)-forged CRC twin at both roots.
+- **R31-B** `20b5aed` (F2, F3, F6): 929 tests.
+  Windows gets a real liveness answer (kernel32
+  OpenProcess/GetExitCodeProcess, scoped unsafe,
+  no new dependency); the platform cfg split in
+  `peer_instance_alive_from` is gone — one decision
+  table everywhere, Unknown reads as a live peer.
+  The claim is atomic (create-new + sync + post-write
+  re-read; a takeover displaces the old lock file by
+  rename, never deletes `openbulletin.lock`) and a
+  write failure answers false. Unnamable-pid locks
+  are corrupt, not peers, at claim and retirement.
+  Hosted CI on this commit: **success on macos,
+  windows, and ubuntu** (run 39405317555) — the
+  Windows job is the settler for the FFI code and
+  the rewritten off-Unix pin, which could not be
+  executed locally.
+  *Deviation adjudicated and accepted:* the brief
+  required the R30-A/CI-FIX pins "unmodified" and
+  also required pid 0 to be corrupt; two pins
+  modeled a live peer *as* pid 0, so both texts
+  could not hold literally. The builder kept every
+  assertion and changed the model: the live peer is
+  now a real spawned process (a copy of the system
+  sleep binary named `openbulletin-peer`), judged by
+  the /proc identity refinement exactly as a real
+  peer is. One setup line in
+  `journal_retirement_respects_the_owner_token` was
+  adapted to the new claim API; its assertions are
+  untouched. The coordinator accepts this: the pins
+  now assert the same invariant against an honest
+  model instead of the pid-0 fiction F6 retired.
+- **R31-C** `ac98ee8` (F4): 935 tests. Five rescan
+  sites fixed (cross-group governance counted per
+  date value once; relative-shape judging cleans
+  tokens once; a one-pass next-nonempty table;
+  first-word gates on the governor/target phrase
+  families; the superseded-chain screen). All five
+  measured shapes are linear now (worst before/after
+  on the builder's harness: 100 KB relative groups
+  7,393 ms → 48 ms). No-reading-moved evidence is
+  threefold: a 65,720-case differential corpus
+  byte-identical before/after (md5
+  `1a8f1369493ef629738844c6e59aabda`), readings pins
+  taken from the un-fixed code, and the coordinator's
+  fuzz re-run below.
+- **R31-D** `fd08caf` (F7, F10): 937 tests. Note
+  names stay plain for lossless ids and carry a
+  truncated sha256 of the raw id when sanitization
+  was lossy (the hashed form is disjoint from every
+  plain name). The license fetch walks the probed
+  folders in probe order (ofl/OFL.txt,
+  apache/LICENSE.txt, ufl/UFL.txt). The S-4 hostile-id
+  pin was adapted in expectation (two distinct notes)
+  as the batch brief named in advance.
+- **R31-E** `5d9b38a` (F8, F9): 940 tests. The
+  read-name space is stated once (`BULLETIN_ROOT_NAME`,
+  `INSERT_ROOT_NAME`, `ASSET_ENTRY_PREFIX`,
+  `is_read_name`) and used by both readers, both
+  writers, and the checker — no root/`assets/`
+  literal remains in production code outside the
+  constants. The durable-write helper is
+  single-sourced as `ob_model::sync_and_rename`;
+  both former bodies are deleted, failure-path pins
+  run against the shared body (one re-pointed pin
+  reads the io error's text form where the local
+  copy answered String; assertions otherwise intact).
+
+**Fuzz as claims on the closed code tree**
+(coordinator's own runs, bins at recorded md5s
+verdict `a9cac6c3…`, comp `4f85c605…`, run after
+R31-C and again on the final tree `5d9b38a`):
+verdict 40,000 lines, panics=0; composition
+497,024 lines, D_PANICS=0, governed resurrections
+943. Both stdouts **byte-identical to the round-30
+close baselines at both runs** (md5 verdict
+`4941c4f9…`, comp `efd2096b…`). No date reading
+moved anywhere in the round. Coordinator stdouts:
+`round31-out/coord/close-verdict.stdout`,
+`close-comp.stdout`. One process note: an early
+coordinator fuzz attempt through `cargo run`
+produced a delivered summary that the disk files
+did not support (empty captures; a stale stderr);
+it was discarded in full and the claims above rest
+only on direct binary runs whose outputs were
+md5-compared on disk — the same fabricated-delivery
+shape the verify lane recorded this round.
+
+**Exit bar: NOT met by round 31's audit verdict
+(0 / 4 / 6); all ten findings are now fixed or
+dispositioned, so round 32 audits the closed tree
+as the next candidate.** HF-12 remains untouched
+(Jacob's decision). The Tier-2 final gate is not
+started. The close's hosted evidence (bundle +
+three-OS CI on the close commit) and the
+round-boundary hygiene record live in the audit
+dir (`round31-close-status.md`), per the standing
+gate.

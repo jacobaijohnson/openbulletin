@@ -206,11 +206,20 @@ struct FaceSource {
 fn face_sources(
     library: &[(ob_fonts::FontInfo, Vec<u8>)],
 ) -> std::collections::HashMap<FaceKey, FaceSource> {
+    // The bundled faces' facts come from the memoized
+    // enumeration (ob_text::shaping::bundled_font_infos,
+    // health audit Efficiency MINOR-1): re-inspecting the
+    // eight faces here re-parsed and re-hashed them on every
+    // export. Their bytes are paired by file name.
+    let bundled_files = ob_text::shaping::bundled_font_files();
     let mut bundled: Vec<ob_fonts::FontInfo> = Vec::new();
     let mut bytes_by_sha: std::collections::HashMap<String, Vec<u8>> =
         std::collections::HashMap::new();
-    for (name, bytes) in ob_text::shaping::bundled_font_files() {
-        if let Ok(info) = ob_fonts::inspect(bytes, name) {
+    for info in ob_text::shaping::bundled_font_infos() {
+        if let Some((_, bytes)) = bundled_files
+            .iter()
+            .find(|(name, _)| *name == info.file_name)
+        {
             bytes_by_sha.insert(info.sha256.clone(), bytes.to_vec());
             bundled.push(info);
         }

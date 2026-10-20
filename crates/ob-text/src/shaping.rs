@@ -143,10 +143,20 @@ pub fn bundled_font_files() -> Vec<(&'static str, &'static [u8])> {
 /// these faces plus the Font Library's
 /// (ob_fonts::candidate_faces, round 4 R4-9).
 pub fn bundled_font_infos() -> Vec<ob_fonts::FontInfo> {
-    bundled_font_files()
-        .iter()
-        .filter_map(|(name, bytes)| ob_fonts::inspect(bytes, name).ok())
-        .collect()
+    // Memoized for the process (health audit Efficiency
+    // MINOR-1): the bytes are compile-time constants, so the
+    // inspected facts can never change, but inspecting them
+    // re-parses and re-hashes all eight faces on every call —
+    // and this is called on every export and every font pin.
+    static INFOS: std::sync::OnceLock<Vec<ob_fonts::FontInfo>> = std::sync::OnceLock::new();
+    INFOS
+        .get_or_init(|| {
+            bundled_font_files()
+                .iter()
+                .filter_map(|(name, bytes)| ob_fonts::inspect(bytes, name).ok())
+                .collect()
+        })
+        .clone()
 }
 
 pub fn bundled_shaper() -> Shaper {

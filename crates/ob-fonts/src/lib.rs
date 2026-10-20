@@ -217,6 +217,59 @@ pub fn sanitize_file_name(name: &str) -> String {
     }
 }
 
+/// One folder listing's cheap fingerprint: (file name, byte
+/// size, modification time) per entry, sorted by name. Two
+/// listings with the same fingerprint hold the same files in
+/// the same states as far as metadata can tell; the font
+/// bytes themselves are never read to compute it.
+type DirFingerprint = Vec<(String, u64, Option<std::time::SystemTime>)>;
+
+fn dir_fingerprint(dir: &Path) -> DirFingerprint {
+    let mut out: DirFingerprint = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let md = entry.metadata().ok();
+            out.push((
+                entry.file_name().to_string_lossy().into_owned(),
+                md.as_ref().map(|m| m.len()).unwrap_or(0),
+                md.and_then(|m| m.modified().ok()),
+            ));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The scan memo's store: one (fingerprint, facts) entry
+/// per library folder.
+type ScanMemo = std::collections::HashMap<PathBuf, (DirFingerprint, Vec<FontInfo>)>;
+
+/// The scan memo (see `FontLibrary::scan`): one entry per
+/// folder, replaced whenever that folder's fingerprint
+/// changes. Process-wide, because call sites build a fresh
+/// `FontLibrary` for the same folder on nearly every call —
+/// a per-instance memo would never be hit twice.
+fn scan_memo() -> &'static std::sync::Mutex<ScanMemo> {
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<ScanMemo>> = std::sync::OnceLock::new();
+    MEMO.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn scan_memo_get(dir: &Path, fingerprint: &DirFingerprint) -> Option<Vec<FontInfo>> {
+    let guard = scan_memo().lock().ok()?;
+    let (stored_fp, infos) = guard.get(dir)?;
+    if stored_fp == fingerprint {
+        Some(infos.clone())
+    } else {
+        None
+    }
+}
+
+fn scan_memo_put(dir: &Path, fingerprint: DirFingerprint, infos: Vec<FontInfo>) {
+    if let Ok(mut guard) = scan_memo().lock() {
+        guard.insert(dir.to_path_buf(), (fingerprint, infos));
+    }
+}
+
 pub struct FontLibrary {
     dir: PathBuf,
 }
@@ -234,7 +287,31 @@ impl FontLibrary {
     }
 
     /// Every readable font in the folder, sorted by family then face.
+    ///
+    /// The scan itself (read, parse, and SHA-256 every file) is
+    /// memoized per folder on a cheap metadata fingerprint —
+    /// file names, sizes, and modification times from one
+    /// directory listing, no font bytes read (health audit
+    /// Efficiency MINOR-1: a scan runs ≈0.5 ms per font and is
+    /// called from at least seven app sites, several times per
+    /// user action). A folder whose listing fingerprint is
+    /// unchanged since its last scan gets the memoized facts
+    /// back; any file added, removed, replaced, or resized
+    /// changes the fingerprint and the folder is scanned
+    /// again in full, so newly added fonts appear on the very
+    /// next scan, exactly as before the memo.
     pub fn scan(&self) -> Vec<FontInfo> {
+        let fingerprint = dir_fingerprint(&self.dir);
+        if let Some(hit) = scan_memo_get(&self.dir, &fingerprint) {
+            return hit;
+        }
+        let out = self.scan_uncached();
+        scan_memo_put(&self.dir, fingerprint, out.clone());
+        out
+    }
+
+    /// The scan itself, with no memo in the way.
+    fn scan_uncached(&self) -> Vec<FontInfo> {
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return out;
@@ -519,6 +596,7 @@ impl FontLibrary {
 /// and where the file lives. The panel offers these with an
 /// "add a copy" button; adding copies the file into the library
 /// (copy-in, never a live link: docs/FONTS.md).
+#[derive(Debug, Clone)]
 pub struct SystemFont {
     pub info: FontInfo,
     pub path: std::path::PathBuf,
@@ -563,7 +641,26 @@ fn system_font_dirs() -> Vec<std::path::PathBuf> {
 /// here (each row is one face, and a collection is several);
 /// adding a collection through the Fonts panel's file pick
 /// splits it into its faces instead.
+///
+/// The enumeration is memoized for the process (health audit
+/// Efficiency MINOR-1): it walks every system font folder and
+/// reads, parses, and hashes every font file it finds, which
+/// costs real time on a font-rich machine, and nothing about
+/// the answer changes while the program runs except fonts
+/// installed mid-session — those appear after a restart.
+/// That is the same staleness bargain the SVG renderer's
+/// system font database already takes (ob-image's fontdb is
+/// loaded once per process). The user's own Font Library is
+/// NOT part of this snapshot: `FontLibrary::scan` re-checks
+/// its folder's fingerprint on every call, so a font the
+/// user adds to the library appears immediately.
 pub fn system_fonts() -> Vec<SystemFont> {
+    static SYSTEM_FONTS: std::sync::OnceLock<Vec<SystemFont>> = std::sync::OnceLock::new();
+    SYSTEM_FONTS.get_or_init(enumerate_system_fonts).clone()
+}
+
+/// The system enumeration itself, with no memo in the way.
+fn enumerate_system_fonts() -> Vec<SystemFont> {
     fn walk(
         dir: &std::path::Path,
         out: &mut Vec<SystemFont>,

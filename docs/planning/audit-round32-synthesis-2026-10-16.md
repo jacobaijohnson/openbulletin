@@ -598,3 +598,95 @@ full-suite run. If the round-33 audit then returns
 zero BLOCKER + zero MAJOR, the exit bar is met and
 the Tier-2 final gate is the next step — not this
 loop's to start.
+
+## Close (coordinator, 2026-10-20)
+
+All six batches landed. Each was verified on its
+committed tree by the coordinator's own unpiped
+suite and clippy runs, with the booklet baseline
+(31,717 imposed / 34,977 reader) exact in suite at
+every step. Suite count: 940 at the round-31 close,
+976 at this close.
+
+- R32-A `d20b5ae` (F1) — 944 tests. Landed under
+  the predecessor coordinator (recovered from a
+  partial tree).
+- R32-B `31c6f90` (F2) — 946 tests. Extended
+  differential corpus (66,620 cases) byte-identical
+  to the round-30 close `3722169`.
+- R32-C `b7d6c06` (F3) — 954 tests. Recovery
+  record below.
+- R32-D `3cf476f` (F4, F5, F6) — 966 tests.
+- R32-E `1afccb3` (F8, F9) — 969 tests. The
+  round-31 F6 record stands amended as F9 states,
+  recorded in `peer_provably_gone`'s doc.
+- R32-F `c0dd8b8` (F7, F10, F11) — 976 tests. The
+  close tree. Its F11 pin is the behavioral
+  equivalent of the RSS witness (refusal from the
+  central facts before any payload is built); a
+  true RSS assertion is impractical in-suite, and
+  the pin says so.
+
+**R32-C recovery record.** The batch's writer was
+reported interrupted, leaving one dirty file. The
+successor coordinator inspected the full uncommitted
+diff: it was timer instrumentation only
+(`Instant` probes and `TIMER` eprintln lines in
+three functions of contribution/composition.rs),
+no fix content. That one file was reset to HEAD
+and a fresh writer dispatched. The fresh writer
+stood down with zero edits on detecting a second
+writer active in the same tree: the original
+writer was in fact still running, and it completed
+the batch across composition.rs, grammar.rs, and
+tests.rs and committed it as `b7d6c06`. A recovery
+writer dispatched against the dirty tree entered
+after that commit had landed and was closed once
+the commit was established. The batch as committed
+was then verified from scratch by the coordinator
+(suite 954/0, clippy 0, fuzz byte-identical, the
+eight `r32c` pins present and passing). The reset
+discarded instrumentation only; no fix content was
+lost. The collision is recorded here because the
+close must show it: two writers were live in one
+tree for part of the batch, against the one-writer
+rule, through a false interruption report.
+
+**Timing provenance (F12 applied).** R32-C's
+commit message mixes estimators: the un-fixed
+figures are the red team's release min-of-5; the
+fixed figures (3,987 ms cancelled-with-core at
+8,000 groups; 2,617 ms relative-cancelled) are from
+a debug probe on a loaded VM. Read the point
+figures with that provenance. The shape claim
+(bounded growth per doubling in place of the
+quadratic) is what the in-suite timing pins carry.
+
+**Fuzz as claims on the closed tree**
+(coordinator's own runs, bins at recorded md5s
+verdict `a9cac6c3…`, comp `4f85c605…`): verdict
+40,000 lines, panics=0; composition 497,024 lines,
+D_PANICS=0. Both stdouts **byte-identical to the
+round-30 close baselines** (md5 verdict
+`4941c4f9…`, comp `efd2096b…`). No date reading
+moved anywhere in the round. Coordinator stdouts:
+`round32-out/coord/close-verdict.stdout`,
+`close-comp.stdout`. One process note: after
+R32-D changed workspace dependency requirements,
+the probe crate's lock file had to be refreshed
+(runs without `--locked`); the bin sources are
+untouched at their recorded md5s and the outputs
+are unchanged.
+
+**Exit bar: NOT met by round 32's audit verdict
+(0 / 3 / 9); all twelve findings are now fixed or
+dispositioned (F12 is a record correction; the F6
+residual as amended by F9 is recorded, not fixed),
+so round 33 audits the closed tree as the next
+candidate.** HF-12 remains untouched (Jacob's
+decision). The Tier-2 final gate is not started.
+The close's hosted evidence (three-OS CI, desktop
+runner build, Windows bundle on the close commit)
+and the round-boundary hygiene record live in the
+audit dir (`round32-close-status.md`), per the
+standing gate.

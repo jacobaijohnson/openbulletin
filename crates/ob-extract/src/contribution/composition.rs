@@ -1271,16 +1271,35 @@ pub(super) fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(S
     // and reads across the same way. A standalone
     // ";" or bullet inside a span is not a nothing
     // and is still never dropped.
-    let kept: Vec<usize> = tokens
-        .iter()
-        .enumerate()
-        .filter(|(idx, t)| *idx == 0 || !nothing_token(t))
-        .map(|(idx, _)| idx)
-        .collect();
-    let normalized: Vec<String> = kept
-        .iter()
-        .map(|&idx| tokens[idx])
-        .map(|t| {
+    // Round 30 (R30-D, F7): the reader's word budget
+    // bounds both the build and the search below.
+    // `parse_flexible_date` reads at most four words —
+    // a weekday, a month, a day, and a year (or one
+    // numeric token) — and every word past the slots
+    // makes the read fail, so a prefix holding five
+    // reader words can never be the longest-first
+    // hit, and no token past it can stand in a
+    // reading either. Words are counted the way the
+    // reader counts them (commas are spaces to it;
+    // a nothing word is nothing to it), over the
+    // normalized tokens, so the bound is exact:
+    // every prefix the old search could read is
+    // still tried, and every skipped prefix is one
+    // it read as None. Before this bound, each call
+    // rebuilt the whole remaining line and re-parsed
+    // every prefix of it, longest first, so a line
+    // of repeated dates cost cubic time in its
+    // length (round 30, RT30-4: ≈8–9 s at 3.4 KB,
+    // over 120 s at 34 KB).
+    let mut kept: Vec<usize> = Vec::new();
+    let mut normalized: Vec<String> = Vec::new();
+    let mut reader_words = 0usize;
+    let mut search_len = 0usize;
+    for (idx, &t) in tokens.iter().enumerate() {
+        if idx != 0 && nothing_token(t) {
+            continue;
+        }
+        let norm = {
             // A token of nothing but the punctuation
             // (a standalone ";" — the composition's own
             // group marker) keeps its shape: it is a
@@ -1345,11 +1364,35 @@ pub(super) fn parse_date_prefix(tokens: &[&str], today: SimpleDate) -> Option<(S
             } else {
                 trimmed.to_string()
             }
-        })
-        .collect();
-    (1..=normalized.len()).rev().find_map(|end| {
+        };
+        reader_words += reader_word_count(&norm);
+        kept.push(idx);
+        normalized.push(norm);
+        if reader_words <= 4 {
+            search_len = kept.len();
+        } else {
+            break;
+        }
+    }
+    (1..=search_len).rev().find_map(|end| {
         parse_flexible_date(&normalized[..end].join(" "), today).map(|d| (d, kept[end - 1] + 1))
     })
+}
+
+/// The number of words one normalized token holds
+/// for `parse_flexible_date` (round 30, R30-D): the
+/// reader turns commas into spaces before it splits,
+/// and a word that is nothing (see `nothing_token`)
+/// is no word to it. Counted on the normalized token
+/// — the very string the reader is handed — so the
+/// budget in `parse_date_prefix` counts exactly the
+/// words a prefix of the line presents to the reader.
+fn reader_word_count(token: &str) -> usize {
+    token
+        .replace(',', " ")
+        .split_whitespace()
+        .filter(|piece| !nothing_token(piece))
+        .count()
 }
 
 /// A token with its wrapping brackets and sentence

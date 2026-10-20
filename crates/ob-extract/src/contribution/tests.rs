@@ -18837,3 +18837,36 @@ fn r29c_determiner_boundaries_stand() {
         );
     }
 }
+
+#[test]
+fn r30d_repeated_date_line_parses_without_the_cliff() {
+    // Round 30 (R30-D, F7 = red team RT30-4): a
+    // For Sunday line repeating one date hundreds
+    // of times used to cost cubic time in the
+    // line's length — `parse_date_prefix` rebuilt
+    // the whole remaining line and re-parsed every
+    // prefix of it, longest first, at every date
+    // the scans stepped to. Measured before the
+    // fix (release): 190 repetitions (≈3.4 KB)
+    // took ≈1.9 s, and the cubic fit puts 380
+    // repetitions past 15 s and the 34 KB class
+    // past the red team's 120 s cap. The reader's
+    // four-word budget now bounds the search (see
+    // `parse_date_prefix`), and the fixed code
+    // reads this witness in milliseconds even in a
+    // debug test profile. The five-second bound
+    // sits far above the fixed code's time and far
+    // below the old code's, so load cannot flake
+    // it either way; the reading itself is pinned
+    // first, as everywhere.
+    let line = vec!["November 1, 2026"; 380].join(", ");
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the repeated-date witness took {elapsed:?}"
+    );
+}

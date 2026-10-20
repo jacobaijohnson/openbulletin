@@ -690,3 +690,32 @@ runner build, Windows bundle on the close commit)
 and the round-boundary hygiene record live in the
 audit dir (`round32-close-status.md`), per the
 standing gate.
+
+**Standing practice change (Jacob, 2026-10-20
+14:53 PDT), recorded at this close.** Storage
+discipline at batch boundaries: after a batch
+commits and pushes and HEAD == origin/main is
+confirmed on its commit, `cargo clean` runs in the
+repo (registry not pruned), and the batch's
+verification then runs cold from that clean tree
+(full unpiped suite + clippy + booklet pin +
+fuzz-as-claims where the batch touches the
+contribution engines), replacing the incremental
+verification for that batch. Per batch, the record
+carries disk free before the clean, after the
+clean, and after the cold rebuild, plus the cold
+run's wall time. Rationale: a round of incremental
+batches grows `target/` to 20-25 GB of debris; a
+single cold build's footprint is ~2-4 GB; the
+pushed GitHub tree is the source of truth being
+rebuilt. First application: this round's close
+itself, whose cold run already followed the shape
+(clean, then cold suite 976/0 and clippy 0 on
+`c0dd8b8`; disk 11G free before the clean, 18G
+after, 16G after the cold rebuild; cold suite wall
+~13.5 min, clippy ~3.7 min, matching the directive's
+measured expectations; full numbers in
+`round32-close-status.md`). Per-batch cold
+verification applies from the next batch onward,
+which is round 33's batches under the next
+coordinator.

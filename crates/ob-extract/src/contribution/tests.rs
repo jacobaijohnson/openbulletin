@@ -19058,6 +19058,307 @@ fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
     );
 }
 
+// Round 32 (R32-C, F3): the cancelled-group family
+// R31-C's five shapes missed — a standing core date
+// on the header line followed by groups carrying
+// cancelled/canceled INSIDE the group, its sibling
+// shapes (distinct-date cancelled groups, one group
+// holding thousands of dates, leading groups before
+// a relative core, bracket groups), each of them
+// quadratic on the un-fixed tree. The rescans, now
+// bounded: the bare test judged a phrase unit at
+// every position of an occurrence's region,
+// nothing-positions included, and each attempt
+// rescanned the whole run of tokens that clean to
+// nothing standing there (a de-grouped core is
+// mostly the composition's own ";" markers); it
+// also rebuilt the run's bracket-span mask once
+// per occurrence. The target-claim test rescanned
+// the whole token run per occurrence — the "to"
+// walk-back, the phrase rebuild, the span/start
+// questions — where one shared scan now states
+// each answer once per run. The leading-group
+// readers rebuilt the full balanced-span list of
+// the remainder for every group stripped or
+// judged; the first-span walk stops where the
+// first span closes. The weekday fallback in the
+// inner date reader joined and re-parsed the
+// whole line suffix after every weekday word; a
+// suffix holding more reader pieces than any date
+// the flexible reader can read (three, plus one
+// leading weekday) is now skipped, as the reader
+// itself answers no date for it. And the by-date /
+// distinct / alternatives membership tests in the
+// group and plain compositions stand in sets
+// beside their lists instead of scanning per
+// occurrence. The readings on every shape below
+// are the readings the un-fixed code produces
+// (verified against a git-archive copy of the
+// round-opening tree), pinned first at small size;
+// the timing pins then hold each large shape to a
+// bound at least five times the fixed code's
+// measured debug time and at most a third of the
+// un-fixed code's at the same size. Measurements:
+// un-fixed, red team, release profile, min-of-5
+// with the absolute-group control interleaved at
+// the same group count — cancelled-with-core
+// 11,605 ms at 8,000 groups (145x control, 3.2-4.1x
+// per doubling), relative-cancelled 35,199 ms
+// (447x), distinct-date cancelled 116x, one big
+// group of same dates 188x, of distinct dates 36x,
+// leading groups 32x, bracket groups ~11x at
+// 608 KB and growing; un-fixed, this batch's debug
+// probe, min-of-5 on the loaded VM (load average
+// ~5.6), parse only — cancelled-with-core 4,915 ms
+// at 2,000 groups and ~3.3x per doubling. Fixed,
+// the same debug probe, min-of-5, same load: at
+// 8,000 groups — cancelled absolute 3,987 ms,
+// cancelled relative 2,617 ms, cancelled distinct
+// 4,934 ms, one big group distinct 4,590 ms,
+// leading 2,164 ms, bracket 1,052 ms, each ~2x per
+// doubling; one big group of same dates 1,369 ms
+// at 4,000, scaled linearly for its pin.
+
+#[test]
+fn r32c_cancelled_group_family_keeps_its_readings() {
+    // Cancelled full-date groups after a standing
+    // core: the core reads, the groups name nothing.
+    let groups = ["(November 1, 2026, cancelled)"; 3].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_parenthesized_dates, Vec::new());
+    assert_eq!(c.for_sunday_second_dates, Vec::new());
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+    assert_eq!(
+        week_verdict(&c, Some(nov(8))),
+        WeekVerdict::DifferentSunday(nov(1))
+    );
+
+    // Cancelled relative groups after the core read
+    // the same way.
+    let groups = ["(next Sunday, cancelled)"; 3].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_in_words, None);
+    assert_eq!(c.for_sunday_second_dates, Vec::new());
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+
+    // Distinct-date cancelled groups after the core:
+    // the core reads, the cancelled dates are named
+    // nowhere.
+    let text = "For Sunday: November 1, 2026 (November 2, 2026, cancelled) (November 3, 2026, cancelled) (November 4, 2026, cancelled)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, Vec::new());
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+
+    // One big group holding the core's date three
+    // times: the core reads, nothing else is named.
+    let inner = "November 1, 2026, ".repeat(3);
+    let text = format!("For Sunday: November 1, 2026 ({inner})\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, Vec::new());
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+
+    // One big group holding three other dates: the
+    // core reads and the group's dates are named as
+    // second dates, in written order.
+    let text = "For Sunday: November 1, 2026 (November 2, 2026, November 3, 2026, November 4, 2026)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(2), nov(3), nov(4)]);
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+
+    // Leading groups before a relative core: the
+    // phrase stands in words with the groups
+    // remembered as its dates.
+    let groups = ["(November 1, 2026)"; 3].join(" ");
+    let text = format!("For Sunday: {groups} next Sunday\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(
+        c.for_sunday_in_words.as_deref(),
+        Some("(November 1, 2026) (November 1, 2026) (November 1, 2026) next Sunday")
+    );
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(1)));
+    assert_eq!(
+        c.for_sunday_parenthesized_dates,
+        vec![nov(1), nov(1), nov(1)]
+    );
+    assert_eq!(
+        week_verdict(&c, Some(nov(1))),
+        WeekVerdict::SundayInWords(nov(1))
+    );
+
+    // Bracket groups after the core: the core reads,
+    // the bracketed dates name nothing.
+    let groups = ["[November 1, 2026]"; 3].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, Vec::new());
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+
+    // The Keep through line carries the cancelled
+    // shapes the same way.
+    let groups = ["(November 1, 2026, cancelled)"; 3].join(" ");
+    let text = format!(
+        "For Sunday: November 8, 2026\nKeep through: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n"
+    );
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    assert_eq!(c.keep_through, Some(nov(1)));
+
+    let groups = ["(next Sunday, cancelled)"; 3].join(" ");
+    let text = format!(
+        "For Sunday: November 8, 2026\nKeep through: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n"
+    );
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)));
+}
+
+#[test]
+fn r32c_cancelled_groups_after_a_core_parse_without_the_cliff() {
+    let groups = vec!["(November 1, 2026, cancelled)"; 8000].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "the cancelled-with-core witness took {elapsed:?}"
+    );
+}
+
+#[test]
+fn r32c_cancelled_relative_groups_after_a_core_parse_without_the_cliff() {
+    let groups = vec!["(next Sunday, cancelled)"; 8000].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "the relative-cancelled-with-core witness took {elapsed:?}"
+    );
+}
+
+#[test]
+fn r32c_distinct_cancelled_groups_after_a_core_parse_without_the_cliff() {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let mut groups = String::new();
+    for i in 0..8000usize {
+        let d = (i % 28) + 1;
+        let m = MONTHS[(i / 28) % 12];
+        let y = 2024 + (i / (28 * 12)) % 40;
+        groups.push_str(&format!("({m} {d}, {y}, cancelled) "));
+    }
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        elapsed < std::time::Duration::from_secs(25),
+        "the distinct-cancelled-with-core witness took {elapsed:?}"
+    );
+}
+
+#[test]
+fn r32c_one_big_group_of_same_dates_parses_without_the_cliff() {
+    let inner = "November 1, 2026, ".repeat(8000);
+    let text = format!("For Sunday: November 1, 2026 ({inner})\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "the one-big-group same-dates witness took {elapsed:?}"
+    );
+}
+
+#[test]
+fn r32c_one_big_group_of_distinct_dates_parses_without_the_cliff() {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let mut inner = String::new();
+    for i in 0..8000usize {
+        let d = (i % 28) + 1;
+        let m = MONTHS[(i / 28) % 12];
+        let y = 2024 + (i / (28 * 12)) % 40;
+        inner.push_str(&format!("{m} {d}, {y}, "));
+    }
+    let text = format!("For Sunday: November 1, 2026 ({inner})\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        elapsed < std::time::Duration::from_secs(25),
+        "the one-big-group distinct-dates witness took {elapsed:?}"
+    );
+}
+
+#[test]
+fn r32c_leading_groups_before_a_relative_core_parse_without_the_cliff() {
+    let groups = vec!["(November 1, 2026)"; 8000].join(" ");
+    let text = format!("For Sunday: {groups} next Sunday\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.for_sunday_parenthesized_dates.len(), 8000);
+    assert!(
+        elapsed < std::time::Duration::from_secs(12),
+        "the leading-groups witness took {elapsed:?}"
+    );
+}
+
+#[test]
+fn r32c_bracket_groups_after_a_core_parse_without_the_cliff() {
+    let groups = vec!["[November 1, 2026]"; 8000].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        elapsed < std::time::Duration::from_secs(6),
+        "the bracket-group witness took {elapsed:?}"
+    );
+}
+
 #[test]
 fn r32b_glued_one_token_remainder_reads_the_sunday_it_names() {
     // Round 32 (R32-B, F2 = review MAJOR-2): R31-C

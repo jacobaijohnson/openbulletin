@@ -3596,17 +3596,200 @@ pub(super) fn target_phrase_may_start(word: &str) -> bool {
         || is_verb_form(word, "push")
 }
 
-pub(super) fn target_claim(
+/// The shared tables one run of target-claim
+/// judgments is read off (round 32, R32-C, F3).
+/// The claim test for one occurrence used to
+/// rescan the whole token run for every
+/// occurrence it judged: walking back over every
+/// token before the date hunting a "to" / "until",
+/// rebuilding every target phrase before that
+/// word, and answering each span / start / clause-
+/// break question by scanning the occurrence list
+/// or the run again. A run holding thousands of
+/// occurrences — one big group holding thousands
+/// of dates, a header line of thousands of
+/// bracketed dates standing as plain signals —
+/// paid that whole run once per occurrence, and
+/// the parse cost quadratic time. Every table
+/// here states, once, an answer the claim test
+/// used to recompute per occurrence, computed by
+/// the same predicates in the same order: the
+/// "to" / "until" positions in written order; the
+/// occurrence starts as a prefix count and a
+/// per-index flag; the token indexes standing
+/// inside an occurrence's span; the target
+/// phrases standing in the run, kept per phrase
+/// length (a phrase's end rises strictly with its
+/// start over the run's words that are something,
+/// so the phrases ending at or before a given
+/// "to" form a prefix of each list); the
+/// next-nonempty table; the last clause break
+/// before each index; and the largest occurrence
+/// end at or before each index. The claim
+/// judgment below reads only these tables and
+/// its occurrence's own neighbourhood; no answer
+/// changes.
+pub(super) struct TargetClaimScan {
+    to_positions: Vec<usize>,
+    starts_prefix: Vec<usize>,
+    is_start: Vec<bool>,
+    in_span: Vec<bool>,
+    cand1: Vec<(usize, usize)>,
+    cand2: Vec<(usize, usize)>,
+    nonempty_next: Vec<Option<usize>>,
+    last_break: Vec<Option<usize>>,
+    largest_end: Vec<Option<usize>>,
+}
+
+pub(super) fn target_claim_scan(
+    raw_tokens: &[&str],
+    tokens: &[String],
+    positional: &[(SimpleDate, usize, usize)],
+) -> TargetClaimScan {
+    let n = tokens.len();
+    let to_positions: Vec<usize> = (0..n)
+        .filter(|&i| matches!(tokens[i].as_str(), "to" | "until"))
+        .collect();
+    let mut is_start = vec![false; n];
+    let mut in_span = vec![false; n];
+    for (_, s, used) in positional {
+        if *s < n {
+            is_start[*s] = true;
+        }
+        for slot in in_span.iter_mut().take((*s + *used).min(n)).skip(*s) {
+            *slot = true;
+        }
+    }
+    let mut starts_prefix: Vec<usize> = vec![0; n + 1];
+    for i in 0..n {
+        starts_prefix[i + 1] = starts_prefix[i] + is_start[i] as usize;
+    }
+    let mut end_present = vec![false; n + 1];
+    for (_, s, used) in positional {
+        let end = s + used;
+        if end <= n {
+            end_present[end] = true;
+        }
+    }
+    let mut largest_end: Vec<Option<usize>> = vec![None; n + 1];
+    let mut best_end: Option<usize> = None;
+    for x in 0..=n {
+        if end_present[x] {
+            best_end = Some(x);
+        }
+        largest_end[x] = best_end;
+    }
+    let mut last_break: Vec<Option<usize>> = vec![None; n + 1];
+    let mut last: Option<usize> = None;
+    for j in 0..n {
+        if clause_break_after_at(raw_tokens, tokens, j) {
+            last = Some(j);
+        }
+        last_break[j + 1] = last;
+    }
+    // The run's target phrases, per phrase length:
+    // at each word that can open one (the R31-C
+    // first-word gate, exactly as the per-occurrence
+    // scan applied it), the phrase of that length
+    // and whether it is a target phrase. A one-word
+    // phrase that does not stand (no word at the
+    // position) closes the position to both
+    // lengths, as the shipped scan's `break` did.
+    let mut cand1: Vec<(usize, usize)> = Vec::new();
+    let mut cand2: Vec<(usize, usize)> = Vec::new();
+    for ps in 0..n {
+        if tokens[ps].is_empty() || !target_phrase_may_start(&tokens[ps]) {
+            continue;
+        }
+        let Some((phrase, pe)) = word_phrase(tokens, ps, 1) else {
+            continue;
+        };
+        if is_target_phrase(&phrase) {
+            cand1.push((ps, pe));
+        }
+        if let Some((phrase, pe)) = word_phrase(tokens, ps, 2) {
+            if is_target_phrase(&phrase) {
+                cand2.push((ps, pe));
+            }
+        }
+    }
+    let nonempty_next = next_nonempty_table(tokens);
+    TargetClaimScan {
+        to_positions,
+        starts_prefix,
+        is_start,
+        in_span,
+        cand1,
+        cand2,
+        nonempty_next,
+        last_break,
+        largest_end,
+    }
+}
+
+/// The target phrase the per-occurrence scan
+/// finds for a "to" / "until" at `to_pos`, read
+/// off the scan's phrase lists (round 32, R32-C):
+/// the shipped scan walked every phrase start
+/// before the "to" in written order and kept the
+/// last phrase of either length that was a target
+/// phrase ending at or before the "to" — the
+/// phrase with the largest start, its two-word
+/// form winning a tie at the same start. Each
+/// list's ends rise strictly with its starts, so
+/// each length's candidates ending at or before
+/// `to_pos` form a prefix of its list, and the
+/// answer is the later of the two prefixes' last
+/// entries (the two-word entry on a tie).
+fn target_phrase_found(scan: &TargetClaimScan, to_pos: usize) -> Option<(usize, usize)> {
+    let c1 = {
+        let upto = scan.cand1.partition_point(|(_, pe)| *pe <= to_pos);
+        scan.cand1[..upto].last().copied()
+    };
+    let c2 = {
+        let upto = scan.cand2.partition_point(|(_, pe)| *pe <= to_pos);
+        scan.cand2[..upto].last().copied()
+    };
+    match (c1, c2) {
+        (Some(a), Some(b)) => {
+            if b.0 >= a.0 {
+                Some(b)
+            } else {
+                Some(a)
+            }
+        }
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// The claim for every occurrence of a run,
+/// judged against one shared scan (round 32,
+/// R32-C): the batch entry the composition passes
+/// use, where the shipped code mapped the
+/// per-occurrence test over the whole run.
+pub(super) fn target_claims(
+    raw_tokens: &[&str],
+    tokens: &[String],
+    positional: &[(SimpleDate, usize, usize)],
+) -> Vec<Option<TargetClaim>> {
+    let scan = target_claim_scan(raw_tokens, tokens, positional);
+    (0..positional.len())
+        .map(|idx| target_claim_in(&scan, raw_tokens, tokens, positional, idx))
+        .collect()
+}
+
+pub(super) fn target_claim_in(
+    scan: &TargetClaimScan,
     raw_tokens: &[&str],
     tokens: &[String],
     positional: &[(SimpleDate, usize, usize)],
     idx: usize,
 ) -> Option<TargetClaim> {
     let start = positional[idx].1;
-    let mut to_pos = start;
-    while to_pos > 0 {
-        to_pos -= 1;
-        if !matches!(tokens[to_pos].as_str(), "to" | "until") {
+    for &to_pos in scan.to_positions.iter().rev() {
+        if to_pos >= start {
             continue;
         }
         // Between the "to" and the date: determiners
@@ -3619,7 +3802,12 @@ pub(super) fn target_claim(
         }
         // A date standing between this "to" and the
         // claimed date means the "to" names THAT date.
-        if positional.iter().any(|(_, s, _)| *s > to_pos && *s < start) {
+        // Round 32 (R32-C): read off the scan's start
+        // prefix count — an occurrence starts strictly
+        // between the "to" and the claimed date exactly
+        // when the count of starts before the date
+        // exceeds the count at or before the "to".
+        if scan.starts_prefix[start] > scan.starts_prefix[to_pos + 1] {
             continue;
         }
         // The nearest target phrase ending at or
@@ -3630,34 +3818,11 @@ pub(super) fn target_claim(
         // ("put \u{200b} back to …") is the phrase,
         // and its end is the index just past its
         // last word.
-        let mut found: Option<(usize, usize)> = None;
-        for ps in 0..to_pos {
-            if tokens[ps].is_empty() {
-                continue;
-            }
-            // Round 31 (R31-C, F4): a word that can
-            // begin no target phrase claims nothing,
-            // so the phrase build is skipped for it —
-            // the same first-word gate as
-            // `governor_phrase_may_start`, stated for
-            // the target family in
-            // `target_phrase_may_start`.
-            if !target_phrase_may_start(&tokens[ps]) {
-                continue;
-            }
-            for len in 1..=2usize {
-                let Some((phrase, pe)) = word_phrase(tokens, ps, len) else {
-                    break;
-                };
-                if pe > to_pos {
-                    break;
-                }
-                if is_target_phrase(&phrase) {
-                    found = Some((ps, pe));
-                }
-            }
-        }
-        let Some((ps, pe)) = found else {
+        // Round 32 (R32-C): read off the scan's
+        // phrase lists (`target_phrase_found`), where
+        // the shipped code rebuilt every phrase
+        // before the "to" for every occurrence.
+        let Some((ps, pe)) = target_phrase_found(scan, to_pos) else {
             continue;
         };
         // Between the phrase and the "to": an object
@@ -3686,10 +3851,12 @@ pub(super) fn target_claim(
         // it. Its comma-after-date twin has always
         // claimed this way.
         let clause_bounded = (pe..to_pos).all(|j| {
-            let in_date_span = positional
-                .iter()
-                .any(|(_, s, used)| j >= *s && j < s + used);
-            let before_intervening_date = positional.iter().any(|(_, s, _)| *s == j + 1 && *s > pe);
+            // Round 32 (R32-C): the span coverage and
+            // the start-at-j+1 questions are the
+            // scan's tables, exactly the predicates
+            // they state.
+            let in_date_span = scan.in_span[j];
+            let before_intervening_date = j + 1 > pe && scan.is_start[j + 1];
             // Round 20 (R20-4): a comma standing on a
             // noun-like word directly before a verb-form
             // word the one verb test reads as a postposed
@@ -3729,12 +3896,12 @@ pub(super) fn target_claim(
                 }
                 match tokens.get(k) {
                     Some(next) if k < to_pos && is_finite_verb_form(next) => {
-                        let seg_start = positional
-                            .iter()
-                            .filter(|(_, s, used)| s + used <= k)
-                            .map(|(_, s, used)| s + used)
-                            .max()
-                            .unwrap_or(pe);
+                        // Round 32 (R32-C): the largest
+                        // occurrence end at or before k,
+                        // off the scan's table — the
+                        // shipped scan filtered the
+                        // whole occurrence list for it.
+                        let seg_start = scan.largest_end[k].unwrap_or(pe);
                         let seg = &tokens[seg_start..to_pos];
                         !verb_form_is_finite(seg, k - seg_start)
                     }
@@ -3763,10 +3930,14 @@ pub(super) fn target_claim(
                 // from \u{200b} November 1 to
                 // November 8") does not detach the
                 // "from" from the date it governs.
-                let next_nonempty = (j + 1..tokens.len()).find(|&p| !tokens[p].is_empty());
-                let from_before_date = w.as_str() == "from"
-                    && next_nonempty
-                        .is_some_and(|ns| positional.iter().any(|(_, st, _)| *st == ns));
+                // Round 32 (R32-C): the next word that
+                // is something is the scan's
+                // next-nonempty table (the R31-C
+                // table), and "a date starts there" is
+                // the scan's start flag.
+                let next_nonempty = scan.nonempty_next[j + 1];
+                let from_before_date =
+                    w.as_str() == "from" && next_nonempty.is_some_and(|ns| scan.is_start[ns]);
                 // Round 18 (R18-3): a word standing
                 // inside an intervening SIGNAL's own
                 // span — an earlier target in the same
@@ -3785,9 +3956,7 @@ pub(super) fn target_claim(
                 // only: governor, cancellation, and
                 // auxiliary words still end the reach
                 // wherever they stand.
-                let in_signal_span = positional
-                    .iter()
-                    .any(|(_, s, used)| j >= *s && j < s + used);
+                let in_signal_span = scan.in_span[j];
                 // Round 20 (R20-6): a weekday word
                 // followed by a noun-like word is a
                 // noun phrase's modifier ("printed
@@ -3859,16 +4028,15 @@ pub(super) fn target_claim(
         // its own clause before that bound is judged
         // by the same rule, as in the other scans.
         let bound = {
-            let mut b = 0usize;
-            for (_, s, used) in positional.iter() {
-                if s + used <= ps {
-                    b = b.max(s + used);
-                }
-            }
-            for (j, _) in raw_tokens.iter().enumerate().take(ps) {
-                if clause_break_after_at(raw_tokens, tokens, j) {
-                    b = b.max(j + 1);
-                }
+            // Round 32 (R32-C): both terms off the
+            // scan's tables — the largest occurrence
+            // end at or before the phrase (the shipped
+            // scan's first loop, defaulting to zero),
+            // and the last clause break before the
+            // phrase (its second loop).
+            let mut b = scan.largest_end[ps].unwrap_or(0);
+            if let Some(j) = scan.last_break[ps] {
+                b = b.max(j + 1);
             }
             b
         };
@@ -3912,12 +4080,11 @@ pub(super) fn target_claim(
             (None, None) => continue,
         };
         if bound > 0 {
-            let mut pcs = 0usize;
-            for (j, _) in raw_tokens.iter().enumerate().take(bound - 1) {
-                if clause_break_after_at(raw_tokens, tokens, j) {
-                    pcs = j + 1;
-                }
-            }
+            // Round 32 (R32-C): the last clause break
+            // before the bound's own fragment, off the
+            // scan's table — the start of the fragment
+            // the bound closes.
+            let pcs = scan.last_break[bound - 1].map(|j| j + 1).unwrap_or(0);
             if let Some((count, all_listed)) = adverb_stack_clause(&tokens[pcs..bound]) {
                 if !all_listed || count + adverbs_used > 2 {
                     continue;
@@ -3935,12 +4102,9 @@ pub(super) fn target_claim(
             // The fragment check above sees only the
             // date's own fragment and missed it.
             if pcs > 0 {
-                let mut ppcs = 0usize;
-                for (j, _) in raw_tokens.iter().enumerate().take(pcs - 1) {
-                    if clause_break_after_at(raw_tokens, tokens, j) {
-                        ppcs = j + 1;
-                    }
-                }
+                // Round 32 (R32-C): the same table,
+                // one fragment earlier.
+                let ppcs = scan.last_break[pcs - 1].map(|j| j + 1).unwrap_or(0);
                 if let Some((count, all_listed)) = adverb_stack_clause(&tokens[ppcs..pcs]) {
                     if !all_listed || count + adverbs_used > 2 {
                         continue;
@@ -5308,8 +5472,36 @@ pub(super) const BARE_PHRASE_UNITS: &[&[&str]] = &[
 /// matching at `i` wins, so "care of the" is taken
 /// as one unit, not as "care of" plus the article.
 pub(super) fn bare_phrase_unit_span(words: &[String], i: usize) -> Option<usize> {
+    // Round 32 (R32-C, F3): a unit standing at `i`
+    // must open on the first word that is something
+    // at or after `i` — the match below skips the
+    // tokens that clean to nothing before comparing
+    // its first word — so a unit whose first word is
+    // not that word cannot match here, and when no
+    // word that is something stands at or after `i`
+    // no unit can match at all. The shipped code
+    // tried every listed unit at every position,
+    // and each attempt rescanned the whole run of
+    // nothing-tokens standing there: a region of
+    // thousands of nothings (a de-grouped header
+    // core is mostly the composition's own ";"
+    // markers) cost quadratic time in exactly this
+    // test, once per cancelled value judged against
+    // it. The filter states the match's own first
+    // step once; every unit it passes is matched
+    // word for word as before, and the span it
+    // returns is the span the unfiltered match
+    // returned.
+    let mut first = i;
+    while words.get(first).is_some_and(|w| w.is_empty()) {
+        first += 1;
+    }
+    let first_word = words.get(first)?;
     let mut best: Option<usize> = None;
     for unit in BARE_PHRASE_UNITS {
+        if unit.first().copied() != Some(first_word.as_str()) {
+            continue;
+        }
         let mut pos = i;
         let mut matched = true;
         for want in unit.iter() {
@@ -5999,11 +6191,22 @@ pub(super) fn determiner_headed_content(
         || complex_preposition_tail(words, side_start, q)
 }
 
-pub(super) fn occurrence_is_bare(
-    raw_tokens: &[&str],
+/// The bare test, with the token run's bracket-span
+/// mask computed by the caller (round 32, R32-C,
+/// F3): the mask is a property of the whole token
+/// run, and the by-date passes judge every
+/// occurrence of a run against it — computing it
+/// inside the test rebuilt it once per occurrence,
+/// so a run holding thousands of occurrences (one
+/// big group, a line of bracketed dates) paid for
+/// the whole run once per occurrence. Every caller
+/// now computes the mask once for its run and
+/// judges through here. No judgment changes.
+pub(super) fn occurrence_is_bare_masked(
     tokens: &[String],
     positional: &[(SimpleDate, usize, usize)],
     idx: usize,
+    span_mask: &[bool],
 ) -> bool {
     let (_, start, used) = positional[idx];
     let region_start = if idx == 0 {
@@ -6066,7 +6269,6 @@ pub(super) fn occurrence_is_bare(
     // with `words` — the before-date words first,
     // then the after-date words, each mapped back
     // to its token index for the span mask.
-    let span_mask = bracket_span_mask(raw_tokens);
     let mut bracket_garnish: Vec<bool> = Vec::with_capacity(words.len());
     bracket_garnish.extend(
         (region_start..start.min(tokens.len())).map(|k| span_mask.get(k).copied().unwrap_or(false)),
@@ -6090,73 +6292,94 @@ pub(super) fn occurrence_is_bare(
         // not, and "together" / "at" are bare but
         // "last" is not, so a member-by-member pass
         // strands both units on their last word.
-        if let Some(span) = bare_phrase_unit_span(&words, i) {
-            // Round 25 (R25-A, M7 = review R25-5): a
-            // unit may not span the date itself —
-            // the before-date and after-date words
-            // are judged as separate sequences, the
-            // same no-span rule the passive-
-            // predicate test above already follows.
-            // "(gone November 1 tomorrow)" and
-            // "(care November 1 of)" are not the
-            // units "gone tomorrow" / "care of".
-            let crosses_date =
-                i < after_start && (after_start..i + span).any(|p| !words[p].is_empty());
-            if !crosses_date {
-                // Round 28 (R28-C, F3 = review
-                // R28 MAJOR-2): a bare unit's own
-                // weekday signal is part of the
-                // bare span. The unit is judged as
-                // written in the token stream, not
-                // only by the part of it standing
-                // inside this region: a region ends
-                // at the next occurrence, so when
-                // the unit's own weekday word IS
-                // that next occurrence — a live
-                // signal of this very line or group
-                // (see `weekday_signal_word`) — the
-                // region's partition consumes only
-                // the unit's head ("see you") and
-                // the span as written still carries
-                // the signal. Such a span is not
-                // bare material for this occurrence
-                // and the region is not bare: the
-                // shipped unit &["see", "you",
-                // "sunday"] made the restated
-                // November 1 in "November 1, 2026,
-                // cancelled, November 1, 2026 see you
-                // sunday" read bare, while the
-                // Sunday inside the unit still
-                // spawned its weekday signal and the
-                // phantom October 18 won the
-                // segment. Judged with the unit
-                // standing, the occurrence asserts
-                // and the signal is named beside it,
-                // as the line read before the unit
-                // shipped. The unit's membership
-                // stands and its group readings
-                // stand (the group twin offers its
-                // alternatives by its two signals,
-                // not by bareness); weekday phrases
-                // that partition word by word —
-                // "coming sunday", "last sunday" —
-                // spawn their signals without any
-                // unit and keep their pinned
-                // readings, untouched by this rule.
-                let unit_token_start = if i < after_start {
-                    region_start + i
-                } else {
-                    after + (i - after_start)
-                };
-                let written_span = bare_phrase_unit_span(tokens, unit_token_start).unwrap_or(0);
-                let unit_has_live_weekday = (unit_token_start..unit_token_start + written_span)
-                    .any(|t| weekday_signal_word(positional, tokens, t));
-                if unit_has_live_weekday {
-                    return false;
+        // Round 32 (R32-C, F3): the unit test is
+        // asked only at a word that is something.
+        // Asked at a nothing position, a matching
+        // unit is either refused by the no-span
+        // rule below (its words stand past the
+        // date boundary the position precedes) or
+        // consumed — and in the consumed case the
+        // same unit, with the same span end, is
+        // consumed when the walk reaches its head
+        // word: the nothing positions before it are
+        // skipped by the garnish step below either
+        // way, and the one reader of `unit_spans`
+        // (the determiner rule) queries it only at
+        // word positions, where a span opening on
+        // a nothing and a span opening on its head
+        // word cover the same words. Asking at
+        // every nothing position instead rescanned
+        // the nothing run once per position — the
+        // de-grouped core's ";" runs again.
+        if !words[i].is_empty() {
+            if let Some(span) = bare_phrase_unit_span(&words, i) {
+                // Round 25 (R25-A, M7 = review R25-5): a
+                // unit may not span the date itself —
+                // the before-date and after-date words
+                // are judged as separate sequences, the
+                // same no-span rule the passive-
+                // predicate test above already follows.
+                // "(gone November 1 tomorrow)" and
+                // "(care November 1 of)" are not the
+                // units "gone tomorrow" / "care of".
+                let crosses_date =
+                    i < after_start && (after_start..i + span).any(|p| !words[p].is_empty());
+                if !crosses_date {
+                    // Round 28 (R28-C, F3 = review
+                    // R28 MAJOR-2): a bare unit's own
+                    // weekday signal is part of the
+                    // bare span. The unit is judged as
+                    // written in the token stream, not
+                    // only by the part of it standing
+                    // inside this region: a region ends
+                    // at the next occurrence, so when
+                    // the unit's own weekday word IS
+                    // that next occurrence — a live
+                    // signal of this very line or group
+                    // (see `weekday_signal_word`) — the
+                    // region's partition consumes only
+                    // the unit's head ("see you") and
+                    // the span as written still carries
+                    // the signal. Such a span is not
+                    // bare material for this occurrence
+                    // and the region is not bare: the
+                    // shipped unit &["see", "you",
+                    // "sunday"] made the restated
+                    // November 1 in "November 1, 2026,
+                    // cancelled, November 1, 2026 see you
+                    // sunday" read bare, while the
+                    // Sunday inside the unit still
+                    // spawned its weekday signal and the
+                    // phantom October 18 won the
+                    // segment. Judged with the unit
+                    // standing, the occurrence asserts
+                    // and the signal is named beside it,
+                    // as the line read before the unit
+                    // shipped. The unit's membership
+                    // stands and its group readings
+                    // stand (the group twin offers its
+                    // alternatives by its two signals,
+                    // not by bareness); weekday phrases
+                    // that partition word by word —
+                    // "coming sunday", "last sunday" —
+                    // spawn their signals without any
+                    // unit and keep their pinned
+                    // readings, untouched by this rule.
+                    let unit_token_start = if i < after_start {
+                        region_start + i
+                    } else {
+                        after + (i - after_start)
+                    };
+                    let written_span = bare_phrase_unit_span(tokens, unit_token_start).unwrap_or(0);
+                    let unit_has_live_weekday = (unit_token_start..unit_token_start + written_span)
+                        .any(|t| weekday_signal_word(positional, tokens, t));
+                    if unit_has_live_weekday {
+                        return false;
+                    }
+                    unit_spans.push((i, i + span));
+                    i += span;
+                    continue;
                 }
-                unit_spans.push((i, i + span));
-                i += span;
-                continue;
             }
         }
         // Round 28 (R28-C, F6 = red team RT28-B1,

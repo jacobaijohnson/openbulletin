@@ -111,9 +111,9 @@ pub(super) fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) 
     let mut trailing_named: Vec<SimpleDate> = Vec::new();
     // Round 16 (R16-1): the target claim standing
     // for each occurrence, computed once.
-    let claims: Vec<Option<TargetClaim>> = (0..positional.len())
-        .map(|idx| target_claim(&raw_tokens, &tokens, &positional, idx))
-        .collect();
+    // Round 32 (R32-C): computed against one shared
+    // scan of the group (`target_claims`).
+    let claims: Vec<Option<TargetClaim>> = target_claims(&raw_tokens, &tokens, &positional);
     let any_target = claims.iter().any(|c| c.is_some());
     // Round 20 (R20-7): the base dates this group's
     // own Sunday-after phrases consume, read with
@@ -347,6 +347,17 @@ pub(super) fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) 
         .filter(|(_, (before, after, _, _))| *before || *after)
         .map(|(entry, _)| entry.0)
         .collect();
+    // Round 32 (R32-C, F3): the group's bracket-span
+    // mask, computed once for the by-date pass and
+    // the contributed-bare test below — the bare
+    // test used to rebuild it once per occurrence.
+    // The governed values stand in a set beside
+    // their list for the same reason: the by-date
+    // membership test scanned the list once per
+    // occurrence.
+    let span_mask = bracket_span_mask(&raw_tokens);
+    let governed_set: std::collections::BTreeSet<SimpleDate> =
+        governed_values.iter().copied().collect();
     for (idx, entry) in positional.iter().enumerate() {
         let (d, _, _) = *entry;
         let (before_disqualified, after_disqualified, target_disqualified, superseded_target) =
@@ -368,10 +379,10 @@ pub(super) fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) 
             == Some("sunday")
             && tokens.get(positional[idx].1 + 1).map(String::as_str) == Some("after");
         let by_date = !(before_disqualified || after_disqualified)
-            && governed_values.contains(&d)
+            && governed_set.contains(&d)
             && !is_last_target
             && !is_sunday_after_phrase
-            && occurrence_is_bare(&raw_tokens, &tokens, &positional, idx);
+            && occurrence_is_bare_masked(&tokens, &positional, idx, &span_mask);
         if before_disqualified
             || after_disqualified
             || target_disqualified
@@ -410,14 +421,24 @@ pub(super) fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) 
             .collect();
         !idxs.is_empty()
             && idxs.iter().all(|i| {
-                occurrence_is_bare(&raw_tokens, &tokens, &positional, *i)
+                occurrence_is_bare_masked(&tokens, &positional, *i, &span_mask)
                     && !(claims[*i].is_some() && !judgments[*i].3)
             })
     };
     let partial = partial_or_alternative(&tokens, &qualified);
+    // Round 32 (R32-C, F3): the distinct values and
+    // the alternatives below are gathered against a
+    // set standing beside the list, not by scanning
+    // the list once per occurrence — in one big
+    // group holding thousands of distinct dates that
+    // scan was quadratic in the group's dates. The
+    // lists themselves are built exactly as before,
+    // first-written order, each value once.
     let mut distinct: Vec<SimpleDate> = Vec::new();
+    let mut distinct_seen: std::collections::BTreeSet<SimpleDate> =
+        std::collections::BTreeSet::new();
     for (d, _, _) in &qualified {
-        if !distinct.contains(d) {
+        if distinct_seen.insert(*d) {
             distinct.push(*d);
         }
     }
@@ -459,9 +480,13 @@ pub(super) fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) 
             None => None,
         };
         if let Some(contributed) = for_outcome {
+            // Round 32 (R32-C): gathered against the
+            // beside-set, as the alternatives below.
             let mut alternatives: Vec<SimpleDate> = Vec::new();
+            let mut alternatives_seen: std::collections::BTreeSet<SimpleDate> =
+                std::collections::BTreeSet::new();
             for d in &distinct {
-                if *d != contributed && !alternatives.contains(d) {
+                if *d != contributed && alternatives_seen.insert(*d) {
                     alternatives.push(*d);
                 }
             }
@@ -469,13 +494,13 @@ pub(super) fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) 
                 if *d != contributed
                     && !consumed_bases.contains(d)
                     && !stack_consumed.contains(d)
-                    && !alternatives.contains(d)
+                    && alternatives_seen.insert(*d)
                 {
                     alternatives.push(*d);
                 }
             }
             if let Some(p) = partial {
-                if p != contributed && !alternatives.contains(&p) {
+                if p != contributed && alternatives_seen.insert(p) {
                     alternatives.push(p);
                 }
             }
@@ -509,8 +534,10 @@ pub(super) fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) 
         return analysis;
     }
     let mut alternatives: Vec<SimpleDate> = Vec::new();
+    let mut alternatives_seen: std::collections::BTreeSet<SimpleDate> =
+        std::collections::BTreeSet::new();
     for (d, _, _) in &qualified {
-        if !alternatives.contains(d) {
+        if alternatives_seen.insert(*d) {
             alternatives.push(*d);
         }
     }
@@ -524,14 +551,14 @@ pub(super) fn analyze_group(inner: &str, today: SimpleDate, anchor: SimpleDate) 
         for d in &trailing_named {
             if !consumed_bases.contains(d)
                 && !stack_consumed.contains(d)
-                && !alternatives.contains(d)
+                && alternatives_seen.insert(*d)
             {
                 alternatives.push(*d);
             }
         }
     }
     if let Some(p) = partial {
-        if !alternatives.contains(&p) {
+        if alternatives_seen.insert(p) {
             alternatives.push(p);
         }
     }
@@ -824,11 +851,14 @@ pub(super) fn group_has_target_claim(
         .iter()
         .map(|s| (s.anchored.unwrap_or(s.date), s.start, s.used))
         .collect();
+    // Round 32 (R32-C): the group's claims against
+    // one shared scan, as in the composition passes.
+    let scan = target_claim_scan(&raw_tokens, &tokens, &positional);
     for (idx, entry) in positional.iter().enumerate() {
         if entry.0 != read {
             continue;
         }
-        if target_claim(&raw_tokens, &tokens, &positional, idx).is_some() {
+        if target_claim_in(&scan, &raw_tokens, &tokens, &positional, idx).is_some() {
             return true;
         }
         let start = entry.1;
@@ -1119,7 +1149,11 @@ pub(super) fn leading_group_disagrees(
 ) -> bool {
     let mut rest = text.trim_start();
     while rest.starts_with('(') {
-        let Some((start, end)) = balanced_spans(rest).into_iter().next() else {
+        // Round 32 (R32-C, F3): the first span only,
+        // as in `strip_leading_parenthesized` — the
+        // full span list of the remainder was rebuilt
+        // for every leading group judged.
+        let Some((start, end)) = first_balanced_span(rest) else {
             return false;
         };
         if start != 0 {
@@ -1685,6 +1719,38 @@ pub(super) fn date_line_inner(
     // garnish stack was the framing check's to judge,
     // so this fallback never returns the date it
     // stands in front of clean.
+    // Round 32 (R32-C, F3): the suffix reader-piece
+    // counts for the loop below, computed once. The
+    // loop hands the flexible reader the whole
+    // suffix after each weekday word, joined and
+    // re-tokenized — a line carrying thousands of
+    // weekday words (a run of "(next Sunday,
+    // cancelled)" groups) paid a whole-line join
+    // and parse per word. The reader's own shapes
+    // bound what it can ever read from a suffix: at
+    // most three reader tokens (a month, a day, and
+    // a year, or one numeric token), plus at most
+    // one leading weekday token the reader consumes
+    // from the same stream — four reader pieces in
+    // all, where a piece is a comma-split fragment
+    // of a suffix token that the reader does not
+    // drop as a nothing. A suffix holding more than
+    // four pieces reads as no date, exactly as the
+    // reader itself answers for it, so the loop
+    // skips only the parses that provably fail; a
+    // suffix within the bound is joined and parsed
+    // whole, word for word as before.
+    let suffix_pieces: Vec<usize> = {
+        let mut counts: Vec<usize> = vec![0; tokens.len() + 1];
+        for i in (0..tokens.len()).rev() {
+            let pieces = tokens[i]
+                .split(',')
+                .filter(|f| !f.is_empty() && !nothing_token(f))
+                .count();
+            counts[i] = counts[i + 1] + pieces;
+        }
+        counts
+    };
     for i in 1..tokens.len() {
         let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.']);
         // Round 29 (R29-A, F3 = red team RT29-T1):
@@ -1702,6 +1768,9 @@ pub(super) fn date_line_inner(
             continue;
         }
         if weekday_is_framed(&tokens, i) {
+            continue;
+        }
+        if suffix_pieces[i + 1] > 4 {
             continue;
         }
         if let Some(date) = parse_flexible_date(&tokens[i + 1..].join(" "), today) {
@@ -1778,6 +1847,47 @@ pub(super) fn balanced_spans(text: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// The first top-level parenthesized span of
+/// `text`, if one closes (round 32, R32-C, F3):
+/// `balanced_spans`' first entry, read by the same
+/// balancing walk, which stops where that span
+/// closes instead of walking the whole text. The
+/// readers that strip or judge one leading group
+/// at a time — the relative-shape loop, the
+/// leading-group disagreement test — used to take
+/// the first entry of the full span list, so a
+/// line holding thousands of leading groups paid
+/// for the whole remainder once per group. The
+/// walk below is `balanced_spans`' own, statement
+/// for statement, up to the first span it records:
+/// a closing paren at depth one records the span,
+/// any other closing paren only lowers the depth
+/// (never below zero), and an opening paren at
+/// depth zero is the span's start.
+pub(super) fn first_balanced_span(text: &str) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut open = 0usize;
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => {
+                if depth == 0 {
+                    open = i;
+                }
+                depth += 1;
+            }
+            b')' if depth == 1 => {
+                return Some((open, i + 1));
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// `text` without its leading "(...)" group, when it
 /// begins with one (round 21, R21-1): the words after
 /// the group. Found by balancing, like
@@ -1787,7 +1897,7 @@ pub(super) fn strip_leading_parenthesized(text: &str) -> Option<&str> {
     if !text.starts_with('(') {
         return None;
     }
-    let (start, end) = balanced_spans(text).into_iter().next()?;
+    let (start, end) = first_balanced_span(text)?;
     if start != 0 {
         return None;
     }
@@ -2087,9 +2197,9 @@ pub(super) fn plain_composition(
         .iter()
         .map(|(d, start, end)| (*d, *start, end - start))
         .collect();
-    let claims: Vec<Option<TargetClaim>> = (0..positional.len())
-        .map(|idx| target_claim(raw_tokens, tokens, &positional, idx))
-        .collect();
+    // Round 32 (R32-C): computed against one shared
+    // scan of the line (`target_claims`).
+    let claims: Vec<Option<TargetClaim>> = target_claims(raw_tokens, tokens, &positional);
     let any_target = claims.iter().any(|c| c.is_some());
     // Round 29 (R29-B, F7 = red team RT29-N1): the
     // plain surface of the group's naming rule —
@@ -2240,6 +2350,13 @@ pub(super) fn plain_composition(
         .filter(|(_, g)| **g)
         .map(|(entry, _)| entry.0)
         .collect();
+    // Round 32 (R32-C, F3): the line's bracket-span
+    // mask, computed once for the by-date pass, as
+    // in `analyze_group`; the governed values stand
+    // in a set beside their list there too.
+    let span_mask = bracket_span_mask(raw_tokens);
+    let governed_set: std::collections::BTreeSet<SimpleDate> =
+        governed_values.iter().copied().collect();
     let mut governed: Vec<bool> = Vec::with_capacity(positional.len());
     for (idx, entry) in positional.iter().enumerate() {
         // Round 20 (R20-10): a Sunday-after phrase
@@ -2252,10 +2369,10 @@ pub(super) fn plain_composition(
         let is_sunday_after_phrase = tokens.get(entry.1).map(String::as_str) == Some("sunday")
             && tokens.get(entry.1 + 1).map(String::as_str) == Some("after");
         let by_date = !direct_governed[idx]
-            && governed_values.contains(&entry.0)
+            && governed_set.contains(&entry.0)
             && !last_target[idx]
             && !is_sunday_after_phrase
-            && occurrence_is_bare(raw_tokens, tokens, &positional, idx);
+            && occurrence_is_bare_masked(tokens, &positional, idx, &span_mask);
         governed.push(direct_governed[idx] || claim_governed[idx] || by_date);
     }
     // Round 18 (R18-5): the prospective half of the
@@ -3436,11 +3553,15 @@ pub(super) fn core_bracketed_bare_restatement(
         .iter()
         .map(|s| (s.date, s.start, s.end - s.start))
         .collect();
+    // Round 32 (R32-C, F3): the core's bracket-span
+    // mask, computed once for the bare tests below,
+    // as in `analyze_group`.
+    let span_mask = bracket_span_mask(&raw_tokens);
     signals.iter().enumerate().any(|(idx, s)| {
         if s.date != read || !s.framed {
             return false;
         }
-        if !occurrence_is_bare(&raw_tokens, &cleaned, &spans, idx) {
+        if !occurrence_is_bare_masked(&cleaned, &spans, idx, &span_mask) {
             return false;
         }
         let open = raw_tokens[s.start]

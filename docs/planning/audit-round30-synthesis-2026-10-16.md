@@ -322,3 +322,87 @@ ubuntu** on the close commit. The exit bar for the
 loop is unchanged: a full round at zero BLOCKER +
 zero MAJOR. This round does not meet it (F1, and
 the CI red CI-FIX exists to close).
+
+## Coordinator close (2026-10-19)
+
+Batches, each verified by the coordinator on its
+committed tree (full unpiped suite + clippy
+`-D warnings` + booklet baseline 31,717 / 34,977;
+fuzz re-run for the contribution batch):
+
+- **CI-FIX** `23cfb21` + `b9ec1e6` (the gate):
+  suite 900 locally; hosted CI run 39373776501
+  success on macos + windows + ubuntu.
+- **R30-A** `d376bb5` (F1): 902 tests. Startup
+  claims the instance lock through
+  `claim_instance_lock`, riding CI-FIX's
+  `peer_liveness`; a live foreign owner keeps its
+  lock byte-for-byte and the starting instance's
+  `peer_alive` rides the token rules. The two-lane
+  witness is pinned
+  (`startup_claim_leaves_a_live_peers_lock_and_journal_alone`),
+  and the lock survey is on the commit: the claim
+  is the only writer of `openbulletin.lock`, and no
+  exit path deletes the lock.
+- **R30-B** `92ca4e1` (F4, F5): 908 tests, six
+  pins. Provenance is keyed by the landed name;
+  the starter collection note claims per-piece
+  manifest records only when every piece has a
+  row; F5 took collision-free naming (the requested
+  catalog id now reaches the note writer, so a
+  dashed family names its own note).
+- **R30-C** `c582d4e` (F2, F3, F6): 914 tests, six
+  pins. F2: the scan memo's fingerprint now
+  carries a full content hash (measured repeat
+  scan ~0.5 ms per font; the parse is still
+  skipped). F3: `sync_and_rename` removes its temp
+  on every failure path, matching its app-side
+  twin. F6 adjudication, accepted by the
+  coordinator and inherited by round 31: refusal
+  is scoped to names the loader reads whose copies
+  *disagree* — an exact repeat (same CRC and
+  sizes) still loads (round-4 pin
+  `many_assets_load_with_one_record_each_even_when_entries_repeat`),
+  and names the loader never reads are not counted
+  (RT5-5 pin). The F6 harm — disagreeing copies
+  silently read from the last — is closed.
+- **R30-D** `7d65037` (F7): 915 tests. The cliff
+  was `parse_date_prefix` rebuilding the whole
+  remaining line at every date position (attempts
+  590 / 2,380 / 9,560 at 20 / 40 / 80 repetitions —
+  cubic); the search now stops past the reader's
+  four-word maximum, and every prefix the old
+  search could read is still tried. Witnesses:
+  3,470 B 1,937 ms → 1 ms; 34,250 B >120 s →
+  23 ms. Pin
+  `r30d_repeated_date_line_parses_without_the_cliff`.
+
+Fuzz as claims on the closed code tree
+(coordinator's own runs; bins at their recorded
+md5s, verdict `a9cac6c3…`, composition
+`4f85c605…`): verdict 40,000 lines, panics=0;
+composition 497,024 lines, D_PANICS=0. Both
+stdouts byte-identical to the verify lane's
+`f03d47e` baselines apart from the lane's own
+trailing exit-marker lines. No reading moved
+across the round.
+
+Residual recorded, not fixed (round 31 inherits
+it, with F9): repeated *parenthesized* date groups
+carry a separate, weaker quadratic in the group
+machinery — R30-D measured 11 ms at 3.7 KB and
+~0.74–0.95 s at 36 KB, present on the old code at
+the small size, so it is neither the F7 cliff nor
+a regression. No freeze at realistic sizes; it
+would bite around ~340 KB.
+
+F8 stands corrected by this synthesis; F9 stands
+recorded. HF-12 is untouched (Jacob's decision).
+The exit bar is not met by this round's audit
+verdict (0 / 1 / 9); the loop continues to round
+31 on the closed tree. The close's hosted evidence
+— the Windows bundle result and the hosted CI
+conclusions for macos, windows, and ubuntu on the
+close commit — is recorded in the audit dir
+(`round30-close-status.md`), per the standing
+gate.

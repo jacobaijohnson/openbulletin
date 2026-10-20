@@ -3492,51 +3492,115 @@ fn write_instance_lock_to(lock: &std::path::Path, token: &str) {
     let _ = std::fs::write(lock, text);
 }
 
+/// What the platform can say about whether a process is
+/// alive: the one liveness primitive the journal peer
+/// machinery rides. `Unknown` is a real answer, not a
+/// failure to be rounded off: where liveness cannot be
+/// proven either way, callers fail toward treating the
+/// peer as alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeerLiveness {
+    Alive,
+    Dead,
+    Unknown,
+}
+
+/// Probe a pid's liveness without `/proc`: `/proc` does
+/// not exist on macOS, so any rule built on its presence
+/// reads every pid as gone there. On Unix, `kill(pid, 0)`
+/// sends no signal and only reports whether the pid names
+/// a live process: success means alive, ESRCH means no
+/// such process, and EPERM means a live process owned by
+/// someone else. Pids that cannot name a single foreign
+/// process (0 names a whole process group; anything above
+/// `i32::MAX` cannot be a pid at all) answer `Unknown`
+/// without any syscall. On non-Unix there is no primitive
+/// here, so the answer is always `Unknown` and callers
+/// keep their conservative posture.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn peer_liveness(pid: u32) -> PeerLiveness {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return PeerLiveness::Unknown;
+    }
+    // SAFETY: signal 0 sends nothing; it only asks the
+    // kernel whether the pid exists and may be signalled.
+    // The pid is a plain integer checked above, and no
+    // memory is read or written.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return PeerLiveness::Alive;
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(code) if code == libc::ESRCH => PeerLiveness::Dead,
+        Some(code) if code == libc::EPERM => PeerLiveness::Alive,
+        _ => PeerLiveness::Unknown,
+    }
+}
+
+#[cfg(not(unix))]
+fn peer_liveness(pid: u32) -> PeerLiveness {
+    let _ = pid;
+    PeerLiveness::Unknown
+}
+
 /// Whether the process with this pid is provably not a live
-/// OpenBulletin peer (Unix): the pid is gone, or the process
+/// OpenBulletin peer: the pid is dead, or the live process
 /// there is plainly some other program — a recycled pid.
 /// Where the process exists but its identity cannot be
 /// established, this answers false: fail toward treating
 /// the peer as alive and keeping its journal.
 fn peer_provably_gone(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        let proc_dir = std::path::PathBuf::from(format!("/proc/{pid}"));
-        if !proc_dir.exists() {
-            return true;
-        }
-        // The exe link names the running program where it is
-        // readable; a name that is not this app means the pid
-        // was recycled by an unrelated process.
-        if let Ok(exe) = std::fs::read_link(proc_dir.join("exe")) {
-            let names_app = exe
-                .file_name()
-                .map(|n| n.to_string_lossy().to_lowercase().contains("openbulletin"))
-                .unwrap_or(false);
-            return !names_app;
-        }
-        if let Ok(cmdline) = std::fs::read(proc_dir.join("cmdline")) {
-            let text = String::from_utf8_lossy(&cmdline).to_lowercase();
-            if !text.is_empty() {
-                return !text.contains("openbulletin");
+    match peer_liveness(pid) {
+        PeerLiveness::Dead => true,
+        PeerLiveness::Alive => {
+            #[cfg(unix)]
+            {
+                // The /proc identity refinement, applied
+                // only where /proc is actually readable
+                // (Linux): the exe link names the running
+                // program; a name that is not this app means
+                // the pid was recycled by an unrelated
+                // process. Where /proc is absent or
+                // unreadable, identity is unproven and the
+                // peer is treated as alive.
+                let proc_dir = std::path::PathBuf::from(format!("/proc/{pid}"));
+                if let Ok(exe) = std::fs::read_link(proc_dir.join("exe")) {
+                    let names_app = exe
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase().contains("openbulletin"))
+                        .unwrap_or(false);
+                    return !names_app;
+                }
+                if let Ok(cmdline) = std::fs::read(proc_dir.join("cmdline")) {
+                    let text = String::from_utf8_lossy(&cmdline).to_lowercase();
+                    if !text.is_empty() {
+                        return !text.contains("openbulletin");
+                    }
+                }
+                false
+            }
+            #[cfg(not(unix))]
+            {
+                false
             }
         }
-        false
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
+        PeerLiveness::Unknown => false,
     }
 }
 
-/// Is another OpenBulletin process alive? Proven on Unix via
-/// /proc (with the recycled-pid guard above); elsewhere a
-/// foreign token in the lock cannot prove liveness on its
-/// own, so we answer no rather than mute a lone instance's
-/// autosave — on those platforms the token, not this check,
-/// is what protects the journal (see
-/// `journal_retirement_allowed`).
+/// Is another OpenBulletin process alive? On Unix the
+/// answer rides the platform liveness primitive (with the
+/// recycled-pid guard above): a live pid that is not
+/// provably a recycled stranger is a live peer, and an
+/// `Unknown` answer also reads as alive — muting a lone
+/// instance's autosave is recoverable, while retiring a
+/// live peer's journal is the loss this machinery exists
+/// to prevent. Elsewhere a foreign token in the lock
+/// cannot prove liveness on its own, so we answer no
+/// rather than mute a lone instance's autosave — on those
+/// platforms the token, not this check, is what protects
+/// the journal (see `journal_retirement_allowed`).
 fn peer_instance_alive() -> bool {
     peer_instance_alive_from(&instance_lock_path(), std::process::id(), instance_token())
 }
@@ -3556,7 +3620,11 @@ fn peer_instance_alive_from(lock: &std::path::Path, own_pid: u32, own_token: &st
     }
     #[cfg(unix)]
     {
-        std::path::Path::new(&format!("/proc/{pid}")).exists() && !peer_provably_gone(pid)
+        match peer_liveness(pid) {
+            PeerLiveness::Alive => !peer_provably_gone(pid),
+            PeerLiveness::Dead => false,
+            PeerLiveness::Unknown => true,
+        }
     }
     #[cfg(not(unix))]
     {
@@ -6497,6 +6565,101 @@ mod settings_tests {
             "own-token",
             Some("foreign-token"),
             true
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn liveness_never_proves_an_unnamable_pid_gone() {
+        // CI-FIX pin: pid 0 names a whole process group and
+        // a pid above i32::MAX names nothing at all, so
+        // neither can be provably gone, on any platform and
+        // without any syscall result being consulted.
+        for pid in [0, i32::MAX as u32 + 1, u32::MAX] {
+            assert_eq!(peer_liveness(pid), PeerLiveness::Unknown, "pid {pid}");
+            assert!(!peer_provably_gone(pid), "pid {pid} is never provably gone");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn liveness_reads_a_live_pid_as_not_gone() {
+        // CI-FIX pin: this test process is alive, so its
+        // own pid is Alive and never provably gone — the
+        // macOS failure was every pid reading as gone
+        // because /proc does not exist there.
+        let own = std::process::id();
+        assert_eq!(peer_liveness(own), PeerLiveness::Alive);
+        assert!(!peer_provably_gone(own), "a live pid is not provably gone");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn liveness_reads_a_reaped_child_as_gone() {
+        // CI-FIX pin: a child that has exited and been
+        // reaped leaves a pid the kernel reports as ESRCH,
+        // which is Dead, and provably gone.
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let pid = child.id();
+        child.wait().expect("reap child");
+        assert_eq!(peer_liveness(pid), PeerLiveness::Dead, "reaped pid {pid}");
+        assert!(peer_provably_gone(pid), "a reaped pid is provably gone");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn peer_alive_follows_the_liveness_primitive() {
+        // CI-FIX pins for peer_instance_alive_from's unix
+        // decision table: a foreign lock naming a reaped
+        // pid names no live peer; a foreign lock naming a
+        // pid that cannot name a process (0) is Unknown,
+        // which reads as alive — the conservative side.
+        let dir = std::env::temp_dir().join(format!("ob-app-peer-alive-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let own = std::process::id();
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = child.id();
+        child.wait().expect("reap child");
+        std::fs::write(&lock, format!("{dead_pid}\nforeign-token\n")).expect("dead lock");
+        assert!(
+            !peer_instance_alive_from(&lock, own, instance_token()),
+            "a reaped foreign pid is not a live peer"
+        );
+        std::fs::write(&lock, "0\nforeign-token\n").expect("unnamable lock");
+        assert!(
+            peer_instance_alive_from(&lock, own, instance_token()),
+            "an unprovable foreign pid reads as a live peer"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn peer_alive_stays_token_only_off_unix() {
+        // CI-FIX pin for the standing non-unix contract: a
+        // foreign token in the lock cannot prove liveness
+        // on its own, so no peer is reported alive there.
+        let dir = std::env::temp_dir().join(format!("ob-app-peer-alive-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        std::fs::write(
+            &lock,
+            format!("{}\nforeign-token\n", std::process::id() + 1),
+        )
+        .expect("foreign lock");
+        assert!(!peer_instance_alive_from(
+            &lock,
+            std::process::id(),
+            instance_token()
         ));
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -3305,6 +3305,7 @@ dependencies = [
  "chrono",
  "eframe",
  "image",
+ "libc",
  "ob-clips",
  "ob-extract",
  "ob-fonts",

@@ -29,5 +29,8 @@ eframe = "0.29"
 chrono.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

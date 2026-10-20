@@ -601,7 +601,7 @@ pub(super) fn strip_trailing_parenthesized(text: &str) -> Option<&str> {
 /// relative Sunday is garnish to the shape — the date
 /// it names is remembered separately — the way a
 /// trailing weekday garnish already is.
-pub(super) fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> bool {
+pub(super) fn relative_shape_matches(text: &str, shape: fn(&[String]) -> bool) -> bool {
     // Round 23 (R23-3): the ONE boundary classification
     // at this site too — colon, semicolon, comma, dash
     // (incl. en/em), slash, and period are boundaries
@@ -617,6 +617,48 @@ pub(super) fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> boo
     const BOUNDARY_TRIM: [char; 10] = [
         ' ', '\t', ';', ',', ':', '.', '/', '-', '\u{2013}', '\u{2014}',
     ];
+    // Round 31 (R31-C, F4): the shape is judged on the
+    // remainder's cleaned words, and the loop below
+    // used to re-clean EVERY word of the remainder for
+    // every group it stripped — thousands of repeated
+    // groups on a relative-Sunday line cost quadratic
+    // time. The line's tokens are now cleaned once, up
+    // front; each remainder is a byte range of the one
+    // text, so its words are the pre-cleaned tokens
+    // inside the range, with at most the two edge
+    // tokens re-cleaned from the part of them the
+    // range still holds (a group taken off mid-token
+    // leaves a partial token, exactly the token the
+    // remainder's own cleaning would read). Both
+    // shapes this loop serves match only a bounded
+    // pattern: past the leading "on"/"the" run, at
+    // most six words (the Sunday-after shape with its
+    // trailing weekday garnish is the longest). A
+    // remainder holding more than six words past that
+    // run cannot match either shape, so its full word
+    // list is never assembled; a remainder within the
+    // bound is assembled whole and judged by the
+    // shape itself, word for word as before.
+    let mut toks: Vec<(usize, usize, String)> = Vec::new();
+    let mut tok_start: Option<usize> = None;
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            if let Some(s) = tok_start.take() {
+                toks.push((s, i, group_token(&text[s..i])));
+            }
+        } else if tok_start.is_none() {
+            tok_start = Some(i);
+        }
+    }
+    if let Some(s) = tok_start {
+        toks.push((s, text.len(), group_token(&text[s..])));
+    }
+    let ne: Vec<usize> = toks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.2.is_empty())
+        .map(|(i, _)| i)
+        .collect();
     let mut rest = text;
     loop {
         rest = rest.trim_start_matches(BOUNDARY_TRIM);
@@ -634,7 +676,8 @@ pub(super) fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> boo
         rest = strip_trailing_boundary_tokens(rest);
         rest = rest.trim_start_matches(BOUNDARY_TRIM);
         rest = rest.trim_end_matches(BOUNDARY_TRIM);
-        if shape(rest) {
+        let lo = rest.as_ptr() as usize - text.as_ptr() as usize;
+        if relative_shape_words(text, &toks, &ne, lo, lo + rest.len(), shape) {
             return true;
         }
         // Round 21 (R21-1): a LEADING group is garnish
@@ -647,6 +690,94 @@ pub(super) fn relative_shape_matches(text: &str, shape: fn(&str) -> bool) -> boo
             None => return false,
         }
     }
+}
+
+/// One remainder's shape verdict in
+/// `relative_shape_matches` (round 31, R31-C): the
+/// remainder is `text[lo..hi]`; its cleaned word
+/// list is read off the line's pre-cleaned tokens
+/// (see there), and the shape is consulted only
+/// when the words past the leading "on"/"the" run
+/// number six or fewer — the bound both shapes
+/// fit — in which case the whole list is assembled
+/// and the shape judges it exactly as it judged
+/// the remainder's text before.
+fn relative_shape_words(
+    text: &str,
+    toks: &[(usize, usize, String)],
+    ne: &[usize],
+    lo: usize,
+    hi: usize,
+    shape: fn(&[String]) -> bool,
+) -> bool {
+    // The tokens the range holds: the first whose
+    // end passes `lo`, through the last whose start
+    // precedes `hi`. A token cut by either edge is
+    // read from the part of it inside the range.
+    let t_first = toks.partition_point(|t| t.1 <= lo);
+    let t_past = toks.partition_point(|t| t.0 < hi);
+    if t_first >= t_past {
+        return shape(&[]);
+    }
+    let t_last = t_past - 1;
+    let head_cut = toks[t_first].0 < lo;
+    let tail_cut = toks[t_last].1 > hi && t_last > t_first;
+    let head: Option<String> = head_cut.then(|| group_token(&text[lo..toks[t_first].1.min(hi)]));
+    let tail: Option<String> = tail_cut.then(|| group_token(&text[toks[t_last].0..hi]));
+    let first_in = if head_cut { t_first + 1 } else { t_first };
+    let last_in = if tail_cut { t_last - 1 } else { t_last };
+    let (ne_lo, ne_hi) = if first_in <= last_in {
+        (
+            ne.partition_point(|&ti| ti < first_in),
+            ne.partition_point(|&ti| ti <= last_in),
+        )
+    } else {
+        let p = ne.partition_point(|&ti| ti < first_in);
+        (p, p)
+    };
+    let head_on = head.as_ref().is_some_and(|w| !w.is_empty());
+    let tail_on = tail.as_ref().is_some_and(|w| !w.is_empty());
+    let total = head_on as usize + (ne_hi - ne_lo) + tail_on as usize;
+    // The leading "on"/"the" run, walked over the
+    // pre-cleaned words: the head word first (when
+    // the range cut its token and the part still
+    // cleans to a word), then the whole tokens.
+    let mut run = 0usize;
+    let mut pos = ne_lo;
+    if head_on {
+        let h = head.as_deref().unwrap_or("");
+        if h == "on" || h == "the" {
+            run += 1;
+        }
+        // Otherwise the head word is the first core
+        // word: the run is empty, and the walk below
+        // is skipped by its gate.
+    }
+    if run > 0 || !head_on {
+        while pos < ne_hi {
+            let w = toks[ne[pos]].2.as_str();
+            if w == "on" || w == "the" {
+                run += 1;
+                pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+    if total - run > 6 {
+        return false;
+    }
+    let mut words: Vec<String> = Vec::with_capacity(total);
+    if head_on {
+        words.push(head.clone().unwrap_or_default());
+    }
+    for p in ne_lo..ne_hi {
+        words.push(toks[ne[p]].2.clone());
+    }
+    if tail_on {
+        words.push(tail.clone().unwrap_or_default());
+    }
+    shape(&words)
 }
 
 /// The date a trailing parenthesized group names, if
@@ -702,6 +833,10 @@ pub(super) fn dates_inside_group_signals(
     anchor: SimpleDate,
 ) -> Vec<GroupSignal> {
     let mut out: Vec<GroupSignal> = Vec::new();
+    // Round 31 (R31-C, F4): the next-nonempty
+    // answers for this scan, read off one table
+    // (see `next_nonempty_table`).
+    let nonempty_next = next_nonempty_table(tokens);
     let mut last_end = 0usize;
     let mut last_framed_sunday = false;
     let mut i = 0;
@@ -713,16 +848,16 @@ pub(super) fn dates_inside_group_signals(
         // \u{200b} after next Sunday") leaves the
         // shape standing, and the span it reports
         // covers the nothing it crossed.
-        let after_at = next_nonempty(tokens, i + 1);
+        let after_at = nonempty_next[i + 1];
         if tokens[i] == "sunday" && after_at.is_some_and(|a| tokens[a].as_str() == "after") {
             let after_at = after_at.unwrap_or(i + 1);
-            let first_at = next_nonempty(tokens, after_at + 1);
+            let first_at = nonempty_next[after_at + 1];
             let (which_at, base_at) = match first_at {
                 Some(f) if tokens[f].as_str() == "the" => (
-                    next_nonempty(tokens, f + 1),
-                    next_nonempty(tokens, f + 1).and_then(|w| next_nonempty(tokens, w + 1)),
+                    nonempty_next[f + 1],
+                    nonempty_next[f + 1].and_then(|w| nonempty_next[w + 1]),
                 ),
-                other => (other, other.and_then(|w| next_nonempty(tokens, w + 1))),
+                other => (other, other.and_then(|w| nonempty_next[w + 1])),
             };
             let used = base_at.map(|b| b - i + 1).unwrap_or(0);
             let which = which_at.and_then(|w| tokens.get(w)).map(String::as_str);
@@ -764,7 +899,7 @@ pub(super) fn dates_inside_group_signals(
         // Sunday" is the phrase, its span covering
         // the nothing between its words).
         let rel_sunday = if tokens[i] == "next" || tokens[i] == "this" {
-            next_nonempty(tokens, i + 1).filter(|&j| tokens[j].as_str() == "sunday")
+            nonempty_next[i + 1].filter(|&j| tokens[j].as_str() == "sunday")
         } else {
             None
         };

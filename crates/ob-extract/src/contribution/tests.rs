@@ -18870,3 +18870,190 @@ fn r30d_repeated_date_line_parses_without_the_cliff() {
         "the repeated-date witness took {elapsed:?}"
     );
 }
+
+// Round 31 (R31-C, F4): repeated date groups on
+// the HEADER lines cost quadratic time while the
+// same groups in a body were flat (red team
+// RT31-1, verify claim 7). The rescans lived in
+// the header group/composition path: the cross-
+// group governance re-judged every sibling group
+// for every group; the relative-shape test re-
+// tokenized the whole remaining line per group
+// stripped; the next-nonempty lookup rescanned a
+// run of nothing-cleaning tokens once per token
+// in it (a de-grouped core is mostly ";" markers);
+// and the governor scans rebuilt and judged three
+// phrases at every word of a segment. Each now
+// runs as a single pass or behind a first-word
+// gate that passes exactly the words that can
+// open a phrase of the family. The readings on
+// every shape below are the readings the un-fixed
+// code produces, pinned first at small size; the
+// timing pins then hold each large shape to a
+// bound at least five times the fixed code's
+// measured debug time on this loaded VM and at
+// most a third of the un-fixed code's at the same
+// size (both codes measured in the debug test
+// profile under parallel load: un-fixed 163 s /
+// 46 s / 168 s / 42 s / 58 s against fixed 1.1 s /
+// 3.2 s / 3.0 s / 2.9 s / 10.7 s at 7,714 / 18,000
+// / 3,600 / 27,000 / 27,000 repetitions; the pin
+// sizes below scale from those points, the fixed
+// side linearly and the un-fixed side
+// quadratically).
+
+#[test]
+fn r31c_header_group_shapes_keep_their_readings() {
+    // Shape 1: the relative phrase with repeated
+    // short groups — the Sunday stands in words,
+    // the groups are remembered as its dates.
+    let groups = ["(November 1)"; 3].join(" ");
+    let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(
+        c.for_sunday_in_words.as_deref(),
+        Some("next Sunday (November 1) (November 1) (November 1)")
+    );
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(1)));
+    assert_eq!(
+        c.for_sunday_parenthesized_dates,
+        vec![nov(1), nov(1), nov(1)]
+    );
+    assert_eq!(
+        week_verdict(&c, Some(nov(1))),
+        WeekVerdict::SundayInWords(nov(1))
+    );
+    assert_eq!(
+        week_verdict(&c, Some(nov(8))),
+        WeekVerdict::DifferentSunday(nov(1))
+    );
+
+    // Shape 2: an absolute core with repeated
+    // full-date groups agreeing with it.
+    let groups = ["(November 1, 2026)"; 3].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+    assert_eq!(
+        week_verdict(&c, Some(nov(8))),
+        WeekVerdict::DifferentSunday(nov(1))
+    );
+
+    // Shape 3: cancelled full-date groups alone
+    // name no Sunday at all.
+    let groups = ["(November 1, 2026, cancelled)"; 3].join(" ");
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::NoSundayNamed);
+    assert_eq!(week_verdict(&c, Some(nov(8))), WeekVerdict::NoSundayNamed);
+
+    // Shape 4: semicolon-joined groups after the
+    // core read the same as shape 2.
+    let groups = ["(November 1, 2026)"; 3].join("; ");
+    let text = format!("For Sunday: November 1, 2026; {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+
+    // Shape 5: conjoined groups after the core
+    // read the same again.
+    let groups = ["(November 1, 2026)"; 3].join(" and ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(week_verdict(&c, Some(nov(1))), WeekVerdict::SameSunday);
+
+    // The Keep through line carries the same
+    // shapes: the relative phrase with groups
+    // keeps through the groups' Sunday, and
+    // cancelled groups alone keep through nothing.
+    let groups = ["(November 1)"; 3].join(" ");
+    let text = format!(
+        "For Sunday: November 1, 2026\nKeep through: next Sunday {groups}\n\n## Announcement\n\nHi.\n"
+    );
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.keep_through, Some(nov(1)));
+
+    let groups = ["(November 1, 2026, cancelled)"; 3].join(" ");
+    let text =
+        format!("For Sunday: November 1, 2026\nKeep through: {groups}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.keep_through, None);
+}
+
+#[test]
+fn r31c_repeated_relative_groups_on_a_for_line_parse_without_the_cliff() {
+    let groups = vec!["(November 1)"; 6000].join(" ");
+    let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.for_sunday_parenthesized_dates.len(), 6000);
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the repeated relative-group witness took {elapsed:?}"
+    );
+}
+
+#[test]
+fn r31c_repeated_full_date_groups_on_a_for_line_parse_without_the_cliff() {
+    let groups = vec!["(November 1, 2026)"; 22000].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "the repeated full-date-group witness took {elapsed:?}"
+    );
+}
+
+#[test]
+fn r31c_repeated_cancelled_groups_parse_without_the_cliff() {
+    let groups = vec!["(November 1, 2026, cancelled)"; 2400].join(" ");
+    let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, None);
+    assert!(
+        elapsed < std::time::Duration::from_secs(11),
+        "the repeated cancelled-group witness took {elapsed:?}"
+    );
+}
+
+#[test]
+fn r31c_semicolon_groups_on_a_for_line_parse_without_the_cliff() {
+    let groups = vec!["(November 1, 2026)"; 32000].join("; ");
+    let text = format!("For Sunday: November 1, 2026; {groups}\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        elapsed < std::time::Duration::from_secs(17),
+        "the semicolon-group witness took {elapsed:?}"
+    );
+}
+
+#[test]
+fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
+    let groups = vec!["(November 1, 2026)"; 75000].join(" and ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let start = std::time::Instant::now();
+    let c = parse_contribution(&text, today()).expect("parses");
+    let elapsed = start.elapsed();
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        elapsed < std::time::Duration::from_secs(150),
+        "the conjoined-group witness took {elapsed:?}"
+    );
+}

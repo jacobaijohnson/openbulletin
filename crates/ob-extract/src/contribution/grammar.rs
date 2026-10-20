@@ -44,6 +44,32 @@ pub(super) fn next_nonempty(tokens: &[String], mut i: usize) -> Option<usize> {
     None
 }
 
+/// The `next_nonempty` answer for every starting
+/// index of `tokens`, computed in one backward
+/// pass (round 31, R31-C, F4): entry `i` is the
+/// nearest non-empty token at or after `i`, and
+/// the entry at `tokens.len()` is None. A scan
+/// that asks the question at every token — the
+/// plain and group signal scans do — otherwise
+/// rescans a run of tokens that clean to nothing
+/// once per token in it: a de-grouped header core
+/// is mostly the composition's own ";" markers,
+/// which clean to nothing, so a line of thousands
+/// of groups cost quadratic time in exactly this
+/// lookup. The table answers the same question;
+/// no answer changes.
+pub(super) fn next_nonempty_table(tokens: &[String]) -> Vec<Option<usize>> {
+    let mut table: Vec<Option<usize>> = vec![None; tokens.len() + 1];
+    let mut next: Option<usize> = None;
+    for i in (0..tokens.len()).rev() {
+        if !tokens[i].is_empty() {
+            next = Some(i);
+        }
+        table[i] = next;
+    }
+    table
+}
+
 /// The last word that is something in a token run
 /// (round 28, R28-A, F2 = review MAJOR-1): the
 /// `last()` a positional reader means — a token
@@ -2135,6 +2161,13 @@ pub(super) fn governed_before(before: &[String], window: &[String]) -> bool {
         });
     }
     for i in 0..window.len() {
+        // Round 31 (R31-C, F4): the phrase-start
+        // gate, as in `governed_after` — a word that
+        // begins no governor phrase is judged by
+        // `phrase_governs` no further.
+        if !governor_phrase_may_start(&window[i]) {
+            continue;
+        }
         // Round 27 (R27-A, F3): a phrase never
         // STARTS on a token that cleans to nothing
         // — the phrase matchers read through an
@@ -3140,6 +3173,11 @@ pub(super) fn unspent_trailing_governor_fronted(
         if clause[i].is_empty() {
             continue;
         }
+        // Round 31 (R31-C, F4): the phrase-start
+        // gate, as in `governed_after`.
+        if !governor_phrase_may_start(&clause[i]) {
+            continue;
+        }
         for len in 1..=3usize {
             // Round 28 (R28-A, F2): word-count
             // phrases, and a suffix of nothings is
@@ -3182,6 +3220,57 @@ pub(super) fn unspent_trailing_governor_fronted(
         }
     }
     false
+}
+
+/// Whether `word` can stand as the FIRST word of
+/// a cancellation or governor phrase (round 31,
+/// R31-C, F4): the first words of the families as
+/// `is_cancellation_phrase` and `is_governor_phrase`
+/// state them — a single governor whole (hyphenated
+/// compounds included, by `is_single_governor`'s own
+/// split test) or carrying a hyphenated cancellation
+/// inside it, a cancellation verb (which also opens
+/// the verb-and-object pairs), a phrasal-pair verb
+/// in any of its forms (call / put / push / forget),
+/// and the listed pairs' and triples' first words
+/// ("no", "don't", "didn't", "dont", "didnt",
+/// "rather", "instead", "never", "old", "hold",
+/// "used", "do"). A word outside this set begins
+/// no phrase of either family in any length, so a
+/// scan that meets it can skip the phrase machinery
+/// for that position without changing any judgment.
+pub(super) fn governor_phrase_may_start(word: &str) -> bool {
+    if is_single_governor(word) || is_cancellation_verb(word) {
+        return true;
+    }
+    if word.contains('-') {
+        let parts: Vec<String> = word
+            .split('-')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect();
+        if parts.len() >= 2 && hyphenated_cancellation(&parts) {
+            return true;
+        }
+    }
+    is_verb_form(word, "call")
+        || is_verb_form(word, "put")
+        || is_verb_form(word, "push")
+        || is_verb_form(word, "forget")
+        || matches!(
+            word,
+            "no" | "don't"
+                | "didn't"
+                | "dont"
+                | "didnt"
+                | "rather"
+                | "instead"
+                | "never"
+                | "old"
+                | "hold"
+                | "used"
+                | "do"
+        )
 }
 
 /// Whether a governor standing AFTER a date inside
@@ -3239,6 +3328,22 @@ pub(super) fn governed_after(
     let after = &tokens[seg_start..seg_end];
     for i in 0..after.len() {
         if after[i].is_empty() {
+            continue;
+        }
+        // Round 31 (R31-C, F4): a word that can
+        // begin no cancellation or governor phrase
+        // governs nothing in any length, so the
+        // phrase machinery is not run for it — the
+        // scan used to build and judge three phrases
+        // at every word of the segment, and a header
+        // core carrying thousands of ordinary words
+        // after its date (the conjoined-groups core
+        // is mostly "and") cost time per word. The
+        // gate is the families' own first words,
+        // stated in `governor_phrase_may_start`;
+        // every word it passes is judged exactly as
+        // before.
+        if !governor_phrase_may_start(&after[i]) {
             continue;
         }
         for len in 1..=3usize {
@@ -3474,6 +3579,23 @@ pub(super) struct TargetClaim {
     pub(super) to_pos: usize,
 }
 
+/// Whether `word` can stand as the FIRST word of
+/// a target phrase (round 31, R31-C, F4): the
+/// target family as `is_target_phrase` states it —
+/// a displacement verb in any form (which is also
+/// the one-word displacement phrase), a form of
+/// "postpone", or a form of "put" / "push" opening
+/// the "back" pairs. A word outside this set
+/// begins no target phrase, so a scan that meets
+/// it can skip the phrase build for that position
+/// without changing any claim.
+pub(super) fn target_phrase_may_start(word: &str) -> bool {
+    is_displacement_verb(word)
+        || is_verb_form(word, "postpone")
+        || is_verb_form(word, "put")
+        || is_verb_form(word, "push")
+}
+
 pub(super) fn target_claim(
     raw_tokens: &[&str],
     tokens: &[String],
@@ -3511,6 +3633,16 @@ pub(super) fn target_claim(
         let mut found: Option<(usize, usize)> = None;
         for ps in 0..to_pos {
             if tokens[ps].is_empty() {
+                continue;
+            }
+            // Round 31 (R31-C, F4): a word that can
+            // begin no target phrase claims nothing,
+            // so the phrase build is skipped for it —
+            // the same first-word gate as
+            // `governor_phrase_may_start`, stated for
+            // the target family in
+            // `target_phrase_may_start`.
+            if !target_phrase_may_start(&tokens[ps]) {
                 continue;
             }
             for len in 1..=2usize {
@@ -3838,6 +3970,11 @@ pub(super) fn governed_before_target(
 ) -> bool {
     for i in 0..window.len() {
         if window[i].is_empty() {
+            continue;
+        }
+        // Round 31 (R31-C, F4): the phrase-start
+        // gate, as in `governed_after`.
+        if !governor_phrase_may_start(&window[i]) {
             continue;
         }
         for len in 1..=3usize {

@@ -648,19 +648,43 @@ pub(super) fn trailing_group_analyses(
 /// on bare restatements of a value a SIBLING group
 /// governs directly contributes nothing.
 pub(super) fn apply_cross_group_governance(analyses: &mut [GroupAnalysis]) {
-    for i in 0..analyses.len() {
-        let Some(d) = analyses[i].contributed else {
+    // Round 31 (R31-C, F4): the sibling test is
+    // counted once per value instead of rescanning
+    // every sibling group for every group — the
+    // pairwise scan cost quadratic time in the
+    // number of groups on a header line (thousands
+    // of repeated groups froze the parse). For each
+    // date value, count the groups that govern it
+    // directly (a group counts once per value,
+    // however many governed occurrences it holds);
+    // a bare contribution of `d` is then suppressed
+    // exactly when a group OTHER than its own is
+    // among those counted — the same test, with the
+    // group's own governance subtracted back out.
+    let mut governing_groups: std::collections::BTreeMap<SimpleDate, usize> =
+        std::collections::BTreeMap::new();
+    for a in analyses.iter() {
+        let mut counted: Vec<SimpleDate> = Vec::new();
+        for d in &a.governed_values {
+            if !counted.contains(d) {
+                counted.push(*d);
+                *governing_groups.entry(*d).or_insert(0) += 1;
+            }
+        }
+    }
+    for a in analyses.iter_mut() {
+        let Some(d) = a.contributed else {
             continue;
         };
-        if !analyses[i].contributed_bare {
+        if !a.contributed_bare {
             continue;
         }
-        let governed_elsewhere = analyses
-            .iter()
-            .enumerate()
-            .any(|(j, a)| j != i && a.governed_values.contains(&d));
-        if governed_elsewhere {
-            analyses[i].contributed = None;
+        let mut count = governing_groups.get(&d).copied().unwrap_or(0);
+        if a.governed_values.contains(&d) {
+            count -= 1;
+        }
+        if count > 0 {
+            a.contributed = None;
         }
     }
 }
@@ -946,9 +970,26 @@ pub(super) fn chain_superseded_from_entries(
     // misclassified as a chain link and suppressed
     // a real garnish mismatch; the test now requires
     // the claim itself (see `group_has_target_claim`).
+    // Round 31 (R31-C, F4): a group with no "to" /
+    // "until" word in it can carry no phrase-with-to
+    // (the test below needs that word standing after
+    // its phrase), so its tokens are not built — the
+    // chain test used to tokenize every group on the
+    // line, thousands of bare date groups included.
+    // The screen reads the group's words as the
+    // cleaning leaves them: format characters out
+    // (a "t\u{200b}o" is the word "to" to the
+    // cleaning), case folded — a cleaned "to" or
+    // "until" is a substring of that text, so a
+    // group the screen passes over holds neither
+    // word, exactly as its tokens would say.
     let group_tokens: Vec<Vec<String>> = entries
         .iter()
         .map(|(inner, _)| {
+            let screened = strip_format_chars(inner).to_ascii_lowercase();
+            if !screened.contains("to") && !screened.contains("until") {
+                return Vec::new();
+            }
             let raw: Vec<&str> = inner.split_whitespace().collect();
             segment_tokens(&raw)
         })
@@ -1015,7 +1056,7 @@ pub(super) fn sunday_after_relative_phrase(
     today: SimpleDate,
 ) -> Option<String> {
     let text = raw.as_deref()?.trim();
-    if !relative_shape_matches(text, sunday_after_relative_shape) {
+    if !relative_shape_matches(text, sunday_after_relative_shape_tokens) {
         return None;
     }
     // Round 21 (R21-1), bounded by the R10-10c
@@ -1110,10 +1151,19 @@ pub(super) fn sunday_after_relative_shape(text: &str) -> bool {
         .map(group_token)
         .filter(|w| !w.is_empty())
         .collect();
+    sunday_after_relative_shape_tokens(&words)
+}
+
+/// The Sunday-after shape judged on the cleaned
+/// word list (round 31, R31-C): the same words the
+/// text form reads, stated once so the group-
+/// stripping loop in `relative_shape_matches` can
+/// judge them without re-cleaning the line.
+pub(super) fn sunday_after_relative_shape_tokens(words: &[String]) -> bool {
     // Leading garnishes compose in order (round 7,
     // R7-5): an optional "on" and/or "the" in front of
     // the shape changes nothing about the shape.
-    let mut core: &[String] = &words[..];
+    let mut core: &[String] = words;
     while matches!(core.first().map(String::as_str), Some("on" | "the")) {
         core = &core[1..];
     }
@@ -1156,7 +1206,7 @@ pub(super) fn sunday_after_relative_shape(text: &str) -> bool {
 /// line saying anything more is not this shape.
 pub(super) fn relative_sunday_phrase(raw: &Option<String>, today: SimpleDate) -> Option<String> {
     let text = raw.as_deref()?.trim();
-    if !relative_shape_matches(text, relative_sunday_shape) {
+    if !relative_shape_matches(text, relative_sunday_shape_tokens) {
         return None;
     }
     // Round 21 (R21-1), bounded by the R10-10c
@@ -1186,9 +1236,18 @@ pub(super) fn relative_sunday_shape(text: &str) -> bool {
         .map(group_token)
         .filter(|w| !w.is_empty())
         .collect();
+    relative_sunday_shape_tokens(&words)
+}
+
+/// The bare relative-Sunday shape judged on the
+/// cleaned word list (round 31, R31-C): the same
+/// words the text form reads, stated once so the
+/// group-stripping loop in `relative_shape_matches`
+/// can judge them without re-cleaning the line.
+pub(super) fn relative_sunday_shape_tokens(words: &[String]) -> bool {
     // Leading garnishes compose in order (round 7,
     // R7-5): an optional "on" and/or "the".
-    let mut core: &[String] = &words[..];
+    let mut core: &[String] = words;
     while matches!(core.first().map(String::as_str), Some("on" | "the")) {
         core = &core[1..];
     }
@@ -2324,6 +2383,11 @@ pub(super) fn scan_plain_signals(
     anchor: SimpleDate,
 ) -> Vec<PlainSignal> {
     let mut signals: Vec<PlainSignal> = Vec::new();
+    // Round 31 (R31-C, F4): the next-nonempty
+    // answers for this scan, read off one table
+    // (see `next_nonempty_table`) instead of
+    // rescanning the nothing-runs per token.
+    let nonempty_next = next_nonempty_table(cleaned);
     // The token index just past the last signal,
     // and whether that signal was a framed Sunday:
     // a bare "Sunday" standing directly after a
@@ -2339,7 +2403,7 @@ pub(super) fn scan_plain_signals(
         // Round 27 (R27-A, F3): the shape's words
         // are read over the nearest non-empty
         // tokens, as in the group scan above.
-        let plain_after_at = next_nonempty(cleaned, i + 1);
+        let plain_after_at = nonempty_next[i + 1];
         if cleaned[i] == "sunday" && plain_after_at.is_some_and(|a| cleaned[a].as_str() == "after")
         {
             // "Sunday after next/this Sunday", the
@@ -2348,13 +2412,13 @@ pub(super) fn scan_plain_signals(
             // Sunday strictly after the relative
             // base's own resolution.
             let plain_after_at = plain_after_at.unwrap_or(i + 1);
-            let first_at = next_nonempty(cleaned, plain_after_at + 1);
+            let first_at = nonempty_next[plain_after_at + 1];
             let (which_at, base_at) = match first_at {
                 Some(f) if cleaned[f].as_str() == "the" => (
-                    next_nonempty(cleaned, f + 1),
-                    next_nonempty(cleaned, f + 1).and_then(|w| next_nonempty(cleaned, w + 1)),
+                    nonempty_next[f + 1],
+                    nonempty_next[f + 1].and_then(|w| nonempty_next[w + 1]),
                 ),
-                other => (other, other.and_then(|w| next_nonempty(cleaned, w + 1))),
+                other => (other, other.and_then(|w| nonempty_next[w + 1])),
             };
             let used = base_at.map(|b| b - i + 1).unwrap_or(0);
             let which = which_at.and_then(|w| cleaned.get(w)).map(String::as_str);
@@ -2395,7 +2459,7 @@ pub(super) fn scan_plain_signals(
         // "this Sunday" (a framed date cannot stand
         // at "next"/"this", so no order is lost).
         let plain_rel_sunday = if cleaned[i] == "next" || cleaned[i] == "this" {
-            next_nonempty(cleaned, i + 1).filter(|&j| cleaned[j].as_str() == "sunday")
+            nonempty_next[i + 1].filter(|&j| cleaned[j].as_str() == "sunday")
         } else {
             None
         };

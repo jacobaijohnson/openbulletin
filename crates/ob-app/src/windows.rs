@@ -975,9 +975,13 @@ impl App {
         self.journal_snapshot = self.saved_snapshot.clone();
         // Single-instance courtesy: if another live OpenBulletin
         // already holds the journal, this instance leaves the
-        // journal entirely alone (closing audit).
-        self.peer_alive = peer_instance_alive();
-        write_instance_lock();
+        // journal entirely alone (closing audit). Claiming the
+        // lock is that check (R30-A): a live peer keeps its
+        // lock — the file is left untouched, so the peer stays
+        // named on it and the journal token rules keep
+        // protecting the peer's journal from this instance.
+        // A refused claim is exactly a live peer.
+        self.peer_alive = !claim_instance_lock();
         if self.peer_alive {
             // The journal belongs to the other window, so
             // this window's work is not being kept safe. Say

@@ -1100,6 +1100,31 @@ pub(super) fn is_bracketed_token(raw: &str) -> bool {
     (t.starts_with('[') && t.ends_with(']')) || (t.starts_with('{') && t.ends_with('}'))
 }
 
+/// The weekday a wholly bracketed token names, if
+/// it names one (round 35, R35-H): the shared
+/// cleaning (`group_token`) reads a bracketed
+/// token as garnish and gives nothing for it, where
+/// the paren twin's cleaning gives the word itself
+/// ("(Sunday)" cleans through its edges to
+/// "sunday"). A reader asking for the word itself —
+/// the Sunday-after phrase scan asking after its
+/// shape word and its base's leading weekday — asks
+/// the raw token here. Only the pairs
+/// `is_bracketed_token` names unwrap ([] and {});
+/// a doubled pair unwraps layer by layer, as the
+/// paren twin's edge trim reads "((Sunday))".
+pub(super) fn bracketed_weekday_word(raw: &str) -> Option<u32> {
+    let mut token: String = raw.to_string();
+    while is_bracketed_token(&token) {
+        let trimmed = token.trim_end_matches([',', '.', ':', ';']).to_string();
+        token = trimmed[1..trimmed.len() - 1].to_string();
+        if let Some(number) = weekday_word(&group_token(&token)) {
+            return Some(number);
+        }
+    }
+    None
+}
+
 /// `text` with a standalone boundary token at its
 /// head taken off, repeatedly (round 24, R24-4):
 /// text-level sites (relative-shape memory, the

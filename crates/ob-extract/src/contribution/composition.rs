@@ -2675,7 +2675,17 @@ pub(super) fn sunday_after_phrase_run(
     // second-date scan's `group_token` cleaning),
     // so the phrase's two words are read unglued
     // here, at the shared reader itself.
-    if weekday_word(&unglued_word(&cleaned[i])) != Some(0) {
+    // Round 35 (R35-H): the shape's weekday may
+    // stand wholly bracketed — the shared cleaning
+    // reads a bracketed token as garnish, so its
+    // cleaned form here is nothing, where the paren
+    // twin's cleaning gives the word itself. The
+    // raw token is asked for its bracketed word, so
+    // "{Sunday} after ..." and "[Sunday] after ..."
+    // are the phrase "(Sunday) after ..." is.
+    if weekday_word(&unglued_word(&cleaned[i])) != Some(0)
+        && bracketed_weekday_word(tokens[i]) != Some(0)
+    {
         return None;
     }
     // Round 27 (R27-A, F3): the "after" is the
@@ -2707,11 +2717,20 @@ pub(super) fn sunday_after_phrase_run(
     }
     // The base's own leading weekday, wearing an
     // optional "on": strip it and read what it framed.
-    let offset = if !rest.is_empty() && weekday_word(&clean(rest[0])).is_some() {
+    // Round 35 (R35-H): the base's leading weekday
+    // may stand wholly bracketed too, as the shape's
+    // word may — the raw token is asked for its
+    // bracketed word where the shared cleaning
+    // gives nothing, so the braced and bracketed
+    // framings strip exactly as the paren framing
+    // does ("Sunday after {Monday} November 1, 2026"
+    // consumes its base as its paren twin does).
+    let lead_weekday = |t: &str| weekday_word(&clean(t)).or_else(|| bracketed_weekday_word(t));
+    let offset = if !rest.is_empty() && lead_weekday(rest[0]).is_some() {
         1
     } else if rest.len() > 1
         && clean(rest[0]).eq_ignore_ascii_case("on")
-        && weekday_word(&clean(rest[1])).is_some()
+        && lead_weekday(rest[1]).is_some()
     {
         2
     } else {

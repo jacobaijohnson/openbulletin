@@ -21320,6 +21320,204 @@ fn r35a_brace_weekday_garnish_is_judged_as_its_paren_twin() {
 }
 
 #[test]
+fn r35h_bracketed_weekday_naming_the_sunday_after_shape_consumes_its_base_as_its_paren_twin() {
+    // Round 35 (R35-H; the scope note R35-A's pin
+    // work recorded): R35-A made a braced weekday
+    // clean to its word at the weekday readers, so
+    // "{Sunday} after November 1, 2026" read its
+    // date and its mismatch as its paren twin did —
+    // but it still recorded the base, November 1,
+    // as a second date where the paren twin records
+    // none. The divergence lived in the second-date
+    // machinery: the Sunday-after phrase scan
+    // (`sunday_after_phrase_run`) reads its words
+    // through the shared cleaning (`group_token`),
+    // which reads a wholly bracketed token as
+    // garnish and gives nothing for it, where the
+    // paren twin's token cleans through its edges
+    // to the word — so the scan never saw the
+    // phrase, and the base stood as a plain date
+    // run beside the resolution. The same failure
+    // at the base's own leading weekday ran the
+    // other way: "Sunday after {Monday} November 1,
+    // 2026" recorded nothing where the paren twin
+    // names the phrase's resolution, November 8,
+    // as the second date beside the base the line
+    // itself reads. The scan now asks the raw token
+    // for its bracketed word (`bracketed_weekday_word`)
+    // at both spots — the shape word and the base's
+    // leading weekday, behind an optional "on" —
+    // so a bracketed weekday names the shape
+    // exactly as its paren twin does, and the
+    // phrase consumes its base on every channel
+    // the scan feeds. Witnessed before the fix on
+    // both lines: the shape cells (plain, lead-in,
+    // glued) carried the base as a second date; the
+    // base-leading cells (agreeing, disagreeing,
+    // "on"-framed) carried no second date; the
+    // base-trailing cells already agreed and are
+    // pinned in `r35a_brace_weekday_garnish_is_judged_as_its_paren_twin`.
+    // November 1, 2026 is a Sunday; the Sunday
+    // after it is November 8.
+    let for_pairs = [
+        // The shape word itself, spaced, with its
+        // lead-ins, and glued (the date line's
+        // re-spacing hands the scan the spaced
+        // twin, as it does the paren form).
+        (
+            "{Sunday} after November 1, 2026",
+            "(Sunday) after November 1, 2026",
+        ),
+        (
+            "[Sunday] after November 1, 2026",
+            "(Sunday) after November 1, 2026",
+        ),
+        (
+            "the {Sunday} after November 1, 2026",
+            "the (Sunday) after November 1, 2026",
+        ),
+        (
+            "on the {Sunday} after November 1, 2026",
+            "on the (Sunday) after November 1, 2026",
+        ),
+        (
+            "words for {Sunday} after November 1, 2026 please",
+            "words for (Sunday) after November 1, 2026 please",
+        ),
+        (
+            "{Sunday}after November 1, 2026",
+            "(Sunday)after November 1, 2026",
+        ),
+        (
+            "[Sunday]after November 1, 2026",
+            "(Sunday)after November 1, 2026",
+        ),
+        // The base's own leading weekday, agreeing
+        // and disagreeing, bracketed and braced,
+        // bare and behind "on".
+        (
+            "Sunday after {Sunday} November 1, 2026",
+            "Sunday after (Sunday) November 1, 2026",
+        ),
+        (
+            "Sunday after {Monday} November 1, 2026",
+            "Sunday after (Monday) November 1, 2026",
+        ),
+        (
+            "Sunday after [Monday] November 1, 2026",
+            "Sunday after (Monday) November 1, 2026",
+        ),
+        (
+            "Sunday after on {Monday} November 1, 2026",
+            "Sunday after on (Monday) November 1, 2026",
+        ),
+        (
+            "Sunday after on {Sunday} November 1, 2026",
+            "Sunday after on (Sunday) November 1, 2026",
+        ),
+        // Both bracketed spots at once, and the
+        // shape word standing in a plain core.
+        (
+            "{Sunday} after {Monday} November 1, 2026",
+            "(Sunday) after (Monday) November 1, 2026",
+        ),
+        (
+            "{Sunday} after {Sunday} November 1, 2026",
+            "(Sunday) after (Sunday) November 1, 2026",
+        ),
+        (
+            "{Sunday} after November 1, 2026 {Sunday}",
+            "(Sunday) after November 1, 2026 (Sunday)",
+        ),
+        (
+            "use {Sunday} after November 1, 2026",
+            "use (Sunday) after November 1, 2026",
+        ),
+        (
+            "use Sunday after {Monday} November 1, 2026",
+            "use Sunday after (Monday) November 1, 2026",
+        ),
+        // The base restated, and a real second
+        // date standing beside the phrase: the
+        // restated base stays a restatement, and
+        // November 15 is named for both twins.
+        (
+            "{Sunday} after November 1, 2026 (November 1, 2026)",
+            "(Sunday) after November 1, 2026 (November 1, 2026)",
+        ),
+        (
+            "{Sunday} after November 1, 2026 and November 15, 2026",
+            "(Sunday) after November 1, 2026 and November 15, 2026",
+        ),
+    ];
+    for (bracket, paren) in for_pairs {
+        r34e_for_twin(bracket, paren);
+    }
+    let keep_pairs = [
+        (
+            "{Sunday} after November 1, 2026",
+            "(Sunday) after November 1, 2026",
+        ),
+        (
+            "[Sunday] after November 1, 2026",
+            "(Sunday) after November 1, 2026",
+        ),
+        (
+            "{Sunday}after November 1, 2026",
+            "(Sunday)after November 1, 2026",
+        ),
+        (
+            "Sunday after {Sunday} November 1, 2026",
+            "Sunday after (Sunday) November 1, 2026",
+        ),
+        (
+            "Sunday after {Monday} November 1, 2026",
+            "Sunday after (Monday) November 1, 2026",
+        ),
+        (
+            "Sunday after on {Monday} November 1, 2026",
+            "Sunday after on (Monday) November 1, 2026",
+        ),
+        (
+            "{Sunday} after {Monday} November 1, 2026",
+            "(Sunday) after (Monday) November 1, 2026",
+        ),
+        (
+            "{Sunday} after November 1, 2026 (November 1, 2026)",
+            "(Sunday) after November 1, 2026 (November 1, 2026)",
+        ),
+        (
+            "{Sunday} after November 1, 2026 and November 15, 2026",
+            "(Sunday) after November 1, 2026 and November 15, 2026",
+        ),
+    ];
+    for (bracket, paren) in keep_pairs {
+        r34e_keep_twin(bracket, paren);
+    }
+    // Stated outright, the two witnessed directions.
+    // The shape cell: the resolution reads and the
+    // base is no second date, on either line.
+    let text = "For Sunday: {Sunday} after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    assert_eq!(c.for_sunday_second_date, None);
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    let text = "For Sunday: November 1, 2026\nKeep-through: {Sunday} after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    assert_eq!(c.keep_through_second_date, None);
+    assert_eq!(c.keep_through_second_dates, Vec::<SimpleDate>::new());
+    // The base-leading cell: the line reads its
+    // base, and the phrase's resolution is the
+    // second date named beside it.
+    let text = "For Sunday: Sunday after {Monday} November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_date, Some(nov(8)));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(8)]);
+}
+
+#[test]
 fn r35b_bracketed_governing_word_governs_as_its_paren_twin() {
     // Round 35 (R35-B, F2 = review R35-R2): a
     // cancellation word wrapped in brackets or

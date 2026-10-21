@@ -1494,7 +1494,13 @@ fn reader_word_count(token: &str) -> usize {
 /// be defined verbatim inside both `weekday_is_framed`
 /// and `framed_date_outcome`).
 pub(super) fn clean(t: &str) -> &str {
-    t.trim_matches(['(', ')', '[', ']', ',', '.'])
+    // Round 34 (R34-C, F4 = RT34-5): the trim set
+    // gains the remaining sentence marks — ";", ":",
+    // "!", "?", and the closing quote — so a weekday
+    // word wearing one is still the word it names,
+    // as `weekday_word` already honors ";" and ":"
+    // as boundary endings.
+    t.trim_matches(['(', ')', '[', ']', ',', '.', ';', ':', '!', '?', '"'])
 }
 
 /// Whether the weekday at `i` in `core` wears the
@@ -1674,29 +1680,121 @@ pub(super) fn bare_unit_weekday_at(tokens: &[&str], i: usize) -> bool {
 /// group already standing apart, a parenthesized
 /// DATE, and every other group keep their text
 /// byte for byte.
+///
+/// Round 34 (R34-C, F4 = red team RT34-2 paren
+/// half + review MINOR-2 + RT34-5): the gate
+/// stopped one shape short, so the suffix it sees
+/// past is widened — still the one gate, still
+/// handing the standing machinery the spaced twin:
+/// - Extra closing marks after the group
+///   ("2026(Monday))", "2026(Monday)]"): the spaced
+///   machinery's token trim already strips the
+///   extra mark; the gate's inner-word test saw
+///   "Monday)" and never fired.
+/// - A doubled garnish ("2026((Monday))"): the
+///   group the gate must find is the OUTER pair;
+///   its contents, parentheses aside, are still
+///   the one weekday word.
+/// - A trailing separator token ("2026(Monday) *",
+///   "… |" — the format's own separators): the
+///   spaced twin is judged because the
+///   trailing-weekday scan skips non-alphanumeric
+///   tokens when it looks for the line's last word.
+/// - Trailing punctuation ("2026(Monday);", and
+///   ":", "!", "?", the closing quote): peeled
+///   with the sentence punctuation here, and the
+///   trailing-word trim set below and in `clean`
+///   extends to the same marks, so the garnish
+///   check fires in both forms.
+///
+/// The re-spaced line keeps the group and every
+/// suffix byte exactly as written; only the one
+/// space is set. A group holding anything but one
+/// weekday word — "(notes)", "(November)", "(next
+/// week)", "(Monday morning)", "(2027)",
+/// "(Sundae)", "(Mondays)", a parenthesized DATE —
+/// is never re-spaced, in any of these shapes.
 pub(super) fn spaced_glued_weekday_garnish(text: &str) -> Option<String> {
-    let trimmed = text.trim_end_matches(['.', ',']);
-    if !trimmed.ends_with(')') {
+    // The suffix layers the group may stand in
+    // front of, peeled from the line's end: sentence
+    // punctuation, then one separator token,
+    // alternating until neither peels — "(Monday);"
+    // sheds its ";", "(Monday) *" sheds its token,
+    // "(Monday) *;" sheds both.
+    let mut end = text.len();
+    loop {
+        let peeled = text[..end]
+            .trim_end_matches(['.', ',', ';', ':', '!', '?', '"'])
+            .len();
+        if peeled != end {
+            end = peeled;
+            continue;
+        }
+        let core = &text[..end];
+        let Some((ws, wc)) = core.char_indices().rev().find(|(_, c)| c.is_whitespace()) else {
+            break;
+        };
+        let token = &core[ws + wc.len_utf8()..];
+        if !token.is_empty() && token.chars().all(|c| c == '*' || c == '|') {
+            end = ws;
+            continue;
+        }
+        break;
+    }
+    // The group closes at `group_end`; everything
+    // from there on is suffix, preserved as written.
+    let group_end = text[..end].trim_end().len();
+    let line = &text[..group_end];
+    if !matches!(line.chars().next_back(), Some(')' | ']')) {
         return None;
     }
-    let open = trimmed.rfind('(')?;
+    // The candidate group, closers aside: the first
+    // "(" whose remainder — parentheses aside — is
+    // one weekday word and nothing else. The
+    // remainder's length is checked before its
+    // contents are scanned: one weekday word with
+    // its wrapping parentheses is a few bytes, and
+    // a long remainder is some earlier group, not
+    // this line's garnish.
+    let cand = line.trim_end_matches([')', ']']);
+    let mut open: Option<usize> = None;
+    for (p, ch) in cand.char_indices() {
+        if ch != '(' {
+            continue;
+        }
+        let inner = &cand[p + 1..];
+        if inner.len() > 32 || inner.contains(char::is_whitespace) {
+            continue;
+        }
+        // The contents, stated exactly: some opening
+        // parentheses (a doubled garnish wears one
+        // extra), the word, some closing parentheses
+        // — a parenthesis anywhere else is not this
+        // shape.
+        let lead = inner.len() - inner.trim_start_matches('(').len();
+        let trailed = &inner[lead..];
+        let word = trailed.trim_end_matches(')');
+        if word.contains(['(', ')']) || !trailed.starts_with(word) {
+            continue;
+        }
+        if weekday_word(word).is_some() {
+            open = Some(p);
+            break;
+        }
+    }
+    let open = open?;
     if open == 0 {
         return None;
     }
-    let before = trimmed[..open].chars().next_back()?;
+    let before = text[..open].chars().next_back()?;
     if before.is_whitespace() {
         return None;
     }
-    let inner = &trimmed[open + 1..trimmed.len() - 1];
-    if inner.contains(char::is_whitespace) || weekday_word(inner.trim()).is_none() {
-        return None;
-    }
     let mut spaced = String::with_capacity(text.len() + 1);
-    spaced.push_str(&trimmed[..open]);
-    spaced.push_str(" (");
-    spaced.push_str(inner);
-    spaced.push(')');
-    spaced.push_str(&text[trimmed.len()..]);
+    spaced.push_str(&text[..open]);
+    spaced.push(' ');
+    spaced.push_str(&text[open..group_end]);
+    spaced.push_str(&text[group_end..]);
     Some(spaced)
 }
 
@@ -1712,7 +1810,13 @@ pub(super) fn date_line_inner(
     // (see `spaced_glued_weekday_garnish`): the line
     // the readers below see is the spaced line, and
     // the raw the leading-weekday check sees is that
-    // same line.
+    // same line. Round 34 (R34-C, F4): the gate's
+    // suffix widened there — extra closing marks, a
+    // doubled garnish, a trailing separator token,
+    // trailing punctuation — and the trailing-word
+    // trim set gained the same punctuation, so the
+    // spaced forms of those shapes are judged here
+    // too.
     let respaced = spaced_glued_weekday_garnish(text);
     let text: &str = respaced.as_deref().unwrap_or(text);
     let effective_raw: Option<String> = match &respaced {
@@ -1750,7 +1854,13 @@ pub(super) fn date_line_inner(
         .iter()
         .rposition(|t| t.chars().any(|c| c.is_alphanumeric()));
     if let Some(i) = last_word {
-        let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.']);
+        // Round 34 (R34-C, F4 = RT34-5): the trim set
+        // extends to ";", ":", "!", "?", and the
+        // closing quote — the same marks `clean`
+        // trims — so a trailing garnish wearing one
+        // is judged here instead of passing as
+        // ordinary text in both its forms.
+        let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.', ';', ':', '!', '?', '"']);
         if let Some(named_number) = weekday_word(word) {
             let rest: Vec<&str> = tokens
                 .iter()

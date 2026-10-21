@@ -474,7 +474,13 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
     let mut trailing: Option<(String, u32)> = None;
     let mut core: Vec<&str> = tokens.to_vec();
     if let Some(i) = last_word {
-        let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.']);
+        // Round 34 (R34-C, F4 = RT34-5): the trailing
+        // word's trim set carries the same sentence
+        // marks as the date line's (`clean` and
+        // `date_line_inner`), so a base garnish
+        // wearing ";", ":", "!", "?", or a quote is
+        // judged here too.
+        let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.', ';', ':', '!', '?', '"']);
         if let Some(named_number) = weekday_word(word) {
             let named = word.to_string();
             trailing = Some((named, named_number));

@@ -437,3 +437,169 @@ runner build success; Windows bundle success via
 hygiene (clean + stale probe sweep, fuzz bins kept at
 recorded md5s, registry not pruned, disk numbers, cold
 proof run). A close missing any leg is not verified.
+
+## Close (coordinator, 2026-10-21)
+
+All six batches landed (R34-D split into D and D2 at
+the fuzz gate; see below). Suite: 986 at the round-33
+close, **1011 / 0 failed** at this close. Booklet
+baseline (31,717 imposed / 34,977 reader) exact in
+suite at every batch. Per-batch records (cold wall
+times, disk numbers, RED evidence) live in the audit
+dir at `round34-out/coord/r34{a,b,c,d,d2,e}-record.md`
+(D and D2 share `r34d-record.md`).
+
+- R34-A `6a4606b` (F5, MAJOR) — 987 tests. The None
+  arm of the displaced hold now mirrors the lock
+  path (`displaced_owner_is_a_live_other` joins the
+  arm); one RED-first pin covers the T1/T1b/T1c/T1d
+  cells plus the gone-peer control; only T1 flipped.
+  A VM restart mid-verification wiped the first
+  cold attempt's logs; the writer discarded a
+  not-cold clippy and re-ran the full cold sequence
+  (suite 22m36s, clippy 4m52s) — the record
+  documents both attempts.
+- R34-B `3b7738a` (F1 + F2, MAJOR) — 1000 tests.
+  `hunted_directory` rewritten validating: checked
+  arithmetic everywhere, hunted records validated
+  against their locator, hunted directories walked
+  to the promised end, search continues past
+  non-validating candidates; all four doors fail
+  closed in standing words when the reader opens a
+  non-empty archive whose directory cannot be
+  derived. Two refusal-over-service choices
+  recorded with reasons (a craft whose record does
+  not close over its locator; the unaccounted-record
+  shape, deliberately distinct from the accepted
+  signature-record shape).
+- R34-C `5e89273` (F4, MAJOR) — 1005 tests. The one
+  garnish gate widened (suffix layers peeled: extra
+  closing marks, doubled garnish, trailing
+  separator, extended trim set); 5 twin pins; fuzz
+  byte-identical, nothing re-baselined.
+- R34-D `a5da987` (F7 + F8, MINOR) — 1005 tests.
+  Timing pins measure at 16,000 groups as well as
+  8,000 (bounds and the R33-D header untouched);
+  `central_spots` single-sourced into ob-model,
+  door counts reproduced exactly.
+- R34-D2 `ff32ffa` (F6, MINOR) — 1006 tests. The
+  batch first stopped at its own fuzz gate: the
+  initial global-precedence rule fixed the 7
+  permission-free witnesses but RAISED the rights
+  bins' route-disagreement counters (triple_diff
+  5823→6747). Coordinator adjudication: not cleared
+  — F6's substance is route-invariance, and a rule
+  that widens measured divergence does not land.
+  The narrower rule (the fold remembers the
+  permission claim its merges stood while the
+  credit line was empty) passed the gate outright:
+  counters FELL on all three measures (5823→5083,
+  1155→1024, 6015→5275), safety sections
+  byte-identical, witnessed family agreeing. Two of
+  RT34-6's nine triples are the round-8 deferral
+  residual, pinned as fold≠chain by the standing
+  r8 pin — adjudicated out of F6's scope, untouched.
+  Record correction, disclosed in `r34d-record.md`:
+  a garbled exec poll made the writer report
+  R34-D cold numbers that never ran; the real cold
+  suite for `a5da987` overlapped the D2 edits and
+  failed on the D2 RED pin (the expected RED state).
+  `a5da987`'s content received cold-from-clean
+  verification as the base of `ff32ffa`'s completed
+  cold run (1006/0); the record carries the
+  polluted run's real numbers and citation.
+- R34-E `197ab50` (F3, MAJOR) — 1011 tests. The
+  adjudicated reading implemented: brackets/braces
+  are group delimiters in the shared machinery
+  (stack-based spans step-equivalent to the old
+  depth count on paren-only text, so no paren
+  reading moved); 5 twin pins over the witnessed
+  family; pin flips bracket-side only, each
+  probe-verified against its paren twin's standing
+  record. The batch STOPPED at the fuzz gate as its
+  hard term required — both contribution stdouts
+  moved — and the coordinator ruled on the itemized
+  delta:
+
+**Re-baseline ruling (coordinator, 2026-10-21).**
+The movement is the adjudicated reading made
+visible, and the fuzz baselines are re-set on it.
+Deltas: verdict27 stdout `4941c4f9…` → `7bcbfdc0…`
+— 40,000 lines and panics=0 unchanged, every EX line
+byte-identical, exactly 3 counter lines differ, all
+down (I4-anchor-diff 5614→5493, I4b-anchor-keep-diff
+5462→5336, invariant_violations 11076→10829).
+comp27 stdout `efd2096b…` → `96b0c7b2…` —
+D_TOTAL=497024, D_PANICS=0, D_STANDING_RELATIVE and
+D_RESURRECT_GOVERNED unchanged; for_none_keep_some
+1797→2357 and soup 470→502 (bracket groups now
+contribute on Keep lines, as adjudicated), and an
+EX-sample rotation whose incoming examples are all
+bracket shapes and whose outgoing are a sampling
+artifact of the class's growth. rights27/rights27s
+byte-identical. No non-bracket example changed; no
+total moved. New standing baselines from this close:
+verdict27 `7bcbfdc0306f9efc642bb03462cba385`,
+comp27 `96b0c7b2ed7eedae6f8dcfa64b0d88ff` (bin
+sources unchanged at their recorded md5s). Round
+35's verify lane claims against these, with this
+provenance.
+
+Carried to round 35, recorded in `r34e-record.md`:
+(1) mixed closers in the bracket family (verified
+byte-identical to `bracket34.log` — deliberately
+unchanged by R34-E); (2) a cancellation word
+wearing brackets INSIDE a group inner does not
+govern there (its round-24 garnish role stands;
+the adjudication made the pair a delimiter, not a
+rewrite of the inner token rules it cited as
+premise). Plus the round-34 open observation: the
+mid-line glued/spaced divergence (`November(Monday)
+1, 2026`), ungraded, not a bracket question.
+
+Five-leg evidence on the close tree `197ab50`:
+
+1. **Local, cold** (landing pass, `round34-out/
+   coord/r34e-land-*` logs): after `cargo clean`,
+   full workspace suite **1011 passed / 0 failed**
+   (exit 0, 11:18:08Z → 11:41:36Z, wall 23m28s),
+   booklet pin ok in suite; clippy `--workspace
+   --all-targets -- -D warnings` exit 0
+   (11:41:36Z → 11:45:23Z, wall 3m47s). A VM restart
+   killed the first cold fuzz build; re-run cold,
+   all four bins at the landed values.
+2. **Fuzz as claims:** bins at recorded source md5s
+   (verdict27 `a9cac6c3…`, comp27 `4f85c605…`):
+   verdict 40,000 lines, panics=0, stdout md5
+   `7bcbfdc0306f9efc642bb03462cba385`; composition
+   D_TOTAL=497024, D_PANICS=0, stdout md5
+   `96b0c7b2ed7eedae6f8dcfa64b0d88ff` — the new
+   baselines set by the ruling above. Rights axes
+   (M8) held for the thirteenth consecutive round:
+   rights27/rights27s byte-identical to the D2
+   references, safety_flips=0 throughout.
+3. **Hosted CI** on `197ab50`: run `39590890242`,
+   **success** — test (ubuntu-latest) ✓ job
+   119191256238, test (macos-latest) ✓ job
+   119191256614, test (windows-latest) ✓ job
+   119191256621.
+4. **Desktop runner build** on `197ab50`: run
+   `39590890220`, **success** — build ✓ job
+   119191256402.
+5. **Windows bundle** on `197ab50`: run
+   `39598049259`, **success** — Gate (format, tests,
+   clippy) ✓ job 119215208945, bundle ✓ job
+   119218886733; dispatched by the coordinator via
+   `gh workflow run` on main at the close commit;
+   confirmed via `gh run view` / watch exit 0.
+
+Round 34 audit verdict stands at 0 BLOCKER /
+5 MAJOR / 3 MINOR — the exit bar is NOT met by this
+round either; all eight findings are fixed or
+dispositioned above. Round 35 audits the closed
+tree `197ab50`. The Tier-2 final gate is not
+triggered. HF-12 remains Jacob's decision,
+untouched. The build-cache policy's first
+application (latched clear at this confirmed
+completion) is executed and recorded in the close
+status note in the audit dir.

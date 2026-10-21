@@ -19334,6 +19334,43 @@ fn r33d_interleaved_best(
     )
 }
 
+// Round 34 (R34-D, F7 = red team RT34-7): the pins
+// below sampled exactly one size (8,000 groups), so
+// a genuinely quadratic term with a small coefficient
+// passed them while dominating at sizes a
+// contribution line can actually carry. Each pin now
+// also measures at a second size, 16,000 groups —
+// one doubling — in the same interleaved best-of-3
+// ratio form, against the same per-shape multiple:
+// the 8,000-group bounds and every number recorded
+// in the pin block's header above are untouched. A
+// term quadratic in the group count contributes
+// twice as much, relative to the linear control, at
+// the doubled size as at the pinned size, so a term
+// that passes at 8,000 can fail at 16,000: the red
+// team's worked example, a term contributing 12x of
+// control at 8,000 groups (total ~19x, under the
+// loosest pins' 20x), contributes 24x at 16,000 for a
+// total of ~30x and fails. Fixed code, interleaved
+// best-of-three at 16,000 groups, measured in this
+// suite's own frame (debug, parse only, this VM) at
+// load average ~1.3: cancelled absolute 5.98x
+// control, cancelled relative 4.95x, cancelled
+// distinct 5.30x, one big group of same dates 3.87x,
+// of distinct dates 4.85x, leading groups 3.24x,
+// bracket groups 1.66x — the 8,000-group ratios
+// (6.7x, 5.2x, 5.7x, 4.2x, 5.3x, 3.4x, 1.7x) standing
+// flat at the doubled size, as linear code's ratios
+// should. The second-size bounds are the pins' own
+// multiples (20x, 20x, 20x, 20x, 10x, 9x, 3x), which
+// sit at least ~1.8x above the fixed ratios measured
+// here and below what the worked-example term
+// reaches on every shape.
+fn r34d_absolute_group_control_at(groups_n: usize) -> String {
+    let groups = vec!["(November 1, 2026)"; groups_n].join(" ");
+    format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n")
+}
+
 #[test]
 fn r32c_cancelled_groups_after_a_core_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026, cancelled)"; 8000].join(" ");
@@ -19344,6 +19381,18 @@ fn r32c_cancelled_groups_after_a_core_parse_without_the_cliff() {
     assert!(
         witness_best < control_best * 20,
         "the cancelled-with-core witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
+    );
+    // The second size (round 34, R34-D, F7): one
+    // doubling, same bound — see the note at
+    // `r34d_absolute_group_control_at`.
+    let groups = vec!["(November 1, 2026, cancelled)"; 16000].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let control = r34d_absolute_group_control_at(16000);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        witness_best < control_best * 20,
+        "the cancelled-with-core witness at 16,000 groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
     );
 }
 
@@ -19357,6 +19406,17 @@ fn r32c_cancelled_relative_groups_after_a_core_parse_without_the_cliff() {
     assert!(
         witness_best < control_best * 20,
         "the relative-cancelled-with-core witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
+    );
+    // The second size (round 34, R34-D, F7): one
+    // doubling, same bound.
+    let groups = vec!["(next Sunday, cancelled)"; 16000].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let control = r34d_absolute_group_control_at(16000);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        witness_best < control_best * 20,
+        "the relative-cancelled-with-core witness at 16,000 groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
     );
 }
 
@@ -19391,6 +19451,23 @@ fn r32c_distinct_cancelled_groups_after_a_core_parse_without_the_cliff() {
         witness_best < control_best * 20,
         "the distinct-cancelled-with-core witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
     );
+    // The second size (round 34, R34-D, F7): one
+    // doubling, same bound.
+    let mut groups = String::new();
+    for i in 0..16000usize {
+        let d = (i % 28) + 1;
+        let m = MONTHS[(i / 28) % 12];
+        let y = 2024 + (i / (28 * 12)) % 40;
+        groups.push_str(&format!("({m} {d}, {y}, cancelled) "));
+    }
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let control = r34d_absolute_group_control_at(16000);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        witness_best < control_best * 20,
+        "the distinct-cancelled-with-core witness at 16,000 groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
+    );
 }
 
 #[test]
@@ -19403,6 +19480,17 @@ fn r32c_one_big_group_of_same_dates_parses_without_the_cliff() {
     assert!(
         witness_best < control_best * 20,
         "the one-big-group same-dates witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
+    );
+    // The second size (round 34, R34-D, F7): one
+    // doubling, same bound.
+    let inner = "November 1, 2026, ".repeat(16000);
+    let text = format!("For Sunday: November 1, 2026 ({inner})\n\n## Announcement\n\nHi.\n");
+    let control = r34d_absolute_group_control_at(16000);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        witness_best < control_best * 20,
+        "the one-big-group same-dates witness at 16,000 groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
     );
 }
 
@@ -19437,6 +19525,23 @@ fn r32c_one_big_group_of_distinct_dates_parses_without_the_cliff() {
         witness_best < control_best * 10,
         "the one-big-group distinct-dates witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 10x the control)"
     );
+    // The second size (round 34, R34-D, F7): one
+    // doubling, same bound.
+    let mut inner = String::new();
+    for i in 0..16000usize {
+        let d = (i % 28) + 1;
+        let m = MONTHS[(i / 28) % 12];
+        let y = 2024 + (i / (28 * 12)) % 40;
+        inner.push_str(&format!("{m} {d}, {y}, "));
+    }
+    let text = format!("For Sunday: November 1, 2026 ({inner})\n\n## Announcement\n\nHi.\n");
+    let control = r34d_absolute_group_control_at(16000);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        witness_best < control_best * 10,
+        "the one-big-group distinct-dates witness at 16,000 groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 10x the control)"
+    );
 }
 
 #[test]
@@ -19451,6 +19556,18 @@ fn r32c_leading_groups_before_a_relative_core_parse_without_the_cliff() {
         witness_best < control_best * 9,
         "the leading-groups witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 9x the control)"
     );
+    // The second size (round 34, R34-D, F7): one
+    // doubling, same bound.
+    let groups = vec!["(November 1, 2026)"; 16000].join(" ");
+    let text = format!("For Sunday: {groups} next Sunday\n\n## Announcement\n\nHi.\n");
+    let control = r34d_absolute_group_control_at(16000);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.for_sunday_parenthesized_dates.len(), 16000);
+    assert!(
+        witness_best < control_best * 9,
+        "the leading-groups witness at 16,000 groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 9x the control)"
+    );
 }
 
 #[test]
@@ -19463,6 +19580,17 @@ fn r32c_bracket_groups_after_a_core_parse_without_the_cliff() {
     assert!(
         witness_best < control_best * 3,
         "the bracket-group witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 3x the control)"
+    );
+    // The second size (round 34, R34-D, F7): one
+    // doubling, same bound.
+    let groups = vec!["[November 1, 2026]"; 16000].join(" ");
+    let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
+    let control = r34d_absolute_group_control_at(16000);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        witness_best < control_best * 3,
+        "the bracket-group witness at 16,000 groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 3x the control)"
     );
 }
 

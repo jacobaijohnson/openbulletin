@@ -217,107 +217,6 @@ pub fn sanitize_file_name(name: &str) -> String {
     }
 }
 
-/// The CP437 characters for bytes 0x80..=0xFF, in byte
-/// order: the zip reader's own table, copied so a name
-/// the reader decodes as CP437 is keyed here by the
-/// characters the reader resolves it to (round 32, F4).
-const CP437_HIGH: &str = "\
-    \u{00c7}\u{00fc}\u{00e9}\u{00e2}\u{00e4}\u{00e0}\u{00e5}\u{00e7}\
-    \u{00ea}\u{00eb}\u{00e8}\u{00ef}\u{00ee}\u{00ec}\u{00c4}\u{00c5}\
-    \u{00c9}\u{00e6}\u{00c6}\u{00f4}\u{00f6}\u{00f2}\u{00fb}\u{00f9}\
-    \u{00ff}\u{00d6}\u{00dc}\u{00a2}\u{00a3}\u{00a5}\u{20a7}\u{0192}\
-    \u{00e1}\u{00ed}\u{00f3}\u{00fa}\u{00f1}\u{00d1}\u{00aa}\u{00ba}\
-    \u{00bf}\u{2310}\u{00ac}\u{00bd}\u{00bc}\u{00a1}\u{00ab}\u{00bb}\
-    \u{2591}\u{2592}\u{2593}\u{2502}\u{2524}\u{2561}\u{2562}\u{2556}\
-    \u{2555}\u{2563}\u{2551}\u{2557}\u{255d}\u{255c}\u{255b}\u{2510}\
-    \u{2514}\u{2534}\u{252c}\u{251c}\u{2500}\u{253c}\u{255e}\u{255f}\
-    \u{255a}\u{2554}\u{2569}\u{2566}\u{2560}\u{2550}\u{256c}\u{2567}\
-    \u{2568}\u{2564}\u{2565}\u{2559}\u{2558}\u{2552}\u{2553}\u{256b}\
-    \u{256a}\u{2518}\u{250c}\u{2588}\u{2584}\u{258c}\u{2590}\u{2580}\
-    \u{03b1}\u{00df}\u{0393}\u{03c0}\u{03a3}\u{03c3}\u{00b5}\u{03c4}\
-    \u{03a6}\u{0398}\u{03a9}\u{03b4}\u{221e}\u{03c6}\u{03b5}\u{2229}\
-    \u{2261}\u{00b1}\u{2265}\u{2264}\u{2320}\u{2321}\u{00f7}\u{2248}\
-    \u{00b0}\u{2219}\u{00b7}\u{221a}\u{207f}\u{00b2}\u{25a0}\u{00a0}";
-
-/// Key one raw central-directory name the way the zip
-/// reader resolves it (round 32, F4): with the entry's
-/// UTF-8 flag set, the name is UTF-8 text; with it
-/// clear, the reader decodes the bytes as CP437.
-fn decode_entry_name(raw: &[u8], flags: u16) -> String {
-    if flags & 0x0800 != 0 {
-        return String::from_utf8_lossy(raw).into_owned();
-    }
-    raw.iter()
-        .map(|&byte| {
-            if byte < 0x80 {
-                byte as char
-            } else {
-                CP437_HIGH
-                    .chars()
-                    .nth(usize::from(byte - 0x80))
-                    .unwrap_or('\u{fffd}')
-            }
-        })
-        .collect()
-}
-
-/// Where one central record's entry payload stands
-/// and how it is packed, its sizes and local offset
-/// resolved through the zip64 extra field wherever a
-/// plain field carries the sentinel — the same spot
-/// the sibling doors' duplicate walks read (round 31,
-/// F1).
-struct RawSpot {
-    method: u16,
-    comp_size: u64,
-    crc32: u32,
-    local_offset: u64,
-}
-
-/// Read one central record's spot out of its fixed
-/// header and extra field (the zip64 values ride in
-/// the order uncompressed, compressed, local offset,
-/// disk, one per sentinel field).
-fn raw_spot(header: &[u8], extra: &[u8]) -> RawSpot {
-    let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap_or([0; 4]));
-    let comp32 = field(20);
-    let uncomp32 = field(24);
-    let local32 = field(42);
-    let disk16 = u16::from_le_bytes([header[34], header[35]]);
-    let mut comp_size = u64::from(comp32);
-    let mut local_offset = u64::from(local32);
-    if comp32 == u32::MAX || uncomp32 == u32::MAX || local32 == u32::MAX || disk16 == u16::MAX {
-        let mut at = 0usize;
-        while at + 4 <= extra.len() {
-            let id = u16::from_le_bytes([extra[at], extra[at + 1]]);
-            let size = usize::from(u16::from_le_bytes([extra[at + 2], extra[at + 3]]));
-            let data = &extra[at + 4..(at + 4 + size).min(extra.len())];
-            if id == 0x0001 {
-                let mut pos = 0usize;
-                if uncomp32 == u32::MAX {
-                    pos += 8;
-                }
-                if comp32 == u32::MAX && pos + 8 <= data.len() {
-                    comp_size = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
-                    pos += 8;
-                }
-                if local32 == u32::MAX && pos + 8 <= data.len() {
-                    local_offset =
-                        u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
-                }
-                break;
-            }
-            at += 4 + size;
-        }
-    }
-    RawSpot {
-        method: u16::from_le_bytes([header[10], header[11]]),
-        comp_size,
-        crc32: field(16),
-        local_offset,
-    }
-}
-
 /// The CRC-32 (zip checksum, IEEE polynomial) table,
 /// built at compile time.
 const CRC_TABLE: [u32; 256] = {
@@ -355,69 +254,17 @@ fn crc32_ieee(bytes: &[u8]) -> u32 {
     !crc
 }
 
-/// The (name, spot) pairs of a zip's central directory,
-/// walked off the raw records, in archive order and
-/// WITH duplicates standing (round 32, F6): the zip
-/// reader's own map is keyed by name, so a duplicated
-/// name reaches a door that enumerates through the
-/// reader as only its last copy, and the first copy is
-/// silently absent before the door's own defenses run.
-/// The directory is the one the latest end record
-/// names, through its zip64 record where the plain
-/// fields are sentinels, located by the workspace's
-/// one derivation (ob_model::zip_directory, round 33,
-/// F3): arithmetic from the end record's position and
-/// declared sizes, and the archive offset it derives
-/// applies to the local offsets in the records. Empty
-/// when no end record stands — the caller falls back
-/// to the reader's enumeration.
-fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
-    // The directory's location is the workspace's one
-    // derivation (ob_model::zip_directory, round 33,
-    // F3), shared with the reader's view of the same
-    // bytes: see the note on this scan's twin in
-    // ob-extract.
-    let Some(directory) = ob_model::zip_directory::central_directory(bytes) else {
-        return Vec::new();
-    };
-    if directory.total == 0 {
-        return Vec::new();
-    }
-    let total = directory.total;
-    let archive_offset = directory.archive_offset;
-    let mut out: Vec<(String, RawSpot)> = Vec::new();
-    let mut at = directory.cd_start;
-    for _ in 0..total {
-        if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
-            break;
-        }
-        let header = &bytes[at..at + 46];
-        let name_len = usize::from(u16::from_le_bytes([header[28], header[29]]));
-        let extra_len = usize::from(u16::from_le_bytes([header[30], header[31]]));
-        let comment_len = usize::from(u16::from_le_bytes([header[32], header[33]]));
-        let name_start = at + 46;
-        let name_end = name_start + name_len;
-        let extra_end = name_end + extra_len;
-        if extra_end > bytes.len() {
-            break;
-        }
-        let flags = u16::from_le_bytes([header[8], header[9]]);
-        let name = decode_entry_name(&bytes[name_start..name_end], flags);
-        let mut spot = raw_spot(header, &bytes[name_end..extra_end]);
-        spot.local_offset = spot.local_offset.saturating_add(archive_offset);
-        out.push((name, spot));
-        at = extra_end + comment_len;
-    }
-    out
-}
-
 /// One entry's decompressed bytes off its raw spot,
 /// read one byte past `cap` (so a copy past the cap is
 /// known to be past it). The caller judges: a result
 /// longer than the cap, or whose checksum is not the
 /// one its record declares, is not a readable copy.
 /// None when the payload cannot be read back at all.
-fn raw_payload(bytes: &[u8], spot: &RawSpot, cap: u64) -> Option<Vec<u8>> {
+fn raw_payload(
+    bytes: &[u8],
+    spot: &ob_model::zip_directory::CentralSpot,
+    cap: u64,
+) -> Option<Vec<u8>> {
     use std::io::Read as _;
     let local = spot.local_offset as usize;
     if local + 30 > bytes.len() || !bytes[local..].starts_with(b"PK\x03\x04") {
@@ -858,7 +705,7 @@ impl FontLibrary {
         // judgment is Skip, health audit E-9). Only when
         // no raw directory stands does the collection
         // fall back to the reader's own enumeration.
-        let spots = central_spots(bytes);
+        let spots = ob_model::zip_directory::central_spots(bytes);
         let (raw_count, entries): (usize, Vec<(String, Vec<u8>)>) = if !spots.is_empty() {
             let entries = spots
                 .iter()

@@ -455,6 +455,164 @@ pub fn prefix_free(bytes: &[u8]) -> Cow<'_, [u8]> {
     Cow::Owned(bytes[start..].to_vec())
 }
 
+/// Where one central record's entry payload stands
+/// and how it is packed: its method, its compressed
+/// size, the checksum its record declares, and its
+/// local offset, the sizes and offset resolved
+/// through the zip64 extra field wherever a plain
+/// field carries the sentinel. One spot type for
+/// every door (round 34, F8): the doors that read no
+/// checksum simply never look at that field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CentralSpot {
+    pub method: u16,
+    pub comp_size: u64,
+    pub crc32: u32,
+    pub local_offset: u64,
+}
+
+/// Read one central record's spot out of its fixed
+/// header and extra field (the zip64 values ride in
+/// the order uncompressed, compressed, local offset,
+/// disk, one per sentinel field).
+fn raw_spot(header: &[u8], extra: &[u8]) -> CentralSpot {
+    let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap_or([0; 4]));
+    let comp32 = field(20);
+    let uncomp32 = field(24);
+    let local32 = field(42);
+    let disk16 = u16::from_le_bytes([header[34], header[35]]);
+    let mut comp_size = u64::from(comp32);
+    let mut local_offset = u64::from(local32);
+    if comp32 == u32::MAX || uncomp32 == u32::MAX || local32 == u32::MAX || disk16 == u16::MAX {
+        let mut at = 0usize;
+        while at + 4 <= extra.len() {
+            let id = u16::from_le_bytes([extra[at], extra[at + 1]]);
+            let size = usize::from(u16::from_le_bytes([extra[at + 2], extra[at + 3]]));
+            let data = &extra[at + 4..(at + 4 + size).min(extra.len())];
+            if id == 0x0001 {
+                let mut pos = 0usize;
+                if uncomp32 == u32::MAX {
+                    pos += 8;
+                }
+                if comp32 == u32::MAX && pos + 8 <= data.len() {
+                    comp_size = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
+                    pos += 8;
+                }
+                if local32 == u32::MAX && pos + 8 <= data.len() {
+                    local_offset =
+                        u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]));
+                }
+                break;
+            }
+            at += 4 + size;
+        }
+    }
+    CentralSpot {
+        method: u16::from_le_bytes([header[10], header[11]]),
+        comp_size,
+        crc32: field(16),
+        local_offset,
+    }
+}
+
+/// The CP437 characters for bytes 0x80..=0xFF, in byte
+/// order: the zip reader's own table, copied so a name
+/// the reader decodes as CP437 is keyed here by the
+/// characters the reader resolves it to (round 32, F4).
+const CP437_HIGH: &str = "\
+    \u{00c7}\u{00fc}\u{00e9}\u{00e2}\u{00e4}\u{00e0}\u{00e5}\u{00e7}\
+    \u{00ea}\u{00eb}\u{00e8}\u{00ef}\u{00ee}\u{00ec}\u{00c4}\u{00c5}\
+    \u{00c9}\u{00e6}\u{00c6}\u{00f4}\u{00f6}\u{00f2}\u{00fb}\u{00f9}\
+    \u{00ff}\u{00d6}\u{00dc}\u{00a2}\u{00a3}\u{00a5}\u{20a7}\u{0192}\
+    \u{00e1}\u{00ed}\u{00f3}\u{00fa}\u{00f1}\u{00d1}\u{00aa}\u{00ba}\
+    \u{00bf}\u{2310}\u{00ac}\u{00bd}\u{00bc}\u{00a1}\u{00ab}\u{00bb}\
+    \u{2591}\u{2592}\u{2593}\u{2502}\u{2524}\u{2561}\u{2562}\u{2556}\
+    \u{2555}\u{2563}\u{2551}\u{2557}\u{255d}\u{255c}\u{255b}\u{2510}\
+    \u{2514}\u{2534}\u{252c}\u{251c}\u{2500}\u{253c}\u{255e}\u{255f}\
+    \u{255a}\u{2554}\u{2569}\u{2566}\u{2560}\u{2550}\u{256c}\u{2567}\
+    \u{2568}\u{2564}\u{2565}\u{2559}\u{2558}\u{2552}\u{2553}\u{256b}\
+    \u{256a}\u{2518}\u{250c}\u{2588}\u{2584}\u{258c}\u{2590}\u{2580}\
+    \u{03b1}\u{00df}\u{0393}\u{03c0}\u{03a3}\u{03c3}\u{00b5}\u{03c4}\
+    \u{03a6}\u{0398}\u{03a9}\u{03b4}\u{221e}\u{03c6}\u{03b5}\u{2229}\
+    \u{2261}\u{00b1}\u{2265}\u{2264}\u{2320}\u{2321}\u{00f7}\u{2248}\
+    \u{00b0}\u{2219}\u{00b7}\u{221a}\u{207f}\u{00b2}\u{25a0}\u{00a0}";
+
+/// Key one raw central-directory name the way the zip
+/// reader resolves it (round 32, F4): with the entry's
+/// UTF-8 flag set, the name is UTF-8 text; with it
+/// clear, the reader decodes the bytes as CP437. The
+/// duplicate scans keyed names by lossy UTF-8 at
+/// first, so a CP437-named pair keyed to a name the
+/// reader never serves and the checks passed over it.
+fn decode_entry_name(raw: &[u8], flags: u16) -> String {
+    if flags & 0x0800 != 0 {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    raw.iter()
+        .map(|&byte| {
+            if byte < 0x80 {
+                byte as char
+            } else {
+                CP437_HIGH
+                    .chars()
+                    .nth(usize::from(byte - 0x80))
+                    .unwrap_or('\u{fffd}')
+            }
+        })
+        .collect()
+}
+
+/// The (name, spot) pairs of an archive's central
+/// directory, walked off the raw records, in archive
+/// order and WITH duplicates standing: the zip
+/// reader's own map is keyed by name, so a duplicated
+/// name reaches it as only its last copy, and the
+/// copies can only be counted here, before that map
+/// is trusted (rounds 31/32, F5/F6). The directory is
+/// the one `central_directory` derives — the latest
+/// end record's, through its zip64 record where the
+/// plain fields are sentinels — and the archive offset
+/// it derives applies to the local offsets in the
+/// records. Empty when no directory can be derived;
+/// each door's own words cover that case. One walk
+/// for every door (round 34, F8): the four doors'
+/// copies were byte-identical, and each door keeps
+/// only its payload read, capped by its own cap.
+pub fn central_spots(bytes: &[u8]) -> Vec<(String, CentralSpot)> {
+    let Some(directory) = central_directory(bytes) else {
+        return Vec::new();
+    };
+    if directory.total == 0 {
+        return Vec::new();
+    }
+    let total = directory.total;
+    let archive_offset = directory.archive_offset;
+    let mut out: Vec<(String, CentralSpot)> = Vec::new();
+    let mut at = directory.cd_start;
+    for _ in 0..total {
+        if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
+            break;
+        }
+        let header = &bytes[at..at + 46];
+        let name_len = usize::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_len = usize::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_len = usize::from(u16::from_le_bytes([header[32], header[33]]));
+        let name_start = at + 46;
+        let name_end = name_start + name_len;
+        let extra_end = name_end + extra_len;
+        if extra_end > bytes.len() {
+            break;
+        }
+        let flags = u16::from_le_bytes([header[8], header[9]]);
+        let name = decode_entry_name(&bytes[name_start..name_end], flags);
+        let mut spot = raw_spot(header, &bytes[name_end..extra_end]);
+        spot.local_offset = spot.local_offset.saturating_add(archive_offset);
+        out.push((name, spot));
+        at = extra_end + comment_len;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

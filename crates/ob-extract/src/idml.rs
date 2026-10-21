@@ -1436,6 +1436,187 @@ mod tests {
         }
     }
 
+    /// The round-35 gap craft (red team RT35-1),
+    /// assembled byte by byte in the crafter's shape:
+    /// all entries Stored, a 512-byte gap between the
+    /// last entry's data and the real directory, a
+    /// central-directory digital-signature record after
+    /// the real directory when `sig` is set (counted in
+    /// the declared directory size), a fake directory
+    /// planted at the head of the gap when `fake` is
+    /// set (each duplicated name's copies replaced by
+    /// the first copy's record, local offsets re-based
+    /// by the gap, the last record's comment padding
+    /// the fake walk to exactly the declared directory
+    /// size), the end structures in plain or zip64
+    /// dress, and the whole archive shifted by 4096
+    /// junk bytes.
+    fn gap_idml(entries: &[(&[u8], &[u8])], fake: bool, sig: bool, zip64: bool) -> Vec<u8> {
+        const GAP: u64 = 512;
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries {
+            locals.push(body.len() as u32);
+            let crc = stored_crc(data);
+            body.extend_from_slice(b"PK\x03\x04");
+            body.extend_from_slice(&20u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&crc.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(name);
+            body.extend_from_slice(data);
+        }
+        let cd_offset = body.len() as u64 + GAP;
+        let central = |name: &[u8], data: &[u8], local_offset: u32, comment: u16| {
+            let crc = stored_crc(data);
+            let mut rec: Vec<u8> = Vec::new();
+            rec.extend_from_slice(b"PK\x01\x02");
+            rec.extend_from_slice(&45u16.to_le_bytes());
+            rec.extend_from_slice(&20u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&crc.to_le_bytes());
+            rec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            rec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            rec.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&comment.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u32.to_le_bytes());
+            rec.extend_from_slice(&local_offset.to_le_bytes());
+            rec.extend_from_slice(name);
+            rec.extend_from_slice(&vec![b'C'; usize::from(comment)]);
+            rec
+        };
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&central(name, data, locals[i], 0));
+        }
+        let sig_len: u64 = if sig { 22 } else { 0 };
+        let cd_size = centrals.len() as u64 + sig_len;
+        let mut fake_recs: Vec<u8> = Vec::new();
+        for (i, (name, _)) in entries.iter().enumerate() {
+            let first = entries
+                .iter()
+                .position(|(other, _)| other == name)
+                .expect("the entry's own first copy stands");
+            let comment = if i + 1 == entries.len() {
+                u16::try_from(cd_size - fake_recs.len() as u64 - 46 - name.len() as u64)
+                    .expect("the fake walk pads to the declared size")
+            } else {
+                0
+            };
+            fake_recs.extend_from_slice(&central(
+                name,
+                entries[first].1,
+                locals[first] + GAP as u32,
+                comment,
+            ));
+        }
+        assert_eq!(fake_recs.len() as u64, cd_size);
+        assert!(fake_recs.len() as u64 <= GAP);
+        let mut gap = vec![b'G'; GAP as usize];
+        if fake {
+            gap[..fake_recs.len()].copy_from_slice(&fake_recs);
+        }
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&gap);
+        out.extend_from_slice(&centrals);
+        if sig {
+            out.extend_from_slice(b"PK\x05\x05");
+            out.extend_from_slice(&16u16.to_le_bytes());
+            out.extend_from_slice(b"SSSSSSSSSSSSSSSS");
+        }
+        if zip64 {
+            let record_at = out.len() as u64;
+            out.extend_from_slice(b"PK\x06\x06");
+            out.extend_from_slice(&44u64.to_le_bytes());
+            out.extend_from_slice(&45u16.to_le_bytes());
+            out.extend_from_slice(&45u16.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            out.extend_from_slice(&cd_size.to_le_bytes());
+            out.extend_from_slice(&cd_offset.to_le_bytes());
+            out.extend_from_slice(b"PK\x06\x07");
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&record_at.to_le_bytes());
+            out.extend_from_slice(&1u32.to_le_bytes());
+            out.extend_from_slice(b"PK\x05\x06");
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&u16::MAX.to_le_bytes());
+            out.extend_from_slice(&u16::MAX.to_le_bytes());
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
+        } else {
+            out.extend_from_slice(b"PK\x05\x06");
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+            out.extend_from_slice(&(cd_size as u32).to_le_bytes());
+            out.extend_from_slice(&(cd_offset as u32).to_le_bytes());
+        }
+        out.extend_from_slice(&0u16.to_le_bytes());
+        shifted(&out, &vec![b'J'; 4096])
+    }
+
+    #[test]
+    fn r35d_a_fake_directory_in_the_gap_does_not_steer_the_package() {
+        // Round 35, F4 (red team RT35-1): on the gap
+        // craft the signature record broke the
+        // arithmetic derivation and the plain hunt
+        // believed a fake directory planted in the gap
+        // before the real one — its records replaced
+        // the disagreeing duplicate's second copy with
+        // the first copy's record, so the package
+        // OPENED and served the first story with no
+        // refusal. The real directory is judged now:
+        // the duplicate refuses in the standing words,
+        // in the craft and in all three controls —
+        // gap-clean (gap and signature record, no
+        // fake), no-signature (fake planted, the
+        // arithmetic walk unbroken), and the zip64
+        // twin (its hunt already carried the offset
+        // anchor).
+        let story_a = one_paragraph_story("First story words here");
+        let story_b = one_paragraph_story("Other story words here");
+        let shapes: [(&str, bool, bool, bool); 4] = [
+            ("gapfake", true, true, false),
+            ("gapclean", false, true, false),
+            ("gapnosig", true, false, false),
+            ("zip64gapfake", true, true, true),
+        ];
+        for (label, fake, sig, zip64) in shapes {
+            let mut parts = witness_parts(&[story_a.clone(), story_b.clone()]);
+            parts.push((b"filler.bin".to_vec(), vec![b'A'; 6000]));
+            let entries: Vec<(&[u8], &[u8])> = parts
+                .iter()
+                .map(|(name, data)| (name.as_slice(), data.as_slice()))
+                .collect();
+            let bytes = gap_idml(&entries, fake, sig, zip64);
+            let err = dump_from_idml(&bytes, "witness.idml")
+                .expect_err("the disagreeing duplicate refuses, every shape");
+            assert!(
+                err.contains("two parts named Stories/Story_u9.xml"),
+                "{label}: {err}"
+            );
+            assert!(err.contains("may be damaged"), "{label}: {err}");
+        }
+    }
+
     #[test]
     fn r34b_a_package_the_reader_opens_with_no_derivable_directory_refuses() {
         // Round 34, F2, the fail-closed side: the

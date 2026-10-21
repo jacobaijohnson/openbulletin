@@ -541,12 +541,21 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
     })
 }
 
-/// The last trailing "(...)" group of `text`, split
-/// as (the words before it, the group's own words).
-/// The group's opening parenthesis is found by
-/// balancing, so a nested group ("(note (November
-/// 1))") is one trailing group, not a defect that
-/// poisons the line it trails (round 11, R11-6).
+/// The last trailing group of `text`, split as (the
+/// words before it, the group's own words). The
+/// group's opening delimiter is found by balancing,
+/// so a nested group ("(note (November 1))") is one
+/// trailing group, not a defect that poisons the
+/// line it trails (round 11, R11-6). Round 34
+/// (R34-E, F3): brackets and braces are group
+/// delimiters alongside parentheses — a bracketed
+/// group is judged as its paren twin (the
+/// adjudicated reading) — so the balance walk is a
+/// stack over all three pairs: a closer closes the
+/// opener it matches, and a closer matching nothing
+/// on the stack closes nothing. On parenthesis-only
+/// text the stack is the depth count it replaces,
+/// step for step.
 pub(super) fn split_last_trailing_group(text: &str) -> Option<(&str, &str)> {
     let text = text.trim_end_matches(['.', ',']);
     // Round 28 (R28-A, F2 = review MINOR-2): a
@@ -571,20 +580,27 @@ pub(super) fn split_last_trailing_group(text: &str) -> Option<(&str, &str)> {
             }
         }
     }
-    if !text.ends_with(')') {
+    if !text.ends_with([')', ']', '}']) {
         return None;
     }
     let bytes = text.as_bytes();
-    let mut depth = 0usize;
+    let mut stack: Vec<u8> = Vec::new();
     let mut open = None;
     for i in (0..bytes.len()).rev() {
         match bytes[i] {
-            b')' => depth += 1,
-            b'(' => {
-                depth -= 1;
-                if depth == 0 {
-                    open = Some(i);
-                    break;
+            b')' | b']' | b'}' => stack.push(bytes[i]),
+            b'(' | b'[' | b'{' => {
+                let want = match bytes[i] {
+                    b'(' => b')',
+                    b'[' => b']',
+                    _ => b'}',
+                };
+                if stack.last() == Some(&want) {
+                    stack.pop();
+                    if stack.is_empty() {
+                        open = Some(i);
+                        break;
+                    }
                 }
             }
             _ => {}
@@ -594,8 +610,11 @@ pub(super) fn split_last_trailing_group(text: &str) -> Option<(&str, &str)> {
     Some((text[..open].trim_end(), &text[open + 1..text.len() - 1]))
 }
 
-/// `text` without a trailing "(...)" group, when it
-/// ends with one: the words before the group.
+/// `text` without a trailing group, when it ends
+/// with one: the words before the group. (The name
+/// is the standing one; since round 34 the group
+/// may wear brackets or braces as well as
+/// parentheses — see `split_last_trailing_group`.)
 pub(super) fn strip_trailing_parenthesized(text: &str) -> Option<&str> {
     split_last_trailing_group(text).map(|(before, _)| before)
 }
@@ -1050,10 +1069,12 @@ pub(super) fn token_has_no_letters_or_digits(raw: &str) -> bool {
 /// Whether a token is one bracketed unit — "[x]",
 /// "{x}" (round 24, R24-4): such a token counts as
 /// a boundary/garnish token in group cleaning and
-/// in date spans. Brackets are NOT group
-/// delimiters: this says nothing about the text a
-/// bracket pair spans, only about a single token
-/// the pair wraps whole.
+/// in date spans. This test itself says nothing
+/// about the text a bracket pair spans, only about
+/// a single token the pair wraps whole; the span
+/// the pair delimits is a group in the group
+/// machinery since round 34 (R34-E, F3), judged as
+/// its paren twin.
 pub(super) fn is_bracketed_token(raw: &str) -> bool {
     let t = raw.trim_end_matches([',', '.', ':', ';']);
     (t.starts_with('[') && t.ends_with(']')) || (t.starts_with('{') && t.ends_with('}'))

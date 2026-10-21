@@ -1745,36 +1745,45 @@ pub(super) fn spaced_glued_weekday_garnish(text: &str) -> Option<String> {
     // from there on is suffix, preserved as written.
     let group_end = text[..end].trim_end().len();
     let line = &text[..group_end];
-    if !matches!(line.chars().next_back(), Some(')' | ']')) {
+    if !matches!(line.chars().next_back(), Some(')' | ']' | '}')) {
         return None;
     }
     // The candidate group, closers aside: the first
-    // "(" whose remainder — parentheses aside — is
-    // one weekday word and nothing else. The
-    // remainder's length is checked before its
+    // opener whose remainder — its own pair's marks
+    // aside — is one weekday word and nothing else.
+    // The remainder's length is checked before its
     // contents are scanned: one weekday word with
-    // its wrapping parentheses is a few bytes, and
+    // its wrapping delimiters is a few bytes, and
     // a long remainder is some earlier group, not
-    // this line's garnish.
-    let cand = line.trim_end_matches([')', ']']);
+    // this line's garnish. Round 34 (R34-E, F3):
+    // the candidate openers are all three pairs —
+    // a glued bracket or brace garnish ("2026
+    // [Monday]" without the space) is judged as
+    // its spaced twin and as the paren garnish,
+    // each pair's marks judged by the same shape
+    // the paren marks have always been judged by.
+    let cand = line.trim_end_matches([')', ']', '}']);
     let mut open: Option<usize> = None;
     for (p, ch) in cand.char_indices() {
-        if ch != '(' {
-            continue;
-        }
+        let closer = match ch {
+            '(' => ')',
+            '[' => ']',
+            '{' => '}',
+            _ => continue,
+        };
         let inner = &cand[p + 1..];
         if inner.len() > 32 || inner.contains(char::is_whitespace) {
             continue;
         }
         // The contents, stated exactly: some opening
-        // parentheses (a doubled garnish wears one
-        // extra), the word, some closing parentheses
-        // — a parenthesis anywhere else is not this
-        // shape.
-        let lead = inner.len() - inner.trim_start_matches('(').len();
+        // delimiters of the pair (a doubled garnish
+        // wears one extra), the word, some closing
+        // delimiters of the pair — a mark of the
+        // pair anywhere else is not this shape.
+        let lead = inner.len() - inner.trim_start_matches(ch).len();
         let trailed = &inner[lead..];
-        let word = trailed.trim_end_matches(')');
-        if word.contains(['(', ')']) || !trailed.starts_with(word) {
+        let word = trailed.trim_end_matches(closer);
+        if word.contains([ch, closer]) || !trailed.starts_with(word) {
             continue;
         }
         if weekday_word(word).is_some() {
@@ -1987,20 +1996,62 @@ pub(super) struct DateLineReading {
     pub(super) second_dates: Vec<SimpleDate>,
 }
 
+/// The group delimiters' closer for an opener
+/// (round 34, R34-E, F3): since this round the
+/// group machinery treats all three pairs alike —
+/// a bracketed or braced group is judged as its
+/// paren twin. Every delimiter is one byte, so the
+/// span arithmetic (+1 / -1 at the edges) is the
+/// same for each pair.
+pub(super) fn group_closer(opener: u8) -> u8 {
+    match opener {
+        b'(' => b')',
+        b'[' => b']',
+        _ => b'}',
+    }
+}
+
+/// Whether a byte opens a group, in any of the
+/// three pairs (round 34, R34-E).
+pub(super) fn is_group_opener(b: u8) -> bool {
+    matches!(b, b'(' | b'[' | b'{')
+}
+
+/// Whether a byte closes a group, in any of the
+/// three pairs (round 34, R34-E).
+pub(super) fn is_group_closer(b: u8) -> bool {
+    matches!(b, b')' | b']' | b'}')
+}
+
 /// The parenthesized groups standing in `text`, as
 /// (start, end) byte spans, end past the closing
-/// parenthesis: flat groups only, in written order.
+/// delimiter: flat groups only, in written order.
+/// (The name is the standing one; since round 34
+/// the groups may wear brackets or braces as well
+/// as parentheses, each pair judged alike — a flat
+/// group is one whose inner text holds no opener
+/// of its OWN pair, as the paren rule has always
+/// been. An opener with no closer of its pair is
+/// passed over, so an unclosed bracket standing
+/// before a closed paren group hides nothing.)
 pub(super) fn parenthesized_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
     let mut out: Vec<(usize, usize)> = Vec::new();
     let mut from = 0;
-    while let Some(rel_open) = text[from..].find('(') {
-        let open = from + rel_open;
-        let Some(rel_close) = text[open + 1..].find(')') else {
+    while from < bytes.len() {
+        let Some(rel_open) = bytes[from..].iter().position(|b| is_group_opener(*b)) else {
             break;
+        };
+        let open = from + rel_open;
+        let opener = bytes[open];
+        let closer = group_closer(opener);
+        let Some(rel_close) = bytes[open + 1..].iter().position(|b| *b == closer) else {
+            from = open + 1;
+            continue;
         };
         let close = open + 1 + rel_close;
         let inner = &text[open + 1..close];
-        if !inner.contains('(') {
+        if !inner.contains(opener as char) {
             out.push((open, close + 1));
         }
         from = close + 1;
@@ -2010,33 +2061,35 @@ pub(super) fn parenthesized_spans(text: &str) -> Vec<(usize, usize)> {
 
 /// The top-level parenthesized spans of `text`, as
 /// (start, end) byte spans, end past the closing
-/// parenthesis, in written order (round 21, R21-1):
+/// delimiter, in written order (round 21, R21-1):
 /// found by balancing, so a nested group is one span
 /// ("(note (November 1))"), and a group standing
 /// anywhere in the line — leading, between plain
 /// segments, trailing — is seen. An unbalanced
-/// opening parenthesis forms no span.
+/// opening delimiter forms no span. Round 34
+/// (R34-E, F3): the balance is a stack over all
+/// three delimiter pairs — a closer closes the
+/// opener it matches, and a closer matching nothing
+/// on the stack closes nothing — so a bracketed or
+/// braced group is a span exactly as its paren twin
+/// is. On parenthesis-only text the stack is the
+/// depth count it replaces, step for step: a stray
+/// ")" with nothing open is ignored, as it was.
 pub(super) fn balanced_spans(text: &str) -> Vec<(usize, usize)> {
     let mut out: Vec<(usize, usize)> = Vec::new();
     let bytes = text.as_bytes();
-    let mut depth = 0usize;
-    let mut open = 0usize;
+    let mut stack: Vec<(usize, u8)> = Vec::new();
     for (i, b) in bytes.iter().enumerate() {
-        match b {
-            b'(' => {
-                if depth == 0 {
-                    open = i;
-                }
-                depth += 1;
-            }
-            b')' if depth == 1 => {
-                depth = 0;
+        if is_group_opener(*b) {
+            stack.push((i, group_closer(*b)));
+            continue;
+        }
+        let matched = is_group_closer(*b) && stack.last().map(|&(_, want)| want) == Some(*b);
+        if matched {
+            let (open, _) = stack.pop().expect("a matched opener stands");
+            if stack.is_empty() {
                 out.push((open, i + 1));
             }
-            b')' => {
-                depth = depth.saturating_sub(1);
-            }
-            _ => {}
         }
     }
     out
@@ -2055,41 +2108,39 @@ pub(super) fn balanced_spans(text: &str) -> Vec<(usize, usize)> {
 /// for the whole remainder once per group. The
 /// walk below is `balanced_spans`' own, statement
 /// for statement, up to the first span it records:
-/// a closing paren at depth one records the span,
-/// any other closing paren only lowers the depth
-/// (never below zero), and an opening paren at
-/// depth zero is the span's start.
+/// since round 34 (R34-E) the walk is the stack
+/// over all three delimiter pairs — an opener
+/// pushes its expected closer, a closer that
+/// matches the stack's top pops it, and the pop
+/// that empties the stack records the span.
 pub(super) fn first_balanced_span(text: &str) -> Option<(usize, usize)> {
     let bytes = text.as_bytes();
-    let mut depth = 0usize;
-    let mut open = 0usize;
+    let mut stack: Vec<(usize, u8)> = Vec::new();
     for (i, b) in bytes.iter().enumerate() {
-        match b {
-            b'(' => {
-                if depth == 0 {
-                    open = i;
-                }
-                depth += 1;
-            }
-            b')' if depth == 1 => {
+        if is_group_opener(*b) {
+            stack.push((i, group_closer(*b)));
+            continue;
+        }
+        let matched = is_group_closer(*b) && stack.last().map(|&(_, want)| want) == Some(*b);
+        if matched {
+            let (open, _) = stack.pop().expect("a matched opener stands");
+            if stack.is_empty() {
                 return Some((open, i + 1));
             }
-            b')' => {
-                depth = depth.saturating_sub(1);
-            }
-            _ => {}
         }
     }
     None
 }
 
-/// `text` without its leading "(...)" group, when it
-/// begins with one (round 21, R21-1): the words after
-/// the group. Found by balancing, like
+/// `text` without its leading group, when it begins
+/// with one (round 21, R21-1): the words after the
+/// group. Found by balancing, like
 /// `split_last_trailing_group` at the other end.
+/// (Since round 34 the leading group may wear
+/// brackets or braces as well as parentheses.)
 pub(super) fn strip_leading_parenthesized(text: &str) -> Option<&str> {
     let text = text.trim_start();
-    if !text.starts_with('(') {
+    if !matches!(text.chars().next(), Some('(' | '[' | '{')) {
         return None;
     }
     let (start, end) = first_balanced_span(text)?;

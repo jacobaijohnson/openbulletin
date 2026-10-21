@@ -11680,30 +11680,38 @@ fn r24a_boundary_token_rule() {
     }
     // (M5) A "[" before a date does not poison its
     // parse: the date reads or not on its own
-    // merits.
+    // merits. FLAGGED (round 34, R34-E, F3): the
+    // adjudicated reading judges bracketed groups
+    // as their paren twins, superseding this list's
+    // round-24 bracket readings — a bracket group
+    // now composes as a group, so the plain core
+    // reads and the group's date is recorded on the
+    // parenthesized record (or bound by the core's
+    // governance) exactly as the paren twin's is,
+    // instead of standing on the plain surface.
+    // Each flipped entry names its paren twin's
+    // standing reading; the full-record twin
+    // equality for these shapes is pinned in
+    // `r34e_bracket_groups_beside_a_plain_core_read_as_their_paren_twins`.
     for (line, want, named) in [
         (
             "[November 8, 2026], November 15, 2026",
-            Some(nov(8)),
-            vec![nov(15)],
+            Some(nov(15)),
+            vec![],
         ),
         (
             "November 15, 2026, [November 8, 2026]",
             Some(nov(15)),
-            vec![nov(8)],
+            vec![],
         ),
         (
             "{November 8, 2026}, November 15, 2026",
-            Some(nov(8)),
-            vec![nov(15)],
+            Some(nov(15)),
+            vec![],
         ),
         ("Sunday bulletins, [November 8, 2026]", Some(nov(8)), vec![]),
-        ("cancelled [November 8, 2026]", None, vec![]),
-        (
-            "[November 1, cancelled] [November 8]",
-            Some(nov(8)),
-            vec![nov(1)],
-        ),
+        ("cancelled [November 8, 2026]", Some(nov(8)), vec![]),
+        ("[November 1, cancelled] [November 8]", Some(nov(8)), vec![]),
     ] {
         let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
         let c = parse_contribution(&text, today()).expect("parses");
@@ -11717,19 +11725,28 @@ fn r24a_boundary_token_rule() {
             "{line}: keep second dates"
         );
     }
-    // Held: brackets are NOT group delimiters — a
-    // bracketed date alone stays unread, the
-    // recorded limitation.
+    // FLAGGED (round 34, R34-E, F3): this held line
+    // recorded the round-24 limitation — brackets
+    // were not group delimiters, so a bracketed
+    // date alone stayed unread. The adjudicated
+    // reading supersedes it: a bracketed date alone
+    // is a line of one group and reads as its paren
+    // twin reads.
     for line in ["[November 8]", "{November 8}"] {
         let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
         let c = parse_contribution(&text, today()).expect("parses");
         assert_eq!(
-            c.for_date, None,
-            "{line}: a bracketed date alone stays unread"
+            c.for_date,
+            Some(nov(8)),
+            "{line}: a bracketed date alone reads as its paren twin"
         );
         let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
         let c = parse_contribution(&text, today()).expect("parses");
-        assert_eq!(c.keep_through, None, "{line}: keep-through stays unread");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{line}: keep-through reads as its paren twin"
+        );
     }
 }
 
@@ -13618,7 +13635,6 @@ fn r26c_unclosed_bracket_spans() {
         "(November 1, cancelled) [our choir November 1",
         "(November 1, cancelled) {November 1",
         "(November 1, cancelled) [November 1]",
-        "(November 1, cancelled) [our choir November 1]",
     ] {
         let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
         let c = parse_contribution(&text, today()).expect("parses");
@@ -13640,6 +13656,42 @@ fn r26c_unclosed_bracket_spans() {
             "{line}: keep-through note is empty"
         );
     }
+    // FLAGGED (round 34, R34-E, F3): the CLOSED
+    // label-headed span that stood in the list
+    // above is superseded by the adjudicated
+    // reading — "[our choir November 1]" is a
+    // bracket group now, judged as its paren twin
+    // "(our choir November 1)", and a label asserts
+    // beside a sibling cancellation (the R20-3
+    // held line), so the line reads the date. The
+    // unclosed spans above keep their readings:
+    // a span with no closer forms no group, and
+    // the mask still binds it.
+    let line = "(November 1, cancelled) [our choir November 1]";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{line}: the closed bracket group asserts as its paren twin"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: nothing is named"
+    );
+    let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(1)),
+        "{line}: keep-through asserts as its paren twin"
+    );
+    assert_eq!(
+        c.keep_through_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: keep-through note is empty"
+    );
     // The alone-unread limitation stands: a line
     // carrying nothing but the unclosed span
     // still reads nothing.
@@ -13992,43 +14044,63 @@ fn r25b_bracketed_restatement_bound_by_governance() {
             "{line}: keep-through names nothing"
         );
     }
-    // Held: the alone-unread limitation stands —
-    // a bracketed date with no governing group
-    // beside it still reads nothing.
+    // FLAGGED (round 34, R34-E, F3): the
+    // alone-unread limitation recorded here is
+    // superseded by the adjudicated reading — a
+    // bracketed group standing alone is a line of
+    // one group and reads as its paren twin reads.
+    // The bound-restatement family above stands
+    // unchanged: the group machinery's own
+    // cross-group governance binds the bare
+    // restatement exactly as the mask did.
     for line in ["[November 1]", "[choir November 1]"] {
         let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
         let c = parse_contribution(&text, today()).expect("parses");
-        assert_eq!(c.for_date, None, "{line}: alone stays unread");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: alone reads as its paren twin"
+        );
         let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
         let c = parse_contribution(&text, today()).expect("parses");
         assert_eq!(
-            c.keep_through, None,
-            "{line}: keep-through alone stays unread"
+            c.keep_through,
+            Some(nov(1)),
+            "{line}: keep-through alone reads as its paren twin"
         );
     }
     // Held (R24-4): a bracketed GOVERNED group
     // beside a bracketed assertion still reads
-    // the assertion naming the governed date.
+    // the assertion. FLAGGED (round 34, R34-E):
+    // the governed date is no longer named beside
+    // it — the paren twin "(November 1, cancelled)
+    // (November 8)" names nothing (a lone governed
+    // date in a group keeps the standing silence),
+    // and the bracket line is judged as that twin.
     let line = "[November 1, cancelled] [November 8]";
     let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
     let c = parse_contribution(&text, today()).expect("parses");
-    assert_eq!(c.for_date, Some(nov(8)), "{line}: the R24-4 pin stands");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the R24-4 assertion stands"
+    );
     assert_eq!(
         c.for_sunday_second_dates,
-        vec![nov(1)],
-        "{line}: November 1 is named"
+        Vec::<SimpleDate>::new(),
+        "{line}: November 1 is named nowhere, as its paren twin names it nowhere"
     );
     let text = format!("Keep-through: {line}\n\n## Announcement\n\nHi.\n");
     let c = parse_contribution(&text, today()).expect("parses");
     assert_eq!(
         c.keep_through,
         Some(nov(8)),
-        "{line}: keep-through pin stands"
+        "{line}: keep-through assertion stands"
     );
     assert_eq!(
         c.keep_through_second_dates,
-        vec![nov(1)],
-        "{line}: keep-through names November 1"
+        Vec::<SimpleDate>::new(),
+        "{line}: keep-through names nothing, as its paren twin names nothing"
     );
 }
 
@@ -14438,7 +14510,10 @@ fn r26a_bare_restatement_spans_do_not_panic() {
     // the bracketed restatement of a governed
     // value stays bound, and a bracketed
     // assertion beside a bracketed governed group
-    // still asserts, naming the governed date.
+    // still asserts. FLAGGED (round 34, R34-E):
+    // the governed date is no longer named beside
+    // the assertion — the bracket line is judged
+    // as its paren twin, which names nothing.
     let line = "(November 1, cancelled) [November 1]";
     let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
     let c = parse_contribution(&text, today()).expect("parses");
@@ -14449,8 +14524,8 @@ fn r26a_bare_restatement_spans_do_not_panic() {
     assert_eq!(c.for_date, Some(nov(8)), "{line}: the assertion stands");
     assert_eq!(
         c.for_sunday_second_dates,
-        vec![nov(1)],
-        "{line}: November 1 is named"
+        Vec::<SimpleDate>::new(),
+        "{line}: November 1 is named nowhere, as its paren twin names it nowhere"
     );
     // The lane's fuzz-shaped samples of the same
     // shape (RT26-1): pinned for panic-freedom —
@@ -20524,4 +20599,422 @@ fn r34c_non_garnish_glued_groups_keep_their_readings() {
         "the glued parenthesized date records as its spaced twin"
     );
     assert!(g.for_sunday_parenthesized_mismatch.is_some());
+}
+
+// Round 34 (R34-E, F3): bracketed groups in
+// contribution text are judged as their paren twins
+// (coordinator's intent adjudication, audit-round34
+// synthesis). The token machinery already assigns
+// brackets the aside role — a bracketed token cleans
+// to nothing at every token site, exactly as garnish
+// does — so a bracket GROUP composes, strips, and
+// cancels as the paren group with the same words:
+// a cancelled bracket date cancels, a bracketed
+// cancellation word leaves the core standing, a
+// bracket group standing before the core is a group,
+// and a glued bracket garnish is judged as its
+// spaced twin. The pair types are the ones
+// `is_bracketed_token` already treats as brackets:
+// [] and {}. Every pin below asserts the bracket
+// line's FULL record equals its paren twin's — the
+// date, the second dates, both mismatch records and
+// their review sentences, and the in-words memories.
+// No paren reading moves: the paren side of every
+// pair is the standing reading, pinned elsewhere.
+
+fn r34e_for_twin(bracket: &str, paren: &str) {
+    let bracket_text = format!("For Sunday: {bracket}\n\n## Announcement\n\nHi.\n");
+    let b = parse_contribution(&bracket_text, today()).expect("parses");
+    let paren_text = format!("For Sunday: {paren}\n\n## Announcement\n\nHi.\n");
+    let p = parse_contribution(&paren_text, today()).expect("parses");
+    assert_eq!(b.for_date, p.for_date, "{bracket}: the bracket twin's date");
+    assert_eq!(
+        b.named_weekday_mismatch, p.named_weekday_mismatch,
+        "{bracket}: the bracket twin's weekday mismatch record"
+    );
+    if let (Some(bm), Some(pm)) = (&b.named_weekday_mismatch, &p.named_weekday_mismatch) {
+        assert_eq!(
+            bm.sentence(),
+            pm.sentence(),
+            "{bracket}: the review's weekday sentence is the twin's"
+        );
+    }
+    assert_eq!(
+        b.for_sunday_in_words, p.for_sunday_in_words,
+        "{bracket}: the bracket twin's in-words memory"
+    );
+    assert_eq!(
+        b.for_sunday_after_in_words, p.for_sunday_after_in_words,
+        "{bracket}: the bracket twin's after-in-words memory"
+    );
+    assert_eq!(
+        b.for_sunday_parenthesized_date, p.for_sunday_parenthesized_date,
+        "{bracket}: the bracket twin's parenthesized date"
+    );
+    assert_eq!(
+        b.for_sunday_parenthesized_dates, p.for_sunday_parenthesized_dates,
+        "{bracket}: the bracket twin's parenthesized dates"
+    );
+    assert_eq!(
+        b.for_sunday_parenthesized_mismatch, p.for_sunday_parenthesized_mismatch,
+        "{bracket}: the bracket twin's parenthesized mismatch record"
+    );
+    if let (Some(bm), Some(pm)) = (
+        &b.for_sunday_parenthesized_mismatch,
+        &p.for_sunday_parenthesized_mismatch,
+    ) {
+        assert_eq!(
+            bm.sentence(),
+            pm.sentence(),
+            "{bracket}: the review's parenthesized sentence is the twin's"
+        );
+    }
+    assert_eq!(
+        b.for_sunday_second_date, p.for_sunday_second_date,
+        "{bracket}: the bracket twin's second date"
+    );
+    assert_eq!(
+        b.for_sunday_second_dates, p.for_sunday_second_dates,
+        "{bracket}: the bracket twin's second dates"
+    );
+}
+
+fn r34e_keep_twin(bracket: &str, paren: &str) {
+    let bracket_text = format!(
+        "For Sunday: November 1, 2026\nKeep-through: {bracket}\n\n## Announcement\n\nHi.\n"
+    );
+    let b = parse_contribution(&bracket_text, today()).expect("parses");
+    let paren_text =
+        format!("For Sunday: November 1, 2026\nKeep-through: {paren}\n\n## Announcement\n\nHi.\n");
+    let p = parse_contribution(&paren_text, today()).expect("parses");
+    assert_eq!(
+        b.for_date,
+        Some(nov(1)),
+        "{bracket}: the For Sunday line stands"
+    );
+    assert_eq!(
+        p.for_date,
+        Some(nov(1)),
+        "{paren}: the For Sunday line stands"
+    );
+    assert_eq!(
+        b.keep_through, p.keep_through,
+        "{bracket}: the bracket twin's keep-through date"
+    );
+    assert_eq!(
+        b.keep_through_weekday_mismatch, p.keep_through_weekday_mismatch,
+        "{bracket}: the bracket twin's keep-through weekday record"
+    );
+    if let (Some(bm), Some(pm)) = (
+        &b.keep_through_weekday_mismatch,
+        &p.keep_through_weekday_mismatch,
+    ) {
+        assert_eq!(
+            bm.keep_through_sentence(),
+            pm.keep_through_sentence(),
+            "{bracket}: the review's keep-through weekday sentence is the twin's"
+        );
+    }
+    assert_eq!(
+        b.keep_through_parenthesized_mismatch, p.keep_through_parenthesized_mismatch,
+        "{bracket}: the bracket twin's keep-through parenthesized record"
+    );
+    if let (Some(bm), Some(pm)) = (
+        &b.keep_through_parenthesized_mismatch,
+        &p.keep_through_parenthesized_mismatch,
+    ) {
+        assert_eq!(
+            bm.keep_through_sentence(),
+            pm.keep_through_sentence(),
+            "{bracket}: the review's keep-through sentence is the twin's"
+        );
+    }
+    assert_eq!(
+        b.keep_through_second_date, p.keep_through_second_date,
+        "{bracket}: the bracket twin's keep-through second date"
+    );
+    assert_eq!(
+        b.keep_through_second_dates, p.keep_through_second_dates,
+        "{bracket}: the bracket twin's keep-through second dates"
+    );
+}
+
+#[test]
+fn r34e_cancelled_bracket_date_cancels_as_its_paren_twin() {
+    // Family 1 of the adjudication: a cancelled date
+    // inside a bracket group cancels exactly as it
+    // does inside parens — it records nothing live.
+    // (Witnessed before the fix: the bracket date
+    // stood as a live second date.)
+    let cases = [
+        (
+            "November 1, 2026 [November 8, 2026, cancelled]",
+            "November 1, 2026 (November 8, 2026, cancelled)",
+        ),
+        (
+            "November 1, 2026 [November 8, 2026, canceled]",
+            "November 1, 2026 (November 8, 2026, canceled)",
+        ),
+        (
+            "November 1, 2026 [November 8, 2026, postponed]",
+            "November 1, 2026 (November 8, 2026, postponed)",
+        ),
+        (
+            "November 1, 2026 [November 8, 2026 cancelled]",
+            "November 1, 2026 (November 8, 2026 cancelled)",
+        ),
+        (
+            "November 1, 2026 [[November 8, 2026, cancelled]]",
+            "November 1, 2026 ((November 8, 2026, cancelled))",
+        ),
+        (
+            "November 1, 2026 {November 8, 2026, cancelled}",
+            "November 1, 2026 (November 8, 2026, cancelled)",
+        ),
+        // A cancelled bracket date standing BEFORE
+        // the core is a group too: it names nothing.
+        (
+            "[November 8, 2026, cancelled] November 1, 2026",
+            "(November 8, 2026, cancelled) November 1, 2026",
+        ),
+        // Two cancelled dates in one bracket group:
+        // the paren reading splits its range — the
+        // cancelled date records the standing
+        // parenthesized mismatch, the rest stands —
+        // and the bracket group inherits that reading
+        // as-is (the adjudication's scope ruling).
+        (
+            "November 1, 2026 [November 8, 2026, November 15, 2026, cancelled]",
+            "November 1, 2026 (November 8, 2026, November 15, 2026, cancelled)",
+        ),
+        (
+            "November 1, 2026 [November 8, 2026 - November 15, 2026, cancelled]",
+            "November 1, 2026 (November 8, 2026 - November 15, 2026, cancelled)",
+        ),
+    ];
+    for (bracket, paren) in cases {
+        r34e_for_twin(bracket, paren);
+        r34e_keep_twin(
+            &bracket.replace("November 1, 2026", "November 8, 2026"),
+            &paren.replace("November 1, 2026", "November 8, 2026"),
+        );
+    }
+    // The headline shape, stated outright: the core
+    // stands and the cancelled bracket date records
+    // nothing live anywhere.
+    let text =
+        "For Sunday: November 1, 2026 [November 8, 2026, cancelled]\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.for_sunday_second_dates, Vec::new());
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(c.for_sunday_parenthesized_dates, Vec::new());
+    // The range twin's split, stated outright: the
+    // cancelled date records the standing mismatch
+    // and the rest of the range stands as a second
+    // date — the bracket range records the SAME.
+    let text = "For Sunday: November 1, 2026 [November 8, 2026 - November 15, 2026, cancelled]\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .as_ref()
+        .expect("the cancelled range date records the standing mismatch");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(15)]);
+}
+
+#[test]
+fn r34e_bracketed_cancellation_word_leaves_the_core_as_its_paren_twin() {
+    // Family 2: a trailing bracket group is stripped
+    // to form the core like a paren group, so a
+    // bracketed cancellation word — or any bracketed
+    // aside of the same pragmatic shape — leaves the
+    // core date standing. (Witnessed before the fix:
+    // the core read nothing at all.)
+    let cases = [
+        (
+            "November 1, 2026 [cancelled]",
+            "November 1, 2026 (cancelled)",
+        ),
+        (
+            "November 1, 2026 [called off]",
+            "November 1, 2026 (called off)",
+        ),
+        (
+            "November 1, 2026 [next Sunday, cancelled]",
+            "November 1, 2026 (next Sunday, cancelled)",
+        ),
+        // The self case: the bracket group restates
+        // the core's own date under a cancellation —
+        // the paren twin keeps the core.
+        (
+            "November 1, 2026 [November 1, 2026, cancelled]",
+            "November 1, 2026 (November 1, 2026, cancelled)",
+        ),
+        // The cancellation word standing first in
+        // the group must not promote the date after
+        // it to the headline.
+        (
+            "November 1, 2026 [cancelled, November 8, 2026]",
+            "November 1, 2026 (cancelled, November 8, 2026)",
+        ),
+        // The whole line is the bracket group: it
+        // reads exactly as the whole-line paren
+        // group reads (nothing — its date is
+        // cancelled).
+        (
+            "[November 1, 2026, cancelled]",
+            "(November 1, 2026, cancelled)",
+        ),
+        (
+            "November 1, 2026 {cancelled}",
+            "November 1, 2026 (cancelled)",
+        ),
+        // The discriminators: a trailing bracket
+        // group of any words is stripped to form the
+        // core like a paren group, so these keep the
+        // core exactly as (choir) / (foo bar) do.
+        ("November 1, 2026 [choir]", "November 1, 2026 (choir)"),
+        ("November 1, 2026 [foo bar]", "November 1, 2026 (foo bar)"),
+        // A live bracketed date composes as its
+        // paren twin too (control: no cancellation
+        // anywhere in the group).
+        (
+            "November 1, 2026 [November 8, 2026]",
+            "November 1, 2026 (November 8, 2026)",
+        ),
+    ];
+    for (bracket, paren) in cases {
+        r34e_for_twin(bracket, paren);
+    }
+    r34e_keep_twin(
+        "November 8, 2026 [cancelled]",
+        "November 8, 2026 (cancelled)",
+    );
+    r34e_keep_twin("November 8, 2026 [choir]", "November 8, 2026 (choir)");
+    // The headline shapes, stated outright.
+    let text = "For Sunday: November 1, 2026 [cancelled]\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    let text =
+        "For Sunday: November 1, 2026 [cancelled, November 8, 2026]\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the cancelled group's date is not the headline"
+    );
+}
+
+#[test]
+fn r34e_nested_bracket_groups_compose_as_their_paren_twins() {
+    // Family 3: nesting. A paren group inside a
+    // bracket group composes clean like its twin
+    // with the pairs swapped (which already composes
+    // clean), and a bracket group nested inside a
+    // bracket group reads as the paren nesting does.
+    r34e_for_twin(
+        "November 1, 2026 [(November 8, 2026), cancelled]",
+        "November 1, 2026 ([November 8, 2026], cancelled)",
+    );
+    // Scope note, on the record: one shape of the
+    // red team's 35 is NOT a twin under the standing
+    // inner rules and is not pinned here — a
+    // cancellation word wearing brackets INSIDE a
+    // group inner ("[November 8, 2026 [cancelled]]").
+    // Inside a group, a wholly bracketed token keeps
+    // its round-24 garnish role and is no word at
+    // all (r25a's held line: "(November 1 [choir])"
+    // stays governed where "(November 1 choir)"
+    // asserts), so the bracketed word does not
+    // govern there, while the unwrapped paren word
+    // does. The adjudication made the bracket pair
+    // a group delimiter; it did not rewrite the
+    // inner token rules it cited as its premise.
+    // Carried to round 35 with the mixed closers
+    // (which close nothing under the stack walk and
+    // keep their round-34 readings byte for byte).
+    let text =
+        "For Sunday: November 1, 2026 [(November 8, 2026), cancelled]\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the cancelled date is not the Sunday"
+    );
+    assert_eq!(c.for_sunday_second_dates, Vec::new());
+}
+
+#[test]
+fn r34e_bracket_groups_beside_a_plain_core_read_as_their_paren_twins() {
+    // A bracket group standing before or after a
+    // plain core composes exactly as the paren
+    // group does: the core reads, and the group's
+    // disagreeing date is recorded on the
+    // parenthesized record, not named as a plain
+    // second date. (These are the round-24 M5
+    // shapes, whose bracket readings the
+    // adjudication supersedes; the flips are
+    // flagged in `r24a_boundary_token_rule`.)
+    r34e_for_twin(
+        "[November 8, 2026], November 15, 2026",
+        "(November 8, 2026), November 15, 2026",
+    );
+    r34e_for_twin(
+        "{November 8, 2026}, November 15, 2026",
+        "(November 8, 2026), November 15, 2026",
+    );
+    r34e_for_twin(
+        "November 15, 2026, [November 8, 2026]",
+        "November 15, 2026, (November 8, 2026)",
+    );
+    r34e_for_twin(
+        "cancelled [November 8, 2026]",
+        "cancelled (November 8, 2026)",
+    );
+    r34e_for_twin(
+        "Sunday bulletins, [November 8, 2026]",
+        "Sunday bulletins, (November 8, 2026)",
+    );
+    // A bracketed date standing alone on the line
+    // is a line of one group, read as the paren
+    // group is read (the round-24/25 alone-unread
+    // limitation is superseded by the adjudication;
+    // the flips are flagged in place).
+    r34e_for_twin("[November 8]", "(November 8)");
+    r34e_for_twin("[choir November 1]", "(choir November 1)");
+}
+
+#[test]
+fn r34e_glued_bracket_garnish_reads_as_its_spaced_and_paren_twins() {
+    // Family 4 (RT34-2's bracket pairs): a glued
+    // bracket garnish is judged exactly as its
+    // spaced twin and as the paren garnish — a
+    // disagreeing weekday records the mismatch, an
+    // agreeing one reads the date clean. (Witnessed
+    // before the fix: both glued forms yielded no
+    // date and no record at all.)
+    r34e_for_twin("November 1, 2026[Monday]", "November 1, 2026 [Monday]");
+    r34e_for_twin("November 1, 2026[Monday]", "November 1, 2026(Monday)");
+    r34e_for_twin("November 1, 2026[Sunday]", "November 1, 2026 [Sunday]");
+    r34e_for_twin("November 1, 2026[Sunday]", "November 1, 2026(Sunday)");
+    r34e_for_twin("November 1, 2026{Monday}", "November 1, 2026 {Monday}");
+    r34e_keep_twin("November 8, 2026[Monday]", "November 8, 2026 [Monday]");
+    r34e_keep_twin("November 8, 2026[Monday]", "November 8, 2026(Monday)");
+    // Stated outright: the disagreeing glued garnish
+    // records the mismatch; the agreeing one reads
+    // the date clean.
+    let text = "For Sunday: November 1, 2026[Monday]\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the disagreeing glued bracket weekday is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, nov(1));
+    let text = "For Sunday: November 1, 2026[Sunday]\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.named_weekday_mismatch, None);
 }

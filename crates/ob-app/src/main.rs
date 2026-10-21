@@ -4190,6 +4190,12 @@ fn retire_journal_from(
     // gone holds nothing, a token match names the owner,
     // and a tokenless displaced file names a holder by
     // its pid (R32-E's rule, applied at the second path).
+    // A tokenless journal is held by a displaced file
+    // naming any live other process, by token or by pid
+    // (R34-A, F5) — the decision table's own None-arm
+    // rule at the lock path, which blocks a tokenless
+    // journal whenever any live foreign holder stands
+    // there, now true of the displaced path too.
     // This instance's own journal is never held from the
     // displaced path: the decision table's own-token
     // branch governs it, exactly as at the lock path.
@@ -4232,7 +4238,7 @@ fn retire_journal_from(
             (displaced_token == Some(token) && displaced_owner_is_a_live_other)
                 || displaced_names_live_holder_by_pid
         }
-        None => displaced_names_live_holder_by_pid,
+        None => displaced_names_live_holder_by_pid || displaced_owner_is_a_live_other,
     };
     let allowed = !displaced_holds_the_journal
         && journal_retirement_allowed(
@@ -8236,6 +8242,133 @@ mod settings_tests {
             "a fresh claim takes the lock once both owners are gone"
         );
         assert!(lock_names_instance(&lock, d_pid, d_token), "D holds");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn displaced_hold_mirrors_the_lock_path_for_a_tokenless_journal() {
+        // R34-A pin for F5 (red team RT34-1,
+        // lockstep34.log): the displaced hold must mirror
+        // the lock path for a tokenless (legacy, pre-token)
+        // journal. The witness's four cells, judged through
+        // `retire_journal_from` with a spawned live peer as
+        // the displaced owner A and this instance's caller
+        // as the lock path's holder C:
+        // - T1: a tokenless journal, the lock naming C
+        //   (the retiring instance's own token), and the
+        //   displaced file naming live A WITH a token.
+        //   Before the fix this cell retired the journal
+        //   while A lived: the None arm of the displaced
+        //   hold read only the by-pid rule, which a
+        //   token-carrying displaced file never satisfies.
+        // - T1b (control): the same live A at the LOCK
+        //   path instead, tokenless journal — refused, the
+        //   decision table's standing None-arm reading.
+        // - T1c: the journal carrying A's own token, A at
+        //   the displaced path — refused (the standing
+        //   R33-A cell, also pinned by the third-claimant
+        //   test above).
+        // - T1d: a tokenless journal and a tokenless
+        //   displaced file naming live A by pid only —
+        //   refused (the standing R32-E by-pid cell at the
+        //   displaced path).
+        // Gone-peer control, after the table: T1's shape
+        // with A provably gone retires, because a gone
+        // owner holds nothing from either path.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r34a-displaced-hold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let mut peer = spawn_live_peer(&dir);
+        let a_pid = peer.id();
+        let a_token = "displaced-a-token";
+        let c_token = "claimant-c-token";
+        let own_pid = std::process::id();
+        let own_lock = format!("{own_pid}\n{c_token}\n");
+        let a_lock_with_token = format!("{a_pid}\n{a_token}\n");
+        let a_lock_pid_only = format!("{a_pid}\n");
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        // (case name, journal token, lock text, displaced text)
+        let cases: [(&str, Option<&str>, &str, Option<&str>); 4] = [
+            (
+                "t1",
+                None,
+                own_lock.as_str(),
+                Some(a_lock_with_token.as_str()),
+            ),
+            ("t1b", None, a_lock_with_token.as_str(), None),
+            (
+                "t1c",
+                Some(a_token),
+                own_lock.as_str(),
+                Some(a_lock_with_token.as_str()),
+            ),
+            (
+                "t1d",
+                None,
+                own_lock.as_str(),
+                Some(a_lock_pid_only.as_str()),
+            ),
+        ];
+        for (name, journal_token, lock_text, displaced_text) in cases {
+            let case = dir.join(name);
+            std::fs::create_dir_all(&case).expect("case dir");
+            let obd = case.join("autosave.obd");
+            let meta = case.join("autosave.txt");
+            let lock = case.join("openbulletin.lock");
+            let displaced = displaced_instance_lock_path(&lock);
+            let write_token = journal_token.unwrap_or("placeholder-token");
+            write_journal_to(&obd, &meta, &doc, &None, write_token).expect("write journal");
+            if journal_token.is_none() {
+                std::fs::write(&meta, "1729000000\n\n").expect("tokenless legacy note");
+            }
+            assert_eq!(
+                journal_token_from(&meta).as_deref(),
+                journal_token,
+                "{name}: the journal note carries the case's token shape"
+            );
+            std::fs::write(&lock, lock_text).expect("case lock");
+            if let Some(text) = displaced_text {
+                std::fs::write(&displaced, text).expect("case displaced file");
+            }
+            assert!(
+                !retire_journal_from(&obd, &meta, &lock, c_token),
+                "{name}: a live owner holds its journal from whichever path it stands at"
+            );
+            assert!(
+                obd.exists() && meta.exists(),
+                "{name}: the journal survives"
+            );
+        }
+        // Gone-peer control: T1's shape, with A provably
+        // gone, retires through the usual path.
+        let _ = peer.kill();
+        let _ = peer.wait();
+        assert!(peer_provably_gone(a_pid), "A is provably gone");
+        let gone = dir.join("gone-peer");
+        std::fs::create_dir_all(&gone).expect("case dir");
+        let obd = gone.join("autosave.obd");
+        let meta = gone.join("autosave.txt");
+        let lock = gone.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        write_journal_to(&obd, &meta, &doc, &None, "placeholder-token").expect("write journal");
+        std::fs::write(&meta, "1729000000\n\n").expect("tokenless legacy note");
+        assert_eq!(journal_token_from(&meta), None, "the note is tokenless");
+        std::fs::write(&lock, &own_lock).expect("lock naming C");
+        std::fs::write(&displaced, &a_lock_with_token).expect("gone owner's displaced file");
+        assert!(
+            retire_journal_from(&obd, &meta, &lock, c_token),
+            "a provably gone displaced owner holds nothing: the tokenless journal retires"
+        );
+        assert!(
+            !obd.exists() && !meta.exists(),
+            "the journal is cleared once A is gone"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

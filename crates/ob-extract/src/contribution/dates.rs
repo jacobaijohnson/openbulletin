@@ -490,8 +490,13 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         // brace pair, so a braced base garnish is
         // judged here as its paren and bracket twins
         // are.
+        // Round 35 (R35-C, F7): the set gains the
+        // apostrophe and the typographic closing
+        // quote, as the date line's trailing sets do —
+        // a base garnish wearing either is judged here
+        // too.
         let word = tokens[i].trim_matches([
-            '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"',
+            '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
         ]);
         if let Some(named_number) = weekday_word(word) {
             let named = word.to_string();

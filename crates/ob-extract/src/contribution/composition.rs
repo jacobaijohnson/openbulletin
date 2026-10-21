@@ -1504,8 +1504,14 @@ pub(super) fn clean(t: &str) -> &str {
     // gains the brace pair — a weekday word wearing
     // braces ("{Monday}") is the word it names, as
     // its paren and bracket twins already are here.
+    // Round 35 (R35-C, F7 = red team RT35-5): the set
+    // gains the apostrophe and the typographic
+    // closing quote — a weekday word wearing either
+    // ("(Monday)'", "(Monday)”") is the word it
+    // names, as one wearing ";" or the closing quote
+    // already is.
     t.trim_matches([
-        '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"',
+        '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
     ])
 }
 
@@ -1722,7 +1728,178 @@ pub(super) fn bare_unit_weekday_at(tokens: &[&str], i: usize) -> bool {
 /// week)", "(Monday morning)", "(2027)",
 /// "(Sundae)", "(Mondays)", a parenthesized DATE —
 /// is never re-spaced, in any of these shapes.
+///
+/// Round 35 (R35-C, F3 = review R35-R3 = red team
+/// RT35-4): the gate above judged only the TRAILING
+/// slot. At the leading slot ("(Monday)November 1,
+/// 2026") and the month–day slot ("November(Monday)
+/// 1, 2026") a glued weekday group was invisible to
+/// every reader in all three pairs, while its spaced
+/// twin was judged — leading, the spaced form refuses
+/// and records the mismatch; month–day, the spaced
+/// form reads no date at all, agreeing or not, as
+/// the bare word there does. The coordinator's
+/// ruling is the R33-B/R34-C doctrine: spacing is
+/// not semantics, so a glued weekday group judges
+/// exactly as its spaced twin at every slot. The
+/// gate therefore runs in two passes over the line:
+/// `respaced_glued_weekday_groups` sets a space on
+/// every glued side of every standalone one-weekday
+/// group wherever it stands (the leading slot's
+/// glue is on the group's right, against the month
+/// word; the month–day slot's is on its left), and
+/// the trailing pass below then judges any shape
+/// the first pass's plainer pattern does not cover
+/// (its suffix layers, a foreign extra closer). The
+/// day–year slot needs no pass: its glued and spaced
+/// forms already read alike, and the first pass
+/// hands it its spaced text, which reads the same.
+///
+/// Round 35 (R35-C, F7 = red team RT35-5): the peel
+/// set below learns the apostrophe and the
+/// typographic closing quote — a disagreeing garnish
+/// followed by "'" or "”" was judged in neither
+/// form, because the peel stopped before both marks
+/// and the weekday readers' sentence-mark trim sets
+/// (`clean`, the trailing scans here and in
+/// `sunday_after_base`) stopped at the same place;
+/// those sets learn both marks with this one, so
+/// the garnish check fires in both forms exactly as
+/// it does for the standing marks.
 pub(super) fn spaced_glued_weekday_garnish(text: &str) -> Option<String> {
+    let mid = respaced_glued_weekday_groups(text);
+    let stage: &str = mid.as_deref().unwrap_or(text);
+    match spaced_trailing_weekday_garnish(stage) {
+        Some(spaced) => Some(spaced),
+        None => mid,
+    }
+}
+
+/// `text` with a space set on every glued side of
+/// every standalone group holding one weekday word
+/// and nothing else, wherever the group stands in
+/// the line (round 35, R35-C, F3): the leading slot
+/// ("(Monday)November 1, 2026" — the glue is on the
+/// group's right, against the word after it —
+/// wearing a peel mark of its own there,
+/// "(Monday)'November 1, 2026", the space sets
+/// after the mark) and
+/// the month–day slot ("November(Monday) 1, 2026" —
+/// the glue is on its left) are the witnessed slots;
+/// the trailing slot is this pass's degenerate case
+/// and keeps the reading the trailing gate has
+/// always given it. A group is standalone when it
+/// does not stand immediately inside another
+/// group's opener — the content of a mixed-pair
+/// wrapper ("([Monday])") is the wrapper's business,
+/// and the wrapper's own pattern failure here leaves
+/// the text byte for byte, as both its forms have
+/// always read. The group's own shape is the
+/// trailing gate's, stated flat: some openers of one
+/// pair, one weekday word (a trailing mark
+/// `weekday_word` itself trims may follow it), some
+/// closing marks. A side is glued when the byte
+/// beside it is not whitespace — on the left, any
+/// such byte; on the right, a letter or digit, the
+/// word the group stands glued against (a closing
+/// mark, a separator, or sentence punctuation
+/// standing after the group is suffix in both forms
+/// and keeps its bytes). Only spaces are set; the
+/// group and every other byte stay as written.
+fn respaced_glued_weekday_groups(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut inserts: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let opener = bytes[i];
+        if !matches!(opener, b'(' | b'[' | b'{') {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < bytes.len() && bytes[j] == opener {
+            j += 1;
+        }
+        let word_start = j;
+        while j < bytes.len() && bytes[j].is_ascii_alphabetic() {
+            j += 1;
+        }
+        if j == word_start || weekday_word(&text[word_start..j]).is_none() {
+            i += 1;
+            continue;
+        }
+        while j < bytes.len() && matches!(bytes[j], b'.' | b',' | b':' | b';' | b'/') {
+            j += 1;
+        }
+        let closers_start = j;
+        while j < bytes.len() && matches!(bytes[j], b')' | b']' | b'}') {
+            j += 1;
+        }
+        if j == closers_start {
+            i += 1;
+            continue;
+        }
+        if i > 0 {
+            let prev = text[..i].chars().next_back().expect("a byte stands before");
+            if matches!(prev, '(' | '[' | '{') {
+                i = j;
+                continue;
+            }
+            if !prev.is_whitespace() {
+                inserts.push(i);
+            }
+        }
+        if j < bytes.len() {
+            // The word the group stands glued against
+            // may itself wear a peel mark the garnish
+            // carries — "(Monday)'November 1, 2026" is
+            // the leading group, its apostrophe, and
+            // the month word in one token run; the
+            // space belongs after the mark, where the
+            // spaced twin "(Monday)' November 1, 2026"
+            // sets it.
+            let mut k = j;
+            while k < bytes.len() {
+                let c = text[k..].chars().next().expect("a byte stands after");
+                if matches!(
+                    c,
+                    '.' | ',' | ';' | ':' | '!' | '?' | '"' | '\'' | '\u{201d}'
+                ) {
+                    k += c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if k < bytes.len() {
+                let next = text[k..].chars().next().expect("a byte stands after");
+                if next.is_alphanumeric() {
+                    inserts.push(k);
+                }
+            }
+        }
+        i = j;
+    }
+    if inserts.is_empty() {
+        return None;
+    }
+    let mut spaced = String::with_capacity(text.len() + inserts.len());
+    let mut at = 0;
+    for p in inserts {
+        spaced.push_str(&text[at..p]);
+        spaced.push(' ');
+        at = p;
+    }
+    spaced.push_str(&text[at..]);
+    Some(spaced)
+}
+
+/// The trailing pass of the gate above: `text` with
+/// a space set before a trailing one-weekday group
+/// that stands glued to the word before it, seeing
+/// past the suffix layers the round-34 widening
+/// named (extra closing marks, a doubled garnish, a
+/// trailing separator token, trailing punctuation).
+fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
     // The suffix layers the group may stand in
     // front of, peeled from the line's end: sentence
     // punctuation, then one separator token,
@@ -1731,8 +1908,14 @@ pub(super) fn spaced_glued_weekday_garnish(text: &str) -> Option<String> {
     // "(Monday) *;" sheds both.
     let mut end = text.len();
     loop {
+        // Round 35 (R35-C, F7): the peel set gains
+        // the apostrophe and the typographic closing
+        // quote, as the trim sets in the garnish path
+        // do — a garnish followed by either mark is
+        // peeled to here exactly as one followed by
+        // ";" or the closing quote already is.
         let peeled = text[..end]
-            .trim_end_matches(['.', ',', ';', ':', '!', '?', '"'])
+            .trim_end_matches(['.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}'])
             .len();
         if peeled != end {
             end = peeled;
@@ -1881,8 +2064,14 @@ pub(super) fn date_line_inner(
         // brace pair, so a trailing brace garnish is
         // judged here as its paren and bracket twins
         // are.
+        // Round 35 (R35-C, F7): the set gains the
+        // apostrophe and the typographic closing
+        // quote, the same two marks `clean` gains —
+        // a trailing garnish wearing either is judged
+        // here instead of passing as ordinary text in
+        // both its forms.
         let word = tokens[i].trim_matches([
-            '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"',
+            '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
         ]);
         if let Some(named_number) = weekday_word(word) {
             let rest: Vec<&str> = tokens
@@ -4190,6 +4379,15 @@ pub(super) fn trailing_dates_after_core_governance(
     today: SimpleDate,
     anchor: SimpleDate,
 ) -> Vec<SimpleDate> {
+    // Round 35 (R35-C, F3): the fallback reads the
+    // line through the same composition as the date
+    // lines, so it is handed the same re-spaced text
+    // (see `date_line`): on the glued month–day text
+    // the composition below composed the date the
+    // spaced form refuses, and the fallback stood it
+    // back up as the keep-through date.
+    let respaced = spaced_glued_weekday_garnish(text);
+    let text: &str = respaced.as_deref().unwrap_or(text);
     if let Some(reading) = whole_line_composition(text, today, anchor) {
         return reading.date.into_iter().collect();
     }
@@ -4385,6 +4583,29 @@ pub(super) fn date_line(
     today: SimpleDate,
     anchor: SimpleDate,
 ) -> DateLineReading {
+    // Round 35 (R35-C, F3): the whole line is read on
+    // its re-spaced text, not only the inner readers
+    // — a glued weekday group at the month–day slot
+    // ("November(Monday) 1, 2026") yields no date and
+    // no record to `date_line_inner` in either form,
+    // so the spaced reading is decided by the composed
+    // readers below, and on the glued text those
+    // readers stripped the group as anonymous garnish
+    // and read the date the spaced form refuses.
+    // Handing every reader the spaced twin makes the
+    // glued line's full record the spaced line's, at
+    // every slot, exactly as `date_line_inner` already
+    // hands its own readers the spaced line.
+    let respaced = raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(spaced_glued_weekday_garnish);
+    let effective_raw: Option<String> = match &respaced {
+        Some(spaced) => Some(spaced.clone()),
+        None => raw.clone(),
+    };
+    let raw: &Option<String> = &effective_raw;
     let (date, weekday_mismatch) = date_line_inner(raw, today);
     let none_reading = DateLineReading {
         date: None,

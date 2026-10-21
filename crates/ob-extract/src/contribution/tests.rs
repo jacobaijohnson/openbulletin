@@ -21337,3 +21337,254 @@ fn r35b_bracketed_governing_word_governs_as_its_paren_twin() {
         }
     }
 }
+
+#[test]
+fn r35c_glued_weekday_group_judges_as_its_spaced_twin_at_leading_and_month_day_slots() {
+    // Round 35 (R35-C, F3 = review R35-R3 = red team
+    // RT35-4): the R33-B re-spacing gate judged only a
+    // TRAILING glued weekday garnish. At the leading
+    // slot and the month–day slot a glued weekday
+    // group was invisible to every reader, in all
+    // three pairs: "(Monday)November 1, 2026" read the
+    // date in silence where spaced "(Monday) November
+    // 1, 2026" refuses it and records the mismatch, and
+    // "November(Monday) 1, 2026" read the date where
+    // the spaced twin — and the bare word — read no
+    // date at all, agreeing or disagreeing, on the For
+    // line and the Keep-through line alike. The ruling
+    // (the R33-B/R34-C doctrine): spacing is not
+    // semantics — a glued weekday group judges exactly
+    // as its spaced twin at every slot, whichever way
+    // the slot's standing spaced reading judges. Every
+    // pair below compares the glued line's FULL record
+    // against its spaced twin's (the r34e helpers), and
+    // the witnessed forms are stated outright after.
+    // November 1 and November 8, 2026 are Sundays:
+    // "Monday" disagrees, "Sunday" agrees. At the
+    // month–day slot the spaced reading is for=None
+    // with NO record, for both words — the group
+    // interrupts the date the bare word interrupts —
+    // so the glued twin's equality there is equality
+    // of refusal, not of judgment by weekday.
+    let pairs = [("(", ")"), ("[", "]"), ("{", "}")];
+    for (open, close) in pairs {
+        for word in ["Monday", "Sunday"] {
+            // The leading slot: the group stands glued
+            // against the month word on its right.
+            let glued_lead = format!("{open}{word}{close}November 1, 2026");
+            let spaced_lead = format!("{open}{word}{close} November 1, 2026");
+            r34e_for_twin(&glued_lead, &spaced_lead);
+            r34e_for_twin(&glued_lead, &format!("({word}) November 1, 2026"));
+            let glued_lead_keep = format!("{open}{word}{close}November 8, 2026");
+            let spaced_lead_keep = format!("{open}{word}{close} November 8, 2026");
+            r34e_keep_twin(&glued_lead_keep, &spaced_lead_keep);
+            // The month–day slot: the group stands
+            // glued against the month word on its left.
+            let glued_mid = format!("November{open}{word}{close} 1, 2026");
+            let spaced_mid = format!("November {open}{word}{close} 1, 2026");
+            r34e_for_twin(&glued_mid, &spaced_mid);
+            r34e_for_twin(&glued_mid, &format!("November ({word}) 1, 2026"));
+            let glued_mid_keep = format!("November{open}{word}{close} 8, 2026");
+            let spaced_mid_keep = format!("November {open}{word}{close} 8, 2026");
+            r34e_keep_twin(&glued_mid_keep, &spaced_mid_keep);
+        }
+        // The witnessed disagreeing forms, stated
+        // outright. Leading: the date is refused and
+        // the mismatch is recorded, as spaced records.
+        let glued_lead = format!("{open}Monday{close}November 1, 2026");
+        let text = format!("For Sunday: {glued_lead}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{glued_lead}");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing glued leading weekday is recorded");
+        assert_eq!(m.named, "Monday", "{glued_lead}");
+        assert_eq!(m.date, nov(1), "{glued_lead}");
+        let glued_lead_keep = format!("{open}Monday{close}November 8, 2026");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {glued_lead_keep}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{glued_lead_keep}");
+        let m = c
+            .keep_through_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing glued leading weekday on the keep line is recorded");
+        assert_eq!(m.named, "Monday", "{glued_lead_keep}");
+        assert_eq!(m.date, nov(8), "{glued_lead_keep}");
+        // Month–day: no date reads and no record
+        // stands, for the disagreeing word AND the
+        // agreeing one, exactly as the spaced forms
+        // read (and as the bare word reads).
+        for word in ["Monday", "Sunday"] {
+            let glued_mid = format!("November{open}{word}{close} 1, 2026");
+            let text = format!("For Sunday: {glued_mid}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{glued_mid}: no date reads");
+            assert_eq!(c.named_weekday_mismatch, None, "{glued_mid}: no record");
+            let glued_mid_keep = format!("November{open}{word}{close} 8, 2026");
+            let text = format!(
+                "For Sunday: November 1, 2026\nKeep-through: {glued_mid_keep}\n\n## Announcement\n\nHi.\n"
+            );
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.keep_through, None, "{glued_mid_keep}: no keep date reads");
+            assert_eq!(
+                c.keep_through_weekday_mismatch, None,
+                "{glued_mid_keep}: no record"
+            );
+        }
+        // The agreeing leading group reads the date
+        // clean, as its spaced twin does.
+        let glued_lead_agree = format!("{open}Sunday{close}November 1, 2026");
+        let text = format!("For Sunday: {glued_lead_agree}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{glued_lead_agree}");
+        assert_eq!(c.named_weekday_mismatch, None, "{glued_lead_agree}");
+    }
+    // The month–day slot's compound shapes, in the
+    // paren pair: a comma after the group, a doubled
+    // group, and two glued groups in a row judge as
+    // their spaced twins.
+    r34e_for_twin("November(Monday), 1, 2026", "November (Monday), 1, 2026");
+    r34e_for_twin("November((Monday)) 1, 2026", "November ((Monday)) 1, 2026");
+    r34e_for_twin(
+        "November(Monday)(Sunday) 1, 2026",
+        "November (Monday) (Sunday) 1, 2026",
+    );
+    r34e_keep_twin("November(Monday), 8, 2026", "November (Monday), 8, 2026");
+    // The red team's witnessed Keep-through line,
+    // stated outright (its For Sunday line is
+    // November 8 in the witness; the keep date and
+    // its refusal are the witness's own): glued keeps
+    // nothing, exactly as spaced keeps nothing.
+    let text =
+        "For Sunday: November 1, 2026\nKeep-through: November[Monday] 15, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+    // A leading group wearing a peel mark against the
+    // month word — "(Monday)'November 1, 2026" — sets
+    // its space after the mark and judges as its
+    // spaced twin "(Monday)' November 1, 2026".
+    r34e_for_twin("(Monday)'November 1, 2026", "(Monday)' November 1, 2026");
+    r34e_for_twin(
+        "(Monday)\u{201d}November 1, 2026",
+        "(Monday)\u{201d} November 1, 2026",
+    );
+    // The day–year slot is coherent already and is
+    // NOT this fix's: its glued and spaced forms both
+    // read the date clean with no record, and both
+    // keep that reading here.
+    r34e_for_twin("November 1(Monday), 2026", "November 1 (Monday), 2026");
+    let text = "For Sunday: November 1(Monday), 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.named_weekday_mismatch, None);
+}
+
+#[test]
+fn r35c_garnish_before_an_apostrophe_or_typographic_quote_is_judged_in_both_forms() {
+    // Round 35 (R35-C, F7 = red team RT35-5): a
+    // disagreeing weekday garnish followed by "'"
+    // or "”" was judged in NEITHER form — "November
+    // 1, 2026 (Monday)'" and "(Monday)”", glued and
+    // spaced alike, read the date clean with no
+    // mismatch record. The R34-C peel set (". , ; :
+    // ! ? \"") stopped before the apostrophe and the
+    // typographic closing quote a phone keyboard
+    // produces after a garnish, and the sentence-mark
+    // trim sets in the garnish path (`clean`, the
+    // trailing-weekday scans, the Sunday-after base
+    // scan) stopped at the same place. Those sets
+    // learn both marks here, so the garnish is judged
+    // exactly as the standing peel marks judge it:
+    // a disagreeing one refuses the date and records
+    // the mismatch, an agreeing one reads clean, in
+    // both forms, in all three pairs, on the For line
+    // and the Keep-through line. November 1 and
+    // November 8, 2026 are Sundays.
+    for mark in ['\'', '\u{201d}'] {
+        for (open, close) in [("(", ")"), ("[", "]"), ("{", "}")] {
+            let glued_disagree = format!("November 1, 2026{open}Monday{close}{mark}");
+            let spaced_disagree = format!("November 1, 2026 {open}Monday{close}{mark}");
+            r34c_for_twin(
+                &glued_disagree,
+                &spaced_disagree,
+                None,
+                Some(("Monday", nov(1))),
+            );
+            let glued_agree = format!("November 1, 2026{open}Sunday{close}{mark}");
+            let spaced_agree = format!("November 1, 2026 {open}Sunday{close}{mark}");
+            r34c_for_twin(&glued_agree, &spaced_agree, Some(nov(1)), None);
+            let glued_keep_disagree = format!("November 8, 2026{open}Monday{close}{mark}");
+            let spaced_keep_disagree = format!("November 8, 2026 {open}Monday{close}{mark}");
+            r34c_keep_twin(
+                &glued_keep_disagree,
+                &spaced_keep_disagree,
+                None,
+                Some(("Monday", nov(8))),
+            );
+            let glued_keep_agree = format!("November 8, 2026{open}Sunday{close}{mark}");
+            let spaced_keep_agree = format!("November 8, 2026 {open}Sunday{close}{mark}");
+            r34c_keep_twin(&glued_keep_agree, &spaced_keep_agree, Some(nov(8)), None);
+        }
+        // The mark layered with the standing suffix
+        // shapes: before a trailing separator token,
+        // doubled, and beside a standing peel mark.
+        let glued_sep = format!("November 1, 2026(Monday){mark} *");
+        let spaced_sep = format!("November 1, 2026 (Monday){mark} *");
+        r34c_for_twin(&glued_sep, &spaced_sep, None, Some(("Monday", nov(1))));
+        let doubled = format!("November 1, 2026 (Monday){mark}{mark}");
+        let text = format!("For Sunday: {doubled}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{doubled}");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing garnish before doubled marks is recorded");
+        assert_eq!(m.named, "Monday", "{doubled}");
+        assert_eq!(m.date, nov(1), "{doubled}");
+        // A Sunday-after base garnish wearing either
+        // mark is judged against its base, as its
+        // standing-mark twins are: a disagreeing one
+        // yields no date and records the mismatch
+        // against the base; an agreeing one resolves.
+        let base_disagree = format!("Sunday after November 1, 2026 (Monday){mark}");
+        let text = format!("For Sunday: {base_disagree}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{base_disagree}");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing base garnish is recorded");
+        assert_eq!(m.named, "Monday", "{base_disagree}");
+        assert_eq!(m.date, nov(1), "{base_disagree}");
+        let base_agree = format!("Sunday after November 1, 2026 (Sunday){mark}");
+        let text = format!("For Sunday: {base_agree}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{base_agree}");
+        assert_eq!(c.named_weekday_mismatch, None, "{base_agree}");
+        // The bare trailing weekday word wearing
+        // either mark: its date was already refused
+        // in both forms, but the same trim omission
+        // silenced the record — the word now names
+        // its mismatch as a clean trailing word does,
+        // and an agreeing one reads clean.
+        let bare_disagree = format!("November 1, 2026 Monday{mark}");
+        let text = format!("For Sunday: {bare_disagree}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{bare_disagree}");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing bare trailing weekday is recorded");
+        assert_eq!(m.named, "Monday", "{bare_disagree}");
+        assert_eq!(m.date, nov(1), "{bare_disagree}");
+        let bare_agree = format!("November 1, 2026 Sunday{mark}");
+        let text = format!("For Sunday: {bare_agree}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{bare_agree}");
+        assert_eq!(c.named_weekday_mismatch, None, "{bare_agree}");
+    }
+}

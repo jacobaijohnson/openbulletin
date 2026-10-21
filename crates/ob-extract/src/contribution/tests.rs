@@ -20918,22 +20918,28 @@ fn r34e_nested_bracket_groups_compose_as_their_paren_twins() {
         "November 1, 2026 ([November 8, 2026], cancelled)",
     );
     // Scope note, on the record: one shape of the
-    // red team's 35 is NOT a twin under the standing
-    // inner rules and is not pinned here — a
-    // cancellation word wearing brackets INSIDE a
+    // red team's 35 was NOT a twin under the
+    // round-34 inner rules and is not pinned here —
+    // a cancellation word wearing brackets INSIDE a
     // group inner ("[November 8, 2026 [cancelled]]").
-    // Inside a group, a wholly bracketed token keeps
-    // its round-24 garnish role and is no word at
+    // Inside a group, a wholly bracketed token kept
+    // its round-24 garnish role and was no word at
     // all (r25a's held line: "(November 1 [choir])"
     // stays governed where "(November 1 choir)"
-    // asserts), so the bracketed word does not
+    // asserts), so the bracketed word did not
     // govern there, while the unwrapped paren word
-    // does. The adjudication made the bracket pair
+    // did. The adjudication made the bracket pair
     // a group delimiter; it did not rewrite the
     // inner token rules it cited as its premise.
     // Carried to round 35 with the mixed closers
     // (which close nothing under the stack walk and
     // keep their round-34 readings byte for byte).
+    // Round 35 (R35-B, F2) supersedes the carried
+    // shape: a governing word now governs however
+    // it is wrapped inside a group inner, while
+    // garnish words keep the round-24 rule — the
+    // cross-cell battery is pinned in
+    // `r35b_bracketed_governing_word_governs_as_its_paren_twin`.
     let text =
         "For Sunday: November 1, 2026 [(November 8, 2026), cancelled]\n\n## Announcement\n\nHi.\n";
     let c = parse_contribution(text, today()).expect("parses");
@@ -21181,4 +21187,153 @@ fn r35a_brace_weekday_garnish_is_judged_as_its_paren_twin() {
     let c = parse_contribution(text, today()).expect("parses");
     assert_eq!(c.for_date, Some(nov(1)));
     assert_eq!(c.named_weekday_mismatch, None);
+}
+
+#[test]
+fn r35b_bracketed_governing_word_governs_as_its_paren_twin() {
+    // Round 35 (R35-B, F2 = review R35-R2): a
+    // cancellation word wrapped in brackets or
+    // braces inside a group inner did not govern,
+    // while its paren-wrapped and bare twins did.
+    // `group_token` cleaned a wholly bracketed
+    // token to nothing by the round-24 rule —
+    // `is_bracketed_token` covers "[]" and "{}"
+    // only — while a paren-wrapped token fell
+    // through to the edge trim and cleaned to the
+    // word itself, so "[cancelled]" read as nothing
+    // to the governor checks and behaved exactly
+    // like the garnish word "[choir]" in every
+    // cell: whole-line, the cancelled date was
+    // promoted to the bulletin Sunday in silence;
+    // trailing, it killed the date but produced a
+    // ParenthesizedDateMismatch record — a
+    // cancellation misreported as a date
+    // disagreement. The ruling: a governing word
+    // governs however it is wrapped — a wholly
+    // bracketed or braced token whose word the
+    // governor checks themselves recognize cleans
+    // to the word, and garnish words keep the
+    // round-24 rule untouched. The battery below
+    // is the full cross-cell set: 3 outer pairs ×
+    // inner forms (bare, paren, bracket, brace) ×
+    // whole-line and trailing × cancelled and
+    // postponed, on the For line and the
+    // Keep-through line, every cell stated
+    // outright and compared field for field with
+    // the governed canonical (outer parens, bare
+    // inner word). November 8, 2026 is a Sunday.
+    let outers = [("(", ")"), ("[", "]"), ("{", "}")];
+    for word in ["cancelled", "postponed"] {
+        let inners = [
+            word.to_string(),
+            format!("({word})"),
+            format!("[{word}]"),
+            format!("{{{word}}}"),
+        ];
+        for (open, close) in outers {
+            for inner in &inners {
+                // Whole-line: the group is the entire
+                // line, and its governed date reads
+                // as no date at all, with no record.
+                let whole = format!("{open}November 8, 2026 {inner}{close}");
+                let text = format!("For Sunday: {whole}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, None, "{whole}: the governed date is no Sunday");
+                assert_eq!(
+                    c.for_sunday_parenthesized_mismatch, None,
+                    "{whole}: a governed date records no mismatch"
+                );
+                assert_eq!(
+                    c.for_sunday_second_dates,
+                    Vec::new(),
+                    "{whole}: a governed date is named nowhere live"
+                );
+                r34e_for_twin(&whole, "(November 8, 2026 cancelled)");
+                // Trailing: the core stands, the inner
+                // date is killed, and NO mismatch
+                // record stands for a governing inner
+                // token — the cancellation is the
+                // record, in the paren twin's form.
+                let trailing = format!("November 1, 2026 {open}November 8, 2026 {inner}{close}");
+                let text = format!("For Sunday: {trailing}\n\n## Announcement\n\nHi.\n");
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(c.for_date, Some(nov(1)), "{trailing}: the core stands");
+                assert_eq!(
+                    c.for_sunday_parenthesized_mismatch, None,
+                    "{trailing}: no mismatch record for a governing inner token"
+                );
+                assert_eq!(
+                    c.for_sunday_second_dates,
+                    Vec::new(),
+                    "{trailing}: the governed date is named nowhere live"
+                );
+                r34e_for_twin(&trailing, "November 1, 2026 (November 8, 2026 cancelled)");
+                // The Keep-through line, whole-line
+                // and trailing, in the same cells.
+                let keep_whole = format!("{open}November 15, 2026 {inner}{close}");
+                let text = format!(
+                    "For Sunday: November 1, 2026\nKeep-through: {keep_whole}\n\n## Announcement\n\nHi.\n"
+                );
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through, None,
+                    "{keep_whole}: the governed keep date reads as none"
+                );
+                assert_eq!(
+                    c.keep_through_parenthesized_mismatch, None,
+                    "{keep_whole}: a governed keep date records no mismatch"
+                );
+                r34e_keep_twin(&keep_whole, "(November 15, 2026 cancelled)");
+                let keep_trailing =
+                    format!("November 29, 2026 {open}November 15, 2026 {inner}{close}");
+                let text = format!(
+                    "For Sunday: November 1, 2026\nKeep-through: {keep_trailing}\n\n## Announcement\n\nHi.\n"
+                );
+                let c = parse_contribution(&text, today()).expect("parses");
+                assert_eq!(
+                    c.keep_through,
+                    Some(nov(29)),
+                    "{keep_trailing}: the keep core stands"
+                );
+                assert_eq!(
+                    c.keep_through_parenthesized_mismatch, None,
+                    "{keep_trailing}: no mismatch record for a governing inner token"
+                );
+                r34e_keep_twin(
+                    &keep_trailing,
+                    "November 29, 2026 (November 15, 2026 cancelled)",
+                );
+            }
+        }
+    }
+    // The garnish controls keep their standing
+    // outcomes exactly, in every wrap: "choir"
+    // governs nothing, whole-line or trailing.
+    for (open, close) in outers {
+        for inner in ["choir", "(choir)", "[choir]", "{choir}"] {
+            let whole = format!("{open}November 8, 2026 {inner}{close}");
+            let text = format!("For Sunday: {whole}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(8)),
+                "{whole}: the garnish group's date stands"
+            );
+            assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{whole}");
+            let trailing = format!("November 1, 2026 {open}November 8, 2026 {inner}{close}");
+            let text = format!("For Sunday: {trailing}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{trailing}: the core stands");
+            let m = c
+                .for_sunday_parenthesized_mismatch
+                .as_ref()
+                .expect("the garnish group's date records the standing mismatch");
+            assert_eq!(
+                m.named,
+                nov(8),
+                "{trailing}: the mismatch names the group date"
+            );
+            assert_eq!(m.read, nov(1), "{trailing}: the mismatch reads the core");
+        }
+    }
 }

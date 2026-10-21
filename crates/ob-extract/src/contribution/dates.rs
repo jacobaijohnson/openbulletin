@@ -1249,14 +1249,43 @@ pub(super) fn group_token(raw: &str) -> String {
     // bracketed token ("[x]", "{x}") cleans to
     // nothing too: it is boundary/garnish here, not
     // a content word standing beside a date.
-    if is_bracketed_token(raw) || token_has_no_letters_or_digits(raw) {
+    // Round 35 (R35-B, F2): the bracketed rule has
+    // one exception — a governing word governs
+    // however it is wrapped. A wholly bracketed or
+    // braced token whose word the governor checks
+    // themselves recognize (a single governor, by
+    // `is_single_governor` — the cancellation stems
+    // included — or a one-word cancellation phrase,
+    // by `is_cancellation_phrase`) cleans to that
+    // word, exactly as its paren twin cleans through
+    // the edge trim in `clean_group_word`:
+    // "[cancelled]" and "{postponed}" are words
+    // standing beside a
+    // date, not garnish. Garnish words ("[choir]")
+    // keep the round-24 rule untouched.
+    if is_bracketed_token(raw) {
+        let trimmed = raw.trim_end_matches([',', '.', ':', ';']);
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let word = clean_group_word(inner);
+        if is_single_governor(&word) || is_cancellation_phrase(std::slice::from_ref(&word)) {
+            return word;
+        }
         return String::new();
     }
-    // Round 25 (R25-A, M6): format characters are
-    // stripped before the edge trim and the
-    // lowercasing, so one glued inside a word
-    // ("cancel\u{200b}led") cannot kill the word.
-    let stripped = strip_format_chars(raw);
+    if token_has_no_letters_or_digits(raw) {
+        return String::new();
+    }
+    clean_group_word(raw)
+}
+
+/// One token's word with its wrapping punctuation
+/// off, lowercased: format characters stripped
+/// (round 25, R25-A, M6 — one glued inside a word,
+/// "cancel\u{200b}led", cannot kill the word), then
+/// the edge trim over every wrapping pair and
+/// boundary mark (round 23, R23-3).
+fn clean_group_word(text: &str) -> String {
+    let stripped = strip_format_chars(text);
     stripped
         .trim_matches([
             '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}', '/',

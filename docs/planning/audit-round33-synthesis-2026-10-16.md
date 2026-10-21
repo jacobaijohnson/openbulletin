@@ -283,3 +283,108 @@ runner build success; Windows bundle success via
 hygiene (clean + stale probe sweep, fuzz bins kept at
 recorded md5s, registry not pruned, disk numbers, cold
 proof run). A close missing any leg is not verified.
+
+## Close (coordinator, 2026-10-20)
+
+All four batches landed. Round 33 is the first round
+verified under the batch-boundary storage discipline
+(Jacob, 2026-10-20): every batch was committed and
+pushed, HEAD == origin/main confirmed on its commit,
+`cargo clean` run (registry never pruned), and the
+batch's verification then run **cold** from the clean
+tree, replacing incremental verification. Per-batch
+records (disk free before clean / after clean /
+after cold rebuild, cold wall times from log
+timestamps) live in the audit dir at
+`round33-out/coord/r33{a,b,c,d}-record.md`. Booklet
+baseline (31,717 imposed / 34,977 reader) exact in
+suite at every step. Suite count: 976 at the
+round-32 close, 986 at this close.
+
+- R33-A `a1b9d39` (F1, MAJOR) — 978 tests. Cold:
+  suite 14m44s, clippy 5m45s, both exit 0. The
+  displaced lock path is now a judged location at
+  claim and at journal retirement; the red team's
+  verbatim witness inverts (`a3_live=true
+  a3_stranded_displaced=false
+  journal_cleared=false`); no standing lock pin
+  edited.
+- R33-B `9d11d4d` (F2, MAJOR) — 979 tests. Cold:
+  suite 14m05s, clippy 4m18s, both exit 0. Glued
+  weekday garnish is re-spaced inside
+  `date_line_inner` so it is judged as its spaced
+  twin; RED-first twin pin. Fuzz gate: both stdouts
+  byte-identical — the changed lines are a
+  refuse/judge class outside both fuzz corpora.
+- R33-C `b5352df` (F3, MINOR) — 985 tests. Cold:
+  suite 13m59s, clippy 3m41s, both exit 0. One
+  arithmetic central-directory derivation in
+  `ob_model::zip_directory`; all four scan copies
+  deleted their own preambles; six new pins.
+  **Deviation, accepted and recorded:** a zip64
+  record carrying an extensible data sector is not
+  arithmetically derivable from the end record, so
+  that one case falls back to the forward signature
+  hunt, which now exists only inside the shared
+  helper as its documented fallback. Round 34's
+  review lane inherits the fallback as a named
+  site.
+- R33-D `601776c` (F4, F5, MINOR) — 986 tests. The
+  close tree. Cold: suite 14m47s, clippy 4m03s,
+  both exit 0. All seven R32-C timing pins are
+  ratio-form (witness against an interleaved
+  absolute-group control, best-of-3); the false
+  header claim is corrected on the record with its
+  frames named; same-frame measurements put every
+  bound between the un-fixed and fixed frames. The
+  coordinator additionally re-ran all seven pins
+  under load (five concurrent with the cold clippy
+  build, two under tenant load): all pass, where
+  the old 20 s form failed at 22.24 s in the review
+  lane's contended witness. F5 closed by sharing:
+  `ob_model::nothing_token` is now the one public
+  statement of the flexible readers' nothing
+  predicate and contribution's delegates to it,
+  with the premise stated at the skip site and a
+  coupling pin over the fragment family. Fuzz
+  gate: both stdouts byte-identical, no reading
+  moved.
+
+F6 (MINOR, record) stands as written in the
+findings: the 66,620-case differential corpus has
+no preserved runner or baseline in the audit tree,
+so future rounds cite it as history, not as a
+re-runnable claim; any future corpus of that kind
+is preserved with its runner and baseline or not
+cited. The ungraded bracket observation
+(`[November 8, 2026, cancelled]` surfaces as a live
+second date; bracket groups do not apply
+cancellation the way paren groups do) goes to
+round 34 ungraded: no round's claim covers bracket
+semantics, and any change there is a reading
+change that needs its intent adjudicated first.
+
+**Fuzz as claims on the closed tree**
+(coordinator's own runs, bins at recorded md5s
+verdict `a9cac6c3…`, comp `4f85c605…`): verdict
+40,000 lines, panics=0; composition 497,024 lines,
+D_PANICS=0. Both stdouts **byte-identical to the
+round-30 close baselines** (md5 verdict
+`4941c4f9…`, comp `efd2096b…`). The round's one
+intentional reading change (R33-B) is outside both
+corpora and is pinned in suite. Coordinator
+stdouts: `round33-out/coord/r33close-fuzz-verdict.stdout`,
+`r33close-fuzz-comp.stdout`.
+
+**Exit bar: NOT met by round 33's audit verdict
+(0 / 2 / 4); all six findings are now fixed or
+dispositioned (F6 is a record), so round 34 audits
+the closed tree `601776c` as the next candidate.**
+Majors trend: 10 → 6 → 6 → 1 → 4 → 3 → 2.
+HF-12 remains untouched (Jacob's decision). The
+Tier-2 final gate is not started. The close's
+five-leg evidence (local cold on the close tree,
+fuzz, three-OS CI, desktop runner build, Windows
+bundle) and the round-boundary hygiene record live
+in the audit dir (`round33-close-status.md`), per
+the standing gate.

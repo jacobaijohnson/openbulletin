@@ -39,6 +39,47 @@ items blocked on a human or fixture. Then Tier 2 (Opus +
 GPT, same three-aspect shape) runs as the final gate;
 whatever it finds re-enters the loop.
 
+## Build-cache policy (Jacob, 2026-10-20)
+
+Full text as relayed and adopted:
+`~/workspace/openbulletin-audit-wave3/build-cache-policy-2026-10-20.md`
+(the audit tree copy is the source of record; this
+section is the charter summary). Both projects share
+the 100 GB VM disk, so cache churn here is disk
+pressure there.
+
+- A round is not complete until backed up and
+  confirmed on git (tip pushed, verified against the
+  remote). No cache action is owed before that
+  confirmed completion; a cold rebuild after a clear
+  runs from that confirmed tree.
+- At each confirmed completion, `df -h /home/hatch`
+  is checked against the window threshold: overnight
+  23:00-07:00, at or above 87% used clears; daytime
+  07:01-22:59, at or above 94% used clears. On a
+  clear: delete the cargo target directory and
+  rebuild cold before the next round, verifying
+  clean first. Below the threshold, the cache
+  carries into the next round.
+- Trigger latching (Jacob, 2026-10-20 23:10): an
+  over-limit reading triggers the completion clear
+  even if a later reading is lower; the trigger does
+  not re-test at completion. The 88% reading at
+  adoption (2026-10-20 23:08, overnight line 87%)
+  latched the clear at round 34's confirmed
+  completion.
+- Never clear mid-round. Exceptions: a Jacob-approved
+  clear at a commit boundary — the standing per-batch
+  clean + cold verification (Jacob, 2026-10-20
+  14:53) is exactly that and continues unchanged —
+  or the emergency stop: below 1 GB free, stop
+  writing, push what exists, and alert.
+- The close's own cold verification pass remains
+  part of completing the round, before the
+  completion is confirmed; this policy governs only
+  the post-completion disposition of the target
+  directory.
+
 ## Roles track (Jacob, 2026-10-16)
 
 The identities widen beyond administrator / pastor /

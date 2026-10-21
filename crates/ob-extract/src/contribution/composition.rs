@@ -2239,18 +2239,44 @@ pub(super) fn is_group_closer(b: u8) -> bool {
 /// been. An opener with no closer of its pair is
 /// passed over, so an unclosed bracket standing
 /// before a closed paren group hides nothing.)
+///
+/// Round 35 (R35-E, F5): the pass-over is held in a
+/// per-pair closer-absence memory. A forward search
+/// that finds no closer of a pair proves no closer
+/// of that pair stands anywhere in the remaining
+/// text, so every later opener of that pair is
+/// passed over without searching again. The walk's
+/// other searches never overlap — a found closer
+/// moves `from` past itself — so a run of unclosed
+/// openers, which used to rescan the whole
+/// remaining line per opener and cost quadratic
+/// time, now costs one failed search per pair and
+/// one step per opener. The spans found are the
+/// standing ones, step for step: the memory only
+/// skips searches already known to fail.
 pub(super) fn parenthesized_spans(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut out: Vec<(usize, usize)> = Vec::new();
     let mut from = 0;
+    let mut closer_absent = [false; 3];
     while from < bytes.len() {
         let Some(rel_open) = bytes[from..].iter().position(|b| is_group_opener(*b)) else {
             break;
         };
         let open = from + rel_open;
         let opener = bytes[open];
+        let pair = match opener {
+            b'(' => 0,
+            b'[' => 1,
+            _ => 2,
+        };
+        if closer_absent[pair] {
+            from = open + 1;
+            continue;
+        }
         let closer = group_closer(opener);
         let Some(rel_close) = bytes[open + 1..].iter().position(|b| *b == closer) else {
+            closer_absent[pair] = true;
             from = open + 1;
             continue;
         };

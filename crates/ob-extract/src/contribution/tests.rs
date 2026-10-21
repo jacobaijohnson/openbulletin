@@ -20998,9 +20998,27 @@ fn r34e_glued_bracket_garnish_reads_as_its_spaced_and_paren_twins() {
     r34e_for_twin("November 1, 2026[Monday]", "November 1, 2026(Monday)");
     r34e_for_twin("November 1, 2026[Sunday]", "November 1, 2026 [Sunday]");
     r34e_for_twin("November 1, 2026[Sunday]", "November 1, 2026(Sunday)");
-    r34e_for_twin("November 1, 2026{Monday}", "November 1, 2026 {Monday}");
+    // Round 35 (R35-A, F1 = review R35-R1): the
+    // brace lines below were corrected — as first
+    // written they compared the glued brace garnish
+    // only against its spaced brace twin, the two
+    // unjudged forms agreeing with each other while
+    // both diverged from the paren twin this test's
+    // name claims. The brace forms now compare
+    // against the paren twins, glued and spaced,
+    // agreeing and disagreeing, on both lines; the
+    // full brace family across the R34-C suffix
+    // layers is pinned in
+    // `r35a_brace_weekday_garnish_is_judged_as_its_paren_twin`.
+    r34e_for_twin("November 1, 2026{Monday}", "November 1, 2026(Monday)");
+    r34e_for_twin("November 1, 2026 {Monday}", "November 1, 2026 (Monday)");
+    r34e_for_twin("November 1, 2026{Sunday}", "November 1, 2026(Sunday)");
+    r34e_for_twin("November 1, 2026 {Sunday}", "November 1, 2026 (Sunday)");
     r34e_keep_twin("November 8, 2026[Monday]", "November 8, 2026 [Monday]");
     r34e_keep_twin("November 8, 2026[Monday]", "November 8, 2026(Monday)");
+    r34e_keep_twin("November 8, 2026{Monday}", "November 8, 2026(Monday)");
+    r34e_keep_twin("November 8, 2026 {Monday}", "November 8, 2026 (Monday)");
+    r34e_keep_twin("November 8, 2026{Sunday}", "November 8, 2026(Sunday)");
     // Stated outright: the disagreeing glued garnish
     // records the mismatch; the agreeing one reads
     // the date clean.
@@ -21014,6 +21032,152 @@ fn r34e_glued_bracket_garnish_reads_as_its_spaced_and_paren_twins() {
     assert_eq!(m.named, "Monday");
     assert_eq!(m.date, nov(1));
     let text = "For Sunday: November 1, 2026[Sunday]\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.named_weekday_mismatch, None);
+}
+
+#[test]
+fn r35a_brace_weekday_garnish_is_judged_as_its_paren_twin() {
+    // Round 35 (R35-A, F1 = review R35-R1): a weekday
+    // garnish in braces was never judged — the weekday
+    // readers' own trim sets stopped before "{" and
+    // "}", so "{Monday}" never cleaned to the word it
+    // names and the group machinery stripped the brace
+    // group as anonymous garnish: a disagreeing weekday
+    // in braces left the date standing in silence,
+    // where its paren and bracket twins refuse the date
+    // and record the mismatch. Witnessed spaced, glued,
+    // extra-close, doubled, punctuated, and leading, on
+    // the For line and the Keep-through line. The brace
+    // family is pinned here across the R34-C suffix
+    // layers, each brace form against its paren twin
+    // with the full record compared, agreeing and
+    // disagreeing, on both lines. November 1 and
+    // November 8, 2026 are Sundays: "Monday" disagrees,
+    // "Sunday" agrees.
+    let for_pairs = [
+        // The plain forms, spaced and glued.
+        ("November 1, 2026 {Monday}", "November 1, 2026 (Monday)"),
+        ("November 1, 2026{Monday}", "November 1, 2026(Monday)"),
+        ("November 1, 2026 {Sunday}", "November 1, 2026 (Sunday)"),
+        ("November 1, 2026{Sunday}", "November 1, 2026(Sunday)"),
+        // Extra closing marks: the witnessed stray ")"
+        // after the brace group, and the pair's own
+        // extra "}".
+        ("November 1, 2026{Monday})", "November 1, 2026(Monday))"),
+        ("November 1, 2026 {Monday})", "November 1, 2026 (Monday))"),
+        ("November 1, 2026{Monday}}", "November 1, 2026(Monday))"),
+        ("November 1, 2026 {Monday}}", "November 1, 2026 (Monday))"),
+        ("November 1, 2026{Sunday}}", "November 1, 2026(Sunday))"),
+        // A doubled garnish, glued and spaced.
+        ("November 1, 2026{{Monday}}", "November 1, 2026((Monday))"),
+        ("November 1, 2026 {{Monday}}", "November 1, 2026 ((Monday))"),
+        ("November 1, 2026{{Sunday}}", "November 1, 2026((Sunday))"),
+        // The leading slot, spaced. (A glued leading
+        // group is round 35's F3, batch R35-C — not
+        // this batch's shape.)
+        ("{Monday} November 1, 2026", "(Monday) November 1, 2026"),
+        ("{Sunday} November 1, 2026", "(Sunday) November 1, 2026"),
+        // The Sunday-after reader this batch's fix
+        // also touches: a braced garnish on the base
+        // date, judged against the base as its paren
+        // twin is.
+        (
+            "Sunday after November 1, 2026 {Monday}",
+            "Sunday after November 1, 2026 (Monday)",
+        ),
+        (
+            "Sunday after November 1, 2026 {Sunday}",
+            "Sunday after November 1, 2026 (Sunday)",
+        ),
+    ];
+    for (brace, paren) in for_pairs {
+        r34e_for_twin(brace, paren);
+    }
+    let keep_pairs = [
+        ("November 8, 2026 {Monday}", "November 8, 2026 (Monday)"),
+        ("November 8, 2026{Monday}", "November 8, 2026(Monday)"),
+        ("November 8, 2026 {Sunday}", "November 8, 2026 (Sunday)"),
+        ("November 8, 2026{Sunday}", "November 8, 2026(Sunday)"),
+        ("November 8, 2026{Monday})", "November 8, 2026(Monday))"),
+        ("November 8, 2026{Monday}}", "November 8, 2026(Monday))"),
+        ("November 8, 2026{Sunday}}", "November 8, 2026(Sunday))"),
+        ("November 8, 2026{{Monday}}", "November 8, 2026((Monday))"),
+        ("November 8, 2026 {{Monday}}", "November 8, 2026 ((Monday))"),
+        ("November 8, 2026{{Sunday}}", "November 8, 2026((Sunday))"),
+        ("{Monday} November 8, 2026", "(Monday) November 8, 2026"),
+        ("{Sunday} November 8, 2026", "(Sunday) November 8, 2026"),
+    ];
+    for (brace, paren) in keep_pairs {
+        r34e_keep_twin(brace, paren);
+    }
+    // A trailing separator token after the garnish,
+    // glued and spaced, agreeing and disagreeing.
+    for sep in [" *", " |"] {
+        let glued_disagree = format!("November 1, 2026{{Monday}}{sep}");
+        let paren_disagree = format!("November 1, 2026(Monday){sep}");
+        r34e_for_twin(&glued_disagree, &paren_disagree);
+        let spaced_disagree = format!("November 1, 2026 {{Monday}}{sep}");
+        let paren_spaced = format!("November 1, 2026 (Monday){sep}");
+        r34e_for_twin(&spaced_disagree, &paren_spaced);
+        let glued_agree = format!("November 1, 2026{{Sunday}}{sep}");
+        let paren_agree = format!("November 1, 2026(Sunday){sep}");
+        r34e_for_twin(&glued_agree, &paren_agree);
+        let keep_disagree = format!("November 8, 2026{{Monday}}{sep}");
+        let keep_paren = format!("November 8, 2026(Monday){sep}");
+        r34e_keep_twin(&keep_disagree, &keep_paren);
+        let keep_agree = format!("November 8, 2026{{Sunday}}{sep}");
+        let keep_paren_agree = format!("November 8, 2026(Sunday){sep}");
+        r34e_keep_twin(&keep_agree, &keep_paren_agree);
+    }
+    // Trailing punctuation after the garnish, glued
+    // and spaced, agreeing and disagreeing — the
+    // R34-C marks, judged for the brace pair as for
+    // the paren pair.
+    for mark in [';', ':', '!', '?', '"'] {
+        let glued_disagree = format!("November 1, 2026{{Monday}}{mark}");
+        let paren_disagree = format!("November 1, 2026(Monday){mark}");
+        r34e_for_twin(&glued_disagree, &paren_disagree);
+        let spaced_disagree = format!("November 1, 2026 {{Monday}}{mark}");
+        let paren_spaced = format!("November 1, 2026 (Monday){mark}");
+        r34e_for_twin(&spaced_disagree, &paren_spaced);
+        let glued_agree = format!("November 1, 2026{{Sunday}}{mark}");
+        let paren_agree = format!("November 1, 2026(Sunday){mark}");
+        r34e_for_twin(&glued_agree, &paren_agree);
+        let keep_disagree = format!("November 8, 2026{{Monday}}{mark}");
+        let keep_paren = format!("November 8, 2026(Monday){mark}");
+        r34e_keep_twin(&keep_disagree, &keep_paren);
+        let keep_spaced = format!("November 8, 2026 {{Monday}}{mark}");
+        let keep_paren_spaced = format!("November 8, 2026 (Monday){mark}");
+        r34e_keep_twin(&keep_spaced, &keep_paren_spaced);
+        let keep_agree = format!("November 8, 2026{{Sunday}}{mark}");
+        let keep_paren_agree = format!("November 8, 2026(Sunday){mark}");
+        r34e_keep_twin(&keep_agree, &keep_paren_agree);
+    }
+    // Stated outright, the witnessed disagreeing
+    // forms: the date is refused and the mismatch is
+    // recorded, exactly as the paren twin records it.
+    let text = "For Sunday: November 1, 2026 {Monday}\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the disagreeing brace weekday is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, nov(1));
+    let text = "For Sunday: November 1, 2026\nKeep-through: November 29, 2026 {Monday}\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .as_ref()
+        .expect("the disagreeing brace weekday on the keep line is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, nov(29));
+    // And the agreeing brace garnish reads clean.
+    let text = "For Sunday: November 1, 2026 {Sunday}\n\n## Announcement\n\nHi.\n";
     let c = parse_contribution(text, today()).expect("parses");
     assert_eq!(c.for_date, Some(nov(1)));
     assert_eq!(c.named_weekday_mismatch, None);

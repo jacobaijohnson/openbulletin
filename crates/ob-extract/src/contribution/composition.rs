@@ -1500,7 +1500,13 @@ pub(super) fn clean(t: &str) -> &str {
     // word wearing one is still the word it names,
     // as `weekday_word` already honors ";" and ":"
     // as boundary endings.
-    t.trim_matches(['(', ')', '[', ']', ',', '.', ';', ':', '!', '?', '"'])
+    // Round 35 (R35-A, F1 = review R35-R1): the set
+    // gains the brace pair — a weekday word wearing
+    // braces ("{Monday}") is the word it names, as
+    // its paren and bracket twins already are here.
+    t.trim_matches([
+        '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"',
+    ])
 }
 
 /// Whether the weekday at `i` in `core` wears the
@@ -1643,7 +1649,9 @@ pub(super) fn framed_date_outcome(
 /// "*Monday" garnish before a date — is not this
 /// shape and keeps its standing reading.
 pub(super) fn bare_unit_weekday_at(tokens: &[&str], i: usize) -> bool {
-    let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.']);
+    // Round 35 (R35-A, F1): the trim set gains the
+    // brace pair, as at the weekday readers above.
+    let word = tokens[i].trim_matches(['(', ')', '[', ']', '{', '}', ',', '.']);
     if weekday_word(&unglued_word(word)).is_none() {
         return false;
     }
@@ -1869,7 +1877,13 @@ pub(super) fn date_line_inner(
         // trims — so a trailing garnish wearing one
         // is judged here instead of passing as
         // ordinary text in both its forms.
-        let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.', ';', ':', '!', '?', '"']);
+        // Round 35 (R35-A, F1): the set gains the
+        // brace pair, so a trailing brace garnish is
+        // judged here as its paren and bracket twins
+        // are.
+        let word = tokens[i].trim_matches([
+            '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"',
+        ]);
         if let Some(named_number) = weekday_word(word) {
             let rest: Vec<&str> = tokens
                 .iter()
@@ -1956,7 +1970,9 @@ pub(super) fn date_line_inner(
         counts
     };
     for i in 1..tokens.len() {
-        let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.']);
+        // Round 35 (R35-A, F1): the trim set gains
+        // the brace pair, as at the scans above.
+        let word = tokens[i].trim_matches(['(', ')', '[', ']', '{', '}', ',', '.']);
         // Round 29 (R29-A, F3 = red team RT29-T1):
         // the weekday word of a bare phrase unit is
         // judged on the unglued token vector, as

@@ -431,8 +431,14 @@ pub(super) fn sunday_after_outcome(text: &str, today: SimpleDate) -> Option<Sund
     // candidate is tried in order until one reads.
     let mut start = 0;
     while start + 1 < tokens.len() {
-        let first = tokens[start].trim_matches(['(', ')', '[', ']', ',', '.']);
-        let second = tokens[start + 1].trim_matches(['(', ')', '[', ']', ',', '.']);
+        // Round 35 (R35-A, F1 = review R35-R1): both
+        // trim sets gain the brace pair — a braced
+        // weekday ("{Sunday} after ...") names its
+        // weekday here as its paren and bracket twins
+        // do; the pair rides on both words of the
+        // shape, as the other two pairs already do.
+        let first = tokens[start].trim_matches(['(', ')', '[', ']', '{', '}', ',', '.']);
+        let second = tokens[start + 1].trim_matches(['(', ')', '[', ']', '{', '}', ',', '.']);
         // Round 29 (R29-A, F8 = review MINOR-1): the
         // phrase's two words are judged unglued on
         // this whole-line reader too — "the *Sunday
@@ -480,7 +486,13 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         // `date_line_inner`), so a base garnish
         // wearing ";", ":", "!", "?", or a quote is
         // judged here too.
-        let word = tokens[i].trim_matches(['(', ')', '[', ']', ',', '.', ';', ':', '!', '?', '"']);
+        // Round 35 (R35-A, F1): the set gains the
+        // brace pair, so a braced base garnish is
+        // judged here as its paren and bracket twins
+        // are.
+        let word = tokens[i].trim_matches([
+            '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"',
+        ]);
         if let Some(named_number) = weekday_word(word) {
             let named = word.to_string();
             trailing = Some((named, named_number));
@@ -522,8 +534,11 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
     let lead_number = weekday_word(lead_word)?;
     let (base, used) = parse_date_prefix(lead_rest, today)?;
     if base.weekday() != lead_number {
+        // Round 35 (R35-A, F1): the named word's
+        // trim set gains the brace pair, as at the
+        // weekday readers above.
         let named = lead_word
-            .trim_matches(['(', ')', '[', ']', ',', '.'])
+            .trim_matches(['(', ')', '[', ']', '{', '}', ',', '.'])
             .to_string();
         return Some(SundayAfter::Mismatch(WeekdayMismatch { named, date: base }));
     }

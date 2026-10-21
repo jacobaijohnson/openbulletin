@@ -4100,10 +4100,18 @@ fn claim_instance_lock_from(lock: &std::path::Path, own_token: &str) -> bool {
 /// `openbulletin.lock.displaced` — left there by a
 /// refused audit whose lock path a third claimant had
 /// already taken — holds its owner's journal from the
-/// displaced path exactly as it would from the lock
-/// path, so the third claimant who holds the lock path
-/// cannot retire the displaced owner's live journal
-/// through the "lock no longer names the owner" rule.
+/// displaced path, so the third claimant who holds the
+/// lock path cannot retire the displaced owner's live
+/// journal through the "lock no longer names the owner"
+/// rule. The displaced hold mirrors the lock path's,
+/// with one exception (R35-G, F8): a file naming the
+/// retiring instance's own pid under a foreign token
+/// does not hold from the displaced path, because no
+/// live peer can stand behind such a file — its owner
+/// is this instance's earlier generation, or a dead
+/// process whose pid was recycled to this instance.
+/// The lock path's stricter reading of that cell is
+/// the conservative side, and it is kept.
 /// `retire_journal_from` computes that hold from the
 /// displaced file with the same corrupt-lock and
 /// provably-gone rules as the lock path's.
@@ -8369,6 +8377,115 @@ mod settings_tests {
             !obd.exists() && !meta.exists(),
             "the journal is cleared once A is gone"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn displaced_hold_own_pid_foreign_token_is_the_mirror_exception() {
+        // R35-G pin for F8 (red team RT35-6,
+        // locksweep35.log): the red team's 40-cell mirror
+        // sweep over the retirement decision table (4
+        // journal shapes × 10 file shapes, lock path vs
+        // displaced path) found exactly one differing
+        // shape, stated here in its two journal shapes.
+        // A file naming the RETIRING process's own pid
+        // under a foreign token blocks retirement at the
+        // lock path and does not hold at the displaced
+        // path. No live peer can stand behind such a
+        // file — two live processes never share a pid, so
+        // its owner is this instance's earlier generation
+        // or a dead process whose pid was recycled to this
+        // instance — and the lock path's stricter reading
+        // is the conservative side, kept as it stands.
+        // The retiring instance here is this test process
+        // itself, so its own pid is the file's pid and its
+        // caller token is the claimant's.
+        let dir = std::env::temp_dir().join(format!(
+            "ob-app-r35g-mirror-exception-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let own_pid = std::process::id();
+        let foreign_token = "sweep-a-token";
+        let c_token = "claimant-c-token";
+        let own_lock = format!("{own_pid}\n{c_token}\n");
+        let own_pid_foreign_lock = format!("{own_pid}\n{foreign_token}\n");
+        let doc = ob_layout::build_template(
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+            "Sunday",
+        );
+        struct Case<'a> {
+            name: &'a str,
+            journal_token: Option<&'a str>,
+            lock_text: &'a str,
+            displaced_text: Option<&'a str>,
+            allowed: bool,
+        }
+        let cases = [
+            Case {
+                name: "lock-tokenless",
+                journal_token: None,
+                lock_text: own_pid_foreign_lock.as_str(),
+                displaced_text: None,
+                allowed: false,
+            },
+            Case {
+                name: "displaced-tokenless",
+                journal_token: None,
+                lock_text: own_lock.as_str(),
+                displaced_text: Some(own_pid_foreign_lock.as_str()),
+                allowed: true,
+            },
+            Case {
+                name: "lock-foreign",
+                journal_token: Some(foreign_token),
+                lock_text: own_pid_foreign_lock.as_str(),
+                displaced_text: None,
+                allowed: false,
+            },
+            Case {
+                name: "displaced-foreign",
+                journal_token: Some(foreign_token),
+                lock_text: own_lock.as_str(),
+                displaced_text: Some(own_pid_foreign_lock.as_str()),
+                allowed: true,
+            },
+        ];
+        for case in cases {
+            let name = case.name;
+            let case_dir = dir.join(name);
+            std::fs::create_dir_all(&case_dir).expect("case dir");
+            let obd = case_dir.join("autosave.obd");
+            let meta = case_dir.join("autosave.txt");
+            let lock = case_dir.join("openbulletin.lock");
+            let displaced = displaced_instance_lock_path(&lock);
+            let write_token = case.journal_token.unwrap_or("placeholder-token");
+            write_journal_to(&obd, &meta, &doc, &None, write_token).expect("write journal");
+            if case.journal_token.is_none() {
+                std::fs::write(&meta, "1729000000\n\n").expect("tokenless legacy note");
+            }
+            assert_eq!(
+                journal_token_from(&meta).as_deref(),
+                case.journal_token,
+                "{name}: the journal note carries the case's token shape"
+            );
+            std::fs::write(&lock, case.lock_text).expect("case lock");
+            if let Some(text) = case.displaced_text {
+                std::fs::write(&displaced, text).expect("case displaced file");
+            }
+            assert_eq!(
+                retire_journal_from(&obd, &meta, &lock, c_token),
+                case.allowed,
+                "{name}: the own-pid foreign-token file blocks at the lock path only"
+            );
+            assert_eq!(
+                obd.exists() && meta.exists(),
+                !case.allowed,
+                "{name}: the journal stands exactly when retirement is refused"
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

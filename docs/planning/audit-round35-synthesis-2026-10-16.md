@@ -449,3 +449,107 @@ Round 35 audited 0 BLOCKER / 6 MAJOR / 2 MINOR —
 the exit bar is NOT met by this round's audit
 verdict. The Tier-2 final gate is not triggered.
 HF-12 remains Jacob's decision, untouched.
+
+---
+
+## F6 adjudication addendum (coordinator, 2026-10-21)
+
+R35-F stopped at its procedure step 2, correctly:
+the step-1 battery (108 cases with bare twins,
+`round35-out/coord/r35f-*`) proved the F6 ruling as
+written underdetermined, and three of the brief's
+stated consequences were wrong about their own
+bare references. The writer's cells file
+(`r35f-cells.md`) is the evidence; this addendum
+is the adjudication it asked for, and it narrows
+F6's mechanism and restates two of its cells.
+
+What the battery established: the group machinery
+already forms NO group for every malformed shape
+in the battery — the stack walk closes nothing,
+the reverse walk finds no trailing group, the flat
+search passes the openers over. The divergent
+readings do not come from a span consumer at all.
+They come from one asymmetry in the plain readers:
+`parse_date_prefix`'s normalization trims garnish
+at a token's edges EXCEPT the two parentheses,
+which its comment defends as structural ("a date
+token wearing one stands at a group edge, and the
+raw-text scans rely on this parse failing there").
+So `(November` is not a date signal while
+`[November` trims and reads. That asymmetry is
+the whole live mechanism of F6. 86 of 108 battery
+cells already read exactly as their bare twins;
+8 more are determined holds (stray closers and
+mixed garnishes, judging as the ruling's
+stray-mark clause already provides).
+
+Adjudication of the three questions the cells file
+poses:
+
+1. **The glued unmatched mark.** "Judge as bare
+   text" means reading (ii), scoped: an opener
+   the shared stack walk does not close is a
+   STRAY MARK, inert at the plain readers — the
+   treatment `[` and `{` unmatched already
+   receive — while a walk-closed group's edge
+   marks keep their structural effect and the
+   paren rule's designed reliance stands there.
+   The ruled outcome for every battery cell is
+   the reading of the text with unmatched marks
+   inert and everything else (walk-closed groups,
+   commas, all other text) untouched: the
+   battery's bare-twin fields. Implementation
+   shape is the writer's (the trim learns the
+   walk's verdict, or the composition pre-marks
+   unmatched openers); the pins judge outcomes.
+2. **Cell C** (`[…, cancelled)` after a core):
+   `secs=[2026-11-08]` — governed and NAMED on
+   the second-date note, exactly as bare governed
+   dates are named — IS the ruled outcome; the
+   fields already match the bare twin today. The
+   F6 text above and the round-34 record describe
+   this cell as the cancelled date "standing
+   live"; that phrasing is corrected here: no
+   silent service exists in this cell, and the
+   brief's "changes" for it is a provenance
+   statement, not an outcome. This cell is a hold.
+3. **Cell D** (`[…, cancelled)` before the core):
+   malformed marks do NOT break a governor
+   window's reach. The bare cancellation standing
+   before the core governs it, as bare
+   `cancelled November 1, 2026` governs its date;
+   `for=None` is the ruled outcome and the
+   current one. The brief's implication that the
+   core stands is restated as wrong. Hold at
+   field level.
+
+Restated change surface (the whole of F6 as
+adjudicated): the paren-poison family — a date
+token wearing an UNCLOSED `(` becomes a signal,
+as its bracket/brace twins already are. Cells A
+and B and their family and the swapped-nested
+cells E change to their bare-twin fields
+(A's recorded round-34 outcome, `for=None`, is
+NOT kept: it was the poison, and the poison is
+the defect). Cell F (mixed outer, walk-closed
+inner) takes its bare-twin fields — inner group
+structural, outer unmatched marks inert, commas
+real text with their standing effects. The mixed
+range and the remaining named cells already
+equal their bare readings and hold. The
+no-silence invariant survives in its correct
+form: after this batch, no malformed shape's
+reading differs from the reading of the same
+words with their unmatched marks removed — one
+rule, checkable cell by cell against the battery.
+
+R35-E's timing pins are untouched by this
+adjudication (their witnesses read `for=None`
+under both candidate models, per the cells file).
+The fuzz gate for the re-dispatched batch: rights
+byte-identical and counters unrisen, as standing;
+a contribution-stdout delta is itemized and must
+be confined to unmatched-opener shapes — a moved
+walk-closed or well-formed case is a defect, not
+a delta.

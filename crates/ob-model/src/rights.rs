@@ -853,6 +853,7 @@ fn judge_folded_composed_record(
     folded: &mut RightsRecord,
     sources: &[RightsRecord],
     paired_candidates: &[LicenseKind],
+    permission_claim: Option<&LicenseKind>,
 ) {
     let mut candidates: Vec<LicenseKind> = paired_candidates.to_vec();
     if folded.children_present == Some(true) && folded.credit_text.trim().is_empty() {
@@ -865,6 +866,31 @@ fn judge_folded_composed_record(
             // merge's own judgment would see on the
             // merges that let the credit stand.
             candidates = restored_credit_pairings(sources, &folded.credit_text);
+        }
+    }
+    // The permission claim the fold's own merges
+    // stood while the credit line was still empty
+    // (round 34, F6; tracked by
+    // `fold_duplicate_asset_records`): a chain of
+    // single merges judges each pair as it arrives,
+    // so its R11-1 permission-axis step fires at the
+    // merge where a permission-free license first
+    // meets the children note with no credit standing
+    // yet, and that license stands in the chain's
+    // composed record from then on. The fold defers
+    // its one judgment to the end, when a credit may
+    // already stand and the axis step no longer
+    // applies — so the claim the fold's merges would
+    // have stood is put back as the standing license
+    // before the judgment runs. The judgment itself
+    // is unchanged: its credit-pairing step can still
+    // answer the claim with the license that traveled
+    // with the standing credit, exactly as a later
+    // single merge could, and on an empty credit line
+    // the claim is itself the standing-wins answer.
+    if let Some(claim) = permission_claim {
+        if folded.license != *claim {
+            folded.license = claim.clone();
         }
     }
     let source_refs: Vec<&RightsRecord> = sources.iter().collect();
@@ -945,6 +971,28 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
     // per folded record: the prefix the arrival test
     // reads.
     let mut folded_bearer_seen: Vec<bool> = Vec::with_capacity(assets.len());
+    // The permission claim each fold's merges stood
+    // while the credit line was still empty (round
+    // 34, F6): the first merge whose composed record
+    // notes children with an empty credit line, and
+    // whose standing license is not an attribution
+    // license a children-bearing source supplied,
+    // judges the permission axis exactly as a single
+    // merge of that pair would — a standing
+    // permission-free license that is vouched stands,
+    // else the best vouched permission-free license
+    // among the sources folded so far stands (see
+    // `permission_fallback_license`) — and that
+    // license is remembered. A chain of single merges
+    // carries the claim in its composed record from
+    // that merge on; the fold, whose judgment is
+    // deferred, carries it here instead, and the
+    // fold's end stands it (see
+    // `judge_folded_composed_record`). No claim is
+    // recorded once a credit stands in the composed
+    // record: from there the routes' judgments
+    // already see the same credit.
+    let mut folded_claim: Vec<Option<LicenseKind>> = Vec::with_capacity(assets.len());
     for asset in assets.drain(..) {
         match folded.iter().position(|a| a.sha256 == asset.sha256) {
             Some(pos) => {
@@ -974,6 +1022,43 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
                     folded_bearer_seen[pos] = true;
                 }
                 let merged = merge_rights_records_inner(&before, &incoming, true);
+                // The claim is the bare-license family's
+                // only (round 34, F6): it is recorded
+                // only while the standing license is an
+                // attribution license no source folded
+                // so far held together with a children
+                // note. Where the attribution record
+                // itself notes the children, the fold's
+                // end judgment over the whole composition
+                // is the standing answer (round 9, R9-4:
+                // the fallback winner is chosen by tier
+                // and rank over all the sources, not by
+                // which permission claim a pairwise
+                // judgment would have stood first), and
+                // no claim is taken.
+                let attribution_children_carried = matches!(
+                    merged.license,
+                    LicenseKind::CcBy(_) | LicenseKind::CcBySa(_)
+                ) && folded_sources[pos]
+                    .iter()
+                    .any(|r| r.license == merged.license && r.children_present == Some(true));
+                if folded_claim[pos].is_none()
+                    && !attribution_children_carried
+                    && merged.children_present == Some(true)
+                    && merged.credit_text.trim().is_empty()
+                {
+                    let prefix_refs: Vec<&RightsRecord> = folded_sources[pos].iter().collect();
+                    let standing_noted = matches!(
+                        merged.license,
+                        LicenseKind::ChurchOwned | LicenseKind::PublicDomain | LicenseKind::Cc0
+                    );
+                    folded_claim[pos] =
+                        if standing_noted && license_vouched(&merged.license, "", &prefix_refs) {
+                            Some(merged.license.clone())
+                        } else {
+                            permission_fallback_license(&prefix_refs)
+                        };
+                }
                 if merged.credit_text.trim().is_empty() || merged.credit_text != before.credit_text
                 {
                     // The credit these pairings traveled
@@ -1010,6 +1095,7 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
                 folded_paired.push(Vec::new());
                 folded_vouched_pairs.push(Vec::new());
                 folded_bearer_seen.push(bearer);
+                folded_claim.push(None);
                 folded.push(asset);
             }
         }
@@ -1019,11 +1105,12 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
     // composed (round 8, R8-9; round 9, R9-1): a
     // record no duplicate folded into is left exactly
     // as it stood, as before.
-    for (((asset, sources), paired), vouched_pairs) in folded
+    for ((((asset, sources), paired), vouched_pairs), claim) in folded
         .iter_mut()
         .zip(folded_sources.iter())
         .zip(folded_paired.iter())
         .zip(folded_vouched_pairs.iter())
+        .zip(folded_claim.iter())
     {
         if sources.len() > 1 {
             // The candidates the fold's end chooses
@@ -1037,7 +1124,7 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
                     candidates.push(license.clone());
                 }
             }
-            judge_folded_composed_record(&mut asset.rights, sources, &candidates);
+            judge_folded_composed_record(&mut asset.rights, sources, &candidates, claim.as_ref());
         }
     }
     *assets = folded;
@@ -2990,5 +3077,149 @@ mod tests {
         assert_eq!(merged.license, LicenseKind::CcBy("4.0".into()));
         assert_eq!(merged.asserted_by, "Mallory");
         assert_eq!(merged.asserted_at, "2026-01-01");
+    }
+
+    #[test]
+    fn r34d_fold_and_chain_choose_the_same_license_for_the_permission_free_family() {
+        // Round 34, F6 (red team rights34.log): the
+        // seven FOLD-VS-CHAIN-DIFF triples that carry a
+        // permission-free license (CC0, church-owned).
+        // In each, a credit-less attribution license
+        // meets a children-bearing permission-free
+        // record before any credit arrives: a chain of
+        // single merges judges that pair while the
+        // credit line is still empty, and the R11-1
+        // permission axis stands the permission-free
+        // license; the fold defers its judgment to the
+        // end, by which time a credit may stand, and
+        // kept the attribution license instead. The
+        // fold now remembers the permission claim its
+        // own merges stood while the credit line was
+        // empty (see `fold_duplicate_asset_records`),
+        // and the claim stands at the fold's end
+        // unless the credit-pairing step answers it,
+        // exactly as a later single merge could.
+        //
+        // Out of family, deliberately: the two
+        // remaining rights34.log triples
+        // (children_only + ccby_nocredit +
+        // credit_children, both orders) carry NO
+        // permission-free license; they are the
+        // round-8 deferral residual, pinned as
+        // fold != chain by
+        // `r8_fold_judges_the_composed_rule_once_at_the_end`,
+        // and are not touched here.
+        fn arch(
+            title: &str,
+            credit: &str,
+            license: LicenseKind,
+            children: Option<bool>,
+            asserted_by: &str,
+        ) -> RightsRecord {
+            RightsRecord {
+                title: title.into(),
+                credit_text: credit.into(),
+                license,
+                children_present: children,
+                asserted_by: asserted_by.into(),
+                asserted_at: if asserted_by.is_empty() {
+                    String::new()
+                } else {
+                    "2026-10-16".into()
+                },
+                ..Default::default()
+            }
+        }
+        let ccby_nocredit = || arch("", "", LicenseKind::CcBy("4.0".into()), None, "");
+        let cc0_children = || arch("", "", LicenseKind::Cc0, Some(true), "");
+        let church_children = || arch("", "", LicenseKind::ChurchOwned, Some(true), "");
+        let credit_only = || arch("Picnic", "Photo by Alice", LicenseKind::Unknown, None, "");
+        let credit_perm = || {
+            arch(
+                "Picnic",
+                "Photo by Alice, used with permission",
+                LicenseKind::Unknown,
+                None,
+                "Sam",
+            )
+        };
+        let credit_children = || {
+            arch(
+                "Picnic",
+                "Photo by Bob",
+                LicenseKind::Unknown,
+                Some(true),
+                "",
+            )
+        };
+        let fold_route = |seq: &[RightsRecord]| -> RightsRecord {
+            let hash = sha256_hex(b"R34DWIT");
+            let mut assets: Vec<Asset> = seq
+                .iter()
+                .cloned()
+                .map(|rights| Asset {
+                    sha256: hash.clone(),
+                    kind: AssetKind::Picture,
+                    media_type: "image/png".into(),
+                    rights,
+                })
+                .collect();
+            fold_duplicate_asset_records(&mut assets);
+            assert_eq!(assets.len(), 1);
+            assets[0].rights.clone()
+        };
+        let single_route = |seq: &[RightsRecord]| -> RightsRecord {
+            let mut acc = seq[0].clone();
+            for next in &seq[1..] {
+                acc = merge_rights_records(&acc, next);
+            }
+            acc
+        };
+        // (sequence, the license both routes must end
+        // with — the chain's standing answer, which is
+        // the permission-free license in every case)
+        let witnesses: Vec<(Vec<RightsRecord>, LicenseKind)> = vec![
+            (
+                vec![ccby_nocredit(), cc0_children(), credit_only()],
+                LicenseKind::Cc0,
+            ),
+            (
+                vec![ccby_nocredit(), cc0_children(), credit_perm()],
+                LicenseKind::Cc0,
+            ),
+            (
+                vec![ccby_nocredit(), cc0_children(), church_children()],
+                LicenseKind::Cc0,
+            ),
+            (
+                vec![ccby_nocredit(), cc0_children(), credit_children()],
+                LicenseKind::Cc0,
+            ),
+            (
+                vec![ccby_nocredit(), church_children(), credit_only()],
+                LicenseKind::ChurchOwned,
+            ),
+            (
+                vec![ccby_nocredit(), church_children(), credit_perm()],
+                LicenseKind::ChurchOwned,
+            ),
+            (
+                vec![ccby_nocredit(), church_children(), credit_children()],
+                LicenseKind::ChurchOwned,
+            ),
+        ];
+        for (seq, expected) in &witnesses {
+            let folded = fold_route(seq);
+            let chained = single_route(seq);
+            assert_eq!(folded.license, chained.license, "fold {seq:?}");
+            assert_eq!(folded.license, *expected, "fold {seq:?}");
+            assert_eq!(folded.children_present, chained.children_present);
+            assert_eq!(folded.credit_text, chained.credit_text);
+            assert_eq!(folded.title, chained.title);
+            assert_eq!(
+                rights_permission_noted(&folded),
+                rights_permission_noted(&chained)
+            );
+        }
     }
 }

@@ -324,84 +324,21 @@ fn decode_entry_name(raw: &[u8], flags: u16) -> String {
 /// Empty when no end record stands — the archive
 /// reader reports that damage in its own words.
 fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
-    let mut eocd: Option<usize> = None;
-    if bytes.len() >= 22 {
-        for at in (0..=bytes.len() - 22).rev() {
-            if !bytes[at..].starts_with(b"PK\x05\x06") {
-                continue;
-            }
-            let comment = usize::from(u16::from_le_bytes([bytes[at + 20], bytes[at + 21]]));
-            if at + 22 + comment <= bytes.len() {
-                eocd = Some(at);
-                break;
-            }
-        }
-    }
-    let Some(eocd) = eocd else {
+    // The directory's location is the workspace's one
+    // derivation (ob_model::zip_directory, round 33,
+    // F3), shared with the reader's view of the same
+    // bytes: see the note on this scan's twin in
+    // ob-extract.
+    let Some(directory) = ob_model::zip_directory::central_directory(bytes) else {
         return Vec::new();
     };
-    let field = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap_or([0; 4]));
-    let mut total = u64::from(u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]));
-    let mut cd_offset = u64::from(field(eocd + 16));
-    if (total == u64::from(u16::MAX) || cd_offset == u64::from(u32::MAX)) && eocd >= 20 {
-        let locator = &bytes[eocd - 20..eocd];
-        if locator.starts_with(b"PK\x06\x07") {
-            // The locator's record offset is declared
-            // relative to the archive's own start, like
-            // every offset here: the record itself
-            // stands at-or-after it, shifted by whatever
-            // junk precedes the archive, and the reader
-            // finds it by searching forward (round 32,
-            // F4). The search stops at the locator.
-            let declared = u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
-            let mut record_at = declared as usize;
-            let mut found = None;
-            while record_at + 4 <= eocd - 20 {
-                if bytes[record_at..].starts_with(b"PK\x06\x06") {
-                    found = Some(record_at);
-                    break;
-                }
-                record_at += 1;
-            }
-            if let Some(record_at) = found {
-                if record_at + 56 <= bytes.len() {
-                    let record = &bytes[record_at..record_at + 56];
-                    total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
-                    cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
-                }
-            }
-        }
-    }
-    if total == 0 {
+    if directory.total == 0 {
         return Vec::new();
     }
-    // The directory's first record stands at-or-after
-    // the declared offset, the reader's own derivation
-    // (round 32, F4): junk prepended before the archive
-    // shifts every declared offset by the same amount,
-    // and a scan that starts exactly at the declared
-    // offset starts inside the last entry's body,
-    // breaks on its first check, and counts nothing —
-    // no duplicate check happened at all. The distance
-    // from the declared offset to the first record that
-    // stands is the archive offset, and it applies to
-    // the local offsets in the records just as the
-    // reader applies it.
-    let mut at = cd_offset as usize;
-    let mut cd_start = None;
-    while at + 4 <= eocd {
-        if bytes[at..].starts_with(b"PK\x01\x02") {
-            cd_start = Some(at);
-            break;
-        }
-        at += 1;
-    }
-    let Some(cd_start) = cd_start else {
-        return Vec::new();
-    };
-    let archive_offset = (cd_start as u64).saturating_sub(cd_offset);
+    let total = directory.total;
+    let archive_offset = directory.archive_offset;
     let mut out: Vec<(String, RawSpot)> = Vec::new();
-    let mut at = cd_start;
+    let mut at = directory.cd_start;
     for _ in 0..total {
         if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
             break;
@@ -499,6 +436,15 @@ fn disagreeing_duplicate(bytes: &[u8], spots: &[(String, RawSpot)], name: &str) 
 /// rootfile when META-INF/container.xml names one, else
 /// the first .musicxml/.xml entry that is one.
 fn zip_score_text(bytes: &[u8]) -> Result<String, String> {
+    // One prefix-free view of the container for both
+    // the reader and the raw-directory walk below
+    // (round 33, F3): see the note at the IDML door.
+    // This door's standing head-sniff refusal of
+    // junk-prefixed bytes (round 32, F4) happens in
+    // `load_music`, before this function is reached,
+    // and is unchanged.
+    let view = ob_model::zip_directory::prefix_free(bytes);
+    let bytes: &[u8] = &view;
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| format!("that file is a zip we cannot open ({e})"))?;
     // Entry-count cap (health audit S-6), the IDML and

@@ -389,74 +389,30 @@ fn crc32_ieee(bytes: &[u8]) -> u32 {
 /// name reaches a door that enumerates through the
 /// reader as only its last copy. The directory is the
 /// one the latest end record names, through its zip64
-/// record where the plain fields are sentinels; its
-/// first record stands at-or-after the declared offset
-/// (junk prepended before the archive shifts every
-/// declared offset, the reader's own derivation,
-/// round 32, F4), and that archive offset applies to
-/// the local offsets in the records. Empty when no
-/// end record stands — the caller falls back to the
+/// record where the plain fields are sentinels,
+/// located by the workspace's one derivation
+/// (ob_model::zip_directory, round 33, F3): arithmetic
+/// from the end record's position and declared sizes,
+/// and the archive offset it derives applies to the
+/// local offsets in the records. Empty when no end
+/// record stands — the caller falls back to the
 /// reader's enumeration.
 fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
-    let mut eocd: Option<usize> = None;
-    if bytes.len() >= 22 {
-        for at in (0..=bytes.len() - 22).rev() {
-            if !bytes[at..].starts_with(b"PK\x05\x06") {
-                continue;
-            }
-            let comment = usize::from(u16::from_le_bytes([bytes[at + 20], bytes[at + 21]]));
-            if at + 22 + comment <= bytes.len() {
-                eocd = Some(at);
-                break;
-            }
-        }
-    }
-    let Some(eocd) = eocd else {
+    // The directory's location is the workspace's one
+    // derivation (ob_model::zip_directory, round 33,
+    // F3), shared with the reader's view of the same
+    // bytes: see the note on this scan's twin in
+    // ob-extract.
+    let Some(directory) = ob_model::zip_directory::central_directory(bytes) else {
         return Vec::new();
     };
-    let field = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap_or([0; 4]));
-    let mut total = u64::from(u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]));
-    let mut cd_offset = u64::from(field(eocd + 16));
-    if (total == u64::from(u16::MAX) || cd_offset == u64::from(u32::MAX)) && eocd >= 20 {
-        let locator = &bytes[eocd - 20..eocd];
-        if locator.starts_with(b"PK\x06\x07") {
-            let declared = u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
-            let mut record_at = declared as usize;
-            let mut found = None;
-            while record_at + 4 <= eocd - 20 {
-                if bytes[record_at..].starts_with(b"PK\x06\x06") {
-                    found = Some(record_at);
-                    break;
-                }
-                record_at += 1;
-            }
-            if let Some(record_at) = found {
-                if record_at + 56 <= bytes.len() {
-                    let record = &bytes[record_at..record_at + 56];
-                    total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
-                    cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
-                }
-            }
-        }
-    }
-    if total == 0 {
+    if directory.total == 0 {
         return Vec::new();
     }
-    let mut at = cd_offset as usize;
-    let mut cd_start = None;
-    while at + 4 <= eocd {
-        if bytes[at..].starts_with(b"PK\x01\x02") {
-            cd_start = Some(at);
-            break;
-        }
-        at += 1;
-    }
-    let Some(cd_start) = cd_start else {
-        return Vec::new();
-    };
-    let archive_offset = (cd_start as u64).saturating_sub(cd_offset);
+    let total = directory.total;
+    let archive_offset = directory.archive_offset;
     let mut out: Vec<(String, RawSpot)> = Vec::new();
-    let mut at = cd_start;
+    let mut at = directory.cd_start;
     for _ in 0..total {
         if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
             break;
@@ -761,6 +717,11 @@ impl ClipLibrary {
             .or_else(|| name.strip_suffix(".ZIP"))
             .unwrap_or(&name)
             .to_string();
+        // One prefix-free view of the pack for both the
+        // reader and the raw-directory walk below
+        // (round 33, F3): see the note at the IDML door.
+        let view = ob_model::zip_directory::prefix_free(bytes);
+        let bytes: &[u8] = &view;
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
             .map_err(|e| format!("that zip file cannot be read: {e}"))?;
         // Entry-count cap (health audit S-6), the IDML and
@@ -1353,6 +1314,127 @@ mod tests {
             second_png,
             "the second item holds the second copy's bytes"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Stored filler entry's payload in the round-33
+    /// witness's shape: see the twin helper in
+    /// ob-extract's tests.
+    fn tail_filler(shape: &str) -> Vec<u8> {
+        let mut payload = vec![b'A'; 600];
+        if shape != "plain" {
+            let at = 600 - 64;
+            payload[at..at + 4].copy_from_slice(b"PK\x01\x02");
+            if shape == "wellformed" {
+                for byte in &mut payload[at + 4..at + 46] {
+                    *byte = b'B';
+                }
+                payload[at + 28..at + 30].copy_from_slice(&4u16.to_le_bytes());
+                payload[at + 30..at + 34].copy_from_slice(&0u32.to_le_bytes());
+                payload[at + 46..at + 50].copy_from_slice(b"JUNK");
+            } else {
+                payload[at + 28..at + 30].copy_from_slice(&0xFFFFu16.to_le_bytes());
+            }
+        }
+        payload
+    }
+
+    /// A pack whose last entry is the Stored filler
+    /// (its payload's tail is the window between the
+    /// declared directory offset and the real directory
+    /// once the pack is shifted), shifted by 64 junk
+    /// bytes.
+    fn zip_shifted_with_filler(entries: &[(&str, &[u8])], filler: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            let stored = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            use std::io::Write as _;
+            for (name, body) in entries {
+                writer.start_file(*name, opts).expect("start entry");
+                writer.write_all(body).expect("write entry");
+            }
+            writer
+                .start_file("filler.bin", stored)
+                .expect("filler entry");
+            writer.write_all(filler).expect("filler write");
+            writer.finish().expect("finish");
+        }
+        let mut out = vec![b'J'; 64];
+        out.extend_from_slice(&buf);
+        out
+    }
+
+    #[test]
+    fn r33c_shifted_packs_with_signature_in_the_stored_tail_land_like_unshifted() {
+        // Round 33, F3 (red team RT33-3): the shifted
+        // clip pack carrying the signature in its stored
+        // tail was refused wholesale, where the plain
+        // shifted pack landed both copies of the
+        // duplicated name. Both witnessed payload shapes
+        // (and the plain shifted control) land both
+        // copies now, as pic.png and pic-2.png, and the
+        // same shifted shape with one picture lands it.
+        // A genuinely corrupt pack still refuses.
+        let first_png = png_filled(255);
+        let second_png = png_filled(0);
+        for shape in ["plain", "fake", "wellformed"] {
+            let filler = tail_filler(shape);
+            let dir = temp_dir(&format!("r33c-{shape}"));
+            let lib = ClipLibrary::open(dir.clone()).expect("open");
+            let mut zip_bytes = zip_shifted_with_filler(
+                &[("pic.png", &first_png), ("pic.pnX", &second_png)],
+                &filler,
+            );
+            patch_entry_name(&mut zip_bytes, "pic.pnX", "pic.png");
+            let report = lib
+                .add_collection_from_zip("pack.zip", &zip_bytes, &CollectionNotes::default(), None)
+                .expect("add zip");
+            assert_eq!(report.added, 2, "{shape}: both copies land: {report:?}");
+            let collection = lib.collection("pack").expect("collection");
+            assert_eq!(collection.items.len(), 2, "{shape}");
+            let first = collection
+                .items
+                .iter()
+                .find(|i| i.file_name == "pic.png")
+                .expect("the first copy keeps the name");
+            let second = collection
+                .items
+                .iter()
+                .find(|i| i.file_name == "pic-2.png")
+                .expect("the second copy lands apart");
+            assert_eq!(
+                std::fs::read(&first.path).expect("read first"),
+                first_png,
+                "{shape}"
+            );
+            assert_eq!(
+                std::fs::read(&second.path).expect("read second"),
+                second_png,
+                "{shape}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+
+            let dir = temp_dir(&format!("r33c-single-{shape}"));
+            let lib = ClipLibrary::open(dir.clone()).expect("open");
+            let single = zip_shifted_with_filler(&[("pic.png", &first_png)], &filler);
+            let report = lib
+                .add_collection_from_zip("pack.zip", &single, &CollectionNotes::default(), None)
+                .expect("add single zip");
+            assert_eq!(report.added, 1, "{shape}: {report:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        let mut corrupt =
+            zip_shifted_with_filler(&[("pic.png", &first_png)], &tail_filler("plain"));
+        corrupt.truncate(corrupt.len() - 10);
+        let dir = temp_dir("r33c-corrupt");
+        let lib = ClipLibrary::open(dir.clone()).expect("open");
+        let err = lib
+            .add_collection_from_zip("pack.zip", &corrupt, &CollectionNotes::default(), None)
+            .expect_err("a corrupt pack refuses");
+        assert!(err.contains("cannot be read"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

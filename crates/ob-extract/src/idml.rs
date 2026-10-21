@@ -554,85 +554,30 @@ fn decode_entry_name(raw: &[u8], flags: u16) -> String {
 /// archive reader reports that damage in its own
 /// words.
 fn central_spots(bytes: &[u8]) -> Vec<(String, RawSpot)> {
-    let mut eocd: Option<usize> = None;
-    if bytes.len() >= 22 {
-        for at in (0..=bytes.len() - 22).rev() {
-            if !bytes[at..].starts_with(b"PK\x05\x06") {
-                continue;
-            }
-            let comment = usize::from(u16::from_le_bytes([bytes[at + 20], bytes[at + 21]]));
-            if at + 22 + comment <= bytes.len() {
-                eocd = Some(at);
-                break;
-            }
-        }
-    }
-    let Some(eocd) = eocd else {
-        return Vec::new();
-    };
-    let field = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap_or([0; 4]));
-    let mut total = u64::from(u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]));
-    let mut cd_offset = u64::from(field(eocd + 16));
-    if (total == u64::from(u16::MAX) || cd_offset == u64::from(u32::MAX)) && eocd >= 20 {
-        let locator = &bytes[eocd - 20..eocd];
-        if locator.starts_with(b"PK\x06\x07") {
-            // The locator's record offset is declared
-            // relative to the archive's own start, like
-            // every offset here: the record itself
-            // stands at-or-after it, shifted by whatever
-            // junk precedes the archive, and the reader
-            // finds it by searching forward (round 32,
-            // F4). The search stops at the locator.
-            let declared = u64::from_le_bytes(locator[8..16].try_into().unwrap_or([0; 8]));
-            let mut record_at = declared as usize;
-            let mut found = None;
-            while record_at + 4 <= eocd - 20 {
-                if bytes[record_at..].starts_with(b"PK\x06\x06") {
-                    found = Some(record_at);
-                    break;
-                }
-                record_at += 1;
-            }
-            if let Some(record_at) = found {
-                if record_at + 56 <= bytes.len() {
-                    let record = &bytes[record_at..record_at + 56];
-                    total = u64::from_le_bytes(record[32..40].try_into().unwrap_or([0; 8]));
-                    cd_offset = u64::from_le_bytes(record[48..56].try_into().unwrap_or([0; 8]));
-                }
-            }
-        }
-    }
-    if total == 0 {
-        return Vec::new();
-    }
-    // The directory's first record stands at-or-after
-    // the declared offset, the reader's own derivation
-    // (round 32, F4): junk prepended before the archive
-    // shifts every declared offset by the same amount,
-    // and a scan that starts exactly at the declared
-    // offset starts inside the last entry's body,
-    // breaks on its first check, and returns no spots —
-    // no duplicate check happened at all, and the
-    // importer's map served the last copy. The distance
-    // from the declared offset to the first record that
-    // stands is the archive offset, and it applies to
+    // The directory's location is the workspace's one
+    // derivation (ob_model::zip_directory, round 33,
+    // F3): arithmetic from the end record's position
+    // and declared sizes, through its zip64 record
+    // where the plain fields are sentinels — never a
+    // forward hunt for the first signature at-or-after
+    // the declared offset, which signature bytes in a
+    // stored entry's tail could poison for the scan
+    // and the reader alike (round 32, F4's hunt is the
+    // shared fallback for a directory that is not
+    // arithmetically derivable, stated in that one
+    // place). The archive offset it derives applies to
     // the local offsets in the records just as the
     // reader applies it.
-    let mut at = cd_offset as usize;
-    let mut cd_start = None;
-    while at + 4 <= eocd {
-        if bytes[at..].starts_with(b"PK\x01\x02") {
-            cd_start = Some(at);
-            break;
-        }
-        at += 1;
-    }
-    let Some(cd_start) = cd_start else {
+    let Some(directory) = ob_model::zip_directory::central_directory(bytes) else {
         return Vec::new();
     };
-    let archive_offset = (cd_start as u64).saturating_sub(cd_offset);
+    if directory.total == 0 {
+        return Vec::new();
+    }
+    let total = directory.total;
+    let archive_offset = directory.archive_offset;
     let mut out: Vec<(String, RawSpot)> = Vec::new();
-    let mut at = cd_start;
+    let mut at = directory.cd_start;
     for _ in 0..total {
         if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
             break;
@@ -732,6 +677,18 @@ fn disagreeing_duplicate_part(bytes: &[u8]) -> Option<String> {
 }
 
 pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, String> {
+    // One prefix-free view of the package for both the
+    // reader and the duplicate scan below (round 33,
+    // F3): a shifted package's junk is cut away by the
+    // shared derivation, so neither consumer ever
+    // traverses the window between the declared
+    // directory offset and the real directory, where
+    // signature bytes in a stored part's tail used to
+    // poison both. The dump still counts the bytes as
+    // they arrived, junk included.
+    let source_bytes = bytes.len();
+    let view = ob_model::zip_directory::prefix_free(bytes);
+    let bytes: &[u8] = &view;
     let cursor = std::io::Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(cursor)
         .map_err(|e| format!("that is not an IDML package (a zip of XML): {e}"))?;
@@ -1000,7 +957,7 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
         schema_version: DUMP_SCHEMA_VERSION,
         source_kind: SourceKind::Idml,
         source_name: source_name.to_string(),
-        source_bytes: bytes.len(),
+        source_bytes,
         extractor: "openbulletin-idml".into(),
         pages,
         spans,
@@ -1290,6 +1247,114 @@ mod tests {
         let dump = dump_from_idml(&bytes, "shifted.idml").expect("a shifted package loads");
         assert_eq!(dump.spans.len(), 2);
         assert_eq!(dump.spans[0].text, "Welcome to worship this morning");
+    }
+
+    /// A Stored filler entry's payload in the round-33
+    /// witness's shape: 600 bytes whose last 64 carry a
+    /// fake central-directory signature, as a fake
+    /// header whose name length is 0xFFFF, as a
+    /// well-formed fake record naming `JUNK`, or not at
+    /// all (the plain control).
+    fn tail_filler(shape: &str) -> Vec<u8> {
+        let mut payload = vec![b'A'; 600];
+        if shape != "plain" {
+            let at = 600 - 64;
+            payload[at..at + 4].copy_from_slice(b"PK\x01\x02");
+            if shape == "wellformed" {
+                for byte in &mut payload[at + 4..at + 46] {
+                    *byte = b'B';
+                }
+                payload[at + 28..at + 30].copy_from_slice(&4u16.to_le_bytes());
+                payload[at + 30..at + 34].copy_from_slice(&0u32.to_le_bytes());
+                payload[at + 46..at + 50].copy_from_slice(b"JUNK");
+            } else {
+                payload[at + 28..at + 30].copy_from_slice(&0xFFFFu16.to_le_bytes());
+            }
+        }
+        payload
+    }
+
+    /// The duplicate-story package with a Stored
+    /// filler entry LAST (its payload's tail is the
+    /// window between the declared directory offset
+    /// and the real directory once the package is
+    /// shifted), then shifted by 64 junk bytes.
+    fn idml_shifted_with_filler(stories: &[&str], filler: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let designmap =
+            r#"<?xml version="1.0"?><Document><Spread src="Spreads/Spread_u1.xml"/></Document>"#;
+        let styles = r#"<?xml version="1.0"?><Root><ParagraphStyleGroup><ParagraphStyle Self="ParagraphStyle/Body" PointSize="11"><Properties><AppliedFont type="string">Calibri</AppliedFont></Properties></ParagraphStyle></ParagraphStyleGroup></Root>"#;
+        let spread = r#"<?xml version="1.0"?><Spread><Page Self="u2" GeometricBounds="0 0 612 396" ItemTransform="1 0 0 1 0 0"/><TextFrame Self="u3" ParentStory="u9" ItemTransform="1 0 0 1 36 48"><Properties><PathGeometry><GeometryPathType><PathPointArray><PathPointType Anchor="0 0"/><PathPointType Anchor="324 0"/><PathPointType Anchor="324 200"/><PathPointType Anchor="0 200"/></PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame></Spread>"#;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            let stored = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            let mut parts: Vec<(&str, &[u8])> = vec![
+                ("designmap.xml", designmap.as_bytes()),
+                ("Resources/Styles.xml", styles.as_bytes()),
+            ];
+            if stories.len() > 1 {
+                parts.push(("Stories/Story_u9.xml", stories[0].as_bytes()));
+                parts.push(("Stories/Story_u9.xmX", stories[1].as_bytes()));
+            } else {
+                parts.push(("Stories/Story_u9.xml", stories[0].as_bytes()));
+            }
+            parts.push(("Spreads/Spread_u1.xml", spread.as_bytes()));
+            for (name, body) in &parts {
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(body).unwrap();
+            }
+            zip.start_file("filler.bin", stored).unwrap();
+            zip.write_all(filler).unwrap();
+            zip.finish().unwrap();
+        }
+        if stories.len() > 1 {
+            patch_entry_name(&mut buf, "Stories/Story_u9.xmX", "Stories/Story_u9.xml");
+        }
+        shifted(&buf, &[b'J'; 64])
+    }
+
+    #[test]
+    fn r33c_shifted_packages_with_signature_in_the_stored_tail_are_judged_like_unshifted() {
+        // Round 33, F3 (red team RT33-3): a shifted
+        // package whose last entry is Stored and whose
+        // payload carries PK\x01\x02 in the window
+        // between the declared directory offset and the
+        // real directory made ZipArchive::new itself
+        // fail ("Could not find EOCD"), so the whole
+        // package was refused before any duplicate
+        // judgment. Both witnessed payload shapes (and
+        // the plain shifted control) are judged exactly
+        // as their unshifted twins now: disagreeing
+        // duplicates refuse in the duplicate words, and
+        // the same shifted shape without duplicates
+        // loads. A genuinely corrupt package still
+        // refuses at the reader.
+        let story_a = one_paragraph_story("First story words");
+        let story_b = one_paragraph_story("Other story words");
+        for shape in ["plain", "fake", "wellformed"] {
+            let filler = tail_filler(shape);
+            let dup = idml_shifted_with_filler(&[&story_a, &story_b], &filler);
+            let err = dump_from_idml(&dup, "witness.idml")
+                .expect_err("shifted duplicates refuse, every shape");
+            assert!(
+                err.contains("two parts named Stories/Story_u9.xml"),
+                "{shape}: {err}"
+            );
+            assert!(err.contains("may be damaged"), "{shape}: {err}");
+            let single = idml_shifted_with_filler(&[&story_a], &filler);
+            let dump = dump_from_idml(&single, "witness.idml")
+                .expect("the shifted package without duplicates loads, every shape");
+            assert_eq!(dump.spans.len(), 1, "{shape}");
+            assert_eq!(dump.spans[0].text, "First story words", "{shape}");
+            assert_eq!(dump.source_bytes, single.len(), "{shape}");
+        }
+        let mut corrupt = idml_shifted_with_filler(&[&story_a], &tail_filler("plain"));
+        corrupt.truncate(corrupt.len() - 10);
+        let err = dump_from_idml(&corrupt, "corrupt.idml").expect_err("a corrupt package refuses");
+        assert!(err.contains("not an IDML package"), "{err}");
     }
 
     #[test]

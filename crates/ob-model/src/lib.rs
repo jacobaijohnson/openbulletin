@@ -15,6 +15,7 @@ pub mod hymns;
 pub mod markdown;
 pub mod rights;
 pub mod serving;
+pub mod zip_directory;
 
 pub use draft::{Badge, DraftOutcome, ImportItem};
 

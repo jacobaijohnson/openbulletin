@@ -1805,6 +1805,26 @@ pub(super) fn date_line_inner(
     // skips only the parses that provably fail; a
     // suffix within the bound is joined and parsed
     // whole, word for word as before.
+    //
+    // Round 33 (R33-D, F5): the premise the count
+    // rests on, stated where it is used. The count
+    // equals the reader's own token count exactly
+    // when `nothing_token` here is the predicate
+    // `parse_flexible_date` tokenizes by — and it
+    // is: both name ob-model's one `nothing_token`
+    // (see `nothing_token` in dates.rs, which
+    // delegates to it), so the agreement holds by
+    // construction. If a local copy ever reappears
+    // on either side and the copies drift, this
+    // skip silently becomes a moved reading: a
+    // fragment this count keeps but the reader
+    // would drop inflates the count and skips a
+    // suffix the reader could have read; a fragment
+    // this count drops but the reader keeps deflates
+    // it and the bound's proof collapses the other
+    // way. The fragment family both predicates
+    // judge is pinned in
+    // `r33d_nothing_token_is_the_flexible_readers_predicate`.
     let suffix_pieces: Vec<usize> = {
         let mut counts: Vec<usize> = vec![0; tokens.len() + 1];
         for i in (0..tokens.len()).rev() {

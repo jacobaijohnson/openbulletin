@@ -737,10 +737,13 @@ fn year_number(word: &str) -> Option<i32> {
 /// MAJOR-1): this is ob-model's own statement of the
 /// class `ob-extract` states as `is_format_char` in
 /// contribution.rs; the two statements name the same
-/// ranges, and the nothing-token class below is the
-/// same class contribution.rs states as
-/// `nothing_token` — restated here, minimally,
-/// because this crate cannot read that one.
+/// ranges. The nothing-token class below is built
+/// on this statement and, since round 33 (R33-D,
+/// F5), is the one statement both crates read:
+/// `ob-extract`'s contribution readers delegate to
+/// [`nothing_token`] instead of keeping a copy, so
+/// the class cannot drift between the flexible
+/// reader here and the contribution readers there.
 fn is_format_char(c: char) -> bool {
     matches!(
         c,
@@ -773,12 +776,23 @@ fn is_format_char(c: char) -> bool {
 /// characters, a token that is nothing but the
 /// bulletin's own separators standing alone ("*",
 /// "|", "**", "*|"), or a separator glued to nothing
-/// ("|\u{200b}", "*,"). The same class
-/// contribution.rs states as `nothing_token`; other
-/// boundary tokens (a standalone "•", "~", an emoji,
-/// a dash) are NOT nothings and keep their standing
-/// readings.
-fn nothing_token(raw: &str) -> bool {
+/// ("|\u{200b}", "*,"). Other boundary tokens (a
+/// standalone "•", "~", an emoji, a dash) are NOT
+/// nothings and keep their standing readings.
+///
+/// Public since round 33 (R33-D, F5) because this
+/// is the ONE statement of the class: the flexible
+/// reader below tokenizes by it, and `ob-extract`'s
+/// contribution readers — whose inner date reader
+/// counts suffix pieces by this predicate to decide
+/// which suffixes the flexible reader could ever
+/// read — call this function rather than a copy.
+/// The coupling the contribution suffix skip rests
+/// on therefore holds by construction; before this
+/// round the two crates kept identical copies and
+/// the premise was stated nowhere, so an edit here
+/// alone could have silently moved readings there.
+pub fn nothing_token(raw: &str) -> bool {
     let stripped: String = raw.chars().filter(|c| !is_format_char(*c)).collect();
     if stripped.len() < raw.len() && !stripped.chars().any(|c| c.is_alphanumeric()) {
         return true;

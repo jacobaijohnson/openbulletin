@@ -1161,22 +1161,31 @@ pub(super) fn cf_only_token(raw: &str) -> bool {
 /// nothing at every site that reads tokens —
 /// adjacency, walk-backs, slice bounds, date spans,
 /// and raw-text extraction alike — exactly as a
-/// Cf-only token has been since round 27. The class
-/// is stated once, here: other boundary tokens (a
-/// standalone "•", "~", an emoji, a dash) are NOT
-/// nothings — they keep their standing boundary
-/// readings wherever those stand, and a standalone
-/// ";" keeps its segment-boundary shape inside a
-/// date span (see `parse_date_prefix`).
+/// Cf-only token has been since round 27. Other
+/// boundary tokens (a standalone "•", "~", an
+/// emoji, a dash) are NOT nothings — they keep
+/// their standing boundary readings wherever those
+/// stand, and a standalone ";" keeps its
+/// segment-boundary shape inside a date span (see
+/// `parse_date_prefix`).
+///
+/// The class is stated once, in ob-model, and this
+/// function delegates to that statement (round 33,
+/// R33-D, F5): `parse_flexible_date` tokenizes by
+/// ob-model's `nothing_token`, so every reader here
+/// and the flexible reader there judge the same
+/// fragments by the same function, by construction.
+/// Until this round this crate kept its own copy,
+/// identical but coupled by nothing; the weekday
+/// fallback's suffix skip in `date_line_inner`
+/// (composition.rs) counts pieces by this predicate
+/// and is sound only while the count agrees with
+/// the reader's own tokenization — the premise that
+/// site now names. The classification of the
+/// fragment family both readers meet is pinned in
+/// `r33d_nothing_token_is_the_flexible_readers_predicate`.
 pub(super) fn nothing_token(raw: &str) -> bool {
-    if cf_only_token(raw) {
-        return true;
-    }
-    let stripped = strip_format_chars(raw);
-    let core = stripped.trim_matches([
-        '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}', '/',
-    ]);
-    !core.is_empty() && core.chars().all(|c| c == '*' || c == '|')
+    ob_model::nothing_token(raw)
 }
 
 /// One group token with its wrapping punctuation off,

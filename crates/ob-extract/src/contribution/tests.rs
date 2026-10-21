@@ -19118,6 +19118,80 @@ fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
 // leading 2,164 ms, bracket 1,052 ms, each ~2x per
 // doubling; one big group of same dates 1,369 ms
 // at 4,000, scaled linearly for its pin.
+//
+// Round 33 (R33-D, F4 = review MINOR-1): the
+// sentence above the measurements does not hold
+// on the numbers it cites, and the record is
+// corrected here. The five-times half held (the
+// absolute bounds stood at 5.0-5.7x the fixed
+// measurements), but "at most a third of the
+// un-fixed code's" was false on the recorded
+// numbers: cancelled-with-core's un-fixed figure
+// is 11,605 ms, a third of which is ~3.9 s
+// against a 20 s bound, and relative-cancelled's
+// is 35,199 ms, a third ~11.7 s against a 15 s
+// bound. The frames were also mixed — the
+// un-fixed figures are release, the fixed figures
+// and the bounds debug — and the absolute bounds
+// judged the machine as much as the code: the
+// review lane watched the headline pin fail at
+// 22.24 s against its 20 s bound in a contended
+// run and pass at 19.77 s standalone, for a shape
+// the fixed code parses in ~4 s. The pins below
+// therefore carry no seconds bound at all. Each
+// measures its witness and the absolute-group
+// control (the standing core followed by 8,000
+// plain "(November 1, 2026)" groups, the control
+// of the round-32 measurements above) interleaved
+// in the same run — three rounds of
+// control-then-witness, the best time of each
+// kept — and asserts the witness's best is under
+// a per-shape multiple of the control's best.
+// Load multiplies both sides of the ratio and
+// cancels; the best of three discards the rounds
+// a load spike lands in. The multiples and the
+// windows they sit in were measured in this
+// suite's own frame (debug, parse only, this VM)
+// in this round. Fixed code, interleaved
+// best-of-three at 8,000 groups, at load average
+// ~6-9 with other work building on the box:
+// cancelled absolute 6.7x control, cancelled
+// relative 5.2x, cancelled distinct 5.7x, one big
+// group of same dates 4.2x, of distinct dates
+// 5.3x, leading groups 3.4x, bracket groups 1.7x;
+// quieter probe runs (load ~2-3, best-of-three at
+// 4,000 groups and single runs at 8,000) put the
+// same ratios at 6.0-6.9x, 4.0-4.3x, 5.6-6.3x,
+// 3.8-4.2x, 4.6-4.9x, 3.1-3.3x, 1.6x. The
+// headline pair shows what the ratio buys: its
+// absolute times inflated from 4,137 ms / 679 ms
+// (best-of-three, load ~2) to 7,501 ms / 1,119 ms
+// in the contended interleaved run, while the
+// ratio moved only 6.1x to 6.7x. Un-fixed code
+// (the round-opening tree, 31c6f90, measured in a
+// scratch worktree in the same debug frame): at
+// 8,000 groups, single runs at load ~3.5 —
+// cancelled absolute 119,586 ms (124x the
+// control's 966 ms), cancelled relative
+// 250,167 ms (259x), cancelled distinct 76,796 ms
+// (~79x), one big group of same dates 231,280 ms
+// (239x), of distinct dates 17,931 ms (18.6x),
+// leading groups 36,711 ms (38x), bracket groups
+// 5,156 ms (5.3x); at 4,000 groups, best-of-three
+// at load ~2-3.3, the same ratios stood at 61x,
+// 158x, 59x, 169x, 8.6x, 16x, 2.7x. The bounds —
+// 20x, 20x, 20x, 20x, 10x, 9x, 3x in the pins'
+// order — sit between the fixed and un-fixed
+// ratios on every shape at the pinned size, with
+// at least ~1.7x of headroom on the fixed side
+// and ~1.7x of catch on the un-fixed side; the
+// bracket pin's window (fixed 1.7x, un-fixed
+// 5.3x, bound 3x) and the big-distinct pin's
+// (fixed 5.3x, un-fixed 18.6x, bound 10x) are the
+// family's narrowest and are recorded as such.
+// The release-frame ratios in the round-32
+// measurements above are kept as provenance only;
+// no bound below rests on them.
 
 #[test]
 fn r32c_cancelled_group_family_keeps_its_readings() {
@@ -19220,17 +19294,56 @@ fn r32c_cancelled_group_family_keeps_its_readings() {
     assert_eq!(c.keep_through, Some(nov(1)));
 }
 
+// Round 33 (R33-D, F4): the timing pins' shared
+// measurement. The control is the absolute-group
+// control of the pin block's header: the standing
+// core followed by 8,000 plain groups, the shape
+// that stood at control cost on both the fixed and
+// the un-fixed tree. Witness and control are parsed
+// interleaved, three rounds of control-then-witness,
+// and the best time of each is returned beside the
+// witness's last parse, so a pin judges the ratio
+// between them, never a wall-clock bound (see the
+// header for the measured windows each pin's
+// multiple sits in).
+fn r33d_absolute_group_control() -> String {
+    let groups = vec!["(November 1, 2026)"; 8000].join(" ");
+    format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n")
+}
+
+fn r33d_interleaved_best(
+    witness: &str,
+    control: &str,
+) -> (Contribution, std::time::Duration, std::time::Duration) {
+    let mut witness_best = std::time::Duration::MAX;
+    let mut control_best = std::time::Duration::MAX;
+    let mut parsed = None;
+    for _ in 0..3 {
+        let start = std::time::Instant::now();
+        parse_contribution(control, today()).expect("the control parses");
+        control_best = control_best.min(start.elapsed());
+        let start = std::time::Instant::now();
+        let c = parse_contribution(witness, today()).expect("parses");
+        witness_best = witness_best.min(start.elapsed());
+        parsed = Some(c);
+    }
+    (
+        parsed.expect("three rounds ran"),
+        witness_best,
+        control_best,
+    )
+}
+
 #[test]
 fn r32c_cancelled_groups_after_a_core_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026, cancelled)"; 8000].join(" ");
     let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r33d_absolute_group_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, Some(nov(1)));
     assert!(
-        elapsed < std::time::Duration::from_secs(20),
-        "the cancelled-with-core witness took {elapsed:?}"
+        witness_best < control_best * 20,
+        "the cancelled-with-core witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
     );
 }
 
@@ -19238,13 +19351,12 @@ fn r32c_cancelled_groups_after_a_core_parse_without_the_cliff() {
 fn r32c_cancelled_relative_groups_after_a_core_parse_without_the_cliff() {
     let groups = vec!["(next Sunday, cancelled)"; 8000].join(" ");
     let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r33d_absolute_group_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, Some(nov(1)));
     assert!(
-        elapsed < std::time::Duration::from_secs(15),
-        "the relative-cancelled-with-core witness took {elapsed:?}"
+        witness_best < control_best * 20,
+        "the relative-cancelled-with-core witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
     );
 }
 
@@ -19272,13 +19384,12 @@ fn r32c_distinct_cancelled_groups_after_a_core_parse_without_the_cliff() {
         groups.push_str(&format!("({m} {d}, {y}, cancelled) "));
     }
     let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r33d_absolute_group_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, Some(nov(1)));
     assert!(
-        elapsed < std::time::Duration::from_secs(25),
-        "the distinct-cancelled-with-core witness took {elapsed:?}"
+        witness_best < control_best * 20,
+        "the distinct-cancelled-with-core witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
     );
 }
 
@@ -19286,13 +19397,12 @@ fn r32c_distinct_cancelled_groups_after_a_core_parse_without_the_cliff() {
 fn r32c_one_big_group_of_same_dates_parses_without_the_cliff() {
     let inner = "November 1, 2026, ".repeat(8000);
     let text = format!("For Sunday: November 1, 2026 ({inner})\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r33d_absolute_group_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, Some(nov(1)));
     assert!(
-        elapsed < std::time::Duration::from_secs(15),
-        "the one-big-group same-dates witness took {elapsed:?}"
+        witness_best < control_best * 20,
+        "the one-big-group same-dates witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
     );
 }
 
@@ -19320,13 +19430,12 @@ fn r32c_one_big_group_of_distinct_dates_parses_without_the_cliff() {
         inner.push_str(&format!("{m} {d}, {y}, "));
     }
     let text = format!("For Sunday: November 1, 2026 ({inner})\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r33d_absolute_group_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, Some(nov(1)));
     assert!(
-        elapsed < std::time::Duration::from_secs(25),
-        "the one-big-group distinct-dates witness took {elapsed:?}"
+        witness_best < control_best * 10,
+        "the one-big-group distinct-dates witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 10x the control)"
     );
 }
 
@@ -19334,14 +19443,13 @@ fn r32c_one_big_group_of_distinct_dates_parses_without_the_cliff() {
 fn r32c_leading_groups_before_a_relative_core_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026)"; 8000].join(" ");
     let text = format!("For Sunday: {groups} next Sunday\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r33d_absolute_group_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, None);
     assert_eq!(c.for_sunday_parenthesized_dates.len(), 8000);
     assert!(
-        elapsed < std::time::Duration::from_secs(12),
-        "the leading-groups witness took {elapsed:?}"
+        witness_best < control_best * 9,
+        "the leading-groups witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 9x the control)"
     );
 }
 
@@ -19349,14 +19457,117 @@ fn r32c_leading_groups_before_a_relative_core_parse_without_the_cliff() {
 fn r32c_bracket_groups_after_a_core_parse_without_the_cliff() {
     let groups = vec!["[November 1, 2026]"; 8000].join(" ");
     let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r33d_absolute_group_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, Some(nov(1)));
     assert!(
-        elapsed < std::time::Duration::from_secs(6),
-        "the bracket-group witness took {elapsed:?}"
+        witness_best < control_best * 3,
+        "the bracket-group witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 3x the control)"
     );
+}
+
+#[test]
+fn r33d_nothing_token_is_the_flexible_readers_predicate() {
+    // Round 33 (R33-D, F5 = review MINOR-2): the
+    // weekday fallback's suffix skip in
+    // `date_line_inner` counts suffix pieces by
+    // contribution's `nothing_token`, and the count
+    // is sound exactly when that predicate agrees
+    // with the one `parse_flexible_date` tokenizes
+    // by — until this round a private copy in
+    // ob-model, identical but coupled by nothing.
+    // The predicate is now shared: contribution's
+    // `nothing_token` delegates to
+    // `ob_model::nothing_token`, the very function
+    // the flexible reader calls, so the agreement
+    // holds by construction. This pin holds both
+    // names to the same classification over the
+    // fragment family the fallback meets — the
+    // comma-split pieces, the format-char classes,
+    // the `*`/`|` cores, and the trim variants both
+    // readers handle — so an edit that moves the
+    // shared class, or reintroduces a copy on
+    // either side, fails here instead of silently
+    // moving a reading; the family is then run
+    // through the fallback itself, below.
+    for (fragment, want) in [
+        ("*", true),
+        ("|", true),
+        ("**", true),
+        ("*|", true),
+        ("|*", true),
+        ("*,", true),
+        ("|\u{200b}", true),
+        ("\u{200b}", true),
+        ("\u{200b}\u{feff}", true),
+        ("(*)", true),
+        ("[|]", true),
+        ("{**}", true),
+        ("(*|)", true),
+        ("-*-", true),
+        (":|:", true),
+        (";*;", true),
+        ("/*/", true),
+        ("\u{2014}|\u{2014}", true),
+        ("\u{2013}*\u{2013}", true),
+        ("(*)\u{200b}", true),
+        ("", false),
+        ("•", false),
+        ("~", false),
+        ("\u{2014}", false),
+        ("-", false),
+        (";", false),
+        (",", false),
+        ("()", false),
+        ("November", false),
+        ("1", false),
+        ("2026", false),
+        ("11/1", false),
+        ("*a", false),
+        ("a*", false),
+        ("\u{200b}x", false),
+        ("x\u{200b}", false),
+        ("*\u{200b}x", false),
+        ("🎉", false),
+    ] {
+        assert_eq!(
+            nothing_token(fragment),
+            want,
+            "{fragment:?}: contribution's classification"
+        );
+        assert_eq!(
+            ob_model::nothing_token(fragment),
+            want,
+            "{fragment:?}: the flexible reader's classification"
+        );
+    }
+    // Through the fallback itself: a weekday word
+    // standing in front of a date, with other words
+    // before it, is read by the suffix loop — the
+    // loop whose skip the count guards. Each suffix
+    // below carries nothing fragments the reader
+    // drops: under the reader's count the suffix
+    // holds three pieces (a month, a day, a year)
+    // and reads; were the fragments counted as
+    // pieces, the count would pass four and the
+    // skip would refuse the suffix, and the date
+    // would not read at all.
+    for (line, want) in [
+        ("Bring a friend Friday * | ** October 25, 2026", oct(25)),
+        (
+            "Bring a friend Friday |\u{200b} \u{200b} (*), October 25, 2026",
+            oct(25),
+        ),
+        ("Bring a friend Friday *, **, November 1, 2026", nov(1)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(want), "{line}: the date reads");
+        assert_eq!(
+            c.named_weekday_mismatch, None,
+            "{line}: no mismatch is recorded"
+        );
+    }
 }
 
 #[test]

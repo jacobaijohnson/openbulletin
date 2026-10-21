@@ -2326,6 +2326,99 @@ pub(super) fn balanced_spans(text: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// `text` with the stray group marks the shared
+/// stack walk does not close set to spaces, in
+/// the shapes scoped below, when any stand
+/// (round 35, R35-F, F6, as adjudicated
+/// 2026-10-21): an opener the walk never closes is
+/// a stray mark, inert at the plain readers — the
+/// treatment an unmatched "[" or "{" already
+/// received, because `parse_date_prefix`'s edge
+/// trim stops only at the two parentheses. A date
+/// token wearing an unclosed "(" was therefore not
+/// a signal while its bracket and brace twins read,
+/// and that one asymmetry was the whole live
+/// mechanism of the malformed family: the group
+/// machinery already forms no group for these
+/// shapes (the walk closes nothing, the reverse
+/// walk finds no trailing group, the flat search
+/// passes the openers over). Setting the stray
+/// marks to spaces hands the composed readers the
+/// text the ruling names — the same words with
+/// their unmatched marks removed — while a
+/// walk-closed group's marks keep their bytes, so
+/// its edge keeps the structural effect the paren
+/// rule's designed reliance stands on (the
+/// raw-text scans still meet a parse failure at a
+/// real group edge, and a closed group's inner
+/// date is never a plain signal). The spacing is
+/// scoped to the adjudicated change surface, in
+/// two shapes. The first is the paren pair itself:
+/// every unmatched "(" is spaced, and a stray ")"
+/// is spaced where it stands glued to the head of
+/// a word (")November"), wearing the word exactly
+/// as an unmatched opener does; a stray closer at
+/// a word's tail or standing alone keeps its
+/// standing effect untouched, as the round-35
+/// battery's stray-close cells hold. The second
+/// shape is an unmatched "[" or "{" standing
+/// glued to the head of a walk-closed group
+/// ("[(November 8, 2026), cancelled)"): there the
+/// mark wears the real group's edge exactly as
+/// "(November" wears a date token's, and it is
+/// spaced with the group's own marks left
+/// standing. An unmatched bracket that opens over
+/// WORDS keeps its bytes: the bracket span
+/// machinery has its own standing reading for
+/// unclosed spans (the R26-C restatement mask
+/// binds an unclosed bracket span as a closed one,
+/// re-affirmed at R34-E), and that reading is not
+/// this ruling's to move. The walk is
+/// `balanced_spans`' own, statement for statement,
+/// except that what it records is the marks
+/// themselves.
+pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut closed_openers: Vec<usize> = Vec::new();
+    let mut stray: Vec<usize> = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        if is_group_opener(b) {
+            stack.push(i);
+            continue;
+        }
+        if is_group_closer(b) {
+            if stack
+                .last()
+                .is_some_and(|&open| group_closer(bytes[open]) == b)
+            {
+                closed_openers.push(stack.pop().expect("a matched opener stands"));
+            } else if b == b')'
+                && text[i + 1..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric())
+            {
+                stray.push(i);
+            }
+        }
+    }
+    stray.extend(stack.iter().copied().filter(|&open| {
+        bytes[open] == b'('
+            || (open + 1 < bytes.len()
+                && is_group_opener(bytes[open + 1])
+                && closed_openers.contains(&(open + 1)))
+    }));
+    if stray.is_empty() {
+        return None;
+    }
+    let mut spaced = bytes.to_vec();
+    for p in stray {
+        spaced[p] = b' ';
+    }
+    Some(String::from_utf8(spaced).expect("only ASCII delimiter bytes were set to spaces"))
+}
+
 /// The first top-level parenthesized span of
 /// `text`, if one closes (round 32, R32-C, F3):
 /// `balanced_spans`' first entry, read by the same
@@ -4414,6 +4507,14 @@ pub(super) fn trailing_dates_after_core_governance(
     // back up as the keep-through date.
     let respaced = spaced_glued_weekday_garnish(text);
     let text: &str = respaced.as_deref().unwrap_or(text);
+    // Round 35 (R35-F, F6): the same stray-mark
+    // spacing as the date lines (see `date_line`),
+    // for the same reason — the fallback composes
+    // the line's groups against its core, and a
+    // malformed group's words are bare words there
+    // too.
+    let stray_spaced = stray_mark_spaced(text);
+    let text: &str = stray_spaced.as_deref().unwrap_or(text);
     if let Some(reading) = whole_line_composition(text, today, anchor) {
         return reading.date.into_iter().collect();
     }
@@ -4630,6 +4731,20 @@ pub(super) fn date_line(
     let effective_raw: Option<String> = match &respaced {
         Some(spaced) => Some(spaced.clone()),
         None => raw.clone(),
+    };
+    // Round 35 (R35-F, F6, as adjudicated
+    // 2026-10-21): the whole line is likewise read
+    // with its stray marks set to spaces (see
+    // `stray_mark_spaced`) — a malformed group's
+    // words judge as the bare words they are, at
+    // every reader below, while walk-closed groups
+    // keep their marks and their structural effect.
+    let effective_raw: Option<String> = match effective_raw {
+        Some(text) => match stray_mark_spaced(&text) {
+            Some(spaced) => Some(spaced),
+            None => Some(text),
+        },
+        None => None,
     };
     let raw: &Option<String> = &effective_raw;
     let (date, weekday_mismatch) = date_line_inner(raw, today);

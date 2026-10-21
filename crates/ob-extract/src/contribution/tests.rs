@@ -21718,3 +21718,801 @@ fn r35c_garnish_before_an_apostrophe_or_typographic_quote_is_judged_in_both_form
         assert_eq!(c.named_weekday_mismatch, None, "{bare_agree}");
     }
 }
+
+// ---- Round 35 (R35-F, F6, as adjudicated
+// 2026-10-21): malformed groups judge by the
+// bare reading of their words. The summary below
+// is the step-1 battery probe's own format (the
+// red team's summary shape), so a pin here compares
+// every field the battery compared.
+
+fn r35f_date(d: &Option<SimpleDate>) -> String {
+    match d {
+        Some(x) => format!("{}-{:02}-{:02}", x.year, x.month, x.day),
+        None => "None".to_string(),
+    }
+}
+
+fn r35f_summary(c: &Contribution) -> String {
+    let wm = c
+        .named_weekday_mismatch
+        .as_ref()
+        .map(|m| format!("{}@{}", m.named, r35f_date(&Some(m.date))));
+    let kwm = c
+        .keep_through_weekday_mismatch
+        .as_ref()
+        .map(|m| format!("{}@{}", m.named, r35f_date(&Some(m.date))));
+    let parens: Vec<String> = c
+        .for_sunday_parenthesized_dates
+        .iter()
+        .map(|d| r35f_date(&Some(*d)))
+        .collect();
+    let secs: Vec<String> = c
+        .for_sunday_second_dates
+        .iter()
+        .map(|d| r35f_date(&Some(*d)))
+        .collect();
+    let ksecs: Vec<String> = c
+        .keep_through_second_dates
+        .iter()
+        .map(|d| r35f_date(&Some(*d)))
+        .collect();
+    format!(
+        "for={} keep={} wm={:?} kwm={:?} inwords={:?} after={:?} paren={} parens={:?} pmis={:?} kmis={:?} sec={} secs={:?} ksec={} ksecs={:?}",
+        r35f_date(&c.for_date),
+        r35f_date(&c.keep_through),
+        wm,
+        kwm,
+        c.for_sunday_in_words,
+        c.for_sunday_after_in_words,
+        r35f_date(&c.for_sunday_parenthesized_date),
+        parens,
+        c.for_sunday_parenthesized_mismatch,
+        c.keep_through_parenthesized_mismatch,
+        r35f_date(&c.for_sunday_second_date),
+        secs,
+        r35f_date(&c.keep_through_second_date),
+        ksecs,
+    )
+}
+
+fn r35f_for(line: &str) -> String {
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    r35f_summary(&c)
+}
+
+const R35F_BATTERY: &[(&str, &str, &str)] = &[
+    (
+        "rt-cancel-date-after-core/paren",
+        "November 1, 2026 (November 8, 2026, cancelled)",
+        "November 1, 2026 (November 8, 2026, cancelled)",
+    ),
+    (
+        "rt-cancel-date-after-core/bracket",
+        "November 1, 2026 [November 8, 2026, cancelled]",
+        "November 1, 2026 [November 8, 2026, cancelled]",
+    ),
+    (
+        "rt-cancel-date-after-core/brace",
+        "November 1, 2026 {November 8, 2026, cancelled}",
+        "November 1, 2026 {November 8, 2026, cancelled}",
+    ),
+    (
+        "rt-cancel-date-after-core/mix-([)]",
+        "November 1, 2026 (November 8, 2026, cancelled]",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-cancel-date-after-core/mix-[(])",
+        "November 1, 2026 [November 8, 2026, cancelled)",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-cancel-date-after-core/mix-{(})",
+        "November 1, 2026 {November 8, 2026, cancelled)",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-cancel-date-after-core/mix-({])",
+        "November 1, 2026 (November 8, 2026, cancelled}",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-cancel-date-after-core/mix-{[}]",
+        "November 1, 2026 [November 8, 2026, cancelled}",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-cancel-date-after-core/mix-{(])",
+        "November 1, 2026 {November 8, 2026, cancelled]",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-cancel-word-after-core/paren",
+        "November 1, 2026 (cancelled)",
+        "November 1, 2026 (cancelled)",
+    ),
+    (
+        "rt-cancel-word-after-core/bracket",
+        "November 1, 2026 [cancelled]",
+        "November 1, 2026 [cancelled]",
+    ),
+    (
+        "rt-cancel-word-after-core/brace",
+        "November 1, 2026 {cancelled}",
+        "November 1, 2026 {cancelled}",
+    ),
+    (
+        "rt-cancel-word-after-core/mix-([)]",
+        "November 1, 2026 (cancelled]",
+        "November 1, 2026 cancelled",
+    ),
+    (
+        "rt-cancel-word-after-core/mix-[(])",
+        "November 1, 2026 [cancelled)",
+        "November 1, 2026 cancelled",
+    ),
+    (
+        "rt-plain-date-after-core/paren",
+        "November 1, 2026 (November 8, 2026)",
+        "November 1, 2026 (November 8, 2026)",
+    ),
+    (
+        "rt-plain-date-after-core/bracket",
+        "November 1, 2026 [November 8, 2026]",
+        "November 1, 2026 [November 8, 2026]",
+    ),
+    (
+        "rt-plain-date-after-core/brace",
+        "November 1, 2026 {November 8, 2026}",
+        "November 1, 2026 {November 8, 2026}",
+    ),
+    (
+        "rt-nested-cross/[(X)]",
+        "November 1, 2026 [(November 8, 2026, cancelled)]",
+        "November 1, 2026 [(November 8, 2026, cancelled)]",
+    ),
+    (
+        "rt-nested-cross/([X])",
+        "November 1, 2026 ([November 8, 2026, cancelled])",
+        "November 1, 2026 ([November 8, 2026, cancelled])",
+    ),
+    (
+        "rt-nested-cross/{[X]}",
+        "November 1, 2026 {[November 8, 2026, cancelled]}",
+        "November 1, 2026 {[November 8, 2026, cancelled]}",
+    ),
+    (
+        "rt-nested-cross/[{X}]",
+        "November 1, 2026 [{November 8, 2026, cancelled}]",
+        "November 1, 2026 [{November 8, 2026, cancelled}]",
+    ),
+    (
+        "rt-nested-cross/([X)]",
+        "November 1, 2026 ([November 8, 2026, cancelled)]",
+        "November 1, 2026 [November 8, 2026, cancelled]",
+    ),
+    (
+        "rt-nested-cross/[(X])",
+        "November 1, 2026 [(November 8, 2026, cancelled])",
+        "November 1, 2026 (November 8, 2026, cancelled)",
+    ),
+    (
+        "rt-nested-cross/((X))",
+        "November 1, 2026 ((November 8, 2026, cancelled))",
+        "November 1, 2026 ((November 8, 2026, cancelled))",
+    ),
+    (
+        "rt-nested-cross/[[X]]",
+        "November 1, 2026 [[November 8, 2026, cancelled]]",
+        "November 1, 2026 [[November 8, 2026, cancelled]]",
+    ),
+    (
+        "rt-nested-cross/{{X}}",
+        "November 1, 2026 {{November 8, 2026, cancelled}}",
+        "November 1, 2026 {{November 8, 2026, cancelled}}",
+    ),
+    (
+        "rt-cancel-token-inside-inner/paren-inner-bracket",
+        "November 1, 2026 (November 8, 2026, [cancelled])",
+        "November 1, 2026 (November 8, 2026, [cancelled])",
+    ),
+    (
+        "rt-cancel-token-inside-inner/paren-inner-paren",
+        "November 1, 2026 (November 8, 2026, (cancelled))",
+        "November 1, 2026 (November 8, 2026, (cancelled))",
+    ),
+    (
+        "rt-cancel-token-inside-inner/bracket-inner-paren",
+        "November 1, 2026 [November 8, 2026, (cancelled)]",
+        "November 1, 2026 [November 8, 2026, (cancelled)]",
+    ),
+    (
+        "rt-cancel-token-inside-inner/paren-inner-brace",
+        "November 1, 2026 (November 8, 2026, {cancelled})",
+        "November 1, 2026 (November 8, 2026, {cancelled})",
+    ),
+    (
+        "rt-cancel-token-inside-inner/bracket-inner-bracket",
+        "November 1, 2026 [November 8, 2026, [cancelled]]",
+        "November 1, 2026 [November 8, 2026, [cancelled]]",
+    ),
+    (
+        "rt-cancel-token-inside-inner/brace-inner-paren",
+        "November 1, 2026 {November 8, 2026, (cancelled)}",
+        "November 1, 2026 {November 8, 2026, (cancelled)}",
+    ),
+    (
+        "rt-cancel-token-inside-inner/lead-bracket-in-paren",
+        "November 1, 2026 ([cancelled] November 8, 2026)",
+        "November 1, 2026 ([cancelled] November 8, 2026)",
+    ),
+    (
+        "rt-cancel-token-inside-inner/lead-paren-in-bracket",
+        "November 1, 2026 [(cancelled) November 8, 2026]",
+        "November 1, 2026 [(cancelled) November 8, 2026]",
+    ),
+    (
+        "rt-cancel-token-inside-inner/double-bracket-inner",
+        "November 1, 2026 (November 8, 2026, [[cancelled]])",
+        "November 1, 2026 (November 8, 2026, [[cancelled]])",
+    ),
+    (
+        "rt-cancel-token-inside-inner/plain-twin",
+        "November 1, 2026 (November 8, 2026, cancelled)",
+        "November 1, 2026 (November 8, 2026, cancelled)",
+    ),
+    (
+        "rt-unbalanced/unclosed-bracket",
+        "November 1, 2026 [November 8, 2026, cancelled",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-unbalanced/unclosed-paren",
+        "November 1, 2026 (November 8, 2026, cancelled",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-unbalanced/stray-close-bracket",
+        "November 1, 2026 November 8, 2026, cancelled]",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-unbalanced/double-open-mix",
+        "November 1, 2026 ((November 8, 2026, cancelled]",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-unbalanced/bracket-then-2close",
+        "November 1, 2026 [November 8, 2026, cancelled))",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-unbalanced/paren-then-bracketclose",
+        "November 1, 2026 (November 8, 2026, cancelled]]",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-unbalanced/brace-unclosed",
+        "November 1, 2026 {November 8, 2026, cancelled",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-unbalanced/close-then-open",
+        "November 1, 2026 )November 8, 2026, cancelled(",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rt-cancel-before-core/bracket",
+        "[November 8, 2026, cancelled] November 1, 2026",
+        "[November 8, 2026, cancelled] November 1, 2026",
+    ),
+    (
+        "rt-cancel-before-core/paren",
+        "(November 8, 2026, cancelled) November 1, 2026",
+        "(November 8, 2026, cancelled) November 1, 2026",
+    ),
+    (
+        "rt-cancel-before-core/brace",
+        "{November 8, 2026, cancelled} November 1, 2026",
+        "{November 8, 2026, cancelled} November 1, 2026",
+    ),
+    (
+        "rt-cancel-before-core/mix",
+        "[November 8, 2026, cancelled) November 1, 2026",
+        "November 8, 2026, cancelled November 1, 2026",
+    ),
+    (
+        "rt-range-in-group/paren",
+        "November 1, 2026 (November 8, 2026 through November 15, 2026, cancelled)",
+        "November 1, 2026 (November 8, 2026 through November 15, 2026, cancelled)",
+    ),
+    (
+        "rt-range-in-group/bracket",
+        "November 1, 2026 [November 8, 2026 through November 15, 2026, cancelled]",
+        "November 1, 2026 [November 8, 2026 through November 15, 2026, cancelled]",
+    ),
+    (
+        "rt-range-in-group/brace",
+        "November 1, 2026 {November 8, 2026 through November 15, 2026, cancelled}",
+        "November 1, 2026 {November 8, 2026 through November 15, 2026, cancelled}",
+    ),
+    (
+        "rt-range-in-group/mix",
+        "November 1, 2026 [November 8, 2026 through November 15, 2026, cancelled)",
+        "November 1, 2026 November 8, 2026 through November 15, 2026, cancelled",
+    ),
+    (
+        "rt-alternatives-in-group/paren",
+        "November 1, 2026 (November 8, 2026 or November 15, 2026, cancelled)",
+        "November 1, 2026 (November 8, 2026 or November 15, 2026, cancelled)",
+    ),
+    (
+        "rt-alternatives-in-group/bracket",
+        "November 1, 2026 [November 8, 2026 or November 15, 2026, cancelled]",
+        "November 1, 2026 [November 8, 2026 or November 15, 2026, cancelled]",
+    ),
+    (
+        "rt-alternatives-in-group/brace",
+        "November 1, 2026 {November 8, 2026 or November 15, 2026, cancelled}",
+        "November 1, 2026 {November 8, 2026 or November 15, 2026, cancelled}",
+    ),
+    (
+        "rt-relative-in-group/paren",
+        "November 1, 2026 (next Sunday, cancelled)",
+        "November 1, 2026 (next Sunday, cancelled)",
+    ),
+    (
+        "rt-relative-in-group/bracket",
+        "November 1, 2026 [next Sunday, cancelled]",
+        "November 1, 2026 [next Sunday, cancelled]",
+    ),
+    (
+        "rt-relative-in-group/brace",
+        "November 1, 2026 {next Sunday, cancelled}",
+        "November 1, 2026 {next Sunday, cancelled}",
+    ),
+    (
+        "rt-relative-in-group/mix",
+        "November 1, 2026 [next Sunday, cancelled)",
+        "November 1, 2026 next Sunday, cancelled",
+    ),
+    (
+        "rt-core-in-group-cancel-outside/paren",
+        "(November 1, 2026) cancelled",
+        "(November 1, 2026) cancelled",
+    ),
+    (
+        "rt-core-in-group-cancel-outside/bracket",
+        "[November 1, 2026] cancelled",
+        "[November 1, 2026] cancelled",
+    ),
+    (
+        "rt-core-in-group-cancel-outside/brace",
+        "{November 1, 2026} cancelled",
+        "{November 1, 2026} cancelled",
+    ),
+    (
+        "rt-group-in-group-plain/bracket-of-paren",
+        "November 1, 2026 [(November 8, 2026)]",
+        "November 1, 2026 [(November 8, 2026)]",
+    ),
+    (
+        "rt-group-in-group-plain/paren-of-bracket",
+        "November 1, 2026 ([November 8, 2026])",
+        "November 1, 2026 ([November 8, 2026])",
+    ),
+    (
+        "rt-group-in-group-plain/brace-of-bracket",
+        "November 1, 2026 {[November 8, 2026]}",
+        "November 1, 2026 {[November 8, 2026]}",
+    ),
+    (
+        "rv-mixed/mix-paren-open-bracket-close-cancel",
+        "November 1, 2026 (November 8, 2026, cancelled]",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rv-mixed/mix-bracket-open-paren-close-cancel",
+        "November 1, 2026 [November 8, 2026, cancelled)",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rv-mixed/mix-brace-open-paren-close-cancel",
+        "November 1, 2026 {November 8, 2026, cancelled)",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rv-mixed/mix-paren-open-brace-close-cancel",
+        "November 1, 2026 (November 8, 2026, cancelled}",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rv-mixed/mix-brace-open-bracket-close-cancel",
+        "November 1, 2026 {November 8, 2026, cancelled]",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rv-mixed/mix-bracket-open-brace-close-cancel",
+        "November 1, 2026 [November 8, 2026, cancelled}",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rv-mixed/ctl-paren-cancel",
+        "November 1, 2026 (November 8, 2026, cancelled)",
+        "November 1, 2026 (November 8, 2026, cancelled)",
+    ),
+    (
+        "rv-mixed/ctl-bracket-cancel",
+        "November 1, 2026 [November 8, 2026, cancelled]",
+        "November 1, 2026 [November 8, 2026, cancelled]",
+    ),
+    (
+        "rv-mixed/ctl-brace-cancel",
+        "November 1, 2026 {November 8, 2026, cancelled}",
+        "November 1, 2026 {November 8, 2026, cancelled}",
+    ),
+    (
+        "rv-mixed/mix-cancelword-paren-bracket",
+        "November 1, 2026 (cancelled]",
+        "November 1, 2026 cancelled",
+    ),
+    (
+        "rv-mixed/mix-cancelword-bracket-paren",
+        "November 1, 2026 [cancelled)",
+        "November 1, 2026 cancelled",
+    ),
+    (
+        "rv-mixed/mix-cancelword-brace-paren",
+        "November 1, 2026 {cancelled)",
+        "November 1, 2026 cancelled",
+    ),
+    (
+        "rv-mixed/ctl-cancelword-paren",
+        "November 1, 2026 (cancelled)",
+        "November 1, 2026 (cancelled)",
+    ),
+    (
+        "rv-mixed/ctl-cancelword-bracket",
+        "November 1, 2026 [cancelled]",
+        "November 1, 2026 [cancelled]",
+    ),
+    (
+        "rv-mixed/unclosed-bracket-cancel",
+        "November 1, 2026 [November 8, 2026, cancelled",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rv-mixed/unclosed-paren-cancel",
+        "November 1, 2026 (November 8, 2026, cancelled",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rv-mixed/unclosed-bracket-cancelword",
+        "November 1, 2026 [cancelled",
+        "November 1, 2026 cancelled",
+    ),
+    (
+        "rv-mixed/unclosed-paren-cancelword",
+        "November 1, 2026 (cancelled",
+        "November 1, 2026 cancelled",
+    ),
+    (
+        "rv-mixed/mix-outer-inner-ok",
+        "November 1, 2026 [(November 8, 2026), cancelled)",
+        "November 1, 2026 (November 8, 2026), cancelled",
+    ),
+    (
+        "rv-mixed/mix-outer-inner-ok2",
+        "November 1, 2026 ([November 8, 2026], cancelled]",
+        "November 1, 2026 [November 8, 2026], cancelled",
+    ),
+    (
+        "rv-mixed/ctl-garnish-glued-paren",
+        "November 1, 2026(Monday)",
+        "November 1, 2026(Monday)",
+    ),
+    (
+        "rv-mixed/ctl-garnish-glued-bracket",
+        "November 1, 2026[Monday]",
+        "November 1, 2026[Monday]",
+    ),
+    (
+        "rv-mixed/extra-close-bracket-group",
+        "November 1, 2026 [November 8, 2026, cancelled]]",
+        "November 1, 2026 [November 8, 2026, cancelled]",
+    ),
+    (
+        "rv-mixed/extra-close-paren-group",
+        "November 1, 2026 (November 8, 2026, cancelled))",
+        "November 1, 2026 (November 8, 2026, cancelled)",
+    ),
+    (
+        "rv-mixed/extra-close-mixed-after-bracket",
+        "November 1, 2026 [November 8, 2026, cancelled])",
+        "November 1, 2026 [November 8, 2026, cancelled]",
+    ),
+    (
+        "rv-mixed/extra-close-mixed-after-paren",
+        "November 1, 2026 (November 8, 2026, cancelled)]",
+        "November 1, 2026 (November 8, 2026, cancelled)",
+    ),
+    (
+        "rv-bare/bare-cancelled-after",
+        "November 1, 2026 cancelled",
+        "November 1, 2026 cancelled",
+    ),
+    (
+        "rv-bare/bare-cancelled-comma-after",
+        "November 1, 2026, cancelled",
+        "November 1, 2026, cancelled",
+    ),
+    (
+        "rv-bare/bare-cancel-date-after",
+        "November 1, 2026 November 8, 2026, cancelled",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rv-bare/unclosed-brace-cancel",
+        "November 1, 2026 {November 8, 2026, cancelled",
+        "November 1, 2026 November 8, 2026, cancelled",
+    ),
+    (
+        "rv-bare/unclosed-brace-cancelword",
+        "November 1, 2026 {cancelled",
+        "November 1, 2026 cancelled",
+    ),
+    (
+        "rv-bare/unclosed-bracket-dateonly",
+        "November 1, 2026 [November 8, 2026",
+        "November 1, 2026 November 8, 2026",
+    ),
+    (
+        "rv-bare/unclosed-paren-dateonly",
+        "November 1, 2026 (November 8, 2026",
+        "November 1, 2026 November 8, 2026",
+    ),
+    (
+        "rv-bare/mix-cancelword-paren-brace",
+        "November 1, 2026 (cancelled}",
+        "November 1, 2026 cancelled",
+    ),
+    (
+        "rv-bare/mix-cancelword-brace-bracket",
+        "November 1, 2026 {cancelled]",
+        "November 1, 2026 cancelled",
+    ),
+];
+const R35F_HOLDS: &[(&str, &str, &str)] = &[
+    ("rv-mixed/stray-close-bracket", "November 1, 2026]", "for=None keep=None wm=None kwm=None inwords=None after=None paren=None parens=[] pmis=None kmis=None sec=None secs=[] ksec=None ksecs=[]"),
+    ("rv-mixed/stray-close-paren", "November 1, 2026)", "for=None keep=None wm=None kwm=None inwords=None after=None paren=None parens=[] pmis=None kmis=None sec=None secs=[] ksec=None ksecs=[]"),
+    ("rv-mixed/stray-close-brace", "November 1, 2026}", "for=None keep=None wm=None kwm=None inwords=None after=None paren=None parens=[] pmis=None kmis=None sec=None secs=[] ksec=None ksecs=[]"),
+    ("rv-mixed/stray-close-mid", "November 1], 2026", "for=None keep=None wm=None kwm=None inwords=None after=None paren=None parens=[] pmis=None kmis=None sec=None secs=[] ksec=None ksecs=[]"),
+    ("rv-mixed/mix-garnish-glued-pb", "November 1, 2026(Monday]", "for=None keep=None wm=Some(\"Monday@2026-11-01\") kwm=None inwords=None after=None paren=None parens=[] pmis=None kmis=None sec=None secs=[] ksec=None ksecs=[]"),
+    ("rv-mixed/mix-garnish-glued-bp", "November 1, 2026[Monday)", "for=None keep=None wm=Some(\"Monday@2026-11-01\") kwm=None inwords=None after=None paren=None parens=[] pmis=None kmis=None sec=None secs=[] ksec=None ksecs=[]"),
+    ("rv-mixed/mix-garnish-glued-agree-pb", "November 1, 2026(Sunday]", "for=2026-11-01 keep=None wm=None kwm=None inwords=None after=None paren=None parens=[] pmis=None kmis=None sec=None secs=[] ksec=None ksecs=[]"),
+    ("rv-mixed/mix-garnish-glued-agree-bp", "November 1, 2026[Sunday)", "for=2026-11-01 keep=None wm=None kwm=None inwords=None after=None paren=None parens=[] pmis=None kmis=None sec=None secs=[] ksec=None ksecs=[]"),
+];
+
+#[test]
+fn r35f_malformed_groups_read_as_their_bare_twins() {
+    // Round 35 (R35-F, F6 = red team RT35-3 /
+    // review R4, as adjudicated 2026-10-21): the
+    // malformed family judged by opener-selected
+    // rules — an unclosed bracket was transparent,
+    // an unclosed paren poisoned the whole line,
+    // swapped nested closers erased it. The step-1
+    // battery (108 cases: the red team's 65, the
+    // review lane's mixed battery, the bare battery,
+    // each with a bare twin — the same text with
+    // every mark the shared stack walk does not
+    // close removed) proved the group machinery
+    // already forms no group for any of these
+    // shapes; the one live mechanism was the plain
+    // readers' token rule, whose edge trim stops at
+    // the two parentheses, so a date token wearing
+    // an unclosed "(" was not a signal while its
+    // bracket and brace twins read. The ruling, as
+    // adjudicated: an opener the walk does not close
+    // is a stray mark, inert at the plain readers;
+    // a walk-closed group's edge marks keep their
+    // structural effect. The ruled outcome for
+    // every battery cell is its bare twin's fields.
+    // The fix (`stray_mark_spaced`, wired where
+    // R35-C wired its re-spacing) sets the stray
+    // paren marks — and an unmatched bracket glued
+    // to a walk-closed group's head — to spaces
+    // before the composed readers run, so every
+    // cell below is compared field for field, in
+    // the probe's full summary, against its bare
+    // twin read through the same door. The 8
+    // determined holds (the stray-close cells and
+    // the mixed-garnish cells, whose marks the
+    // ruling's stray-mark clause already judged)
+    // pin at their standing fields, stated in
+    // R35F_HOLDS as the pre-fix probe read them.
+    for (label, line, bare) in R35F_BATTERY {
+        assert_eq!(
+            r35f_for(line),
+            r35f_for(bare),
+            "{label}: {line} reads as its bare twin {bare}"
+        );
+    }
+    for (label, line, standing) in R35F_HOLDS {
+        assert_eq!(
+            r35f_for(line),
+            *standing,
+            "{label}: {line} holds at its standing reading"
+        );
+    }
+}
+
+#[test]
+fn r35f_headline_cells_stated_outright() {
+    // The adjudication's named cells, stated
+    // outright (the battery above carries them as
+    // twin comparisons): A and B and their family
+    // change to their bare-twin fields — A's
+    // recorded round-34 outcome (for=None) was the
+    // poison and is not kept — the swapped-nested
+    // cells E change, cell F changes, and cells C
+    // and D are holds whose fields already equal
+    // their twins'. November 1 and November 8,
+    // 2026 are Sundays.
+    //
+    // A — the recorded carried shape 1, mixed
+    // closers on an unclosed paren: the core stands
+    // and the governed second date is named, as the
+    // bare words name it.
+    // B — the unclosed paren itself, same outcome.
+    for line in [
+        "November 1, 2026 (November 8, 2026, cancelled]",
+        "November 1, 2026 (November 8, 2026, cancelled",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{line}: the core stands");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(8)],
+            "{line}: the governed date is named, as bare governed dates are"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: November 29, 2026{tail}\n\n## Announcement\n\nHi.\n",
+            tail = &line["November 1, 2026".len()..]
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(29)),
+            "{line}: the keep core stands"
+        );
+        assert_eq!(
+            c.keep_through_second_dates,
+            vec![nov(8)],
+            "{line}: keep-through names the governed date"
+        );
+    }
+    // E — the swapped nested closers, both orders:
+    // the walk closes the inner group (its marks
+    // stand in the bare twin), the cancellation
+    // governs inside it, and the core stands with
+    // nothing named — the closed-twin reading.
+    for line in [
+        "November 1, 2026 ([November 8, 2026, cancelled)]",
+        "November 1, 2026 [(November 8, 2026, cancelled])",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{line}: the core stands");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: the group-governed date is named nowhere"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: no mismatch record"
+        );
+    }
+    // F — mixed outer, walk-closed inner, both
+    // orders: the inner group is structural, the
+    // outer unmatched marks are inert, and the bare
+    // cancellation beside the group kills the core
+    // and asserts the group's date, exactly as the
+    // composite bare reference reads.
+    for line in [
+        "November 1, 2026 [(November 8, 2026), cancelled)",
+        "November 1, 2026 ([November 8, 2026], cancelled]",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the group's date asserts through the governed core"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: the governed core is named"
+        );
+    }
+    // C — a hold (adjudication question 2): the
+    // mixed group after the core already reads as
+    // its bare twin — the cancelled date is
+    // governed and NAMED on the second-date note,
+    // exactly as bare governed dates are named;
+    // no silent service exists in this cell.
+    let line = "November 1, 2026 [November 8, 2026, cancelled)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "{line}: the core stands");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(8)],
+        "{line}: governed and named — the bare record"
+    );
+    // D — a hold (adjudication question 3): the
+    // mixed group before the core. Malformed marks
+    // do not break a governor window's reach: the
+    // bare cancellation standing before the core
+    // governs it, as bare "cancelled November 1,
+    // 2026" governs its date.
+    let line = "[November 8, 2026, cancelled) November 1, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{line}: the bare window reach governs the core — the bare outcome"
+    );
+}
+
+#[test]
+fn r35f_walk_closed_group_edge_keeps_its_structural_effect() {
+    // The designed reliance the fix must not
+    // repeal (adjudication constraint): at a
+    // WALK-CLOSED group edge the plain composition
+    // must not signal the group's inner date — the
+    // raw-text scans rely on `parse_date_prefix`
+    // failing there — so a governed group date is
+    // never double-judged as a plain signal. The
+    // contrast is cell C's bare shape: a bare
+    // governed date IS named on the second-date
+    // note (pinned above). Inside a closed group
+    // the same governed date is named nowhere, in
+    // every pair, trailing, leading, and whole-line.
+    for line in [
+        "November 1, 2026 (November 8, 2026, cancelled)",
+        "November 1, 2026 [November 8, 2026, cancelled]",
+        "November 1, 2026 {November 8, 2026, cancelled}",
+        "(November 8, 2026, cancelled) November 1, 2026",
+        "[November 8, 2026, cancelled] November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{line}: the core stands");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: the closed group's governed date is not a plain signal"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: no mismatch record"
+        );
+    }
+    let line = "(November 8, 2026, cancelled)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "{line}: the whole-line governed group asserts nothing"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: nothing is named"
+    );
+}

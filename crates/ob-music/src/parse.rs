@@ -443,10 +443,26 @@ fn zip_score_text(bytes: &[u8]) -> Result<String, String> {
     // junk-prefixed bytes (round 32, F4) happens in
     // `load_music`, before this function is reached,
     // and is unchanged.
+    let directory_derived = ob_model::zip_directory::central_directory(bytes).is_some();
     let view = ob_model::zip_directory::prefix_free(bytes);
     let bytes: &[u8] = &view;
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| format!("that file is a zip we cannot open ({e})"))?;
+    // Round 34, F2: the reader opened the container, so
+    // its entries can be served — but no directory
+    // could be derived for the raw-directory walk
+    // below, which would judge an empty directory while
+    // the reader serves a duplicated name's last copy.
+    // Fail closed in this door's standing words. A
+    // container the reader cannot open refuses on its
+    // own above; a genuinely empty container derives
+    // its empty directory and is untouched.
+    if !zip.is_empty() && !directory_derived {
+        return Err(
+            "that file is a zip we cannot open (its central directory cannot be derived)"
+                .to_string(),
+        );
+    }
     // Entry-count cap (health audit S-6), the IDML and
     // font-pack readers' 512: a .mxl carries a container
     // and a score, not thousands of entries, and the
@@ -1101,6 +1117,238 @@ mod tests {
         patch_name_byte(&mut buf, "scAre.musicxml", 2, 0x81);
         let (_xml, info) = load_music(&buf).expect("a single CP437 score loads");
         assert_eq!(info.title.as_deref(), Some("First Test Hymn!"));
+    }
+
+    /// CRC-32 (IEEE) of a Stored entry's bytes, for the
+    /// hand-assembled archives below.
+    fn stored_crc(data: &[u8]) -> u32 {
+        let mut crc: u32 = 0xFFFF_FFFF;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xEDB8_8320 & 0u32.wrapping_sub(crc & 1));
+            }
+        }
+        !crc
+    }
+
+    /// A zip64 .mxl assembled byte by byte, its zip64
+    /// record carrying an extensible data sector of
+    /// `sector` bytes (size field 44 + sector, so the
+    /// arithmetic derivation refuses it and the hunted
+    /// fallback is the only path), all entries Stored.
+    /// The crafter's twin of the audit lanes' mkzip64
+    /// assembly (round 34).
+    fn sector_mxl(entries: &[(&[u8], &[u8])], sector: usize) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (name, data) in entries {
+            let local_offset = out.len() as u32;
+            let crc = stored_crc(data);
+            out.extend_from_slice(b"PK\x03\x04");
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name);
+            out.extend_from_slice(data);
+
+            centrals.extend_from_slice(b"PK\x01\x02");
+            centrals.extend_from_slice(&45u16.to_le_bytes());
+            centrals.extend_from_slice(&20u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&crc.to_le_bytes());
+            centrals.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            centrals.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            centrals.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u32.to_le_bytes());
+            centrals.extend_from_slice(&local_offset.to_le_bytes());
+            centrals.extend_from_slice(name);
+        }
+        let cd_offset = out.len() as u64;
+        let cd_size = centrals.len() as u64;
+        out.extend_from_slice(&centrals);
+        let record_at = out.len() as u64;
+        out.extend_from_slice(b"PK\x06\x06");
+        out.extend_from_slice(&((44 + sector) as u64).to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&vec![b'S'; sector]);
+        out.extend_from_slice(b"PK\x06\x07");
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_at.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    /// The last entry name in the red team's name-fake
+    /// witnesses: see the twin helper in ob-model's
+    /// zip_directory tests.
+    fn fake_record_name() -> Vec<u8> {
+        let mut name = vec![b'A'; 30];
+        name.extend_from_slice(b"PK\x06\x06");
+        name.extend_from_slice(&52u64.to_le_bytes());
+        name.extend_from_slice(&45u16.to_le_bytes());
+        name.extend_from_slice(&45u16.to_le_bytes());
+        name.extend_from_slice(&0u32.to_le_bytes());
+        name.extend_from_slice(&0u32.to_le_bytes());
+        name.extend_from_slice(&2u64.to_le_bytes());
+        name.extend_from_slice(&2u64.to_le_bytes());
+        name.extend_from_slice(&257u64.to_le_bytes());
+        name.extend_from_slice(&0x7F7F7F7Fu64.to_le_bytes());
+        name
+    }
+
+    #[test]
+    fn r34b_sector_containers_with_fakes_in_the_hunts_windows_are_judged_like_plain() {
+        // Round 34, F2, at the door the shifted shapes
+        // cannot reach (junk-prefixed bytes are refused
+        // at this door's standing head sniff, unchanged
+        // below): unshifted, a zip64 container with an
+        // extensible data sector is judged through the
+        // hunted fallback, and neither a fake central
+        // signature in the last entry's stored tail nor
+        // a fake zip64 record in the last record's name
+        // may steer that judgment — the disagreeing
+        // duplicate score refuses in the standing words
+        // and the single score loads, exactly as the
+        // plain container's pins above judge.
+        let score_a = TINY_SCORE.replace("A Tiny Test Hymn", "First Test Hymn!");
+        let score_b = TINY_SCORE.replace("A Tiny Test Hymn", "Other Test Hymn!");
+        let mut filler = vec![b'A'; 600];
+        let at = 600 - 64;
+        filler[at..at + 4].copy_from_slice(b"PK\x01\x02");
+        for byte in &mut filler[at + 4..at + 46] {
+            *byte = b'B';
+        }
+        filler[at + 28..at + 30].copy_from_slice(&4u16.to_le_bytes());
+        filler[at + 30..at + 34].copy_from_slice(&0u32.to_le_bytes());
+        filler[at + 46..at + 50].copy_from_slice(b"JUNK");
+        let fake_name = fake_record_name();
+        let tails: Vec<(&str, usize, Vec<u8>, Vec<u8>)> = vec![
+            (
+                "payload-wellformed",
+                16,
+                b"filler.bin".to_vec(),
+                filler.clone(),
+            ),
+            ("name-fake", 8, fake_name.clone(), b"tail".to_vec()),
+        ];
+        for (label, sector, tail_name, tail_data) in &tails {
+            let dup = sector_mxl(
+                &[
+                    (b"META-INF/container.xml", CONTAINER_FOR_SCORE),
+                    (b"score.musicxml", score_a.as_bytes()),
+                    (b"score.musicxml", score_b.as_bytes()),
+                    (tail_name.as_slice(), tail_data.as_slice()),
+                ],
+                *sector,
+            );
+            let err = load_music(&dup).expect_err("the duplicate refuses, every shape");
+            assert!(
+                err.contains("two parts named score.musicxml"),
+                "{label}: {err}"
+            );
+            assert!(err.contains("may be damaged"), "{label}: {err}");
+
+            let single = sector_mxl(
+                &[
+                    (b"META-INF/container.xml", CONTAINER_FOR_SCORE),
+                    (b"score.musicxml", score_a.as_bytes()),
+                    (tail_name.as_slice(), tail_data.as_slice()),
+                ],
+                *sector,
+            );
+            let (_xml, info) = load_music(&single).expect("the single score loads");
+            assert_eq!(info.title.as_deref(), Some("First Test Hymn!"), "{label}");
+        }
+        // The shifted twin of the sector container is
+        // refused at the head sniff, as it was before
+        // this batch: junk-prefixed bytes are not a
+        // MusicXML file to this door.
+        let single = sector_mxl(
+            &[
+                (b"META-INF/container.xml", CONTAINER_FOR_SCORE),
+                (b"score.musicxml", score_a.as_bytes()),
+            ],
+            8,
+        );
+        let mut moved = vec![b'J'; 64];
+        moved.extend_from_slice(&single);
+        let err = load_music(&moved).expect_err("shifted bytes refuse at the head sniff");
+        assert!(err.contains("not music text we can read"), "{err}");
+    }
+
+    #[test]
+    fn r34b_a_container_the_reader_opens_with_no_derivable_directory_refuses() {
+        // Round 34, F2, the fail-closed side: the
+        // sector container above, with the real zip64
+        // record's declared directory size corrupted
+        // (ten bytes more than its directory holds), so
+        // the record does not validate against its
+        // locator and NO directory can be derived — yet
+        // the reader opens the container anyway. (The
+        // shifted steering shape cannot reach this door
+        // — its head sniff refuses junk-prefixed bytes —
+        // so this door's underivable craft is unshifted:
+        // before this batch the unvalidated hunt judged
+        // it on the record's unchecked fields; now the
+        // door refuses it in its standing words rather
+        // than trust a directory that does not validate.
+        // Refusal, not service, is the fail-closed
+        // direction the disposition names.)
+        let score_a = TINY_SCORE.replace("A Tiny Test Hymn", "First Test Hymn!");
+        let score_b = TINY_SCORE.replace("A Tiny Test Hymn", "Other Test Hymn!");
+        let fake_name = fake_record_name();
+        let mut buf = sector_mxl(
+            &[
+                (b"META-INF/container.xml", CONTAINER_FOR_SCORE),
+                (b"score.musicxml", score_a.as_bytes()),
+                (b"score.musicxml", score_b.as_bytes()),
+                (fake_name.as_slice(), b"tail"),
+            ],
+            8,
+        );
+        // The real zip64 record is the LAST PK\x06\x06
+        // in the file (the fake stands earlier, in the
+        // last record's name); its directory-size field
+        // stands 40 bytes in.
+        let record_at = buf
+            .windows(4)
+            .rposition(|w| w == b"PK\x06\x06")
+            .expect("the real zip64 record stands in the bytes");
+        let cd_size = u64::from_le_bytes(buf[record_at + 40..record_at + 48].try_into().unwrap());
+        buf[record_at + 40..record_at + 48].copy_from_slice(&(cd_size + 10).to_le_bytes());
+        let err = load_music(&buf)
+            .expect_err("a reader-openable container with no derivable directory refuses");
+        assert!(err.contains("a zip we cannot open"), "{err}");
     }
 
     #[test]

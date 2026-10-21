@@ -687,6 +687,7 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
     // poison both. The dump still counts the bytes as
     // they arrived, junk included.
     let source_bytes = bytes.len();
+    let directory_derived = ob_model::zip_directory::central_directory(bytes).is_some();
     let view = ob_model::zip_directory::prefix_free(bytes);
     let bytes: &[u8] = &view;
     let cursor = std::io::Cursor::new(bytes);
@@ -694,6 +695,22 @@ pub fn dump_from_idml(bytes: &[u8], source_name: &str) -> Result<ExtractionDump,
         .map_err(|e| format!("that is not an IDML package (a zip of XML): {e}"))?;
     if zip.len() > MAX_ENTRIES {
         return Err("that IDML package has too many parts".into());
+    }
+    // Round 34, F2: the reader opened the package, so
+    // its entries will be served — but no directory
+    // could be derived for the duplicate scan below,
+    // which would judge an empty directory while the
+    // reader serves those entries (the steered hunt
+    // used to land exactly here). Fail closed in this
+    // door's reader-refusal words. A package the reader
+    // cannot open refuses on its own above; a genuinely
+    // empty package derives its empty directory and is
+    // untouched.
+    if !zip.is_empty() && !directory_derived {
+        return Err(
+            "that is not an IDML package (a zip of XML): its central directory cannot be derived"
+                .into(),
+        );
     }
     // A duplicated part whose copies disagree refuses
     // before any part is read (round 31, F5), in the
@@ -1354,6 +1371,271 @@ mod tests {
         let mut corrupt = idml_shifted_with_filler(&[&story_a], &tail_filler("plain"));
         corrupt.truncate(corrupt.len() - 10);
         let err = dump_from_idml(&corrupt, "corrupt.idml").expect_err("a corrupt package refuses");
+        assert!(err.contains("not an IDML package"), "{err}");
+    }
+
+    /// CRC-32 (IEEE) of a Stored entry's bytes, for the
+    /// hand-assembled archives below: the readers check
+    /// a stored entry's checksum as they read it.
+    fn stored_crc(data: &[u8]) -> u32 {
+        let mut crc: u32 = 0xFFFF_FFFF;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xEDB8_8320 & 0u32.wrapping_sub(crc & 1));
+            }
+        }
+        !crc
+    }
+
+    /// A zip64 archive assembled byte by byte, its
+    /// zip64 record carrying an extensible data sector
+    /// of `sector` bytes (size field 44 + sector, so
+    /// the arithmetic derivation refuses it and the
+    /// hunted fallback is the only path), all entries
+    /// Stored, optionally shifted by `shift` junk
+    /// bytes. The crafter's twin of the audit lanes'
+    /// mkzip64 assembly (round 34).
+    fn sector_idml(entries: &[(&[u8], &[u8])], sector: usize, shift: usize) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (name, data) in entries {
+            let local_offset = out.len() as u32;
+            let crc = stored_crc(data);
+            out.extend_from_slice(b"PK\x03\x04");
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name);
+            out.extend_from_slice(data);
+
+            centrals.extend_from_slice(b"PK\x01\x02");
+            centrals.extend_from_slice(&45u16.to_le_bytes());
+            centrals.extend_from_slice(&20u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&crc.to_le_bytes());
+            centrals.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            centrals.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            centrals.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u32.to_le_bytes());
+            centrals.extend_from_slice(&local_offset.to_le_bytes());
+            centrals.extend_from_slice(name);
+        }
+        let cd_offset = out.len() as u64;
+        let cd_size = centrals.len() as u64;
+        out.extend_from_slice(&centrals);
+        let record_at = out.len() as u64;
+        out.extend_from_slice(b"PK\x06\x06");
+        out.extend_from_slice(&((44 + sector) as u64).to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&vec![b'S'; sector]);
+        out.extend_from_slice(b"PK\x06\x07");
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_at.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        if shift == 0 {
+            out
+        } else {
+            shifted(&out, &vec![b'J'; shift])
+        }
+    }
+
+    /// The last entry name in the red team's name-fake
+    /// witnesses: see the twin helper in ob-model's
+    /// zip_directory tests.
+    fn fake_record_name() -> Vec<u8> {
+        let mut name = vec![b'A'; 30];
+        name.extend_from_slice(b"PK\x06\x06");
+        name.extend_from_slice(&52u64.to_le_bytes());
+        name.extend_from_slice(&45u16.to_le_bytes());
+        name.extend_from_slice(&45u16.to_le_bytes());
+        name.extend_from_slice(&0u32.to_le_bytes());
+        name.extend_from_slice(&0u32.to_le_bytes());
+        name.extend_from_slice(&2u64.to_le_bytes());
+        name.extend_from_slice(&2u64.to_le_bytes());
+        name.extend_from_slice(&257u64.to_le_bytes());
+        name.extend_from_slice(&0x7F7F7F7Fu64.to_le_bytes());
+        name
+    }
+
+    /// The IDML parts of the round-34 witnesses, in
+    /// archive order: the package's real parts, the
+    /// given stories, then the spread; the caller
+    /// appends its tail entry (filler or fake name).
+    fn witness_parts(stories: &[String]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let designmap =
+            r#"<?xml version="1.0"?><Document><Spread src="Spreads/Spread_u1.xml"/></Document>"#;
+        let styles =
+            r#"<?xml version="1.0"?><Root><ParagraphStyleGroup></ParagraphStyleGroup></Root>"#;
+        let spread = r#"<?xml version="1.0"?><Spread><Page Self="u2" GeometricBounds="0 0 612 396" ItemTransform="1 0 0 1 0 0"/><TextFrame Self="u3" ParentStory="u9" ItemTransform="1 0 0 1 36 48"><Properties><PathGeometry><GeometryPathType><PathPointArray><PathPointType Anchor="0 0"/><PathPointType Anchor="324 0"/><PathPointType Anchor="324 200"/><PathPointType Anchor="0 200"/></PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame></Spread>"#;
+        let mut parts: Vec<(Vec<u8>, Vec<u8>)> = vec![
+            (b"designmap.xml".to_vec(), designmap.as_bytes().to_vec()),
+            (b"Resources/Styles.xml".to_vec(), styles.as_bytes().to_vec()),
+        ];
+        for story in stories {
+            parts.push((b"Stories/Story_u9.xml".to_vec(), story.as_bytes().to_vec()));
+        }
+        parts.push((
+            b"Spreads/Spread_u1.xml".to_vec(),
+            spread.as_bytes().to_vec(),
+        ));
+        parts
+    }
+
+    #[test]
+    fn r34b_sector_shifted_packages_with_fakes_in_the_hunts_windows_are_judged_like_unshifted() {
+        // Round 34, F2 (review MINOR-1 + red team
+        // RT34-3): on a shifted zip64 archive with an
+        // extensible data sector, the hunted fallback
+        // validated nothing — a fake central signature
+        // in the last entry's stored tail became the
+        // directory the scans judged, and a fake zip64
+        // record planted in the last record's name
+        // steered the hunt to no directory at all, so
+        // this package's disagreeing duplicate story
+        // was SERVED ("Other story words here") while
+        // its unshifted twin refused. The hunt validates
+        // its record against the locator and its
+        // directory by a walk now, and keeps searching
+        // past fakes: every shape below is judged
+        // exactly like its unshifted twin — the
+        // duplicate refuses in the standing words, the
+        // single story loads.
+        let story_a = one_paragraph_story("First story words here");
+        let story_b = one_paragraph_story("Other story words here");
+        // (label, sector, tail entry) — the payload
+        // shapes ride the review witness (sector 16,
+        // the round-33 fillers in a Stored tail entry),
+        // the name shape rides the red team's (sector
+        // 8, the fake record standing in the last
+        // record's name, which is the tail entry here).
+        let fake_name = fake_record_name();
+        let tails: Vec<(&str, usize, Vec<u8>, Vec<u8>)> = vec![
+            (
+                "payload-fake-header",
+                16,
+                b"filler.bin".to_vec(),
+                tail_filler("fake"),
+            ),
+            (
+                "payload-wellformed",
+                16,
+                b"filler.bin".to_vec(),
+                tail_filler("wellformed"),
+            ),
+            (
+                "payload-clean",
+                16,
+                b"filler.bin".to_vec(),
+                tail_filler("plain"),
+            ),
+            ("name-fake", 8, fake_name.clone(), b"tail".to_vec()),
+        ];
+        for (label, sector, tail_name, tail_data) in &tails {
+            for shift in [0usize, 64] {
+                let mut parts = witness_parts(&[story_a.clone(), story_b.clone()]);
+                parts.push((tail_name.clone(), tail_data.clone()));
+                let entries: Vec<(&[u8], &[u8])> = parts
+                    .iter()
+                    .map(|(name, data)| (name.as_slice(), data.as_slice()))
+                    .collect();
+                let dup = sector_idml(&entries, *sector, shift);
+                let err = dump_from_idml(&dup, "witness.idml")
+                    .expect_err("the duplicate refuses, every shape");
+                assert!(
+                    err.contains("two parts named Stories/Story_u9.xml"),
+                    "{label} shift={shift}: {err}"
+                );
+                assert!(
+                    err.contains("may be damaged"),
+                    "{label} shift={shift}: {err}"
+                );
+
+                let mut parts = witness_parts(std::slice::from_ref(&story_a));
+                parts.push((tail_name.clone(), tail_data.clone()));
+                let entries: Vec<(&[u8], &[u8])> = parts
+                    .iter()
+                    .map(|(name, data)| (name.as_slice(), data.as_slice()))
+                    .collect();
+                let single = sector_idml(&entries, *sector, shift);
+                let dump = dump_from_idml(&single, "witness.idml")
+                    .expect("the single story loads, every shape");
+                assert_eq!(dump.spans.len(), 1, "{label} shift={shift}");
+                assert_eq!(
+                    dump.spans[0].text, "First story words here",
+                    "{label} shift={shift}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn r34b_a_package_the_reader_opens_with_no_derivable_directory_refuses() {
+        // Round 34, F2, the fail-closed side: the
+        // name-fake package above, with the real zip64
+        // record's declared directory size corrupted
+        // (ten bytes more than its directory holds), so
+        // the record does not validate against its
+        // locator and NO directory can be derived — yet
+        // the reader opens the package anyway. Before
+        // this batch the hunt was steered by the fake
+        // record in the name to no directory at all and
+        // the door served the second copy of the
+        // disagreeing duplicate story in silence. The
+        // door refuses in its reader-refusal words now
+        // rather than scan an empty directory while its
+        // reader serves the entries.
+        let story_a = one_paragraph_story("First story words here");
+        let story_b = one_paragraph_story("Other story words here");
+        let fake_name = fake_record_name();
+        let mut parts = witness_parts(&[story_a, story_b]);
+        parts.push((fake_name, b"tail".to_vec()));
+        let entries: Vec<(&[u8], &[u8])> = parts
+            .iter()
+            .map(|(name, data)| (name.as_slice(), data.as_slice()))
+            .collect();
+        let mut bytes = sector_idml(&entries, 8, 64);
+        // The real zip64 record is the LAST PK\x06\x06
+        // in the file (the fake stands earlier, in the
+        // last record's name); its directory-size field
+        // stands 40 bytes in.
+        let record_at = bytes
+            .windows(4)
+            .rposition(|w| w == b"PK\x06\x06")
+            .expect("the real zip64 record stands in the bytes");
+        let cd_size = u64::from_le_bytes(bytes[record_at + 40..record_at + 48].try_into().unwrap());
+        bytes[record_at + 40..record_at + 48].copy_from_slice(&(cd_size + 10).to_le_bytes());
+        let err = dump_from_idml(&bytes, "underivable.idml")
+            .expect_err("a reader-openable package with no derivable directory refuses");
         assert!(err.contains("not an IDML package"), "{err}");
     }
 

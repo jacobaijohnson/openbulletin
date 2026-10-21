@@ -717,6 +717,7 @@ impl ClipLibrary {
             .or_else(|| name.strip_suffix(".ZIP"))
             .unwrap_or(&name)
             .to_string();
+        let directory_derived = ob_model::zip_directory::central_directory(bytes).is_some();
         // One prefix-free view of the pack for both the
         // reader and the raw-directory walk below
         // (round 33, F3): see the note at the IDML door.
@@ -724,6 +725,22 @@ impl ClipLibrary {
         let bytes: &[u8] = &view;
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
             .map_err(|e| format!("that zip file cannot be read: {e}"))?;
+        // Round 34, F2: the reader opened the pack, so
+        // its entries can be served — but no directory
+        // could be derived for the raw-directory walk
+        // below, which would judge an empty directory
+        // and leave the copies to the reader's
+        // name-keyed enumeration, collapsing a
+        // duplicated name to its last copy in silence.
+        // Fail closed in this door's standing words. A
+        // pack the reader cannot open refuses on its own
+        // above; a genuinely empty pack derives its
+        // empty directory and is untouched.
+        if !archive.is_empty() && !directory_derived {
+            return Err(
+                "that zip file cannot be read: its central directory cannot be derived".to_string(),
+            );
+        }
         // Entry-count cap (health audit S-6), the IDML and
         // font-pack readers' 512: a clipart pack is dozens
         // of pictures, not thousands of entries, and the
@@ -1434,6 +1451,248 @@ mod tests {
         let err = lib
             .add_collection_from_zip("pack.zip", &corrupt, &CollectionNotes::default(), None)
             .expect_err("a corrupt pack refuses");
+        assert!(err.contains("cannot be read"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A zip64 clip pack assembled byte by byte, its
+    /// zip64 record carrying an extensible data sector
+    /// of `sector` bytes (size field 44 + sector, so
+    /// the arithmetic derivation refuses it and the
+    /// hunted fallback is the only path), all entries
+    /// Stored, optionally shifted by `shift` junk
+    /// bytes. The crafter's twin of the audit lanes'
+    /// mkzip64 assembly (round 34).
+    fn sector_pack(entries: &[(&[u8], &[u8])], sector: usize, shift: usize) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (name, data) in entries {
+            let local_offset = out.len() as u32;
+            let crc = crc32_ieee(data);
+            out.extend_from_slice(b"PK\x03\x04");
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name);
+            out.extend_from_slice(data);
+
+            centrals.extend_from_slice(b"PK\x01\x02");
+            centrals.extend_from_slice(&45u16.to_le_bytes());
+            centrals.extend_from_slice(&20u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&crc.to_le_bytes());
+            centrals.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            centrals.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            centrals.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u32.to_le_bytes());
+            centrals.extend_from_slice(&local_offset.to_le_bytes());
+            centrals.extend_from_slice(name);
+        }
+        let cd_offset = out.len() as u64;
+        let cd_size = centrals.len() as u64;
+        out.extend_from_slice(&centrals);
+        let record_at = out.len() as u64;
+        out.extend_from_slice(b"PK\x06\x06");
+        out.extend_from_slice(&((44 + sector) as u64).to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&vec![b'S'; sector]);
+        out.extend_from_slice(b"PK\x06\x07");
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_at.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        if shift == 0 {
+            out
+        } else {
+            let mut moved = vec![b'J'; shift];
+            moved.extend_from_slice(&out);
+            moved
+        }
+    }
+
+    /// The last entry name in the red team's name-fake
+    /// witnesses: see the twin helper in ob-model's
+    /// zip_directory tests.
+    fn fake_record_name() -> Vec<u8> {
+        let mut name = vec![b'A'; 30];
+        name.extend_from_slice(b"PK\x06\x06");
+        name.extend_from_slice(&52u64.to_le_bytes());
+        name.extend_from_slice(&45u16.to_le_bytes());
+        name.extend_from_slice(&45u16.to_le_bytes());
+        name.extend_from_slice(&0u32.to_le_bytes());
+        name.extend_from_slice(&0u32.to_le_bytes());
+        name.extend_from_slice(&2u64.to_le_bytes());
+        name.extend_from_slice(&2u64.to_le_bytes());
+        name.extend_from_slice(&257u64.to_le_bytes());
+        name.extend_from_slice(&0x7F7F7F7Fu64.to_le_bytes());
+        name
+    }
+
+    #[test]
+    fn r34b_sector_shifted_packs_with_fakes_in_the_hunts_windows_land_both_copies() {
+        // Round 34, F2 (red team RT34-3 + review
+        // MINOR-1): on a shifted zip64 pack with an
+        // extensible data sector, the unvalidated hunt
+        // either took a fake central signature in the
+        // last entry's stored tail as the directory or
+        // was steered by a fake zip64 record in the last
+        // record's name to no directory at all — the
+        // scans judged a fake or empty directory, the
+        // reader's enumeration collapsed the duplicated
+        // name to its last copy, and ONE picture landed
+        // where every control lands both. The hunt
+        // validates and keeps searching now: both
+        // copies land as pic.png and pic-2.png in every
+        // shape, shifted exactly as unshifted, and the
+        // same shapes with one picture land it.
+        let first_png = png_filled(255);
+        let second_png = png_filled(0);
+        let fake_name = fake_record_name();
+        let tails: Vec<(&str, usize, Vec<u8>, Vec<u8>)> = vec![
+            (
+                "payload-fake-header",
+                16,
+                b"filler.bin".to_vec(),
+                tail_filler("fake"),
+            ),
+            (
+                "payload-wellformed",
+                16,
+                b"filler.bin".to_vec(),
+                tail_filler("wellformed"),
+            ),
+            (
+                "payload-clean",
+                16,
+                b"filler.bin".to_vec(),
+                tail_filler("plain"),
+            ),
+            ("name-fake", 8, fake_name.clone(), b"tail".to_vec()),
+        ];
+        for (label, sector, tail_name, tail_data) in &tails {
+            for shift in [0usize, 64] {
+                let entries: Vec<(&[u8], &[u8])> = vec![
+                    (b"pic.png", &first_png),
+                    (b"pic.png", &second_png),
+                    (tail_name.as_slice(), tail_data.as_slice()),
+                ];
+                let pack = sector_pack(&entries, *sector, shift);
+                let dir = temp_dir(&format!("r34b-{label}-{shift}"));
+                let lib = ClipLibrary::open(dir.clone()).expect("open");
+                let report = lib
+                    .add_collection_from_zip("pack.zip", &pack, &CollectionNotes::default(), None)
+                    .expect("add zip");
+                assert_eq!(
+                    report.added, 2,
+                    "{label} shift={shift}: both copies land: {report:?}"
+                );
+                let collection = lib.collection("pack").expect("collection");
+                assert_eq!(collection.items.len(), 2, "{label} shift={shift}");
+                let first = collection
+                    .items
+                    .iter()
+                    .find(|i| i.file_name == "pic.png")
+                    .expect("the first copy keeps the name");
+                let second = collection
+                    .items
+                    .iter()
+                    .find(|i| i.file_name == "pic-2.png")
+                    .expect("the second copy lands apart");
+                assert_eq!(
+                    std::fs::read(&first.path).expect("read first"),
+                    first_png,
+                    "{label} shift={shift}"
+                );
+                assert_eq!(
+                    std::fs::read(&second.path).expect("read second"),
+                    second_png,
+                    "{label} shift={shift}"
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+
+                let entries: Vec<(&[u8], &[u8])> = vec![
+                    (b"pic.png", &first_png),
+                    (tail_name.as_slice(), tail_data.as_slice()),
+                ];
+                let single = sector_pack(&entries, *sector, shift);
+                let dir = temp_dir(&format!("r34b-single-{label}-{shift}"));
+                let lib = ClipLibrary::open(dir.clone()).expect("open");
+                let report = lib
+                    .add_collection_from_zip("pack.zip", &single, &CollectionNotes::default(), None)
+                    .expect("add single zip");
+                assert_eq!(report.added, 1, "{label} shift={shift}: {report:?}");
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
+
+    #[test]
+    fn r34b_a_pack_the_reader_opens_with_no_derivable_directory_refuses() {
+        // Round 34, F2, the fail-closed side: the
+        // name-fake pack above, with the real zip64
+        // record's declared directory size corrupted
+        // (ten bytes more than its directory holds), so
+        // the record does not validate against its
+        // locator and NO directory can be derived — yet
+        // the reader opens the pack anyway. Before this
+        // batch the hunt was steered by the fake record
+        // in the name to no directory at all and the
+        // fallback to the reader's enumeration landed
+        // only the last copy of the duplicated picture.
+        // The door refuses the pack in its standing
+        // words now.
+        let first_png = png_filled(255);
+        let second_png = png_filled(0);
+        let fake_name = fake_record_name();
+        let entries: Vec<(&[u8], &[u8])> = vec![
+            (b"pic.png", &first_png),
+            (b"pic.png", &second_png),
+            (fake_name.as_slice(), b"tail"),
+        ];
+        let mut pack = sector_pack(&entries, 8, 64);
+        // The real zip64 record is the LAST PK\x06\x06
+        // in the file (the fake stands earlier, in the
+        // last record's name); its directory-size field
+        // stands 40 bytes in.
+        let record_at = pack
+            .windows(4)
+            .rposition(|w| w == b"PK\x06\x06")
+            .expect("the real zip64 record stands in the bytes");
+        let cd_size = u64::from_le_bytes(pack[record_at + 40..record_at + 48].try_into().unwrap());
+        pack[record_at + 40..record_at + 48].copy_from_slice(&(cd_size + 10).to_le_bytes());
+        let dir = temp_dir("r34b-nodir");
+        let lib = ClipLibrary::open(dir.clone()).expect("open");
+        let err = lib
+            .add_collection_from_zip("pack.zip", &pack, &CollectionNotes::default(), None)
+            .expect_err("a reader-openable pack with no derivable directory refuses");
         assert!(err.contains("cannot be read"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }

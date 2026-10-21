@@ -36,7 +36,17 @@
 //! directory and the end record, a zip64 record with an
 //! extensible data sector) falls back to the hunt this
 //! derivation replaced — stated once, here, so the
-//! fallback is the same for every door too.
+//! fallback is the same for every door too. The hunt
+//! validates what it finds (round 34, F1 + F2): a
+//! hunted zip64 record must validate against the
+//! locator that follows it, a hunted directory must
+//! walk to the promised end the way an arithmetic
+//! candidate must, the search keeps going past a
+//! candidate that does not validate, and every
+//! position it computes is checked arithmetic — the
+//! unvalidated hunt took planted signature bytes in a
+//! shifted archive's windows for the directory, or for
+//! no directory, and panicked on crafted offsets.
 //!
 //! This lives in ob-model, the lowest crate every zip
 //! door can reach, stated over raw bytes the way
@@ -96,36 +106,71 @@ fn end_record_at(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-/// Whether the central records starting at `cd_start`
-/// walk, `total` of them in the shape the directory
-/// scans themselves walk, to exactly `end` and no
-/// further: the proof an arithmetic candidate is the
-/// real directory and not signature bytes standing in
-/// an entry's payload.
-fn directory_walks_to(bytes: &[u8], cd_start: usize, total: u64, end: usize) -> bool {
+/// Where the walk of `total` central records starting
+/// at `cd_start`, in the shape the directory scans
+/// themselves walk, lands: the position just past the
+/// last record. None when any record does not stand
+/// where the walk puts it.
+fn directory_walk_end(bytes: &[u8], cd_start: usize, total: u64) -> Option<usize> {
     let mut at = cd_start;
     for _ in 0..total {
-        if at + 46 > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
-            return false;
+        let header_end = at.checked_add(46)?;
+        if header_end > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
+            return None;
         }
         let name_len = usize::from(u16_at(bytes, at + 28));
         let extra_len = usize::from(u16_at(bytes, at + 30));
         let comment_len = usize::from(u16_at(bytes, at + 32));
-        let Some(name_end) = (at + 46).checked_add(name_len) else {
-            return false;
-        };
-        let Some(extra_end) = name_end.checked_add(extra_len) else {
-            return false;
-        };
+        let name_end = header_end.checked_add(name_len)?;
+        let extra_end = name_end.checked_add(extra_len)?;
         if extra_end > bytes.len() {
-            return false;
+            return None;
         }
-        let Some(next) = extra_end.checked_add(comment_len) else {
-            return false;
-        };
-        at = next;
+        at = extra_end.checked_add(comment_len)?;
     }
-    at == end
+    Some(at)
+}
+
+/// Whether the central records starting at `cd_start`
+/// walk, `total` of them, to exactly `end` and no
+/// further: the proof an arithmetic candidate is the
+/// real directory and not signature bytes standing in
+/// an entry's payload.
+fn directory_walks_to(bytes: &[u8], cd_start: usize, total: u64, end: usize) -> bool {
+    directory_walk_end(bytes, cd_start, total) == Some(end)
+}
+
+/// Whether a hunted candidate directory is the real
+/// one, by the same walk to the promised end the
+/// arithmetic path demands (`directory_walks_to`),
+/// with the one terminator the hunt exists to stand
+/// past: a central-directory digital-signature record
+/// (PK\x05\x05) counted in the declared directory
+/// size but not in the entry count, spanning exactly
+/// from the walk's end to the promised end.
+fn hunted_directory_walks_to(
+    bytes: &[u8],
+    cd_start: usize,
+    total: u64,
+    promised_end: usize,
+) -> bool {
+    let Some(at) = directory_walk_end(bytes, cd_start, total) else {
+        return false;
+    };
+    if at == promised_end {
+        return true;
+    }
+    if at > bytes.len() || !bytes[at..].starts_with(b"PK\x05\x05") {
+        return false;
+    }
+    let Some(header_end) = at.checked_add(6) else {
+        return false;
+    };
+    if header_end > bytes.len() {
+        return false;
+    }
+    let data_len = usize::from(u16_at(bytes, at + 4));
+    header_end.checked_add(data_len) == Some(promised_end)
 }
 
 /// The directory derived arithmetically (see the
@@ -200,6 +245,79 @@ fn arithmetic_directory(bytes: &[u8], eocd: usize) -> Option<CentralDirectory> {
     })
 }
 
+/// A zip64 record candidate at `record_at`, validated
+/// against the locator that must follow it (round 34,
+/// F2): the record's own declared length — its size
+/// field plus the twelve bytes of signature and size —
+/// must land exactly on the locator at `locator_at`,
+/// its directory fields must close over the locator's
+/// declared record offset (the directory's offset and
+/// size sum to it, in the archive's own coordinates),
+/// and the position it stands at must agree with that
+/// declaration. Returns the record's (total, directory
+/// size, directory offset, archive offset) when it
+/// validates; a signature planted in a record's name
+/// or an entry's payload validates on none of these.
+fn validated_zip64_record(
+    bytes: &[u8],
+    record_at: usize,
+    locator_at: usize,
+    declared_record: u64,
+) -> Option<(u64, u64, u64, u64)> {
+    let fixed_end = record_at.checked_add(56)?;
+    if fixed_end > bytes.len() {
+        return None;
+    }
+    let size_field = u64_at(bytes, record_at + 4);
+    if size_field < 44 {
+        return None;
+    }
+    let record_len = usize::try_from(size_field.checked_add(12)?).ok()?;
+    if record_at.checked_add(record_len)? != locator_at {
+        return None;
+    }
+    let archive_offset = u64::try_from(record_at)
+        .ok()?
+        .checked_sub(declared_record)?;
+    let total = u64_at(bytes, record_at + 32);
+    let cd_size = u64_at(bytes, record_at + 40);
+    let cd_offset = u64_at(bytes, record_at + 48);
+    if cd_offset.checked_add(cd_size)? != declared_record {
+        return None;
+    }
+    Some((total, cd_size, cd_offset, archive_offset))
+}
+
+/// One central-hunt candidate at `at`, validated the
+/// arithmetic path's way (round 34, F2): the archive
+/// offset the candidate implies must be the one the
+/// validated zip64 record implied, where there is one,
+/// and the records at `at` must walk, `total` of them,
+/// to the promised end — the declared directory size
+/// taken from the candidate's own start.
+fn validated_central_candidate(
+    bytes: &[u8],
+    at: usize,
+    total: u64,
+    cd_size: u64,
+    cd_offset: u64,
+    record_archive_offset: Option<u64>,
+) -> Option<CentralDirectory> {
+    let archive_offset = u64::try_from(at).ok()?.checked_sub(cd_offset)?;
+    if record_archive_offset.is_some_and(|expected| expected != archive_offset) {
+        return None;
+    }
+    let promised_end = at.checked_add(usize::try_from(cd_size).ok()?)?;
+    if !hunted_directory_walks_to(bytes, at, total, promised_end) {
+        return None;
+    }
+    Some(CentralDirectory {
+        archive_offset,
+        cd_start: at,
+        total,
+    })
+}
+
 /// The derivation the doors used to state per door
 /// (round 32, F4), kept as the one fallback for an
 /// archive whose directory is not arithmetically
@@ -207,49 +325,98 @@ fn arithmetic_directory(bytes: &[u8], eocd: usize) -> Option<CentralDirectory> {
 /// forward from its declared offset to its locator,
 /// and the directory's first record found by searching
 /// forward from the declared offset to the end record.
+///
+/// Round 34, F1 + F2: the hunt validates what it finds
+/// and trusts no field as a position unchecked. Every
+/// position computation is checked arithmetic, so a
+/// crafted offset near u64::MAX is a candidate that
+/// does not validate, never an overflow in debug, a
+/// wrap in release, or a slice out of range. A hunted
+/// zip64 record is believed only when it validates
+/// against the locator that follows it
+/// (`validated_zip64_record`); a hunted directory
+/// only when its records walk to the promised end
+/// (`validated_central_candidate`); and the hunt keeps
+/// searching past a candidate that does not validate
+/// instead of taking the first signature as final —
+/// on a shifted archive the search window crosses the
+/// last entry's stored tail and the real directory's
+/// own tail, where signature bytes planted in a
+/// payload or a record's name used to become, or
+/// erase, the directory the doors judged. Where no
+/// candidate validates the hunt answers None, as it
+/// does for underivable bytes; the doors refuse a
+/// reader-openable archive in that state rather than
+/// scan the empty directory this used to return.
 fn hunted_directory(bytes: &[u8], eocd: usize) -> Option<CentralDirectory> {
     let mut total = u64::from(u16_at(bytes, eocd + 10));
+    let mut cd_size = u64::from(u32_at(bytes, eocd + 12));
     let mut cd_offset = u64::from(u32_at(bytes, eocd + 16));
-    if (total == u64::from(u16::MAX) || cd_offset == u64::from(u32::MAX)) && eocd >= 20 {
-        let locator = &bytes[eocd - 20..eocd];
-        if locator.starts_with(b"PK\x06\x07") {
-            let declared = u64_at(locator, 8);
-            let mut record_at = usize::try_from(declared).ok()?;
-            let mut found = None;
-            while record_at + 4 <= eocd - 20 {
-                if bytes[record_at..].starts_with(b"PK\x06\x06") {
-                    found = Some(record_at);
+    let mut record_archive_offset: Option<u64> = None;
+    let zip64_needed = total == u64::from(u16::MAX)
+        || cd_size == u64::from(u32::MAX)
+        || cd_offset == u64::from(u32::MAX);
+    if zip64_needed {
+        // The plain fields are sentinels: the true
+        // fields ride in the zip64 record, and without
+        // a locator standing where one must stand there
+        // is nothing to validate a record against.
+        let locator_at = eocd.checked_sub(20)?;
+        if !bytes[locator_at..].starts_with(b"PK\x06\x07") {
+            return None;
+        }
+        let declared_record = u64_at(bytes, locator_at + 8);
+        let mut record_at = usize::try_from(declared_record).unwrap_or(usize::MAX);
+        let mut validated = None;
+        while let Some(window_end) = record_at.checked_add(4) {
+            if window_end > locator_at {
+                break;
+            }
+            if bytes[record_at..].starts_with(b"PK\x06\x06") {
+                if let Some(fields) =
+                    validated_zip64_record(bytes, record_at, locator_at, declared_record)
+                {
+                    validated = Some(fields);
                     break;
                 }
-                record_at += 1;
             }
-            if let Some(record_at) = found {
-                if record_at + 56 <= bytes.len() {
-                    total = u64_at(bytes, record_at + 32);
-                    cd_offset = u64_at(bytes, record_at + 48);
-                }
-            }
+            let Some(next) = record_at.checked_add(1) else {
+                break;
+            };
+            record_at = next;
         }
+        let (rec_total, rec_size, rec_offset, rec_archive_offset) = validated?;
+        total = rec_total;
+        cd_size = rec_size;
+        cd_offset = rec_offset;
+        record_archive_offset = Some(rec_archive_offset);
     }
     if total == 0 {
         return None;
     }
-    let mut at = usize::try_from(cd_offset).ok()?;
-    let mut cd_start = None;
-    while at + 4 <= eocd {
-        if bytes[at..].starts_with(b"PK\x01\x02") {
-            cd_start = Some(at);
+    let mut at = usize::try_from(cd_offset).unwrap_or(usize::MAX);
+    while let Some(window_end) = at.checked_add(4) {
+        if window_end > eocd {
             break;
         }
-        at += 1;
+        if bytes[at..].starts_with(b"PK\x01\x02") {
+            if let Some(directory) = validated_central_candidate(
+                bytes,
+                at,
+                total,
+                cd_size,
+                cd_offset,
+                record_archive_offset,
+            ) {
+                return Some(directory);
+            }
+        }
+        let Some(next) = at.checked_add(1) else {
+            break;
+        };
+        at = next;
     }
-    let cd_start = cd_start?;
-    let archive_offset = (cd_start as u64).saturating_sub(cd_offset);
-    Some(CentralDirectory {
-        archive_offset,
-        cd_start,
-        total,
-    })
+    None
 }
 
 /// The central directory of the archive in `bytes`:
@@ -460,6 +627,309 @@ mod tests {
             assert_eq!(directory.cd_start, control.cd_start + 64);
             assert_eq!(&*prefix_free(&moved), &plain[..]);
         }
+    }
+
+    /// A zip64 archive assembled byte by byte, its
+    /// zip64 record carrying an extensible data sector
+    /// of `sector` bytes (the record's size field says
+    /// 44 + sector, so the arithmetic derivation
+    /// refuses it and the hunted fallback is the only
+    /// path — the documented fallback case), over
+    /// arbitrary Stored entries.
+    fn sector_archive(entries: &[(&[u8], &[u8])], sector: usize) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (name, data) in entries {
+            let local_offset = out.len() as u32;
+            out.extend_from_slice(b"PK\x03\x04");
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name);
+            out.extend_from_slice(data);
+
+            centrals.extend_from_slice(b"PK\x01\x02");
+            centrals.extend_from_slice(&45u16.to_le_bytes());
+            centrals.extend_from_slice(&20u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u32.to_le_bytes());
+            centrals.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            centrals.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            centrals.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u16.to_le_bytes());
+            centrals.extend_from_slice(&0u32.to_le_bytes());
+            centrals.extend_from_slice(&local_offset.to_le_bytes());
+            centrals.extend_from_slice(name);
+        }
+        let cd_offset = out.len() as u64;
+        let cd_size = centrals.len() as u64;
+        out.extend_from_slice(&centrals);
+        let record_at = out.len() as u64;
+        out.extend_from_slice(b"PK\x06\x06");
+        out.extend_from_slice(&((44 + sector) as u64).to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&vec![b'S'; sector]);
+        out.extend_from_slice(b"PK\x06\x07");
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_at.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    /// The last entry name in the red team's name-fake
+    /// witnesses (round 34, RT34-3): 30 filler bytes,
+    /// then a fake zip64 record whose fields name a
+    /// total of 2, a directory size of 257, and a
+    /// directory offset of 0x7F7F7F7F — planted where a
+    /// shifted archive's record hunt crosses the last
+    /// bytes of the real directory.
+    fn fake_record_name() -> Vec<u8> {
+        let mut name = vec![b'A'; 30];
+        name.extend_from_slice(b"PK\x06\x06");
+        name.extend_from_slice(&52u64.to_le_bytes());
+        name.extend_from_slice(&45u16.to_le_bytes());
+        name.extend_from_slice(&45u16.to_le_bytes());
+        name.extend_from_slice(&0u32.to_le_bytes());
+        name.extend_from_slice(&0u32.to_le_bytes());
+        name.extend_from_slice(&2u64.to_le_bytes());
+        name.extend_from_slice(&2u64.to_le_bytes());
+        name.extend_from_slice(&257u64.to_le_bytes());
+        name.extend_from_slice(&0x7F7F7F7Fu64.to_le_bytes());
+        name
+    }
+
+    #[test]
+    fn the_fallback_never_panics_on_crafted_offsets() {
+        // Round 34, F1 (review MAJOR-1): a 98-byte
+        // skeleton — a zip64 record at 0 whose size
+        // field is 45 (so the arithmetic derivation
+        // refuses it, as designed), a locator at 56
+        // declaring the record offset, an end record at
+        // 76 with sentinel plain fields. The hunt used
+        // the locator's declared offset and a found
+        // record's directory offset as loop positions
+        // unchecked: declared offsets of u64::MAX and
+        // u64::MAX - 1 panicked "attempt to add with
+        // overflow" at the record hunt, and a found
+        // record carrying directory offset u64::MAX
+        // panicked the same way at the central hunt
+        // (in release the additions wrap and the
+        // following slices panic instead). Every shape
+        // answers None now, with the bytes passed
+        // through untouched.
+        let skeleton = |declared: u64, record_cd_offset: Option<u64>| -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"PK\x06\x06");
+            bytes.extend_from_slice(&45u64.to_le_bytes());
+            bytes.extend_from_slice(&[0u8; 44]);
+            if let Some(cd_offset) = record_cd_offset {
+                bytes[32..40].copy_from_slice(&2u64.to_le_bytes());
+                bytes[48..56].copy_from_slice(&cd_offset.to_le_bytes());
+            }
+            bytes.extend_from_slice(b"PK\x06\x07");
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&declared.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(b"PK\x05\x06");
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            bytes.extend_from_slice(&u16::MAX.to_le_bytes());
+            bytes.extend_from_slice(&u16::MAX.to_le_bytes());
+            bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+            bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            assert_eq!(bytes.len(), 98);
+            bytes
+        };
+        for bytes in [
+            skeleton(u64::MAX, None),
+            skeleton(u64::MAX - 1, None),
+            skeleton(0, Some(u64::MAX)),
+            skeleton(0, None),
+        ] {
+            assert_eq!(central_directory(&bytes), None);
+            assert!(matches!(prefix_free(&bytes), Cow::Borrowed(_)));
+        }
+    }
+
+    #[test]
+    fn a_sector_shifted_directory_is_derived_by_the_validating_hunt() {
+        // Round 34, F2 (review MINOR-1): a zip64
+        // archive with a 16-byte extensible data sector,
+        // shifted by 64 junk bytes, its last entry
+        // Stored with the round-33 filler shapes in its
+        // tail. The sector is not arithmetically
+        // derivable, and the old hunt took the first
+        // PK\x01\x02 at-or-after the declared offset —
+        // which on a shifted archive stands inside that
+        // tail — so it returned the fake record as the
+        // directory and prefix_free stripped nothing.
+        // The hunt validates each candidate by a walk
+        // to the promised end now, keeps searching past
+        // one that does not validate, and derives the
+        // real directory in both filler shapes; the
+        // plain-filler control and the unshifted twin
+        // derive exactly as before.
+        for wellformed in [false, true] {
+            let filler = fake_filler_payload(wellformed);
+            let entries: [(&[u8], &[u8]); 2] = [(b"a.txt", b"hi"), (b"filler.bin", &filler)];
+            let plain = sector_archive(&entries, 16);
+            let control = central_directory(&plain).expect("unshifted sector directory");
+            assert_eq!(control.archive_offset, 0);
+            assert_eq!(control.total, 2);
+
+            let moved = shifted(&plain, 64);
+            let directory = central_directory(&moved).expect("shifted sector directory");
+            assert_eq!(directory.archive_offset, 64);
+            assert_eq!(directory.total, 2);
+            assert_eq!(directory.cd_start, control.cd_start + 64);
+            assert_eq!(
+                &moved[directory.cd_start..directory.cd_start + 4],
+                b"PK\x01\x02",
+                "the derived start is the real first record, not the fake"
+            );
+            assert_eq!(&*prefix_free(&moved), &plain[..]);
+        }
+        let plain_filler = vec![b'A'; 600];
+        let entries: [(&[u8], &[u8]); 2] = [(b"a.txt", b"hi"), (b"filler.bin", &plain_filler)];
+        let plain = sector_archive(&entries, 16);
+        let moved = shifted(&plain, 64);
+        let directory = central_directory(&moved).expect("clean sector shifted directory");
+        assert_eq!(directory.archive_offset, 64);
+        assert_eq!(&*prefix_free(&moved), &plain[..]);
+    }
+
+    #[test]
+    fn a_fake_zip64_record_in_the_last_name_does_not_steer_the_hunt() {
+        // Round 34, F2 (red team RT34-3): on a shifted
+        // sector archive the record hunt's window
+        // includes the last bytes of the real directory,
+        // and the last record's name there carried a
+        // fake PK\x06\x06 with a bogus directory offset:
+        // the hunt took it as final and answered None,
+        // so the doors scanned an empty directory while
+        // the reader served the entries. A hunted
+        // record is validated against the locator that
+        // follows it now, the hunt keeps searching past
+        // the fake, and the real directory is derived —
+        // shifted exactly as unshifted.
+        let fake_name = fake_record_name();
+        let entries: [(&[u8], &[u8]); 2] = [(b"a.txt", b"hi"), (&fake_name, b"tail")];
+        let plain = sector_archive(&entries, 8);
+        let control = central_directory(&plain).expect("unshifted name-fake directory");
+        assert_eq!(control.archive_offset, 0);
+        assert_eq!(control.total, 2);
+
+        let moved = shifted(&plain, 64);
+        let directory = central_directory(&moved).expect("shifted name-fake directory");
+        assert_eq!(directory.archive_offset, 64);
+        assert_eq!(directory.total, 2);
+        assert_eq!(directory.cd_start, control.cd_start + 64);
+        assert_eq!(&*prefix_free(&moved), &plain[..]);
+    }
+
+    #[test]
+    fn a_directory_followed_by_a_signature_record_is_derived_by_the_hunt() {
+        // The other interposed-record shape the
+        // fallback exists for: a central-directory
+        // digital-signature record (PK\x05\x05) standing
+        // between the directory and the end record, its
+        // bytes counted in the declared directory size
+        // but not in the entry count. The arithmetic
+        // walk to the end record cannot close over it;
+        // the hunt's walk ends at the signature record
+        // and the signature spans exactly to the
+        // promised end, unshifted and shifted alike.
+        let filler = fake_filler_payload(false);
+        let plain_archive = stored_archive(false, &filler);
+        let eocd = plain_archive.len() - 22;
+        let mut signed = plain_archive[..eocd].to_vec();
+        signed.extend_from_slice(b"PK\x05\x05");
+        signed.extend_from_slice(&4u16.to_le_bytes());
+        signed.extend_from_slice(b"sign");
+        signed.extend_from_slice(&plain_archive[eocd..]);
+        let signed_eocd = signed.len() - 22;
+        let cd_size = u32::from_le_bytes(
+            signed[signed_eocd + 12..signed_eocd + 16]
+                .try_into()
+                .unwrap(),
+        ) + 10;
+        signed[signed_eocd + 12..signed_eocd + 16].copy_from_slice(&cd_size.to_le_bytes());
+        let control = central_directory(&signed).expect("signed directory");
+        assert_eq!(control.archive_offset, 0);
+        assert_eq!(control.total, 2);
+
+        let moved = shifted(&signed, 64);
+        let directory = central_directory(&moved).expect("shifted signed directory");
+        assert_eq!(directory.archive_offset, 64);
+        assert_eq!(directory.total, 2);
+        assert_eq!(directory.cd_start, control.cd_start + 64);
+        assert_eq!(&*prefix_free(&moved), &signed[..]);
+    }
+
+    #[test]
+    fn a_directory_whose_declared_size_covers_an_unaccounted_record_derives_nothing() {
+        // The fail-closed twin of the signature shape:
+        // an extra central record standing between the
+        // directory and the end record, counted in the
+        // declared directory size but not in the entry
+        // count. The records the count names walk to
+        // neither the promised end nor a signature
+        // record spanning to it, so no candidate
+        // validates and the derivation answers None —
+        // the doors refuse such an archive rather than
+        // scan a directory that is not the one the
+        // reader serves (round 34, F2). The hunt used
+        // to return the first record it found here,
+        // unvalidated.
+        let filler = fake_filler_payload(false);
+        let plain_archive = stored_archive(false, &filler);
+        let eocd = plain_archive.len() - 22;
+        let mut padded = plain_archive[..eocd].to_vec();
+        let mut extra = b"PK\x01\x02".to_vec();
+        extra.extend_from_slice(&[0u8; 42]);
+        extra[28..30].copy_from_slice(&4u16.to_le_bytes());
+        extra.extend_from_slice(b"JUNK");
+        let extra_len = extra.len() as u32;
+        padded.extend_from_slice(&extra);
+        padded.extend_from_slice(&plain_archive[eocd..]);
+        let padded_eocd = padded.len() - 22;
+        let cd_size = u32::from_le_bytes(
+            padded[padded_eocd + 12..padded_eocd + 16]
+                .try_into()
+                .unwrap(),
+        ) + extra_len;
+        padded[padded_eocd + 12..padded_eocd + 16].copy_from_slice(&cd_size.to_le_bytes());
+        assert_eq!(central_directory(&padded), None);
+        assert!(matches!(prefix_free(&padded), Cow::Borrowed(_)));
     }
 
     #[test]

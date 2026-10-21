@@ -553,3 +553,192 @@ a contribution-stdout delta is itemized and must
 be confined to unmatched-opener shapes — a moved
 walk-closed or well-formed case is a defect, not
 a delta.
+
+---
+
+## Close (coordinator, 2026-10-21)
+
+Close commit (code): `4a3c9c1` (R35-H). This close
+section is committed on top; HEAD == origin/main at
+the close record is the round's confirmed
+completion. Suite: 1011 (round-34 close) →
+**1028 / 0 failed**.
+
+Audit verdict (round 35): **0 BLOCKER / 6 MAJOR /
+2 MINOR** — exit bar NOT met. All eight findings
+fixed or dispositioned. Majors trend:
+10 → 6 → 6 → 1 → 4 → 3 → 2 → 5 → 6.
+
+## Batches, each coordinator-verified COLD on its committed tree
+
+Per-batch records: `round35-out/coord/r35{a..h}-record.md`
+(the F batch's first dispatch produced the cells
+file and STOP instead — see the F6 addendum above).
+
+| Batch | Commit | Findings | Cold suite |
+|---|---|---|---|
+| R35-A | `182f358` | F1 (MAJOR) | 1012/0 |
+| R35-B | `e8cc538` | F2 (MAJOR) | 1013/0 |
+| R35-C | `2619589` | F3 (MAJOR), F7 (MINOR) | 1015/0 |
+| R35-D | `6e7ff85` | F4 (MAJOR) | 1019/0 |
+| R35-E | `a1515b2` | F5 (MAJOR) | 1023/0 |
+| R35-F | `11feec6` | F6 (MAJOR, as adjudicated) | 1026/0 |
+| R35-G | `292bc19` | F8 (MINOR) | 1027/0 |
+| R35-H | `4a3c9c1` | R35-A observation (ungraded) | 1028/0 |
+
+Notes on the round's batch record:
+
+- R35-A: the fix reached exactly the seven reader
+  sites F1 named; the vacuously-passing brace pin
+  now compares against the paren twin. Its pin work
+  surfaced the Sunday-after observation that R35-H
+  later fixed. The batch's brief pointed at a
+  re-runnable differential corpus; none exists (no
+  runner or baseline is preserved — the 66,620-case
+  corpus is a historical claim from `3722169`'s era,
+  as rounds 33/34 already recorded). Briefs no
+  longer name it as a gate; the fuzz hard term and
+  the pin set are the gates, and both held in every
+  contribution batch this round.
+- R35-B: the governing-class recognition was found
+  scattered and was NOT re-invented — the cleaning
+  calls the governor checks' own two predicates.
+  Fuzz byte-identical.
+- R35-C: the re-spacing gate is now two passes and
+  `date_line` reads the whole line on the re-spaced
+  text (the inner gate alone let composed readers
+  resurrect refused dates). Two flags, both
+  dispositioned: the bare trailing word
+  `… Monday'` record-silencing cured by the same
+  F7 trim fix (date outcome unchanged, pinned); and
+  glued NON-weekday groups at the month–day slot
+  left byte-for-byte, carried to round 36 as an
+  ungraded observation.
+- R35-D: both fix shapes landed — the arithmetic
+  derivation gained the signature-terminator
+  allowance, and the plain hunt gained the offset
+  anchor — with a pinned variant (signature record
+  not counted in the declared size) that only the
+  anchor catches.
+- R35-E: the quadratic died by a closer-absence
+  memory (successful searches never overlap; only
+  failed searches repeated). 64,000 unclosed groups:
+  57.7 s → 1.6 s; ratios flat at both sizes in both
+  frames. Readings byte-preserved; fuzz identical.
+- R35-F: stopped once at its step-2 cells gate
+  (see the addendum), re-dispatched on the
+  adjudicated scope, and landed exactly 14 cells
+  onto their bare twins with no other field moving
+  and NO fuzz delta. One scoping refinement inside
+  the adjudication, recorded in the batch record
+  and the code comment: the first implementation
+  spaced every unmatched opener and broke exactly
+  one standing pin, `r26c_unclosed_bracket_spans`
+  — the R26-C restatement mask deliberately binds
+  an unclosed bracket span over words, re-affirmed
+  at R34-E. The landed rule spaces unmatched `(`,
+  a stray `)` glued to a word's head, and an
+  unmatched `[`/`{` glued to the head of a
+  walk-closed group, and holds that pin while
+  landing every battery cell. The reliance is
+  pinned outright: a walk-closed group's governed
+  date is named nowhere, a bare governed date is
+  named on the second-date note.
+- R35-G: the comment correction landed, and the
+  mirror-exception cell is pinned in-tree in both
+  journal shapes at both paths (more than the
+  disposition required).
+- R35-H: an observation from R35-A's pin work,
+  dispositioned as a late batch on the
+  coordinator's ruling. The Sunday-after phrase
+  scan read its words through `group_token`, so a
+  wholly bracketed weekday word cleaned to nothing
+  there — the F2 family in one more reader. The
+  witnessed family was two-directional (the base
+  wrongly recorded as a second date in one
+  direction; the resolution wrongly unrecorded in
+  the other); the fix is confined to the scan
+  (`bracketed_weekday_word` at the two spots) and
+  every moved line lands field-for-field on its
+  paren twin. `group_token` itself is unchanged.
+  Its scope canary — a braced Sunday-after shape
+  inside a paren group recording a mismatch its
+  twin does not — stood before the batch and is
+  byte-identical after it; carried to round 36
+  ungraded.
+
+Fuzz, all contribution batches: verdict27 and
+comp27 byte-identical to the standing R34-E
+baselines in every batch (R35-F included — the
+adjudicated reading change moved no fuzz case);
+rights byte-identical, counters 5083 / 1024 /
+5275 throughout, safety_flips=0. M8 held,
+fifteenth consecutive round. Booklet baseline
+exact at every batch.
+
+## Five-leg evidence on the close tree (`4a3c9c1`)
+
+Close-verification detail:
+`~/workspace/openbulletin-audit-wave3/round35-close-status.md`.
+
+1. **Local, cold:** after `cargo clean` (13,809
+   files, 9.9 GiB; registry not pruned), suite
+   **1028 passed / 0 failed** exit 0 (23:12:47Z →
+   23:40:44Z, wall 27m57s;
+   `round35-out/coord/close-cold-suite.log`),
+   booklet pin ok, direct run 31,717 / 34,977
+   exit 0; clippy `-D warnings` exit 0 (wall
+   3m43s). Verdicts re-derived from completed disk
+   logs after the carrying exec session was
+   SIGKILLed post-completion.
+2. **Fuzz as claims:** bin sources at recorded
+   md5s; verdict27 40,000 lines panics=0 md5
+   `7bcbfdc0306f9efc642bb03462cba385`; comp27
+   D_TOTAL=497024 D_PANICS=0 md5
+   `96b0c7b2ed7eedae6f8dcfa64b0d88ff`;
+   rights27/rights27s byte-identical, counters
+   5083 / 1024 / 5275, safety_flips=0.
+3. **Hosted CI** on `4a3c9c1`: run `39688303302`,
+   **success** — windows ✓ job 119527868947,
+   ubuntu ✓ job 119527869253, macos ✓ job
+   119527869292.
+4. **Desktop runner build** on `4a3c9c1`: run
+   `39688303292`, **success** — build ✓ job
+   119527868677.
+5. **Windows bundle** on `4a3c9c1`: run
+   `39691919383`, **success** — Gate ✓ job
+   119539919743, bundle ✓ job 119543009764;
+   coordinator-dispatched, watch exit 0.
+
+## Boundary hygiene
+
+Swept from `round35-out/` only: 8 probe target
+dirs, 4,968,589,082 B total (red-team, review,
+verify, and coord probe builds). Kept: all lane
+reports, this synthesis's inputs, coord records
+and logs, red-team witnesses (`witness35/`), the
+r35f battery files, probe sources and crafters,
+fixtures, and the fuzz bins — whose source md5s
+were re-verified unchanged after the sweep.
+Registry not pruned.
+
+## Build-cache policy at this confirmed completion
+
+Readings through the round stayed below both
+lines (overnight-window readings 77–78% against
+the 87% line; daytime readings 79–85% against the
+94% line), so nothing latched. The disposition on
+the completion reading — number, window, and
+outcome (clear-and-cold-start or carry) — is
+recorded in the close status note in the audit
+dir, per the charter.
+
+Carried to round 36: (a) the R35-C boundary
+observation (glued non-weekday groups and
+mixed-pair wrappers at the month–day slot,
+ungraded); (b) the R35-H canary (braced
+Sunday-after shape inside a paren group, ungraded);
+(c) the F6/F9 recycled-pid residual, standing
+recorded-not-fixed. The Tier-2 final gate is not
+triggered. HF-12 remains Jacob's decision,
+untouched.

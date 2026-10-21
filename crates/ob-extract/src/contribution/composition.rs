@@ -1648,6 +1648,58 @@ pub(super) fn bare_unit_weekday_at(tokens: &[&str], i: usize) -> bool {
     (0..=i).any(|s| bare_phrase_unit_span(&words, s).is_some_and(|span| s + span == i + 1))
 }
 
+/// `text` with a space set before a trailing
+/// parenthesized weekday garnish that stands GLUED
+/// to the word before it (round 33, R33-B, F2 = red
+/// team RT33-2): "November 1, 2026(Monday)". The
+/// spaced twin — "November 1, 2026 (Monday)" — is
+/// the pinned R4-7 shape: its garnish is the line's
+/// last word, so the trailing-weekday check judges
+/// it and a disagreeing weekday refuses the date
+/// and records the mismatch. Glued, the garnish
+/// rode inside the year token, no reader ever saw
+/// it as a word, and the line's trailing group was
+/// later stripped as anonymous garnish: the date
+/// read clean and the check was silenced. Setting
+/// the one space hands the line to every reader
+/// below exactly as its spaced twin is handed, so
+/// the glued garnish is judged by the standing
+/// machinery, word for word — an agreeing one
+/// reads as spaced reads, a disagreeing one
+/// refuses and records as spaced records, leading
+/// weekday and all. Only this shape is re-spaced:
+/// the group must close the line (sentence
+/// punctuation after it aside), hold one weekday
+/// word and nothing else, and stand glued — a
+/// group already standing apart, a parenthesized
+/// DATE, and every other group keep their text
+/// byte for byte.
+pub(super) fn spaced_glued_weekday_garnish(text: &str) -> Option<String> {
+    let trimmed = text.trim_end_matches(['.', ',']);
+    if !trimmed.ends_with(')') {
+        return None;
+    }
+    let open = trimmed.rfind('(')?;
+    if open == 0 {
+        return None;
+    }
+    let before = trimmed[..open].chars().next_back()?;
+    if before.is_whitespace() {
+        return None;
+    }
+    let inner = &trimmed[open + 1..trimmed.len() - 1];
+    if inner.contains(char::is_whitespace) || weekday_word(inner.trim()).is_none() {
+        return None;
+    }
+    let mut spaced = String::with_capacity(text.len() + 1);
+    spaced.push_str(&trimmed[..open]);
+    spaced.push_str(" (");
+    spaced.push_str(inner);
+    spaced.push(')');
+    spaced.push_str(&text[trimmed.len()..]);
+    Some(spaced)
+}
+
 pub(super) fn date_line_inner(
     raw: &Option<String>,
     today: SimpleDate,
@@ -1655,6 +1707,19 @@ pub(super) fn date_line_inner(
     let Some(text) = raw.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         return (None, None);
     };
+    // Round 33 (R33-B, F2): a glued trailing weekday
+    // garnish is judged exactly as its spaced twin
+    // (see `spaced_glued_weekday_garnish`): the line
+    // the readers below see is the spaced line, and
+    // the raw the leading-weekday check sees is that
+    // same line.
+    let respaced = spaced_glued_weekday_garnish(text);
+    let text: &str = respaced.as_deref().unwrap_or(text);
+    let effective_raw: Option<String> = match &respaced {
+        Some(spaced) => Some(spaced.clone()),
+        None => raw.clone(),
+    };
+    let raw: &Option<String> = &effective_raw;
     if let Some(d) = parse_flexible_date(text, today) {
         return (Some(d), None);
     }

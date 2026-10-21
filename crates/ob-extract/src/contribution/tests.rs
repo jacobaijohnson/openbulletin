@@ -19689,3 +19689,138 @@ fn r32b_glued_relative_twins_keep_their_readings() {
     assert_eq!(c.for_sunday_after_in_words, None);
     assert_eq!(week_verdict(&c, Some(oct(25))), WeekVerdict::NoSundayNamed);
 }
+
+#[test]
+fn r33b_glued_weekday_garnish_reads_as_its_spaced_twin() {
+    // Round 33 (R33-B, F2 = red team RT33-2): the
+    // spaced trailing weekday garnish is the pinned
+    // R4-7 behavior — "November 1, 2026 (Monday)"
+    // names the wrong weekday (November 1, 2026 is
+    // a Sunday), so the date does not read and a
+    // WeekdayMismatch is recorded. Glued to the
+    // year — "November 1, 2026(Monday)", ordinary
+    // typing, no space before the parenthesis —
+    // the garnish vanished into the date token's
+    // cleaning: the date read clean and no mismatch
+    // was recorded. The glued garnish is judged
+    // exactly as its spaced twin, on both absolute
+    // lines, agreeing and disagreeing, with and
+    // without a leading weekday word. (glued line,
+    // spaced line, the date read, the mismatch's
+    // named word and date)
+    let for_cases = [
+        (
+            "November 1, 2026(Monday)",
+            "November 1, 2026 (Monday)",
+            None,
+            Some(("Monday", nov(1))),
+        ),
+        (
+            "November 1, 2026(Tuesday)",
+            "November 1, 2026 (Tuesday)",
+            None,
+            Some(("Tuesday", nov(1))),
+        ),
+        (
+            "Sunday, November 1, 2026(Monday)",
+            "Sunday, November 1, 2026 (Monday)",
+            None,
+            Some(("Monday", nov(1))),
+        ),
+        (
+            "November 1, 2026(Sunday)",
+            "November 1, 2026 (Sunday)",
+            Some(nov(1)),
+            None,
+        ),
+    ];
+    for (glued, spaced, want_date, want_mismatch) in &for_cases {
+        let glued_text = format!("For Sunday: {glued}\n\n## Announcement\n\nHi.\n");
+        let g = parse_contribution(&glued_text, today()).expect("parses");
+        let spaced_text = format!("For Sunday: {spaced}\n\n## Announcement\n\nHi.\n");
+        let s = parse_contribution(&spaced_text, today()).expect("parses");
+        assert_eq!(g.for_date, s.for_date, "{glued}: the glued twin's date");
+        assert_eq!(
+            g.named_weekday_mismatch, s.named_weekday_mismatch,
+            "{glued}: the glued twin's mismatch record"
+        );
+        assert_eq!(g.for_date, *want_date, "{glued}");
+        match want_mismatch {
+            Some((named, date)) => {
+                let m = g
+                    .named_weekday_mismatch
+                    .as_ref()
+                    .expect("the disagreeing glued weekday is recorded");
+                assert_eq!(m.named, *named, "{glued}");
+                assert_eq!(m.date, *date, "{glued}");
+                assert_eq!(
+                    m.sentence(),
+                    s.named_weekday_mismatch
+                        .as_ref()
+                        .expect("the spaced twin records it too")
+                        .sentence(),
+                    "{glued}: the review's sentence is the twin's"
+                );
+            }
+            None => {
+                assert_eq!(g.named_weekday_mismatch, None, "{glued}");
+            }
+        }
+    }
+    // The Keep-through line, the same twins
+    // (November 8, 2026 is a Sunday too): a
+    // disagreeing glued garnish refuses the
+    // keep-through date and records the mismatch;
+    // an agreeing one reads exactly as spaced.
+    let keep_cases = [
+        (
+            "November 8, 2026(Monday)",
+            "November 8, 2026 (Monday)",
+            None,
+            Some(("Monday", nov(8))),
+        ),
+        (
+            "November 8, 2026(Sunday)",
+            "November 8, 2026 (Sunday)",
+            Some(nov(8)),
+            None,
+        ),
+    ];
+    for (glued, spaced, want_date, want_mismatch) in &keep_cases {
+        let glued_text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {glued}\n\n## Announcement\n\nHi.\n"
+        );
+        let g = parse_contribution(&glued_text, today()).expect("parses");
+        let spaced_text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {spaced}\n\n## Announcement\n\nHi.\n"
+        );
+        let s = parse_contribution(&spaced_text, today()).expect("parses");
+        assert_eq!(
+            g.for_date,
+            Some(nov(1)),
+            "{glued}: the For Sunday line stands"
+        );
+        assert_eq!(
+            g.keep_through, s.keep_through,
+            "{glued}: the glued twin's keep-through date"
+        );
+        assert_eq!(
+            g.keep_through_weekday_mismatch, s.keep_through_weekday_mismatch,
+            "{glued}: the glued twin's keep-through mismatch record"
+        );
+        assert_eq!(g.keep_through, *want_date, "{glued}");
+        match want_mismatch {
+            Some((named, date)) => {
+                let m = g
+                    .keep_through_weekday_mismatch
+                    .as_ref()
+                    .expect("the disagreeing glued weekday is recorded");
+                assert_eq!(m.named, *named, "{glued}");
+                assert_eq!(m.date, *date, "{glued}");
+            }
+            None => {
+                assert_eq!(g.keep_through_weekday_mismatch, None, "{glued}");
+            }
+        }
+    }
+}

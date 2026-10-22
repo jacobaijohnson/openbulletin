@@ -1127,9 +1127,14 @@ pub(super) fn token_has_no_letters_or_digits(raw: &str) -> bool {
 /// a single token the pair wraps whole; the span
 /// the pair delimits is a group in the group
 /// machinery since round 34 (R34-E, F3), judged as
-/// its paren twin.
+/// its paren twin. Round 36 (R36-E, F5): the
+/// trailing trim also takes the sentence marks
+/// `! ? ' "` — a wrapped word wearing one of them
+/// ("[cancelled]!") is still the one bracketed
+/// unit, exactly as its paren twin "(cancelled)!"
+/// is read through the paren unwrap.
 pub(super) fn is_bracketed_token(raw: &str) -> bool {
-    let t = raw.trim_end_matches([',', '.', ':', ';']);
+    let t = raw.trim_end_matches([',', '.', ':', ';', '!', '?', '\'', '"']);
     (t.starts_with('[') && t.ends_with(']')) || (t.starts_with('{') && t.ends_with('}'))
 }
 
@@ -1327,7 +1332,11 @@ pub(super) fn group_token(raw: &str) -> String {
     // date, not garnish. Garnish words ("[choir]")
     // keep the round-24 rule untouched.
     if is_bracketed_token(raw) {
-        let trimmed = raw.trim_end_matches([',', '.', ':', ';']);
+        // Round 36 (R36-E, F5): the same trailing
+        // trim `is_bracketed_token` judges by, so the
+        // inner word of "[cancelled]!" is "cancelled"
+        // itself, not "cancelled]".
+        let trimmed = raw.trim_end_matches([',', '.', ':', ';', '!', '?', '\'', '"']);
         let inner = &trimmed[1..trimmed.len() - 1];
         let word = clean_group_word(inner);
         if is_single_governor(&word) || is_cancellation_phrase(std::slice::from_ref(&word)) {
@@ -1346,12 +1355,19 @@ pub(super) fn group_token(raw: &str) -> String {
 /// (round 25, R25-A, M6 — one glued inside a word,
 /// "cancel\u{200b}led", cannot kill the word), then
 /// the edge trim over every wrapping pair and
-/// boundary mark (round 23, R23-3).
+/// boundary mark (round 23, R23-3). Round 36
+/// (R36-E, F5): the edge trim also takes the
+/// sentence marks `! ? ' "` — a word wearing one
+/// ("cancelled!", "off]!") cleans to the word, as
+/// the bare line's own reading of "cancelled!"
+/// already governed; an apostrophe INSIDE a word
+/// ("don't") is not an edge and is untouched.
 fn clean_group_word(text: &str) -> String {
     let stripped = strip_format_chars(text);
     stripped
         .trim_matches([
             '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}', '/',
+            '!', '?', '\'', '"',
         ])
         .to_ascii_lowercase()
 }

@@ -13627,8 +13627,10 @@ fn r26c_unclosed_bracket_spans() {
     // line-level restatement test demanded a
     // closing bracket. An unclosed span now binds
     // as a closed one does in composition: it
-    // runs to the end of the token run. The
-    // alone-unread limitation stands.
+    // runs to the end of the token run. (The
+    // alone-unread limitation for a LONE unclosed
+    // span stood here until round 36 — flagged at
+    // the cell below, where R36-F supersedes it.)
     for line in [
         "(November 1, cancelled) [November 1",
         "(November 1, cancelled) [our choir) November 1",
@@ -13692,15 +13694,27 @@ fn r26c_unclosed_bracket_spans() {
         Vec::<SimpleDate>::new(),
         "{line}: keep-through note is empty"
     );
-    // The alone-unread limitation stands: a line
-    // carrying nothing but the unclosed span
-    // still reads nothing.
+    // FLAGGED (round 36, R36-F, F8 = review
+    // R36-8): the alone-unread limitation recorded
+    // here is superseded for the UNCLOSED span by
+    // the adjudicated reading — a stray mark at
+    // the head of the line judges as the paren
+    // pair's mark does, and "(November 1" has read
+    // its date since the round-35 stray-mark
+    // recovery, so the lone unclosed span reads as
+    // its paren twin reads, as the closed lone
+    // group has since R34-E (flagged in place
+    // there). The bound-restatement family above
+    // stands unchanged: beside a governed sibling
+    // the unclosed span still binds and reads
+    // nothing.
     let line = "[November 1";
     let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
     let c = parse_contribution(&text, today()).expect("parses");
     assert_eq!(
-        c.for_date, None,
-        "{line}: the lone unclosed span stays unread"
+        c.for_date,
+        Some(nov(1)),
+        "{line}: the lone unclosed span reads as its paren twin"
     );
     // BOUNDARY THAT STANDS: a span that CLOSED
     // before the date opens nothing over it —
@@ -24091,4 +24105,304 @@ fn r36d_leading_group_with_a_trailing_group_in_every_pair() {
     ] {
         r36d_pair(wrapped, paren);
     }
+}
+
+#[test]
+fn r36f_stray_bracket_and_brace_marks_read_as_their_paren_and_bare_twins() {
+    // Round 36 (R36-F, F8 = review R36-8): the R35-F
+    // stray-mark recovery was paren-only at the head
+    // of the line. "(November 1, 2026" and
+    // ")November 1, 2026" read as their bare twins,
+    // but "[November 1, 2026", "{November 1, 2026",
+    // "]November 1, 2026", and "}November 1, 2026"
+    // read nothing — the sender's date dropped with
+    // no record. The stray closer glued to a word's
+    // head is now spaced for all three pairs in
+    // `stray_mark_spaced`, as the paren closer has
+    // been since round 35, and an unmatched "[" or
+    // "{" standing at the head of the line is spaced
+    // as its paren twin is. A mark standing after
+    // other content keeps its bytes: the R26-C
+    // restatement shapes below hold at their
+    // standing readings.
+    for line in [
+        "[November 1, 2026",
+        "{November 1, 2026",
+        "]November 1, 2026",
+        "}November 1, 2026",
+        "[ November 1, 2026",
+        "{ November 1, 2026",
+        "[November 1",
+        "{November 1",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the stray-marked date reads as its bare twin"
+        );
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no weekday record");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::new(),
+            "{line}: nothing else is named"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: no parenthesized record"
+        );
+    }
+    // Field for field against the paren readings,
+    // both routes (the r34e helpers).
+    for (marked, paren) in [
+        ("[November 1, 2026", "(November 1, 2026"),
+        ("{November 1, 2026", "(November 1, 2026"),
+        ("]November 1, 2026", ")November 1, 2026"),
+        ("}November 1, 2026", ")November 1, 2026"),
+        ("[November 1", "(November 1"),
+        ("{November 1", "(November 1"),
+    ] {
+        r34e_for_twin(marked, paren);
+        r34e_keep_twin(marked, paren);
+    }
+    // The keep-through line standing alone (no For
+    // Sunday line at all): the same recovery, at the
+    // keep route's own fallback.
+    for (marked, paren) in [
+        ("[November 29, 2026", "(November 29, 2026"),
+        ("{November 29, 2026", "(November 29, 2026"),
+        ("]November 29, 2026", ")November 29, 2026"),
+        ("}November 29, 2026", ")November 29, 2026"),
+    ] {
+        let text = format!("Keep-through: {marked}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(29)),
+            "{marked}: the stray-marked keep date reads as its bare twin"
+        );
+        let paren_text = format!("Keep-through: {paren}\n\n## Announcement\n\nHi.\n");
+        let p = parse_contribution(&paren_text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, p.keep_through,
+            "{marked}: the keep twin's date"
+        );
+        assert_eq!(
+            c.keep_through_second_dates, p.keep_through_second_dates,
+            "{marked}: the keep twin's named dates"
+        );
+    }
+    // Holds: an unmatched bracket standing AFTER
+    // other content keeps the R26-C reading — the
+    // restatement mask binds it beside its governed
+    // sibling — and a stray closer at a word's tail
+    // keeps the R35-F hold. Neither is this ruling's
+    // surface.
+    for line in [
+        "(November 1, cancelled) [November 1",
+        "(November 1, cancelled) {November 1",
+        "(November 1, cancelled) [our choir November 1",
+        "November 1, 2026]",
+        "November 1, 2026}",
+        "November 1], 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the standing hold reads no date");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::new(),
+            "{line}: the standing hold names nothing"
+        );
+    }
+}
+
+#[test]
+fn r36f_in_words_memory_treats_a_stray_bracket_as_its_paren_twin() {
+    // Round 36 (R36-F, F11 = review R36-9): on the
+    // audited tree "[next Sunday" was remembered in
+    // words verbatim — the stray bracket repeated
+    // back as part of the sender's phrase — while
+    // "(next Sunday" was not remembered at all.
+    // R36-D's leading-group gate (F4) has since
+    // brought the bracket and brace forms under the
+    // same gate the paren form stands under, and on
+    // this tree the twins already judge alike: a
+    // stray opener at the head of the line is
+    // remembered in NEITHER pair. This pin locks
+    // that parity on the in-words surfaces, and
+    // states the agreeing forms beside it: a stray
+    // CLOSER at the head, and a stray opener behind
+    // the garnish "on", are remembered verbatim in
+    // every pair alike — each pair repeats the
+    // sender's own mark, which is the standing
+    // treatment, not a divergence.
+    for line in [
+        "(next Sunday",
+        "[next Sunday",
+        "{next Sunday",
+        "(this Sunday",
+        "[this Sunday",
+        "{this Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_in_words, None,
+            "{line}: a stray opener at the head is not remembered, in any pair"
+        );
+    }
+    r34e_for_twin("[next Sunday", "(next Sunday");
+    r34e_for_twin("{next Sunday", "(next Sunday");
+    r34e_for_twin("[this Sunday", "(this Sunday");
+    for line in [
+        "(the Sunday after next Sunday",
+        "[the Sunday after next Sunday",
+        "{the Sunday after next Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_after_in_words, None,
+            "{line}: the after-phrase behind a stray opener is not remembered, in any pair"
+        );
+    }
+    r34e_for_twin(
+        "[the Sunday after next Sunday",
+        "(the Sunday after next Sunday",
+    );
+    // The agreeing verbatim forms, stated outright
+    // per pair: the remembered words are the
+    // sender's own, stray mark included, in every
+    // pair alike.
+    for (line, remembered) in [
+        (")next Sunday", ")next Sunday"),
+        ("]next Sunday", "]next Sunday"),
+        ("}next Sunday", "}next Sunday"),
+        ("on (next Sunday", "on (next Sunday"),
+        ("on [next Sunday", "on [next Sunday"),
+        ("on {next Sunday", "on {next Sunday"),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(remembered),
+            "{line}: remembered verbatim, as in every pair"
+        );
+    }
+}
+
+#[test]
+fn r36f_sunday_after_shape_word_wearing_sentence_marks_reads_as_its_controls() {
+    // Round 36 (R36-F, F12 = review R36-10): the
+    // Sunday-after shape word wearing "!", "?", or
+    // quotes read nothing at all — no date, no
+    // record — while wearing ":" or ";" it read.
+    // `sunday_after_outcome`'s shape trim judged
+    // only the wrapper pairs, "," and ".", and
+    // `weekday_word`'s trailing trim between them
+    // covered ":" and ";" but not the other three
+    // marks. The shape trim now learns the sentence
+    // marks, on both words of the shape. November 1,
+    // 2026 is a Sunday; the Sunday after it is
+    // November 8, 2026.
+    for shape in [
+        "Sunday!",
+        "Sunday?",
+        "\"Sunday\"",
+        "'Sunday'",
+        // The controls, at their standing readings.
+        "Sunday:",
+        "Sunday;",
+        "Sunday.",
+        "Sunday,",
+        "Sunday",
+    ] {
+        let line = format!("{shape} after November 1, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the shape word wearing its mark reads the Sunday after"
+        );
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no weekday record");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::new(),
+            "{line}: the base is consumed by its phrase, not named"
+        );
+        r34e_for_twin(&line, "Sunday: after November 1, 2026");
+        r34e_keep_twin(&line, "Sunday: after November 1, 2026");
+    }
+    // The garnish forms of the shape read the same.
+    for line in [
+        "the Sunday! after November 1, 2026",
+        "on Sunday? after November 1, 2026",
+        "the \"Sunday\" after November 1, 2026",
+        "on 'Sunday' after November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the garnished shape reads the Sunday after"
+        );
+    }
+    // The shape's second word wearing a mark reads
+    // as its bare twin does.
+    for line in [
+        "Sunday after! November 1, 2026",
+        "Sunday after? November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the marked second word reads the Sunday after"
+        );
+        r34e_for_twin(line, "Sunday after November 1, 2026");
+    }
+    // A disagreeing base weekday under a marked
+    // shape word records the mismatch, as the bare
+    // shape's does — the phrase is refused, not
+    // collapsed to its base.
+    let line = "Sunday! after Monday November 1, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: the disagreeing base refuses");
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the mismatch is recorded");
+    assert_eq!(m.named, "Monday", "{line}: the record names the weekday");
+    assert_eq!(m.date, nov(1), "{line}: the record names the base date");
+    r34e_for_twin(line, "Sunday after Monday November 1, 2026");
+    // Inside a group the marked shape forms its
+    // phrase too: the group's resolution is the
+    // line's date and the core is named beside it,
+    // exactly as the bare group form reads — no
+    // phantom mismatch naming the resolution.
+    let line = "November 15, 2026 (Sunday! after November 1, 2026)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the group's resolution is the line's date"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(15)],
+        "{line}: the core is named as the second date"
+    );
+    assert_eq!(
+        c.for_sunday_parenthesized_mismatch, None,
+        "{line}: no phantom mismatch stands"
+    );
+    r34e_for_twin(line, "November 15, 2026 (Sunday after November 1, 2026)");
 }

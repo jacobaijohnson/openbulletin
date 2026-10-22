@@ -437,8 +437,23 @@ pub(super) fn sunday_after_outcome(text: &str, today: SimpleDate) -> Option<Sund
         // weekday here as its paren and bracket twins
         // do; the pair rides on both words of the
         // shape, as the other two pairs already do.
-        let first = tokens[start].trim_matches(['(', ')', '[', ']', '{', '}', ',', '.']);
-        let second = tokens[start + 1].trim_matches(['(', ')', '[', ']', '{', '}', ',', '.']);
+        // Round 36 (R36-F, F12 = review R36-10): both
+        // trim sets gain the sentence marks — "!", "?",
+        // and the quotes, with ":" and ";" stated
+        // outright — so the shape word wearing one
+        // ("Sunday! after ...", "\"Sunday\" after ...")
+        // names its weekday here as the ":" / ";"
+        // forms already did through `weekday_word`'s
+        // trailing trim. Between the two trims the
+        // marks were judged unevenly: two sentence
+        // marks read the phrase and the other three
+        // silenced the whole line.
+        let first = tokens[start].trim_matches([
+            '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '!', '?', '"', '\'',
+        ]);
+        let second = tokens[start + 1].trim_matches([
+            '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '!', '?', '"', '\'',
+        ]);
         // Round 29 (R29-A, F8 = review MINOR-1): the
         // phrase's two words are judged unglued on
         // this whole-line reader too — "the *Sunday

@@ -2657,7 +2657,17 @@ pub(super) fn balanced_spans(text: &str) -> Vec<(usize, usize)> {
 /// unclosed spans (the R26-C restatement mask
 /// binds an unclosed bracket span as a closed one,
 /// re-affirmed at R34-E), and that reading is not
-/// this ruling's to move. The walk is
+/// this ruling's to move. Round 36 (R36-F, F8 =
+/// review R36-8) extends the surface in two places
+/// where the paren pair already judged: the stray
+/// closer glued to a word's head is spaced for all
+/// three pairs, not the paren pair alone, and an
+/// unmatched "[" or "{" standing at the head of
+/// the line is spaced — the mask's binding runs
+/// beside a governed sibling, and a mark leading
+/// the line has none; a mark standing after other
+/// content keeps its bytes, so the R26-C shapes
+/// hold. The walk is
 /// `balanced_spans`' own, statement for statement,
 /// except that what it records is the marks
 /// themselves.
@@ -2677,12 +2687,18 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
                 .is_some_and(|&open| group_closer(bytes[open]) == b)
             {
                 closed_openers.push(stack.pop().expect("a matched opener stands"));
-            } else if b == b')'
-                && text[i + 1..]
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_alphanumeric())
+            } else if text[i + 1..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric())
             {
+                // Round 36 (R36-F, F8 = review R36-8):
+                // the stray closer glued to a word's
+                // head is spaced for all three pairs,
+                // as the paren closer has been since
+                // round 35 — "]November" and "}November"
+                // wear their word exactly as
+                // ")November" does.
                 stray.push(i);
             }
         }
@@ -2692,6 +2708,22 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
             || (open + 1 < bytes.len()
                 && is_group_opener(bytes[open + 1])
                 && closed_openers.contains(&(open + 1)))
+            // Round 36 (R36-F, F8 = review R36-8): an
+            // unmatched "[" or "{" standing at the
+            // head of the line — nothing before it but
+            // whitespace and other unmatched openers —
+            // is a stray mark too, spaced as its paren
+            // twin is: "[November 1, 2026" is the bare
+            // line with a typo'd mark, and no governed
+            // sibling stands before it for the R26-C
+            // restatement mask to bind beside. A mark
+            // standing after other content keeps its
+            // bytes: that is the R26-C surface, and it
+            // is not this ruling's to move.
+            || (bytes[open] != b'('
+                && bytes[..open].iter().enumerate().all(|(j, &b)| {
+                    b.is_ascii_whitespace() || (is_group_opener(b) && stack.contains(&j))
+                }))
     }));
     if stray.is_empty() {
         return None;

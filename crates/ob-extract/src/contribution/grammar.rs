@@ -5579,7 +5579,14 @@ pub(super) fn bracket_span_mask(raw_tokens: &[&str]) -> Vec<bool> {
     // a line carrying nothing but the unclosed span
     // still reads nothing, exactly as before — the
     // mask feeds judgments about governed lines,
-    // and a lone span has no governor.
+    // and a lone span has no governor. (Round 36,
+    // R36-F, F8: the mask itself is unchanged, but
+    // the plain date readers now space a stray
+    // mark standing at the head of the line before
+    // any mask is consulted — `stray_mark_spaced`
+    // — so on those readers the lone span reads as
+    // its paren twin; the limitation survives here,
+    // where a sibling stands before the mark.)
     if let Some(s) = span_start {
         for m in &mut mask[s..] {
             *m = true;

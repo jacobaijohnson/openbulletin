@@ -1665,7 +1665,7 @@ pub(super) fn framed_date_outcome(
 /// ("[Monday]" standing inside "([Monday])") cleans
 /// off with the pair's marks — and the word is
 /// returned as the lone record names it.
-fn garnish_group_weekday(inner: &str) -> Option<(String, u32)> {
+pub(super) fn garnish_group_weekday(inner: &str) -> Option<(String, u32)> {
     let mut words = inner.split_whitespace();
     let word = words.next()?;
     if words.next().is_some() {

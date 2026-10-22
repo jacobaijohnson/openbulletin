@@ -502,6 +502,14 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         .iter()
         .rposition(|t| t.chars().any(|c| c.is_alphanumeric()));
     let mut trailing: Option<(String, u32)> = None;
+    // Round 37 (R37-G): the trailing weekday's raw
+    // token, kept when it closes the line — the
+    // group-sequence walk below judges the sequence
+    // standing after the base in written order, and
+    // a lone trailing weekday taken out here stands
+    // last in that sequence when companions precede
+    // it ("(notes)(Monday)").
+    let mut trailing_token: Option<&str> = None;
     let mut core: Vec<&str> = tokens.to_vec();
     if let Some(i) = last_word {
         // Round 34 (R34-C, F4 = RT34-5): the trailing
@@ -535,6 +543,9 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         if let Some(named_number) = weekday_word(word) {
             let named = word.to_string();
             trailing = Some((named, named_number));
+            if i + 1 == tokens.len() {
+                trailing_token = Some(tokens[i]);
+            }
             core = tokens
                 .iter()
                 .enumerate()
@@ -544,6 +555,14 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         }
     }
     if let Some((base, used)) = parse_date_prefix(&core, today) {
+        // Round 37 (R37-G): a group SEQUENCE standing
+        // directly after the base is judged before
+        // the lone trailing word below — the first
+        // disagreeing weekday group in the sequence
+        // records the lone form's mismatch.
+        if let Some(m) = base_trailing_sequence_mismatch(&core, used, trailing_token, base) {
+            return Some(SundayAfter::Mismatch(m));
+        }
         // The trailing weekday describes the base only
         // when it stands directly after it; words
         // between the base and the trailing word make
@@ -610,8 +629,14 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
     }
     // The leading weekday agreed (it can only have
     // blocked the whole reading by wearing "on"); the
-    // trailing weekday still has its say, when it
-    // stands directly after the base.
+    // trailing garnish still has its say, when it
+    // stands directly after the base — a group
+    // sequence first (round 37, R37-G), then the
+    // lone trailing weekday.
+    let consumed = core.len() - lead_rest.len() + used;
+    if let Some(m) = base_trailing_sequence_mismatch(&core, consumed, trailing_token, base) {
+        return Some(SundayAfter::Mismatch(m));
+    }
     Some(match trailing {
         Some((named, named_number))
             if used == lead_rest.len() && base.weekday() != named_number =>
@@ -620,6 +645,125 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         }
         _ => SundayAfter::Date(first_sunday_after(base)),
     })
+}
+
+/// The weekday mismatch a group sequence standing
+/// directly after the Sunday-after base date names,
+/// when one does (round 37, R37-G, late batch on
+/// the R35-H precedent, from the R37-D writer's
+/// witnessed flag): the lone trailing garnish is
+/// judged above — "Sunday after November 1, 2026
+/// (Monday)" refuses with WeekdayMismatch(Monday@
+/// 2026-11-01) — but the judgment asked only for
+/// the line's last word, so a weekday group
+/// standing with any companion group beside it, in
+/// any spacing and either position, was served in
+/// silence ("Sunday after November 1, 2026
+/// (Monday)(notes)" and its mirror "(notes)
+/// (Monday)" both resolved to 2026-11-08). This is
+/// a third slot beside the plain line's leading
+/// and trailing slots, which R37-D's
+/// `group_sequence_weekday_mismatch` walks; the
+/// walk here is the same step inside the base's
+/// own machinery. `core` is the base's token list
+/// with the lone trailing weekday (if any) taken
+/// out, `consumed` is how much of it the base date
+/// itself consumed, and `trailing_token` is that
+/// taken-out weekday's raw token when it closed
+/// the line — it stands last in written order, so
+/// it closes the sequence the walk reads. The
+/// garnish text is the tail of the base's last
+/// token from its first group opener (a garnish
+/// glued against the year rides inside that
+/// token), the tokens standing after the base,
+/// and that trailing token. A sequence is two or
+/// more top-level groups covering that text
+/// whole — sentence punctuation and a standalone
+/// separator token after the last group aside, as
+/// the standing trailing readers peel them —
+/// separated only by whitespace and commas, the
+/// separations the lone forms allow; every
+/// weekday group in it is judged on its contents
+/// against the BASE date, and the first
+/// disagreeing one in written order records the
+/// lone form's mismatch. An agreeing (or
+/// weekday-free) sequence names nothing here, so
+/// the standing readings consume it exactly as
+/// they consume the lone agreeing garnish.
+/// Companion contents keep their standing
+/// judgments at this slot throughout: the walk
+/// adopts nothing and governs nothing — a
+/// governing or date-carrying companion standing
+/// after the base is garnish here, as it is when
+/// it stands alone — and words standing after the
+/// sequence are the line's remainder, which ends
+/// the sequence, so the R5-D bare-word arm is
+/// untouched by construction.
+fn base_trailing_sequence_mismatch(
+    core: &[&str],
+    consumed: usize,
+    trailing_token: Option<&str>,
+    base: SimpleDate,
+) -> Option<WeekdayMismatch> {
+    let mut garnish = String::new();
+    if let Some(last) = consumed.checked_sub(1).and_then(|i| core.get(i)) {
+        if let Some(open) = last.find(['(', '[', '{']) {
+            garnish.push_str(&last[open..]);
+        }
+    }
+    for token in &core[consumed.min(core.len())..] {
+        if !garnish.is_empty() {
+            garnish.push(' ');
+        }
+        garnish.push_str(token);
+    }
+    if let Some(token) = trailing_token {
+        if !garnish.is_empty() {
+            garnish.push(' ');
+        }
+        garnish.push_str(token);
+    }
+    let mut rest = garnish.as_str();
+    loop {
+        let peeled = rest
+            .trim_end()
+            .trim_end_matches(['.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}']);
+        if peeled.len() != rest.len() {
+            rest = peeled;
+            continue;
+        }
+        match rest.rsplit_once(char::is_whitespace) {
+            Some((head, token))
+                if !token.is_empty() && token.chars().all(|c| c == '*' || c == '|') =>
+            {
+                rest = head;
+            }
+            _ => break,
+        }
+    }
+    let rest = rest.trim_end();
+    let spans = balanced_spans(rest);
+    if spans.len() < 2 {
+        return None;
+    }
+    if spans[0].0 != 0 || spans[spans.len() - 1].1 != rest.len() {
+        return None;
+    }
+    for pair in spans.windows(2) {
+        let gap = &rest[pair[0].1..pair[1].0];
+        if !gap.chars().all(|c| c == ',' || c.is_whitespace()) {
+            return None;
+        }
+    }
+    for (start, end) in &spans {
+        let inner = &rest[start + 1..end - 1];
+        if let Some((named, number)) = garnish_group_weekday(inner) {
+            if base.weekday() != number {
+                return Some(WeekdayMismatch { named, date: base });
+            }
+        }
+    }
+    None
 }
 
 /// The name the Sunday-after base's leading-weekday

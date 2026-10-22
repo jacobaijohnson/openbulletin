@@ -293,17 +293,11 @@ fn raw_payload(
     cap: u64,
 ) -> Option<Vec<u8>> {
     use std::io::Read as _;
-    let local = spot.local_offset as usize;
-    if local + 30 > bytes.len() || !bytes[local..].starts_with(b"PK\x03\x04") {
-        return None;
-    }
-    let name_len = usize::from(u16::from_le_bytes([bytes[local + 26], bytes[local + 27]]));
-    let extra_len = usize::from(u16::from_le_bytes([bytes[local + 28], bytes[local + 29]]));
-    let data_start = local + 30 + name_len + extra_len;
-    let data_end = data_start.checked_add(spot.comp_size as usize)?;
-    if data_end > bytes.len() {
-        return None;
-    }
+    // The span is the shared checked computation
+    // (round 36, F7): this copy's plain additions on
+    // the spot's zip64-resolved offset panicked on an
+    // offset near u64::MAX.
+    let (data_start, data_end) = ob_model::zip_directory::payload_span(bytes, spot)?;
     let raw = &bytes[data_start..data_end];
     match spot.method {
         0 => Some(raw[..(raw.len() as u64).min(cap + 1) as usize].to_vec()),
@@ -1693,6 +1687,269 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// One plain central record for the round-36
+    /// crafts: Stored, no comment, the given extra
+    /// field riding after the name.
+    fn plain_central(name: &[u8], data: &[u8], local_offset: u32, extra: &[u8]) -> Vec<u8> {
+        let crc = crc32_ieee(data);
+        let mut rec: Vec<u8> = Vec::new();
+        rec.extend_from_slice(b"PK\x01\x02");
+        rec.extend_from_slice(&45u16.to_le_bytes());
+        rec.extend_from_slice(&20u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&crc.to_le_bytes());
+        rec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        rec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        rec.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        rec.extend_from_slice(&(extra.len() as u16).to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u32.to_le_bytes());
+        rec.extend_from_slice(&local_offset.to_le_bytes());
+        rec.extend_from_slice(name);
+        rec.extend_from_slice(extra);
+        rec
+    }
+
+    /// One plain end record with the given disk field
+    /// and comment, the tail of the round-36 crafts.
+    fn plain_eocd(total: u16, cd_size: u32, cd_offset: u32, disk: u16, comment: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&disk.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&(comment.len() as u16).to_le_bytes());
+        out.extend_from_slice(comment);
+        out
+    }
+
+    /// The round-36 second-directory crafts (review
+    /// R36-6 + red team RT36-5 + review R36-7's
+    /// compound), assembled byte by byte over Stored
+    /// entries, in the IDML door's crafter shape:
+    /// "plain" the real directory alone;
+    /// "appended-clean" / "appended-dirty" a second
+    /// directory naming each part once with its own
+    /// end record (disk field 0 or 1); "comment" that
+    /// second directory planted inside the real end
+    /// record's declared comment; "steered" an
+    /// appended directory whose extra record
+    /// duplicates the first repeated name with a zip64
+    /// extra resolving its local offset to
+    /// u64::MAX - 10; "direct-steered" the real
+    /// directory's own first record carrying that
+    /// steered offset.
+    fn second_directory_pack(entries: &[(&[u8], &[u8])], shape: &str) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries {
+            locals.push(out.len() as u32);
+            let crc = crc32_ieee(data);
+            out.extend_from_slice(b"PK\x03\x04");
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name);
+            out.extend_from_slice(data);
+        }
+        let cd_offset = out.len() as u32;
+        let steered_record = |entries: &[(&[u8], &[u8])]| -> Vec<u8> {
+            let dup_at = entries
+                .iter()
+                .position(|(name, _)| entries.iter().filter(|(n, _)| n == name).count() > 1)
+                .expect("a repeated name stands");
+            let (name, _) = entries[dup_at];
+            let second = entries
+                .iter()
+                .enumerate()
+                .filter(|(i, (n, _))| *n == name && *i != dup_at)
+                .map(|(_, (_, data))| *data)
+                .next()
+                .expect("the repeated name's second copy stands");
+            let mut extra: Vec<u8> = Vec::new();
+            extra.extend_from_slice(&1u16.to_le_bytes());
+            extra.extend_from_slice(&8u16.to_le_bytes());
+            extra.extend_from_slice(&(u64::MAX - 10).to_le_bytes());
+            plain_central(name, second, u32::MAX, &extra)
+        };
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            if shape == "direct-steered" && i == 0 {
+                let mut extra: Vec<u8> = Vec::new();
+                extra.extend_from_slice(&1u16.to_le_bytes());
+                extra.extend_from_slice(&8u16.to_le_bytes());
+                extra.extend_from_slice(&(u64::MAX - 10).to_le_bytes());
+                centrals.extend_from_slice(&plain_central(name, data, u32::MAX, &extra));
+            } else {
+                centrals.extend_from_slice(&plain_central(name, data, locals[i], &[]));
+            }
+        }
+        let mut fake_recs: Vec<u8> = Vec::new();
+        let mut fake_total: u16 = 0;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            if entries[..i].iter().any(|(other, _)| other == name) {
+                continue;
+            }
+            fake_recs.extend_from_slice(&plain_central(name, data, locals[i], &[]));
+            fake_total += 1;
+        }
+        out.extend_from_slice(&centrals);
+        match shape {
+            "plain" | "direct-steered" => {
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &[],
+                ));
+            }
+            "comment" => {
+                let planted_offset = cd_offset + centrals.len() as u32 + 22;
+                let mut comment = fake_recs.clone();
+                comment.extend_from_slice(&plain_eocd(
+                    fake_total,
+                    fake_recs.len() as u32,
+                    planted_offset,
+                    0,
+                    &[],
+                ));
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &comment,
+                ));
+            }
+            _ => {
+                let disk = if shape == "appended-dirty" { 1 } else { 0 };
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &[],
+                ));
+                let fake_offset = out.len() as u32;
+                let mut appended = fake_recs.clone();
+                let mut appended_total = fake_total;
+                if shape == "steered" {
+                    appended.extend_from_slice(&steered_record(entries));
+                    appended_total += 1;
+                }
+                out.extend_from_slice(&appended);
+                out.extend_from_slice(&plain_eocd(
+                    appended_total,
+                    appended.len() as u32,
+                    fake_offset,
+                    disk,
+                    &[],
+                ));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn r36a_a_second_directory_never_steers_the_pack() {
+        // Round 36, F6 (review R36-6 + red team
+        // RT36-5): a second self-consistent central
+        // directory — appended past the real end
+        // record, or planted inside the real end
+        // record's own comment — judged the pack
+        // instead of the real directory, so the red
+        // picture landed twice and the blue picture
+        // never landed at all. The real directory is
+        // judged in every shape now: both pictures
+        // land, the first as pic.png and the second
+        // as pic-2.png, each holding its own bytes,
+        // exactly as the plain control lands them
+        // (the r32 F6 pin above).
+        let red = png_filled(255);
+        let blue = png_filled(0);
+        for shape in [
+            "plain",
+            "appended-clean",
+            "appended-dirty",
+            "comment",
+            "steered",
+        ] {
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"pic.png", &red),
+                (b"pic.png", &blue),
+                (b"filler.bin", b"tail"),
+            ];
+            let bytes = second_directory_pack(&entries, shape);
+            let dir = temp_dir(&format!("r36a-{shape}"));
+            let lib = ClipLibrary::open(dir.clone()).expect("open");
+            let report = lib
+                .add_collection_from_zip("pack.zip", &bytes, &CollectionNotes::default(), None)
+                .expect("add zip");
+            assert_eq!(report.added, 2, "{shape}: both copies land: {report:?}");
+            let collection = lib.collection("pack").expect("collection");
+            assert_eq!(collection.items.len(), 2, "{shape}");
+            let first = collection
+                .items
+                .iter()
+                .find(|i| i.file_name == "pic.png")
+                .expect("the first copy keeps the name");
+            let second = collection
+                .items
+                .iter()
+                .find(|i| i.file_name == "pic-2.png")
+                .expect("the second copy lands apart");
+            assert_eq!(
+                std::fs::read(&first.path).expect("read first"),
+                red,
+                "{shape}: the first item holds the first copy's bytes"
+            );
+            assert_eq!(
+                std::fs::read(&second.path).expect("read second"),
+                blue,
+                "{shape}: the second item holds the second copy's bytes"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn r36a_a_direct_over_range_spot_refuses_instead_of_panicking() {
+        // Round 36, F7 (review R36-7): one entry whose
+        // own central record resolves its local offset
+        // to u64::MAX - 10 through a zip64 extra. This
+        // door calls raw_payload for every spot, so
+        // the unchecked `local + 30` arithmetic stood
+        // directly on this shape; the checked
+        // arithmetic refuses it in this door's standing
+        // words ("cannot be read"), never a panic.
+        let red = png_filled(255);
+        let entries: Vec<(&[u8], &[u8])> = vec![(b"pic.png", &red)];
+        let bytes = second_directory_pack(&entries, "direct-steered");
+        let dir = temp_dir("r36a-direct-steered");
+        let lib = ClipLibrary::open(dir.clone()).expect("open");
+        let err = lib
+            .add_collection_from_zip("pack.zip", &bytes, &CollectionNotes::default(), None)
+            .expect_err("the over-range pack refuses");
+        assert!(err.contains("cannot be read"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

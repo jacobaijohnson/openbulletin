@@ -1840,6 +1840,29 @@ pub(super) fn bare_unit_weekday_at(tokens: &[&str], i: usize) -> bool {
 /// stands as written for the standing readers to
 /// judge, and a glued one is re-spaced at its
 /// outer edge.
+///
+/// Round 37 (R37-C, F5 + F6): the date-slot pass
+/// stopped one pattern short once more — a compound
+/// of two groups glued together at the month–day
+/// slot qualified on NEITHER span (the first is
+/// followed by a group, not a day digit; the second
+/// is preceded by a group, not a month word), so
+/// the compound was never re-spaced: governing
+/// contents in either position served the date live
+/// ("November(cancelled)(notes) 1, 2026" and its
+/// reverse read November 1 with no record; the
+/// spaced twins read nothing), a mixed weekday
+/// wrapper served silently, a date group first read
+/// the outer date with a record where the spaced
+/// twin reads the group's date clean, and inert
+/// compounds read November 1 glued, nothing spaced.
+/// The pass now states the slot for a chain of
+/// glued spans as a unit — month word before the
+/// chain's first group, day number after its last —
+/// and sets a space on every glued side of the
+/// chain, so the compound takes its spaced reading
+/// exactly as the single group at the slot does,
+/// for a chain of any length.
 pub(super) fn spaced_glued_weekday_garnish(text: &str) -> Option<String> {
     let at_slots = respaced_glued_groups_at_date_slots(text);
     let stage0: &str = at_slots.as_deref().unwrap_or(text);
@@ -1976,10 +1999,79 @@ fn day_number_stands_after(text: &str, at: usize) -> bool {
 /// group standing in running words — keeps its
 /// bytes from this pass, as do groups standing
 /// apart on the side in question.
+///
+/// Round 37 (R37-C, F5 + F6): the per-span
+/// neighbours above are the single group's, and a
+/// compound of two groups glued together at the
+/// month–day slot satisfied neither span's: the
+/// first is followed by a group, not a day digit,
+/// and the second is preceded by a group, not a
+/// month word — so the compound was never
+/// re-spaced, and governing contents served the
+/// date live, a date group first flipped the
+/// reading to the outer date with a record, and
+/// inert contents read a date their spaced twins
+/// refuse. The slot is therefore also stated for a
+/// CHAIN of glued spans — two or more top-level
+/// spans standing immediately against each other —
+/// as a unit: a month word ending immediately
+/// before the chain's first group and a day number
+/// standing after the chain's last group, with a
+/// space set on every glued side of the chain (its
+/// head, between its groups, and at its tail when
+/// the day number itself stands glued there). The
+/// chain rule keys on the same two neighbours as
+/// the single group's, so a chain of any length
+/// takes its spaced reading the same way; a chain
+/// standing anywhere else, and groups standing
+/// apart inside a would-be chain (the half-glued
+/// form), keep the per-span reading below.
 fn respaced_glued_groups_at_date_slots(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut inserts: Vec<usize> = Vec::new();
-    for (start, end) in balanced_spans(text) {
+    let spans = balanced_spans(text);
+    let mut in_chain = vec![false; spans.len()];
+    // The compound chains (round 37, R37-C): runs
+    // of two or more spans standing immediately
+    // against each other, judged at the month–day
+    // slot as a unit.
+    let mut chain_at = 0;
+    while chain_at < spans.len() {
+        let mut chain_end = chain_at;
+        while chain_end + 1 < spans.len() && spans[chain_end + 1].0 == spans[chain_end].1 {
+            chain_end += 1;
+        }
+        if chain_end > chain_at {
+            let (start, _) = spans[chain_at];
+            let (_, end) = spans[chain_end];
+            let left_glued = start > 0
+                && !text[..start]
+                    .chars()
+                    .next_back()
+                    .expect("a byte stands before")
+                    .is_whitespace();
+            if word_before_is_month(text, start) && day_number_stands_after(text, end) {
+                if left_glued {
+                    inserts.push(start);
+                }
+                for span in &spans[chain_at..chain_end] {
+                    inserts.push(span.1);
+                }
+                if end < bytes.len() && bytes[end].is_ascii_digit() {
+                    inserts.push(end);
+                }
+                for taken in in_chain.iter_mut().take(chain_end + 1).skip(chain_at) {
+                    *taken = true;
+                }
+            }
+        }
+        chain_at = chain_end + 1;
+    }
+    for (span_at, (start, end)) in spans.iter().enumerate() {
+        if in_chain[span_at] {
+            continue;
+        }
+        let (start, end) = (*start, *end);
         // The position on the group's right where a
         // glued word would stand: past any peel
         // marks the group wears there.

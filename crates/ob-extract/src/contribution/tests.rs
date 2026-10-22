@@ -22490,6 +22490,268 @@ fn r36c_any_standalone_group_at_the_month_day_slot_takes_its_spaced_reading() {
 }
 
 #[test]
+fn r37c_two_group_compound_glued_at_the_month_day_slot_takes_its_spaced_reading() {
+    // Round 37 (R37-C, F5 MAJOR + F6 MINOR = verify
+    // V4/V5 = review R37-R3/R37-R7 = red team
+    // RT37-4/RT37-6): two-group compounds glued at
+    // the month–day slot escaped the R36-C date-slot
+    // pass entirely. The pass iterates top-level
+    // balanced spans and qualifies a span by its own
+    // neighbours — a month word before it, a day
+    // number after it — so in a glued compound
+    // neither span qualifies: the first is followed
+    // by a group, not a day digit, and the second is
+    // preceded by a group, not a month word. The
+    // compound was never re-spaced, and its glued
+    // reading split from its spaced twin's by
+    // contents: a governing group in either position
+    // served the date live with no record
+    // ("November(cancelled)(notes) 1, 2026" and
+    // "November(notes)(cancelled) 1, 2026" read
+    // November 1; the spaced twins read nothing), a
+    // mixed weekday wrapper served silently
+    // ("November([Monday])(notes) 1, 2026"), a date
+    // group first flipped the reading to the outer
+    // date with a mismatch record
+    // ("November(November 8, 2026)(notes) 1, 2026"
+    // read November 1 naming November 8, where the
+    // spaced twin reads November 8 clean), and inert
+    // compounds read November 1 glued, nothing spaced
+    // ("November(notes)(choir) 1, 2026" and its
+    // mixed-pair, repeated, and doubled forms). The
+    // adjudicated reading is the standing one:
+    // spacing is not semantics — the compound
+    // standing at the slot (first group glued to the
+    // month word, day number after the second group)
+    // takes its spaced reading as a unit. Every pair
+    // below compares the glued line's FULL record
+    // against its spaced twins' (both the twin spaced
+    // only after the month word — the form the lanes
+    // witnessed — and the fully-spaced form), on the
+    // For line and the Keep-through line, via the
+    // r34e helpers; the headline forms are stated
+    // outright after. November 1 and November 8,
+    // 2026 are Sundays.
+    let pair_shapes: [(&str, &str, &str, &str); 5] = [
+        ("(", ")", "(", ")"),
+        ("[", "]", "[", "]"),
+        ("{", "}", "{", "}"),
+        ("(", ")", "[", "]"),
+        ("[", "]", "(", ")"),
+    ];
+    // Governing contents in either position, the
+    // multi-word governor included, and the inert
+    // family (plain, repeated).
+    let content_pairs: [(&str, &str); 7] = [
+        ("cancelled", "notes"),
+        ("notes", "cancelled"),
+        ("called off", "notes"),
+        ("notes", "called off"),
+        ("postponed", "choir"),
+        ("notes", "choir"),
+        ("notes", "notes"),
+    ];
+    for (o1, c1, o2, c2) in pair_shapes {
+        for (first, second) in content_pairs {
+            let glued = format!("November{o1}{first}{c1}{o2}{second}{c2} 1, 2026");
+            let half_spaced = format!("November {o1}{first}{c1}{o2}{second}{c2} 1, 2026");
+            let spaced = format!("November {o1}{first}{c1} {o2}{second}{c2} 1, 2026");
+            r34e_for_twin(&glued, &half_spaced);
+            r34e_for_twin(&glued, &spaced);
+            r34e_keep_twin(&glued, &half_spaced);
+            r34e_keep_twin(&glued, &spaced);
+        }
+    }
+    // A date group in either position, and the
+    // mixed weekday wrapper in either position.
+    for compound in [
+        "(November 8, 2026)(notes)",
+        "(notes)(November 8, 2026)",
+        "[November 8, 2026][notes]",
+        "([Monday])(notes)",
+        "(notes)([Monday])",
+        "([Sunday])(notes)",
+        // The doubled wrappers, as a compound.
+        "((notes))((choir))",
+        "((cancelled))((notes))",
+        // Weekday-only compounds: twin-equal before
+        // this batch (the lanes' held control) and
+        // unweakened here.
+        "(Monday)(notes)",
+        "(notes)(Monday)",
+        "(Sunday)(notes)",
+        "(Monday)(Sunday)",
+    ] {
+        let glued = format!("November{compound} 1, 2026");
+        let half_spaced = format!("November {compound} 1, 2026");
+        r34e_for_twin(&glued, &half_spaced);
+        r34e_keep_twin(&glued, &half_spaced);
+    }
+    // The fully-spaced twins of the wrapped forms,
+    // stated as pairs in their own right.
+    r34e_for_twin(
+        "November([Monday])(notes) 1, 2026",
+        "November ([Monday]) (notes) 1, 2026",
+    );
+    r34e_keep_twin(
+        "November([Monday])(notes) 1, 2026",
+        "November ([Monday]) (notes) 1, 2026",
+    );
+    r34e_for_twin(
+        "November((notes))((choir)) 1, 2026",
+        "November ((notes)) ((choir)) 1, 2026",
+    );
+    r34e_keep_twin(
+        "November((notes))((choir)) 1, 2026",
+        "November ((notes)) ((choir)) 1, 2026",
+    );
+    r34e_for_twin(
+        "November(November 8, 2026)(notes) 1, 2026",
+        "November (November 8, 2026) (notes) 1, 2026",
+    );
+    r34e_keep_twin(
+        "November(November 8, 2026)(notes) 1, 2026",
+        "November (November 8, 2026) (notes) 1, 2026",
+    );
+    // Spaced-inside contents: the spaces inside the
+    // groups are the sender's, and the compound is
+    // still the compound at the slot.
+    r34e_for_twin(
+        "November( notes )( choir ) 1, 2026",
+        "November ( notes )( choir ) 1, 2026",
+    );
+    r34e_keep_twin(
+        "November( notes )( choir ) 1, 2026",
+        "November ( notes )( choir ) 1, 2026",
+    );
+    // Stated outright, the headline forms. A
+    // governing group in either position — and the
+    // multi-word governor — reads no date and stands
+    // no record, as its spaced twins read, on both
+    // routes.
+    for line in [
+        "November(cancelled)(notes) 1, 2026",
+        "November(notes)(cancelled) 1, 2026",
+        "November(called off)(notes) 1, 2026",
+        "November(notes)(called off) 1, 2026",
+        "November([Monday])(notes) 1, 2026",
+        "November(notes)(choir) 1, 2026",
+        "November[notes][choir] 1, 2026",
+        "November{notes}{choir} 1, 2026",
+        "November(notes)[choir] 1, 2026",
+        "November((notes))((choir)) 1, 2026",
+        "November(notes)(notes) 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: no parenthesized record"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+        assert_eq!(
+            c.keep_through_parenthesized_mismatch, None,
+            "{line}: no keep parenthesized record"
+        );
+    }
+    // The date group first: the compound takes the
+    // spaced reading — the group's own date reads,
+    // clean, on both routes.
+    let text = "For Sunday: November(November 8, 2026)(notes) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    let text = "For Sunday: November 1, 2026\nKeep-through: November(November 8, 2026)(notes) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+    // The half-glued control, unweakened: the first
+    // group glued and the second standing apart was
+    // twin-equal before this batch (the single-group
+    // pass already reaches the form's reading) and
+    // keeps it — no date reads, on both routes.
+    r34e_for_twin(
+        "November(notes) (choir) 1, 2026",
+        "November (notes) (choir) 1, 2026",
+    );
+    r34e_keep_twin(
+        "November(notes) (choir) 1, 2026",
+        "November (notes) (choir) 1, 2026",
+    );
+    let text = "For Sunday: November(notes) (choir) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    // The weekday-only compound control, stated
+    // outright at its standing reading: the
+    // disagreeing weekday compound reads no date,
+    // glued exactly as spaced.
+    let text = "For Sunday: November(Monday)(notes) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let text = "For Sunday: November(notes)(Monday) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+}
+
+#[test]
+fn r37c_three_group_compound_glued_at_the_month_day_slot_takes_its_spaced_reading() {
+    // Round 37 (R37-C, F5/F6 scope answer): chains
+    // longer than two groups were unwitnessed by
+    // the lanes. The compound rule keys on the chain
+    // standing at the slot — first group glued to
+    // the month word, day number after the chain's
+    // last group — so it generalizes to a chain of
+    // any length without a second mechanism, and
+    // the three-group forms are pinned here rather
+    // than left to the generalization's say-so:
+    // inert, governing in the middle, and a date
+    // group first, each compared field for field
+    // against its spaced twin on both routes, the
+    // governing and date forms stated outright.
+    // November 1 and November 8, 2026 are Sundays.
+    for (glued, spaced) in [
+        (
+            "November(notes)(choir)(rehearsal) 1, 2026",
+            "November (notes) (choir) (rehearsal) 1, 2026",
+        ),
+        (
+            "November(notes)(cancelled)(choir) 1, 2026",
+            "November (notes) (cancelled) (choir) 1, 2026",
+        ),
+        (
+            "November(November 8, 2026)(notes)(choir) 1, 2026",
+            "November (November 8, 2026) (notes) (choir) 1, 2026",
+        ),
+        (
+            "November[notes]{choir}(rehearsal) 1, 2026",
+            "November [notes] {choir} (rehearsal) 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(glued, spaced);
+        r34e_keep_twin(glued, spaced);
+    }
+    let text = "For Sunday: November(notes)(cancelled)(choir) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    let text =
+        "For Sunday: November(November 8, 2026)(notes)(choir) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    let text = "For Sunday: November 1, 2026\nKeep-through: November(November 8, 2026)(notes)(choir) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+}
+
+#[test]
 fn r36c_mixed_pair_wrapper_glued_at_the_leading_slot_is_judged_as_its_spaced_twin() {
     // Round 36 (R36-C, F1 leading arm = red team
     // RT36-3 = verify target (a) extension): the

@@ -5011,40 +5011,52 @@ pub(super) fn composition_segment_weekday_mismatch(
     None
 }
 
-/// Whether a line is a leading group — any of the
-/// three wrapper pairs — standing beside a core
-/// that is only a relative Sunday phrase (round 36,
-/// R36-D, F4). This is the in-words machinery's
-/// shape: the R21-1 readings remember the phrase in
-/// words and surface the group on the parenthesized
-/// record, and the line itself reads no date. The
-/// plain multi-date reading must not adopt the
-/// group's date as a plain framed signal on such a
-/// line — for a paren group it never could (the
-/// plain scan cannot read a date through a
+/// Whether a line is a group — any of the three
+/// wrapper pairs — standing beside a core that is
+/// only a relative Sunday phrase (round 36, R36-D,
+/// F4; round 37, R37-B, F1). This is the in-words
+/// machinery's shape: the R21-1 readings remember
+/// the phrase in words and surface the group on the
+/// parenthesized record, and the line itself reads
+/// no date. The plain multi-date reading must not
+/// adopt the group's date as a plain framed signal
+/// on such a line — for a paren group it never could
+/// (the plain scan cannot read a date through a
 /// parenthesis), but the scan's date reader trims
 /// brackets and braces at a group edge, so a
-/// bracket/brace leading group was adopted as the
-/// line's date and the phrase forgotten. The check
-/// is the shape itself: the line opens with a
-/// balanced group, the de-grouped core (built as
-/// `whole_line_composition` builds it, a semicolon
-/// where each group stood) is a relative-phrase
-/// core, and no framed plain signal stands in that
-/// core — a framed date beside the phrase is the
-/// plain composition's shape, not this one.
-pub(super) fn leading_group_beside_relative_core(
+/// bracket/brace group was adopted as the line's
+/// date and the phrase forgotten. Round 36 judged
+/// only a group standing at the line's head; past
+/// any leading word ("notes [November 8, 2026] next
+/// Sunday") the same adoption stood, field-identical
+/// to the bare reading, so the judgment is consulted
+/// wherever the group stands before the phrase, in
+/// this one place. The check is the shape itself:
+/// a balanced group stands before the phrase, the
+/// de-grouped core (built as `whole_line_composition`
+/// builds it, a semicolon where each group stood)
+/// carries no framed plain signal — a framed date
+/// beside the phrase is the plain composition's
+/// shape, not this one — and the words from the
+/// group onward are only the relative phrase (at
+/// the line's head, the whole core is the phrase;
+/// past a prefix, the phrase stands alone after
+/// the last group before it, and no signal of any
+/// kind stands in the words before it). One
+/// witnessed position is excepted, exactly as the
+/// red team's round-37 sweep held it: two or more
+/// groups standing before the phrase that ALL carry
+/// the same date (the stacked agreeing groups) keep
+/// their standing reading — that date is adopted in
+/// every pair form — so the judgment does not fire
+/// there.
+pub(super) fn group_beside_relative_core(
     text: &str,
     today: SimpleDate,
     anchor: SimpleDate,
 ) -> bool {
-    let trimmed = text.trim_start();
-    if !matches!(trimmed.chars().next(), Some('(' | '[' | '{')) {
-        return false;
-    }
     let spans = balanced_spans(text);
-    let lead = text.len() - trimmed.len();
-    if spans.first().map(|(start, _)| *start) != Some(lead) {
+    if spans.is_empty() {
         return false;
     }
     let mut core = String::with_capacity(text.len());
@@ -5057,13 +5069,68 @@ pub(super) fn leading_group_beside_relative_core(
     core.push_str(&text[at..]);
     let core_words = core.replace(';', " ");
     let core_trim = core_words.trim();
-    if !relative_sunday_shape(core_trim) && !sunday_after_relative_shape(core_trim) {
-        return false;
-    }
     let tokens: Vec<&str> = core_trim.split_whitespace().collect();
     let cleaned: Vec<String> = segment_tokens(&tokens);
     let signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
-    !signals.iter().any(|s| s.framed)
+    if signals.iter().any(|s| s.framed) {
+        return false;
+    }
+    // The leading position (round 36): the whole
+    // de-grouped core is only the relative phrase.
+    let trimmed = text.trim_start();
+    let lead = text.len() - trimmed.len();
+    if spans.first().map(|(start, _)| *start) == Some(lead) {
+        return relative_sunday_shape(core_trim) || sunday_after_relative_shape(core_trim);
+    }
+    // The non-leading positions (round 37): the
+    // line's segments are the text between its
+    // groups, in written order. The phrase segment
+    // is the last segment from which the rest of
+    // the line is only the relative phrase; every
+    // group before it stands before the phrase.
+    let mut segments: Vec<&str> = Vec::with_capacity(spans.len() + 1);
+    let mut at = 0usize;
+    for (start, end) in &spans {
+        segments.push(&text[at..*start]);
+        at = *end;
+    }
+    segments.push(&text[at..]);
+    for p in (1..segments.len()).rev() {
+        let suffix = segments[p..].join(" ");
+        let suffix_trim = suffix.trim();
+        if !relative_sunday_shape(suffix_trim) && !sunday_after_relative_shape(suffix_trim) {
+            continue;
+        }
+        // No signal of any kind stands in the words
+        // before the phrase segment: a framed date
+        // there is already excluded by the core scan
+        // above, and a relative phrase standing
+        // before the group is the plain reading's
+        // restated-relative shape, not this one.
+        let prefix = segments[..p].join(" ");
+        let prefix_tokens: Vec<&str> = prefix.split_whitespace().collect();
+        let prefix_cleaned: Vec<String> = segment_tokens(&prefix_tokens);
+        let prefix_signals = scan_plain_signals(&prefix_tokens, &prefix_cleaned, today, anchor);
+        if !prefix_signals.is_empty() {
+            return false;
+        }
+        // The stacked agreeing exception: every
+        // group standing before the phrase carries
+        // the same date (see the head comment).
+        let groups_before = &spans[..p];
+        if groups_before.len() >= 2 {
+            let mut dates = groups_before
+                .iter()
+                .map(|(start, end)| group_date(&text[start + 1..end - 1], today, today));
+            if let Some(first) = dates.next() {
+                if first.is_some() && dates.all(|d| d == first) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    false
 }
 
 /// Read one date line with its round-9 records: the
@@ -5378,8 +5445,11 @@ pub(super) fn date_line(
         // framed signal and forget the phrase, where
         // the paren twin reads no date and the phrase
         // is remembered in words (see
-        // `leading_group_beside_relative_core`).
-        if !leading_group_beside_relative_core(core, today, anchor) {
+        // `group_beside_relative_core`). Round 37
+        // (R37-B, F1): the exception covers the group
+        // at every pre-phrase position, not only the
+        // line's head.
+        if !group_beside_relative_core(core, today, anchor) {
             if let Some(reading) = plain_multi_date_reading(core, today, anchor, &alternatives) {
                 return reading;
             }
@@ -5431,16 +5501,18 @@ pub(super) fn date_line(
             // primacy on the de-grouped core, with
             // the trailing groups still compared as
             // garnish against the date it reads.
-            // Round 36 (R36-D, F4): the same leading-
-            // group exception as on the whole line
-            // above — the core here keeps its leading
-            // group (only the trailing groups were
-            // stripped), so a bracket/brace leading
-            // group beside the core's relative phrase
-            // is not adopted here either; the line
+            // Round 36 (R36-D, F4): the same group
+            // exception as on the whole line above —
+            // the core here keeps its pre-phrase
+            // groups (only the trailing groups were
+            // stripped), so a bracket/brace group
+            // beside the core's relative phrase is
+            // not adopted here either; the line
             // falls to the relative path below, as
-            // its paren twin does.
-            let plain_multi = if leading_group_beside_relative_core(core, today, anchor) {
+            // its paren twin does. Round 37 (R37-B,
+            // F1): the exception covers the group at
+            // every pre-phrase position.
+            let plain_multi = if group_beside_relative_core(core, today, anchor) {
                 None
             } else {
                 plain_multi_date_reading(core, today, anchor, &alternatives)

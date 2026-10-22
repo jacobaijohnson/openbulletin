@@ -1097,7 +1097,13 @@ pub(super) fn sunday_after_relative_phrase(
     // Sunday is a segment asserting another date, and
     // the phrase is remembered with it, the group
     // named on the parenthesized record.
-    if text.trim_start().starts_with('(') {
+    // Round 36 (R36-D, F4): the leading group may
+    // wear any of the three pairs — the gate stated
+    // a literal "(" here, so a bracket or brace
+    // leading group never entered this machinery at
+    // all: it was adopted as the line's date by the
+    // generic reading and the phrase forgotten.
+    if matches!(text.trim_start().chars().next(), Some('(' | '[' | '{')) {
         let resolution = relative_phrase_resolution(text, today, true);
         if !leading_group_disagrees(text, today, resolution) {
             return None;
@@ -1142,13 +1148,23 @@ pub(super) fn relative_phrase_resolution(
 /// disagreement answers. A group that contributes
 /// nothing, or restates the resolution, does not
 /// disagree.
+/// Round 36 (R36-D, F4): a leading group may wear
+/// any of the three pairs, as everywhere else in
+/// the group machinery since round 34 — the loop
+/// stated a literal "(" here, so it stopped at (or
+/// never entered) a bracket or brace group standing
+/// in the leading run, and the groups after it were
+/// never judged either. The span walk it calls
+/// (`first_balanced_span`) already balances all
+/// three pairs, and the span's inner text is read
+/// the same way whatever pair stands at its edges.
 pub(super) fn leading_group_disagrees(
     text: &str,
     today: SimpleDate,
     resolution: SimpleDate,
 ) -> bool {
     let mut rest = text.trim_start();
-    while rest.starts_with('(') {
+    while matches!(rest.chars().next(), Some('(' | '[' | '{')) {
         // Round 32 (R32-C, F3): the first span only,
         // as in `strip_leading_parenthesized` — the
         // full span list of the remainder was rebuilt
@@ -1248,7 +1264,9 @@ pub(super) fn relative_sunday_phrase(raw: &Option<String>, today: SimpleDate) ->
     // a leading group restating the phrase's own
     // Sunday stays unread; a leading group naming a
     // different Sunday is remembered with the phrase.
-    if text.trim_start().starts_with('(') {
+    // Round 36 (R36-D, F4): the leading group may
+    // wear any of the three pairs, as there.
+    if matches!(text.trim_start().chars().next(), Some('(' | '[' | '{')) {
         let resolution = relative_phrase_resolution(text, today, false);
         if !leading_group_disagrees(text, today, resolution) {
             return None;
@@ -4961,6 +4979,61 @@ pub(super) fn composition_segment_weekday_mismatch(
     None
 }
 
+/// Whether a line is a leading group — any of the
+/// three wrapper pairs — standing beside a core
+/// that is only a relative Sunday phrase (round 36,
+/// R36-D, F4). This is the in-words machinery's
+/// shape: the R21-1 readings remember the phrase in
+/// words and surface the group on the parenthesized
+/// record, and the line itself reads no date. The
+/// plain multi-date reading must not adopt the
+/// group's date as a plain framed signal on such a
+/// line — for a paren group it never could (the
+/// plain scan cannot read a date through a
+/// parenthesis), but the scan's date reader trims
+/// brackets and braces at a group edge, so a
+/// bracket/brace leading group was adopted as the
+/// line's date and the phrase forgotten. The check
+/// is the shape itself: the line opens with a
+/// balanced group, the de-grouped core (built as
+/// `whole_line_composition` builds it, a semicolon
+/// where each group stood) is a relative-phrase
+/// core, and no framed plain signal stands in that
+/// core — a framed date beside the phrase is the
+/// plain composition's shape, not this one.
+pub(super) fn leading_group_beside_relative_core(
+    text: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> bool {
+    let trimmed = text.trim_start();
+    if !matches!(trimmed.chars().next(), Some('(' | '[' | '{')) {
+        return false;
+    }
+    let spans = balanced_spans(text);
+    let lead = text.len() - trimmed.len();
+    if spans.first().map(|(start, _)| *start) != Some(lead) {
+        return false;
+    }
+    let mut core = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for (start, end) in &spans {
+        core.push_str(&text[at..*start]);
+        core.push(';');
+        at = *end;
+    }
+    core.push_str(&text[at..]);
+    let core_words = core.replace(';', " ");
+    let core_trim = core_words.trim();
+    if !relative_sunday_shape(core_trim) && !sunday_after_relative_shape(core_trim) {
+        return false;
+    }
+    let tokens: Vec<&str> = core_trim.split_whitespace().collect();
+    let cleaned: Vec<String> = segment_tokens(&tokens);
+    let signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
+    !signals.iter().any(|s| s.framed)
+}
+
 /// Read one date line with its round-9 records: the
 /// plain readings are `date_line_inner`'s, and the
 /// trailing parenthesized dates compose around them.
@@ -5266,8 +5339,18 @@ pub(super) fn date_line(
         // Round 12 (R12-6): a plain line naming two
         // framed dates reads its first, the rest
         // noted — it does not read as naming none.
-        if let Some(reading) = plain_multi_date_reading(core, today, anchor, &alternatives) {
-            return reading;
+        // Round 36 (R36-D, F4): a leading group
+        // beside a relative-phrase core is excepted —
+        // the multi-date reading would adopt a
+        // bracket/brace group's date as a plain
+        // framed signal and forget the phrase, where
+        // the paren twin reads no date and the phrase
+        // is remembered in words (see
+        // `leading_group_beside_relative_core`).
+        if !leading_group_beside_relative_core(core, today, anchor) {
+            if let Some(reading) = plain_multi_date_reading(core, today, anchor, &alternatives) {
+                return reading;
+            }
         }
         return DateLineReading {
             date: None,
@@ -5316,8 +5399,21 @@ pub(super) fn date_line(
             // primacy on the de-grouped core, with
             // the trailing groups still compared as
             // garnish against the date it reads.
-            if let Some(mut reading) = plain_multi_date_reading(core, today, anchor, &alternatives)
-            {
+            // Round 36 (R36-D, F4): the same leading-
+            // group exception as on the whole line
+            // above — the core here keeps its leading
+            // group (only the trailing groups were
+            // stripped), so a bracket/brace leading
+            // group beside the core's relative phrase
+            // is not adopted here either; the line
+            // falls to the relative path below, as
+            // its paren twin does.
+            let plain_multi = if leading_group_beside_relative_core(core, today, anchor) {
+                None
+            } else {
+                plain_multi_date_reading(core, today, anchor, &alternatives)
+            };
+            if let Some(mut reading) = plain_multi {
                 // Round 16 (R16-4): the composition can
                 // read no date at all (every signal
                 // governed); then there is no read date

@@ -586,3 +586,192 @@ policy disposition at the confirmed completion
 round's recorded readings). HF-12 untouched.
 The Tier-2 final gate is not triggered (0/6/5)
 and is not the coordinator's to start in any case.
+
+---
+
+# Round 37 — close (coordinator, 2026-10-22)
+
+Close code tree: `1167fda` (R37-G). Suite: 1053
+(round-36 close) → **1076 / 0 failed**. All eleven
+findings fixed or dispositioned; the exit bar was
+NOT met by this round's audit verdict (0/6/5), so
+round 38 audits this closed tree and the Tier-2
+final gate is not triggered. Majors trend:
+10 → 6 → 6 → 1 → 4 → 3 → 2 → 5 → 6 → 8 → 6.
+
+## Batches, each cold-verified under the batch-boundary discipline
+
+| Batch | Commit | Findings | Cold suite |
+|---|---|---|---|
+| R37-A | `b420c2d` | F8 | 1059/0 |
+| R37-B | `b83bd4b` | F1 | 1064/0 |
+| R37-C | `e5800cf` | F5, F6 | 1066/0 |
+| R37-D | `15f2dd2` | F7 | 1068/0 |
+| R37-E | `9c5949e` | F2, F3, F4 | 1071/0 |
+| R37-F | `bae38b4` | F9, F10, F11 | 1074/0 |
+| R37-G | `1167fda` | late batch (below) | 1076/0 |
+
+Per-batch records: `round37-out/coord/r37{a..g}-record.md`.
+Booklet baseline 31,717 imposed / 34,977 reader
+exact in suite at every batch. Fuzz-as-claims ran
+on every contribution batch (B–G): verdict/comp
+byte-identical to the R36-D baselines, rights
+counters 5083 / 1024 / 5275, safety_flips=0
+throughout.
+
+**R37-G (late batch).** The synthesis plan named
+six batches; a seventh was dispositioned during
+the fix phase from the R37-D writer's witnessed
+flag, on the R35-H precedent: the Sunday-after
+base's trailing garnish in compound form — a lone
+disagreeing garnish refuses with the record
+against the base date, but one inert companion
+group appended in any spacing served the
+resolution silently. The base's machinery now
+walks the group sequence standing after the base
+date, as R37-D's walk does at the plain slots.
+Record: `r37g-record.md`.
+
+**Synthesis correction.** The first synthesis
+commit (`e7e31b6`) was truncated mid-F3; the
+restoration commit `d59d13d` restored the missing
+sections verbatim as adjudicated, flagged by the
+R37-A writer and verified against the committed
+file.
+
+## The interrupted close and its recovery
+
+The predecessor coordinator launched the close
+script (`close-cold-verify.sh`, nohup, pid 36714)
+at 2026-10-22T21:23:50Z. Its exec session then
+disappeared from the runtime's view, and the close
+was handed to a successor as interrupted
+mid-clippy: no CLIPPY_EXIT recorded at handoff,
+the clippy log still growing.
+
+The successor's first act was the standing
+live-writer check — and the premise was false.
+The script was alive, parented to init, its
+clippy actively compiling in the tree. The
+successor stood down as sole writer, renamed the
+still-growing clippy log aside and back (an
+inode-preserving rename; the file is the complete
+original log, 14,097 bytes, the standing size),
+verified the hosted legs read-only, and monitored
+the disk logs only.
+
+The predecessor's script then completed every
+remaining leg itself, in order: CLIPPY_EXIT=0
+(21:55:21Z — the clippy leg is the predecessor's
+own genuinely-cold run on the cleaned tree; the
+successor's contingency warm re-run proved
+unnecessary and was NOT used), BOOKLET_EXIT=0,
+and the full fuzz block, ending FUZZ_END
+22:09:38Z / CLOSE_SCRIPT_DONE 22:10:31Z. No second
+writer ever entered the tree. The successor
+performed only the close record, the cache-policy
+disposition, and boundary hygiene.
+
+Recorded lesson, the round-32 scar confirmed from
+the other side: an exec session's disappearance
+is not the process's death. The live-writer check
+(processes, recent mtimes, growing logs) precedes
+any recovery dispatch, and a recovery brief's
+premise is a claim to verify, not a fact.
+
+## Five-leg evidence on the close tree (`1167fda`)
+
+1. **Local, cold (the predecessor's close run,
+   completed as above):** after `cargo clean`
+   (11,668 files, 8.6 GiB), suite **1076 passed /
+   0 failed** (SUITE_EXIT=0, 21:24:15Z→21:48:49Z);
+   clippy `--workspace --all-targets --
+   -D warnings` CLIPPY_EXIT=0; booklet direct run
+   imposed=31717 reader=34977, BOOKLET_SIZE_MISMATCH=0,
+   BOOKLET_EXIT=0 (`close-cold-suite.log`,
+   `close-cold-clippy.log`, `close-booklet.log`;
+   exits in `close-cold-exits.log`).
+2. **Fuzz as claims:** bin sources at recorded
+   md5s (verdict `a9cac6c3…`, comp `4f85c605…`,
+   rights `95a47ee1…`, rightsS `9346879d…`);
+   verdict27 stdout md5 `797758443d101f9339fdd778e14af430`
+   (total_lines=40000 panics=0); comp27 stdout md5
+   `77f0adddc908d8cd4ada60bd48b94bae` (D_TOTAL=497024,
+   D_PANICS=0); rights stdouts cmp-clean against
+   the R34-D2 references, counters 5083 / 1024 /
+   5275, safety_flips=0 on all three rights
+   outputs; all four stderrs empty; no stray
+   processes after the runs (`close-fuzz-exits.log`).
+   M8 held.
+3. **Hosted CI** on `1167fda`: run `39849263172`,
+   **success** — test (macos-latest), test
+   (windows-latest), test (ubuntu-latest) all
+   success.
+4. **Desktop runner build** on `1167fda`: run
+   `39849262986`, **success**.
+5. **Windows bundle** on `1167fda`: run
+   `39856862283` (workflow_dispatch, dispatched by
+   the predecessor at 21:23:28Z), **success** —
+   Gate (format, tests, clippy) and bundle jobs
+   both success.
+
+## Carried to round 38
+
+- The two uniform cells, as doctrine questions
+  (adjudication 5): a weekday group standing
+  mid-line before the month word is unjudged in
+  every form; a wrapped leading governor is
+  garnish in every pair while the bare leading
+  governor governs. Neither breaks an adjudicated
+  reading; both want a doctrine ruling, not a fix
+  smuggled into a batch.
+- Rights permutation variance (adjudication 6):
+  three classes documented with witnesses in
+  `round37-out/redteam/rights37*.log`; not
+  findings under the standing M8 definition;
+  re-grade only if that definition is widened.
+- The review lane's remaining unwitnessed
+  observations: the fonts-door refusal wording
+  varies with the steered field (both wordings
+  refuse; no content served); the zip64
+  extra-field size/version gates in
+  `payload_span` are code-read only. (The lane's
+  curly open-only governor observation was
+  witnessed and fixed inside R37-E.)
+- The F6/F9 recycled-pid residual stands
+  recorded-not-fixed, its boundary re-verified by
+  this round's audit.
+- The scheduling note stands: heavy lane runs
+  serialize where practical, and timing-sensitive
+  pins are not judged under concurrent load.
+  HF-12 untouched throughout.
+
+## Build-cache policy at the confirmed completion
+
+Charter: `docs/planning/convergence-loop.md`;
+source note `build-cache-policy-2026-10-20.md`.
+Readings recorded during the round
+(df -h /home/hatch, from the per-batch and close
+exits logs): 82–85% across all batch verifies and
+the close cold pass; the highest
+overnight-window reading was 85% (line 87%); one
+87% reading at the close fuzz start
+(2026-10-22 15:04 PDT, daytime window, line 94%).
+No reading met its window's threshold; no trigger
+latched. Completion reading, after boundary
+hygiene: 2026-10-22 15:04 PDT (daytime window),
+**84% used / 17G free**. Disposition: **CARRY** —
+no clear is owed; the target directory rebuilt by
+the close cold pass carries into round 38.
+
+Boundary hygiene in the same pass: seven probe
+target directories swept — `round37-out/redteam/
+probe37/target`, `round37-out/redteam/
+probe37lock/target`, `round37-out/review/
+probe37/target`, `round37-out/verify/probe37/
+target`, `round37-out/coord/probe37e/target`,
+`round37-out/coord/probe37f/target`, and
+`probe29v/target` (~4.3 GB total). Probe sources,
+logs, records, witnesses, and fuzz stdouts kept;
+the four fuzz bin sources re-verified at their
+recorded md5s after the sweep.

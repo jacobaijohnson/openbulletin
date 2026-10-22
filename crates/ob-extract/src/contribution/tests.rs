@@ -25588,3 +25588,547 @@ fn r36f_sunday_after_shape_word_wearing_sentence_marks_reads_as_its_controls() {
     );
     r34e_for_twin(line, "November 15, 2026 (Sunday after November 1, 2026)");
 }
+
+#[test]
+fn r37e_curly_quoted_governor_inside_a_group_governs_as_its_straight_and_bare_twins() {
+    // Round 37 (R37-E, F2 MAJOR governor arm =
+    // verify V3 / review R37-R2 / red team RT37-3;
+    // F4 MAJOR = review R37-R5): a curly-quoted
+    // governing word inside a group escaped
+    // judgment where its straight-quoted and bare
+    // twins govern — "(November 8, 2026
+    // “cancelled”)" adopted November 8 on both
+    // routes. The group cleaners' trim sets held
+    // no curly quotes at all (`clean_group_word`,
+    // reached via `group_token`), and the
+    // typographic closing quotes U+201D/U+2019
+    // were missing from the trailing trim sets at
+    // `is_bracketed_token`, `group_token`,
+    // `clean_group_word`, and
+    // `bracketed_weekday_word`, so a governor
+    // wearing one escaped the same way
+    // ("[cancelled]”" and its siblings adopted the
+    // cancelled date). The adjudicated reading is
+    // parity with the straight-quoted twins at
+    // every site. Every pair below compares the
+    // curly form's FULL record against its
+    // straight-quoted and bare twins' (the r34e
+    // helpers), on the For line and the
+    // Keep-through line; the headline forms are
+    // stated outright after. November 1 and
+    // November 8, 2026 are Sundays.
+    for curly in [
+        "(November 8, 2026 \u{201c}cancelled\u{201d})",
+        "(November 8, 2026 [\u{201c}cancelled\u{201d}])",
+        "(November 8, 2026 \u{2018}cancelled\u{2019})",
+        "(November 8, 2026 [\u{2018}cancelled\u{2019}])",
+    ] {
+        r34e_for_twin(curly, "(November 8, 2026 \"cancelled\")");
+        r34e_keep_twin(curly, "(November 8, 2026 \"cancelled\")");
+        r34e_for_twin(curly, "(November 8, 2026 cancelled)");
+        r34e_keep_twin(curly, "(November 8, 2026 cancelled)");
+    }
+    // The F4 adoption forms: a typographic closing
+    // quote trailing the wrapped governor, inside
+    // the pair, or trailing a bare in-group
+    // governor — each against its ASCII-mark and
+    // paren controls, which govern.
+    for curly in [
+        "(November 8, 2026 [cancelled]\u{201d})",
+        "(November 8, 2026 {cancelled}\u{201d})",
+        "(November 8, 2026 [cancelled\u{201d}])",
+        "(November 8, 2026 [cancelled]\u{2019})",
+        "(November 8, 2026 cancelled\u{201d})",
+        "(November 8, 2026 cancelled\u{2019})",
+    ] {
+        r34e_for_twin(curly, "(November 8, 2026 [cancelled]!)");
+        r34e_keep_twin(curly, "(November 8, 2026 [cancelled]!)");
+        r34e_for_twin(curly, "(November 8, 2026 cancelled)");
+        r34e_keep_twin(curly, "(November 8, 2026 cancelled)");
+    }
+    // The review lane's unwitnessed observation 3,
+    // witnessed pre-fix in
+    // `r37e-openonly-prefix.log`: a curly OPENING
+    // quote as the governor's only curly mark
+    // escaped in every form (bracketed, bare
+    // in-group, and the stray-closer form), while
+    // every straight open-only twin governed. They
+    // land under this fix, at the same parity.
+    for curly in [
+        "(November 8, 2026 [\u{2018}cancelled])",
+        "(November 8, 2026 [\u{201c}cancelled])",
+        "(November 8, 2026 \u{2018}cancelled)",
+        "(November 8, 2026 \u{201c}cancelled)",
+        "(November 8, 2026 \u{201c}cancelled\u{201d}])",
+        "(November 8, 2026 \u{2018}cancelled\u{2019}])",
+    ] {
+        r34e_for_twin(curly, "(November 8, 2026 ['cancelled])");
+        r34e_keep_twin(curly, "(November 8, 2026 ['cancelled])");
+        r34e_for_twin(curly, "(November 8, 2026 cancelled)");
+        r34e_keep_twin(curly, "(November 8, 2026 cancelled)");
+    }
+    // Stated outright: the headline governor forms
+    // govern — no date reads, on either route.
+    for line in [
+        "(November 8, 2026 \u{201c}cancelled\u{201d})",
+        "(November 8, 2026 [\u{201c}cancelled\u{201d}])",
+        "(November 8, 2026 [cancelled]\u{201d})",
+        "(November 8, 2026 [\u{2018}cancelled])",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the governed date reads nothing");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{line}: the governed date reads nothing on the keep line"
+        );
+    }
+    // The F4 trailing-group phantom form: the
+    // ungoverned group date was named against the
+    // line's date in a phantom parenthesized
+    // mismatch. Governed, the group contributes
+    // nothing and the line reads exactly as its
+    // paren control reads.
+    let curly = "November 15, 2026 (November 8, 2026 [cancelled]\u{201d})";
+    r34e_for_twin(
+        curly,
+        "November 15, 2026 (November 8, 2026 (cancelled)\u{201d})",
+    );
+    r34e_keep_twin(
+        curly,
+        "November 15, 2026 (November 8, 2026 (cancelled)\u{201d})",
+    );
+    let text = format!("For Sunday: {curly}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(15)), "{curly}: the line's date reads");
+    assert_eq!(
+        c.for_sunday_parenthesized_mismatch, None,
+        "{curly}: no phantom mismatch stands"
+    );
+}
+
+#[test]
+fn r37e_curly_quoted_sunday_after_phrase_forms_where_its_straight_twin_forms() {
+    // Round 37 (R37-E, F2 MAJOR phrase arms +
+    // F3 MINOR shape arms): a curly-quoted
+    // Sunday-after shape word never formed its
+    // phrase where the straight-quoted phrase
+    // forms — inside a group the base stood as a
+    // plain signal and was recorded against the
+    // resolution (the group canary's phantom
+    // ParenthesizedDateMismatch), whole-line group
+    // forms collapsed to the base, a wrapped
+    // base-leading weekday collapsed the phrase the
+    // same way, a curly base trailing garnish was
+    // served without the refusal record every twin
+    // records, and whole-line the shape word, the
+    // second word, and an unwrapped disagreeing
+    // base-leading weekday all read silence. A
+    // trim-only shape is the round-36 reverted
+    // anti-pattern; the adjudicated reading is
+    // that the phrase FORMS wherever the
+    // straight-quoted phrase forms, including
+    // inside groups. The sites are the full set
+    // the lanes mapped: `clean_group_word` /
+    // `group_token` (the shared cleaning every
+    // gate below reads), the
+    // `dates_inside_group_signals` gate,
+    // `sunday_after_phrase_run`'s token cleaning,
+    // `sunday_after_outcome`'s shape trims, and
+    // `sunday_after_base` (its lead-weekday path
+    // and its trailing trim, which held U+201D but
+    // not U+201C). November 1, 2026 is a Sunday;
+    // the Sunday after it is November 8.
+    // The group canary, disagreeing and agreeing:
+    // the resolution is the line's date, the core
+    // named beside it, and no phantom record —
+    // field-for-field the straight and bare twins.
+    for curly in [
+        "November 15, 2026 (\u{201c}Sunday\u{201d} after November 1, 2026)",
+        "November 15, 2026 ({\u{201c}Sunday\u{201d}} after November 1, 2026)",
+    ] {
+        r34e_for_twin(
+            curly,
+            "November 15, 2026 (\"Sunday\" after November 1, 2026)",
+        );
+        r34e_keep_twin(
+            curly,
+            "November 15, 2026 (\"Sunday\" after November 1, 2026)",
+        );
+        r34e_for_twin(curly, "November 15, 2026 (Sunday after November 1, 2026)");
+        r34e_keep_twin(curly, "November 15, 2026 (Sunday after November 1, 2026)");
+    }
+    let line = "November 15, 2026 (\u{201c}Sunday\u{201d} after November 1, 2026)";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "{line}: the resolution reads");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(15)],
+        "{line}: the core is named as the second date"
+    );
+    assert_eq!(
+        c.for_sunday_parenthesized_mismatch, None,
+        "{line}: no phantom mismatch stands"
+    );
+    let line = "November 8, 2026 (\u{201c}Sunday\u{201d} after November 1, 2026)";
+    r34e_for_twin(line, "November 8, 2026 (\"Sunday\" after November 1, 2026)");
+    r34e_keep_twin(line, "November 8, 2026 (\"Sunday\" after November 1, 2026)");
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "{line}: the agreeing resolution reads"
+    );
+    assert_eq!(
+        c.for_sunday_parenthesized_mismatch, None,
+        "{line}: no phantom mismatch stands on agreeing dates"
+    );
+    // The collapse forms: the whole phrase inside a
+    // group of any pair, and the phrase standing in
+    // a trailing group, resolve to November 8 —
+    // never to the base.
+    for curly in [
+        "(\u{201c}Sunday\u{201d} after November 1, 2026)",
+        "[\u{201c}Sunday\u{201d} after November 1, 2026]",
+        "{\u{201c}Sunday\u{201d} after November 1, 2026}",
+        "November 8, 2026 [\u{201c}Sunday\u{201d} after November 1, 2026]",
+        "November 8, 2026 {\u{201c}Sunday\u{201d} after November 1, 2026}",
+    ] {
+        let bare = curly.replace(['\u{201c}', '\u{201d}'], "");
+        r34e_for_twin(curly, &bare);
+        r34e_keep_twin(curly, &bare);
+        let text = format!("For Sunday: {curly}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{curly}: the phrase resolves, never collapses to its base"
+        );
+    }
+    // The wrapped base-leading weekday: agreeing
+    // reads the resolution as its unwrapped twin
+    // does; disagreeing is refused with the record
+    // — stated outright, because the record names
+    // the sender's word verbatim, curly quotes
+    // included, exactly as the straight twin's
+    // record names "\"Monday\"" (the verbatim
+    // naming itself is R37-F's F11 family and is
+    // unchanged here).
+    r34e_for_twin(
+        "Sunday after (\u{201c}Sunday\u{201d}) November 1, 2026",
+        "Sunday after (Sunday) November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sunday after (\u{201c}Sunday\u{201d}) November 1, 2026",
+        "Sunday after (Sunday) November 1, 2026",
+    );
+    for line in [
+        "Sunday after (\u{201c}Monday\u{201d}) November 1, 2026",
+        "(Sunday after \u{201c}Monday\u{201d} November 1, 2026)",
+        "November 15, 2026 (Sunday after \u{201c}Monday\u{201d} November 1, 2026)",
+        "Sunday after \u{201c}Monday\u{201d} November 1, 2026",
+        "Sunday after on \u{201c}Monday\u{201d} November 1, 2026",
+        "Sunday after \u{2018}Monday\u{2019} November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the disagreeing base refuses");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the mismatch is recorded, not lost");
+        let named = if line.contains('\u{2018}') {
+            "\u{2018}Monday\u{2019}"
+        } else {
+            "\u{201c}Monday\u{201d}"
+        };
+        assert_eq!(m.named, named, "{line}: the record names the sender's word");
+        assert_eq!(m.date, nov(1), "{line}: the record names the base date");
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: the refusal carries no parenthesized record"
+        );
+    }
+    // The agreeing unwrapped base-leading arm was
+    // already at parity and stays: it reads the
+    // resolution.
+    r34e_for_twin(
+        "Sunday after \u{201c}Sunday\u{201d} November 1, 2026",
+        "Sunday after \"Sunday\" November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sunday after \u{201c}Sunday\u{201d} November 1, 2026",
+        "Sunday after \"Sunday\" November 1, 2026",
+    );
+    // The base trailing garnish: a disagreeing
+    // curly garnish refuses with the record, as
+    // bare, straight, and paren twins do — the
+    // record's named word is the cleaned weekday
+    // at this site, so the full records are the
+    // twins' — and an agreeing one lets the phrase
+    // resolve.
+    for curly in [
+        "Sunday after November 1, 2026 \u{201c}Monday\u{201d}",
+        "Sunday after November 1, 2026 \u{2018}Monday\u{2019}",
+    ] {
+        r34e_for_twin(curly, "Sunday after November 1, 2026 \"Monday\"");
+        r34e_keep_twin(curly, "Sunday after November 1, 2026 \"Monday\"");
+        r34e_for_twin(curly, "Sunday after November 1, 2026 Monday");
+        r34e_keep_twin(curly, "Sunday after November 1, 2026 Monday");
+    }
+    r34e_for_twin(
+        "Sunday after November 1, 2026 \u{201c}Sunday\u{201d}",
+        "Sunday after November 1, 2026 \"Sunday\"",
+    );
+    r34e_keep_twin(
+        "Sunday after November 1, 2026 \u{201c}Sunday\u{201d}",
+        "Sunday after November 1, 2026 \"Sunday\"",
+    );
+    // The whole-line shape arms (F3): the shape
+    // word in either curly pair, open-quote-only,
+    // close-quote-only, behind "the", behind "on",
+    // the mixed-quote forms, and over a
+    // disagreeing base date — each forms the
+    // phrase exactly as its straight and bare
+    // twins do. The shape's second word wearing
+    // the pair forms it too.
+    for curly in [
+        "\u{201c}Sunday\u{201d} after November 1, 2026",
+        "\u{2018}Sunday\u{2019} after November 1, 2026",
+        "\u{201c}Sunday after November 1, 2026",
+        "Sunday\u{201d} after November 1, 2026",
+        "the \u{201c}Sunday\u{201d} after November 1, 2026",
+        "on \u{201c}Sunday\u{201d} after November 1, 2026",
+        "\u{201c}Sunday\" after November 1, 2026",
+        "\"Sunday\u{201d} after November 1, 2026",
+        "\u{201c}Sunday\u{201d} after November 2, 2026",
+        "Sunday \u{201c}after\u{201d} November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {curly}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{curly}: the curly shape forms its phrase"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::new(),
+            "{curly}: the base is consumed by its phrase, not named"
+        );
+    }
+    for (curly, straight) in [
+        (
+            "\u{201c}Sunday\u{201d} after November 1, 2026",
+            "\"Sunday\" after November 1, 2026",
+        ),
+        (
+            "Sunday \u{201c}after\u{201d} November 1, 2026",
+            "Sunday \"after\" November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(curly, straight);
+        r34e_keep_twin(curly, straight);
+        r34e_for_twin(curly, "Sunday after November 1, 2026");
+        r34e_keep_twin(curly, "Sunday after November 1, 2026");
+    }
+    // The behind-"on" BASE forms are silent in
+    // curly, straight, and bare alike — no
+    // divergence, and this fix does not move them:
+    // a base date standing behind a bare "on" (with
+    // no weekday after it) is no shape's base.
+    for line in [
+        "\u{201c}Sunday\u{201d} after on November 1, 2026",
+        "\"Sunday\" after on November 1, 2026",
+        "Sunday after on November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the after-on base stays silent");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record stands");
+    }
+}
+
+#[test]
+fn r37e_curly_quoted_framing_trailing_garnish_and_memory_read_as_their_twins() {
+    // Round 37 (R37-E, F3 MINOR framing / trailing
+    // / memory arms + F4's wrapped base-leading
+    // collapse): curly-quoted words at the line's
+    // own slots read nothing where their straight
+    // and bare twins read — a line-head framing
+    // weekday was dropped in both its arms (the
+    // disagreeing one's record lost, the agreeing
+    // one's correct date dropped entirely), a
+    // plain trailing garnish silenced the line, a
+    // relative phrase wearing curly quotes was not
+    // remembered, and a wrapped base-leading
+    // weekday wearing a typographic closing quote
+    // ("[Monday]”") collapsed its phrase to the
+    // base. The framing readers' shared cleaning
+    // (`clean` in composition.rs) and the trailing
+    // garnish trim in `date_line_inner` held
+    // U+201D only, and the relative-phrase memory
+    // reader judges the shared cleaning
+    // (`group_token`), which held no curly quotes.
+    // November 1, 2026 is a Sunday.
+    // Line-head framing, disagreeing and agreeing,
+    // plain and behind "on", in both curly pairs:
+    // the full records are the straight twins'
+    // (the framing record names the cleaned
+    // weekday at this site).
+    for curly in [
+        "\u{201c}Monday\u{201d} November 1, 2026",
+        "on \u{201c}Monday\u{201d} November 1, 2026",
+        "\u{2018}Monday\u{2019} November 1, 2026",
+        "\u{201c}Sunday\u{201d} November 1, 2026",
+    ] {
+        let straight = curly
+            .replace(['\u{201c}', '\u{201d}'], "\"")
+            .replace(['\u{2018}', '\u{2019}'], "'");
+        r34e_for_twin(curly, &straight);
+        r34e_keep_twin(curly, &straight);
+    }
+    let line = "\u{201c}Monday\u{201d} November 1, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: the disagreeing framing refuses");
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the framing mismatch is recorded, not lost");
+    assert_eq!(m.named, "Monday", "{line}");
+    assert_eq!(m.date, nov(1), "{line}");
+    let line = "\u{201c}Sunday\u{201d} November 1, 2026";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{line}: the agreeing framing's date is served, not dropped"
+    );
+    assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+    // Plain trailing garnish: the disagreeing
+    // curly garnish refuses with the record, the
+    // agreeing one is consumed and the date reads
+    // — the straight twins' readings, outright.
+    let line = "November 1, 2026 \u{201c}Monday\u{201d}";
+    r34e_for_twin(line, "November 1, 2026 \"Monday\"");
+    r34e_keep_twin(line, "November 1, 2026 \"Monday\"");
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: the disagreeing garnish refuses");
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the garnish mismatch is recorded, not lost");
+    assert_eq!(m.named, "Monday", "{line}");
+    assert_eq!(m.date, nov(1), "{line}");
+    let line = "November 1, 2026 \u{201c}Sunday\u{201d}";
+    r34e_for_twin(line, "November 1, 2026 \"Sunday\"");
+    r34e_keep_twin(line, "November 1, 2026 \"Sunday\"");
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "{line}: the agreeing garnish reads"
+    );
+    assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+    // Relative-phrase memory: the curly forms are
+    // remembered, in the sender's own words
+    // verbatim — curly quotes included, exactly as
+    // the straight form is remembered with its
+    // straight quotes. Stated outright, because
+    // the remembered text is the sender's own and
+    // differs from the twins' by the quote
+    // characters themselves; the straight and bare
+    // controls stand unchanged beside them.
+    for line in [
+        "\u{201c}next Sunday\u{201d}",
+        "next \u{201c}Sunday\u{201d}",
+        "\u{2018}next Sunday\u{2019}",
+        "\"next Sunday\"",
+        "next \"Sunday\"",
+        "next Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(line),
+            "{line}: the relative phrase is remembered verbatim"
+        );
+        assert_eq!(c.for_date, None, "{line}: a words-only line reads no date");
+    }
+    // F4's wrapped base-leading collapse: the
+    // phrase is refused with the record, never
+    // collapsed to its base. Stated outright,
+    // because the record names the wrapped word
+    // verbatim, wrapper residue included — the
+    // standing F11 shape its ASCII twins already
+    // carry ("Monday]!"), unchanged here.
+    for (line, named) in [
+        (
+            "Sunday after [Monday]\u{201d} November 1, 2026",
+            "Monday]\u{201d}",
+        ),
+        (
+            "Sunday after [Monday]\u{2019} November 1, 2026",
+            "Monday]\u{2019}",
+        ),
+        (
+            "Sunday after {Monday}\u{2019} November 1, 2026",
+            "Monday}\u{2019}",
+        ),
+        ("Sunday after [Monday]! November 1, 2026", "Monday]!"),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the wrapped weekday refuses");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the mismatch is recorded, not collapsed away");
+        assert_eq!(m.named, named, "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: the keep route refuses too");
+        let m = c
+            .keep_through_weekday_mismatch
+            .as_ref()
+            .expect("the mismatch is recorded on the keep route");
+        assert_eq!(m.named, named, "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+    }
+    // Controls, unchanged: a whole date wearing
+    // quotes is silent in the curly form exactly
+    // as in the straight form (no twin diverges —
+    // the bare form's reading is the flexible
+    // reader's, and neither quoted form has ever
+    // had it), and the straight-quote controls of
+    // every arm above stand at their standing
+    // readings.
+    r34e_for_twin("\u{201c}November 8, 2026\u{201d}", "\"November 8, 2026\"");
+    r34e_keep_twin("\u{201c}November 8, 2026\u{201d}", "\"November 8, 2026\"");
+    let text = "For Sunday: \"Sunday\" after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    let text = "For Sunday: \"Monday\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the straight control's record stands");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, nov(1));
+}

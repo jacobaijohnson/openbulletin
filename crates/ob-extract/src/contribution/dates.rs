@@ -448,11 +448,20 @@ pub(super) fn sunday_after_outcome(text: &str, today: SimpleDate) -> Option<Sund
         // marks were judged unevenly: two sentence
         // marks read the phrase and the other three
         // silenced the whole line.
+        // Round 37 (R37-E, F3): both trim sets gain
+        // the curly quote pairs — a shape word
+        // wearing curly quotes ("“Sunday” after
+        // ...", "Sunday “after” ...") names its
+        // word here as the straight-quoted twins
+        // already do, so the phrase forms wherever
+        // the straight-quoted phrase forms.
         let first = tokens[start].trim_matches([
-            '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '!', '?', '"', '\'',
+            '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '!', '?', '"', '\'', '\u{2018}',
+            '\u{2019}', '\u{201c}', '\u{201d}',
         ]);
         let second = tokens[start + 1].trim_matches([
-            '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '!', '?', '"', '\'',
+            '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '!', '?', '"', '\'', '\u{2018}',
+            '\u{2019}', '\u{201c}', '\u{201d}',
         ]);
         // Round 29 (R29-A, F8 = review MINOR-1): the
         // phrase's two words are judged unglued on
@@ -510,8 +519,18 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         // quote, as the date line's trailing sets do —
         // a base garnish wearing either is judged here
         // too.
+        // Round 37 (R37-E, F2): the set gains the
+        // rest of the curly family — the opening
+        // quotes and the single closing quote join
+        // the double closing quote — so a base
+        // garnish wearing a full curly pair
+        // ("... “Monday”") is judged here as its
+        // straight-quoted twin is; the pair was
+        // only half trimmed before, and the garnish
+        // passed as ordinary text.
         let word = tokens[i].trim_matches([
             '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
+            '\u{201c}', '\u{2018}', '\u{2019}',
         ]);
         if let Some(named_number) = weekday_word(word) {
             let named = word.to_string();
@@ -1149,7 +1168,14 @@ pub(super) fn token_has_no_letters_or_digits(raw: &str) -> bool {
 /// unit, exactly as its paren twin "(cancelled)!"
 /// is read through the paren unwrap.
 pub(super) fn is_bracketed_token(raw: &str) -> bool {
-    let t = raw.trim_end_matches([',', '.', ':', ';', '!', '?', '\'', '"']);
+    // Round 37 (R37-E, F4): the trailing trim gains
+    // the typographic closing quotes — a wrapped
+    // word wearing one ("[cancelled]”") is still
+    // the one bracketed unit, exactly as one
+    // wearing the straight closing quote is.
+    let t = raw.trim_end_matches([
+        ',', '.', ':', ';', '!', '?', '\'', '"', '\u{201d}', '\u{2019}',
+    ]);
     (t.starts_with('[') && t.ends_with(']')) || (t.starts_with('{') && t.ends_with('}'))
 }
 
@@ -1169,7 +1195,15 @@ pub(super) fn is_bracketed_token(raw: &str) -> bool {
 pub(super) fn bracketed_weekday_word(raw: &str) -> Option<u32> {
     let mut token: String = raw.to_string();
     while is_bracketed_token(&token) {
-        let trimmed = token.trim_end_matches([',', '.', ':', ';']).to_string();
+        // Round 37 (R37-E, F4): the extraction trim
+        // gains the typographic closing quotes, as
+        // `is_bracketed_token`'s own trim does — the
+        // closing bracket of "[Monday]”" is reached
+        // past the quote, so the wrapped weekday
+        // stands.
+        let trimmed = token
+            .trim_end_matches([',', '.', ':', ';', '\u{201d}', '\u{2019}'])
+            .to_string();
         token = trimmed[1..trimmed.len() - 1].to_string();
         if let Some(number) = weekday_word(&group_token(&token)) {
             return Some(number);
@@ -1351,7 +1385,13 @@ pub(super) fn group_token(raw: &str) -> String {
         // trim `is_bracketed_token` judges by, so the
         // inner word of "[cancelled]!" is "cancelled"
         // itself, not "cancelled]".
-        let trimmed = raw.trim_end_matches([',', '.', ':', ';', '!', '?', '\'', '"']);
+        // Round 37 (R37-E, F4): the trim gains the
+        // typographic closing quotes with it, so the
+        // inner word of "[cancelled]”" is "cancelled"
+        // itself too.
+        let trimmed = raw.trim_end_matches([
+            ',', '.', ':', ';', '!', '?', '\'', '"', '\u{201d}', '\u{2019}',
+        ]);
         let inner = &trimmed[1..trimmed.len() - 1];
         let word = clean_group_word(inner);
         if is_single_governor(&word) || is_cancellation_phrase(std::slice::from_ref(&word)) {
@@ -1379,10 +1419,17 @@ pub(super) fn group_token(raw: &str) -> String {
 /// ("don't") is not an edge and is untouched.
 fn clean_group_word(text: &str) -> String {
     let stripped = strip_format_chars(text);
+    // Round 37 (R37-E, F2/F3/F4): the edge trim
+    // learns the curly quote pairs — U+201C/U+201D
+    // and U+2018/U+2019 stand at a word's edges
+    // exactly as the straight quotes do, so a
+    // curly-quoted word ("“cancelled”",
+    // "‘Sunday’") cleans to the word itself, at
+    // parity with its straight-quoted twin.
     stripped
         .trim_matches([
             '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}', '/',
-            '!', '?', '\'', '"',
+            '!', '?', '\'', '"', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}',
         ])
         .to_ascii_lowercase()
 }

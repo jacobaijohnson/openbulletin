@@ -1528,8 +1528,17 @@ pub(super) fn clean(t: &str) -> &str {
     // ("(Monday)'", "(Monday)”") is the word it
     // names, as one wearing ";" or the closing quote
     // already is.
+    // Round 37 (R37-E, F3): the set gains the rest
+    // of the curly family — the opening quotes and
+    // the single closing quote join the double
+    // closing quote — so a weekday word wearing a
+    // curly pair ("“Monday” November 1, 2026", the
+    // trailing "November 1, 2026 “Monday”") is the
+    // word it names, as one wearing the straight
+    // pair already is.
     t.trim_matches([
         '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
+        '\u{201c}', '\u{2018}', '\u{2019}',
     ])
 }
 
@@ -2718,8 +2727,16 @@ pub(super) fn date_line_inner(
         // a trailing garnish wearing either is judged
         // here instead of passing as ordinary text in
         // both its forms.
+        // Round 37 (R37-E, F3): the set gains the
+        // rest of the curly family, as `clean` does
+        // — a trailing garnish wearing a curly pair
+        // ("November 1, 2026 “Monday”") is judged
+        // here as its straight-quoted twin is, in
+        // both its arms: the disagreeing one refused
+        // with the record, the agreeing one read.
         let word = tokens[i].trim_matches([
             '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
+            '\u{201c}', '\u{2018}', '\u{2019}',
         ]);
         if let Some(named_number) = weekday_word(word) {
             let rest: Vec<&str> = tokens

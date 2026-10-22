@@ -1646,6 +1646,267 @@ pub(super) fn framed_date_outcome(
     None
 }
 
+/// The weekday a garnish-sequence group names when
+/// it holds one weekday word and nothing else
+/// (round 37, R37-D, F7): the group's inner text is
+/// one token, read through the shared cleaning
+/// (`clean`) exactly as the lone garnish token is
+/// read at the framing and trailing sites — a
+/// wrapper the group wears inside its own pair
+/// ("[Monday]" standing inside "([Monday])") cleans
+/// off with the pair's marks — and the word is
+/// returned as the lone record names it.
+fn garnish_group_weekday(inner: &str) -> Option<(String, u32)> {
+    let mut words = inner.split_whitespace();
+    let word = words.next()?;
+    if words.next().is_some() {
+        return None;
+    }
+    let named = clean(word);
+    weekday_word(named).map(|number| (named.to_string(), number))
+}
+
+/// `rest` (already trimmed at its head) with the
+/// framing garnish stack taken off: an optional
+/// "on" and an optional "the", in the compositions
+/// the framing readers allow — the stack that may
+/// stand in front of a lone weekday group at the
+/// leading slot ("on (Monday) ...", "the (Monday)
+/// ...", "on the (Monday) ..."), read here so a
+/// sequence standing behind the same stack is
+/// reached the same way.
+fn skip_framing_garnish(mut rest: &str) -> &str {
+    for _ in 0..2 {
+        let Some(token) = rest.split_whitespace().next() else {
+            break;
+        };
+        let cleaned = clean(token);
+        if !cleaned.eq_ignore_ascii_case("on") && !cleaned.eq_ignore_ascii_case("the") {
+            break;
+        }
+        rest = rest[token.len()..].trim_start();
+    }
+    rest
+}
+
+/// The group sequence standing at the leading slot
+/// of `text` (round 37, R37-D, F7): the framing
+/// garnish stack aside, two or more top-level
+/// groups standing at the line's head, separated
+/// only by whitespace and commas — glued, spaced,
+/// and comma-separated alike, the separations the
+/// lone forms allow. Returns the groups' inner
+/// texts in written order and the text standing
+/// after the sequence (its own leading separators
+/// taken off). A single group is the lone form,
+/// judged by the standing readers, and is not a
+/// sequence here; a bare word standing where a
+/// group would continue the sequence ends it, so
+/// the R5-D adjacency doctrine — a bare word
+/// between a weekday group and its date leaves the
+/// weekday ordinary text — is untouched by
+/// construction.
+fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
+    let mut rest = skip_framing_garnish(text.trim_start());
+    let mut inners: Vec<String> = Vec::new();
+    loop {
+        rest = rest.trim_start_matches([' ', '\t', ',']);
+        if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
+            break;
+        }
+        let Some((start, end)) = first_balanced_span(rest) else {
+            break;
+        };
+        if start != 0 {
+            break;
+        }
+        let inner = &rest[start + 1..end - 1];
+        inners.push(inner.to_string());
+        rest = &rest[end..];
+    }
+    if inners.len() < 2 {
+        return None;
+    }
+    let rest = rest.trim_start_matches([' ', '\t', ',']);
+    Some((inners, rest))
+}
+
+/// The group sequence standing at the trailing
+/// slot of `text` (round 37, R37-D, F7): two or
+/// more top-level groups closing the line —
+/// sentence punctuation and a trailing separator
+/// token after the last group aside, as the
+/// standing trailing readers peel them — separated
+/// only by whitespace and commas, in any spacing.
+/// Returns the run's inner texts in written order
+/// and the text standing before the run (its own
+/// trailing separators taken off). Groups standing
+/// elsewhere in the line are not the run, and a
+/// single trailing group is the lone form.
+fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
+    // The suffix layers the sequence may stand in
+    // front of, peeled as in
+    // `spaced_trailing_weekday_garnish`: sentence
+    // punctuation, then one separator token,
+    // alternating until neither peels.
+    let mut end = text.len();
+    loop {
+        let peeled = text[..end]
+            .trim_end_matches(['.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}'])
+            .len();
+        if peeled != end {
+            end = peeled;
+            continue;
+        }
+        let core = &text[..end];
+        let Some((ws, wc)) = core.char_indices().rev().find(|(_, c)| c.is_whitespace()) else {
+            break;
+        };
+        let token = &core[ws + wc.len_utf8()..];
+        if !token.is_empty() && token.chars().all(|c| c == '*' || c == '|') {
+            end = ws;
+            continue;
+        }
+        break;
+    }
+    let core = text[..end].trim_end();
+    let spans = balanced_spans(core);
+    if spans.len() < 2 {
+        return None;
+    }
+    let last = spans.len() - 1;
+    if spans[last].1 != core.len() {
+        return None;
+    }
+    // The run is the suffix of the span list whose
+    // members stand against each other with only
+    // whitespace and commas between them (a glued
+    // pair's gap is empty, and stands).
+    let mut run_first = last;
+    while run_first > 0 {
+        let gap = &core[spans[run_first - 1].1..spans[run_first].0];
+        if !gap.chars().all(|c| c == ',' || c.is_whitespace()) {
+            break;
+        }
+        run_first -= 1;
+    }
+    if last - run_first + 1 < 2 {
+        return None;
+    }
+    let mut inners: Vec<String> = Vec::new();
+    for (start, end) in &spans[run_first..=last] {
+        let inner = &core[start + 1..end - 1];
+        inners.push(inner.to_string());
+    }
+    let prefix = core[..spans[run_first].0].trim_end_matches([' ', '\t', ',']);
+    Some((inners, prefix))
+}
+
+/// `text` with a leading group run taken off — the
+/// framing garnish stack, then every top-level
+/// group standing at the head, in any separation
+/// the sequence allows: the text a trailing-slot
+/// judgment reads its date from when the line's
+/// own head carries groups beside its date
+/// ("(Sunday)(notes)November 1, 2026 (Monday)
+/// (notes)" — the trailing sequence is judged
+/// against the date the de-grouped head names).
+fn strip_leading_group_run(text: &str) -> &str {
+    let mut rest = skip_framing_garnish(text.trim_start());
+    loop {
+        rest = rest.trim_start_matches([' ', '\t', ',']);
+        if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
+            return rest;
+        }
+        match first_balanced_span(rest) {
+            Some((0, end)) => rest = &rest[end..],
+            _ => return rest,
+        }
+    }
+}
+
+/// The weekday mismatch a group sequence at the
+/// leading or trailing slot names, when one does
+/// (round 37, R37-D, F7 = review R37-R4): the lone
+/// weekday group is judged at both slots — leading,
+/// `(Monday)November 1, 2026` refuses with
+/// WeekdayMismatch(Monday@2026-11-01); trailing,
+/// `November 1, 2026 (Monday)` refuses with the
+/// same record — but the standing readers stop at
+/// one group: the framing reader asks for the date
+/// directly after its weekday token, and the
+/// trailing reader asks only for the line's last
+/// word, so a weekday group standing with any
+/// companion group beside it, in any spacing and
+/// either position, was served in silence on both
+/// routes ("(Monday)(notes)November 1, 2026",
+/// "November 1, 2026 (notes) (Monday)"), breaking
+/// R35-C's recorded claim that spaced and two-group
+/// compound forms keep the weekday reading. The
+/// month–day slot's readers already walk compound
+/// groups (R37-C); this walk is the same step at
+/// the two garnish slots. A sequence is two or
+/// more groups standing at the slot, separated
+/// only by whitespace and commas as the lone forms
+/// allow; every weekday group in the sequence is
+/// judged on its contents against the date the
+/// slot frames — leading, the date standing after
+/// the sequence (words after the date are the
+/// remainder, as the framing reader has them);
+/// trailing, the date standing before the sequence
+/// (read whole, its own leading groups stripped
+/// exactly as the leading arm strips them) — and
+/// the first disagreeing weekday in written order
+/// records the mismatch the lone form records.
+/// An agreeing weekday group names nothing here:
+/// the line falls to the standing readers, which
+/// consume it exactly as they consume the lone
+/// agreeing group, so the agreeing arm converges
+/// with its twin by the standing machinery, not by
+/// this walk. Companion contents keep their own
+/// standing judgments throughout: the walk adopts
+/// nothing and governs nothing — a date-carrying
+/// or governing companion is judged by the readers
+/// that judge it today, and the weekday refusal
+/// itself carries no parenthesized record, as
+/// every standing weekday refusal does. A bare
+/// word standing between the weekday group and the
+/// date ends the sequence, so the R5-D adjacency
+/// arm ("(Monday) notes November 1, 2026" reads
+/// clean) is not this walk's to move.
+pub(super) fn group_sequence_weekday_mismatch(
+    text: &str,
+    today: SimpleDate,
+) -> Option<WeekdayMismatch> {
+    if let Some((inners, rest)) = leading_group_sequence(text) {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if let Some((date, _)) = parse_date_prefix(&tokens, today) {
+            for inner in &inners {
+                if let Some((named, number)) = garnish_group_weekday(inner) {
+                    if date.weekday() != number {
+                        return Some(WeekdayMismatch { named, date });
+                    }
+                }
+            }
+        }
+    }
+    if let Some((inners, prefix)) = trailing_group_sequence(text) {
+        let stripped = strip_leading_group_run(prefix);
+        let date =
+            parse_flexible_date(prefix, today).or_else(|| parse_flexible_date(stripped, today));
+        if let Some(date) = date {
+            for inner in &inners {
+                if let Some((named, number)) = garnish_group_weekday(inner) {
+                    if date.weekday() != number {
+                        return Some(WeekdayMismatch { named, date });
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Read one of a contribution's two date lines: the
 /// date when the line reads, and the mismatch record
 /// when the line named a weekday its date does not
@@ -2409,6 +2670,17 @@ pub(super) fn date_line_inner(
         None => {}
     }
     if let Some(m) = named_weekday_mismatch(raw, today) {
+        return (None, Some(m));
+    }
+    // Round 37 (R37-D, F7): a weekday group standing
+    // at the leading or trailing slot with a
+    // companion group beside it is judged on its
+    // contents, as the lone group is — the group
+    // sequence at the slot is walked before the
+    // framing reader, whose one-group reach the
+    // companions escaped (see
+    // `group_sequence_weekday_mismatch`).
+    if let Some(m) = group_sequence_weekday_mismatch(text, today) {
         return (None, Some(m));
     }
     // Framing composed (round 7, R7-3/R7-7): a weekday

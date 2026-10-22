@@ -1785,6 +1785,237 @@ mod tests {
         out
     }
 
+    /// The round-37 planted-directory crafts (red
+    /// team RT37-2), assembled byte by byte over
+    /// Stored entries in the round-36 crafter's shape:
+    /// the real directory, and per `shape` — "plain"
+    /// nothing more; "z1" a second directory naming
+    /// each part once (the first copies' records)
+    /// planted inside the real archive's zip64
+    /// extensible data sector; "z2" that directory
+    /// planted inside the last entry's payload (the
+    /// filler, whose payload the caller makes large
+    /// enough to carry it); "z3" / "z3b" the real
+    /// archive standing behind a complete tiny prefix
+    /// archive whose end record declares a comment of
+    /// 64 bytes / the whole real archive, reaching
+    /// into it — no comment bytes follow the prefix's
+    /// end record; the real archive stands there.
+    fn planted_directory_idml(entries: &[(&[u8], &[u8])], shape: &str) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries {
+            locals.push(body.len() as u32);
+            let crc = stored_crc(data);
+            body.extend_from_slice(b"PK\x03\x04");
+            body.extend_from_slice(&20u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&crc.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(name);
+            body.extend_from_slice(data);
+        }
+        let cd_offset = body.len() as u32;
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&plain_central(name, data, locals[i], &[]));
+        }
+        let mut fake_recs: Vec<u8> = Vec::new();
+        let mut fake_total: u16 = 0;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            if entries[..i].iter().any(|(other, _)| other == name) {
+                continue;
+            }
+            fake_recs.extend_from_slice(&plain_central(name, data, locals[i], &[]));
+            fake_total += 1;
+        }
+        let fake_eocd =
+            |cd_pos: usize| plain_eocd(fake_total, fake_recs.len() as u32, cd_pos as u32, 0, &[]);
+        match shape {
+            "z1" => {
+                let mut out = body;
+                out.extend_from_slice(&centrals);
+                let record_at = out.len();
+                let sector_len = 2048usize;
+                let fake_cd_pos = record_at + 56 + 16;
+                let mut sector = vec![b'S'; sector_len];
+                sector[16..16 + fake_recs.len()].copy_from_slice(&fake_recs);
+                let planted_eocd = fake_eocd(fake_cd_pos);
+                let eocd_at = 16 + fake_recs.len();
+                sector[eocd_at..eocd_at + 22].copy_from_slice(&planted_eocd);
+                out.extend_from_slice(b"PK\x06\x06");
+                out.extend_from_slice(&((44 + sector_len) as u64).to_le_bytes());
+                out.extend_from_slice(&45u16.to_le_bytes());
+                out.extend_from_slice(&45u16.to_le_bytes());
+                out.extend_from_slice(&0u32.to_le_bytes());
+                out.extend_from_slice(&0u32.to_le_bytes());
+                out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+                out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+                out.extend_from_slice(&(centrals.len() as u64).to_le_bytes());
+                out.extend_from_slice(&(cd_offset as u64).to_le_bytes());
+                out.extend_from_slice(&sector);
+                out.extend_from_slice(b"PK\x06\x07");
+                out.extend_from_slice(&0u32.to_le_bytes());
+                out.extend_from_slice(&(record_at as u64).to_le_bytes());
+                out.extend_from_slice(&1u32.to_le_bytes());
+                out.extend_from_slice(b"PK\x05\x06");
+                out.extend_from_slice(&0u16.to_le_bytes());
+                out.extend_from_slice(&0u16.to_le_bytes());
+                out.extend_from_slice(&u16::MAX.to_le_bytes());
+                out.extend_from_slice(&u16::MAX.to_le_bytes());
+                out.extend_from_slice(&u32::MAX.to_le_bytes());
+                out.extend_from_slice(&u32::MAX.to_le_bytes());
+                out.extend_from_slice(&0u16.to_le_bytes());
+                out
+            }
+            "z2" => {
+                let last = entries.len() - 1;
+                let payload_at = locals[last] as usize + 30 + entries[last].0.len();
+                let fake_cd_pos = payload_at + 100;
+                body[fake_cd_pos..fake_cd_pos + fake_recs.len()].copy_from_slice(&fake_recs);
+                let planted_eocd = fake_eocd(fake_cd_pos);
+                let eocd_at = fake_cd_pos + fake_recs.len();
+                body[eocd_at..eocd_at + 22].copy_from_slice(&planted_eocd);
+                // The carrier entry stays self-consistent:
+                // its local and central checksums are the
+                // checksum of its final, planted payload.
+                let carrier = body[payload_at..payload_at + entries[last].1.len()].to_vec();
+                let carrier_crc = stored_crc(&carrier);
+                let local_crc_at = locals[last] as usize + 14;
+                body[local_crc_at..local_crc_at + 4].copy_from_slice(&carrier_crc.to_le_bytes());
+                let central_start = centrals.len() - 46 - entries[last].0.len();
+                centrals[central_start + 16..central_start + 20]
+                    .copy_from_slice(&carrier_crc.to_le_bytes());
+                let mut out = body;
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &[],
+                ));
+                out
+            }
+            "z3" | "z3b" => {
+                let mut real = body;
+                real.extend_from_slice(&centrals);
+                real.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &[],
+                ));
+                let tiny_name: &[u8] = b"tiny.txt";
+                let tiny_data: &[u8] = b"tiny";
+                let mut tiny: Vec<u8> = Vec::new();
+                let crc = stored_crc(tiny_data);
+                tiny.extend_from_slice(b"PK\x03\x04");
+                tiny.extend_from_slice(&20u16.to_le_bytes());
+                tiny.extend_from_slice(&0u16.to_le_bytes());
+                tiny.extend_from_slice(&0u16.to_le_bytes());
+                tiny.extend_from_slice(&0u16.to_le_bytes());
+                tiny.extend_from_slice(&0u16.to_le_bytes());
+                tiny.extend_from_slice(&crc.to_le_bytes());
+                tiny.extend_from_slice(&(tiny_data.len() as u32).to_le_bytes());
+                tiny.extend_from_slice(&(tiny_data.len() as u32).to_le_bytes());
+                tiny.extend_from_slice(&(tiny_name.len() as u16).to_le_bytes());
+                tiny.extend_from_slice(&0u16.to_le_bytes());
+                tiny.extend_from_slice(tiny_name);
+                tiny.extend_from_slice(tiny_data);
+                let tiny_cd_offset = tiny.len() as u32;
+                let tiny_central = plain_central(tiny_name, tiny_data, 0, &[]);
+                tiny.extend_from_slice(&tiny_central);
+                let comment_len: u16 = if shape == "z3b" {
+                    u16::try_from(real.len().min(usize::from(u16::MAX)))
+                        .expect("the declared comment fits its field")
+                } else {
+                    64
+                };
+                tiny.extend_from_slice(b"PK\x05\x06");
+                tiny.extend_from_slice(&0u16.to_le_bytes());
+                tiny.extend_from_slice(&0u16.to_le_bytes());
+                tiny.extend_from_slice(&1u16.to_le_bytes());
+                tiny.extend_from_slice(&1u16.to_le_bytes());
+                tiny.extend_from_slice(&(tiny_central.len() as u32).to_le_bytes());
+                tiny.extend_from_slice(&tiny_cd_offset.to_le_bytes());
+                tiny.extend_from_slice(&comment_len.to_le_bytes());
+                tiny.extend_from_slice(&real);
+                tiny
+            }
+            _ => {
+                let mut out = body;
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &[],
+                ));
+                out
+            }
+        }
+    }
+
+    #[test]
+    fn r37a_a_directory_planted_in_a_sector_a_payload_or_behind_a_prefix_comment_never_steers() {
+        // Round 37, F8 (red team RT37-2): a second
+        // self-consistent directory planted in a zip64
+        // extensible data sector, in a stored entry's
+        // payload, or behind a prefix archive whose
+        // declared comment reaches into the real
+        // archive steered the package the way round
+        // 36's vectors did — the scan judged the planted
+        // directory (each part once) while the reader
+        // served the real one, and the second copy of
+        // the disagreeing duplicate story was served in
+        // silence. The real directory is judged in
+        // every shape now: the duplicate refuses in the
+        // standing words, exactly as the plain control
+        // refuses, and the same shapes carrying one
+        // story load it — the z1 single side is also
+        // this door's sector-archive service control.
+        let story_a = one_paragraph_story("First story words here");
+        let story_b = one_paragraph_story("Other story words here");
+        let filler = vec![b'A'; 2000];
+        for shape in ["plain", "z1", "z2", "z3", "z3b"] {
+            let mut parts = witness_parts(&[story_a.clone(), story_b.clone()]);
+            parts.push((b"filler.bin".to_vec(), filler.clone()));
+            let entries: Vec<(&[u8], &[u8])> = parts
+                .iter()
+                .map(|(name, data)| (name.as_slice(), data.as_slice()))
+                .collect();
+            let bytes = planted_directory_idml(&entries, shape);
+            let err = dump_from_idml(&bytes, "witness.idml")
+                .expect_err("the disagreeing duplicate refuses, every shape");
+            assert!(
+                err.contains("two parts named Stories/Story_u9.xml"),
+                "{shape}: {err}"
+            );
+            assert!(err.contains("may be damaged"), "{shape}: {err}");
+
+            let mut parts = witness_parts(std::slice::from_ref(&story_a));
+            parts.push((b"filler.bin".to_vec(), filler.clone()));
+            let entries: Vec<(&[u8], &[u8])> = parts
+                .iter()
+                .map(|(name, data)| (name.as_slice(), data.as_slice()))
+                .collect();
+            let bytes = planted_directory_idml(&entries, shape);
+            let dump = dump_from_idml(&bytes, "witness.idml")
+                .expect("the single story loads, every shape");
+            assert_eq!(dump.spans.len(), 1, "{shape}");
+            assert_eq!(dump.spans[0].text, "First story words here", "{shape}");
+        }
+    }
+
     #[test]
     fn r36a_a_second_directory_never_steers_the_package() {
         // Round 36, F6 (review R36-6 + red team

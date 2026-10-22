@@ -527,16 +527,33 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
     // remains is the base; a weekday that disagrees
     // with it records the mismatch and yields no date,
     // and no later reading may salvage the base date.
+    // Round 36 (R36-B, F2): the base's leading
+    // weekday may stand wrapped — a bracket pair,
+    // a brace pair, a paren pair, doubled or mixed —
+    // and this reader judged it through
+    // `weekday_word` on the raw token, which never
+    // unwraps a pair, so a wrapped framing weekday
+    // was not seen at all, the phrase reading
+    // failed, and the line fell to the generic
+    // reading that adopts the base itself. The
+    // weekday is asked for as the phrase scan asks
+    // (round 35, R35-H): through the shared
+    // cleaning, which reads a paren pair through
+    // its edges, and through the raw token's
+    // bracketed word for the pairs the cleaning
+    // reads as garnish.
+    let lead_weekday =
+        |t: &str| weekday_word(&group_token(t)).or_else(|| bracketed_weekday_word(t));
     let (lead_word, lead_rest): (&str, &[&str]) = match core.first() {
-        Some(first) if weekday_word(first).is_some() => (*first, &core[1..]),
+        Some(first) if lead_weekday(first).is_some() => (*first, &core[1..]),
         Some(first) if first.eq_ignore_ascii_case("on") => {
             let second = core.get(1)?;
-            weekday_word(second)?;
+            lead_weekday(second)?;
             (*second, &core[2..])
         }
         _ => return None,
     };
-    let lead_number = weekday_word(lead_word)?;
+    let lead_number = lead_weekday(lead_word)?;
     let (base, used) = parse_date_prefix(lead_rest, today)?;
     if base.weekday() != lead_number {
         // Round 35 (R35-A, F1): the named word's
@@ -917,7 +934,23 @@ pub(super) fn dates_inside_group_signals(
         // shape standing, and the span it reports
         // covers the nothing it crossed.
         let after_at = nonempty_next[i + 1];
-        if tokens[i] == "sunday" && after_at.is_some_and(|a| tokens[a].as_str() == "after") {
+        // Round 36 (R36-B, F3): the shape word may
+        // stand wholly bracketed — the shared
+        // cleaning reads a bracketed token as
+        // garnish, so its cleaned form here is
+        // nothing, where the paren twin's cleaning
+        // gives the word itself, and a gate on the
+        // cleaned token alone never opens for it:
+        // the phrase run (which itself asks the raw
+        // token, round 35 R35-H) was unreachable
+        // inside a group, the phrase never formed,
+        // and its base stood as a plain signal to be
+        // recorded against the resolution. The gate
+        // asks the raw token for its bracketed word,
+        // as the phrase scan now does.
+        let shape_sunday =
+            tokens[i] == "sunday" || bracketed_weekday_word(raw_tokens[i]) == Some(0);
+        if shape_sunday && after_at.is_some_and(|a| tokens[a].as_str() == "after") {
             let after_at = after_at.unwrap_or(i + 1);
             let first_at = nonempty_next[after_at + 1];
             let (which_at, base_at) = match first_at {

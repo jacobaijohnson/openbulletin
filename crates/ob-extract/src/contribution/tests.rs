@@ -22099,6 +22099,282 @@ fn r35c_glued_weekday_group_judges_as_its_spaced_twin_at_leading_and_month_day_s
 }
 
 #[test]
+fn r36c_any_standalone_group_at_the_month_day_slot_takes_its_spaced_reading() {
+    // Round 36 (R36-C, F1 MAJOR arm + F10 = review
+    // R36-1 = red team RT36-2 = verify target (a)):
+    // the R35-C re-spacing gate re-spaced only a
+    // standalone group holding one weekday word in
+    // openers of one pair. Past that pattern, at the
+    // month–day slot, glued and spaced split for
+    // every other standalone group: a governing
+    // group served its date live in the glued form
+    // ("November(cancelled) 1, 2026" read November 1
+    // with no record; the spaced twin and the bare
+    // twin read nothing — likewise "(postponed)" and
+    // the multi-word governor "[called off]"); a
+    // glued date group read the outer date with a
+    // record naming the group's date
+    // ("November(November 8, 2026) 1, 2026" read
+    // November 1, record naming November 8, where
+    // the spaced twin reads November 8 clean); a
+    // mixed-pair wrapper escaped even for weekday
+    // contents; and inert contents flipped
+    // date-vs-no-date on one space ("November(notes)
+    // 1, 2026" read, "November (notes) 1, 2026" read
+    // nothing, identically for [] and {} and for
+    // choir and the other inert words the lanes
+    // tried). The adjudicated reading for the whole
+    // slot is the standing one: spacing is not
+    // semantics — the glued form takes the spaced
+    // form's reading. The gate's new date-slot pass
+    // re-spaces a standalone group of ANY contents
+    // at this slot from its balanced span, mixed
+    // and doubled wrappers included. Every pair
+    // below compares the glued line's FULL record
+    // against its spaced twin's (the r34e helpers),
+    // on the For line and the Keep-through line, and
+    // the headline forms are stated outright after.
+    // November 1 and November 8, 2026 are Sundays.
+    let contents = [
+        "cancelled",
+        "postponed",
+        "called off",
+        "notes",
+        "choir",
+        "note",
+        "rehearsal",
+        "potluck",
+        "meeting",
+        "x",
+        "Monday",
+        "Sunday",
+    ];
+    for (open, close) in [("(", ")"), ("[", "]"), ("{", "}")] {
+        for content in contents {
+            let glued = format!("November{open}{content}{close} 1, 2026");
+            let spaced = format!("November {open}{content}{close} 1, 2026");
+            r34e_for_twin(&glued, &spaced);
+            let glued_keep = format!("November{open}{content}{close} 8, 2026");
+            let spaced_keep = format!("November {open}{content}{close} 8, 2026");
+            r34e_keep_twin(&glued_keep, &spaced_keep);
+        }
+    }
+    // A glued date group: the spaced reading stands
+    // — the group's own date reads, clean.
+    for (open, close) in [("(", ")"), ("[", "]"), ("{", "}")] {
+        let glued = format!("November{open}November 8, 2026{close} 1, 2026");
+        let spaced = format!("November {open}November 8, 2026{close} 1, 2026");
+        r34e_for_twin(&glued, &spaced);
+        r34e_keep_twin(&glued, &spaced);
+    }
+    // Doubled wrappers with non-weekday contents,
+    // and the doubled weekday control whose outcome
+    // R35-C already pinned (unweakened here).
+    for group in ["((notes))", "[[cancelled]]", "{{choir}}", "((Monday))"] {
+        let glued = format!("November{group} 1, 2026");
+        let spaced = format!("November {group} 1, 2026");
+        r34e_for_twin(&glued, &spaced);
+        let glued_keep = format!("November{group} 8, 2026");
+        let spaced_keep = format!("November {group} 8, 2026");
+        r34e_keep_twin(&glued_keep, &spaced_keep);
+    }
+    // Mixed-pair wrappers, disagreeing and agreeing.
+    for group in [
+        "([Monday])",
+        "[(Monday)]",
+        "{[Monday]}",
+        "{(Monday)}",
+        "([Sunday])",
+        "[(Sunday)]",
+    ] {
+        let glued = format!("November{group} 1, 2026");
+        let spaced = format!("November {group} 1, 2026");
+        r34e_for_twin(&glued, &spaced);
+        r34e_keep_twin(&glued, &spaced);
+    }
+    // Stated outright, the headline forms. The
+    // governing glued forms read no date and stand
+    // no record, as their spaced and bare twins read.
+    for line in [
+        "November(cancelled) 1, 2026",
+        "November(postponed) 1, 2026",
+        "November[called off] 1, 2026",
+        "November(notes) 1, 2026",
+        "November([Monday]) 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: no parenthesized record"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+    }
+    // The glued date group reads its group's date
+    // clean, on both routes.
+    let text = "For Sunday: November(November 8, 2026) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    let text = "For Sunday: November 1, 2026\nKeep-through: November(November 8, 2026) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+}
+
+#[test]
+fn r36c_mixed_pair_wrapper_glued_at_the_leading_slot_is_judged_as_its_spaced_twin() {
+    // Round 36 (R36-C, F1 leading arm = red team
+    // RT36-3 = verify target (a) extension): the
+    // same gate-pattern failure at the leading slot.
+    // "([Monday])November 1, 2026" served November 1
+    // with no record; its spaced twin refuses with
+    // WeekdayMismatch(Monday@2026-11-01), on both
+    // routes, for all four mixed pairs. The single-
+    // pair leading twins were already judged in both
+    // forms (R35-C); the silencing was the mixed
+    // wrapper's alone, and the date-slot pass now
+    // re-spaces the wrapper's balanced span glued
+    // against the month word. Every pair compares
+    // the full record (the r34e helpers); the
+    // disagreeing headline is stated outright.
+    // November 1, 2026 is a Sunday.
+    for group in ["([Monday])", "[(Monday)]", "{[Monday]}", "{(Monday)}"] {
+        let glued = format!("{group}November 1, 2026");
+        let spaced = format!("{group} November 1, 2026");
+        r34e_for_twin(&glued, &spaced);
+        r34e_keep_twin(&glued, &spaced);
+    }
+    for group in ["([Sunday])", "[(Sunday)]", "{[Sunday]}", "{(Sunday)}"] {
+        let glued = format!("{group}November 1, 2026");
+        let spaced = format!("{group} November 1, 2026");
+        r34e_for_twin(&glued, &spaced);
+        r34e_keep_twin(&glued, &spaced);
+    }
+    // The doubled same-pair control, unweakened:
+    // glued and spaced judge alike, as R35-C pinned
+    // the single-pair forms.
+    r34e_for_twin("((Monday))November 1, 2026", "((Monday)) November 1, 2026");
+    r34e_keep_twin("((Monday))November 1, 2026", "((Monday)) November 1, 2026");
+    // Stated outright: the disagreeing glued mixed
+    // wrapper is refused with the mismatch recorded,
+    // on both routes; the agreeing one reads clean.
+    let text = "For Sunday: ([Monday])November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None);
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the disagreeing glued mixed leading weekday is recorded");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, nov(1));
+    let text = "For Sunday: November 1, 2026\nKeep-through: ([Monday])November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None);
+    let m = c
+        .keep_through_weekday_mismatch
+        .as_ref()
+        .expect("the disagreeing glued mixed leading weekday is recorded on the keep line");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, nov(1));
+    let text = "For Sunday: ([Sunday])November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.named_weekday_mismatch, None);
+}
+
+#[test]
+fn r36c_trailing_garnish_in_a_mixed_pair_wrapper_is_judged_as_its_single_pair_twin() {
+    // Round 36 (R36-C, F9 = red team RT36-4):
+    // "November 1, 2026 ([Monday])" read clean, glued
+    // and spaced, all four mixed pairs, both routes;
+    // its single-pair twin "(Monday)" is judged
+    // (refused with the record), and the doubled
+    // same-pair wrappers "((Monday))", "[[Monday]]",
+    // "{{Monday}}" trailing are judged too. No
+    // glued/spaced divergence — the trailing-garnish
+    // check was simply absent for mixed pairs: the
+    // trailing pass's candidate scan found only the
+    // wrapper's inner pair and set its space inside
+    // the wrapper, breaking the token the trailing
+    // readers judge. The candidate's contents now
+    // shed opening and closing marks of any pair, so
+    // the wrapper itself is the candidate. Every
+    // pair below compares the mixed line's FULL
+    // record against its single-pair twin's (the
+    // r34e helpers), agreeing and disagreeing, glued
+    // and spaced, on both routes; the disagreeing
+    // headline is stated outright. November 1 and
+    // November 8, 2026 are Sundays.
+    for group in ["([Monday])", "[(Monday)]", "{[Monday]}", "{(Monday)}"] {
+        let spaced = format!("November 1, 2026 {group}");
+        r34e_for_twin(&spaced, "November 1, 2026 (Monday)");
+        let glued = format!("November 1, 2026{group}");
+        r34e_for_twin(&glued, "November 1, 2026(Monday)");
+        r34e_for_twin(&glued, &spaced);
+        let keep_spaced = format!("November 8, 2026 {group}");
+        r34e_keep_twin(&keep_spaced, "November 8, 2026 (Monday)");
+        let keep_glued = format!("November 8, 2026{group}");
+        r34e_keep_twin(&keep_glued, "November 8, 2026(Monday)");
+    }
+    for group in ["([Sunday])", "[(Sunday)]", "{[Sunday]}", "{(Sunday)}"] {
+        let spaced = format!("November 1, 2026 {group}");
+        r34e_for_twin(&spaced, "November 1, 2026 (Sunday)");
+        let glued = format!("November 1, 2026{group}");
+        r34e_for_twin(&glued, "November 1, 2026(Sunday)");
+        let keep_spaced = format!("November 8, 2026 {group}");
+        r34e_keep_twin(&keep_spaced, "November 8, 2026 (Sunday)");
+        let keep_glued = format!("November 8, 2026{group}");
+        r34e_keep_twin(&keep_glued, "November 8, 2026(Sunday)");
+    }
+    // The doubled same-pair controls, unweakened:
+    // each still judges as the single-pair twin.
+    for group in ["((Monday))", "[[Monday]]", "{{Monday}}"] {
+        let spaced = format!("November 1, 2026 {group}");
+        r34e_for_twin(&spaced, "November 1, 2026 (Monday)");
+        let glued = format!("November 1, 2026{group}");
+        r34e_for_twin(&glued, "November 1, 2026(Monday)");
+    }
+    // Stated outright: the disagreeing mixed
+    // trailing garnish is refused with the mismatch
+    // recorded, glued and spaced, on both routes;
+    // the agreeing one reads clean.
+    for line in ["November 1, 2026 ([Monday])", "November 1, 2026([Monday])"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing mixed trailing weekday is recorded");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+        let keep_line = line.replace("November 1, 2026", "November 8, 2026");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {keep_line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{keep_line}");
+        let m = c
+            .keep_through_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing mixed trailing weekday is recorded on the keep line");
+        assert_eq!(m.named, "Monday", "{keep_line}");
+        assert_eq!(m.date, nov(8), "{keep_line}");
+    }
+    let text = "For Sunday: November 1, 2026 ([Sunday])\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert_eq!(c.named_weekday_mismatch, None);
+}
+
+#[test]
 fn r35c_garnish_before_an_apostrophe_or_typographic_quote_is_judged_in_both_forms() {
     // Round 35 (R35-C, F7 = red team RT35-5): a
     // disagreeing weekday garnish followed by "'"

@@ -1727,7 +1727,13 @@ pub(super) fn bare_unit_weekday_at(tokens: &[&str], i: usize) -> bool {
 /// weekday word — "(notes)", "(November)", "(next
 /// week)", "(Monday morning)", "(2027)",
 /// "(Sundae)", "(Mondays)", a parenthesized DATE —
-/// is never re-spaced, in any of these shapes.
+/// is never re-spaced by THIS (trailing) pass, in
+/// any of these shapes. (Round 36, R36-C: at the
+/// month–day and leading slots a group of any
+/// contents IS re-spaced, by the date-slot pass
+/// below — the two passes state different patterns
+/// for different slots, and neither statement
+/// covers the other's.)
 ///
 /// Round 35 (R35-C, F3 = review R35-R3 = red team
 /// RT35-4): the gate above judged only the TRAILING
@@ -1766,13 +1772,253 @@ pub(super) fn bare_unit_weekday_at(tokens: &[&str], i: usize) -> bool {
 /// those sets learn both marks with this one, so
 /// the garnish check fires in both forms exactly as
 /// it does for the standing marks.
+///
+/// Round 36 (R36-C, F1 + F10 + F9): the gate stopped
+/// one pattern short again. Past the one-weekday
+/// single-pair pattern, glued and spaced split at
+/// the month–day slot for EVERY standalone group —
+/// a governing group ("November(cancelled) 1, 2026"
+/// served the cancelled date live; the spaced twin
+/// and the bare twin read nothing), a multi-word
+/// governor ("November[called off] 1, 2026"), a
+/// date group ("November(November 8, 2026) 1, 2026"
+/// read November 1 with a record naming November 8
+/// where the spaced twin reads November 8 clean),
+/// and inert groups alike ("November(notes) 1,
+/// 2026" read where "November (notes) 1, 2026"
+/// reads nothing, identically in all three pairs) —
+/// and a mixed-pair wrapper escaped at both the
+/// month–day slot and the leading slot
+/// ("November([Monday]) 1, 2026" and
+/// "([Monday])November 1, 2026" both served
+/// November 1 in silence, where every spaced twin
+/// refuses or records). The adjudicated reading
+/// for the whole family is the standing one:
+/// spacing is not semantics — the glued form takes
+/// the spaced form's reading. The gate therefore
+/// gains a pass over the line's top-level groups
+/// (`respaced_glued_groups_at_date_slots`): a
+/// standalone group of ANY contents standing at
+/// the month–day slot (glued against the month
+/// word on its left, a day number standing after
+/// it) or at the leading slot (the line's first
+/// group, glued against the month word on its
+/// right) is re-spaced on its glued side, whatever
+/// it holds and however it is wrapped — mixed
+/// pairs and doubled pairs included, because the
+/// pass reads the group's balanced span, not its
+/// edges. And the trailing pass below learns the
+/// mixed-pair wrapper's shape (F9): a trailing
+/// garnish in a mixed pair ("November 1, 2026
+/// ([Monday])") was judged in neither form — the
+/// candidate scan found only the wrapper's inner
+/// pair and set its space inside the wrapper,
+/// breaking the very token the trailing readers
+/// judge — where its single-pair and doubled
+/// same-pair twins are judged; the candidate's
+/// contents now shed opening and closing marks of
+/// any pair, so the wrapper itself is the
+/// candidate, a spaced wrapper needs no space and
+/// stands as written for the standing readers to
+/// judge, and a glued one is re-spaced at its
+/// outer edge.
 pub(super) fn spaced_glued_weekday_garnish(text: &str) -> Option<String> {
-    let mid = respaced_glued_weekday_groups(text);
-    let stage: &str = mid.as_deref().unwrap_or(text);
+    let at_slots = respaced_glued_groups_at_date_slots(text);
+    let stage0: &str = at_slots.as_deref().unwrap_or(text);
+    let mid = respaced_glued_weekday_groups(stage0);
+    let stage: &str = mid.as_deref().unwrap_or(stage0);
     match spaced_trailing_weekday_garnish(stage) {
         Some(spaced) => Some(spaced),
-        None => mid,
+        None => match mid {
+            Some(spaced) => Some(spaced),
+            None => at_slots,
+        },
     }
+}
+
+/// The inserts applied to `text`, in ascending
+/// order: a space set at each position, every other
+/// byte as written.
+fn apply_space_inserts(text: &str, inserts: &[usize]) -> String {
+    let mut spaced = String::with_capacity(text.len() + inserts.len());
+    let mut at = 0;
+    for p in inserts {
+        spaced.push_str(&text[at..*p]);
+        spaced.push(' ');
+        at = *p;
+    }
+    spaced.push_str(&text[at..]);
+    spaced
+}
+
+/// Whether the alphabetic word standing at `at` in
+/// `text` (the run of letters there) is a month
+/// name or one of its standing abbreviations — the
+/// same table the flexible reader reads
+/// (`month_number` in ob-model, restated here
+/// because this crate's readers name the word, not
+/// its number).
+fn word_at_is_month(text: &str, at: usize) -> bool {
+    let run: String = text[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    matches!(
+        run.to_ascii_lowercase().as_str(),
+        "jan"
+            | "january"
+            | "feb"
+            | "february"
+            | "mar"
+            | "march"
+            | "apr"
+            | "april"
+            | "may"
+            | "jun"
+            | "june"
+            | "jul"
+            | "july"
+            | "aug"
+            | "august"
+            | "sep"
+            | "sept"
+            | "september"
+            | "oct"
+            | "october"
+            | "nov"
+            | "november"
+            | "dec"
+            | "december"
+    )
+}
+
+/// Whether the word ending immediately before byte
+/// `before` in `text` is a month name: the letter
+/// run ending there (a trailing "." the abbreviation
+/// may wear is stepped over first), read whole — a
+/// longer run is a longer word, not a month glued
+/// inside one.
+fn word_before_is_month(text: &str, before: usize) -> bool {
+    let mut end = before;
+    while end > 0 && matches!(text.as_bytes()[end - 1], b' ' | b'\t') {
+        end -= 1;
+    }
+    if end > 0 && text.as_bytes()[end - 1] == b'.' {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && text.as_bytes()[start - 1].is_ascii_alphabetic() {
+        start -= 1;
+    }
+    if start == end {
+        return false;
+    }
+    word_at_is_month(text, start)
+}
+
+/// Whether a day-of-month number stands at the
+/// first non-whitespace byte at or after `at`: one
+/// or two digits naming 1..=31, followed by a comma,
+/// whitespace, or the line's end.
+fn day_number_stands_after(text: &str, at: usize) -> bool {
+    let rest = text[at..].trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() || digits.len() > 2 {
+        return false;
+    }
+    let Ok(day) = digits.parse::<u32>() else {
+        return false;
+    };
+    if !(1..=31).contains(&day) {
+        return false;
+    }
+    match rest[digits.len()..].chars().next() {
+        None => true,
+        Some(c) => c == ',' || c.is_whitespace(),
+    }
+}
+
+/// `text` with a space set on every glued side of
+/// every standalone group standing at the month–day
+/// slot or the leading slot, whatever the group
+/// holds (round 36, R36-C, F1 + F10): the pass
+/// reads the line's top-level balanced spans, so a
+/// mixed-pair wrapper and a doubled pair are the
+/// group they stand as, and the contents — one
+/// word, several words, a whole date — never enter
+/// the pattern. The month–day slot is stated by
+/// its neighbours: a month word ending immediately
+/// before the group and a day number standing after
+/// it. The leading slot is the line's first group
+/// (nothing but space before it) glued against a
+/// month word on its right, the space setting after
+/// any peel mark the group wears there, exactly as
+/// the weekday pass sets it. A group at any other
+/// slot — the day–year slot, the trailing slot, a
+/// group standing in running words — keeps its
+/// bytes from this pass, as do groups standing
+/// apart on the side in question.
+fn respaced_glued_groups_at_date_slots(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut inserts: Vec<usize> = Vec::new();
+    for (start, end) in balanced_spans(text) {
+        // The position on the group's right where a
+        // glued word would stand: past any peel
+        // marks the group wears there.
+        let mut k = end;
+        while k < bytes.len() {
+            let c = text[k..].chars().next().expect("a byte stands after");
+            if matches!(
+                c,
+                '.' | ',' | ';' | ':' | '!' | '?' | '"' | '\'' | '\u{201d}'
+            ) {
+                k += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let right_glued_at = if k < bytes.len()
+            && text[k..]
+                .chars()
+                .next()
+                .expect("a byte stands after")
+                .is_alphanumeric()
+        {
+            Some(k)
+        } else {
+            None
+        };
+        let left_glued = start > 0
+            && !text[..start]
+                .chars()
+                .next_back()
+                .expect("a byte stands before")
+                .is_whitespace();
+        // The month–day slot.
+        if word_before_is_month(text, start) && day_number_stands_after(text, end) {
+            if left_glued {
+                inserts.push(start);
+            }
+            if end < bytes.len() && bytes[end].is_ascii_digit() {
+                inserts.push(end);
+            }
+            continue;
+        }
+        // The leading slot.
+        if text[..start].trim().is_empty() {
+            if let Some(at) = right_glued_at {
+                if word_at_is_month(text, at) {
+                    inserts.push(at);
+                }
+            }
+        }
+    }
+    if inserts.is_empty() {
+        return None;
+    }
+    inserts.sort_unstable();
+    inserts.dedup();
+    Some(apply_space_inserts(text, &inserts))
 }
 
 /// `text` with a space set on every glued side of
@@ -1788,13 +2034,25 @@ pub(super) fn spaced_glued_weekday_garnish(text: &str) -> Option<String> {
 /// the glue is on its left) are the witnessed slots;
 /// the trailing slot is this pass's degenerate case
 /// and keeps the reading the trailing gate has
-/// always given it. A group is standalone when it
-/// does not stand immediately inside another
-/// group's opener — the content of a mixed-pair
-/// wrapper ("([Monday])") is the wrapper's business,
-/// and the wrapper's own pattern failure here leaves
-/// the text byte for byte, as both its forms have
-/// always read. The group's own shape is the
+/// always given it. A group is standalone, FOR
+/// THIS PASS, when it does not stand immediately
+/// inside another group's opener — the content of
+/// a mixed-pair wrapper ("([Monday])") is not
+/// re-spaced here, because this pass reads one
+/// weekday word at a group's own edges and the
+/// wrapper's inner group is not that group. Round
+/// 36 (R36-C, F1) corrected the stronger claim an
+/// earlier statement of this rule carried — that
+/// the wrapper's forms "have always read" alike:
+/// they had not. At the month–day and leading
+/// slots the glued wrapper was erased and the date
+/// read, where the spaced wrapper interrupted or
+/// refused. The wrapper itself is the earlier
+/// date-slot pass's business
+/// (`respaced_glued_groups_at_date_slots`), which
+/// re-spaces the wrapper's balanced span at those
+/// slots; at the trailing slot the trailing pass
+/// below judges it (R36-C, F9). The group's own shape is the
 /// trailing gate's, stated flat: some openers of one
 /// pair, one weekday word (a trailing mark
 /// `weekday_word` itself trims may follow it), some
@@ -1956,12 +2214,9 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
     let cand = line.trim_end_matches([')', ']', '}']);
     let mut open: Option<usize> = None;
     for (p, ch) in cand.char_indices() {
-        let closer = match ch {
-            '(' => ')',
-            '[' => ']',
-            '{' => '}',
-            _ => continue,
-        };
+        if !matches!(ch, '(' | '[' | '{') {
+            continue;
+        }
         let inner = &cand[p + 1..];
         if inner.len() > 32 || inner.contains(char::is_whitespace) {
             continue;
@@ -1971,10 +2226,21 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
         // wears one extra), the word, some closing
         // delimiters of the pair — a mark of the
         // pair anywhere else is not this shape.
-        let lead = inner.len() - inner.trim_start_matches(ch).len();
-        let trailed = &inner[lead..];
-        let word = trailed.trim_end_matches(closer);
-        if word.contains([ch, closer]) || !trailed.starts_with(word) {
+        // Round 36 (R36-C, F9): the opening and
+        // closing marks may be ANY pair's — a garnish
+        // in a mixed-pair wrapper ("([Monday])") is
+        // this shape too, and the candidate is the
+        // wrapper's OUTER opener, not its inner one:
+        // finding only the inner pair set the space
+        // inside the wrapper and broke the token the
+        // trailing readers judge, so a mixed wrapper
+        // was judged in neither form where its
+        // single-pair and doubled same-pair twins
+        // are judged; the contents' own marks are
+        // read across pairs.
+        let trailed = inner.trim_start_matches(['(', '[', '{']);
+        let word = trailed.trim_end_matches([')', ']', '}']);
+        if word.contains(['(', ')', '[', ']', '{', '}']) || !trailed.starts_with(word) {
             continue;
         }
         if weekday_word(word).is_some() {

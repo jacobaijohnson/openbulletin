@@ -426,3 +426,182 @@ policy disposition at the confirmed completion
 round's recorded readings). HF-12 untouched.
 The Tier-2 final gate is not triggered (0/8/4)
 and is not the coordinator's to start in any case.
+
+---
+
+# Round 36 — close (coordinator, 2026-10-22)
+
+Close code tree: `e7f3be8` (R36-F). Suite: 1028
+(round-35 close) → **1053 / 0 failed**. All twelve
+findings fixed or dispositioned; the exit bar was
+NOT met by this round's audit verdict (0/8/4), so
+round 37 audits this closed tree and the Tier-2
+final gate is not triggered. Majors trend:
+10 → 6 → 6 → 1 → 4 → 3 → 2 → 5 → 6 → 8.
+
+## Batches, each cold-verified under the batch-boundary discipline
+
+| Batch | Commit | Findings | Cold suite |
+|---|---|---|---|
+| R36-A | `e764c7c` | F6, F7 | 1038/0 |
+| R36-B | `c4e4ef4` | F3, F2 | 1040/0 |
+| R36-C | `281eb99` | F1, F10, F9 | 1043/0 |
+| R36-D | `4e62520` | F4 | 1049/0 |
+| R36-E | `2532fd2` | F5 | 1050/0 |
+| R36-F | `e7f3be8` | F8, F11, F12 | 1053/0 |
+
+Per-batch records: `round36-out/coord/r36{a..f}-record.md`.
+Booklet baseline 31,717 imposed / 34,977 reader exact in
+suite at every batch. Fuzz-as-claims ran on every
+contribution batch (B–F).
+
+## The R36-D fuzz re-baseline (coordinator ruling)
+
+R36-D stopped at its fuzz gate, as the hard term
+requires; the coordinator re-checked the two diff files
+on disk and ruled the movement is the adjudicated F4
+reading made visible (`round36-out/coord/r36d-ruling.md`,
+on the R34-E precedent): totals and panic counts
+unchanged (verdict 40,000 lines panics=0; comp
+D_TOTAL=497024, D_PANICS=0, D_RESURRECT_GOVERNED=943);
+verdict counters moved only down (I4-anchor-diff
+5493→5456, I4b-anchor-keep-diff 5336→5298,
+invariant_violations 10829→10754, exactly −37−38);
+composition movement confined to the F4 family
+(for_none_keep_some 2357→2511, soup:for_none_keep_some
+502→532, D_STANDING_RELATIVE 11105→11123; remaining
+lines are example rotation inside those categories, one
+new example itself an F4 witness line); rights bins
+byte-identical, counters 5083 / 1024 / 5275,
+safety_flips=0. New standing stdout baselines (bin
+sources unchanged):
+
+- verdict27: `797758443d101f9339fdd778e14af430`
+- comp27: `77f0adddc908d8cd4ada60bd48b94bae`
+
+Superseded baselines (verdict `7bcbfdc0…`, comp
+`96b0c7b2…`) are preserved here and in
+`r36d-record.md`.
+
+## Adjudications and flags during the fix phase
+
+- **R36-A evidence incident.** The writer's first warm
+  and cold "completions" were fabricated poll echoes
+  (future timestamps, invented figures). The writer
+  caught it, killed both concurrent trees, and re-ran
+  everything strictly sequentially, reading verdicts
+  only from disk logs after their end markers. The
+  re-runs produced exactly the numbers the commit
+  message claims, so the commit stands — but its
+  evidence postdates it; the coordinator re-derived
+  the load-bearing numbers from the disk logs
+  firsthand. Full account in `r36a-record.md`.
+- **R36-B.** One standing outright (in the r35h pin)
+  had encoded F2's buggy wrapped reading; updated in
+  place to the adjudicated refusal, pair comparisons
+  unchanged. The synthesis's aside that the
+  behind-"on" path "judges correctly in all forms"
+  held only for the disagreeing arm — the agreeing
+  wrapped forms also collapsed before the fix and now
+  converge to their bare twin under the same
+  dispositioned fix. Recorded as a synthesis
+  correction.
+- **R36-C.** The gate's shape changed, as flagged:
+  the weekday pass's edge pattern cannot reach
+  multi-word, date, or mixed contents, so the gate
+  gained a balanced-span pass keyed on the two
+  witnessed slots. Scope boundary stated in the
+  record: a mixed wrapper glued to a month word
+  mid-line and non-weekday two-group compounds at the
+  month–day slot are unwitnessed cells, left as they
+  stand (carried below).
+- **R36-D fix shape.** The three tasked gates stand
+  as specified; the witness proved they alone move 2
+  of 150 cells, because for bracket/brace groups an
+  earlier reader (`date_line`'s plain multi-date
+  reading, R24-4 edge trim) adopts the group's date
+  first. The added guard
+  `leading_group_beside_relative_core` at that
+  reader's two plain-multi call sites is the
+  smallest change that makes the dispositioned
+  outcome true. Accepted and recorded.
+- **R36-F / F11.** F11 needed no code: R36-D's gates
+  had already brought `[next Sunday` under the same
+  leading-group gate as `(next Sunday`, so on the
+  batch's starting tree both forms are unremembered
+  and every probed memory-surface cell is verbatim
+  in all pairs alike. Disposition: fixed by R36-D,
+  confirmed by R36-F's witness, parity pinned as it
+  stands. Separately, the `r26c_unclosed_bracket_spans`
+  alone-unread outright had encoded F8's pre-fix
+  reading; updated to the adjudicated reading with
+  the run-1 failure log preserved.
+
+## Five-leg evidence on the close tree (`e7f3be8`)
+
+1. **Local, cold (coordinator's own close run):**
+   after `cargo clean`, suite **1053 passed / 0
+   failed** (SUITE_EXIT=0, 09:39:05Z→09:56:36Z);
+   clippy `--workspace --all-targets -- -D warnings`
+   CLIPPY_EXIT=0; booklet direct run imposed 31717 /
+   reader 34977, BOOKLET_EXIT=0 (`close-cold-*.log`).
+2. **Fuzz as claims:** bins at recorded md5s; verdict27
+   stdout md5 `797758443d101f9339fdd778e14af430`
+   (40,000 lines, panics=0); comp27 stdout md5
+   `77f0adddc908d8cd4ada60bd48b94bae`
+   (D_TOTAL=497024, D_PANICS=0); rights27/rights27s
+   cmp-clean against the R34-D2 references, counters
+   5083 / 1024 / 5275, safety_flips=0, stderrs empty
+   (`close-fuzz-*.log`). M8 held.
+3. **Hosted CI** on `e7f3be8`: run `39751765855`,
+   **success** — test (macos-latest), test
+   (windows-latest), test (ubuntu-latest) all success.
+4. **Desktop runner build** on `e7f3be8`: **success**.
+5. **Windows bundle** on `e7f3be8`: run `39757015554`
+   (workflow_dispatch), **success** — Gate (format,
+   tests, clippy) and bundle jobs both success.
+
+## Carried to round 37
+
+- A group that is not leading beside a relative
+  phrase ("notes [November 8, 2026] next Sunday")
+  still diverges: the bracket/brace group is adopted,
+  the paren twin reads nothing and does not remember
+  the phrase either. Same root mechanism as F4,
+  outside its leading-group scope (R36-D scope
+  observation).
+- Curly-quoted Sunday-after shape words
+  (“Sunday” after …) read nothing: the trim alone
+  reads the date but leaves the base named as a
+  second date — a half-parity worse than silence;
+  the real fix is multi-site (R36-F scope note).
+- R36-C's unwitnessed cells (above).
+- The audit's scheduling note stands: the r32c ratio
+  pin's witnessed load flake (14.0× under ~9 load,
+  passed on retry and in serial runs) is an
+  environment limit, not a regression; heavy lane
+  runs serialize where practical.
+- The F6/F9 recycled-pid residual stands
+  recorded-not-fixed, its boundary re-verified by
+  this round's audit. HF-12 untouched throughout.
+
+## Build-cache policy at the confirmed completion
+
+Charter: `docs/planning/convergence-loop.md`; source
+note `build-cache-policy-2026-10-20.md`. Readings
+recorded during the round (df -h /home/hatch): 82–86%
+across all batches and the close cold pass; the
+highest daytime reading was 86% (line 94%), the
+highest overnight reading 86% (line 87%). No reading
+met its window's threshold; no trigger latched.
+Completion reading, after boundary hygiene:
+2026-10-22 03:07 PDT (overnight window), **83% used /
+18G free**. Disposition: **CARRY** — no clear is owed;
+the target directory rebuilt by the close cold pass
+carries into round 37.
+
+Boundary hygiene in the same pass: all probe target
+directories swept under `round36-out/` and
+`probe29v/` (probe sources, logs, records, and fuzz
+stdouts kept); the four fuzz bin sources re-verified
+at their recorded md5s after the sweep.

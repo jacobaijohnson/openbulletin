@@ -593,9 +593,19 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         // Round 35 (R35-A, F1): the named word's
         // trim set gains the brace pair, as at the
         // weekday readers above.
-        let named = lead_word
-            .trim_matches(['(', ')', '[', ']', '{', '}', ',', '.'])
-            .to_string();
+        // Round 37 (R37-F, F11 = review R37-R8): the
+        // named string is the cleaned weekday — the
+        // wrapper and sentence-mark residue the old
+        // trim could not reach (a closing bracket
+        // standing behind a trailing mark, "Monday]!",
+        // or behind a trailing typographic quote,
+        // "Monday]”") is shed, so the record the
+        // Check surface quotes names the weekday the
+        // sender wrote. A word wearing only a quote
+        // pair keeps its quotes: that verbatim naming
+        // is the standing twin behavior (R37-E), not
+        // residue (see `base_leading_named`).
+        let named = base_leading_named(lead_word);
         return Some(SundayAfter::Mismatch(WeekdayMismatch { named, date: base }));
     }
     // The leading weekday agreed (it can only have
@@ -610,6 +620,47 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         }
         _ => SundayAfter::Date(first_sunday_after(base)),
     })
+}
+
+/// The name the Sunday-after base's leading-weekday
+/// mismatch record carries (round 37, R37-F, F11 =
+/// review R37-R8): the sender's weekday word with its
+/// wrapper and sentence-mark residue shed, in
+/// whichever order the wrapper and the marks stand —
+/// "[Monday]!" names "Monday", as "(Monday)!",
+/// "{Monday}?", and the bare "Monday!" do, and a
+/// trailing typographic quote standing behind a
+/// wrapper ("[Monday]”") sheds with the wrapper. The
+/// one form that keeps its marks is a word wearing
+/// only a quote pair — straight or curly, bare or
+/// standing inside a shed wrapper ("\"Monday\"",
+/// "“Monday”", "(“Monday”)"): at this site the
+/// record names the sender's quoted word verbatim,
+/// exactly as the straight twin's record names its
+/// own (the standing reading R37-E pinned stated
+/// outright) — the quotes are the word's own dress,
+/// not residue standing against it.
+fn base_leading_named(lead_word: &str) -> String {
+    // The wrapper and sentence marks shed first,
+    // quotes aside: what remains decides the form.
+    let shed = lead_word.trim_matches(['(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?']);
+    // A quote pair standing at the shed word's own
+    // edges, around the weekday itself: the quoted
+    // word, named verbatim.
+    let inner = shed.trim_matches(['"', '\'', '\u{201c}', '\u{201d}', '\u{2018}', '\u{2019}']);
+    if inner.len() < shed.len() && weekday_word(inner).is_some() {
+        return shed.to_string();
+    }
+    // Every other form names the cleaned weekday:
+    // the full edge trim, quotes and typographic
+    // quotes included, reaches the wrapper marks
+    // standing behind them.
+    lead_word
+        .trim_matches([
+            '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{2018}',
+            '\u{2019}', '\u{201c}', '\u{201d}',
+        ])
+        .to_string()
 }
 
 /// The last trailing group of `text`, split as (the

@@ -27622,6 +27622,511 @@ fn r38c_held_neighbours_at_the_interior_slots_keep_their_readings() {
     }
 }
 
+// Round 39 (R39-B, F3): the interior-slot guard's
+// judgment reaches the positions round 38 recorded
+// as deliberately unreached. A date group standing
+// between a Sunday-after phrase's "after" and its
+// base was adopted by the bracket/brace line
+// ("Sunday after [November 8, 2026] November 1,
+// 2026" served November 15 — the Sunday after the
+// adopted group — where the paren twin serves the
+// written base with the group recorded); a framing
+// word standing after "after" before the base left
+// the split group adopted the same way ("Sunday
+// [November 8, 2026] after the November 1, 2026"
+// served November 8); a group glued against the
+// phrase's "Sunday" was adopted where its spaced
+// twin reads nothing; a weekday group at the split
+// position left the bracket line totally silent
+// where the paren twin reads on its plain scan;
+// and after a weekday word other than "Sunday" the
+// bracket line refused with a weekday mismatch
+// manufactured from the group's date where the
+// paren twin serves the Sunday arm's reading.
+// Every pin below asserts the bracket/brace line's
+// FULL record equals its paren twin's (the r34e
+// helpers), on both routes, with the headline
+// readings stated outright. The pins run at the
+// suite's today, 2026-10-16, so "next Sunday"
+// resolves October 25, "this Sunday" October 18,
+// and the Sunday after November 1, 2026 is
+// November 8.
+
+#[test]
+fn r39b_group_between_after_and_base_takes_the_paren_reading_in_every_pair() {
+    // The between-"after"-and-base family: the group
+    // names the resolution (November 8), another
+    // Sunday (November 15), and the base itself
+    // (November 1, the restating form), plus the
+    // short form, framing between the group and the
+    // base (the base's own dress), and a trailing
+    // group beside the phrase.
+    for (wrapped, paren) in [
+        (
+            "Sunday after [November 8, 2026] November 1, 2026",
+            "Sunday after (November 8, 2026) November 1, 2026",
+        ),
+        (
+            "Sunday after {November 8, 2026} November 1, 2026",
+            "Sunday after (November 8, 2026) November 1, 2026",
+        ),
+        (
+            "Sunday after [November 15, 2026] November 1, 2026",
+            "Sunday after (November 15, 2026) November 1, 2026",
+        ),
+        (
+            "Sunday after {November 15, 2026} November 1, 2026",
+            "Sunday after (November 15, 2026) November 1, 2026",
+        ),
+        (
+            "Sunday after [November 1, 2026] November 1, 2026",
+            "Sunday after (November 1, 2026) November 1, 2026",
+        ),
+        (
+            "Sunday after {November 1, 2026} November 1, 2026",
+            "Sunday after (November 1, 2026) November 1, 2026",
+        ),
+        (
+            "Sunday after [November 8] November 1, 2026",
+            "Sunday after (November 8) November 1, 2026",
+        ),
+        (
+            "Sunday after [November 8, 2026] the November 1, 2026",
+            "Sunday after (November 8, 2026) the November 1, 2026",
+        ),
+        (
+            "Sunday after {November 8, 2026} the November 1, 2026",
+            "Sunday after (November 8, 2026) the November 1, 2026",
+        ),
+        (
+            "Sunday after [November 8, 2026] November 1, 2026 (notes)",
+            "Sunday after (November 8, 2026) November 1, 2026 (notes)",
+        ),
+        (
+            "Sunday after {November 8, 2026} November 1, 2026 (notes)",
+            "Sunday after (November 8, 2026) November 1, 2026 (notes)",
+        ),
+        // The control that was already twin-equal:
+        // framing between "after" and the group is
+        // not this slot, and does not move.
+        (
+            "Sunday after the [November 8, 2026] November 1, 2026",
+            "Sunday after the (November 8, 2026) November 1, 2026",
+        ),
+        (
+            "Sunday after the {November 8, 2026} November 1, 2026",
+            "Sunday after the (November 8, 2026) November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(wrapped, paren);
+        r34e_keep_twin(wrapped, paren);
+    }
+    // The paren reading stated outright, on the
+    // bracket line itself: the written base is
+    // served — not November 15, the Sunday after
+    // the adopted group — and the group is recorded
+    // against it.
+    let text =
+        "For Sunday: Sunday after [November 8, 2026] November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the written base is served, not the adopted group's resolution"
+    );
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the group is recorded against the base");
+    assert_eq!(m.named, nov(8), "the group is the recorded date");
+    assert_eq!(m.read, nov(1), "against the base the line read");
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after [November 8, 2026] November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(1)),
+        "the keep line serves the written base too"
+    );
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the group is recorded on the keep line too");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+}
+
+#[test]
+fn r39b_split_group_with_framing_after_after_takes_the_paren_reading_in_every_pair() {
+    // The framing-after-"after" family: a framing
+    // word ("the" / "on" / "on the" stack) standing
+    // after the phrase's "after" before its base,
+    // with the group at the split position — the
+    // bracket/brace group was adopted (serving
+    // November 8 with the base on the note) where
+    // the paren twin serves the base with the group
+    // recorded.
+    for (wrapped, paren) in [
+        (
+            "Sunday [November 8, 2026] after the November 1, 2026",
+            "Sunday (November 8, 2026) after the November 1, 2026",
+        ),
+        (
+            "Sunday {November 8, 2026} after the November 1, 2026",
+            "Sunday (November 8, 2026) after the November 1, 2026",
+        ),
+        (
+            "Sunday [November 8, 2026] after on November 1, 2026",
+            "Sunday (November 8, 2026) after on November 1, 2026",
+        ),
+        (
+            "Sunday {November 8, 2026} after on November 1, 2026",
+            "Sunday (November 8, 2026) after on November 1, 2026",
+        ),
+        (
+            "Sunday [November 8, 2026] after on the November 1, 2026",
+            "Sunday (November 8, 2026) after on the November 1, 2026",
+        ),
+        (
+            "Sunday {November 8, 2026} after on the November 1, 2026",
+            "Sunday (November 8, 2026) after on the November 1, 2026",
+        ),
+        (
+            "Sunday [November 8, 2026] after the November 1, 2026 (notes)",
+            "Sunday (November 8, 2026) after the November 1, 2026 (notes)",
+        ),
+        (
+            "Sunday {November 8, 2026} after the November 1, 2026 (notes)",
+            "Sunday (November 8, 2026) after the November 1, 2026 (notes)",
+        ),
+    ] {
+        r34e_for_twin(wrapped, paren);
+        r34e_keep_twin(wrapped, paren);
+    }
+    // Stated outright on the bracket line: the base
+    // is served with the group recorded — the group
+    // itself is not served.
+    let text =
+        "For Sunday: Sunday [November 8, 2026] after the November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the base is served, not the split group"
+    );
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the group is recorded against the base");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+}
+
+#[test]
+fn r39b_glued_split_group_takes_the_spaced_reading_in_every_pair() {
+    // The glued family: a group glued against the
+    // phrase's "Sunday" was adopted in both dresses
+    // (serving November 8) where the spaced twins
+    // read nothing in every pair. The glued line
+    // takes the spaced reading — total silence on
+    // the For route, beside a trailing group too.
+    for (glued, spaced) in [
+        (
+            "Sunday[November 8, 2026] after November 1, 2026",
+            "Sunday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday{November 8, 2026} after November 1, 2026",
+            "Sunday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday(November 8, 2026) after November 1, 2026",
+            "Sunday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday[November 8] after November 1, 2026",
+            "Sunday (November 8) after November 1, 2026",
+        ),
+        (
+            "Sunday[November 8, 2026] after November 1, 2026 (notes)",
+            "Sunday (November 8, 2026) after November 1, 2026 (notes)",
+        ),
+        (
+            "Sunday{November 8, 2026} after November 1, 2026 (notes)",
+            "Sunday (November 8, 2026) after November 1, 2026 (notes)",
+        ),
+    ] {
+        r34e_for_twin(glued, spaced);
+        r34e_keep_twin(glued, spaced);
+    }
+    // The glued reading stated outright: silence.
+    let text =
+        "For Sunday: Sunday[November 8, 2026] after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the glued line reads no date");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "and names no second date"
+    );
+    // The held neighbour, unmoved: a group glued on
+    // BOTH sides keeps its standing reading — the
+    // base served with the group recorded — in
+    // both dresses, on both routes.
+    for line in [
+        "Sunday[November 8, 2026]after November 1, 2026",
+        "Sunday(November 8, 2026)after November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the glued-both base is served"
+        );
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the glued-both group is recorded");
+        assert_eq!(m.named, nov(8), "{line}: the group is recorded");
+        assert_eq!(m.read, nov(1), "{line}: against the base");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(1)),
+            "{line}: the keep line serves the base"
+        );
+    }
+}
+
+#[test]
+fn r39b_weekday_group_at_the_split_takes_the_paren_reading_in_every_pair() {
+    // The weekday-group family: a weekday-only
+    // group at the split position left the bracket
+    // line totally silent, where the paren twin's
+    // cleaning gives the word itself, no phrase
+    // forms across it, and the plain scan reads the
+    // bare Sunday with the base as second date. The
+    // bracket/brace line takes that reading. (A
+    // group naming "Sunday" itself is the held
+    // neighbour of round 38 — the phrase resolves —
+    // and is not this family.)
+    for (wrapped, paren) in [
+        (
+            "Sunday [Monday] after November 1, 2026",
+            "Sunday (Monday) after November 1, 2026",
+        ),
+        (
+            "Sunday {Monday} after November 1, 2026",
+            "Sunday (Monday) after November 1, 2026",
+        ),
+        (
+            "Sunday [Tuesday] after November 1, 2026",
+            "Sunday (Tuesday) after November 1, 2026",
+        ),
+        (
+            "Sunday {Tuesday} after November 1, 2026",
+            "Sunday (Tuesday) after November 1, 2026",
+        ),
+        (
+            "Sunday [Wednesday] after November 1, 2026",
+            "Sunday (Wednesday) after November 1, 2026",
+        ),
+        (
+            "Sunday {Friday} after November 1, 2026",
+            "Sunday (Friday) after November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(wrapped, paren);
+        r34e_keep_twin(wrapped, paren);
+    }
+    // The paren reading stated outright, on the
+    // bracket line: the bare Sunday (October 18 at
+    // the suite's today) is served, the base named
+    // as second date, on both routes.
+    let text = "For Sunday: Sunday [Monday] after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(oct(18)),
+        "the bare Sunday is served, as the paren twin serves it"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![nov(1)],
+        "with the base as second date"
+    );
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday [Monday] after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(18)), "the keep line serves it too");
+    assert_eq!(
+        c.keep_through_second_dates,
+        vec![nov(1)],
+        "with the base as second date"
+    );
+}
+
+#[test]
+fn r39b_group_after_any_weekday_word_takes_the_paren_reading_in_every_pair() {
+    // The after-weekday-word family, extended past
+    // "Sunday": a date group after ANY weekday word
+    // before a relative phrase takes the Sunday
+    // arm's reading. The bracket/brace line refused
+    // with a weekday mismatch manufactured from the
+    // group's date ("Monday [November 8, 2026] next
+    // Sunday" recorded Monday at November 8 and
+    // served nothing) where the paren twin serves
+    // the group's date with the relative phrase
+    // remembered on the note; before a Sunday-after
+    // phrase it refused the same way where the
+    // paren twin serves the base with the group
+    // recorded.
+    for (wrapped, paren) in [
+        (
+            "Monday [November 8, 2026] next Sunday",
+            "Monday (November 8, 2026) next Sunday",
+        ),
+        (
+            "Monday {November 8, 2026} next Sunday",
+            "Monday (November 8, 2026) next Sunday",
+        ),
+        (
+            "Tuesday [November 8, 2026] next Sunday",
+            "Tuesday (November 8, 2026) next Sunday",
+        ),
+        (
+            "Tuesday {November 8, 2026} next Sunday",
+            "Tuesday (November 8, 2026) next Sunday",
+        ),
+        (
+            "Wednesday [November 8, 2026] next Sunday",
+            "Wednesday (November 8, 2026) next Sunday",
+        ),
+        (
+            "Friday [November 8, 2026] next Sunday",
+            "Friday (November 8, 2026) next Sunday",
+        ),
+        (
+            "Monday [November 8, 2026] this Sunday",
+            "Monday (November 8, 2026) this Sunday",
+        ),
+        (
+            "Tuesday [November 8, 2026] this Sunday",
+            "Tuesday (November 8, 2026) this Sunday",
+        ),
+        (
+            "Wednesday [November 8, 2026] this Sunday",
+            "Wednesday (November 8, 2026) this Sunday",
+        ),
+        (
+            "Wednesday {November 8, 2026} this Sunday",
+            "Wednesday (November 8, 2026) this Sunday",
+        ),
+        (
+            "Monday [November 8, 2026] after November 1, 2026",
+            "Monday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "Monday {November 8, 2026} after November 1, 2026",
+            "Monday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "Tuesday [November 8, 2026] after November 1, 2026",
+            "Tuesday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "Wednesday [November 8, 2026] after November 1, 2026",
+            "Wednesday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "Friday [November 8, 2026] after November 1, 2026",
+            "Friday (November 8, 2026) after November 1, 2026",
+        ),
+        // The weekday word's own framing stack.
+        (
+            "the Monday [November 8, 2026] next Sunday",
+            "the Monday (November 8, 2026) next Sunday",
+        ),
+        (
+            "on Monday [November 8, 2026] next Sunday",
+            "on Monday (November 8, 2026) next Sunday",
+        ),
+        (
+            "the Tuesday [November 8, 2026] after November 1, 2026",
+            "the Tuesday (November 8, 2026) after November 1, 2026",
+        ),
+        // Beside a trailing group the core is the
+        // weekday-word line in its own right.
+        (
+            "Monday [November 8, 2026] next Sunday (notes)",
+            "Monday (November 8, 2026) next Sunday (notes)",
+        ),
+        (
+            "Monday [November 8, 2026] after November 1, 2026 (notes)",
+            "Monday (November 8, 2026) after November 1, 2026 (notes)",
+        ),
+        // An agreeing stack after a weekday word
+        // adopts in neither dress (round 38's
+        // stacked exception belongs to the
+        // signal-free prefixes): both are silent.
+        (
+            "Monday [October 25, 2026] [October 25, 2026] next Sunday",
+            "Monday (October 25, 2026) (October 25, 2026) next Sunday",
+        ),
+        (
+            "Monday {October 25, 2026} {October 25, 2026} next Sunday",
+            "Monday (October 25, 2026) (October 25, 2026) next Sunday",
+        ),
+    ] {
+        r34e_for_twin(wrapped, paren);
+        r34e_keep_twin(wrapped, paren);
+    }
+    // The readings stated outright. Before a
+    // relative phrase the bracket line serves the
+    // group's date with the phrase on the note and
+    // records no weekday mismatch.
+    let text = "For Sunday: Monday [November 8, 2026] next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the group's date is served, as the paren twin serves it"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        vec![oct(25)],
+        "with next Sunday remembered on the note"
+    );
+    assert_eq!(
+        c.named_weekday_mismatch, None,
+        "and no manufactured mismatch is recorded"
+    );
+    // Before a Sunday-after phrase the bracket line
+    // serves the base with the group recorded.
+    let text =
+        "For Sunday: Monday [November 8, 2026] after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "the base is served");
+    assert_eq!(
+        c.named_weekday_mismatch, None,
+        "with no manufactured mismatch recorded"
+    );
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the group is recorded against the base");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    let text = "For Sunday: November 1, 2026\nKeep-through: Monday [November 8, 2026] after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(1)),
+        "the keep line serves the base"
+    );
+    assert_eq!(
+        c.keep_through_weekday_mismatch, None,
+        "with no manufactured mismatch on the keep line"
+    );
+}
+
 #[test]
 fn r38d_wrapped_leading_governor_governs_as_its_bare_twin() {
     // Round 38 (R38-D, F4 — doctrine change adopted

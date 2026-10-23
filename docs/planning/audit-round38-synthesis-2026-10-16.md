@@ -567,3 +567,126 @@ round's recorded readings). HF-12 untouched.
 The Tier-2 final gate is not triggered (0/5/5)
 and is not the coordinator's to start in any
 case.
+
+---
+
+## Coordinator close (2026-10-23)
+
+Round 38 is closed. Its audit found **0 BLOCKER / 5 MAJOR /
+5 MINOR** over `eabd258`; every finding is fixed in the batches
+below, and the two doctrine questions the audit adjudicated are
+carried as stated. Code close: **`3ce5e0a`** (R38-F) on `068c36d`
+(R38-E) on `8fbe22f` (R38-D) on `b741fca` (R38-C) on `db264ec`
+(R38-B) on `c446b38` (R38-A) on the audit base `eabd258`, suite
+**1094/0**, clippy 0, booklet baseline exact. Per-batch records:
+`round38-out/coord/r38{a..f}-record.md` with the writers' notes
+beside them; rulings at `r38c-ruling.md` and `r38d-ruling.md`.
+
+- **R38-A (`c446b38`, F1 MAJOR):** the candidate standing judged
+  against the whole walked extent in `zip_directory`; a planted
+  fake directory in local-header extra, central extra, central
+  comment, or signature-record data steers none of the four
+  doors. Suite 1082/0.
+- **R38-B (`db264ec`, F2 MAJOR):** the sequence walks take the
+  lone forms' separator and suffix sets verbatim — `;` `.` `:`
+  peels between groups and the closing-quote peel on sequence
+  suffixes — at both walk call sites, both routes. Suite 1084/0.
+- **R38-C (`b741fca`, F3 MAJOR):** the group judgment is
+  consulted at the Sunday-after phrase's interior slots, and
+  `date_line` consults the guard against both inner reads. The
+  batch took three writers: the first was interrupted by a
+  runtime restart and resumed on its own; a recovery writer
+  detected the collision and stood down with the route analysis
+  the batch was missing; a completer finished it and held
+  before commit on the fuzz hard term. **Fuzz re-baseline
+  (coordinator ruling, `r38c-ruling.md`, R34-E/R36-D
+  precedent):** the whole comp delta is one counter,
+  `for_none_keep_some` 2511 → 2514 (+3) — three corpus lines
+  whose routes agreed on the F3-adopted date now read nothing
+  on the For route as their paren twins do. New standing comp
+  baseline `5868726a9f55b131d86e81070557c5f4`; verdict unchanged
+  `797758443d101f9339fdd778e14af430`. Suite 1087/0. The
+  recovery is recorded in full in the batch record, including
+  the seat's own reset of the interrupted writer's exploration
+  test on a false no-live-writer premise — no work was lost,
+  and the scar it sharpens is stated there.
+- **R38-D (`8fbe22f`, F4 MAJOR):** the doctrine change, leading
+  slot only, under a coordinator scope ruling (`r38d-ruling.md`):
+  the writer stopped under adjudication 4's stop term on
+  trailing / base-trailing pins encoding governor-as-garnish;
+  the seat ruled the change is exactly the adjudicated
+  leading-slot scope, those pins standing readings unweakened
+  (the fix is verified not to move them, in suite and fuzz),
+  and **the trailing / base-trailing wrapped/bare governor
+  split, plus the unpinned mid-line form the stop probe found,
+  are carried to round 39 as a named doctrine question** on the
+  writer's probe evidence — the same road cell (a)(ii) traveled.
+  A cancellation-carrying group at the leading slot now refuses
+  its line at every leading judged slot, both routes, from one
+  shared predicate. Fuzz byte-identical. Suite 1088/0.
+- **R38-E (`068c36d`, F5 MAJOR + F6 MINOR):** one separator-chain
+  mechanism read at all three chain sites in
+  `whole_line_composition`: a cancellation-headed chain governs
+  the whole line, dress-invariant; an inert-headed chain of ≥2
+  groups counts as one date carrier, judged as lone groups are;
+  a comma directly after a heading weekday word is dress and
+  keeps the record. One witnessed restatement (an R37-C glued
+  arm the new verdict supersedes) carried in the commit message.
+  Fuzz byte-identical. Suite 1090/0.
+- **R38-F (`3ce5e0a`, F7+F8+F9+F10 MINOR):** bare-path dress
+  parity with the grouped/quoted paths — a fully quote-wrapped
+  word is transparent to the mid-line plain-multi walk at the
+  adjudicated case; one shared stray-peel at both composition
+  call sites plus the day-slot period and the doubled day group;
+  the year-mark shed computed once from the peeled tail for both
+  outcome arms, with the `bare_date_mark_shed` doc sentence
+  corrected to name the shedding layer; one interior/edge
+  sentence mark is dress in the date-word predicates and the
+  tokenizer. Four in-pin count updates (7 → 6, readings
+  unchanged) disclosed in the writer note. Witness: full-suite
+  stash run, exactly the 4 new pins failing. Fuzz byte-identical.
+  Suite 1094/0.
+
+**Five-leg close evidence on the final code tree `3ce5e0a`**
+(verified firsthand by the coordinator seat): (1) local cold —
+coordinator's own detached run from a cleaned tree
+(`r38f-cold-verify.sh`; `r38f-cold-*.log`): suite 1094/0
+(SUITE_EXIT=0), clippy clean (CLIPPY_EXIT=0), booklet baseline
+exact in suite; (2) fuzz as claims, same run — verdict 40,000
+lines 0 panics, md5 `797758443d101f9339fdd778e14af430`;
+composition 497,024 lines 0 panics, md5
+`5868726a9f55b131d86e81070557c5f4` (the R38-C baseline); rights
+counters 5083 / 1024 / 5275, safety_flips=0 (M8 axes
+route-invariant, 19th consecutive round); every batch's cold
+bins byte-identical to its writer's warm runs; (3) hosted CI
+run 39943642335 — success on macOS, Windows, and Ubuntu;
+(4) desktop runner run 39943642274 — success; (5) Windows
+bundle run 39950735557 — success (Gate + bundle jobs).
+
+**Build-cache policy (charter, `docs/planning/convergence-loop.md`):**
+DISPOSITION: **clear-and-cold-start, on a latched trigger.**
+Readings over the round: 85% (audit start) → 86% before the
+R38-C clean → **87% at the R38-D completion (23:48 PDT,
+overnight window, the 87% line) — latched** → **87% again at
+the R38-E completion (01:21 PDT, overnight)** → 61–66% through
+R38-F after the other lane freed its cache externally. Under
+the latching rule the lower later readings do not clear the
+trigger. Executed at this confirmed completion: `cargo clean`
+and a full cold verification run on this close tree before
+round 39; the result is recorded in `round38-close-status.md`.
+
+**Boundary hygiene:** the round's eight stale probe directories
+(coord probe-r38b/c/e/f, lane probe38 ×3 + probe38lock) swept;
+lane reports, syntheses, batch records, writer notes, rulings
+and fuzz bins at their recorded md5s kept in the audit dir;
+registry cache untouched.
+
+**What round 39 inherits:** the audit of this tree; the carried
+doctrine question above (trailing / base-trailing governor
+split + mid-line form); the recorded F38-F residual (a peeled
+tail ending in a trailing group keeps the pre-existing
+one-peel depth); doctrine cell (a)(i)'s re-opening condition
+unchanged (a natural bulletin or a pin-family asymmetry in
+either direction re-opens it); the recycled-pid and F11 records
+stand as recorded. The exit bar is judged on round 39's audit
+of this tree. The Tier-2 final gate is not started here.

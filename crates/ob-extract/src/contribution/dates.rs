@@ -681,10 +681,16 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
 /// whole — sentence punctuation and a standalone
 /// separator token after the last group aside, as
 /// the standing trailing readers peel them —
-/// separated only by whitespace and commas, the
-/// separations the lone forms allow; every
-/// weekday group in it is judged on its contents
-/// against the BASE date, and the first
+/// separated only by whitespace, commas, and the
+/// sentence separators ";" "." ":", the
+/// separations the lone forms allow (round 38,
+/// R38-B, F2 — the lone garnish is judged wearing
+/// any of those marks, "Sunday after November 1,
+/// 2026 (Monday);" included, and its suffix peel
+/// below carries the typographic closing quote
+/// U+2019 the lone readers' trim sets carry);
+/// every weekday group in it is judged on its
+/// contents against the BASE date, and the first
 /// disagreeing one in written order records the
 /// lone form's mismatch. An agreeing (or
 /// weekday-free) sequence names nothing here, so
@@ -725,9 +731,15 @@ fn base_trailing_sequence_mismatch(
     }
     let mut rest = garnish.as_str();
     loop {
-        let peeled = rest
-            .trim_end()
-            .trim_end_matches(['.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}']);
+        // Round 38 (R38-B, F2): the peel set gains
+        // U+2019, as at the plain trailing walk —
+        // the lone base garnish wearing it ("Sunday
+        // after November 1, 2026 (Monday)’") is
+        // judged, and its pair U+201D was already
+        // here.
+        let peeled = rest.trim_end().trim_end_matches([
+            '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}',
+        ]);
         if peeled.len() != rest.len() {
             rest = peeled;
             continue;
@@ -751,7 +763,14 @@ fn base_trailing_sequence_mismatch(
     }
     for pair in spans.windows(2) {
         let gap = &rest[pair[0].1..pair[1].0];
-        if !gap.chars().all(|c| c == ',' || c.is_whitespace()) {
+        // Round 38 (R38-B, F2): a gap may carry the
+        // sentence separators ";" "." ":" and a
+        // U+2019 standing as the preceding group's
+        // suffix, as at the plain slots' walks.
+        if !gap
+            .chars()
+            .all(|c| matches!(c, ',' | ';' | '.' | ':' | '\u{2019}') || c.is_whitespace())
+        {
             return None;
         }
     }

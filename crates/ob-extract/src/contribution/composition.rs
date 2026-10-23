@@ -1702,24 +1702,33 @@ fn skip_framing_garnish(mut rest: &str) -> &str {
 /// of `text` (round 37, R37-D, F7): the framing
 /// garnish stack aside, two or more top-level
 /// groups standing at the line's head, separated
-/// only by whitespace and commas — glued, spaced,
-/// and comma-separated alike, the separations the
-/// lone forms allow. Returns the groups' inner
-/// texts in written order and the text standing
-/// after the sequence (its own leading separators
-/// taken off). A single group is the lone form,
-/// judged by the standing readers, and is not a
-/// sequence here; a bare word standing where a
-/// group would continue the sequence ends it, so
-/// the R5-D adjacency doctrine — a bare word
-/// between a weekday group and its date leaves the
-/// weekday ordinary text — is untouched by
-/// construction.
+/// only by whitespace, commas, and the sentence
+/// separators ";" "." ":" — glued, spaced, and
+/// comma-separated alike, the separations the lone
+/// forms allow (round 38, R38-B, F2: the lone
+/// forms judge a group followed by one of those
+/// marks, "(Monday); November 1, 2026", so a mark
+/// standing between the groups, or between the
+/// last group and the date, does not end the
+/// walk). A typographic closing quote (U+2019)
+/// standing as a group's suffix is taken off with
+/// the separators, as the lone forms peel it
+/// ("(Monday)’ November 1, 2026" is judged).
+/// Returns the groups' inner texts in written
+/// order and the text standing after the sequence
+/// (its own leading separators taken off). A
+/// single group is the lone form, judged by the
+/// standing readers, and is not a sequence here; a
+/// bare word standing where a group would continue
+/// the sequence ends it, so the R5-D adjacency
+/// doctrine — a bare word between a weekday group
+/// and its date leaves the weekday ordinary text —
+/// is untouched by construction.
 fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut inners: Vec<String> = Vec::new();
     loop {
-        rest = rest.trim_start_matches([' ', '\t', ',']);
+        rest = rest.trim_start_matches([' ', '\t', ',', ';', '.', ':', '\u{2019}']);
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             break;
         }
@@ -1736,7 +1745,7 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     if inners.len() < 2 {
         return None;
     }
-    let rest = rest.trim_start_matches([' ', '\t', ',']);
+    let rest = rest.trim_start_matches([' ', '\t', ',', ';', '.', ':', '\u{2019}']);
     Some((inners, rest))
 }
 
@@ -1746,10 +1755,12 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
 /// sentence punctuation and a trailing separator
 /// token after the last group aside, as the
 /// standing trailing readers peel them — separated
-/// only by whitespace and commas, in any spacing.
-/// Returns the run's inner texts in written order
-/// and the text standing before the run (its own
-/// trailing separators taken off). Groups standing
+/// only by whitespace, commas, and the sentence
+/// separators ";" "." ":" the lone forms allow,
+/// in any spacing (round 38, R38-B, F2). Returns
+/// the run's inner texts in written order and the
+/// text standing before the run (its own trailing
+/// separators taken off). Groups standing
 /// elsewhere in the line are not the run, and a
 /// single trailing group is the lone form.
 fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
@@ -1757,11 +1768,20 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     // front of, peeled as in
     // `spaced_trailing_weekday_garnish`: sentence
     // punctuation, then one separator token,
-    // alternating until neither peels.
+    // alternating until neither peels. Round 38
+    // (R38-B, F2): the peel set gains the
+    // typographic closing quote U+2019, which the
+    // lone readers' trim sets have carried since
+    // R35-C/R37-E — its pair U+201D was already
+    // here, and the lone trailing form wearing
+    // U+2019 ("November 1, 2026 (Monday)’") is
+    // judged.
     let mut end = text.len();
     loop {
         let peeled = text[..end]
-            .trim_end_matches(['.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}'])
+            .trim_end_matches([
+                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}',
+            ])
             .len();
         if peeled != end {
             end = peeled;
@@ -1789,12 +1809,19 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     }
     // The run is the suffix of the span list whose
     // members stand against each other with only
-    // whitespace and commas between them (a glued
-    // pair's gap is empty, and stands).
+    // whitespace, commas, and the sentence
+    // separators ";" "." ":" between them (a glued
+    // pair's gap is empty, and stands); a U+2019
+    // standing in a gap is the preceding group's
+    // suffix, peeled as at the sequence's end
+    // (round 38, R38-B, F2).
     let mut run_first = last;
     while run_first > 0 {
         let gap = &core[spans[run_first - 1].1..spans[run_first].0];
-        if !gap.chars().all(|c| c == ',' || c.is_whitespace()) {
+        if !gap
+            .chars()
+            .all(|c| matches!(c, ',' | ';' | '.' | ':' | '\u{2019}') || c.is_whitespace())
+        {
             break;
         }
         run_first -= 1;
@@ -1823,7 +1850,7 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
 fn strip_leading_group_run(text: &str) -> &str {
     let mut rest = skip_framing_garnish(text.trim_start());
     loop {
-        rest = rest.trim_start_matches([' ', '\t', ',']);
+        rest = rest.trim_start_matches([' ', '\t', ',', ';', '.', ':', '\u{2019}']);
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             return rest;
         }
@@ -1856,8 +1883,12 @@ fn strip_leading_group_run(text: &str) -> &str {
 /// groups (R37-C); this walk is the same step at
 /// the two garnish slots. A sequence is two or
 /// more groups standing at the slot, separated
-/// only by whitespace and commas as the lone forms
-/// allow; every weekday group in the sequence is
+/// only by whitespace, commas, and the sentence
+/// separators ";" "." ":" as the lone forms allow
+/// (round 38, R38-B, F2 — the walks' separator
+/// and suffix sets are the lone forms' sets,
+/// U+2019 in the suffix peels included); every
+/// weekday group in the sequence is
 /// judged on its contents against the date the
 /// slot frames — leading, the date standing after
 /// the sequence (words after the date are the

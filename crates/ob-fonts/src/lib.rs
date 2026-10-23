@@ -2289,6 +2289,129 @@ mod tests {
                 tiny.extend_from_slice(&real);
                 tiny
             }
+            "n1" => {
+                // Round 38, F1: the fake directory
+                // planted inside the last entry's
+                // local-header extra field — the filler
+                // local header gains a 4,000-byte extra
+                // field carrying the fake records and
+                // their end record; the filler's own
+                // local offset is unmoved, and the real
+                // directory stands 4,000 bytes later
+                // than the plain shape's.
+                let last = entries.len() - 1;
+                let extra_start = locals[last] as usize + 30 + entries[last].0.len();
+                let fake_cd_pos = extra_start + 100;
+                let mut extra = vec![b'E'; 4000];
+                extra[100..100 + fake_recs.len()].copy_from_slice(&fake_recs);
+                let planted_eocd = fake_eocd(fake_cd_pos);
+                extra[100 + fake_recs.len()..100 + fake_recs.len() + 22]
+                    .copy_from_slice(&planted_eocd);
+                let mut out = body[..extra_start].to_vec();
+                let extra_len_at = locals[last] as usize + 28;
+                out[extra_len_at..extra_len_at + 2].copy_from_slice(&4000u16.to_le_bytes());
+                out.extend_from_slice(&extra);
+                out.extend_from_slice(&body[extra_start..]);
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset + 4000,
+                    0,
+                    &[],
+                ));
+                out
+            }
+            "n2b" => {
+                // Round 38, F1: the fake directory
+                // planted contiguously inside the last
+                // record's central extra field.
+                let last = entries.len() - 1;
+                let name_len = entries[last].0.len();
+                let record_start = centrals.len() - 46 - name_len;
+                let fake_cd_pos = cd_offset as usize + record_start + 46 + name_len + 4 + 50;
+                let mut blob = vec![b'Z'; fake_recs.len() + 400];
+                blob[50..50 + fake_recs.len()].copy_from_slice(&fake_recs);
+                let planted_eocd = fake_eocd(fake_cd_pos);
+                blob[50 + fake_recs.len()..50 + fake_recs.len() + 22]
+                    .copy_from_slice(&planted_eocd);
+                let mut extra: Vec<u8> = Vec::new();
+                extra.extend_from_slice(&0x9999u16.to_le_bytes());
+                extra.extend_from_slice(&(blob.len() as u16).to_le_bytes());
+                extra.extend_from_slice(&blob);
+                let mut new_centrals = centrals.clone();
+                let extra_len_at = record_start + 30;
+                new_centrals[extra_len_at..extra_len_at + 2]
+                    .copy_from_slice(&(extra.len() as u16).to_le_bytes());
+                new_centrals.extend_from_slice(&extra);
+                let mut out = body;
+                out.extend_from_slice(&new_centrals);
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    new_centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &[],
+                ));
+                out
+            }
+            "n3b" => {
+                // Round 38, F1: the fake directory
+                // planted contiguously inside the last
+                // record's central comment field.
+                let last = entries.len() - 1;
+                let name_len = entries[last].0.len();
+                let record_start = centrals.len() - 46 - name_len;
+                let fake_cd_pos = cd_offset as usize + record_start + 46 + name_len + 50;
+                let mut blob = vec![b'Z'; fake_recs.len() + 400];
+                blob[50..50 + fake_recs.len()].copy_from_slice(&fake_recs);
+                let planted_eocd = fake_eocd(fake_cd_pos);
+                blob[50 + fake_recs.len()..50 + fake_recs.len() + 22]
+                    .copy_from_slice(&planted_eocd);
+                let mut new_centrals = centrals.clone();
+                let comment_len_at = record_start + 32;
+                new_centrals[comment_len_at..comment_len_at + 2]
+                    .copy_from_slice(&(blob.len() as u16).to_le_bytes());
+                new_centrals.extend_from_slice(&blob);
+                let mut out = body;
+                out.extend_from_slice(&new_centrals);
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    new_centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &[],
+                ));
+                out
+            }
+            "n4" => {
+                // Round 38, F1: the fake directory
+                // planted inside a digital-signature
+                // record's data, the record standing
+                // between the real directory and its
+                // end record; the declared directory
+                // size counts the central records only,
+                // the standing allowance's shape.
+                let fake_cd_pos = cd_offset as usize + centrals.len() + 6 + 100;
+                let mut sig_data = vec![b'S'; 4000];
+                sig_data[100..100 + fake_recs.len()].copy_from_slice(&fake_recs);
+                let planted_eocd = fake_eocd(fake_cd_pos);
+                sig_data[100 + fake_recs.len()..100 + fake_recs.len() + 22]
+                    .copy_from_slice(&planted_eocd);
+                let mut out = body;
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(b"PK\x05\x05");
+                out.extend_from_slice(&(sig_data.len() as u16).to_le_bytes());
+                out.extend_from_slice(&sig_data);
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &[],
+                ));
+                out
+            }
             _ => {
                 let mut out = body;
                 out.extend_from_slice(&centrals);
@@ -2331,6 +2454,62 @@ mod tests {
             ];
             let bytes = planted_directory_pack(&entries, shape);
             let dir = temp_dir(&format!("r37a-{shape}"));
+            let lib = FontLibrary::open(dir.clone()).expect("open");
+            let results = lib.add_zip_bytes(&bytes);
+            assert_eq!(
+                results.len(),
+                2,
+                "{shape}: one result per copy: {results:?}"
+            );
+            let first = results[0].as_ref().expect("the first copy lands");
+            let second = results[1].as_ref().expect("the second copy lands");
+            assert_eq!(first.file_name, "MyFont.ttf", "{shape}");
+            assert_eq!(
+                first.sha256,
+                inspect(&regular, "MyFont.ttf")
+                    .expect("inspect regular")
+                    .sha256,
+                "{shape}"
+            );
+            let bold_info = inspect(&bold, "MyFont.ttf").expect("inspect bold");
+            assert_eq!(second.sha256, bold_info.sha256, "{shape}");
+            let short: String = bold_info.sha256.chars().take(8).collect();
+            assert_eq!(second.file_name, format!("MyFont.ttf-{short}"), "{shape}");
+            assert_eq!(lib.read(first).expect("read first"), regular, "{shape}");
+            assert_eq!(lib.read(second).expect("read second"), bold, "{shape}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn r38a_a_directory_planted_in_a_local_extra_a_central_extra_a_central_comment_or_a_signature_record_never_steers(
+    ) {
+        // Round 38, F1 (red team RT38-1): a second
+        // self-consistent directory planted in a local
+        // header's extra field, in a central record's
+        // extra or comment field, or in a
+        // digital-signature record's data steered the
+        // pack the way round 37's vectors did — the
+        // round-37 spans covered an entry's payload
+        // only, so the scan judged the planted
+        // directory and only the Regular face landed.
+        // Standing is judged against the whole walked
+        // extent now: the real directory is judged in
+        // every shape, and both faces land, the first
+        // under the clean name and the second under
+        // its hashed name, exactly as the plain
+        // control lands them.
+        let regular = bundled("LiberationSans-Regular.ttf");
+        let bold = bundled("LiberationSans-Bold.ttf");
+        let filler = vec![b'A'; 2000];
+        for shape in ["plain", "n1", "n2b", "n3b", "n4"] {
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"MyFont.ttf", &regular),
+                (b"MyFont.ttf", &bold),
+                (b"filler.bin", filler.as_slice()),
+            ];
+            let bytes = planted_directory_pack(&entries, shape);
+            let dir = temp_dir(&format!("r38a-{shape}"));
             let lib = FontLibrary::open(dir.clone()).expect("open");
             let results = lib.add_zip_bytes(&bytes);
             assert_eq!(

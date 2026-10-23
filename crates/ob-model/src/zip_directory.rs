@@ -116,6 +116,24 @@
 //! archive's actual start, which a declared comment
 //! length reaching into that start cannot defeat.
 //!
+//! Round 38, F1: four more plant sites stood outside
+//! the round-37 spans, which covered an entry's
+//! payload (compressed data) only: a fake directory
+//! planted in a local header's extra field, in a
+//! central record's extra field, in a central
+//! record's comment field, or in a digital-signature
+//! record's data derived, stood earliest, and was
+//! judged while the reader served the real archive.
+//! Candidate standing is judged against the whole
+//! walked extent now (stated at `central_directory`):
+//! a candidate whose end record stands anywhere
+//! inside another standing candidate's walked spans
+//! — its entries' local headers whole as well as
+//! their payloads, its central records whole, and a
+//! signature record standing at its walk's end —
+//! cannot outrank the candidate that accounts for
+//! those bytes.
+//!
 //! This lives in ob-model, the lowest crate every zip
 //! door can reach, stated over raw bytes the way
 //! `read_capped` is stated over `Read`, so this crate
@@ -605,6 +623,98 @@ fn hunted_directory(bytes: &[u8], eocd: usize) -> Option<CentralDirectory> {
     None
 }
 
+/// The byte spans one candidate directory's walk
+/// accounts for whole (round 38, F1): each declared
+/// entry's local header whole — its fixed part, name,
+/// and extra field — together with the payload span
+/// the checked helper names; the central records
+/// whole, from the directory's first record to the
+/// walk's end, each record's header, name, extra, and
+/// comment included; and a digital-signature record
+/// standing at the walk's end, its header and data.
+/// The round-37 spans covered only the payloads
+/// (compressed data), so a directory planted in a
+/// local header's extra field, in a central record's
+/// extra or comment field, or in a signature record's
+/// data stood in no span and steered every door. A
+/// second end record standing inside one of these
+/// spans stands inside bytes this candidate's own
+/// walk accounts for.
+fn directory_walked_spans(bytes: &[u8], directory: &CentralDirectory) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut at = directory.cd_start;
+    let mut walked = true;
+    for _ in 0..directory.total {
+        let header_end = match at.checked_add(46) {
+            Some(end) => end,
+            None => {
+                walked = false;
+                break;
+            }
+        };
+        if header_end > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
+            walked = false;
+            break;
+        }
+        let name_len = usize::from(u16_at(bytes, at + 28));
+        let extra_len = usize::from(u16_at(bytes, at + 30));
+        let comment_len = usize::from(u16_at(bytes, at + 32));
+        let name_end = match header_end.checked_add(name_len) {
+            Some(end) => end,
+            None => {
+                walked = false;
+                break;
+            }
+        };
+        let extra_end = match name_end.checked_add(extra_len) {
+            Some(end) => end,
+            None => {
+                walked = false;
+                break;
+            }
+        };
+        if extra_end > bytes.len() {
+            walked = false;
+            break;
+        }
+        let header = &bytes[at..header_end];
+        let extra = &bytes[name_end..extra_end];
+        let mut spot = raw_spot(header, extra);
+        spot.local_offset = spot.local_offset.saturating_add(directory.archive_offset);
+        if let Some((data_start, data_end)) = payload_span(bytes, &spot) {
+            if let Ok(local) = usize::try_from(spot.local_offset) {
+                if local <= data_start {
+                    spans.push((local, data_start));
+                }
+                spans.push((data_start, data_end));
+            }
+        }
+        match extra_end.checked_add(comment_len) {
+            Some(next) => at = next,
+            None => {
+                walked = false;
+                break;
+            }
+        }
+    }
+    if walked {
+        spans.push((directory.cd_start, at));
+        if at < bytes.len() && bytes[at..].starts_with(b"PK\x05\x05") {
+            if let Some(header_end) = at.checked_add(6) {
+                if header_end <= bytes.len() {
+                    let data_len = usize::from(u16_at(bytes, at + 4));
+                    if let Some(sig_end) = header_end.checked_add(data_len) {
+                        if sig_end <= bytes.len() {
+                            spans.push((at, sig_end));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    spans
+}
+
 /// The byte spans one candidate directory's declared
 /// entries' payloads occupy in the file, per that
 /// candidate's own walk (round 37, F8): each central
@@ -749,6 +859,21 @@ fn zip64_structural_span(
 /// the bytes the comment claims are the later
 /// archive's own bytes, and an absorbed candidate's
 /// declared comment span subordinates nothing.
+///
+/// Round 38, F1: the structural spans are the whole
+/// walked extent now. A candidate whose end record
+/// stands anywhere inside another standing
+/// candidate's walked spans — the local headers whole
+/// (fixed part, name, and extra field) and payloads
+/// of the entries its own walk declares, its central
+/// records whole (header, name, extra, and comment),
+/// and a digital-signature record standing at its
+/// walk's end — cannot outrank the candidate that
+/// accounts for those bytes: a directory planted in
+/// a local header's extra field, a central record's
+/// extra or comment field, or a signature record's
+/// data is that archive's header, record, or
+/// signature bytes, not its directory.
 pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
     // Every candidate that derives, in file order,
     // with the span its declared comment covers:
@@ -789,6 +914,10 @@ pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
         .iter()
         .map(|(eocd, _, _, directory)| zip64_structural_span(bytes, *eocd, directory))
         .collect();
+    let walked_spans: Vec<Vec<(usize, usize)>> = derived
+        .iter()
+        .map(|(_, _, _, directory)| directory_walked_spans(bytes, directory))
+        .collect();
     for (i, (at, _, _, directory)) in derived.iter().enumerate() {
         if absorbed[i] {
             continue;
@@ -808,6 +937,9 @@ pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
                 && (payload_spans[j]
                     .iter()
                     .any(|(start, end)| at >= start && at < end)
+                    || walked_spans[j]
+                        .iter()
+                        .any(|(start, end)| at >= start && at < end)
                     || zip64_spans[j].is_some_and(|(start, end)| *at >= start && *at < end))
         });
         if in_structural {
@@ -2241,6 +2373,306 @@ mod tests {
                 spots[1].1.comp_size, 12,
                 "{shape}: the second copy's own record stands in the judged directory"
             );
+            if archive_offset > 0 {
+                assert_eq!(
+                    &*prefix_free(&bytes),
+                    &bytes[archive_offset as usize..],
+                    "{shape}: the prefix-free view is the real archive"
+                );
+            }
+        }
+    }
+
+    /// The round-38 walked-extent crafts (red team
+    /// RT38-1), assembled byte by byte over the same
+    /// Stored entries as the round-37 crafter: per
+    /// `shape` — "plain" nothing more; "n1" a complete
+    /// fake directory (the first copies' records plus
+    /// its own end record) planted inside the filler
+    /// entry's local-header extra field (4,000 bytes
+    /// the real local header declares); "n2b" that
+    /// directory planted contiguously inside the
+    /// filler record's central extra field; "n3b" the
+    /// same plant inside its central comment field;
+    /// "n4" the same plant inside a digital-signature
+    /// record's data, the record standing between the
+    /// real directory and its end record in the
+    /// standing allowance's shape (the declared
+    /// directory size counts the central records only);
+    /// "n2split" the split form — the fake directory
+    /// in the filler's payload, its end record moved
+    /// into the filler record's central extra field;
+    /// "n5" the real archive standing behind a chain
+    /// of two tiny prefix archives, the first declaring
+    /// a 400-byte comment reaching into what follows.
+    /// Returns the bytes, the real directory's start,
+    /// and the real archive offset.
+    fn walked_plant_archive(shape: &str) -> (Vec<u8>, usize, u64) {
+        let entries: [(&[u8], &[u8]); 3] = [
+            (b"a.txt", b"first copy"),
+            (b"a.txt", b"second copy!"),
+            (b"filler.bin", &[b'A'; 600]),
+        ];
+        let central =
+            |name: &[u8], data: &[u8], local_offset: u32, extra: &[u8], comment: &[u8]| {
+                let mut rec: Vec<u8> = Vec::new();
+                rec.extend_from_slice(b"PK\x01\x02");
+                rec.extend_from_slice(&45u16.to_le_bytes());
+                rec.extend_from_slice(&20u16.to_le_bytes());
+                rec.extend_from_slice(&0u16.to_le_bytes());
+                rec.extend_from_slice(&0u16.to_le_bytes());
+                rec.extend_from_slice(&0u16.to_le_bytes());
+                rec.extend_from_slice(&0u16.to_le_bytes());
+                rec.extend_from_slice(&0u32.to_le_bytes());
+                rec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                rec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                rec.extend_from_slice(&(name.len() as u16).to_le_bytes());
+                rec.extend_from_slice(&(extra.len() as u16).to_le_bytes());
+                rec.extend_from_slice(&(comment.len() as u16).to_le_bytes());
+                rec.extend_from_slice(&0u16.to_le_bytes());
+                rec.extend_from_slice(&0u16.to_le_bytes());
+                rec.extend_from_slice(&0u32.to_le_bytes());
+                rec.extend_from_slice(&local_offset.to_le_bytes());
+                rec.extend_from_slice(name);
+                rec.extend_from_slice(extra);
+                rec.extend_from_slice(comment);
+                rec
+            };
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        let mut filler_extra_start = 0usize;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            locals.push(body.len() as u32);
+            let local_extra: usize = if shape == "n1" && i + 1 == entries.len() {
+                4000
+            } else {
+                0
+            };
+            body.extend_from_slice(b"PK\x03\x04");
+            body.extend_from_slice(&20u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            body.extend_from_slice(&(local_extra as u16).to_le_bytes());
+            body.extend_from_slice(name);
+            if local_extra > 0 {
+                filler_extra_start = body.len();
+                body.extend_from_slice(&vec![b'E'; local_extra]);
+            }
+            body.extend_from_slice(data);
+        }
+        let mut fake_recs: Vec<u8> = Vec::new();
+        let mut fake_total: u16 = 0;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            if entries[..i].iter().any(|(other, _)| other == name) {
+                continue;
+            }
+            fake_recs.extend_from_slice(&central(name, data, locals[i], &[], &[]));
+            fake_total += 1;
+        }
+        let fake_eocd =
+            |cd_pos: usize| plain_eocd(fake_total, fake_recs.len() as u32, cd_pos as u32, 0, &[]);
+        if shape == "n1" {
+            let fake_cd_pos = filler_extra_start + 100;
+            body[fake_cd_pos..fake_cd_pos + fake_recs.len()].copy_from_slice(&fake_recs);
+            let planted_eocd = fake_eocd(fake_cd_pos);
+            let eocd_at = fake_cd_pos + fake_recs.len();
+            body[eocd_at..eocd_at + 22].copy_from_slice(&planted_eocd);
+        }
+        if shape == "n2split" {
+            let payload_at = locals[2] as usize + 30 + entries[2].0.len();
+            let fake_cd_pos = payload_at + 100;
+            body[fake_cd_pos..fake_cd_pos + fake_recs.len()].copy_from_slice(&fake_recs);
+        }
+        let cd_offset = body.len();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            let last = i + 1 == entries.len();
+            let (extra, comment): (Vec<u8>, Vec<u8>) = if last && shape == "n2b" {
+                let fake_cd_pos = cd_offset + centrals.len() + 46 + name.len() + 4 + 50;
+                let mut blob = vec![b'Z'; fake_recs.len() + 400];
+                blob[50..50 + fake_recs.len()].copy_from_slice(&fake_recs);
+                let planted_eocd = fake_eocd(fake_cd_pos);
+                blob[50 + fake_recs.len()..50 + fake_recs.len() + 22]
+                    .copy_from_slice(&planted_eocd);
+                let mut extra = Vec::new();
+                extra.extend_from_slice(&0x9999u16.to_le_bytes());
+                extra.extend_from_slice(&(blob.len() as u16).to_le_bytes());
+                extra.extend_from_slice(&blob);
+                (extra, Vec::new())
+            } else if last && shape == "n3b" {
+                let fake_cd_pos = cd_offset + centrals.len() + 46 + name.len() + 50;
+                let mut blob = vec![b'Z'; fake_recs.len() + 400];
+                blob[50..50 + fake_recs.len()].copy_from_slice(&fake_recs);
+                let planted_eocd = fake_eocd(fake_cd_pos);
+                blob[50 + fake_recs.len()..50 + fake_recs.len() + 22]
+                    .copy_from_slice(&planted_eocd);
+                (Vec::new(), blob)
+            } else if last && shape == "n2split" {
+                let payload_at = locals[2] as usize + 30 + entries[2].0.len();
+                let fake_cd_pos = payload_at + 100;
+                let mut blob = vec![b'X'; 3000];
+                let planted_eocd = fake_eocd(fake_cd_pos);
+                blob[100..122].copy_from_slice(&planted_eocd);
+                let mut extra = Vec::new();
+                extra.extend_from_slice(&0x9999u16.to_le_bytes());
+                extra.extend_from_slice(&(blob.len() as u16).to_le_bytes());
+                extra.extend_from_slice(&blob);
+                (extra, Vec::new())
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            centrals.extend_from_slice(&central(name, data, locals[i], &extra, &comment));
+        }
+        match shape {
+            "n4" => {
+                let mut sig_data = vec![b'S'; 4000];
+                let fake_cd_pos = cd_offset + centrals.len() + 6 + 100;
+                sig_data[100..100 + fake_recs.len()].copy_from_slice(&fake_recs);
+                let planted_eocd = fake_eocd(fake_cd_pos);
+                sig_data[100 + fake_recs.len()..100 + fake_recs.len() + 22]
+                    .copy_from_slice(&planted_eocd);
+                let mut out = body;
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(b"PK\x05\x05");
+                out.extend_from_slice(&(sig_data.len() as u16).to_le_bytes());
+                out.extend_from_slice(&sig_data);
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset as u32,
+                    0,
+                    &[],
+                ));
+                (out, cd_offset, 0)
+            }
+            "n5" => {
+                let mut real = body;
+                real.extend_from_slice(&centrals);
+                real.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset as u32,
+                    0,
+                    &[],
+                ));
+                let tiny_archive = |comment_len: u16| {
+                    let tiny_name: &[u8] = b"tiny.txt";
+                    let tiny_data: &[u8] = b"tiny";
+                    let mut tiny: Vec<u8> = Vec::new();
+                    tiny.extend_from_slice(b"PK\x03\x04");
+                    tiny.extend_from_slice(&20u16.to_le_bytes());
+                    tiny.extend_from_slice(&0u16.to_le_bytes());
+                    tiny.extend_from_slice(&0u16.to_le_bytes());
+                    tiny.extend_from_slice(&0u16.to_le_bytes());
+                    tiny.extend_from_slice(&0u16.to_le_bytes());
+                    tiny.extend_from_slice(&0u32.to_le_bytes());
+                    tiny.extend_from_slice(&(tiny_data.len() as u32).to_le_bytes());
+                    tiny.extend_from_slice(&(tiny_data.len() as u32).to_le_bytes());
+                    tiny.extend_from_slice(&(tiny_name.len() as u16).to_le_bytes());
+                    tiny.extend_from_slice(&0u16.to_le_bytes());
+                    tiny.extend_from_slice(tiny_name);
+                    tiny.extend_from_slice(tiny_data);
+                    let tiny_cd_offset = tiny.len();
+                    let tiny_central = central(tiny_name, tiny_data, 0, &[], &[]);
+                    tiny.extend_from_slice(&tiny_central);
+                    tiny.extend_from_slice(b"PK\x05\x06");
+                    tiny.extend_from_slice(&0u16.to_le_bytes());
+                    tiny.extend_from_slice(&0u16.to_le_bytes());
+                    tiny.extend_from_slice(&1u16.to_le_bytes());
+                    tiny.extend_from_slice(&1u16.to_le_bytes());
+                    tiny.extend_from_slice(&(tiny_central.len() as u32).to_le_bytes());
+                    tiny.extend_from_slice(&(tiny_cd_offset as u32).to_le_bytes());
+                    tiny.extend_from_slice(&comment_len.to_le_bytes());
+                    tiny
+                };
+                let mut out = tiny_archive(400);
+                out.extend_from_slice(&tiny_archive(0));
+                let archive_offset = out.len() as u64;
+                let real_cd_start = out.len() + cd_offset;
+                out.extend_from_slice(&real);
+                (out, real_cd_start, archive_offset)
+            }
+            _ => {
+                let mut out = body;
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset as u32,
+                    0,
+                    &[],
+                ));
+                (out, cd_offset, 0)
+            }
+        }
+    }
+
+    #[test]
+    fn a_directory_planted_in_a_local_extra_a_central_extra_a_central_comment_or_a_signature_record_never_steers(
+    ) {
+        // Round 38, F1 (red team RT38-1): round 37's
+        // structural spans covered a candidate's
+        // declared comment, its entries' payloads
+        // (compressed data only), and its zip64 end
+        // structures. Four byte regions no span covered
+        // remained — a local header's extra field, a
+        // central record's extra field, a central
+        // record's comment field, and a signature
+        // record's data — and a complete fake directory
+        // planted contiguously in any of them derived,
+        // stood earliest, and was judged while the
+        // reader served the real archive. Standing is
+        // judged against the whole walked extent now:
+        // the real directory is judged in every shape,
+        // the plain control included, the second copy
+        // under its own record.
+        for shape in ["plain", "n1", "n2b", "n3b", "n4"] {
+            let (bytes, cd_start, archive_offset) = walked_plant_archive(shape);
+            let directory = central_directory(&bytes).expect("the real directory derives");
+            assert_eq!(directory.archive_offset, archive_offset, "{shape}");
+            assert_eq!(directory.total, 3, "{shape}");
+            assert_eq!(directory.cd_start, cd_start, "{shape}");
+            let spots = central_spots(&bytes);
+            let names: Vec<&str> = spots.iter().map(|(name, _)| name.as_str()).collect();
+            assert_eq!(names, ["a.txt", "a.txt", "filler.bin"], "{shape}");
+            assert_eq!(spots[0].1.comp_size, 10, "{shape}: the first copy's record");
+            assert_eq!(
+                spots[1].1.comp_size, 12,
+                "{shape}: the second copy's own record stands in the judged directory"
+            );
+        }
+    }
+
+    #[test]
+    fn split_plants_derive_nothing_and_the_two_prefix_chain_absorbs_whole() {
+        // The held lines beside F1, stated on the same
+        // crafts: a fake directory whose end record
+        // stands away from its records (the directory
+        // in a payload, the end record in a central
+        // extra field) derives nothing at all — the
+        // hunt's frame anchor forces the directory to
+        // stand immediately before its end record — so
+        // the real directory is judged; and a chain of
+        // two tiny prefix archives before the real one
+        // is absorbed whole, the first archive's
+        // 400-byte declared comment reaching into what
+        // follows notwithstanding, so the real directory
+        // is judged at its own offset.
+        for shape in ["n2split", "n5"] {
+            let (bytes, cd_start, archive_offset) = walked_plant_archive(shape);
+            let directory = central_directory(&bytes).expect("the real directory derives");
+            assert_eq!(directory.archive_offset, archive_offset, "{shape}");
+            assert_eq!(directory.total, 3, "{shape}");
+            assert_eq!(directory.cd_start, cd_start, "{shape}");
+            let spots = central_spots(&bytes);
+            let names: Vec<&str> = spots.iter().map(|(name, _)| name.as_str()).collect();
+            assert_eq!(names, ["a.txt", "a.txt", "filler.bin"], "{shape}");
             if archive_offset > 0 {
                 assert_eq!(
                     &*prefix_free(&bytes),

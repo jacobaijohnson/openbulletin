@@ -27120,3 +27120,455 @@ fn r38b_sequence_suffix_peels_take_the_typographic_closing_quote() {
         assert_eq!(m.date, nov(1), "{line}");
     }
 }
+
+// Round 38 (R38-C, F3 MAJOR = red team RT38-2): the
+// R36-D / R37-B group judgment
+// (`group_beside_relative_core`) was consulted at the
+// leading slot and at the non-leading pre-phrase slot,
+// but not at two further positions where the plain
+// reading adopts a bracket/brace group's date as a
+// plain framed signal while the paren twin reads
+// nothing: between a Sunday-after phrase's own words
+// ("Sunday [November 8, 2026] after November 1, 2026"
+// served November 8 with the base demoted to a
+// second-date note; the disagreeing form adopted
+// November 15; the base-restating form adopted
+// November 1), and after a weekday word before a
+// relative phrase ("Sunday [November 8, 2026] next
+// Sunday" adopted November 8). The judgment is now
+// consulted at those interior positions as at the
+// non-leading pre-phrase slot, in the same one place:
+// the bracket/brace group there takes the paren
+// reading — silence, the phrase's own reading
+// governing — and is never adopted. Every pin below
+// asserts the bracket/brace line's FULL record equals
+// its paren twin's (the r34e helpers), on both routes
+// (For / Keep-through), with the headline forms stated
+// outright. The pins run at the suite's today,
+// 2026-10-16, so "next Sunday" resolves October 25,
+// "this Sunday" October 18, the Sunday after next
+// Sunday November 1, and the Sunday after
+// November 1, 2026 is November 8.
+
+#[test]
+fn r38c_split_sunday_after_group_takes_the_paren_reading_in_every_pair() {
+    // The split-phrase family: a date group standing
+    // between the phrase's "Sunday" and its "after" —
+    // naming the resolution (November 8), another
+    // Sunday (November 15), and the base itself
+    // (November 1, the restating form) — plus the
+    // short form, doubled wrappers, the phrase's own
+    // framing stack ("the Sunday" / "on Sunday"), and
+    // ordinary lead-in words before the phrase, which
+    // the Sunday-after reader itself walks past.
+    for (wrapped, paren) in [
+        (
+            "Sunday [November 8, 2026] after November 1, 2026",
+            "Sunday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday {November 8, 2026} after November 1, 2026",
+            "Sunday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday [November 15, 2026] after November 1, 2026",
+            "Sunday (November 15, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday {November 15, 2026} after November 1, 2026",
+            "Sunday (November 15, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday [November 1, 2026] after November 1, 2026",
+            "Sunday (November 1, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday {November 1, 2026} after November 1, 2026",
+            "Sunday (November 1, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday [November 8] after November 1, 2026",
+            "Sunday (November 8) after November 1, 2026",
+        ),
+        (
+            "Sunday {November 8} after November 1, 2026",
+            "Sunday (November 8) after November 1, 2026",
+        ),
+        (
+            "Sunday [[November 8, 2026]] after November 1, 2026",
+            "Sunday ((November 8, 2026)) after November 1, 2026",
+        ),
+        (
+            "Sunday {{November 8, 2026}} after November 1, 2026",
+            "Sunday ((November 8, 2026)) after November 1, 2026",
+        ),
+        (
+            "the Sunday [November 8, 2026] after November 1, 2026",
+            "the Sunday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "the Sunday {November 8, 2026} after November 1, 2026",
+            "the Sunday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "on Sunday [November 8, 2026] after November 1, 2026",
+            "on Sunday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "choir Sunday [November 8, 2026] after November 1, 2026",
+            "choir Sunday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "notes Sunday {November 8, 2026} after November 1, 2026",
+            "notes Sunday (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "words for Sunday [November 8, 2026] after November 1, 2026",
+            "words for Sunday (November 8, 2026) after November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(wrapped, paren);
+        r34e_keep_twin(wrapped, paren);
+    }
+    // Stacked groups at the split position, agreeing,
+    // disagreeing, and mixed pairs: the paren stacks
+    // are silent, so no stacked-agreeing adoption
+    // stands at this slot (the R37-B exception belongs
+    // to the pre-phrase slot, where the stacks adopt
+    // in the paren form's own mixed pairs).
+    for (wrapped, paren) in [
+        (
+            "Sunday [November 8, 2026] [November 8, 2026] after November 1, 2026",
+            "Sunday (November 8, 2026) (November 8, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday [November 8, 2026] [November 15, 2026] after November 1, 2026",
+            "Sunday (November 8, 2026) (November 15, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday [November 8, 2026] (November 15, 2026) after November 1, 2026",
+            "Sunday (November 8, 2026) (November 15, 2026) after November 1, 2026",
+        ),
+        (
+            "Sunday (November 8, 2026) [November 15, 2026] after November 1, 2026",
+            "Sunday (November 8, 2026) (November 15, 2026) after November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(wrapped, paren);
+        r34e_keep_twin(wrapped, paren);
+    }
+    // A trailing weekday garnish after the base, and
+    // a trailing group after the phrase: the garnish
+    // forms take the paren silence, and beside a
+    // trailing group the For route is silent while
+    // the Keep-through line stands the trailing
+    // group, in every pair.
+    for (wrapped, paren) in [
+        (
+            "Sunday [November 8, 2026] after November 1, 2026 Monday",
+            "Sunday (November 8, 2026) after November 1, 2026 Monday",
+        ),
+        (
+            "Sunday [November 8, 2026] after November 1, 2026 Sunday",
+            "Sunday (November 8, 2026) after November 1, 2026 Sunday",
+        ),
+        (
+            "Sunday [November 8, 2026] after November 1, 2026 (November 15, 2026)",
+            "Sunday (November 8, 2026) after November 1, 2026 (November 15, 2026)",
+        ),
+        (
+            "Sunday {November 8, 2026} after November 1, 2026 (November 15, 2026)",
+            "Sunday (November 8, 2026) after November 1, 2026 (November 15, 2026)",
+        ),
+    ] {
+        r34e_for_twin(wrapped, paren);
+        r34e_keep_twin(wrapped, paren);
+    }
+    // The paren reading stated outright: total
+    // silence on the For route — no date, no memory,
+    // no parenthesized date, no second date — and
+    // the Keep-through line keeps nothing.
+    let text =
+        "For Sunday: Sunday (November 8, 2026) after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the split line reads no date");
+    assert_eq!(c.for_sunday_in_words, None, "and remembers nothing");
+    assert_eq!(
+        c.for_sunday_after_in_words, None,
+        "and remembers nothing in after-words"
+    );
+    assert_eq!(
+        c.for_sunday_parenthesized_date, None,
+        "and surfaces no parenthesized date"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "and names no second date"
+    );
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday (November 8, 2026) after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "the split keep line keeps nothing");
+    assert_eq!(
+        c.keep_through_second_dates,
+        Vec::<SimpleDate>::new(),
+        "with no second date from the base"
+    );
+    // Beside a trailing group the keep-through line
+    // stands the trailing group, stated outright.
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday (November 8, 2026) after November 1, 2026 (November 15, 2026)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(15)),
+        "the keep line stands the trailing group"
+    );
+    // The clean phrase is unmoved: it resolves
+    // November 8 on both routes.
+    let text = "For Sunday: Sunday after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)), "the clean phrase resolves");
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(8)),
+        "the clean keep phrase resolves"
+    );
+}
+
+#[test]
+fn r38c_group_after_a_weekday_word_takes_the_paren_reading_in_every_pair() {
+    // The after-weekday-word family: a date group
+    // standing after the weekday word "Sunday" (with
+    // its framing stack) and before a relative phrase
+    // — "next Sunday", "this Sunday", and the
+    // Sunday-after relative — naming the resolution,
+    // another Sunday, and the relative base.
+    for (wrapped, paren) in [
+        (
+            "Sunday [November 8, 2026] next Sunday",
+            "Sunday (November 8, 2026) next Sunday",
+        ),
+        (
+            "Sunday {November 8, 2026} next Sunday",
+            "Sunday (November 8, 2026) next Sunday",
+        ),
+        (
+            "Sunday [October 25, 2026] next Sunday",
+            "Sunday (October 25, 2026) next Sunday",
+        ),
+        (
+            "Sunday {October 25, 2026} next Sunday",
+            "Sunday (October 25, 2026) next Sunday",
+        ),
+        (
+            "Sunday [November 15, 2026] next Sunday",
+            "Sunday (November 15, 2026) next Sunday",
+        ),
+        (
+            "Sunday [November 8] next Sunday",
+            "Sunday (November 8) next Sunday",
+        ),
+        (
+            "Sunday [October 25] next Sunday",
+            "Sunday (October 25) next Sunday",
+        ),
+        (
+            "Sunday [[November 8, 2026]] next Sunday",
+            "Sunday ((November 8, 2026)) next Sunday",
+        ),
+        (
+            "Sunday {{November 8, 2026}} next Sunday",
+            "Sunday ((November 8, 2026)) next Sunday",
+        ),
+        (
+            "Sunday [November 8, 2026] this Sunday",
+            "Sunday (November 8, 2026) this Sunday",
+        ),
+        (
+            "Sunday {November 8, 2026} this Sunday",
+            "Sunday (November 8, 2026) this Sunday",
+        ),
+        (
+            "Sunday [October 18, 2026] this Sunday",
+            "Sunday (October 18, 2026) this Sunday",
+        ),
+        (
+            "Sunday [November 1, 2026] the Sunday after next Sunday",
+            "Sunday (November 1, 2026) the Sunday after next Sunday",
+        ),
+        (
+            "Sunday {November 1, 2026} the Sunday after next Sunday",
+            "Sunday (November 1, 2026) the Sunday after next Sunday",
+        ),
+        (
+            "Sunday [October 25, 2026] the Sunday after next Sunday",
+            "Sunday (October 25, 2026) the Sunday after next Sunday",
+        ),
+        (
+            "Sunday [November 8, 2026] the Sunday after next Sunday",
+            "Sunday (November 8, 2026) the Sunday after next Sunday",
+        ),
+        (
+            "the Sunday [November 8, 2026] next Sunday",
+            "the Sunday (November 8, 2026) next Sunday",
+        ),
+        (
+            "on Sunday [November 8, 2026] next Sunday",
+            "on Sunday (November 8, 2026) next Sunday",
+        ),
+        (
+            "Sunday [November 8, 2026] next Sunday Monday",
+            "Sunday (November 8, 2026) next Sunday Monday",
+        ),
+    ] {
+        r34e_for_twin(wrapped, paren);
+        r34e_keep_twin(wrapped, paren);
+    }
+    // Stacked groups after the weekday word,
+    // agreeing, disagreeing, and mixed pairs: the
+    // paren stacks are silent, so no stacked-agreeing
+    // adoption stands at this slot either.
+    for (wrapped, paren) in [
+        (
+            "Sunday [October 25, 2026] [October 25, 2026] next Sunday",
+            "Sunday (October 25, 2026) (October 25, 2026) next Sunday",
+        ),
+        (
+            "Sunday [November 8, 2026] [November 15, 2026] next Sunday",
+            "Sunday (November 8, 2026) (November 15, 2026) next Sunday",
+        ),
+        (
+            "Sunday (October 25, 2026) [October 25, 2026] next Sunday",
+            "Sunday (October 25, 2026) (October 25, 2026) next Sunday",
+        ),
+        (
+            "Sunday [October 25, 2026] (October 25, 2026) next Sunday",
+            "Sunday (October 25, 2026) (October 25, 2026) next Sunday",
+        ),
+        (
+            "Sunday [November 8, 2026] (November 15, 2026) next Sunday",
+            "Sunday (November 8, 2026) (November 15, 2026) next Sunday",
+        ),
+    ] {
+        r34e_for_twin(wrapped, paren);
+        r34e_keep_twin(wrapped, paren);
+    }
+    // A trailing group after the phrase: the For
+    // route is silent and the Keep-through line
+    // stands the trailing group, in every pair.
+    for (wrapped, paren) in [
+        (
+            "Sunday [November 8, 2026] next Sunday (November 15, 2026)",
+            "Sunday (November 8, 2026) next Sunday (November 15, 2026)",
+        ),
+        (
+            "Sunday {November 8, 2026} next Sunday (November 15, 2026)",
+            "Sunday (November 8, 2026) next Sunday (November 15, 2026)",
+        ),
+    ] {
+        r34e_for_twin(wrapped, paren);
+        r34e_keep_twin(wrapped, paren);
+    }
+    // The paren reading stated outright: total
+    // silence on the For route, and the Keep-through
+    // line keeps nothing.
+    let text = "For Sunday: Sunday (November 8, 2026) next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the after-weekday line reads no date");
+    assert_eq!(c.for_sunday_in_words, None, "and remembers nothing");
+    assert_eq!(
+        c.for_sunday_parenthesized_date, None,
+        "and surfaces no parenthesized date"
+    );
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "and names no second date"
+    );
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday (November 8, 2026) next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through, None,
+        "the after-weekday keep line keeps nothing"
+    );
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday (November 8, 2026) next Sunday (November 15, 2026)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(15)),
+        "the keep line stands the trailing group"
+    );
+}
+
+#[test]
+fn r38c_held_neighbours_at_the_interior_slots_keep_their_readings() {
+    // The held neighbour from the RT38-2 sweep, stated
+    // unchanged: a governor group at the split
+    // position is garnish in both pairs — silent on
+    // both routes, in every pair — and the same holds
+    // for a governor group after the weekday word and
+    // an inert group at the split position.
+    for line in [
+        "Sunday (cancelled) after November 1, 2026",
+        "Sunday [cancelled] after November 1, 2026",
+        "Sunday {cancelled} after November 1, 2026",
+        "Sunday (cancelled) next Sunday",
+        "Sunday [cancelled] next Sunday",
+        "Sunday {cancelled} next Sunday",
+        "Sunday (notes) after November 1, 2026",
+        "Sunday [notes] after November 1, 2026",
+        "Sunday {notes} after November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date on the For route");
+        assert_eq!(c.for_sunday_in_words, None, "{line}: no memory");
+        assert_eq!(c.for_sunday_after_in_words, None, "{line}: no after-memory");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: nothing kept");
+    }
+    // A weekday-only group at the split position is
+    // twin-equal standing behaviour, unmoved: the
+    // phrase resolves November 8 in every pair.
+    for line in [
+        "Sunday (Sunday) after November 1, 2026",
+        "Sunday [Sunday] after November 1, 2026",
+        "Sunday {Sunday} after November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: the phrase resolves");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{line}: the keep phrase resolves"
+        );
+    }
+    // A group standing between a relative phrase's
+    // own words ("next … Sunday") is silent in every
+    // pair, as the red team's held family recorded:
+    // unmoved by the interior judgment.
+    for line in [
+        "next (November 8, 2026) Sunday",
+        "next [November 8, 2026] Sunday",
+        "next {November 8, 2026} Sunday",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date on the For route");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: nothing kept");
+    }
+}

@@ -5666,6 +5666,29 @@ pub(super) fn composition_segment_weekday_mismatch(
 /// their standing reading — that date is adopted in
 /// every pair form — so the judgment does not fire
 /// there.
+/// Round 38 (R38-C, F3): two further positions take
+/// the same judgment. A group standing after a
+/// weekday word before the phrase ("Sunday
+/// [November 8, 2026] next Sunday") escaped the
+/// non-leading check because the weekday word is
+/// the Sunday the phrase names: its one plain
+/// signal is the bare-Sunday signal the word itself
+/// spawns, the phrase's own material, not a signal
+/// standing beside the phrase — so a prefix that is
+/// only that word (with its "on"/"the" framing
+/// stack) does not disarm the judgment, and the
+/// stacked agreeing exception, whose adopting
+/// stacks stand at the signal-free prefixes, does
+/// not extend there (at this slot the paren stacks
+/// are silent, agreeing, disagreeing, and mixed
+/// alike). And a date group standing between a
+/// Sunday-after phrase's own words ("Sunday
+/// [November 8, 2026] after November 1, 2026", the
+/// phrase's lead-in words and all) is judged by
+/// `group_split_sunday_after_phrase` below: the
+/// phrase there is absolute, not relative, so it is
+/// a second shape beside this one's, consulted in
+/// this same place.
 pub(super) fn group_beside_relative_core(
     text: &str,
     today: SimpleDate,
@@ -5723,18 +5746,43 @@ pub(super) fn group_beside_relative_core(
         // above, and a relative phrase standing
         // before the group is the plain reading's
         // restated-relative shape, not this one.
+        // Round 38 (R38-C, F3): the one prefix whose
+        // signal is the phrase's own material — the
+        // weekday word "Sunday", with its "on"/"the"
+        // framing stack — is not a signal standing
+        // before the group: the word spawns a
+        // bare-Sunday signal by standing there at
+        // all, and a group after it ("Sunday
+        // [November 8, 2026] next Sunday") is at the
+        // phrase's interior, judged as the groups at
+        // the signal-free prefixes are.
         let prefix = segments[..p].join(" ");
         let prefix_tokens: Vec<&str> = prefix.split_whitespace().collect();
         let prefix_cleaned: Vec<String> = segment_tokens(&prefix_tokens);
         let prefix_signals = scan_plain_signals(&prefix_tokens, &prefix_cleaned, today, anchor);
-        if !prefix_signals.is_empty() {
+        let prefix_words: Vec<&str> = prefix_cleaned
+            .iter()
+            .map(String::as_str)
+            .filter(|w| !w.is_empty())
+            .collect();
+        let mut word_at = 0usize;
+        while matches!(prefix_words.get(word_at), Some(&"on") | Some(&"the")) {
+            word_at += 1;
+        }
+        let weekday_word_prefix =
+            prefix_words.len() - word_at == 1 && prefix_words[word_at] == "sunday";
+        if !prefix_signals.is_empty() && !weekday_word_prefix {
             return false;
         }
         // The stacked agreeing exception: every
         // group standing before the phrase carries
-        // the same date (see the head comment).
+        // the same date (see the head comment). The
+        // exception is the signal-free prefixes'
+        // standing reading; it does not extend to
+        // the weekday-word prefix, where no stack
+        // adopts in the paren form (round 38).
         let groups_before = &spans[..p];
-        if groups_before.len() >= 2 {
+        if prefix_signals.is_empty() && groups_before.len() >= 2 {
             let mut dates = groups_before
                 .iter()
                 .map(|(start, end)| group_date(&text[start + 1..end - 1], today, today));
@@ -5745,6 +5793,124 @@ pub(super) fn group_beside_relative_core(
             }
         }
         return true;
+    }
+    // The split-phrase position (round 38): a date
+    // group standing between a Sunday-after phrase's
+    // own words, judged by the helper below.
+    if group_split_sunday_after_phrase(text, &spans, today, anchor) {
+        return true;
+    }
+    false
+}
+
+/// Whether a date group stands between a Sunday-after
+/// phrase's own words in `text` (round 38, R38-C, F3):
+/// the phrase's "Sunday" and "after" are consecutive
+/// plain words with a group standing between them, at
+/// least one of the groups there carries a date, the
+/// words after "after" are exactly the phrase's base
+/// (one trailing weekday garnish word aside), no group
+/// stands at or after the "after", and the words
+/// before the "Sunday" are ordinary lead-in — the
+/// framing stack and plain words, never a weekday word
+/// or a relative phrase's "next"/"this", whose lines
+/// are the standing readers' own shapes (a preceding
+/// relative phrase reads twin-equal in every pair, and
+/// a framing weekday is the weekday machinery's). A
+/// governor or inert group at the split is garnish in
+/// every pair already, and a weekday-only group there
+/// is read by the phrase's own readers in every pair,
+/// so only a date-carrying group is this judgment's:
+/// its bracket/brace date is what the plain reading
+/// adopted while the paren twin read nothing. At this
+/// slot no stack adopts in the paren form — agreeing,
+/// disagreeing, and mixed stacks are silent alike — so
+/// no stacked exception stands here.
+pub(super) fn group_split_sunday_after_phrase(
+    text: &str,
+    spans: &[(usize, usize)],
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> bool {
+    // The line's whitespace tokens, with byte ranges.
+    let mut tokens: Vec<(usize, usize, &str)> = Vec::new();
+    let mut at: Option<usize> = None;
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            if let Some(s) = at.take() {
+                tokens.push((s, i, &text[s..i]));
+            }
+        } else if at.is_none() {
+            at = Some(i);
+        }
+    }
+    if let Some(s) = at {
+        tokens.push((s, text.len(), &text[s..]));
+    }
+    // A token is a group token when it starts inside a
+    // balanced span; the plain words are the rest, in
+    // written order, cleaned as the token readers
+    // clean them.
+    let in_group = |start: usize| spans.iter().any(|(s, e)| *s <= start && start < *e);
+    let plain: Vec<(usize, String)> = tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, (start, _, _))| !in_group(*start))
+        .map(|(idx, (_, _, raw))| (idx, group_token(raw)))
+        .filter(|(_, cleaned)| !cleaned.is_empty())
+        .collect();
+    for w in 0..plain.len() {
+        if plain[w].1 != "sunday" {
+            continue;
+        }
+        // The lead-in before the phrase's own word:
+        // ordinary words only (see the head comment).
+        let lead_in_ok = plain[..w].iter().all(|(_, word)| {
+            weekday_word(word).is_none() && word.as_str() != "next" && word.as_str() != "this"
+        });
+        if !lead_in_ok {
+            continue;
+        }
+        let Some(after) = plain.get(w + 1) else {
+            continue;
+        };
+        if after.1 != "after" {
+            continue;
+        }
+        let (_, sunday_end, _) = tokens[plain[w].0];
+        let (after_start, _, _) = tokens[after.0];
+        // No group stands at or after the "after":
+        // a group there is the base-leading or a
+        // later position, not this slot.
+        if spans.iter().any(|(s, _)| *s >= after_start) {
+            continue;
+        }
+        // A date-carrying group stands between the
+        // phrase's two words.
+        let split_carries_date = spans
+            .iter()
+            .filter(|(s, e)| *s >= sunday_end && *e <= after_start)
+            .any(|(s, e)| group_date(&text[s + 1..e - 1], today, anchor).is_some());
+        if !split_carries_date {
+            continue;
+        }
+        // The words after "after" are exactly the
+        // base: a date prefix consuming them whole,
+        // or consuming all but a trailing weekday
+        // garnish word.
+        let rest: Vec<&str> = tokens[after.0 + 1..]
+            .iter()
+            .map(|(_, _, raw)| *raw)
+            .collect();
+        let Some((_, used)) = parse_date_prefix(&rest, today) else {
+            continue;
+        };
+        if used == rest.len() {
+            return true;
+        }
+        if used + 1 == rest.len() && weekday_word(&group_token(rest[used])).is_some() {
+            return true;
+        }
     }
     false
 }
@@ -5842,6 +6008,43 @@ pub(super) fn date_line(
     };
     let Some(text) = raw.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         return none_reading;
+    };
+    // Round 38 (R38-C, F3): the group judgment
+    // (`group_beside_relative_core`) is consulted
+    // against the inner reading here, before the
+    // early return below — at the two interior
+    // positions the extended guard now judges (a
+    // date group between a Sunday-after phrase's own
+    // words, a date group after a weekday word
+    // before a relative phrase) the inner reader's
+    // head flexible read adopts the bracket/brace
+    // group's date, and the guard's standing call
+    // sites, in the inner-None branches' plain-multi
+    // readings, are never reached. When the guard
+    // fires, the inner date is discarded and the line
+    // reads on exactly as its paren twin does. The
+    // guard is judged on the line and on its
+    // trailing-stripped core alike: beside a trailing
+    // group the split position's guard fires only on
+    // the core (the split helper requires no group at
+    // or after the phrase's "after"). The scope probe
+    // (r38c-scope-probe.log) shows the discard is
+    // safe unscoped: across the standing pin families
+    // the guard fires with an inner date only at the
+    // two new positions — at the R36-D / R37-B
+    // positions the inner reader never adopts, and
+    // every control and deliberately unreached form
+    // (the group between "after" and the base, the
+    // "after the" form, the weekday-group split)
+    // stands with the guard silent — so no standing
+    // inner reading coincides with a firing guard.
+    let (date, weekday_mismatch) = if date.is_some()
+        && (group_beside_relative_core(text, today, anchor)
+            || group_beside_relative_core(strip_all_trailing_parenthesized(text), today, anchor))
+    {
+        (None, weekday_mismatch)
+    } else {
+        (date, weekday_mismatch)
     };
     let groups = trailing_parenthesized_dates(text, today, anchor);
     // Round 11 (R11-6): the alternatives a trailing
@@ -6092,6 +6295,21 @@ pub(super) fn date_line(
     }
     let core_raw = Some(core.to_string());
     let (core_date, core_mismatch) = date_line_inner(&core_raw, today);
+    // Round 38 (R38-C, F3): the same consultation on
+    // the core re-read — beside a trailing group the
+    // core is an interior-position line in its own
+    // right ("Sunday [November 8, 2026] after
+    // November 1, 2026" stands under its trailing
+    // group), and its inner read adopts the group's
+    // date the same way, so a firing guard on the
+    // core discards that date too and the line falls
+    // to the paths below exactly as its paren twin
+    // does (whose core inner read is empty there).
+    let core_date = if core_date.is_some() && group_beside_relative_core(core, today, anchor) {
+        None
+    } else {
+        core_date
+    };
     match core_date {
         Some(read) => {
             let parenthesized_mismatch = mismatch_from_groups(&groups, read, false);

@@ -3117,7 +3117,24 @@ pub(super) fn date_line_inner(
     for i in 1..tokens.len() {
         // Round 35 (R35-A, F1): the trim set gains
         // the brace pair, as at the scans above.
-        let word = tokens[i].trim_matches(['(', ')', '[', ']', '{', '}', ',', '.']);
+        // Round 38 (R38-F, F7 = review R38-R2): the
+        // set gains the quote family — the straight
+        // pair, the apostrophe, and the curly family,
+        // the same marks `clean` trims — so a weekday
+        // word standing mid-line in quote dress
+        // ("notes \"Monday\" November 1, 2026") is the
+        // word it names here, as its bare twin is: a
+        // quote-wrapped word is a word in dress, and
+        // at this slot the bare word is ordinary text
+        // the date reads past. Before this, the trim
+        // stopped at the quotes, no reader in the
+        // line ever saw the weekday, and the line
+        // read nothing in any quote form while its
+        // bare and grouped twins served the date.
+        let word = tokens[i].trim_matches([
+            '(', ')', '[', ']', '{', '}', ',', '.', '"', '\'', '\u{201c}', '\u{201d}', '\u{2018}',
+            '\u{2019}',
+        ]);
         // Round 29 (R29-A, F3 = red team RT29-T1):
         // the weekday word of a bare phrase unit is
         // judged on the unglued token vector, as
@@ -3303,16 +3320,46 @@ pub(super) fn balanced_spans(text: &str) -> Vec<(usize, usize)> {
 /// it (whitespace between), and at a day number's
 /// tail, with the date's comma standing after it.
 /// A mark standing anywhere else — against another
-/// word, at a year's tail, before a word — keeps
-/// its bytes and its standing effect, exactly as a
-/// stray group mark outside `stray_mark_spaced`'s
-/// shapes does. The removal drops the mark byte
-/// only; every other byte stands as written.
+/// word, before a word — keeps its bytes and its
+/// standing effect, exactly as a stray group mark
+/// outside `stray_mark_spaced`'s shapes does. The
+/// removal drops the mark byte only; every other
+/// byte stands as written.
+///
+/// Round 38 (R38-F, F8 = review R38-R3, F9 = red
+/// team RT38-5, F10 = red team RT38-7): the shed
+/// stopped one slot short in three places, and one
+/// sentence above recorded a year's tail as keeping
+/// its standing effect — a doc sentence recording
+/// an effect is not an adjudication of it, and the
+/// grouped twins read through the same marks at the
+/// same slots, so the bare path takes their reading
+/// and that sentence is corrected here. The day
+/// slot gains the period ("November 1., 2026" read
+/// nothing; "(November 1.), 2026" reads). A year's
+/// tail joins the shed: a run of sentence marks and
+/// closing quotes standing at the line's end
+/// against a year (two or four digits, the date's
+/// comma before it, outside any group) is dropped
+/// ("November 1, 2026!", "November 1, 2026..",
+/// "November 1, 26!" all read nothing bare, and
+/// read grouped). And a mark standing INSIDE a
+/// bare date word is dropped where the word it
+/// splits is a date word once the mark is gone —
+/// a month or weekday name ("Novem!ber 8, 2026",
+/// "Sun!day after November 1, 2026"), or a digit
+/// run of two or four ("November 1, 20!26",
+/// "November 1!2, 2026") — outside any group, so
+/// the grouped readers' own readings of such words
+/// are untouched. A mark inside any other word
+/// keeps its bytes: it splits no date word, and
+/// shedding it could only mint one (a governor's
+/// stem is not this pass's to complete).
 pub(super) fn bare_date_mark_shed(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut drop: Vec<usize> = Vec::new();
     for (i, &b) in bytes.iter().enumerate() {
-        if !matches!(b, b'!' | b'?' | b':' | b';') {
+        if !matches!(b, b'!' | b'?' | b':' | b';' | b'.') {
             continue;
         }
         // The month slot: the letter run ending at
@@ -3350,17 +3397,137 @@ pub(super) fn bare_date_mark_shed(text: &str) -> Option<String> {
             drop.push(i);
         }
     }
+    // Round 38 (R38-F): the year tail and the
+    // interior marks (see the head note). Both arms
+    // judge only marks standing outside every
+    // balanced group: inside a group the grouped
+    // readers' own cleaning already sheds a year's
+    // tail mark, and an interior mark there is the
+    // group readers' standing silence, not this
+    // pass's to move.
+    let spans = balanced_spans(text);
+    let inside_group = |pos: usize| spans.iter().any(|(s, e)| pos > *s && pos < *e);
+    // The year slot: peel the line's end — sentence
+    // marks and closing quotes, whitespace between
+    // and around them — and judge what stands
+    // before the peel: a year of two or four digits
+    // with the date's comma before it.
+    {
+        let mut end = text.len();
+        let mut tail_marks: Vec<usize> = Vec::new();
+        while let Some((ci, c)) = text[..end].char_indices().next_back() {
+            if c.is_whitespace() {
+                end = ci;
+                continue;
+            }
+            if matches!(
+                c,
+                '!' | '?' | ':' | ';' | '.' | '\u{2026}' | '"' | '\'' | '\u{201d}' | '\u{2019}'
+            ) {
+                tail_marks.push(ci);
+                end = ci;
+                continue;
+            }
+            break;
+        }
+        if !tail_marks.is_empty() {
+            let mut start = end;
+            while start > 0 && bytes[start - 1].is_ascii_digit() {
+                start -= 1;
+            }
+            let digits = &text[start..end];
+            if (digits.len() == 2 || digits.len() == 4) && !inside_group(start) {
+                let mut before = start;
+                while before > 0 && matches!(bytes[before - 1], b' ' | b'\t') {
+                    before -= 1;
+                }
+                if before > 0 && bytes[before - 1] == b',' {
+                    for m in tail_marks {
+                        let width = text[m..]
+                            .chars()
+                            .next()
+                            .expect("a mark stands there")
+                            .len_utf8();
+                        drop.extend(m..m + width);
+                    }
+                }
+            }
+        }
+    }
+    // The interior slots: a sentence mark standing
+    // between two letters of a month or weekday
+    // name, or between two digits of a two- or
+    // four-digit run, once the run's marks are gone.
+    for (i, &b) in bytes.iter().enumerate() {
+        if !matches!(b, b'!' | b'?' | b':' | b';') || inside_group(i) {
+            continue;
+        }
+        // The letter run holding the mark.
+        let mut start = i;
+        while start > 0
+            && (bytes[start - 1].is_ascii_alphabetic()
+                || matches!(bytes[start - 1], b'!' | b'?' | b':' | b';'))
+        {
+            start -= 1;
+        }
+        let mut end = i + 1;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphabetic() || matches!(bytes[end], b'!' | b'?' | b':' | b';'))
+        {
+            end += 1;
+        }
+        if end - start > 1
+            && bytes[start].is_ascii_alphabetic()
+            && bytes[end - 1].is_ascii_alphabetic()
+        {
+            let joined: String = text[start..end]
+                .chars()
+                .filter(|c| !matches!(c, '!' | '?' | ':' | ';'))
+                .collect();
+            if word_at_is_month(&joined, 0) || weekday_word(&joined).is_some() {
+                drop.extend(
+                    (start..end).filter(|p| matches!(bytes[*p], b'!' | b'?' | b':' | b';')),
+                );
+                continue;
+            }
+        }
+        // The digit run holding the mark.
+        let mut start = i;
+        while start > 0
+            && (bytes[start - 1].is_ascii_digit()
+                || matches!(bytes[start - 1], b'!' | b'?' | b':' | b';'))
+        {
+            start -= 1;
+        }
+        let mut end = i + 1;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_digit() || matches!(bytes[end], b'!' | b'?' | b':' | b';'))
+        {
+            end += 1;
+        }
+        if end - start > 1 && bytes[start].is_ascii_digit() && bytes[end - 1].is_ascii_digit() {
+            let digits = text[start..end]
+                .chars()
+                .filter(|c| !matches!(c, '!' | '?' | ':' | ';'))
+                .count();
+            if digits == 2 || digits == 4 {
+                drop.extend(
+                    (start..end).filter(|p| matches!(bytes[*p], b'!' | b'?' | b':' | b';')),
+                );
+            }
+        }
+    }
     if drop.is_empty() {
         return None;
     }
-    let mut shed = String::with_capacity(text.len());
-    let mut at = 0;
-    for p in drop {
-        shed.push_str(&text[at..p]);
-        at = p + 1;
-    }
-    shed.push_str(&text[at..]);
-    Some(shed)
+    let drop_set: std::collections::BTreeSet<usize> = drop.into_iter().collect();
+    let shed_bytes: Vec<u8> = bytes
+        .iter()
+        .enumerate()
+        .filter(|(p, _)| !drop_set.contains(p))
+        .map(|(_, b)| *b)
+        .collect();
+    Some(String::from_utf8(shed_bytes).expect("only whole marks were dropped"))
 }
 
 /// `text` with the stray group marks the shared
@@ -3435,6 +3602,13 @@ pub(super) fn bare_date_mark_shed(text: &str) -> Option<String> {
 /// round-35 tail hold survives only mid-line: a
 /// stray closer at a word's tail with more line
 /// after it ("November 1], 2026") keeps its bytes.
+/// Round 38 (R38-F, F8 = review R38-R3) extends the
+/// trailing arm once more, in the place the wrapped
+/// twins already judged: a stray standing in the
+/// line's trailing garnish run — closers and
+/// sentence marks to the line's end — is spaced
+/// with the run's last stray (see
+/// `stray_closer_is_spaced`).
 /// The walk is
 /// `balanced_spans`' own, statement for statement,
 /// except that what it records is the marks
@@ -3522,9 +3696,37 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
 /// mid-line, or before punctuation or a space —
 /// is not spaced here and keeps its standing
 /// effect.
+///
+/// Round 38 (R38-F, F8 = review R38-R3): the
+/// trailing arm stopped one shape short — it
+/// spaced only a stray with nothing but whitespace
+/// after it, so in a run only the last stray was
+/// spaced and the rest killed the date
+/// ("November 1, 2026))", "November 1, 2026)]"),
+/// and a stray wearing a sentence mark at the
+/// line's end was spaced in neither form
+/// ("November 1, 2026).", "November 1, 2026]."),
+/// where the wrapped twins read through the run
+/// and the mark. The trailing arm therefore also
+/// spaces a stray whose whole remainder is the
+/// line's trailing garnish run — fellow closers,
+/// sentence marks, and whitespace, nothing else —
+/// each stray of the run judged as the single
+/// trailing stray is. The mid-line hold stands:
+/// a stray with a word, a comma, or a date after
+/// its run is not spaced here.
 fn stray_closer_is_spaced(text: &str, i: usize) -> bool {
     let bytes = text.as_bytes();
     if text[i + 1..].trim().is_empty() {
+        return true;
+    }
+    if text[i + 1..].chars().all(|c| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                ')' | ']' | '}' | '.' | '!' | '?' | ':' | ';' | '\u{2026}'
+            )
+    }) {
         return true;
     }
     let mut j = i + 1;
@@ -3618,6 +3820,26 @@ pub(super) fn strip_leading_parenthesized(text: &str) -> Option<&str> {
 /// is tried first and is untouched wherever it
 /// reads, and a group holding anything else (a
 /// word, a whole date) is never spliced.
+///
+/// Round 38 (R38-F, F8 = review R38-R3): the splice
+/// stopped at a DOUBLED day group — "November
+/// ((8)), 2026" and "November ([8]), 2026" read
+/// nothing, while the wrapped twin "(November
+/// ((8)), 2026)" reads November 8. The flat span
+/// search passes a doubled group by construction
+/// (a span whose inner text holds an opener of its
+/// own pair is no flat span), so the group never
+/// reached the splice. The slot now also walks the
+/// balanced spans the flat search passes over, and
+/// the day is read through the nesting
+/// (`nested_bare_day_group_inner`): a group whose
+/// whole inner text is itself a day group, in any
+/// pair at either layer, is the day in two wrappers,
+/// as the doubled MONTH groups already read at
+/// their slot. The garnish arm is unchanged: it is
+/// tried first, on the same de-grouped candidate,
+/// for the balanced spans exactly as for the flat
+/// ones.
 pub(super) fn mid_date_group_reading(
     text: &str,
     today: SimpleDate,
@@ -3625,7 +3847,22 @@ pub(super) fn mid_date_group_reading(
     trailing_groups: &[SimpleDate],
     trailing_alternatives: &[SimpleDate],
 ) -> Option<DateLineReading> {
-    for (start, end) in parenthesized_spans(text) {
+    // The flat spans, plus the balanced spans the
+    // flat search passes over for holding a nested
+    // opener (round 38, R38-F: the doubled groups),
+    // in written order.
+    let mut spans = parenthesized_spans(text);
+    for span in balanced_spans(text) {
+        if !spans.contains(&span)
+            && text[span.0 + 1..span.1 - 1]
+                .chars()
+                .any(|c| matches!(c, '(' | '[' | '{'))
+        {
+            spans.push(span);
+        }
+    }
+    spans.sort_unstable();
+    for (start, end) in spans {
         let after = text[end..].trim_start();
         let Some(after_comma) = after.strip_prefix(',') else {
             continue;
@@ -3661,7 +3898,7 @@ pub(super) fn mid_date_group_reading(
         let (candidate_core, read) = match cand_date {
             Some(read) => (candidate_core, read),
             None => {
-                let Some(day) = bare_day_group_inner(inner) else {
+                let Some(day) = nested_bare_day_group_inner(inner) else {
                     continue;
                 };
                 let mut spliced = String::with_capacity(text.len());
@@ -3712,6 +3949,34 @@ pub(super) fn mid_date_group_reading(
 /// Returned as written, suffix included, so the
 /// spliced candidate is the line the sender's words
 /// make with the group unwrapped.
+/// The bare day number a mid-date group's inner text
+/// holds through its nesting, when it holds one
+/// (round 38, R38-F, F8): the inner text is unwrapped
+/// layer by layer — each layer a balanced group
+/// standing as the whole remaining text, in any of
+/// the three pairs — until the day group itself
+/// stands, which `bare_day_group_inner` judges as it
+/// judges the single group's. A layer holding
+/// anything beside the nested group (a word, a
+/// second group) stops the descent and is no day.
+fn nested_bare_day_group_inner(inner: &str) -> Option<String> {
+    let mut cur = inner.trim();
+    loop {
+        let first = cur.chars().next()?;
+        if !matches!(first, '(' | '[' | '{') {
+            break;
+        }
+        let Some((start, end)) = first_balanced_span(cur) else {
+            break;
+        };
+        if start != 0 || end != cur.len() {
+            break;
+        }
+        cur = cur[start + 1..end - 1].trim();
+    }
+    bare_day_group_inner(cur)
+}
+
 fn bare_day_group_inner(inner: &str) -> Option<String> {
     let word = inner.trim().trim_matches([',', '.']);
     let digits = word

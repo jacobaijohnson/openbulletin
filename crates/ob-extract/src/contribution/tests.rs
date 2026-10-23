@@ -28118,3 +28118,497 @@ fn r38e_separator_dress_before_the_day_and_the_sunday_comma_compound() {
     let c = parse_contribution(text, today()).expect("parses");
     assert_eq!(c.keep_through, Some(nov(8)));
 }
+
+#[test]
+fn r38f_quoted_weekday_word_mid_line_reads_as_its_bare_and_grouped_twins() {
+    // Round 38 (R38-F, F7 MINOR = review R38-R2): a
+    // quoted WEEKDAY word standing mid-line before a
+    // bare date silenced the line in every quote form
+    // — "notes \"Monday\" November 1, 2026" read
+    // nothing on either route, where the bare
+    // "notes Monday November 1, 2026" and the grouped
+    // "notes (Monday) November 1, 2026" serve the date
+    // (the weekday word is ordinary text the suffix
+    // fallback steps over; contrib-midline-38.log,
+    // contrib-hunt5-38.log). The adjudicated reading:
+    // a quote-wrapped word is a word in dress, read as
+    // its bare and grouped twins read. November 1 and
+    // November 8, 2026 are Sundays.
+    //
+    // Scope note (firsthand, this batch's probes): the
+    // finding's headline as worded names an inert word
+    // ("notes for the 'harvest' November 8, 2026"),
+    // whose BARE twin also reads nothing — a bare word
+    // mid-line is not a segment, and only the grouped
+    // form serves, by the standing group machinery.
+    // The divergence the lanes witnessed is the
+    // weekday dress pinned here; the inert family is
+    // pinned below as a control (quoted == bare,
+    // grouped serving), unchanged.
+    for prefix in [
+        "notes",
+        "choir notes",
+        "notes for the",
+        "for the",
+        "a",
+        "notes notes",
+        "reminder",
+    ] {
+        for dress in ["\"Monday\"", "'Monday'", "“Monday”", "\"Sunday\""] {
+            let line = format!("{prefix} {dress} November 1, 2026");
+            let bare = format!(
+                "{prefix} {} November 1, 2026",
+                dress.trim_matches(['"', '\'', '“', '”'])
+            );
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.for_date,
+                Some(nov(1)),
+                "{line}: the quoted weekday reads as its bare twin"
+            );
+            assert_eq!(c.named_weekday_mismatch, None, "{line}: no weekday record");
+            assert_eq!(
+                c.for_sunday_second_dates,
+                Vec::new(),
+                "{line}: nothing else is named"
+            );
+            let text = format!(
+                "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+            );
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{line}: the quoted weekday keeps as its bare twin"
+            );
+            // Field for field against the bare twin,
+            // both routes (the r34e helpers).
+            r34e_for_twin(&line, &bare);
+            r34e_keep_twin(&line, &bare);
+        }
+    }
+    // The weekday word on the later Sunday, and the
+    // comma dresses of the same slot.
+    for (line, bare, date) in [
+        (
+            "notes \"Monday\" November 8, 2026",
+            "notes Monday November 8, 2026",
+            nov(8),
+        ),
+        (
+            "notes, \"Monday\" November 1, 2026",
+            "notes, Monday November 1, 2026",
+            nov(1),
+        ),
+        (
+            "notes \"Monday\", November 1, 2026",
+            "notes Monday, November 1, 2026",
+            nov(1),
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(date), "{line}: reads as its bare twin");
+        r34e_for_twin(line, bare);
+        r34e_keep_twin(line, bare);
+    }
+    // Field for field against the grouped twin.
+    r34e_for_twin(
+        "notes \"Monday\" November 1, 2026",
+        "notes (Monday) November 1, 2026",
+    );
+    r34e_keep_twin(
+        "notes \"Monday\" November 1, 2026",
+        "notes (Monday) November 1, 2026",
+    );
+    // The inert control family (see the scope note):
+    // a quoted inert word mid-line is its bare twin —
+    // silence on both routes — while the grouped form
+    // serves by the standing group machinery.
+    for line in [
+        "notes for the 'harvest' November 8, 2026",
+        "notes for the \"harvest\" November 8, 2026",
+        "notes for the “harvest” November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the inert dress reads nothing");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{line}: the inert dress keeps nothing"
+        );
+        r34e_for_twin(line, "notes for the harvest November 8, 2026");
+        r34e_keep_twin(line, "notes for the harvest November 8, 2026");
+    }
+    let text = "For Sunday: notes for the (harvest) November 8, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the grouped inert control serves November 8, unchanged"
+    );
+}
+
+#[test]
+fn r38f_bare_day_period_doubled_strays_and_doubled_day_group_read_as_their_twins() {
+    // Round 38 (R38-F, F8 MINOR = review R38-R3):
+    // three bare-path parity gaps of the trailing and
+    // day-group slots. (a) A period at the day slot:
+    // "November 1., 2026" read nothing where the
+    // wrapped "(November 1., 2026)" reads. (Firsthand
+    // note: the brief's month-day-group form
+    // "(November 1.), 2026" reads nothing on this
+    // tree — the group is garnish-shaped with no
+    // reader — so the wrapped form is the twin of
+    // record here, as with the neighbouring slots.)
+    // (b)
+    // Doubled and part-wearing trailing strays:
+    // "November 8, 2026))", "…2026].", "…2026).",
+    // and the doubled bare period "November 8,
+    // 2026.." read nothing where the grouped twins
+    // and the single strays read. (c) The doubled
+    // day group: "November ((8)), 2026" read nothing
+    // where the wrapped "(November ((8)), 2026)"
+    // reads (R36-B pinned doubled MONTH groups only;
+    // R37-F pinned the single bare day group).
+    // The adjudicated reading everywhere is the
+    // grouped and single-form twins' reading.
+    // November 1 and November 8, 2026 are Sundays.
+    for (line, date) in [("November 1., 2026", nov(1)), ("November 8., 2026", nov(8))] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(date),
+            "{line}: the day period reads as its grouped twin"
+        );
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no weekday record");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::new(),
+            "{line}: nothing else is named"
+        );
+        let clean = if date == nov(1) {
+            "November 1, 2026"
+        } else {
+            "November 8, 2026"
+        };
+        r34e_for_twin(line, clean);
+        r34e_keep_twin(line, clean);
+    }
+    r34e_for_twin("November 1., 2026", "(November 1., 2026)");
+    r34e_keep_twin("November 1., 2026", "(November 1., 2026)");
+    // The day period under a disagreeing weekday
+    // frame refuses WITH the clean twin's record,
+    // where before the fix the line read in silence.
+    {
+        let line = "November 1., 2026 (Monday)";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the framed date refuses");
+        assert!(
+            c.named_weekday_mismatch.is_some(),
+            "{line}: the refusal records the weekday"
+        );
+        r34e_for_twin(line, "November 1, 2026 (Monday)");
+        r34e_keep_twin(line, "November 1, 2026 (Monday)");
+    }
+    for line in [
+        "November 8, 2026))",
+        "November 8, 2026]]",
+        "November 8, 2026]]]",
+        "November 8, 2026)]",
+        "November 8, 2026].",
+        "November 8, 2026).",
+        "November 8, 2026..",
+        "November 8, 2026)}",
+        "November 8, 2026})",
+        "November 8, 2026)!",
+        "November 8, 2026)!?",
+        "November 1, 2026))",
+        "November 1, 2026]]",
+        "November 1, 2026)]",
+        "November 1, 2026).",
+        "November 1, 2026..",
+    ] {
+        let clean = if line.starts_with("November 8") {
+            "November 8, 2026"
+        } else {
+            "November 1, 2026"
+        };
+        let want = if line.starts_with("November 8") {
+            nov(8)
+        } else {
+            nov(1)
+        };
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(want),
+            "{line}: the trailing run reads as its single-stray twin"
+        );
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no weekday record");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::new(),
+            "{line}: nothing else is named"
+        );
+        r34e_for_twin(line, clean);
+        r34e_keep_twin(line, clean);
+    }
+    r34e_for_twin("November 8, 2026))", "November 8, 2026)");
+    r34e_keep_twin("November 8, 2026))", "November 8, 2026)");
+    r34e_for_twin("November 8, 2026).", "(November 8, 2026).");
+    r34e_keep_twin("November 8, 2026).", "(November 8, 2026).");
+    // The mid-line hold stands: a stray with more
+    // line after its run keeps its standing silence.
+    for line in ["November 8, 2026) extra", "November 8, 2026). extra"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the mid-line stray still reads nothing"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{line}: the mid-line stray still keeps nothing"
+        );
+    }
+    for (line, date) in [
+        ("November ((8)), 2026", nov(8)),
+        ("November ([8]), 2026", nov(8)),
+        ("November [[8]], 2026", nov(8)),
+        ("November {{8}}, 2026", nov(8)),
+        ("November [(8)], 2026", nov(8)),
+        ("November ((1)), 2026", nov(1)),
+        ("November ((8th)), 2026", nov(8)),
+        ("November ((8)),2026", nov(8)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(date),
+            "{line}: the doubled day group reads as its wrapped twin"
+        );
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no weekday record");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::new(),
+            "{line}: nothing else is named"
+        );
+        r34e_for_twin(
+            line,
+            if date == nov(8) {
+                "November 8, 2026"
+            } else {
+                "November 1, 2026"
+            },
+        );
+        r34e_keep_twin(
+            line,
+            if date == nov(8) {
+                "November 8, 2026"
+            } else {
+                "November 1, 2026"
+            },
+        );
+    }
+    r34e_for_twin("November ((8)), 2026", "(November ((8)), 2026)");
+    r34e_keep_twin("November ((8)), 2026", "(November ((8)), 2026)");
+    // A doubled group holding no bare day still
+    // refuses, on both routes.
+    for line in [
+        "November ((32)), 2026",
+        "November ((0)), 2026",
+        "November ((Feb)), 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: no day stands in the doubled group"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{line}: no day keeps through the doubled group"
+        );
+    }
+}
+
+#[test]
+fn r38f_bare_sentence_marks_at_the_year_read_as_their_grouped_twins() {
+    // Round 38 (R38-F, F9 MINOR = red team RT38-5):
+    // a sentence mark glued to a BARE year silenced
+    // the line — "November 1, 2026!", "…2026?",
+    // "…2026…" read nothing, and a mark after a
+    // framed date recorded nothing where the grouped
+    // forms read or refuse WITH a weekday record.
+    // The bare_date_mark_shed doc sentence recorded
+    // the year's-tail hold as if adjudicated; it was
+    // a description, not a ruling (synthesis
+    // adjudication 6). The adjudicated parity: marks
+    // are closers on the bare path too, and the doc
+    // sentence is corrected in this batch.
+    // November 1 and November 8, 2026 are Sundays.
+    for (line, date) in [
+        ("November 1, 2026!", nov(1)),
+        ("November 1, 2026?", nov(1)),
+        ("November 1, 2026:", nov(1)),
+        ("November 1, 2026;", nov(1)),
+        ("November 1, 2026.", nov(1)),
+        ("November 1, 2026…", nov(1)),
+        ("November 1, 2026!!", nov(1)),
+        ("November 1, 2026!?", nov(1)),
+        ("November 1, 2026”", nov(1)),
+        ("November 1, 2026\"", nov(1)),
+        ("November 8, 2026!", nov(8)),
+        ("November 1, 26!", nov(1)),
+    ] {
+        let clean = if date == nov(8) {
+            "November 8, 2026"
+        } else {
+            "November 1, 2026"
+        };
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(date),
+            "{line}: the year mark reads as its grouped twin"
+        );
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no weekday record");
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::new(),
+            "{line}: nothing else is named"
+        );
+        r34e_for_twin(line, clean);
+        r34e_keep_twin(line, clean);
+    }
+    r34e_for_twin("November 1, 2026!", "(November 1, 2026!)");
+    r34e_keep_twin("November 1, 2026!", "(November 1, 2026!)");
+    r34e_for_twin("November 1, 2026…", "(November 1, 2026…)");
+    r34e_keep_twin("November 1, 2026…", "(November 1, 2026…)");
+    // The framed forms, unchanged: a mark after a
+    // framed date refuses WITH its weekday record,
+    // and a mark after a wrapped date reads.
+    {
+        let line = "November 1, 2026 (Monday)!";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the framed date refuses");
+        assert!(
+            c.named_weekday_mismatch.is_some(),
+            "{line}: the refusal records the weekday"
+        );
+        // Stated only: the fully wrapped twin serves
+        // its date with the inner weekday as garnish —
+        // a different standing shape, not this slot's
+        // twin — so no full-record pairing is made.
+    }
+    {
+        let line = "(November 1, 2026)!";
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(1)),
+            "{line}: the wrapped control reads November 1, unchanged"
+        );
+    }
+}
+
+#[test]
+fn r38f_interior_sentence_marks_in_date_words_read_as_their_clean_twins() {
+    // Round 38 (R38-F, F10 MINOR = red team RT38-7):
+    // a sentence mark standing INSIDE a bare date
+    // word killed the reading — "Novem!ber 8, 2026",
+    // "November 8, 20!26", and "Sun!day after
+    // November 1, 2026" read nothing where their
+    // clean twins read (analyze38.log family quoted).
+    // The adjudicated reading: the mark is shed where
+    // the split word is a date word once the mark is
+    // gone — a month or weekday name, or a digit run
+    // of two or four — and nowhere else.
+    // November 1 and November 8, 2026 are Sundays.
+    for (line, clean, date) in [
+        ("Novem!ber 8, 2026", "November 8, 2026", nov(8)),
+        ("Novem?ber 8, 2026", "November 8, 2026", nov(8)),
+        ("Novem:ber 8, 2026", "November 8, 2026", nov(8)),
+        ("Novem;ber 8, 2026", "November 8, 2026", nov(8)),
+        ("Novem!ber 1, 2026", "November 1, 2026", nov(1)),
+        ("November 8, 20!26", "November 8, 2026", nov(8)),
+        ("November 8, 20?26", "November 8, 2026", nov(8)),
+        ("November 1, 20!26", "November 1, 2026", nov(1)),
+        (
+            "Sun!day after November 1, 2026",
+            "Sunday after November 1, 2026",
+            nov(8),
+        ),
+        (
+            "Sun?day after November 1, 2026",
+            "Sunday after November 1, 2026",
+            nov(8),
+        ),
+        ("November 1!2, 2026", "November 12, 2026", nov(12)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(date),
+            "{line}: the interior mark reads as its clean twin"
+        );
+        r34e_for_twin(line, clean);
+        r34e_keep_twin(line, clean);
+    }
+    // The weekday arms refuse WITH their clean twins'
+    // records, where before the fix they held nothing.
+    for (line, clean) in [
+        ("Mon!day November 1, 2026", "Monday November 1, 2026"),
+        ("Satur!day November 1, 2026", "Saturday November 1, 2026"),
+        ("Novem!ber 8, 2026 (Monday)", "November 8, 2026 (Monday)"),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the date refuses");
+        assert!(
+            c.named_weekday_mismatch.is_some(),
+            "{line}: the refusal records the weekday"
+        );
+        r34e_for_twin(line, clean);
+        r34e_keep_twin(line, clean);
+    }
+    // The holds: an apostrophe is not a sentence
+    // mark, and a mark inside a word that is no date
+    // word keeps its bytes — a governor's stem is not
+    // completed by this shedding. Both read nothing,
+    // on both routes, as their twins do.
+    for line in ["Novem'ber 8, 2026", "cancell!ed November 8, 2026"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: still reads nothing");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: still keeps nothing");
+    }
+    r34e_for_twin("Novem'ber 8, 2026", "(Novem'ber 8, 2026)");
+    r34e_keep_twin("Novem'ber 8, 2026", "(Novem'ber 8, 2026)");
+}

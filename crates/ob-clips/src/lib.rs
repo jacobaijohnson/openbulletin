@@ -2289,6 +2289,418 @@ mod tests {
         }
     }
 
+    /// The round-39 crafts (red team RT39-1 / RT39-2,
+    /// review R39-R2), assembled byte by byte over the
+    /// caller's Stored entries in the planted-directory
+    /// crafters' shape. Per `shape`:
+    /// "gap" / "gap64" — a 5,000-byte unused gap
+    /// between the last entry's payload and the real
+    /// directory (plain / zip64 host) with a complete
+    /// fake directory (the first copies' records plus
+    /// its own end record) planted at the gap's head;
+    /// "gapclean" — the gap with no plant, the control;
+    /// "prefirst" — a 3,000-byte region before the
+    /// first local header carrying the plant;
+    /// "broken" / "broken64" — the last entry (the
+    /// filler) gains a 4,000-byte local extra carrying
+    /// the plant, and its central record declares a
+    /// compressed size of 0xFFFFFFF0, so its payload
+    /// span does not resolve (plain / zip64 host);
+    /// "z64sig-clean" — a zip64 host whose 4,000-byte
+    /// digital-signature record stands between the
+    /// directory and the zip64 record, NOT counted in
+    /// the declared directory size;
+    /// "z64sig-plant" — the fake directory planted
+    /// inside that signature record's data;
+    /// "z64sig-counted" — the plant, with the
+    /// signature record counted in the declared
+    /// directory size;
+    /// "z64sectorsig-clean" / "z64sectorsig-plant" —
+    /// the uncounted-signature shapes on a sector host
+    /// (a 2,048-byte extensible data sector, so the
+    /// validating hunt is the only derivation).
+    /// Zip64 hosts carry plain central records and a
+    /// sentinel end record, as the sector crafter's do.
+    fn r39a_archive_pack(entries: &[(&[u8], &[u8])], shape: &str) -> Vec<u8> {
+        let zip64 = matches!(
+            shape,
+            "gap64"
+                | "broken64"
+                | "z64sig-clean"
+                | "z64sig-plant"
+                | "z64sig-counted"
+                | "z64sectorsig-clean"
+                | "z64sectorsig-plant"
+        );
+        let sector: usize = if shape.starts_with("z64sectorsig") {
+            2048
+        } else {
+            0
+        };
+        let sig_shape = matches!(
+            shape,
+            "z64sig-clean"
+                | "z64sig-plant"
+                | "z64sig-counted"
+                | "z64sectorsig-clean"
+                | "z64sectorsig-plant"
+        );
+        let plant_in_sig = matches!(
+            shape,
+            "z64sig-plant" | "z64sig-counted" | "z64sectorsig-plant"
+        );
+        let prefix: usize = if shape == "prefirst" { 3000 } else { 0 };
+        let gap: usize = if matches!(shape, "gap" | "gap64" | "gapclean") {
+            5000
+        } else {
+            0
+        };
+        let broken = matches!(shape, "broken" | "broken64");
+        // The pre-first-header region opens with the
+        // archive's own signature bytes as filler, so
+        // the file still presents as a zip at the
+        // door's head check; the plant rides inside
+        // the region either way.
+        let mut body: Vec<u8> = Vec::new();
+        if prefix > 0 {
+            body.extend_from_slice(b"PK");
+            body.resize(prefix, b'P');
+        }
+        let mut locals: Vec<u32> = Vec::new();
+        let mut filler_extra_start = 0usize;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            locals.push(body.len() as u32);
+            let crc = crc32_ieee(data);
+            let local_extra: usize = if broken && i + 1 == entries.len() {
+                4000
+            } else {
+                0
+            };
+            body.extend_from_slice(b"PK\x03\x04");
+            body.extend_from_slice(&20u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&crc.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            body.extend_from_slice(&(local_extra as u16).to_le_bytes());
+            body.extend_from_slice(name);
+            if local_extra > 0 {
+                filler_extra_start = body.len();
+                body.extend_from_slice(&vec![b'E'; local_extra]);
+            }
+            body.extend_from_slice(data);
+        }
+        // The fake directory: the first copy's record
+        // for every name, in archive order, plus its
+        // own end record.
+        let mut fake_recs: Vec<u8> = Vec::new();
+        let mut fake_total: u16 = 0;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            if entries[..i].iter().any(|(other, _)| other == name) {
+                continue;
+            }
+            fake_recs.extend_from_slice(&plain_central(name, data, locals[i], &[]));
+            fake_total += 1;
+        }
+        let fake_len = fake_recs.len();
+        let plant = |host: &mut Vec<u8>, at: usize| {
+            host[at..at + fake_len].copy_from_slice(&fake_recs);
+            let eocd = plain_eocd(fake_total, fake_len as u32, at as u32, 0, &[]);
+            host[at + fake_len..at + fake_len + 22].copy_from_slice(&eocd);
+        };
+        if shape == "prefirst" {
+            plant(&mut body, 100);
+        }
+        if broken {
+            plant(&mut body, filler_extra_start + 100);
+        }
+        if gap > 0 {
+            let gap_start = body.len();
+            body.extend_from_slice(&vec![b'G'; gap]);
+            if shape != "gapclean" {
+                plant(&mut body, gap_start + 100);
+            }
+        }
+        let cd_offset = body.len() as u32;
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            let mut rec = plain_central(name, data, locals[i], &[]);
+            if broken && i + 1 == entries.len() {
+                rec[20..24].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+            }
+            centrals.extend_from_slice(&rec);
+        }
+        let mut out = body;
+        out.extend_from_slice(&centrals);
+        if sig_shape {
+            let sig_start = out.len();
+            let mut sig_data = vec![b'S'; 4000];
+            if plant_in_sig {
+                plant(&mut sig_data, 100);
+                // The planted end record names its
+                // directory's position in file
+                // coordinates; the plant helper wrote
+                // the signature-relative position, so
+                // rebase its declared offset onto the
+                // file.
+                let eocd_at = 100 + fake_len;
+                let declared =
+                    u32::from_le_bytes(sig_data[eocd_at + 16..eocd_at + 20].try_into().unwrap());
+                let rebased = declared + (sig_start + 6) as u32;
+                sig_data[eocd_at + 16..eocd_at + 20].copy_from_slice(&rebased.to_le_bytes());
+            }
+            out.extend_from_slice(b"PK\x05\x05");
+            out.extend_from_slice(&(sig_data.len() as u16).to_le_bytes());
+            out.extend_from_slice(&sig_data);
+        }
+        if zip64 {
+            let record_at = out.len() as u64;
+            let cd_size = centrals.len() as u64 + if shape == "z64sig-counted" { 4006 } else { 0 };
+            out.extend_from_slice(b"PK\x06\x06");
+            out.extend_from_slice(&((44 + sector) as u64).to_le_bytes());
+            out.extend_from_slice(&45u16.to_le_bytes());
+            out.extend_from_slice(&45u16.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            out.extend_from_slice(&cd_size.to_le_bytes());
+            out.extend_from_slice(&(cd_offset as u64).to_le_bytes());
+            out.extend_from_slice(&vec![b'S'; sector]);
+            out.extend_from_slice(b"PK\x06\x07");
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&record_at.to_le_bytes());
+            out.extend_from_slice(&1u32.to_le_bytes());
+            out.extend_from_slice(b"PK\x05\x06");
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&u16::MAX.to_le_bytes());
+            out.extend_from_slice(&u16::MAX.to_le_bytes());
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+        } else {
+            out.extend_from_slice(&plain_eocd(
+                entries.len() as u16,
+                centrals.len() as u32,
+                cd_offset,
+                0,
+                &[],
+            ));
+        }
+        out
+    }
+
+    #[test]
+    fn r39a_a_directory_planted_in_the_gap_before_the_first_header_or_a_spanless_entrys_header_never_steers(
+    ) {
+        // Round 39, F1 (red team RT39-1 + review
+        // R39-R2): a second self-consistent directory
+        // planted in the unused gap before the central
+        // directory, in the region before the first
+        // local header, or in the local header of an
+        // entry whose payload span does not resolve
+        // steered the pack the way round 38's vectors
+        // did — those regions stood outside the walked
+        // extent, so the scan judged the planted
+        // directory and only one picture landed. The
+        // walked extent accounts for every byte from
+        // the archive's start to the end of its
+        // directory walk now, and a local header stands
+        // in it from its own fields whether or not its
+        // payload span resolves: the real directory is
+        // judged in every shape, on plain and zip64
+        // hosts alike, and both pictures land, the
+        // first as pic.png and the second as pic-2.png,
+        // each holding its own bytes, exactly as the
+        // gap-clean control lands them; the same shapes
+        // carrying one picture land it. The broken
+        // shapes are the stated exception at this
+        // door: this door reads every entry's payload,
+        // so a pack whose filler entry's span cannot
+        // be read back refuses in its standing words —
+        // under the fake directory it landed one
+        // picture; under the real one it refuses, on
+        // the broken entry itself.
+        let red = png_filled(255);
+        let blue = png_filled(0);
+        let filler = vec![b'A'; 2000];
+        for shape in ["gap", "gapclean", "gap64", "prefirst", "broken", "broken64"] {
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"pic.png", &red),
+                (b"pic.png", &blue),
+                (b"filler.bin", filler.as_slice()),
+            ];
+            let bytes = r39a_archive_pack(&entries, shape);
+            let dir = temp_dir(&format!("r39a-f1-{shape}"));
+            let lib = ClipLibrary::open(dir.clone()).expect("open");
+            if matches!(shape, "broken" | "broken64") {
+                let err = lib
+                    .add_collection_from_zip("pack.zip", &bytes, &CollectionNotes::default(), None)
+                    .expect_err("the broken entry refuses under the real directory");
+                assert!(
+                    err.contains("its bytes could not be read back"),
+                    "{shape}: {err}"
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+
+                let entries: Vec<(&[u8], &[u8])> =
+                    vec![(b"pic.png", &red), (b"filler.bin", filler.as_slice())];
+                let bytes = r39a_archive_pack(&entries, shape);
+                let dir = temp_dir(&format!("r39a-f1-single-{shape}"));
+                let lib = ClipLibrary::open(dir.clone()).expect("open");
+                let err = lib
+                    .add_collection_from_zip("pack.zip", &bytes, &CollectionNotes::default(), None)
+                    .expect_err("the broken entry refuses, one picture or two");
+                assert!(
+                    err.contains("its bytes could not be read back"),
+                    "{shape}: {err}"
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+                continue;
+            }
+            let report = lib
+                .add_collection_from_zip("pack.zip", &bytes, &CollectionNotes::default(), None)
+                .expect("add zip");
+            assert_eq!(report.added, 2, "{shape}: both copies land: {report:?}");
+            let collection = lib.collection("pack").expect("collection");
+            assert_eq!(collection.items.len(), 2, "{shape}");
+            let first = collection
+                .items
+                .iter()
+                .find(|i| i.file_name == "pic.png")
+                .expect("the first copy keeps the name");
+            let second = collection
+                .items
+                .iter()
+                .find(|i| i.file_name == "pic-2.png")
+                .expect("the second copy lands apart");
+            assert_eq!(
+                std::fs::read(&first.path).expect("read first"),
+                red,
+                "{shape}: the first item holds the first copy's bytes"
+            );
+            assert_eq!(
+                std::fs::read(&second.path).expect("read second"),
+                blue,
+                "{shape}: the second item holds the second copy's bytes"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+
+            let entries: Vec<(&[u8], &[u8])> =
+                vec![(b"pic.png", &red), (b"filler.bin", filler.as_slice())];
+            let bytes = r39a_archive_pack(&entries, shape);
+            let dir = temp_dir(&format!("r39a-f1-single-{shape}"));
+            let lib = ClipLibrary::open(dir.clone()).expect("open");
+            let report = lib
+                .add_collection_from_zip("pack.zip", &bytes, &CollectionNotes::default(), None)
+                .expect("add zip");
+            assert_eq!(
+                report.added, 1,
+                "{shape}: the single copy lands: {report:?}"
+            );
+            let collection = lib.collection("pack").expect("collection");
+            assert_eq!(collection.items.len(), 1, "{shape}");
+            assert_eq!(
+                std::fs::read(&collection.items[0].path).expect("read single"),
+                red,
+                "{shape}: the single item holds its bytes"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn r39a_a_zip64_archive_whose_signature_record_is_uncounted_derives_and_its_plant_never_steers()
+    {
+        // Round 39, F2 (red team RT39-2): a zip64
+        // archive whose signature record is not
+        // counted in the declared directory size
+        // derived nothing at all — both derivations
+        // demanded the directory end equal the zip64
+        // record's position exactly — so every door
+        // refused the clean craft, and a directory
+        // planted inside that signature record was
+        // the only standing candidate and steered the
+        // pack (only one picture landed). The zip64
+        // candidate derives under the signature
+        // allowance now, on the arithmetic path and
+        // the sector host's hunt alike: the clean
+        // crafts derive and land both pictures, the
+        // planted crafts judge the real directory,
+        // and the counted-signature variant derives
+        // and lands both exactly as before. The
+        // plain-host signature plant stands
+        // subordinated as the r38a pin states (its
+        // "n4" shape).
+        let red = png_filled(255);
+        let blue = png_filled(0);
+        let filler = vec![b'A'; 2000];
+        for shape in [
+            "z64sig-clean",
+            "z64sig-plant",
+            "z64sig-counted",
+            "z64sectorsig-clean",
+            "z64sectorsig-plant",
+        ] {
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"pic.png", &red),
+                (b"pic.png", &blue),
+                (b"filler.bin", filler.as_slice()),
+            ];
+            let bytes = r39a_archive_pack(&entries, shape);
+            let dir = temp_dir(&format!("r39a-f2-{shape}"));
+            let lib = ClipLibrary::open(dir.clone()).expect("open");
+            let report = lib
+                .add_collection_from_zip("pack.zip", &bytes, &CollectionNotes::default(), None)
+                .expect("add zip");
+            assert_eq!(report.added, 2, "{shape}: both copies land: {report:?}");
+            let collection = lib.collection("pack").expect("collection");
+            assert_eq!(collection.items.len(), 2, "{shape}");
+            let first = collection
+                .items
+                .iter()
+                .find(|i| i.file_name == "pic.png")
+                .expect("the first copy keeps the name");
+            let second = collection
+                .items
+                .iter()
+                .find(|i| i.file_name == "pic-2.png")
+                .expect("the second copy lands apart");
+            assert_eq!(
+                std::fs::read(&first.path).expect("read first"),
+                red,
+                "{shape}: the first item holds the first copy's bytes"
+            );
+            assert_eq!(
+                std::fs::read(&second.path).expect("read second"),
+                blue,
+                "{shape}: the second item holds the second copy's bytes"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+
+            let entries: Vec<(&[u8], &[u8])> =
+                vec![(b"pic.png", &red), (b"filler.bin", filler.as_slice())];
+            let bytes = r39a_archive_pack(&entries, shape);
+            let dir = temp_dir(&format!("r39a-f2-single-{shape}"));
+            let lib = ClipLibrary::open(dir.clone()).expect("open");
+            let report = lib
+                .add_collection_from_zip("pack.zip", &bytes, &CollectionNotes::default(), None)
+                .expect("add zip");
+            assert_eq!(
+                report.added, 1,
+                "{shape}: the single copy lands: {report:?}"
+            );
+            let collection = lib.collection("pack").expect("collection");
+            assert_eq!(collection.items.len(), 1, "{shape}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn r36a_a_second_directory_never_steers_the_pack() {
         // Round 36, F6 (review R36-6 + red team

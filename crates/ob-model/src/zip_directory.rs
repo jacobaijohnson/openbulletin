@@ -134,6 +134,39 @@
 //! cannot outrank the candidate that accounts for
 //! those bytes.
 //!
+//! Round 39, F1 + F2: three more regions stood
+//! outside the walked extent — the unused gap before
+//! the central directory, the region before the
+//! first local header, and the local header of an
+//! entry whose payload span does not resolve (its
+//! span was pushed only inside the payload span's
+//! success) — and a directory planted in any of them
+//! steered the doors again. The walked extent
+//! accounts for every byte between a standing
+//! candidate's archive start and the end of its
+//! directory walk now, gaps included, and a local
+//! header stands in the extent from its own fields
+//! whether or not its payload span resolves. The
+//! extent's gap fill is judged with an accounting
+//! guard (stated at `central_directory`): it
+//! subordinates only a candidate whose local
+//! headers the filling candidate's walk wholly
+//! accounts for, so an appended second directory —
+//! which names only the first copies' headers —
+//! cannot swallow the real directory's end record.
+//! And a zip64 archive whose signature record was not
+//! counted in the declared directory size derived
+//! nothing at all — both zip64 derivations demanded
+//! the directory end equal the zip64 record's
+//! position exactly — leaving a directory planted
+//! in that signature record the sole standing
+//! candidate. A zip64 candidate whose record
+//! validation fails only by a signature record
+//! standing at its directory walk's end derives
+//! under the signature allowance the plain frame
+//! already carries: the signature record's own
+//! declared length closes the gap, counted or not.
+//!
 //! This lives in ob-model, the lowest crate every zip
 //! door can reach, stated over raw bytes the way
 //! `read_capped` is stated over `Read`, so this crate
@@ -342,15 +375,23 @@ fn arithmetic_directory(bytes: &[u8], eocd: usize) -> Option<CentralDirectory> {
         let total = u64_at(bytes, record_at + 32);
         let cd_size = u64_at(bytes, record_at + 40);
         let cd_offset = u64_at(bytes, record_at + 48);
-        // The directory ends where the zip64 record
-        // stands, in the archive's own coordinates.
-        if cd_offset.checked_add(cd_size)? != declared_record {
-            return None;
-        }
         let archive_offset = u64::try_from(record_at)
             .ok()?
             .checked_sub(declared_record)?;
         let cd_start = usize::try_from(cd_offset.checked_add(archive_offset)?).ok()?;
+        // The directory ends where the zip64 record
+        // stands, in the archive's own coordinates —
+        // or at a digital-signature record standing at
+        // the walk's end whose own declared length
+        // closes the gap to the record, counted in the
+        // declared directory size or not (round 39,
+        // F2): the signature allowance the plain frame
+        // already carries, one flavour over.
+        if cd_offset.checked_add(cd_size)? != declared_record
+            && !signature_record_closes_to_zip64_record(bytes, cd_start, total, record_at)
+        {
+            return None;
+        }
         if !hunted_directory_walks_to(bytes, cd_start, total, record_at) {
             return None;
         }
@@ -420,7 +461,16 @@ fn validated_zip64_record(
     let cd_size = u64_at(bytes, record_at + 40);
     let cd_offset = u64_at(bytes, record_at + 48);
     if cd_offset.checked_add(cd_size)? != declared_record {
-        return None;
+        // The signature allowance, as in the
+        // arithmetic derivation (round 39, F2): the
+        // record stands when a signature record at
+        // the directory walk's end accounts for every
+        // byte between the declared directory end and
+        // the record's own position.
+        let cd_start = usize::try_from(cd_offset.checked_add(archive_offset)?).ok()?;
+        if !signature_record_closes_to_zip64_record(bytes, cd_start, total, record_at) {
+            return None;
+        }
     }
     Some((total, cd_size, cd_offset, archive_offset))
 }
@@ -445,6 +495,28 @@ fn signature_record_spans_to(bytes: &[u8], promised_end: usize, eocd: usize) -> 
     }
     let data_len = usize::from(u16_at(bytes, promised_end + 4));
     header_end.checked_add(data_len) == Some(eocd)
+}
+
+/// Whether a digital-signature record standing at
+/// the end of the directory walk starting at
+/// `cd_start` spans exactly to the zip64 record at
+/// `record_at` (round 39, F2): the record's own
+/// declared length closes the gap between the
+/// directory's end and the zip64 record, whether or
+/// not the declared directory size counted its
+/// bytes. The walk itself must land where the
+/// signature record stands — a gap of any other
+/// shape closes nothing.
+fn signature_record_closes_to_zip64_record(
+    bytes: &[u8],
+    cd_start: usize,
+    total: u64,
+    record_at: usize,
+) -> bool {
+    let Some(walk_end) = directory_walk_end(bytes, cd_start, total) else {
+        return false;
+    };
+    signature_record_spans_to(bytes, walk_end, record_at)
 }
 
 /// One central-hunt candidate at `at`, validated the
@@ -623,6 +695,32 @@ fn hunted_directory(bytes: &[u8], eocd: usize) -> Option<CentralDirectory> {
     None
 }
 
+/// The byte span one central spot's local header
+/// occupies in `bytes`, computed from the local
+/// header's own fields alone — its fixed thirty
+/// bytes and its declared name and extra fields —
+/// with checked arithmetic throughout (round 39,
+/// F1). Unlike `payload_span` this never consults
+/// the declared compressed size, so a header stands
+/// even where its entry's payload cannot be read
+/// back. None when the header does not stand where
+/// the spot says or its fields do not fit in the
+/// file.
+fn local_header_span(bytes: &[u8], spot: &CentralSpot) -> Option<(usize, usize)> {
+    let local = usize::try_from(spot.local_offset).ok()?;
+    let header_end = local.checked_add(30)?;
+    if header_end > bytes.len() || !bytes[local..].starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let name_len = usize::from(u16_at(bytes, local + 26));
+    let extra_len = usize::from(u16_at(bytes, local + 28));
+    let data_start = header_end.checked_add(name_len)?.checked_add(extra_len)?;
+    if data_start > bytes.len() {
+        return None;
+    }
+    Some((local, data_start))
+}
+
 /// The byte spans one candidate directory's walk
 /// accounts for whole (round 38, F1): each declared
 /// entry's local header whole — its fixed part, name,
@@ -640,6 +738,20 @@ fn hunted_directory(bytes: &[u8], eocd: usize) -> Option<CentralDirectory> {
 /// second end record standing inside one of these
 /// spans stands inside bytes this candidate's own
 /// walk accounts for.
+///
+/// Round 39, F1: three regions still stood outside
+/// — the unused gap between the last entry's payload
+/// and the directory, the region between the
+/// archive's own start and its first local header,
+/// and the local header of an entry whose payload
+/// span does not resolve (the header span was pushed
+/// only inside the payload span's success). Each
+/// local header's span is computed from the local
+/// header's own fields now, whether or not its
+/// payload span resolves; the two gap regions are
+/// the walked extent's fill, stated at
+/// `directory_walked_extent` and judged at
+/// `central_directory`.
 fn directory_walked_spans(bytes: &[u8], directory: &CentralDirectory) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     let mut at = directory.cd_start;
@@ -681,13 +793,17 @@ fn directory_walked_spans(bytes: &[u8], directory: &CentralDirectory) -> Vec<(us
         let extra = &bytes[name_end..extra_end];
         let mut spot = raw_spot(header, extra);
         spot.local_offset = spot.local_offset.saturating_add(directory.archive_offset);
-        if let Some((data_start, data_end)) = payload_span(bytes, &spot) {
-            if let Ok(local) = usize::try_from(spot.local_offset) {
-                if local <= data_start {
-                    spans.push((local, data_start));
-                }
-                spans.push((data_start, data_end));
-            }
+        // The local header stands in the extent from
+        // its own fields (round 39, F1), whether or
+        // not the entry's payload span resolves: an
+        // entry whose declared compressed size
+        // overruns the file used to account for no
+        // bytes at all, its header included.
+        if let Some(span) = local_header_span(bytes, &spot) {
+            spans.push(span);
+        }
+        if let Some(span) = payload_span(bytes, &spot) {
+            spans.push(span);
         }
         match extra_end.checked_add(comment_len) {
             Some(next) => at = next,
@@ -713,6 +829,85 @@ fn directory_walked_spans(bytes: &[u8], directory: &CentralDirectory) -> Vec<(us
         }
     }
     spans
+}
+
+/// The whole run of bytes one candidate's walk
+/// covers, from the archive's own start to the end
+/// of its directory walk — a signature record
+/// standing at the walk's end included (round 39,
+/// F1). The walked spans above account for the
+/// headers, payloads, and records themselves; this
+/// run accounts for everything between them too:
+/// the unused gap before the central directory and
+/// the region before the first local header are the
+/// candidate's bytes the way its accounted spans
+/// are. None when the walk does not complete.
+fn directory_walked_extent(bytes: &[u8], directory: &CentralDirectory) -> Option<(usize, usize)> {
+    let walk_end = directory_walk_end(bytes, directory.cd_start, directory.total)?;
+    let mut extent_end = walk_end;
+    if walk_end < bytes.len() && bytes[walk_end..].starts_with(b"PK\x05\x05") {
+        let header_end = walk_end.checked_add(6)?;
+        if header_end <= bytes.len() {
+            let data_len = usize::from(u16_at(bytes, walk_end + 4));
+            if let Some(sig_end) = header_end.checked_add(data_len) {
+                if sig_end <= bytes.len() {
+                    extent_end = sig_end;
+                }
+            }
+        }
+    }
+    let archive_start = usize::try_from(directory.archive_offset).ok()?;
+    if archive_start > extent_end {
+        return None;
+    }
+    Some((archive_start, extent_end))
+}
+
+/// Every local offset one candidate's walk accounts
+/// for, in the file's own coordinates: the local
+/// header each of its central records names, shifted
+/// by its archive offset. Two candidates over one
+/// body of local headers are told apart by these
+/// sets (round 39, F1): a planted or appended
+/// directory names each duplicated name's first copy
+/// only, so the second copies' local headers stand
+/// in the real directory's set and in no other's.
+fn directory_local_offsets(bytes: &[u8], directory: &CentralDirectory) -> Vec<u64> {
+    let mut offsets = Vec::new();
+    let mut at = directory.cd_start;
+    for _ in 0..directory.total {
+        let header_end = match at.checked_add(46) {
+            Some(end) => end,
+            None => break,
+        };
+        if header_end > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
+            break;
+        }
+        let name_len = usize::from(u16_at(bytes, at + 28));
+        let extra_len = usize::from(u16_at(bytes, at + 30));
+        let comment_len = usize::from(u16_at(bytes, at + 32));
+        let name_end = match header_end.checked_add(name_len) {
+            Some(end) => end,
+            None => break,
+        };
+        let extra_end = match name_end.checked_add(extra_len) {
+            Some(end) => end,
+            None => break,
+        };
+        if extra_end > bytes.len() {
+            break;
+        }
+        let header = &bytes[at..header_end];
+        let extra = &bytes[name_end..extra_end];
+        let mut spot = raw_spot(header, extra);
+        spot.local_offset = spot.local_offset.saturating_add(directory.archive_offset);
+        offsets.push(spot.local_offset);
+        match extra_end.checked_add(comment_len) {
+            Some(next) => at = next,
+            None => break,
+        }
+    }
+    offsets
 }
 
 /// The byte spans one candidate directory's declared
@@ -874,6 +1069,31 @@ fn zip64_structural_span(
 /// extra or comment field, or a signature record's
 /// data is that archive's header, record, or
 /// signature bytes, not its directory.
+///
+/// Round 39, F1 + F2: the walked extent runs from
+/// the candidate's archive start to the end of its
+/// directory walk, every gap byte included, and a
+/// local header stands in it from its own fields
+/// whether or not its entry's payload span resolves
+/// — a directory planted in the gap before the
+/// directory, before the first local header, or in
+/// the header of a spanless entry is this archive's
+/// bytes, not its directory. The extent's gap fill
+/// subordinates a candidate only where the filling
+/// candidate's walk accounts for every local header
+/// the filled candidate's walk accounts for, and at
+/// least one more: an appended second directory
+/// names only the first copies' local headers (or,
+/// over a duplicate-free body, exactly the real
+/// one's), so its fill cannot swallow the end record
+/// of the directory that accounts for them all, and
+/// the round-36 appended discipline stands. And a
+/// zip64 candidate
+/// failing record validation only by an uncounted
+/// signature record at its walk's end derives under
+/// the signature allowance, so the real candidate
+/// stands and the plant inside that signature
+/// record is subordinated as on plain hosts.
 pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
     // Every candidate that derives, in file order,
     // with the span its declared comment covers:
@@ -918,6 +1138,14 @@ pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
         .iter()
         .map(|(_, _, _, directory)| directory_walked_spans(bytes, directory))
         .collect();
+    let walked_extents: Vec<Option<(usize, usize)>> = derived
+        .iter()
+        .map(|(_, _, _, directory)| directory_walked_extent(bytes, directory))
+        .collect();
+    let local_offsets: Vec<Vec<u64>> = derived
+        .iter()
+        .map(|(_, _, _, directory)| directory_local_offsets(bytes, directory))
+        .collect();
     for (i, (at, _, _, directory)) in derived.iter().enumerate() {
         if absorbed[i] {
             continue;
@@ -940,7 +1168,42 @@ pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
                     || walked_spans[j]
                         .iter()
                         .any(|(start, end)| at >= start && at < end)
-                    || zip64_spans[j].is_some_and(|(start, end)| *at >= start && *at < end))
+                    || zip64_spans[j].is_some_and(|(start, end)| *at >= start && *at < end)
+                    // The walked extent's gap fill
+                    // (round 39, F1): this candidate's
+                    // end record stands between the
+                    // other candidate's archive start
+                    // and the end of its walk, in a gap
+                    // no accounted span covers — and
+                    // the other candidate's walk
+                    // accounts for every local header
+                    // this candidate's walk accounts
+                    // for, and at least one more. The
+                    // accounting guard is what keeps an
+                    // appended second directory from
+                    // swallowing the real one: the
+                    // appended directory names only the
+                    // first copies' headers, so the
+                    // directory that accounts for them
+                    // all is not inside its fill, while
+                    // a directory planted in the real
+                    // archive's gap names nothing the
+                    // real walk does not. The guard is
+                    // strict — a second directory that
+                    // mirrors the real one's headers
+                    // exactly (an appended or
+                    // comment-planted copy over a body
+                    // with no duplicates) accounts for
+                    // no more than the real one, and
+                    // its fill swallows nothing.
+                    || (walked_extents[j]
+                        .is_some_and(|(start, end)| *at >= start && *at < end)
+                        && local_offsets[i]
+                            .iter()
+                            .all(|offset| local_offsets[j].contains(offset))
+                        && local_offsets[j]
+                            .iter()
+                            .any(|offset| !local_offsets[i].contains(offset))))
         });
         if in_structural {
             continue;
@@ -2711,5 +2974,386 @@ mod tests {
         assert_eq!(directory.total, 2);
         assert_eq!(directory.cd_start, control.cd_start + 64);
         assert_eq!(&*prefix_free(&moved), &plain[..]);
+    }
+
+    /// The round-39 walked-extent crafts (red team
+    /// RT39-1, review R39-R2), assembled byte by byte
+    /// over Stored entries a.txt in two disagreeing
+    /// copies and a filler: per `shape` — "gap" a
+    /// 5,000-byte unused gap between the last entry's
+    /// payload and the real directory, a complete fake
+    /// directory (the first copies' records plus its
+    /// own end record) planted at the gap's head;
+    /// "gapclean" the gap with no plant; "prefirst" a
+    /// 3,000-byte region before the first local header
+    /// carrying the plant; "broken" the filler gaining
+    /// a 4,000-byte local extra carrying the plant
+    /// while its central record declares a compressed
+    /// size of 0xFFFFFFF0, so its payload span does not
+    /// resolve. The zip64 twins of "gap" and "broken"
+    /// ride in the F2 crafter's host table. Returns
+    /// the bytes and the real directory's start.
+    fn r39a_gap_archive(shape: &str) -> (Vec<u8>, usize) {
+        let entries: [(&[u8], &[u8]); 3] = [
+            (b"a.txt", b"first copy"),
+            (b"a.txt", b"second copy!"),
+            (b"filler.bin", &[b'A'; 600]),
+        ];
+        let central = |name: &[u8], data: &[u8], local_offset: u32, comp: u32| {
+            let mut rec: Vec<u8> = Vec::new();
+            rec.extend_from_slice(b"PK\x01\x02");
+            rec.extend_from_slice(&45u16.to_le_bytes());
+            rec.extend_from_slice(&20u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u32.to_le_bytes());
+            rec.extend_from_slice(&comp.to_le_bytes());
+            rec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            rec.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u32.to_le_bytes());
+            rec.extend_from_slice(&local_offset.to_le_bytes());
+            rec.extend_from_slice(name);
+            rec
+        };
+        let prefix: usize = if shape == "prefirst" { 3000 } else { 0 };
+        let gap: usize = if matches!(shape, "gap" | "gapclean") {
+            5000
+        } else {
+            0
+        };
+        let broken = shape == "broken";
+        let mut body: Vec<u8> = vec![b'P'; prefix];
+        let mut locals: Vec<u32> = Vec::new();
+        let mut filler_extra_start = 0usize;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            locals.push(body.len() as u32);
+            let local_extra: usize = if broken && i + 1 == entries.len() {
+                4000
+            } else {
+                0
+            };
+            body.extend_from_slice(b"PK\x03\x04");
+            body.extend_from_slice(&20u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            body.extend_from_slice(&(local_extra as u16).to_le_bytes());
+            body.extend_from_slice(name);
+            if local_extra > 0 {
+                filler_extra_start = body.len();
+                body.extend_from_slice(&vec![b'E'; local_extra]);
+            }
+            body.extend_from_slice(data);
+        }
+        let mut fake_recs: Vec<u8> = Vec::new();
+        let mut fake_total: u16 = 0;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            if entries[..i].iter().any(|(other, _)| other == name) {
+                continue;
+            }
+            fake_recs.extend_from_slice(&central(name, data, locals[i], data.len() as u32));
+            fake_total += 1;
+        }
+        let fake_len = fake_recs.len();
+        let plant = |host: &mut Vec<u8>, at: usize| {
+            host[at..at + fake_len].copy_from_slice(&fake_recs);
+            let eocd = plain_eocd(fake_total, fake_len as u32, at as u32, 0, &[]);
+            host[at + fake_len..at + fake_len + 22].copy_from_slice(&eocd);
+        };
+        if shape == "prefirst" {
+            plant(&mut body, 100);
+        }
+        if broken {
+            plant(&mut body, filler_extra_start + 100);
+        }
+        if gap > 0 {
+            let gap_start = body.len();
+            body.extend_from_slice(&vec![b'G'; gap]);
+            if shape == "gap" {
+                plant(&mut body, gap_start + 100);
+            }
+        }
+        let cd_start = body.len();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            let comp = if broken && i + 1 == entries.len() {
+                0xFFFF_FFF0
+            } else {
+                data.len() as u32
+            };
+            centrals.extend_from_slice(&central(name, data, locals[i], comp));
+        }
+        let mut out = body;
+        out.extend_from_slice(&centrals);
+        out.extend_from_slice(&plain_eocd(
+            entries.len() as u16,
+            centrals.len() as u32,
+            cd_start as u32,
+            0,
+            &[],
+        ));
+        (out, cd_start)
+    }
+
+    #[test]
+    fn a_directory_planted_in_the_gap_before_the_directory_before_the_first_header_or_in_a_spanless_entrys_header_never_steers(
+    ) {
+        // Round 39, F1 (red team RT39-1 + review
+        // R39-R2): three byte regions stood outside
+        // the walked extent — the unused gap between
+        // the last entry's payload and the central
+        // directory, the region between the archive's
+        // own start and its first local header, and
+        // the local header of an entry whose payload
+        // span does not resolve (its span was pushed
+        // only inside the payload span's success, so a
+        // filler whose central record declares a
+        // compressed size overrunning the file
+        // accounted for no bytes at all, its header
+        // included). A complete fake directory planted
+        // in any of them derived, stood earliest, and
+        // was judged. The real directory is judged in
+        // every shape now, the gap-clean control
+        // included: every entry stands in it, the
+        // second copy under its own record.
+        for shape in ["gap", "gapclean", "prefirst", "broken"] {
+            let (bytes, cd_start) = r39a_gap_archive(shape);
+            let directory = central_directory(&bytes).expect("the real directory derives");
+            assert_eq!(directory.archive_offset, 0, "{shape}");
+            assert_eq!(directory.total, 3, "{shape}");
+            assert_eq!(directory.cd_start, cd_start, "{shape}");
+            let spots = central_spots(&bytes);
+            let names: Vec<&str> = spots.iter().map(|(name, _)| name.as_str()).collect();
+            assert_eq!(names, ["a.txt", "a.txt", "filler.bin"], "{shape}");
+            assert_eq!(spots[0].1.comp_size, 10, "{shape}: the first copy's record");
+            assert_eq!(
+                spots[1].1.comp_size, 12,
+                "{shape}: the second copy's own record stands in the judged directory"
+            );
+        }
+    }
+
+    /// The round-39 zip64 signature crafts (red team
+    /// RT39-2), assembled byte by byte over the same
+    /// Stored entries as the gap crafter: a zip64 host
+    /// whose digital-signature record (4,000 data
+    /// bytes) stands between the real directory and
+    /// the zip64 record. Per `shape` — "clean" the
+    /// signature record uncounted in the zip64
+    /// record's declared directory size and no plant;
+    /// "plant" a complete fake directory planted
+    /// inside the signature record's data, uncounted;
+    /// "counted" the plant with the signature record
+    /// counted in the declared size; "sectorclean" /
+    /// "sectorplant" the uncounted shapes on a host
+    /// whose zip64 record carries a 2,048-byte
+    /// extensible data sector, so the validating hunt
+    /// is the only derivation; "gap64" a fake
+    /// directory planted in a 5,000-byte gap before
+    /// the directory of a zip64 host; "broken64" the
+    /// gap crafter's broken filler on a zip64 host.
+    /// Returns the bytes and the real directory's
+    /// start.
+    fn r39a_zip64_sig_archive(shape: &str) -> (Vec<u8>, usize) {
+        if matches!(shape, "gap64" | "broken64") {
+            // The plain gap crafts rebuilt on a zip64
+            // host: the same body (the gap plant rides
+            // in the rebuilt body's gap; the broken
+            // filler's plant rides in its local extra),
+            // then the zip64 end structures in place of
+            // the plain end record.
+            let plain_shape = if shape == "gap64" { "gap" } else { "broken" };
+            let (plain, cd_start) = r39a_gap_archive(plain_shape);
+            let plain_eocd = plain.len() - 22;
+            let mut out = plain[..plain_eocd].to_vec();
+            let centrals_len = plain_eocd - cd_start;
+            let record_at = out.len() as u64;
+            out.extend_from_slice(b"PK\x06\x06");
+            out.extend_from_slice(&44u64.to_le_bytes());
+            out.extend_from_slice(&45u16.to_le_bytes());
+            out.extend_from_slice(&45u16.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&3u64.to_le_bytes());
+            out.extend_from_slice(&3u64.to_le_bytes());
+            out.extend_from_slice(&(centrals_len as u64).to_le_bytes());
+            out.extend_from_slice(&(cd_start as u64).to_le_bytes());
+            out.extend_from_slice(b"PK\x06\x07");
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&record_at.to_le_bytes());
+            out.extend_from_slice(&1u32.to_le_bytes());
+            out.extend_from_slice(b"PK\x05\x06");
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&u16::MAX.to_le_bytes());
+            out.extend_from_slice(&u16::MAX.to_le_bytes());
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            return (out, cd_start);
+        }
+        let entries: [(&[u8], &[u8]); 3] = [
+            (b"a.txt", b"first copy"),
+            (b"a.txt", b"second copy!"),
+            (b"filler.bin", &[b'A'; 600]),
+        ];
+        let central = |name: &[u8], data: &[u8], local_offset: u32| {
+            let mut rec: Vec<u8> = Vec::new();
+            rec.extend_from_slice(b"PK\x01\x02");
+            rec.extend_from_slice(&45u16.to_le_bytes());
+            rec.extend_from_slice(&20u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u32.to_le_bytes());
+            rec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            rec.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            rec.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u16.to_le_bytes());
+            rec.extend_from_slice(&0u32.to_le_bytes());
+            rec.extend_from_slice(&local_offset.to_le_bytes());
+            rec.extend_from_slice(name);
+            rec
+        };
+        let sector: usize = if shape.starts_with("sector") { 2048 } else { 0 };
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in &entries {
+            locals.push(body.len() as u32);
+            body.extend_from_slice(b"PK\x03\x04");
+            body.extend_from_slice(&20u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(name);
+            body.extend_from_slice(data);
+        }
+        let cd_start = body.len();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&central(name, data, locals[i]));
+        }
+        let mut fake_recs: Vec<u8> = Vec::new();
+        let mut fake_total: u16 = 0;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            if entries[..i].iter().any(|(other, _)| other == name) {
+                continue;
+            }
+            fake_recs.extend_from_slice(&central(name, data, locals[i]));
+            fake_total += 1;
+        }
+        let mut sig_data = vec![b'S'; 4000];
+        if matches!(shape, "plant" | "counted" | "sectorplant") {
+            let fake_at = cd_start + centrals.len() + 6 + 100;
+            sig_data[100..100 + fake_recs.len()].copy_from_slice(&fake_recs);
+            let eocd = plain_eocd(fake_total, fake_recs.len() as u32, fake_at as u32, 0, &[]);
+            let eocd_at = 100 + fake_recs.len();
+            sig_data[eocd_at..eocd_at + 22].copy_from_slice(&eocd);
+        }
+        let cd_size = centrals.len() as u64 + if shape == "counted" { 4006 } else { 0 };
+        let mut out = body;
+        out.extend_from_slice(&centrals);
+        out.extend_from_slice(b"PK\x05\x05");
+        out.extend_from_slice(&(sig_data.len() as u16).to_le_bytes());
+        out.extend_from_slice(&sig_data);
+        let record_at = out.len() as u64;
+        out.extend_from_slice(b"PK\x06\x06");
+        out.extend_from_slice(&((44 + sector) as u64).to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&(cd_start as u64).to_le_bytes());
+        out.extend_from_slice(&vec![b'S'; sector]);
+        out.extend_from_slice(b"PK\x06\x07");
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_at.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        (out, cd_start)
+    }
+
+    #[test]
+    fn a_zip64_archive_whose_signature_record_is_uncounted_derives_and_a_directory_planted_in_it_never_steers(
+    ) {
+        // Round 39, F2 (red team RT39-2): on a plain
+        // host a signature record standing after the
+        // directory is handled — the hunt's frame
+        // anchor carries the signature allowance — but
+        // on a zip64 host whose signature record's
+        // bytes are NOT counted in the declared
+        // directory size, both derivations demanded
+        // the directory end equal the zip64 record's
+        // position exactly, so the clean craft derived
+        // nothing at all while the reader served it,
+        // and a fake directory planted inside the
+        // signature record was the only standing
+        // candidate and was judged. A zip64 candidate
+        // failing validation only by that signature
+        // record derives under the signature allowance
+        // now — the record's own declared length
+        // closes the gap, counted or not — on the
+        // arithmetic path and the hunt alike: the real
+        // directory is judged in every shape, the
+        // counted variant and the F1 zip64 twins (a
+        // plant in the gap, a plant in a spanless
+        // entry's header) included, the second copy
+        // under its own record. The plain-host
+        // signature plant stands subordinated as the
+        // round-38 pin above states (its "n4" shape).
+        for shape in [
+            "clean",
+            "plant",
+            "counted",
+            "sectorclean",
+            "sectorplant",
+            "gap64",
+            "broken64",
+        ] {
+            let (bytes, cd_start) = r39a_zip64_sig_archive(shape);
+            let directory = central_directory(&bytes).expect("the real directory derives");
+            assert_eq!(directory.archive_offset, 0, "{shape}");
+            assert_eq!(directory.total, 3, "{shape}");
+            assert_eq!(directory.cd_start, cd_start, "{shape}");
+            let spots = central_spots(&bytes);
+            let names: Vec<&str> = spots.iter().map(|(name, _)| name.as_str()).collect();
+            assert_eq!(names, ["a.txt", "a.txt", "filler.bin"], "{shape}");
+            assert_eq!(spots[0].1.comp_size, 10, "{shape}: the first copy's record");
+            assert_eq!(
+                spots[1].1.comp_size, 12,
+                "{shape}: the second copy's own record stands in the judged directory"
+            );
+        }
     }
 }

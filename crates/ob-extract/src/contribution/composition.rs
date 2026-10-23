@@ -1698,6 +1698,133 @@ fn skip_framing_garnish(mut rest: &str) -> &str {
     rest
 }
 
+/// `text` with a leading governor group unwrapped:
+/// the group's own governor words standing bare at
+/// the leading slot, every other byte as written
+/// (round 38, R38-D, F4 — a doctrine change adopted
+/// openly in the round-38 synthesis, adjudication
+/// 4, not a reading smuggled into this batch).
+///
+/// The doctrine: a leading group's governor
+/// contents are judged as the bare governor is
+/// judged, at the leading slot, in every wrapper.
+/// The slot already judges group contents — for
+/// weekdays (the framing readers and the R37-D
+/// sequence walk) and for dates (the R36-D / R37-B
+/// consultation beside relative phrases) — and on
+/// the audited tree the governor was the one exempt
+/// contents class: a wrapped leading governor was
+/// garnish in every wrapper form (all three pairs,
+/// doubled, mixed, marked, glued, spaced, behind
+/// the `on`/`the` framing stack, with a companion,
+/// before a Sunday-after phrase) while the bare
+/// governor governed in every corresponding form
+/// and the quote-wrapped bare governor governed
+/// too — inside one leading sequence the weekday
+/// judged and the cancellation standing beside it
+/// was ignored. Dress is not semantics at a judged
+/// slot.
+///
+/// The construction is the judgment restated as a
+/// reading: the framing garnish stack aside, every
+/// top-level group standing in the leading run
+/// (separated as the sequence walk allows) whose
+/// whole contents are a governor phrase — judged
+/// by the standing phrase judgments
+/// (`is_governor_phrase` / `is_cancellation_phrase`)
+/// over the group's cleaned words, the same
+/// judgments the bare line's segment scan applies —
+/// is replaced by those words bare, so every reader
+/// below reads the line its bare-governor twin
+/// reads, field for field, on both routes.
+/// Companion groups keep their dress and their own
+/// standing judgments: only the governor's wrapper
+/// comes off. A group holding anything more than a
+/// governor phrase (a date, a weekday, inert words,
+/// a governor beside other words) is not this
+/// pass's: its standing readers judge it whole.
+///
+/// Scope, per the coordinator's ruling
+/// (r38d-ruling.md, option (a)): the LEADING slot
+/// only. The walk starts at the line's head and
+/// stops at the first word that is not a run group,
+/// so a group standing anywhere else — trailing,
+/// at a Sunday-after base's trailing slot, mid-line
+/// — keeps its standing reading byte for byte this
+/// round; the wrapped/bare split at those slots is
+/// carried to round 39 as a doctrine question, not
+/// widened here.
+fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    let head_offset = text.len() - trimmed.len();
+    let rest = skip_framing_garnish(trimmed);
+    let mut scan = head_offset + (trimmed.len() - rest.len());
+    let mut out: Option<String> = None;
+    let mut cursor = 0usize;
+    loop {
+        // The separations the leading sequence walk
+        // allows between the run's groups (round 38,
+        // R38-B): whitespace, commas, the sentence
+        // separators, and a typographic closing quote
+        // standing as a group's suffix.
+        let mut p = scan;
+        while let Some(c) = text[p..].chars().next() {
+            if matches!(c, ' ' | '\t' | ',' | ';' | '.' | ':' | '\u{2019}') {
+                p += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if !matches!(text[p..].chars().next(), Some('(' | '[' | '{')) {
+            break;
+        }
+        let Some((start, end)) = first_balanced_span(&text[p..]) else {
+            break;
+        };
+        if start != 0 {
+            break;
+        }
+        let inner = &text[p + 1..p + end - 1];
+        let raw_words: Vec<&str> = inner.split_whitespace().collect();
+        let words: Vec<String> = segment_tokens(&raw_words)
+            .into_iter()
+            .filter(|w| !w.is_empty())
+            .collect();
+        if !words.is_empty() && (is_governor_phrase(&words) || is_cancellation_phrase(&words)) {
+            let bare = words.join(" ");
+            let buf = out.get_or_insert_with(|| String::with_capacity(text.len()));
+            buf.push_str(&text[cursor..p]);
+            // The bare words stand as words: a space
+            // separates them from a word or a group
+            // they stand glued against, on either
+            // side ("(Monday)(cancelled)November" —
+            // the governor's twin is "(Monday)
+            // cancelled November").
+            if buf
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_alphanumeric() || matches!(c, ')' | ']' | '}'))
+            {
+                buf.push(' ');
+            }
+            buf.push_str(&bare);
+            let after = p + end;
+            if text[after..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || matches!(c, '(' | '[' | '{'))
+            {
+                buf.push(' ');
+            }
+            cursor = after;
+        }
+        scan = p + end;
+    }
+    let mut buf = out?;
+    buf.push_str(&text[cursor..]);
+    Some(buf)
+}
+
 /// The group sequence standing at the leading slot
 /// of `text` (round 37, R37-D, F7): the framing
 /// garnish stack aside, two or more top-level
@@ -5466,6 +5593,15 @@ pub(super) fn trailing_dates_after_core_governance(
     // shed is garnish there as well.
     let mark_shed = bare_date_mark_shed(text);
     let text: &str = mark_shed.as_deref().unwrap_or(text);
+    // Round 38 (R38-D, F4): the same leading-governor
+    // unwrap as the date lines (see `date_line`), for
+    // the same reason — the fallback composes the
+    // whole line, and on the wrapped text the
+    // composition served the date the bare-governor
+    // twin's line governs, standing it back up as
+    // the keep-through date the twin never stands.
+    let unwrapped = unwrapped_leading_governor_group(text);
+    let text: &str = unwrapped.as_deref().unwrap_or(text);
     if let Some(reading) = whole_line_composition(text, today, anchor) {
         return reading.date.into_iter().collect();
     }
@@ -5994,6 +6130,24 @@ pub(super) fn date_line(
     let effective_raw: Option<String> = match effective_raw {
         Some(text) => match bare_date_mark_shed(&text) {
             Some(shed) => Some(shed),
+            None => Some(text),
+        },
+        None => None,
+    };
+    // Round 38 (R38-D, F4): the whole line is
+    // likewise read with a leading governor group
+    // unwrapped (see
+    // `unwrapped_leading_governor_group`) — a leading
+    // group's governor contents are judged as the
+    // bare governor is judged, at the leading slot,
+    // in every wrapper, so the wrapped line's full
+    // record is its bare-governor twin's. The pass
+    // walks only the leading run: trailing and
+    // base-trailing groups keep their standing
+    // readings (coordinator ruling, r38d-ruling.md).
+    let effective_raw: Option<String> = match effective_raw {
+        Some(text) => match unwrapped_leading_governor_group(&text) {
+            Some(unwrapped) => Some(unwrapped),
             None => Some(text),
         },
         None => None,

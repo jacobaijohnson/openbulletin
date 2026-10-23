@@ -23028,33 +23028,62 @@ fn r37d_companion_contents_keep_their_standing_judgments_and_the_r5d_boundary_st
     // contents carry their own judgment keeps it.
     // A governing companion beside a disagreeing
     // weekday group changes nothing about the
-    // weekday's refusal (a wrapped leading governor
-    // is garnish, per the standing uniform cell;
-    // a trailing "(cancelled)" group leaves the
-    // core to the weekday exactly as it leaves it
-    // to the standing readers), and beside an
-    // agreeing weekday group the line reads as the
-    // lone agreeing line reads.
-    for compound in [
-        "(Monday)(cancelled)November 1, 2026",
-        "(cancelled)(Monday)November 1, 2026",
-        "November 1, 2026 (Monday)(cancelled)",
-        "November 1, 2026 (cancelled)(Monday)",
+    // weekday's refusal, and a trailing
+    // "(cancelled)" group leaves the core to the
+    // weekday exactly as it leaves it to the
+    // standing readers.
+    // Round 38 (R38-D, F4) RESTATES the leading
+    // arms of this pin outright, flagged in the
+    // batch's writer note: the round-37 text here
+    // recorded that "a wrapped leading governor is
+    // garnish, per the standing uniform cell", and
+    // the leading arms were pinned against the
+    // lone weekday forms. Under the doctrine
+    // adopted in the round-38 synthesis
+    // (adjudication 4) a leading group's governor
+    // contents are judged as the bare governor is
+    // judged, so the leading arms are now pinned
+    // against their governor-bared twins: beside a
+    // disagreeing weekday the refusal record is the
+    // twin's (the weekday still speaks), and beside
+    // an agreeing weekday the governor governs and
+    // the line reads nothing, as its twin reads
+    // nothing. The trailing arms below are
+    // unchanged (coordinator ruling r38d-ruling.md:
+    // the doctrine change is leading-slot only).
+    for (compound, twin) in [
+        (
+            "(Monday)(cancelled)November 1, 2026",
+            "(Monday) cancelled November 1, 2026",
+        ),
+        (
+            "(cancelled)(Monday)November 1, 2026",
+            "cancelled (Monday) November 1, 2026",
+        ),
+        (
+            "November 1, 2026 (Monday)(cancelled)",
+            "November 1, 2026 (Monday)",
+        ),
+        (
+            "November 1, 2026 (cancelled)(Monday)",
+            "November 1, 2026 (Monday)",
+        ),
     ] {
-        let lone = if compound.starts_with("November") {
-            "November 1, 2026 (Monday)"
-        } else {
-            "(Monday)November 1, 2026"
-        };
-        r34e_for_twin(compound, lone);
-        r34e_keep_twin(compound, lone);
+        r34e_for_twin(compound, twin);
+        r34e_keep_twin(compound, twin);
     }
-    for compound in [
-        "(Sunday)(cancelled)November 1, 2026",
-        "(cancelled)(Sunday)November 1, 2026",
+    for (compound, twin) in [
+        (
+            "(Sunday)(cancelled)November 1, 2026",
+            "(Sunday) cancelled November 1, 2026",
+        ),
+        (
+            "(cancelled)(Sunday)November 1, 2026",
+            "cancelled (Sunday) November 1, 2026",
+        ),
     ] {
-        r34e_for_twin(compound, "(Sunday)November 1, 2026");
-        r34e_keep_twin(compound, "(Sunday)November 1, 2026");
+        r34e_for_twin(compound, twin);
+        r34e_keep_twin(compound, twin);
     }
     for compound in [
         "November 1, 2026 (Sunday)(cancelled)",
@@ -26880,16 +26909,36 @@ fn r38b_sequence_walks_take_the_lone_forms_sentence_separators() {
     // Companion contents keep their standing
     // judgments beside a separator: the walk judges
     // the weekday group and nothing else, so a
-    // governing or date-carrying companion separated
-    // by ";" stands exactly as its glued twin in
-    // the r37d/r37g pin sets stands.
-    for compound in [
-        "(Monday); (cancelled) November 1, 2026",
-        "(cancelled); (Monday) November 1, 2026",
-        "(Monday); (November 8, 2026) November 1, 2026",
+    // date-carrying companion separated by ";"
+    // stands exactly as its glued twin in the
+    // r37d/r37g pin sets stands, and a governing
+    // companion at the trailing and base-trailing
+    // slots stands the same way. A governing
+    // companion at the LEADING slot no longer
+    // stands with them: since round 38 (R38-D, F4)
+    // its contents are judged as the bare governor
+    // is judged, so the leading arms below are
+    // pinned against their governor-bared twins —
+    // RESTATED OUTRIGHT by R38-D, flagged in the
+    // batch's writer note (the pre-R38-D pins
+    // compared them to "(Monday) November 1, 2026",
+    // encoding the wrapped governor as garnish).
+    for (compound, twin) in [
+        (
+            "(Monday); (cancelled) November 1, 2026",
+            "(Monday); cancelled November 1, 2026",
+        ),
+        (
+            "(cancelled); (Monday) November 1, 2026",
+            "cancelled; (Monday) November 1, 2026",
+        ),
+        (
+            "(Monday); (November 8, 2026) November 1, 2026",
+            "(Monday) November 1, 2026",
+        ),
     ] {
-        r34e_for_twin(compound, "(Monday) November 1, 2026");
-        r34e_keep_twin(compound, "(Monday) November 1, 2026");
+        r34e_for_twin(compound, twin);
+        r34e_keep_twin(compound, twin);
     }
     for compound in [
         "November 1, 2026 (Monday); (cancelled)",
@@ -27571,4 +27620,214 @@ fn r38c_held_neighbours_at_the_interior_slots_keep_their_readings() {
         let c = parse_contribution(&text, today()).expect("parses");
         assert_eq!(c.keep_through, None, "{line}: nothing kept");
     }
+}
+
+#[test]
+fn r38d_wrapped_leading_governor_governs_as_its_bare_twin() {
+    // Round 38 (R38-D, F4 — doctrine change adopted
+    // openly in the round-38 synthesis,
+    // adjudication 4): a leading group's governor
+    // contents are judged as the bare governor is
+    // judged, at the leading slot, in every wrapper.
+    // On the audited tree the wrapped leading
+    // governor was garnish in every form (review
+    // doctrine (a)(ii), 39 lines, contrib-gov-38.log;
+    // red team, 12 forms uniform) while the bare
+    // governor and the quote-wrapped bare governor
+    // governed at the same slot — dress was
+    // semantics at a slot that already judges group
+    // contents for weekdays and dates. Every pair
+    // below compares the wrapped line's FULL record
+    // against its bare twin's (the r34e helpers),
+    // on the For line and the Keep-through line:
+    // the twin is the same line with the governor
+    // group's wrapper off and every companion's
+    // dress untouched, because the governor's dress
+    // is the one variable the doctrine moves.
+    // November 8, 2026 is a Sunday.
+    for (wrapped, bare) in [
+        // All three pairs, and the second governor
+        // word of the witnessed family.
+        ("(cancelled) November 8, 2026", "cancelled November 8, 2026"),
+        ("[cancelled] November 8, 2026", "cancelled November 8, 2026"),
+        ("{cancelled} November 8, 2026", "cancelled November 8, 2026"),
+        (
+            "(called off) November 8, 2026",
+            "called off November 8, 2026",
+        ),
+        (
+            "[called off] November 8, 2026",
+            "called off November 8, 2026",
+        ),
+        ("(postponed) November 8, 2026", "postponed November 8, 2026"),
+        // Spaced.
+        (
+            "(cancelled)  November 8, 2026",
+            "cancelled November 8, 2026",
+        ),
+        // Doubled, every pair.
+        (
+            "((cancelled)) November 8, 2026",
+            "cancelled November 8, 2026",
+        ),
+        (
+            "[[cancelled]] November 8, 2026",
+            "cancelled November 8, 2026",
+        ),
+        (
+            "{{cancelled}} November 8, 2026",
+            "cancelled November 8, 2026",
+        ),
+        // Mixed pairs.
+        (
+            "([cancelled]) November 8, 2026",
+            "cancelled November 8, 2026",
+        ),
+        (
+            "[(cancelled)] November 8, 2026",
+            "cancelled November 8, 2026",
+        ),
+        (
+            "{[cancelled]} November 8, 2026",
+            "cancelled November 8, 2026",
+        ),
+        // Wearing a mark.
+        (
+            "[cancelled]! November 8, 2026",
+            "cancelled November 8, 2026",
+        ),
+        (
+            "(cancelled)? November 8, 2026",
+            "cancelled November 8, 2026",
+        ),
+        // Glued.
+        ("(cancelled)November 8, 2026", "cancelled November 8, 2026"),
+        ("[cancelled]November 8, 2026", "cancelled November 8, 2026"),
+        // Behind the on/the framing stack.
+        (
+            "on (cancelled) November 8, 2026",
+            "on cancelled November 8, 2026",
+        ),
+        (
+            "the (cancelled) November 8, 2026",
+            "the cancelled November 8, 2026",
+        ),
+        (
+            "on the (cancelled) November 8, 2026",
+            "on the cancelled November 8, 2026",
+        ),
+        // With a companion group, either order,
+        // glued and spaced: the companion keeps its
+        // dress and its own standing judgment.
+        (
+            "(cancelled)(notes) November 8, 2026",
+            "cancelled (notes) November 8, 2026",
+        ),
+        (
+            "(notes)(cancelled) November 8, 2026",
+            "(notes) cancelled November 8, 2026",
+        ),
+        (
+            "(cancelled) (notes) November 8, 2026",
+            "cancelled (notes) November 8, 2026",
+        ),
+        // With a weekday companion: the disagreeing
+        // arm refuses on the weekday, its record the
+        // twin's — inside one leading sequence the
+        // two content classes are now both judged.
+        (
+            "(cancelled)(Monday) November 8, 2026",
+            "cancelled (Monday) November 8, 2026",
+        ),
+        (
+            "(Monday)(cancelled) November 8, 2026",
+            "(Monday) cancelled November 8, 2026",
+        ),
+        // Before a Sunday-after phrase: the bare
+        // governor is garnish before the phrase, so
+        // the wrapped form is too — the twin serves
+        // the resolution, and so does the wrapped
+        // form, unchanged.
+        (
+            "(cancelled) Sunday after November 1, 2026",
+            "cancelled Sunday after November 1, 2026",
+        ),
+        (
+            "[cancelled] Sunday after November 1, 2026",
+            "cancelled Sunday after November 1, 2026",
+        ),
+        // Before a relative phrase.
+        ("(cancelled) next Sunday", "cancelled next Sunday"),
+    ] {
+        r34e_for_twin(wrapped, bare);
+        r34e_keep_twin(wrapped, bare);
+    }
+    // The headline shape, stated outright: the
+    // wrapped leading governor governs — no date
+    // reads on either route and no record stands.
+    let text = "For Sunday: (cancelled) November 8, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the wrapped governor governs");
+    assert_eq!(c.named_weekday_mismatch, None);
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(c.for_sunday_second_dates, Vec::new());
+    let text =
+        "For Sunday: November 1, 2026\nKeep-through: (cancelled) November 8, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through, None,
+        "the wrapped governor governs the keep line"
+    );
+    // The inert controls, stated unmoved: a leading
+    // group holding no governor phrase is still
+    // garnish and the date serves, both routes.
+    for line in ["(notes) November 8, 2026", "(choir) November 8, 2026"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: the inert group serves");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{line}: the inert group serves"
+        );
+    }
+    // The quote-wrapped bare forms, stated unmoved:
+    // they governed before this batch and govern
+    // still — the doctrine moved the bracket forms
+    // to them, not the other way.
+    for line in [
+        "\"cancelled\" November 8, 2026",
+        "\u{201c}cancelled\u{201d} November 8, 2026",
+        "\u{2018}cancelled\u{2019} November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the quoted governor governs");
+    }
+    // The scope controls, stated outright under the
+    // coordinator's ruling (r38d-ruling.md, option
+    // (a) — leading slot only): a governor group at
+    // the trailing slot and at a Sunday-after
+    // base's trailing slot keeps its standing
+    // garnish reading this round, unmoved by this
+    // batch; the split there is carried to round 39
+    // as a doctrine question.
+    let text = "For Sunday: November 8, 2026 (cancelled)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the trailing governor group keeps its standing reading"
+    );
+    let text = "For Sunday: Sunday after November 1, 2026 (cancelled)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the base-trailing governor group keeps its standing reading"
+    );
 }

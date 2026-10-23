@@ -2291,6 +2291,17 @@ pub(super) fn bare_unit_weekday_at(tokens: &[&str], i: usize) -> bool {
 /// chain, so the compound takes its spaced reading
 /// exactly as the single group at the slot does,
 /// for a chain of any length.
+///
+/// Round 38 (R38-E, F5 + F6): the chain stopped at
+/// a "," or ";" separator between its groups — the
+/// glued separator chain ("November(cancelled),
+/// (notes) 1, 2026") and the lone group wearing the
+/// separator before its day ("November(cancelled),
+/// 1, 2026") escaped the pass while their spaced
+/// and half-glued twins were judged; the pass now
+/// states the chain for separator links and the
+/// day past separator dress (see
+/// `respaced_glued_groups_at_date_slots`).
 pub(super) fn spaced_glued_weekday_garnish(text: &str) -> Option<String> {
     let at_slots = respaced_glued_groups_at_date_slots(text);
     let stage0: &str = at_slots.as_deref().unwrap_or(text);
@@ -2407,6 +2418,51 @@ fn day_number_stands_after(text: &str, at: usize) -> bool {
     }
 }
 
+/// The byte position where a day-of-month number
+/// stands at or after `at`, past the separator
+/// dress a group at the month–day slot may wear
+/// between itself and its day (round 38, R38-E,
+/// F5 + F6): whitespace, then at most one "," or
+/// ";" separator, then whitespace again — the
+/// dressed forms of `day_number_stands_after`, with
+/// the day itself under the same test (one or two
+/// digits naming 1..=31, followed by a comma,
+/// whitespace, or the line's end). Returns the
+/// day's first byte, so the caller can tell a day
+/// standing glued (against a group or against the
+/// separator itself) from one standing apart.
+fn dressed_day_start(text: &str, at: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = at;
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
+        i += 1;
+    }
+    if i < bytes.len() && matches!(bytes[i], b',' | b';') {
+        i += 1;
+        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
+            i += 1;
+        }
+    }
+    if day_number_stands_after(text, i) {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+/// Whether the gap between two top-level spans is
+/// a chain link (round 38, R38-E, F5): nothing at
+/// all (the spans stand immediately against each
+/// other, the R37-C glued chain), or one "," or ";"
+/// separator with whatever whitespace the sender
+/// set around it — the separator-joined chain. A
+/// gap of whitespace alone is no link: groups
+/// standing apart are the spaced form already, and
+/// keep the per-span reading.
+fn chain_gap_is_link(gap: &str) -> bool {
+    gap.is_empty() || matches!(gap.trim(), "," | ";")
+}
+
 /// `text` with a space set on every glued side of
 /// every standalone group standing at the month–day
 /// slot or the leading slot, whatever the group
@@ -2454,6 +2510,46 @@ fn day_number_stands_after(text: &str, at: usize) -> bool {
 /// standing anywhere else, and groups standing
 /// apart inside a would-be chain (the half-glued
 /// form), keep the per-span reading below.
+///
+/// Round 38 (R38-E, F5 MAJOR + F6 MINOR): the
+/// chain rule stopped one pattern short again —
+/// it keyed on spans standing immediately against
+/// each other, so a "," or ";" separator between
+/// the groups defeated it, and neither span then
+/// qualified alone (the first is followed by the
+/// separator, not a day digit; the second is
+/// preceded by the separator, not a month word).
+/// Glued at the separator specifically, a chain
+/// was never re-spaced: governing contents served
+/// the date live in every pair
+/// ("November(cancelled),(notes) 1, 2026" read
+/// November 1; the spaced twin and every
+/// half-glued form read nothing), inert contents
+/// read a date their spaced twins refuse
+/// ("November(notes),(choir) 1, 2026", the
+/// three-group and semicolon chains), and a
+/// weekday group in a comma chain stood in the
+/// same silence as its spaced twin only by
+/// accident of neither being read. The single
+/// group escaped the same way wearing the
+/// separator as dress before its day
+/// ("November(cancelled), 1, 2026" and
+/// "November(cancelled) , 1, 2026" served, where
+/// "November (cancelled), 1, 2026" reads
+/// nothing). The slot is therefore stated for a
+/// chain whose links may be a separator as well
+/// as bare adjacency (`chain_gap_is_link`), and
+/// the day after the slot's last group — or after
+/// a lone group — may stand past the same
+/// separator dress (`dressed_day_start`). Spaces
+/// are set only on glued sides: the chain's head
+/// against the month word, each later group
+/// against the span or separator it stands glued
+/// to, and the day against the group or separator
+/// it stands glued to — so the re-spaced line is
+/// a spaced twin the standing readers judge, byte
+/// for byte in shape. Comma spacing in this
+/// family is dress and flips nothing.
 fn respaced_glued_groups_at_date_slots(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut inserts: Vec<usize> = Vec::new();
@@ -2462,11 +2558,20 @@ fn respaced_glued_groups_at_date_slots(text: &str) -> Option<String> {
     // The compound chains (round 37, R37-C): runs
     // of two or more spans standing immediately
     // against each other, judged at the month–day
-    // slot as a unit.
+    // slot as a unit. Round 38 (R38-E): a run's
+    // links may also be one "," or ";" separator
+    // (`chain_gap_is_link`) — the separator-joined
+    // chain is the same compound at the same slot —
+    // and the day after the run may stand past the
+    // same separator dress (`dressed_day_start`).
+    // Spaces are set on glued sides only, as the
+    // function's head note states.
     let mut chain_at = 0;
     while chain_at < spans.len() {
         let mut chain_end = chain_at;
-        while chain_end + 1 < spans.len() && spans[chain_end + 1].0 == spans[chain_end].1 {
+        while chain_end + 1 < spans.len()
+            && chain_gap_is_link(&text[spans[chain_end].1..spans[chain_end + 1].0])
+        {
             chain_end += 1;
         }
         if chain_end > chain_at {
@@ -2478,18 +2583,33 @@ fn respaced_glued_groups_at_date_slots(text: &str) -> Option<String> {
                     .next_back()
                     .expect("a byte stands before")
                     .is_whitespace();
-            if word_before_is_month(text, start) && day_number_stands_after(text, end) {
-                if left_glued {
-                    inserts.push(start);
-                }
-                for span in &spans[chain_at..chain_end] {
-                    inserts.push(span.1);
-                }
-                if end < bytes.len() && bytes[end].is_ascii_digit() {
-                    inserts.push(end);
-                }
-                for taken in in_chain.iter_mut().take(chain_end + 1).skip(chain_at) {
-                    *taken = true;
+            if word_before_is_month(text, start) {
+                if let Some(day_start) = dressed_day_start(text, end) {
+                    if left_glued {
+                        inserts.push(start);
+                    }
+                    for span in &spans[chain_at + 1..=chain_end] {
+                        let span_start = span.0;
+                        if !text[..span_start]
+                            .chars()
+                            .next_back()
+                            .expect("a byte stands before")
+                            .is_whitespace()
+                        {
+                            inserts.push(span_start);
+                        }
+                    }
+                    if !text[..day_start]
+                        .chars()
+                        .next_back()
+                        .expect("a byte stands before")
+                        .is_whitespace()
+                    {
+                        inserts.push(day_start);
+                    }
+                    for taken in in_chain.iter_mut().take(chain_end + 1).skip(chain_at) {
+                        *taken = true;
+                    }
                 }
             }
         }
@@ -2532,15 +2652,28 @@ fn respaced_glued_groups_at_date_slots(text: &str) -> Option<String> {
                 .next_back()
                 .expect("a byte stands before")
                 .is_whitespace();
-        // The month–day slot.
-        if word_before_is_month(text, start) && day_number_stands_after(text, end) {
-            if left_glued {
-                inserts.push(start);
+        // The month–day slot. Round 38 (R38-E):
+        // the day may stand past a "," or ";"
+        // separator dress after the group
+        // (`dressed_day_start`) — the lone group
+        // wearing the separator before its day is
+        // the chain family's single-group form, and
+        // its space sets at the same glued sides.
+        if word_before_is_month(text, start) {
+            if let Some(day_start) = dressed_day_start(text, end) {
+                if left_glued {
+                    inserts.push(start);
+                }
+                if !text[..day_start]
+                    .chars()
+                    .next_back()
+                    .expect("a byte stands before")
+                    .is_whitespace()
+                {
+                    inserts.push(day_start);
+                }
+                continue;
             }
-            if end < bytes.len() && bytes[end].is_ascii_digit() {
-                inserts.push(end);
-            }
-            continue;
         }
         // The leading slot.
         if text[..start].trim().is_empty() {

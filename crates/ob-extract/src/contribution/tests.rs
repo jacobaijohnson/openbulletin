@@ -27831,3 +27831,290 @@ fn r38d_wrapped_leading_governor_governs_as_its_bare_twin() {
         "the base-trailing governor group keeps its standing reading"
     );
 }
+
+#[test]
+fn r38e_separator_chain_at_the_month_day_slot_takes_its_spaced_reading() {
+    // Round 38 (R38-E, F5 MAJOR = red team RT38-3 +
+    // F6 MINOR = red team RT38-6): the R37-C chain
+    // rule keyed on spans standing immediately
+    // against each other, so a "," or ";" separator
+    // between the groups of a month–day compound
+    // defeated it — neither span qualified alone
+    // (the first is followed by the separator, not
+    // a day digit; the second is preceded by the
+    // separator, not a month word) and the compound
+    // was never re-spaced. Glued at the separator
+    // specifically, governing contents served the
+    // date live in every pair
+    // ("November(cancelled),(notes) 1, 2026" read
+    // November 1 with no record; the spaced twin
+    // "November (cancelled), (notes) 1, 2026" and
+    // every half-glued form read nothing), inert
+    // contents read a date their spaced twins
+    // refuse ("November(notes),(choir) 1, 2026",
+    // the three-group chain, the semicolon chain),
+    // and a weekday group in a comma chain read
+    // nothing with no record in either spacing.
+    // The adjudicated reading is the spaced twin's:
+    // comma spacing in this family is dress and
+    // flips nothing. Every pair below compares the
+    // separator-glued line's FULL record against
+    // its spaced twins' via the r34e helpers, on
+    // the For line and the Keep-through line; the
+    // headline forms are stated outright after.
+    // November 1 and November 8, 2026 are Sundays.
+    let pair_shapes: [(&str, &str, &str, &str); 6] = [
+        ("(", ")", "(", ")"),
+        ("[", "]", "[", "]"),
+        ("{", "}", "{", "}"),
+        ("(", ")", "[", "]"),
+        ("[", "]", "(", ")"),
+        ("[", "]", "{", "}"),
+    ];
+    // Governing contents in either position, the
+    // multi-word governor, the inert pair, and the
+    // weekday arms (disagreeing and agreeing).
+    let content_pairs: [(&str, &str); 8] = [
+        ("cancelled", "notes"),
+        ("notes", "cancelled"),
+        ("called off", "notes"),
+        ("postponed", "choir"),
+        ("notes", "choir"),
+        ("Monday", "notes"),
+        ("notes", "Monday"),
+        ("notes", "Sunday"),
+    ];
+    for sep in [",", ";"] {
+        for (o1, c1, o2, c2) in pair_shapes {
+            for (first, second) in content_pairs {
+                let glued = format!("November{o1}{first}{c1}{sep}{o2}{second}{c2} 1, 2026");
+                let spaced = format!("November {o1}{first}{c1}{sep} {o2}{second}{c2} 1, 2026");
+                let half = format!("November{o1}{first}{c1}{sep} {o2}{second}{c2} 1, 2026");
+                r34e_for_twin(&glued, &spaced);
+                r34e_for_twin(&glued, &half);
+                r34e_keep_twin(&glued, &spaced);
+                r34e_keep_twin(&glued, &half);
+            }
+        }
+    }
+    // Three-group separator chains: inert, and a
+    // governor in the middle.
+    for (glued, spaced) in [
+        (
+            "November(notes),(choir),(bells) 1, 2026",
+            "November (notes), (choir), (bells) 1, 2026",
+        ),
+        (
+            "November(notes),(cancelled),(choir) 1, 2026",
+            "November (notes), (cancelled), (choir) 1, 2026",
+        ),
+        (
+            "November(notes);(choir);(bells) 1, 2026",
+            "November (notes); (choir); (bells) 1, 2026",
+        ),
+        (
+            "November[notes],[cancelled],[choir] 1, 2026",
+            "November [notes], [cancelled], [choir] 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(glued, spaced);
+        r34e_keep_twin(glued, spaced);
+    }
+    // Mixed links inside one chain: a bare-adjacent
+    // link and a separator link, in either order,
+    // and the separator wearing spaces on its far
+    // side while the chain's head stays glued.
+    for (glued, spaced) in [
+        (
+            "November(cancelled)(notes),(choir) 1, 2026",
+            "November (cancelled)(notes), (choir) 1, 2026",
+        ),
+        (
+            "November(cancelled),(notes)(choir) 1, 2026",
+            "November (cancelled), (notes)(choir) 1, 2026",
+        ),
+        (
+            "November(cancelled) , (notes) 1, 2026",
+            "November (cancelled) , (notes) 1, 2026",
+        ),
+        (
+            "November(cancelled),(notes)1, 2026",
+            "November (cancelled), (notes) 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(glued, spaced);
+        r34e_keep_twin(glued, spaced);
+    }
+    // A date group in either position of a comma
+    // chain: the compound takes the spaced reading.
+    for (glued, spaced) in [
+        (
+            "November(November 8, 2026),(notes) 1, 2026",
+            "November (November 8, 2026), (notes) 1, 2026",
+        ),
+        (
+            "November(notes),(November 8, 2026) 1, 2026",
+            "November (notes), (November 8, 2026) 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(glued, spaced);
+        r34e_keep_twin(glued, spaced);
+    }
+    // Stated outright, the headline forms. A
+    // governing group in either position of a
+    // separator chain — and the inert chains —
+    // read no date and stand no record, as their
+    // spaced twins read, on both routes.
+    for line in [
+        "November(cancelled),(notes) 1, 2026",
+        "November[cancelled],[notes] 1, 2026",
+        "November{cancelled},{notes} 1, 2026",
+        "November(notes),(cancelled) 1, 2026",
+        "November(cancelled);(notes) 1, 2026",
+        "November(notes),(choir) 1, 2026",
+        "November(notes),(choir),(bells) 1, 2026",
+        "November(notes);(choir) 1, 2026",
+        "November(Monday),(notes) 1, 2026",
+        "November (Monday), (notes) 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: no parenthesized record"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+        assert_eq!(
+            c.keep_through_parenthesized_mismatch, None,
+            "{line}: no keep parenthesized record"
+        );
+    }
+    // The date group first in a comma chain: the
+    // group's own date reads, clean, on both
+    // routes, as the spaced twin reads it.
+    let text = "For Sunday: November(November 8, 2026),(notes) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    let text = "For Sunday: November 1, 2026\nKeep-through: November(November 8, 2026),(notes) 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+}
+
+#[test]
+fn r38e_separator_dress_before_the_day_and_the_sunday_comma_compound() {
+    // Round 38 (R38-E, F6 MINOR): the chain
+    // family's single-group form and the weekday
+    // compound form. (1) A lone group at the
+    // month–day slot wearing a "," or ";" separator
+    // as dress before its day flipped its reading
+    // on comma spacing: "November(cancelled),
+    // 1, 2026" and "November(cancelled) , 1, 2026"
+    // served November 1 live, where
+    // "November (cancelled), 1, 2026" and the
+    // comma-free "November(cancelled) 1, 2026"
+    // read nothing — the separator stood between
+    // the group and its day, so the date-slot pass
+    // never saw the slot. (2) "Sunday, after
+    // November 1, 2026" is pinned against its
+    // comma-free twin: the compound keeps its
+    // twin's whole record, the comma after the
+    // weekday word being dress of the same family.
+    // Every pair compares FULL records via the
+    // r34e helpers on both routes. November 1 and
+    // November 8, 2026 are Sundays; the Sunday
+    // after November 1 is November 8.
+    for (dressed, twin) in [
+        // The witnessed spacing pair, stated as
+        // the adjudication states it: the two
+        // forms are one reading.
+        (
+            "November(cancelled) 1, 2026",
+            "November (cancelled), 1, 2026",
+        ),
+        (
+            "November[cancelled] 1, 2026",
+            "November [cancelled], 1, 2026",
+        ),
+        (
+            "November{cancelled} 1, 2026",
+            "November {cancelled}, 1, 2026",
+        ),
+        // The separator-dressed singles against
+        // the same twins.
+        (
+            "November(cancelled), 1, 2026",
+            "November (cancelled), 1, 2026",
+        ),
+        (
+            "November[cancelled], 1, 2026",
+            "November [cancelled], 1, 2026",
+        ),
+        (
+            "November{cancelled}; 1, 2026",
+            "November {cancelled}, 1, 2026",
+        ),
+        (
+            "November(cancelled) , 1, 2026",
+            "November (cancelled), 1, 2026",
+        ),
+        (
+            "November(cancelled),1, 2026",
+            "November (cancelled), 1, 2026",
+        ),
+        // The inert arm of the same dress.
+        ("November(notes), 1, 2026", "November (notes), 1, 2026"),
+        ("November(notes) , 1, 2026", "November (notes), 1, 2026"),
+        ("November[notes]; 1, 2026", "November [notes], 1, 2026"),
+    ] {
+        r34e_for_twin(dressed, twin);
+        r34e_keep_twin(dressed, twin);
+    }
+    // Stated outright: the dressed governing and
+    // inert singles read no date, on both routes.
+    for line in [
+        "November(cancelled), 1, 2026",
+        "November(cancelled) , 1, 2026",
+        "November(notes), 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+    }
+    // The weekday compound pair: the comma form
+    // is its comma-free twin, full record, both
+    // routes — and stated outright, the resolution
+    // reads, November 8 for the November 1 base
+    // and November 15 for the November 8 base.
+    for (comma, plain) in [
+        (
+            "Sunday, after November 1, 2026",
+            "Sunday after November 1, 2026",
+        ),
+        (
+            "Sunday, after November 8, 2026",
+            "Sunday after November 8, 2026",
+        ),
+    ] {
+        r34e_for_twin(comma, plain);
+        r34e_keep_twin(comma, plain);
+    }
+    let text = "For Sunday: Sunday, after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(8)));
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday, after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)));
+}

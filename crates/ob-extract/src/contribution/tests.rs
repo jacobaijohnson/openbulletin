@@ -29191,3 +29191,473 @@ fn r38f_interior_sentence_marks_in_date_words_read_as_their_clean_twins() {
     r34e_for_twin("Novem'ber 8, 2026", "(Novem'ber 8, 2026)");
     r34e_keep_twin("Novem'ber 8, 2026", "(Novem'ber 8, 2026)");
 }
+// Round 39 (R39-C, F4 MAJOR = review R39-R1 + red
+// team RT39-3, as scoped by the coordinator's
+// ruling r39c-ruling.md: arm (d) dropped as
+// mis-framed): the sequence walks' and the
+// governor pass's boundary sets were still
+// narrower than the lone forms' at the positions
+// round 38 did not witness. The lone forms judge
+// a weekday group wearing "!", "?", or U+201D as
+// its suffix in every slot — "(Monday)! November
+// 1, 2026" refuses with
+// WeekdayMismatch(Monday@2026-11-01) — but one of
+// those marks standing between the groups of a
+// sequence, or after the last leading group,
+// disarmed the walks at all three slots; a marked
+// companion shielded a following governor from
+// the R38-D pass; a separator at a walk's head
+// disarmed the single-group forms and the
+// trailing run; and the leading walk's suffix
+// peel took one mark where the lone form's tail
+// takes a stack. The walks and the pass now take
+// the lone forms' full separator/suffix
+// discipline at every boundary position. Every
+// pin below compares its FULL record against its
+// lone twin's (the r34e helpers), on the For
+// line and the Keep-through line, with headline
+// forms stated outright. November 1, 2026 is a
+// Sunday: "Monday" disagrees, "Sunday" agrees,
+// and the Sunday after November 1 is November 8.
+// November 8, 2026 is a Sunday.
+
+#[test]
+fn r39c_sequence_walks_take_the_lone_forms_suffix_marks_between_groups() {
+    for mark in ['!', '?', '\u{201d}'] {
+        // Leading: the mark between the groups in
+        // either order, spaced and glued, and after
+        // the last group in either order — the lone
+        // twin carries the same mark after its one
+        // group, the position the lone forms judge.
+        for compound in [
+            format!("(Monday){mark} (notes) November 1, 2026"),
+            format!("(notes){mark} (Monday) November 1, 2026"),
+            format!("(Monday){mark}(notes) November 1, 2026"),
+            format!("(Monday) (notes){mark} November 1, 2026"),
+            format!("(notes) (Monday){mark} November 1, 2026"),
+            format!("(notes){mark} (Monday){mark} (choir) November 1, 2026"),
+        ] {
+            let lone = format!("(Monday){mark} November 1, 2026");
+            r34e_for_twin(&compound, &lone);
+            r34e_keep_twin(&compound, &lone);
+        }
+        // The other two pairs at the leading slot.
+        for compound in [
+            format!("[Monday]{mark} [notes] November 1, 2026"),
+            format!("{{notes}}{mark} {{Monday}} November 1, 2026"),
+        ] {
+            let lone = format!("(Monday){mark} November 1, 2026");
+            r34e_for_twin(&compound, &lone);
+            r34e_keep_twin(&compound, &lone);
+        }
+        // Trailing: the mark between the groups in
+        // either order, spaced and glued.
+        for compound in [
+            format!("November 1, 2026 (Monday){mark} (notes)"),
+            format!("November 1, 2026 (notes){mark} (Monday)"),
+            format!("November 1, 2026 (Monday){mark}(notes)"),
+        ] {
+            let lone = format!("November 1, 2026 (Monday){mark}");
+            r34e_for_twin(&compound, &lone);
+            r34e_keep_twin(&compound, &lone);
+        }
+        // The Sunday-after base's trailing slot:
+        // the mark between the groups in either
+        // order, spaced and glued.
+        for compound in [
+            format!("Sunday after November 1, 2026 (Monday){mark} (notes)"),
+            format!("Sunday after November 1, 2026 (notes){mark} (Monday)"),
+            format!("Sunday after November 1, 2026 (notes){mark}(Monday)"),
+        ] {
+            let lone = format!("Sunday after November 1, 2026 (Monday){mark}");
+            r34e_for_twin(&compound, &lone);
+            r34e_keep_twin(&compound, &lone);
+        }
+        // The agreeing arm converges at every slot:
+        // an agreeing weekday group in a marked
+        // sequence is consumed exactly as the lone
+        // agreeing group wearing the mark is.
+        for (compound, lone) in [
+            (
+                format!("(Sunday){mark} (notes) November 1, 2026"),
+                format!("(Sunday){mark} November 1, 2026"),
+            ),
+            (
+                format!("November 1, 2026 (notes){mark} (Sunday)"),
+                format!("November 1, 2026 (Sunday){mark}"),
+            ),
+            (
+                format!("Sunday after November 1, 2026 (Sunday){mark} (notes)"),
+                format!("Sunday after November 1, 2026 (Sunday){mark}"),
+            ),
+        ] {
+            r34e_for_twin(&compound, &lone);
+            r34e_keep_twin(&compound, &lone);
+        }
+    }
+    // Stated outright, the headline forms. A
+    // disagreeing weekday group in a sequence whose
+    // companion wears one of the three marks is
+    // refused with the lone form's record, on both
+    // routes, at all three slots.
+    for line in [
+        "(Monday)! (notes) November 1, 2026",
+        "(Monday)? (notes) November 1, 2026",
+        "(notes)\u{201d} (Monday) November 1, 2026",
+        "(Monday) (notes)! November 1, 2026",
+        "November 1, 2026 (Monday)! (notes)",
+        "November 1, 2026 (notes)? (Monday)",
+        "Sunday after November 1, 2026 (Monday)! (notes)",
+        "Sunday after November 1, 2026 (notes)\u{201d} (Monday)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing weekday group in a marked sequence is recorded");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: a weekday refusal carries no parenthesized record"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+        let m = c
+            .keep_through_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing weekday group is recorded on the keep line");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+    }
+    // The agreeing marked sequences serve clean,
+    // stated outright at all three slots.
+    for (line, served) in [
+        ("(Sunday)! (notes) November 1, 2026", nov(1)),
+        ("November 1, 2026 (Sunday)! (notes)", nov(1)),
+        ("Sunday after November 1, 2026 (Sunday)! (notes)", nov(8)),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(served), "{line}: the date reads");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(served), "{line}: the keep date reads");
+        assert_eq!(c.keep_through_weekday_mismatch, None, "{line}: no record");
+    }
+}
+
+#[test]
+fn r39c_governor_pass_skips_the_lone_forms_suffix_marks_between_groups() {
+    // Arm (b): the R38-D governor pass skipped the
+    // R38-B separation set between the leading
+    // run's groups, so a companion wearing "!",
+    // "?", or U+201D shielded the governor group
+    // standing after it — "(notes)” (cancelled)
+    // November 8, 2026" served its date live where
+    // the unmarked companion governs. The pass now
+    // skips the same three marks. Every pair below
+    // compares the wrapped line's FULL record
+    // against its governor-bared twin's, the
+    // companion's dress untouched.
+    for mark in ['!', '?', '\u{201d}'] {
+        for (wrapped, bare) in [
+            (
+                format!("(notes){mark} (cancelled) November 8, 2026"),
+                format!("(notes){mark} cancelled November 8, 2026"),
+            ),
+            (
+                format!("(notes){mark}(cancelled) November 8, 2026"),
+                format!("(notes){mark} cancelled November 8, 2026"),
+            ),
+            (
+                format!("(notes){mark} (called off) November 8, 2026"),
+                format!("(notes){mark} called off November 8, 2026"),
+            ),
+        ] {
+            r34e_for_twin(&wrapped, &bare);
+            r34e_keep_twin(&wrapped, &bare);
+        }
+    }
+    // The governor standing first is unwrapped
+    // before the pass reaches any mark, and that
+    // arm is unmoved: a governor group wearing a
+    // mark, with a companion, governs as its bare
+    // twin does.
+    r34e_for_twin(
+        "(cancelled)! (notes) November 8, 2026",
+        "cancelled! (notes) November 8, 2026",
+    );
+    r34e_keep_twin(
+        "(cancelled)! (notes) November 8, 2026",
+        "cancelled! (notes) November 8, 2026",
+    );
+    // Stated outright: the marked companion no
+    // longer shields the governor — no date reads
+    // and no record stands, on either route.
+    for line in [
+        "(notes)\u{201d} (cancelled) November 8, 2026",
+        "(notes)! (cancelled) November 8, 2026",
+        "(notes)? (cancelled) November 8, 2026",
+        "(notes) (cancelled) November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the governor governs");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: no record"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{line}: the governor governs the keep line"
+        );
+    }
+}
+
+#[test]
+fn r39c_walk_heads_take_separators_before_single_groups_and_trailing_runs() {
+    // Arm (c), scoped by the first writer's
+    // refinement (r39c-record.md): a head separator
+    // disarmed only the single-group forms and the
+    // trailing run — a sequence of two or more
+    // groups behind the same separators already
+    // trimmed them and refused. The single leading
+    // group behind head separators, the trailing
+    // run behind a separator standing after its
+    // date, the single trailing group behind one,
+    // and the same two shapes at the Sunday-after
+    // base's trailing slot now judge as their
+    // unseparated twins do.
+    for sep in [';', '.', ':', ','] {
+        let compound = format!("{sep}(Monday) November 1, 2026");
+        r34e_for_twin(&compound, "(Monday) November 1, 2026");
+        r34e_keep_twin(&compound, "(Monday) November 1, 2026");
+        let compound = format!("November 1, 2026 {sep}(Monday)");
+        r34e_for_twin(&compound, "November 1, 2026 (Monday)");
+        r34e_keep_twin(&compound, "November 1, 2026 (Monday)");
+        let compound = format!("Sunday after November 1, 2026 {sep}(Monday)");
+        r34e_for_twin(&compound, "Sunday after November 1, 2026 (Monday)");
+        r34e_keep_twin(&compound, "Sunday after November 1, 2026 (Monday)");
+    }
+    // Runs of head separators, a spaced separator,
+    // the other pairs, and a suffix mark standing
+    // after the single leading group.
+    for (compound, lone) in [
+        (";; (Monday) November 1, 2026", "(Monday) November 1, 2026"),
+        ("; (Monday) November 1, 2026", "(Monday) November 1, 2026"),
+        (";[Monday] November 1, 2026", "[Monday] November 1, 2026"),
+        (";{Monday} November 1, 2026", "{Monday} November 1, 2026"),
+        (";(Monday)! November 1, 2026", "(Monday)! November 1, 2026"),
+        (
+            "on ;(Monday) November 1, 2026",
+            "on (Monday) November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(compound, lone);
+        r34e_keep_twin(compound, lone);
+    }
+    // The trailing run behind a separator after
+    // its date, in either order, spaced and glued,
+    // with runs and the sentence separators.
+    for (compound, lone) in [
+        (
+            "November 1, 2026 ;(Monday)(notes)",
+            "November 1, 2026 (Monday)(notes)",
+        ),
+        (
+            "November 1, 2026 ;(notes)(Monday)",
+            "November 1, 2026 (notes)(Monday)",
+        ),
+        (
+            "November 1, 2026 ; (Monday)(notes)",
+            "November 1, 2026 (Monday)(notes)",
+        ),
+        (
+            "November 1, 2026 .(Monday)(notes)",
+            "November 1, 2026 (Monday)(notes)",
+        ),
+        (
+            "November 1, 2026 :(notes)(Monday)",
+            "November 1, 2026 (notes)(Monday)",
+        ),
+        (
+            "November 1, 2026 ;;(Monday)(notes)",
+            "November 1, 2026 (Monday)(notes)",
+        ),
+    ] {
+        r34e_for_twin(compound, lone);
+        r34e_keep_twin(compound, lone);
+    }
+    // The base-trailing run and single group
+    // behind a separator after the base.
+    for (compound, lone) in [
+        (
+            "Sunday after November 1, 2026 ;(Monday)(notes)",
+            "Sunday after November 1, 2026 (Monday)(notes)",
+        ),
+        (
+            "Sunday after November 1, 2026 ;(notes)(Monday)",
+            "Sunday after November 1, 2026 (notes)(Monday)",
+        ),
+        (
+            "Sunday after November 1, 2026 ; (Monday)(notes)",
+            "Sunday after November 1, 2026 (Monday)(notes)",
+        ),
+    ] {
+        r34e_for_twin(compound, lone);
+        r34e_keep_twin(compound, lone);
+    }
+    // The agreeing arm converges at every slot.
+    for (compound, lone) in [
+        (";(Sunday) November 1, 2026", "(Sunday) November 1, 2026"),
+        ("November 1, 2026 ;(Sunday)", "November 1, 2026 (Sunday)"),
+        (
+            "November 1, 2026 ;(Sunday)(notes)",
+            "November 1, 2026 (Sunday)(notes)",
+        ),
+        (
+            "Sunday after November 1, 2026 ;(Sunday)",
+            "Sunday after November 1, 2026 (Sunday)",
+        ),
+        (
+            "Sunday after November 1, 2026 ;(Sunday)(notes)",
+            "Sunday after November 1, 2026 (Sunday)(notes)",
+        ),
+    ] {
+        r34e_for_twin(compound, lone);
+        r34e_keep_twin(compound, lone);
+    }
+    // The boundary the arm does not cross, stated
+    // outright: a single trailing group standing
+    // behind a separator WITH another group
+    // elsewhere in the line is not the walk's —
+    // its unseparated twin serves, and the
+    // separated form serves identically.
+    r34e_for_twin(
+        "(notes) November 1, 2026 ;(Monday)",
+        "(notes) November 1, 2026 (Monday)",
+    );
+    r34e_keep_twin(
+        "(notes) November 1, 2026 ;(Monday)",
+        "(notes) November 1, 2026 (Monday)",
+    );
+    // Stated outright, the headline forms: refused
+    // with the lone form's record, both routes.
+    for line in [
+        ";(Monday) November 1, 2026",
+        ".(Monday) November 1, 2026",
+        "November 1, 2026 ;(Monday)(notes)",
+        "November 1, 2026 ;(Monday)",
+        "Sunday after November 1, 2026 ;(Monday)(notes)",
+        "Sunday after November 1, 2026 ;(Monday)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing weekday group behind a head separator is recorded");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+        let m = c
+            .keep_through_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing weekday group is recorded on the keep line");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+    }
+}
+
+#[test]
+fn r39c_leading_walk_suffix_peel_takes_the_lone_forms_stack() {
+    // Arm (e): a stacked suffix at the leading
+    // walk — "(Monday)(notes)!’ November 1, 2026"
+    // served silently, where "’", "’’", and "!"
+    // alone judge and the lone "(Monday)!’
+    // November 1, 2026" refuses. The walk's trims
+    // repeat over the full suffix set, so the
+    // stack peels as the lone form's tail peels
+    // it, between the groups and after the last
+    // group alike.
+    for (compound, lone) in [
+        (
+            "(Monday)(notes)!\u{2019} November 1, 2026",
+            "(Monday)!\u{2019} November 1, 2026",
+        ),
+        (
+            "(Monday)(notes)\u{2019}! November 1, 2026",
+            "(Monday)\u{2019}! November 1, 2026",
+        ),
+        (
+            "(notes)(Monday)!\u{2019} November 1, 2026",
+            "(Monday)!\u{2019} November 1, 2026",
+        ),
+        (
+            "(Monday)!\u{2019} (notes) November 1, 2026",
+            "(Monday)!\u{2019} November 1, 2026",
+        ),
+        (
+            "(Monday)(notes)?\u{2019} November 1, 2026",
+            "(Monday)?\u{2019} November 1, 2026",
+        ),
+        (
+            "(Monday)(notes)\u{201d}! November 1, 2026",
+            "(Monday)\u{201d}! November 1, 2026",
+        ),
+        (
+            "(Sunday)(notes)!\u{2019} November 1, 2026",
+            "(Sunday)!\u{2019} November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(compound, lone);
+        r34e_keep_twin(compound, lone);
+    }
+    // Stated outright: the stacked sequence is
+    // refused with the lone form's record, both
+    // routes.
+    for line in [
+        "(Monday)(notes)!\u{2019} November 1, 2026",
+        "(Monday)(notes)\u{2019}! November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing weekday group in a stacked sequence is recorded");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+        let m = c
+            .keep_through_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing weekday group is recorded on the keep line");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+    }
+}

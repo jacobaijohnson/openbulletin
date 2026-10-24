@@ -689,7 +689,14 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
 /// 2026 (Monday);" included, and its suffix peel
 /// below carries the typographic closing quote
 /// U+2019 the lone readers' trim sets carry);
-/// every weekday group in it is judged on its
+/// round 39 (R39-C, F4) completes the boundary
+/// sets at this slot as at the plain slots: a
+/// group's suffix marks "!", "?", and U+201D
+/// stand in the gaps (arm (a)), head separators
+/// standing before the garnish are taken off, and
+/// a single group standing behind those head
+/// separators is walked (arm (c)), as at the
+/// plain trailing slot. Every weekday group in it is judged on its
 /// contents against the BASE date, and the first
 /// disagreeing one in written order records the
 /// lone form's mismatch. An agreeing (or
@@ -754,8 +761,21 @@ fn base_trailing_sequence_mismatch(
         }
     }
     let rest = rest.trim_end();
+    // Round 39 (R39-C, F4, arm (c)): head
+    // separators standing before the garnish are
+    // the walk's head dress, as at the plain
+    // slots — "Sunday after November 1, 2026
+    // ;(Monday)(notes)" is the unseparated twin's
+    // sequence standing behind a ";". Before this
+    // the first span had to stand at the garnish's
+    // first byte, so the separator ended the walk.
+    let head_trimmed = rest.trim_start_matches([' ', '\t', ',', ';', '.', ':']);
+    let head_had_separator = rest[..rest.len() - head_trimmed.len()]
+        .chars()
+        .any(|c| matches!(c, ',' | ';' | '.' | ':'));
+    let rest = head_trimmed;
     let spans = balanced_spans(rest);
-    if spans.len() < 2 {
+    if spans.len() < 2 && !(spans.len() == 1 && head_had_separator) {
         return None;
     }
     if spans[0].0 != 0 || spans[spans.len() - 1].1 != rest.len() {
@@ -767,10 +787,16 @@ fn base_trailing_sequence_mismatch(
         // sentence separators ";" "." ":" and a
         // U+2019 standing as the preceding group's
         // suffix, as at the plain slots' walks.
-        if !gap
-            .chars()
-            .all(|c| matches!(c, ',' | ';' | '.' | ':' | '\u{2019}') || c.is_whitespace())
-        {
+        // Round 39 (R39-C, F4, arm (a)): a gap may
+        // also carry "!", "?", and U+201D standing
+        // as the preceding group's suffix, the three
+        // marks the lone forms judge a group wearing.
+        if !gap.chars().all(|c| {
+            matches!(
+                c,
+                ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
+            ) || c.is_whitespace()
+        }) {
             return None;
         }
     }

@@ -1766,10 +1766,19 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
         // allows between the run's groups (round 38,
         // R38-B): whitespace, commas, the sentence
         // separators, and a typographic closing quote
-        // standing as a group's suffix.
+        // standing as a group's suffix. Round 39
+        // (R39-C, F4, arm (b)): the skip set gains the
+        // three suffix marks the lone forms judge a
+        // group wearing — "!", "?", and U+201D — so a
+        // companion wearing one ("(notes)” (cancelled)
+        // November 8, 2026") no longer shields the
+        // governor group standing after it.
         let mut p = scan;
         while let Some(c) = text[p..].chars().next() {
-            if matches!(c, ' ' | '\t' | ',' | ';' | '.' | ':' | '\u{2019}') {
+            if matches!(
+                c,
+                ' ' | '\t' | ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
+            ) {
                 p += c.len_utf8();
             } else {
                 break;
@@ -1841,6 +1850,16 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
 /// standing as a group's suffix is taken off with
 /// the separators, as the lone forms peel it
 /// ("(Monday)’ November 1, 2026" is judged).
+/// Round 39 (R39-C, F4, arms (a) and (e)): the
+/// suffix set the trims below take off gains the
+/// three marks the lone forms also judge a group
+/// wearing — "!", "?", and U+201D ("(Monday)!
+/// November 1, 2026" is judged) — at every
+/// position the trims stand: between the groups,
+/// after the last group, and stacked, the trims
+/// repeating over the set so a stack peels as the
+/// lone form's tail peels it ("(Monday)(notes)!’
+/// November 1, 2026" is judged).
 /// Returns the groups' inner texts in written
 /// order and the text standing after the sequence
 /// (its own leading separators taken off). A
@@ -1855,7 +1874,9 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut inners: Vec<String> = Vec::new();
     loop {
-        rest = rest.trim_start_matches([' ', '\t', ',', ';', '.', ':', '\u{2019}']);
+        rest = rest.trim_start_matches([
+            ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}',
+        ]);
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             break;
         }
@@ -1872,7 +1893,9 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     if inners.len() < 2 {
         return None;
     }
-    let rest = rest.trim_start_matches([' ', '\t', ',', ';', '.', ':', '\u{2019}']);
+    let rest = rest.trim_start_matches([
+        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}',
+    ]);
     Some((inners, rest))
 }
 
@@ -1884,12 +1907,23 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
 /// standing trailing readers peel them — separated
 /// only by whitespace, commas, and the sentence
 /// separators ";" "." ":" the lone forms allow,
-/// in any spacing (round 38, R38-B, F2). Returns
+/// in any spacing (round 38, R38-B, F2), with a
+/// group's suffix marks standing in the gaps as at
+/// the leading walk (round 39, R39-C, F4, arm
+/// (a): U+2019 since R38-B, and "!", "?", U+201D
+/// now — "(Monday)! (notes)" is one run). Returns
 /// the run's inner texts in written order and the
 /// text standing before the run (its own trailing
 /// separators taken off). Groups standing
 /// elsewhere in the line are not the run, and a
-/// single trailing group is the lone form.
+/// single trailing group is the lone form — with
+/// one exception (round 39, R39-C, F4, arm (c)):
+/// a single group standing behind a separator the
+/// prefix trim takes off ("November 1, 2026
+/// ;(Monday)"), the line's only group, is walked
+/// here, because the lone readers are disarmed by
+/// that separator token and the unseparated twin
+/// is judged.
 fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     // The suffix layers the sequence may stand in
     // front of, peeled as in
@@ -1927,7 +1961,7 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     }
     let core = text[..end].trim_end();
     let spans = balanced_spans(core);
-    if spans.len() < 2 {
+    if spans.is_empty() {
         return None;
     }
     let last = spans.len() - 1;
@@ -1941,27 +1975,58 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     // pair's gap is empty, and stands); a U+2019
     // standing in a gap is the preceding group's
     // suffix, peeled as at the sequence's end
-    // (round 38, R38-B, F2).
+    // (round 38, R38-B, F2). Round 39 (R39-C, F4,
+    // arm (a)): "!", "?", and U+201D stand in a gap
+    // the same way — each is the preceding group's
+    // suffix, as the lone forms judge it.
     let mut run_first = last;
     while run_first > 0 {
         let gap = &core[spans[run_first - 1].1..spans[run_first].0];
-        if !gap
-            .chars()
-            .all(|c| matches!(c, ',' | ';' | '.' | ':' | '\u{2019}') || c.is_whitespace())
-        {
+        if !gap.chars().all(|c| {
+            matches!(
+                c,
+                ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
+            ) || c.is_whitespace()
+        }) {
             break;
         }
         run_first -= 1;
     }
+    // Round 39 (R39-C, F4, arm (c)): the prefix's
+    // own trailing separators come off with its
+    // whitespace and commas — a separator standing
+    // between the date and the run ("November 1,
+    // 2026 ;(Monday)(notes)") is the walk's head
+    // dress, not part of the date, exactly as a
+    // separator at the leading walk's head is not
+    // part of its first group. Before this the
+    // prefix kept its trailing separator and
+    // "November 1, 2026 ;" never parsed, so the
+    // run behind it went unjudged.
+    let prefix_raw = &core[..spans[run_first].0];
+    let prefix = prefix_raw.trim_end_matches([' ', '\t', ',', ';', '.', ':']);
     if last - run_first + 1 < 2 {
-        return None;
+        // The single-group exception stated in the
+        // walk's doc: the group is the line's only
+        // group, and a separator stood between it
+        // and the prefix the trim just took off.
+        // A single group with other groups elsewhere
+        // in the line keeps the lone form's standing
+        // reading — its unseparated twin ("(notes)
+        // November 1, 2026 (Monday)") serves, and so
+        // does the separated form.
+        let separator_came_off = prefix_raw[prefix.len()..]
+            .chars()
+            .any(|c| matches!(c, ',' | ';' | '.' | ':'));
+        if !(spans.len() == 1 && separator_came_off) {
+            return None;
+        }
     }
     let mut inners: Vec<String> = Vec::new();
     for (start, end) in &spans[run_first..=last] {
         let inner = &core[start + 1..end - 1];
         inners.push(inner.to_string());
     }
-    let prefix = core[..spans[run_first].0].trim_end_matches([' ', '\t', ',']);
     Some((inners, prefix))
 }
 
@@ -1977,7 +2042,9 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
 fn strip_leading_group_run(text: &str) -> &str {
     let mut rest = skip_framing_garnish(text.trim_start());
     loop {
-        rest = rest.trim_start_matches([' ', '\t', ',', ';', '.', ':', '\u{2019}']);
+        rest = rest.trim_start_matches([
+            ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}',
+        ]);
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             return rest;
         }
@@ -2014,7 +2081,14 @@ fn strip_leading_group_run(text: &str) -> &str {
 /// separators ";" "." ":" as the lone forms allow
 /// (round 38, R38-B, F2 — the walks' separator
 /// and suffix sets are the lone forms' sets,
-/// U+2019 in the suffix peels included); every
+/// U+2019 in the suffix peels included; round 39,
+/// R39-C, F4: the suffix sets gain "!", "?", and
+/// U+201D, the head separators in front of a
+/// single leading group and of a trailing run are
+/// walked, and a stacked suffix peels as a stack
+/// — the sets below are the lone forms' sets at
+/// every boundary position, heads, gaps, tails,
+/// and stacks alike); every
 /// weekday group in the sequence is
 /// judged on its contents against the date the
 /// slot frames — leading, the date standing after
@@ -2041,6 +2115,53 @@ fn strip_leading_group_run(text: &str) -> &str {
 /// date ends the sequence, so the R5-D adjacency
 /// arm ("(Monday) notes November 1, 2026" reads
 /// clean) is not this walk's to move.
+/// The single group standing at the leading slot
+/// behind head separators (round 39, R39-C, F4, arm
+/// (c)): the framing garnish stack aside, one or
+/// more of the walk's separators — "," ";" "." ":"
+/// among the trimmed characters — stand before the
+/// group, and the group stands at the trimmed
+/// head. Returns the group's inner text and the
+/// text standing after it (its own leading
+/// separators and suffix marks taken off, as the
+/// sequence walk's final trim takes them). A group
+/// standing at the head with no separator before
+/// it is the lone form, judged by the standing
+/// readers, and is not returned here: the head
+/// separators are what disarm those readers — the
+/// weekday pass sets the group apart behind a
+/// separator token, the framing scan will not
+/// frame a weekday standing behind another token,
+/// and the line falls to the readers that read a
+/// mid-line weekday as ordinary text — while a
+/// sequence of two or more behind the same
+/// separators is already walked by
+/// `leading_group_sequence`, whose head trim takes
+/// the separators off.
+fn leading_single_group_behind_head_separators(text: &str) -> Option<(String, &str)> {
+    let mut rest = skip_framing_garnish(text.trim_start());
+    let trimmed = rest.trim_start_matches([' ', '\t', ',', ';', '.', ':', '\u{2019}']);
+    if !rest[..rest.len() - trimmed.len()]
+        .chars()
+        .any(|c| matches!(c, ',' | ';' | '.' | ':'))
+    {
+        return None;
+    }
+    rest = trimmed;
+    if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
+        return None;
+    }
+    let (start, end) = first_balanced_span(rest)?;
+    if start != 0 {
+        return None;
+    }
+    let inner = &rest[start + 1..end - 1];
+    let rest = rest[end..].trim_start_matches([
+        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}',
+    ]);
+    Some((inner.to_string(), rest))
+}
+
 pub(super) fn group_sequence_weekday_mismatch(
     text: &str,
     today: SimpleDate,
@@ -2053,6 +2174,22 @@ pub(super) fn group_sequence_weekday_mismatch(
                     if date.weekday() != number {
                         return Some(WeekdayMismatch { named, date });
                     }
+                }
+            }
+        }
+    }
+    // Round 39 (R39-C, F4, arm (c)): the single
+    // leading group behind head separators, judged
+    // as its unseparated twin is — the sequence
+    // walk above takes two or more, and the lone
+    // readers are disarmed by the separator token
+    // (see `leading_single_group_behind_head_separators`).
+    if let Some((inner, rest)) = leading_single_group_behind_head_separators(text) {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if let Some((date, _)) = parse_date_prefix(&tokens, today) {
+            if let Some((named, number)) = garnish_group_weekday(&inner) {
+                if date.weekday() != number {
+                    return Some(WeekdayMismatch { named, date });
                 }
             }
         }

@@ -2564,20 +2564,28 @@ fn day_number_stands_after(text: &str, at: usize) -> bool {
 /// dressed forms of `day_number_stands_after`, with
 /// the day itself under the same test (one or two
 /// digits naming 1..=31, followed by a comma,
-/// whitespace, or the line's end). Returns the
-/// day's first byte, so the caller can tell a day
-/// standing glued (against a group or against the
-/// separator itself) from one standing apart.
+/// whitespace, or the line's end). Round 39
+/// (R39-D, F5 + F6): the dress is the full set —
+/// one or a run of "," ";" "." ":" separators,
+/// with whatever whitespace the sender set around
+/// or between them ("November(cancelled). 1,
+/// 2026", "November(cancelled): 1, 2026", and
+/// "November(cancelled),; 1, 2026" wear it, as the
+/// "," / ";" dresses have since R38-E). Returns
+/// the day's first byte, so the caller can tell a
+/// day standing glued (against a group or against
+/// the separator itself) from one standing apart.
 fn dressed_day_start(text: &str, at: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut i = at;
-    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
-        i += 1;
-    }
-    if i < bytes.len() && matches!(bytes[i], b',' | b';') {
-        i += 1;
+    loop {
         while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
             i += 1;
+        }
+        if i < bytes.len() && matches!(bytes[i], b',' | b';' | b'.' | b':') {
+            i += 1;
+        } else {
+            break;
         }
     }
     if day_number_stands_after(text, i) {
@@ -2592,12 +2600,24 @@ fn dressed_day_start(text: &str, at: usize) -> Option<usize> {
 /// all (the spans stand immediately against each
 /// other, the R37-C glued chain), or one "," or ";"
 /// separator with whatever whitespace the sender
-/// set around it — the separator-joined chain. A
-/// gap of whitespace alone is no link: groups
-/// standing apart are the spaced form already, and
-/// keep the per-span reading.
+/// set around it — the separator-joined chain.
+/// Round 39 (R39-D, F5 + F6): the link is the
+/// full set — one or a run of "," ";" "." ":"
+/// separators, with whatever whitespace the
+/// sender set around or between them
+/// ("November(cancelled).(notes) 1, 2026",
+/// "November(cancelled):(notes) 1, 2026", and the
+/// ",," / ";;" / ",;" runs are links, as the ","
+/// and ";" links have been since R38-E). A gap of
+/// whitespace alone is no link: groups standing
+/// apart are the spaced form already, and keep
+/// the per-span reading.
 fn chain_gap_is_link(gap: &str) -> bool {
-    gap.is_empty() || matches!(gap.trim(), "," | ";")
+    gap.is_empty()
+        || (!gap.trim().is_empty()
+            && gap
+                .chars()
+                .all(|c| matches!(c, ',' | ';' | '.' | ':') || c.is_whitespace()))
 }
 
 /// `text` with a space set on every glued side of
@@ -2687,6 +2707,35 @@ fn chain_gap_is_link(gap: &str) -> bool {
 /// a spaced twin the standing readers judge, byte
 /// for byte in shape. Comma spacing in this
 /// family is dress and flips nothing.
+///
+/// Round 39 (R39-D, F5 MAJOR + F6 MINOR): the
+/// R38-E statement stopped one separator set
+/// short again — the sentence separators "." and
+/// ":" were not chain links, runs of separators
+/// were not links in either set, and a lone group
+/// wearing "." or ":" (or a run) as dress before
+/// its day escaped the same way ("November
+/// (cancelled).(notes) 1, 2026" and the ":" form
+/// served November 1 live where the spaced twin
+/// governs; "November(cancelled),,(notes) 1,
+/// 2026", ";;", and ",;" runs served the same
+/// way; "November(cancelled). 1, 2026",
+/// "November(cancelled): 1, 2026", and
+/// "November(cancelled),; 1, 2026" served where
+/// the "," / ";" dresses have governed since
+/// R38-E; the inert chains "November(notes).
+/// (choir) 1, 2026" and its three-group form read
+/// a date their spaced twins refuse). The slot
+/// therefore takes the full set in both helpers:
+/// `chain_gap_is_link` admits bare adjacency, or
+/// one or a run of "," ";" "." ":", and
+/// `dressed_day_start` admits the same run as
+/// dress before the day. The weekday arms at
+/// this site stand as they stood: the comma
+/// chains and the spaced forms alike read
+/// nothing with no record, and the new links
+/// take the same reading (their re-spaced lines
+/// are the spaced forms).
 fn respaced_glued_groups_at_date_slots(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut inserts: Vec<usize> = Vec::new();
@@ -2701,6 +2750,9 @@ fn respaced_glued_groups_at_date_slots(text: &str) -> Option<String> {
     // chain is the same compound at the same slot —
     // and the day after the run may stand past the
     // same separator dress (`dressed_day_start`).
+    // Round 39 (R39-D): the links and the dress
+    // take the full set — one or a run of ","
+    // ";" "." ":" as well as bare adjacency.
     // Spaces are set on glued sides only, as the
     // function's head note states.
     let mut chain_at = 0;
@@ -2796,6 +2848,8 @@ fn respaced_glued_groups_at_date_slots(text: &str) -> Option<String> {
         // wearing the separator before its day is
         // the chain family's single-group form, and
         // its space sets at the same glued sides.
+        // Round 39 (R39-D): the dress is the full
+        // set — one or a run of "," ";" "." ":".
         if word_before_is_month(text, start) {
             if let Some(day_start) = dressed_day_start(text, end) {
                 if left_glued {

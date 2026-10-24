@@ -29661,3 +29661,341 @@ fn r39c_leading_walk_suffix_peel_takes_the_lone_forms_stack() {
         assert_eq!(m.date, nov(1), "{line}");
     }
 }
+
+#[test]
+fn r39d_separator_chains_at_the_month_day_slot_take_the_full_link_set() {
+    // Round 39 (R39-D, F5 MAJOR = review R39-R5 +
+    // red team RT39-4; F6 MINOR = review R39-R6):
+    // R38-E stated the month–day slot for chains
+    // whose links are bare adjacency or one "," /
+    // ";", and the sentence separators "." and ":"
+    // were not chain links, and runs were not
+    // links in either set — "November(cancelled).
+    // (notes) 1, 2026" and the ":" form served
+    // November 1 live with no record where the
+    // spaced twin governs, the ",," / ";;" / ",;"
+    // runs served the same way, and the inert
+    // chains "November(notes).(choir) 1, 2026" and
+    // its three-group form read a date their
+    // spaced twins refuse. The adjudicated reading
+    // is the spaced twin's, for the full link set:
+    // bare adjacency, or one or a run of "," ";"
+    // "." ":". Every pair below compares the
+    // glued line's FULL record against its spaced
+    // twins' via the r34e helpers, on the For line
+    // and the Keep-through line; the headline
+    // forms are stated outright after. November 1
+    // and November 8, 2026 are Sundays.
+    let pair_shapes: [(&str, &str, &str, &str); 6] = [
+        ("(", ")", "(", ")"),
+        ("[", "]", "[", "]"),
+        ("{", "}", "{", "}"),
+        ("(", ")", "[", "]"),
+        ("[", "]", "(", ")"),
+        ("[", "]", "{", "}"),
+    ];
+    // Governing contents in either position, the
+    // multi-word governor, the inert pair, and
+    // the weekday arms (disagreeing and agreeing).
+    let content_pairs: [(&str, &str); 8] = [
+        ("cancelled", "notes"),
+        ("notes", "cancelled"),
+        ("called off", "notes"),
+        ("postponed", "choir"),
+        ("notes", "choir"),
+        ("Monday", "notes"),
+        ("notes", "Monday"),
+        ("notes", "Sunday"),
+    ];
+    // The new links: the two sentence separators
+    // and the separator runs.
+    for link in [".", ":", ",,", ";;", ",;", ".:"] {
+        for (o1, c1, o2, c2) in pair_shapes {
+            for (first, second) in content_pairs {
+                let glued = format!("November{o1}{first}{c1}{link}{o2}{second}{c2} 1, 2026");
+                let spaced = format!("November {o1}{first}{c1} {o2}{second}{c2} 1, 2026");
+                let spaced_link =
+                    format!("November {o1}{first}{c1}{link} {o2}{second}{c2} 1, 2026");
+                let half = format!("November{o1}{first}{c1}{link} {o2}{second}{c2} 1, 2026");
+                r34e_for_twin(&glued, &spaced);
+                r34e_for_twin(&glued, &spaced_link);
+                r34e_for_twin(&glued, &half);
+                r34e_keep_twin(&glued, &spaced);
+                r34e_keep_twin(&glued, &spaced_link);
+            }
+        }
+    }
+    // The remaining run shapes, paren pair, every
+    // content pair.
+    for link in [";.", ":.", "..", "::", ",,;", ";;."] {
+        for (first, second) in content_pairs {
+            let glued = format!("November({first}){link}({second}) 1, 2026");
+            let spaced = format!("November ({first}) ({second}) 1, 2026");
+            r34e_for_twin(&glued, &spaced);
+            r34e_keep_twin(&glued, &spaced);
+        }
+    }
+    // A run wearing spaces between its marks, and
+    // a link wearing spaces on both sides while
+    // the chain's head stays glued.
+    for (glued, spaced) in [
+        (
+            "November(cancelled), , (notes) 1, 2026",
+            "November (cancelled) (notes) 1, 2026",
+        ),
+        (
+            "November(cancelled) . (notes) 1, 2026",
+            "November (cancelled) (notes) 1, 2026",
+        ),
+        (
+            "November(cancelled),, (notes) 1, 2026",
+            "November (cancelled) (notes) 1, 2026",
+        ),
+        (
+            "November(notes) : (choir) 1, 2026",
+            "November (notes) (choir) 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(glued, spaced);
+        r34e_keep_twin(glued, spaced);
+    }
+    // Three-group chains in the new links: inert,
+    // a governor in the middle, a governor first,
+    // and mixed links (a run and a sentence
+    // separator in one chain).
+    for (glued, spaced) in [
+        (
+            "November(notes).(choir).(band) 1, 2026",
+            "November (notes) (choir) (band) 1, 2026",
+        ),
+        (
+            "November(notes):(choir):(band) 1, 2026",
+            "November (notes) (choir) (band) 1, 2026",
+        ),
+        (
+            "November(notes),,(choir);;(band) 1, 2026",
+            "November (notes) (choir) (band) 1, 2026",
+        ),
+        (
+            "November(notes).(cancelled).(choir) 1, 2026",
+            "November (notes) (cancelled) (choir) 1, 2026",
+        ),
+        (
+            "November(cancelled).(notes):(choir) 1, 2026",
+            "November (cancelled) (notes) (choir) 1, 2026",
+        ),
+        (
+            "November[notes].[cancelled].[choir] 1, 2026",
+            "November [notes] [cancelled] [choir] 1, 2026",
+        ),
+        (
+            "November(notes).(choir),,(band) 1, 2026",
+            "November (notes) (choir) (band) 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(glued, spaced);
+        r34e_keep_twin(glued, spaced);
+    }
+    // A date group in either position of a chain
+    // in the new links: the compound takes the
+    // spaced reading.
+    for (glued, spaced) in [
+        (
+            "November(notes).(November 8, 2026) 1, 2026",
+            "November (notes) (November 8, 2026) 1, 2026",
+        ),
+        (
+            "November(November 8, 2026).(notes) 1, 2026",
+            "November (November 8, 2026) (notes) 1, 2026",
+        ),
+        (
+            "November(notes),,(November 8, 2026) 1, 2026",
+            "November (notes) (November 8, 2026) 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(glued, spaced);
+        r34e_keep_twin(glued, spaced);
+    }
+    // The weekday arms at this site, stated as
+    // the lanes witnessed them: the chains in the
+    // new links stand at parity with the spaced
+    // forms — both read nothing with no record, on
+    // both routes (the record loss there is
+    // uniform, not part of this finding).
+    for line in [
+        "November(Monday).(notes) 1, 2026",
+        "November(Monday):(notes) 1, 2026",
+        "November(Monday),,(notes) 1, 2026",
+        "November(notes).(Monday) 1, 2026",
+        "November (Monday) (notes) 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+        assert_eq!(
+            c.keep_through_weekday_mismatch, None,
+            "{line}: no keep record"
+        );
+    }
+    // Stated outright, the headline forms. A
+    // governing group in either position of a
+    // chain in the new links — and the inert
+    // chains — read no date and stand no record,
+    // as their spaced twins read, on both routes.
+    for line in [
+        "November(cancelled).(notes) 1, 2026",
+        "November(cancelled):(notes) 1, 2026",
+        "November[cancelled].[notes] 1, 2026",
+        "November{cancelled}:{notes} 1, 2026",
+        "November(notes).(cancelled) 1, 2026",
+        "November(cancelled),,(notes) 1, 2026",
+        "November(cancelled);;(notes) 1, 2026",
+        "November(cancelled),;(notes) 1, 2026",
+        "November(notes).(choir) 1, 2026",
+        "November(notes):(choir) 1, 2026",
+        "November(notes).(choir).(band) 1, 2026",
+        "November(notes),,(choir) 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: no parenthesized record"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+        assert_eq!(
+            c.keep_through_parenthesized_mismatch, None,
+            "{line}: no keep parenthesized record"
+        );
+    }
+    // The date group first in a chain in the new
+    // links: the group's own date reads, clean, on
+    // both routes, as the spaced twin reads it.
+    for line in [
+        "November(November 8, 2026).(notes) 1, 2026",
+        "November(November 8, 2026),,(notes) 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{line}");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}");
+        assert_eq!(c.keep_through_parenthesized_mismatch, None, "{line}");
+    }
+}
+
+#[test]
+fn r39d_separator_dress_before_the_day_takes_the_full_set() {
+    // Round 39 (R39-D, F5 MAJOR + F6 MINOR): the
+    // chain family's single-group form. A lone
+    // group at the month–day slot wearing "." or
+    // ":" — or a run of separators — as dress
+    // before its day escaped as the chains did:
+    // "November(cancelled). 1, 2026",
+    // "November(cancelled): 1, 2026", and
+    // "November(cancelled),; 1, 2026" served
+    // November 1 live, where the "," / ";"
+    // dresses have governed since R38-E and the
+    // plain glued form "November(cancelled)
+    // 1, 2026" reads nothing. The adjudicated
+    // reading is the plain twin's, for the full
+    // dress set: one or a run of "," ";" "." ":".
+    // Every pair compares FULL records via the
+    // r34e helpers on both routes, against the
+    // plain spaced twin and the R38-E comma twin.
+    // November 1, 2026 is a Sunday.
+    let pair_shapes: [(&str, &str); 3] = [("(", ")"), ("[", "]"), ("{", "}")];
+    let contents: [&str; 6] = [
+        "cancelled",
+        "called off",
+        "postponed",
+        "notes",
+        "Monday",
+        "Sunday",
+    ];
+    for dress in [".", ":", ",;", ";,", "..", "::", ".:"] {
+        for (o, c) in pair_shapes {
+            for content in contents {
+                let dressed = format!("November{o}{content}{c}{dress} 1, 2026");
+                let plain = format!("November {o}{content}{c} 1, 2026");
+                let comma = format!("November {o}{content}{c}, 1, 2026");
+                r34e_for_twin(&dressed, &plain);
+                r34e_for_twin(&dressed, &comma);
+                r34e_keep_twin(&dressed, &plain);
+                r34e_keep_twin(&dressed, &comma);
+            }
+        }
+    }
+    // The remaining run shapes and the dress's
+    // spacing forms, paren pair: a run glued
+    // against the day, a mark standing apart
+    // from the group, a run wearing spaces
+    // between its marks.
+    for (dressed, plain) in [
+        (
+            "November(cancelled),, 1, 2026",
+            "November (cancelled) 1, 2026",
+        ),
+        (
+            "November(cancelled);; 1, 2026",
+            "November (cancelled) 1, 2026",
+        ),
+        (
+            "November(cancelled),;1, 2026",
+            "November (cancelled) 1, 2026",
+        ),
+        (
+            "November(cancelled).1, 2026",
+            "November (cancelled) 1, 2026",
+        ),
+        (
+            "November(cancelled) . 1, 2026",
+            "November (cancelled) 1, 2026",
+        ),
+        (
+            "November(cancelled), ; 1, 2026",
+            "November (cancelled) 1, 2026",
+        ),
+        ("November(notes). 1, 2026", "November (notes) 1, 2026"),
+        ("November(notes): 1, 2026", "November (notes) 1, 2026"),
+        ("November(Monday). 1, 2026", "November (Monday) 1, 2026"),
+    ] {
+        r34e_for_twin(dressed, plain);
+        r34e_keep_twin(dressed, plain);
+    }
+    // Stated outright: the dressed governing and
+    // inert singles read no date, on both routes.
+    for line in [
+        "November(cancelled). 1, 2026",
+        "November(cancelled): 1, 2026",
+        "November(cancelled),; 1, 2026",
+        "November[cancelled]. 1, 2026",
+        "November(notes). 1, 2026",
+        "November(notes),, 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+    }
+}

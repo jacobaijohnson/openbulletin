@@ -540,8 +540,14 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
             '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
             '\u{201c}', '\u{2018}', '\u{2019}',
         ]);
-        if let Some(named_number) = weekday_word(word) {
-            let named = word.to_string();
+        // Round 39 (R39-E, F7): the base's trailing
+        // garnish word is read through
+        // `cleaned_weekday`, so one interior sentence
+        // mark is shed as at the plain line's garnish
+        // slots — "Sunday after November 1, 2026
+        // (Mon!day)" is judged here as its bare twin
+        // is.
+        if let Some((named, named_number)) = cleaned_weekday(word) {
             trailing = Some((named, named_number));
             if i + 1 == tokens.len() {
                 trailing_token = Some(tokens[i]);

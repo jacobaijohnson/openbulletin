@@ -29999,3 +29999,278 @@ fn r39d_separator_dress_before_the_day_takes_the_full_set() {
         assert_eq!(c.keep_through, None, "{line}: no keep date reads");
     }
 }
+
+#[test]
+fn r39e_grouped_weekday_with_one_interior_sentence_mark_is_judged_as_its_bare_twin() {
+    // Round 39 (R39-E, F7 MAJOR = review R39-R7):
+    // R38-F shed an interior mark from a bare date
+    // word, vocabulary-anchored, guarded to marks
+    // OUTSIDE every group; inside a group the same
+    // mark disarmed the weekday judgment at all
+    // three garnish slots — "November 1, 2026
+    // (Mon!day)" served November 1 silently,
+    // leading "(Mon!day) November 1, 2026" served
+    // silently, and base-trailing "Sunday after
+    // November 1, 2026 (Mon!day)" served November 8
+    // silently — where the bare twins refuse with
+    // WeekdayMismatch(Monday@2026-11-01) at all
+    // three. The grouped weekday readers trimmed a
+    // token's edges but not its interior, while the
+    // edge form inside a group already judged
+    // ("(Monday!)" refuses with the record). The
+    // adjudicated reading: in the grouped weekday
+    // readers (`garnish_group_weekday` and the
+    // framing readers' cleaning, through
+    // `cleaned_weekday`), a weekday word whose
+    // interior holds ONE ASCII sentence mark is
+    // judged as the word with the mark shed, under
+    // the same vocabulary anchor as
+    // `bare_date_mark_shed`'s interior arm — the
+    // same mark set ("!", "?", ":", ";") and the
+    // shed completing only a weekday name. Every
+    // pair below compares the marked grouped
+    // line's FULL record against its bare twin's
+    // and its clean grouped twin's via the r34e
+    // helpers, on the For line and the
+    // Keep-through line. November 1, 2026 is a
+    // Sunday.
+    let pairs: [(&str, &str); 3] = [("(", ")"), ("[", "]"), ("{", "}")];
+    for mark in ["!", "?", ":", ";"] {
+        let marked = format!("Mon{mark}day");
+        for (open, close) in pairs {
+            let grouped_trailing = format!("November 1, 2026 {open}{marked}{close}");
+            let bare_trailing = format!("November 1, 2026 {marked}");
+            let clean_trailing = format!("November 1, 2026 {open}Monday{close}");
+            r34e_for_twin(&grouped_trailing, &bare_trailing);
+            r34e_for_twin(&grouped_trailing, &clean_trailing);
+            r34e_keep_twin(&grouped_trailing, &bare_trailing);
+            r34e_keep_twin(&grouped_trailing, &clean_trailing);
+            let grouped_leading = format!("{open}{marked}{close} November 1, 2026");
+            let bare_leading = format!("{marked} November 1, 2026");
+            let clean_leading = format!("{open}Monday{close} November 1, 2026");
+            r34e_for_twin(&grouped_leading, &bare_leading);
+            r34e_for_twin(&grouped_leading, &clean_leading);
+            r34e_keep_twin(&grouped_leading, &bare_leading);
+            r34e_keep_twin(&grouped_leading, &clean_leading);
+            let grouped_base = format!("Sunday after November 1, 2026 {open}{marked}{close}");
+            let bare_base = format!("Sunday after November 1, 2026 {marked}");
+            let clean_base = format!("Sunday after November 1, 2026 {open}Monday{close}");
+            r34e_for_twin(&grouped_base, &bare_base);
+            r34e_for_twin(&grouped_base, &clean_base);
+            r34e_keep_twin(&grouped_base, &bare_base);
+            r34e_keep_twin(&grouped_base, &clean_base);
+        }
+        // The mark at every interior position, and
+        // in another weekday name, trailing slot.
+        for shed_word in [
+            format!("Wednes{mark}day"),
+            format!("M{mark}onday"),
+            format!("Monda{mark}y"),
+        ] {
+            let grouped = format!("November 1, 2026 ({shed_word})");
+            let bare = format!("November 1, 2026 {shed_word}");
+            r34e_for_twin(&grouped, &bare);
+            r34e_keep_twin(&grouped, &bare);
+        }
+        // The shed completes a shortened weekday
+        // name too, as the bare vocabulary anchor
+        // completes it ("Mo!n" names Mon).
+        let grouped_short = format!("November 1, 2026 (Mo{mark}n)");
+        let bare_short = format!("November 1, 2026 Mo{mark}n");
+        r34e_for_twin(&grouped_short, &bare_short);
+        r34e_keep_twin(&grouped_short, &bare_short);
+        // Sequences at all three slots, a framing
+        // stack in front of the leading group, and
+        // doubled / mixed wrappers: each takes its
+        // clean grouped twin's reading, and the
+        // framing forms take their bare twins'.
+        for (grouped, twin) in [
+            (
+                format!("(Mon{mark}day)(notes) November 1, 2026"),
+                "(Monday)(notes) November 1, 2026".to_string(),
+            ),
+            (
+                format!("(notes) (Mon{mark}day) November 1, 2026"),
+                "(notes) (Monday) November 1, 2026".to_string(),
+            ),
+            (
+                format!("November 1, 2026 (Mon{mark}day)(notes)"),
+                "November 1, 2026 (Monday)(notes)".to_string(),
+            ),
+            (
+                format!("Sunday after November 1, 2026 (Mon{mark}day)(notes)"),
+                "Sunday after November 1, 2026 (Monday)(notes)".to_string(),
+            ),
+            (
+                format!("on (Mon{mark}day) November 1, 2026"),
+                format!("on Mon{mark}day November 1, 2026"),
+            ),
+            (
+                format!("the (Mon{mark}day) November 1, 2026"),
+                format!("the Mon{mark}day November 1, 2026"),
+            ),
+            (
+                format!("November 1, 2026 ((Mon{mark}day))"),
+                "November 1, 2026 ((Monday))".to_string(),
+            ),
+            (
+                format!("November 1, 2026 ([Mon{mark}day])"),
+                "November 1, 2026 ([Monday])".to_string(),
+            ),
+        ] {
+            r34e_for_twin(&grouped, &twin);
+            r34e_keep_twin(&grouped, &twin);
+        }
+        // An agreeing shed weekday reads its date,
+        // at all three slots, stated outright.
+        for line in [
+            format!("November 1, 2026 (Sun{mark}day)"),
+            format!("(Sun{mark}day) November 1, 2026"),
+        ] {
+            let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, Some(nov(1)), "{line}: the agreeing date reads");
+            assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+            let text = format!(
+                "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+            );
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through,
+                Some(nov(1)),
+                "{line}: the agreeing date reads"
+            );
+            assert_eq!(c.keep_through_weekday_mismatch, None, "{line}: no record");
+        }
+        let line = format!("Sunday after November 1, 2026 (Sun{mark}day)");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: the resolution reads");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{line}: the resolution reads");
+        assert_eq!(c.keep_through_weekday_mismatch, None, "{line}: no record");
+    }
+    // Stated outright: the headline forms refuse
+    // with the bare twins' record, both routes.
+    for line in [
+        "November 1, 2026 (Mon!day)",
+        "(Mon!day) November 1, 2026",
+        "Sunday after November 1, 2026 (Mon!day)",
+        "November 1, 2026 [Mon?day]",
+        "{Mon:day} November 1, 2026",
+        "Sunday after November 1, 2026 {Mon;day}",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date reads");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing grouped weekday is recorded");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+        let m = c
+            .keep_through_weekday_mismatch
+            .as_ref()
+            .expect("the disagreeing grouped weekday is recorded on the keep line");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+    }
+}
+
+#[test]
+fn r39e_shed_completes_no_governor_word_and_no_wrapped_month_word() {
+    // Round 39 (R39-E, F7): the boundaries stated
+    // with the fix. No governor word is ever
+    // completed by shedding (the F10-of-round-38
+    // governor-stem hold): "(cancell!ed) November
+    // 8, 2026" serving is a recorded non-finding —
+    // the stamp as written is not a governor word,
+    // its bare twin is equally silent as a governor
+    // (it reads nothing at all) — and the grouped
+    // readers' shed, anchored to weekday names
+    // only, does not complete it: the grouped
+    // governor forms keep their standing readings,
+    // stated outright on both routes.
+    for line in [
+        "(cancell!ed) November 8, 2026",
+        "(cancel!led) November 8, 2026",
+        "November 8, 2026 (cancell!ed)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date,
+            Some(nov(8)),
+            "{line}: the uncompleted governor group stays garnish"
+        );
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{line}: the uncompleted governor group stays garnish"
+        );
+        assert_eq!(c.keep_through_weekday_mismatch, None, "{line}: no record");
+    }
+    // The wrapped-date month case from the R38-F
+    // writer note is untouched: the change is
+    // bounded to weekday names in the grouped
+    // WEEKDAY readers, not the date readers, so a
+    // month word with an interior mark inside a
+    // wrapped date still dies in both dresses —
+    // the safe direction — on both routes.
+    for line in ["November (Novem!ber 1, 2026)", "(Novem!ber 1, 2026)"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_date, None,
+            "{line}: the wrapped marked month reads nothing"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{line}: the wrapped marked month reads nothing"
+        );
+    }
+    // The shed set's own boundaries, stated
+    // outright: an interior "." is not in
+    // `bare_date_mark_shed`'s interior arm and is
+    // not shed here — the grouped "." forms keep
+    // their standing garnish readings — and two
+    // interior marks are outside the one-mark
+    // scope, so the doubled-mark group keeps its
+    // standing reading too.
+    for (line, read) in [
+        ("November 1, 2026 (Mon.day)", Some(nov(1))),
+        ("(Mon.day) November 1, 2026", Some(nov(1))),
+        ("Sunday after November 1, 2026 (Mon.day)", Some(nov(8))),
+        ("November 1, 2026 (Mon!!day)", Some(nov(1))),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, read, "{line}: the standing reading stands");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, read, "{line}: the standing reading stands");
+        assert_eq!(c.keep_through_weekday_mismatch, None, "{line}: no record");
+    }
+}

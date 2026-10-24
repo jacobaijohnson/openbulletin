@@ -1618,7 +1618,13 @@ pub(super) fn framed_date_outcome(
         .iter()
         .rposition(|t| t.chars().any(|c| c.is_alphanumeric()))?;
     let trailing_word = clean(tokens[last]);
-    let trailing = weekday_word(trailing_word).map(|n| (trailing_word, n));
+    // Round 39 (R39-E, F7): the framing readers'
+    // cleaning sheds one interior sentence mark
+    // from a weekday word (see `cleaned_weekday`),
+    // as it does at the garnish-group reader — a
+    // grouped "(Mon!day)" frames its date here
+    // exactly as the bare "Mon!day" does.
+    let trailing = cleaned_weekday(trailing_word);
     let core: Vec<&str> = match trailing {
         Some(_) => tokens
             .iter()
@@ -1629,7 +1635,7 @@ pub(super) fn framed_date_outcome(
         None => tokens.clone(),
     };
     for i in 0..core.len() {
-        let Some(lead_number) = weekday_word(clean(core[i])) else {
+        let Some((lead_named, lead_number)) = cleaned_weekday(clean(core[i])) else {
             continue;
         };
         if !weekday_is_framed(&core, i) {
@@ -1639,13 +1645,13 @@ pub(super) fn framed_date_outcome(
             continue;
         };
         if date.weekday() != lead_number {
-            let named = clean(core[i]).to_string();
+            let named = lead_named;
             return Some((None, Some(WeekdayMismatch { named, date })));
         }
         if i + 1 + used == core.len() {
             if let Some((trailing_word, trailing_number)) = trailing {
                 if date.weekday() != trailing_number {
-                    let named = trailing_word.to_string();
+                    let named = trailing_word;
                     return Some((None, Some(WeekdayMismatch { named, date })));
                 }
             }
@@ -1664,15 +1670,69 @@ pub(super) fn framed_date_outcome(
 /// wrapper the group wears inside its own pair
 /// ("[Monday]" standing inside "([Monday])") cleans
 /// off with the pair's marks — and the word is
-/// returned as the lone record names it.
+/// returned as the lone record names it. Round 39
+/// (R39-E, F7): the word is read through
+/// `cleaned_weekday`, so one interior sentence mark
+/// is shed under the weekday vocabulary anchor —
+/// "(Mon!day)" names Monday here as its bare twin
+/// does.
 pub(super) fn garnish_group_weekday(inner: &str) -> Option<(String, u32)> {
     let mut words = inner.split_whitespace();
     let word = words.next()?;
     if words.next().is_some() {
         return None;
     }
-    let named = clean(word);
-    weekday_word(named).map(|number| (named.to_string(), number))
+    cleaned_weekday(clean(word))
+}
+
+/// A weekday word as the grouped readers name it:
+/// the word itself when it is one, or the word with
+/// ONE interior ASCII sentence mark shed when that
+/// shed completes a weekday name (round 39, R39-E,
+/// F7 = review R39-R7). The grouped readers trim a
+/// token's edges but not its interior, so "(Mon!day)"
+/// was inert garnish at every garnish slot while the
+/// bare twin "Mon!day" refused with the record —
+/// `bare_date_mark_shed`'s interior arm sheds the
+/// mark on the bare path, guarded to marks OUTSIDE
+/// every group, and this arm is its grouped twin:
+/// the same mark set ("!", "?", ":", ";"), the same
+/// vocabulary anchor (`weekday_word` on the shed
+/// word, so the shed completes only a weekday name
+/// and no other word — a governor's stem above all —
+/// is ever completed by shedding), and the shed
+/// word is the name the record carries, as the bare
+/// twin's record names the shed word. A mark at the
+/// word's edge is the edge trims' business, not this
+/// arm's; two interior marks are not shed (the
+/// one-mark scope the synthesis states); an interior
+/// "." is not in the set, as it is not in the bare
+/// interior arm's.
+pub(super) fn cleaned_weekday(word: &str) -> Option<(String, u32)> {
+    if let Some(number) = weekday_word(word) {
+        return Some((word.to_string(), number));
+    }
+    let bytes = word.as_bytes();
+    let mut marks = bytes
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| matches!(b, b'!' | b'?' | b':' | b';'))
+        .map(|(i, _)| i);
+    let pos = marks.next()?;
+    if marks.next().is_some() || pos == 0 || pos + 1 >= bytes.len() {
+        return None;
+    }
+    if !bytes[pos - 1].is_ascii_alphabetic() || !bytes[pos + 1].is_ascii_alphabetic() {
+        return None;
+    }
+    let shed_bytes: Vec<u8> = bytes
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != pos)
+        .map(|(_, b)| *b)
+        .collect();
+    let shed = String::from_utf8(shed_bytes).expect("only an ASCII mark byte was dropped");
+    weekday_word(&shed).map(|number| (shed, number))
 }
 
 /// `rest` (already trimmed at its head) with the
@@ -3220,7 +3280,13 @@ pub(super) fn date_line_inner(
             '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
             '\u{201c}', '\u{2018}', '\u{2019}',
         ]);
-        if let Some(named_number) = weekday_word(word) {
+        // Round 39 (R39-E, F7): the trailing garnish
+        // word is read through `cleaned_weekday`, so
+        // one interior sentence mark is shed as at
+        // the framing and garnish-group readers —
+        // "(Mon!day)" is judged here as the bare
+        // "Mon!day" is.
+        if let Some((named, named_number)) = cleaned_weekday(word) {
             let rest: Vec<&str> = tokens
                 .iter()
                 .enumerate()
@@ -3231,13 +3297,7 @@ pub(super) fn date_line_inner(
                 if date.weekday() == named_number {
                     return (Some(date), None);
                 }
-                return (
-                    None,
-                    Some(WeekdayMismatch {
-                        named: word.to_string(),
-                        date,
-                    }),
-                );
+                return (None, Some(WeekdayMismatch { named, date }));
             }
         }
     }

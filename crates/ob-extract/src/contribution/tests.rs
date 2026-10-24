@@ -19208,10 +19208,10 @@ fn r31c_semicolon_groups_on_a_for_line_parse_without_the_cliff() {
 // load 3.7–6.9; probe in round39-out/g/): the
 // "(notes)" group run grew 8.2x/15.2x/17.3x per 4x
 // of groups (640 groups: 1,098 ms against a
-// 1.7 ms long-word control), the mixed unclosed
-// run 77x then 13.9x per 4x (240 repetitions:
-// 1,153 ms), the nested day groups 5.9x/18.9x per
-// 4x (depth 1,600: 223 ms), and the semicolon
+// 9.4 ms long-word control), the mixed unclosed
+// run 77.3x then 73.9x per 4x (960 repetitions:
+// 85,208 ms), the nested day groups 5.6x/9.2x per
+// 4x (depth 1,600: 101.0 ms), and the semicolon
 // shape 5.6x per doubling at the top size
 // (64,000 groups: 153.5 s against the 30x pin
 // bound the 32,000-group pin below carries).
@@ -19287,8 +19287,10 @@ fn r39g_unclosed_mixed_groups_parse_without_the_cliff() {
     // no-group line, whose cost no fix here touches.
     // Fixed tree: the witness stands under the
     // control itself (~0.6x); pre-fix it stood at
-    // thousands of times the control (240
-    // repetitions: 1,153 ms against ~1 ms).
+    // ~440x the control at 240 repetitions in the
+    // probe frame (1,153 ms against 2.6 ms), and
+    // 2,067x at 480 in this suite's interleaved
+    // frame (9,500 ms against 4.6 ms).
     for n in [480usize, 960] {
         let text = format!(
             "For Sunday: {}\n\n## Announcement\n\nHi.\n",
@@ -19311,8 +19313,9 @@ fn r39g_nested_day_groups_parse_without_the_cliff() {
     // the witness's byte size, as above. Fixed
     // tree: the witness stands at ~2–3x the control
     // at both depths; pre-fix, depth 1,600 stood at
-    // ~140x in the probe frame (223 ms against
-    // ~1.6 ms), and in this suite's frame the pin
+    // ~13x in the probe frame (101.0 ms against the
+    // long-word control's ~7.7 ms at the same byte
+    // size), and in this suite's frame the pin
     // bites at the second size: depth 3,200 took
     // 395.2 ms against the control's 14.1 ms (28.0x).
     for n in [1600usize, 3200] {

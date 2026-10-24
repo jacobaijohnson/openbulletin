@@ -18943,20 +18943,27 @@ fn r30d_repeated_date_line_parses_without_the_cliff() {
     // four-word budget now bounds the search (see
     // `parse_date_prefix`), and the fixed code
     // reads this witness in milliseconds even in a
-    // debug test profile. The five-second bound
-    // sits far above the fixed code's time and far
-    // below the old code's, so load cannot flake
-    // it either way; the reading itself is pinned
-    // first, as everywhere.
+    // debug test profile. Round 39 (R39-CI): the
+    // five-second bound is now a ratio, in the
+    // R33-D form — the witness measured against
+    // the absolute-group control at the same
+    // count (380 groups), interleaved in the same
+    // run, best of three, bound 20x the control.
+    // On this tree the ratio measures 1.02; on the
+    // tree before R30-D (c582d4e) the converted pin
+    // fails with the witness at 280.26 s against
+    // the control's 364 ms (a ratio of ~769x), so
+    // the bound sits between the frames. The
+    // reading itself is pinned first, as
+    // everywhere.
     let line = vec!["November 1, 2026"; 380].join(", ");
     let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r34d_absolute_group_control_at(380);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, Some(nov(1)));
     assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "the repeated-date witness took {elapsed:?}"
+        witness_best < control_best * 20,
+        "the repeated-date witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
     );
 }
 
@@ -18990,6 +18997,51 @@ fn r30d_repeated_date_line_parses_without_the_cliff() {
 // sizes below scale from those points, the fixed
 // side linearly and the un-fixed side
 // quadratically).
+//
+// Round 39 (R39-CI): the five timing pins below
+// no longer carry seconds bounds. The absolute
+// form judged the machine as much as the code:
+// on hosted CI run 40038323553 the relative pin
+// failed at 10.77 s against its 5 s bound and
+// the semicolon pin at 30.72 s against 17 s, on
+// Ubuntu and Windows both, with every reading
+// assertion passing, and the R39-B record holds
+// the same pins failing locally on time alone
+// under co-tenant load. The pins now carry the
+// R33-D form: witness and control measured
+// interleaved in the same run, best of three,
+// the assert on the ratio. The control is not
+// the r32c family's absolute-group control — on
+// the tree before R31-C (20b5aed, this round's
+// single runs) that shape carried this family's
+// own cliff: at 32,000 groups the control took
+// 169.0 s against the semicolon witness's
+// 93.7 s, and at 75,000 groups it took 1,483.7 s
+// against the conjoined witness's 500.0 s. The
+// control here is the repeated-date shape
+// (`r39ci_repeated_date_control`, 8,000 bare
+// repetitions of the core date), whose cost
+// lives in the prefix reader R31-C never
+// touched: a single run on the pre-fix tree
+// reads it in 2.50 s, the same cost class as on
+// this tree. Fixed tree, this round, interleaved
+// best-of-three against that control (load
+// ~8-11): relative 8.4x, full-date 7.5x,
+// cancelled 2.9x, semicolon 21.6x, conjoined
+// 30.3x. Pre-fix witnesses against the same
+// control (single runs): relative 142.9 s (57x),
+// full-date 75.6 s (30x), cancelled 79.3 s
+// (32x), semicolon 93.7 s (37x), conjoined
+// 500.0 s (200x). The bounds — 20x, 15x, 10x,
+// 30x, 75x in the pins' order — sit between the
+// frames on every shape. The semicolon pin's
+// window is the family's narrowest: its fixed
+// cost is dominated by linear work over the
+// de-grouped core of ";" markers, so its cliff's
+// inflation at this size is the family's
+// smallest; it is recorded as such. The round-31
+// measurements above are kept as provenance
+// only; no bound below rests on them.
 
 #[test]
 fn r31c_header_group_shapes_keep_their_readings() {
@@ -19080,14 +19132,13 @@ fn r31c_header_group_shapes_keep_their_readings() {
 fn r31c_repeated_relative_groups_on_a_for_line_parse_without_the_cliff() {
     let groups = vec!["(November 1)"; 6000].join(" ");
     let text = format!("For Sunday: next Sunday {groups}\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r39ci_repeated_date_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, None);
     assert_eq!(c.for_sunday_parenthesized_dates.len(), 6000);
     assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "the repeated relative-group witness took {elapsed:?}"
+        witness_best < control_best * 20,
+        "the repeated relative-group witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
     );
 }
 
@@ -19095,13 +19146,12 @@ fn r31c_repeated_relative_groups_on_a_for_line_parse_without_the_cliff() {
 fn r31c_repeated_full_date_groups_on_a_for_line_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026)"; 22000].join(" ");
     let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r39ci_repeated_date_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, Some(nov(1)));
     assert!(
-        elapsed < std::time::Duration::from_secs(20),
-        "the repeated full-date-group witness took {elapsed:?}"
+        witness_best < control_best * 15,
+        "the repeated full-date-group witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 15x the control)"
     );
 }
 
@@ -19109,13 +19159,12 @@ fn r31c_repeated_full_date_groups_on_a_for_line_parse_without_the_cliff() {
 fn r31c_repeated_cancelled_groups_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026, cancelled)"; 2400].join(" ");
     let text = format!("For Sunday: {groups}\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r39ci_repeated_date_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, None);
     assert!(
-        elapsed < std::time::Duration::from_secs(11),
-        "the repeated cancelled-group witness took {elapsed:?}"
+        witness_best < control_best * 10,
+        "the repeated cancelled-group witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 10x the control)"
     );
 }
 
@@ -19123,13 +19172,12 @@ fn r31c_repeated_cancelled_groups_parse_without_the_cliff() {
 fn r31c_semicolon_groups_on_a_for_line_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026)"; 32000].join("; ");
     let text = format!("For Sunday: November 1, 2026; {groups}\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r39ci_repeated_date_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, Some(nov(1)));
     assert!(
-        elapsed < std::time::Duration::from_secs(17),
-        "the semicolon-group witness took {elapsed:?}"
+        witness_best < control_best * 30,
+        "the semicolon-group witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 30x the control)"
     );
 }
 
@@ -19137,13 +19185,12 @@ fn r31c_semicolon_groups_on_a_for_line_parse_without_the_cliff() {
 fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026)"; 75000].join(" and ");
     let text = format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n");
-    let start = std::time::Instant::now();
-    let c = parse_contribution(&text, today()).expect("parses");
-    let elapsed = start.elapsed();
+    let control = r39ci_repeated_date_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
     assert_eq!(c.for_date, Some(nov(1)));
     assert!(
-        elapsed < std::time::Duration::from_secs(150),
-        "the conjoined-group witness took {elapsed:?}"
+        witness_best < control_best * 75,
+        "the conjoined-group witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 75x the control)"
     );
 }
 
@@ -19458,6 +19505,33 @@ fn r33d_interleaved_best(
 fn r34d_absolute_group_control_at(groups_n: usize) -> String {
     let groups = vec!["(November 1, 2026)"; groups_n].join(" ");
     format!("For Sunday: November 1, 2026 {groups}\n\n## Announcement\n\nHi.\n")
+}
+
+// Round 39 (R39-CI): the r31c pins' shared control
+// for their ratio form (see the correction note at
+// the r31c pin block's header). The r32c family's
+// control — plain groups after a standing core —
+// cannot serve as this family's linear baseline:
+// on the tree before R31-C that shape carried the
+// same cliff as the witnesses (this round's
+// single-run measurements on that tree, 20b5aed:
+// the plain-group control at 32,000 groups took
+// 169.0 s against the semicolon witness's 93.7 s,
+// and the full-date witness against the 8,000-group
+// control stood at a ratio of 6.99 against its
+// fixed-tree 4.98 — no multiple sits in that
+// window). The control here is the R30-D shape —
+// the core date repeated bare on the For line —
+// whose cost lives in the prefix reader the R31-C
+// fix never touched, so it reads at the same cost
+// on both sides of that fix and the ratios judge
+// the group machinery, not the machine. At 8,000
+// repetitions it stands in the r32c control's cost
+// class (best-of-three ≈ 2 s in this suite's
+// frame).
+fn r39ci_repeated_date_control() -> String {
+    let line = vec!["November 1, 2026"; 8000].join(", ");
+    format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n")
 }
 
 #[test]

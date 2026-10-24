@@ -30274,3 +30274,439 @@ fn r39e_shed_completes_no_governor_word_and_no_wrapped_month_word() {
         assert_eq!(c.keep_through_weekday_mismatch, None, "{line}: no record");
     }
 }
+
+#[test]
+fn r39f_stray_run_wearing_a_closing_quote_reads_as_its_clean_twin() {
+    // Round 39 (R39-F, F8 MINOR = review R39-R8):
+    // a trailing stray run wearing a closing quote
+    // silenced the line — "November 1, 2026)”",
+    // "November 1, 2026)’", "November 1, 2026)\"",
+    // and "November 1, 2026)'" read nothing on
+    // either route, where "November 1, 2026!”"
+    // (the quote in the year tail, no stray), the
+    // admitted stray runs ("November 1, 2026)!",
+    // "November 1, 2026).!"), and the wrapped
+    // twins read. Mechanism: `stray_closer_is_spaced`'s
+    // trailing-run set admitted closers, sentence
+    // marks, and whitespace but not the closing-
+    // quote family the year-tail peel sheds, so a
+    // stray standing before a quote was never
+    // spaced and the run killed the date. The
+    // adjudicated reading is the clean twin's.
+    // November 1, 2026 is a Sunday.
+    for closer in [')', ']', '}'] {
+        for quote in ['\u{201d}', '\u{2019}', '"', '\''] {
+            let line = format!("November 1, 2026{closer}{quote}");
+            r34e_for_twin(&line, "November 1, 2026");
+            r34e_keep_twin(&line, "November 1, 2026");
+        }
+    }
+    // The headline form, stated outright.
+    let text = "For Sunday: November 1, 2026)\u{201d}\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the stray wearing a closing quote reads its date"
+    );
+    assert_eq!(c.named_weekday_mismatch, None);
+    assert_eq!(c.for_sunday_second_dates, Vec::new());
+    // At a Sunday-after base's trailing slot too:
+    // the stray run's set is the one set, wherever
+    // the run stands.
+    r34e_for_twin(
+        "Sunday after November 1, 2026)\u{201d}",
+        "Sunday after November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sunday after November 1, 2026)\u{201d}",
+        "Sunday after November 1, 2026",
+    );
+}
+
+#[test]
+fn r39f_day_period_runs_and_slot_mark_runs_read_as_their_clean_twins() {
+    // Round 39 (R39-F, F8 MINOR = review R39-R8 +
+    // red team RT39-6): the day slot shed a single
+    // mark only, and only with the comma
+    // immediately after it, so a run at either
+    // date slot shed nothing — at the run's first
+    // mark the next byte is its fellow, and at its
+    // last the scan behind finds no word or number.
+    // "November 1.., 2026" read nothing where the
+    // wrapped "(November 1.., 2026)" and the
+    // single period (R38-F) read; "November 1!!,
+    // 2026" and "November!! 1, 2026" read nothing
+    // where their single-mark twins read. The
+    // slots now judge the run as they judged one
+    // mark. November 1 and November 8, 2026 are
+    // Sundays.
+    for (line, clean) in [
+        ("November 1.., 2026", "November 1, 2026"),
+        ("November 8.., 2026", "November 8, 2026"),
+        ("November 1..., 2026", "November 1, 2026"),
+        ("November 1!!, 2026", "November 1, 2026"),
+        ("November 1??, 2026", "November 1, 2026"),
+        ("November 1::, 2026", "November 1, 2026"),
+        ("November 1!?, 2026", "November 1, 2026"),
+        ("November!! 1, 2026", "November 1, 2026"),
+        ("November?? 1, 2026", "November 1, 2026"),
+        ("November;; 1, 2026", "November 1, 2026"),
+        ("November!? 1, 2026", "November 1, 2026"),
+    ] {
+        r34e_for_twin(line, clean);
+        r34e_keep_twin(line, clean);
+    }
+    // The wrapped twin of record for the doubled
+    // period, as in R38-F's day-period pin.
+    r34e_for_twin("November 1.., 2026", "(November 1.., 2026)");
+    r34e_keep_twin("November 1.., 2026", "(November 1.., 2026)");
+    // A mark run under a disagreeing weekday frame
+    // refuses WITH the clean twin's record.
+    r34e_for_twin("November 1!!, 2026 (Monday)", "November 1, 2026 (Monday)");
+    r34e_keep_twin("November 1!!, 2026 (Monday)", "November 1, 2026 (Monday)");
+    // The anchor stands: a run after a number that
+    // is no day sheds nothing, on either route.
+    for line in ["November 32!!, 2026", "November!! 32, 2026"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no day stands at the run");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no day keeps at the run");
+    }
+}
+
+#[test]
+fn r39f_year_tail_on_a_comma_less_date_reads_as_its_clean_twin() {
+    // Round 39 (R39-F, F8 MINOR = review R39-R8):
+    // a year tail on a comma-less date silenced
+    // the line — "November 1 2026!" and "November
+    // 1 2026”" read nothing, where the clean
+    // comma-less form serves (the flexible reader
+    // takes it) and the grouped "(November 1
+    // 2026!)" reads. Mechanism: the year-tail arm
+    // of `bare_date_mark_shed` required the date's
+    // comma before the year — a comma the
+    // comma-less form lawfully lacks. The arm now
+    // admits a year standing after a day number
+    // with whitespace between, comma or none.
+    for (line, clean) in [
+        ("November 1 2026!", "November 1 2026"),
+        ("November 1 2026\u{201d}", "November 1 2026"),
+        ("November 1 2026?", "November 1 2026"),
+        ("November 1 2026.", "November 1 2026"),
+        ("November 1 2026!!", "November 1 2026"),
+        ("November 8 2026!", "November 8 2026"),
+        ("November 1 26!", "November 1 2026"),
+    ] {
+        r34e_for_twin(line, clean);
+        r34e_keep_twin(line, clean);
+    }
+    r34e_for_twin("November 1 2026!", "(November 1 2026!)");
+    r34e_keep_twin("November 1 2026!", "(November 1 2026!)");
+    let text = "For Sunday: November 1 2026!\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the comma-less year tail reads its date"
+    );
+}
+
+#[test]
+fn r39f_second_interior_mark_reads_as_its_single_mark_twin() {
+    // Round 39 (R39-F, F8 MINOR = red team RT39-6):
+    // a second mark at a date word's run end
+    // silenced the line — "Sun!day! after November
+    // 1, 2026" read nothing, where the single-mark
+    // "Sun!day after November 1, 2026" held in
+    // R38-F's family. The interior run ended in
+    // the second mark, not a letter, so the
+    // interior arm's shed never judged it. A run
+    // holding at least one mark between two
+    // letters, whose joined letters are a month or
+    // weekday name under the standing vocabulary
+    // anchor, now sheds every mark it holds.
+    r34e_for_twin(
+        "Sun!day! after November 1, 2026",
+        "Sun!day after November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sun!day! after November 1, 2026",
+        "Sun!day after November 1, 2026",
+    );
+    r34e_for_twin(
+        "Sun!day! after November 1, 2026",
+        "Sunday after November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sun!day! after November 1, 2026",
+        "Sunday after November 1, 2026",
+    );
+    r34e_for_twin("Novem!ber! 8, 2026", "Novem!ber 8, 2026");
+    r34e_keep_twin("Novem!ber! 8, 2026", "Novem!ber 8, 2026");
+    // The shed forms judge as their clean twins
+    // judge: the agreeing weekday serves the
+    // phrase, the disagreeing one refuses with
+    // its record, on both routes.
+    r34e_for_twin("Sun!day! November 1, 2026", "Sunday November 1, 2026");
+    r34e_keep_twin("Sun!day! November 1, 2026", "Sunday November 1, 2026");
+    r34e_for_twin("Mon!day! November 1, 2026", "Monday November 1, 2026");
+    r34e_keep_twin("Mon!day! November 1, 2026", "Monday November 1, 2026");
+    r34e_for_twin("Novem!ber! 8, 2026 (Monday)", "November 8, 2026 (Monday)");
+    r34e_keep_twin("Novem!ber! 8, 2026 (Monday)", "November 8, 2026 (Monday)");
+    // The vocabulary anchor stands, stated
+    // outright: no governor word is completed by
+    // the second-mark shed, and an interior "."
+    // is in neither arm's set.
+    for line in [
+        "cancell!ed! November 8, 2026",
+        "Sun.day! after November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the anchor holds, silence");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: the anchor holds, silence");
+    }
+}
+
+#[test]
+fn r39f_nested_month_group_is_the_month_at_its_slot() {
+    // Round 39 (R39-F, F8 MINOR = red team RT39-6):
+    // a triple-nested month group silenced the
+    // line — "(((November))) 1, 2026" read
+    // nothing, while the doubled whole-date group
+    // and the doubled day group at their slots
+    // read. Firsthand scope note (this batch's
+    // probes, round39-out/f/in-monthgroup.tsv):
+    // the single and doubled month groups were
+    // silent on the pre-fix tree too — the month
+    // group had no splice at ANY depth (the
+    // de-grouped core names no month, and a
+    // month-only group contributes no date) —
+    // while the day group at its slot has been
+    // spliced since R37-F (single) and R38-F
+    // (nested). The fix is the component splice
+    // at the month slot, as the day group's is at
+    // its slot: a group standing at the line's
+    // head or at a Sunday-after phrase's base
+    // slot, whose inner text unwrapped layer by
+    // layer is a month word and nothing else, is
+    // the month. No standing pin held the single
+    // or doubled forms silent (the full suite is
+    // the witness), and no pin is restated here.
+    for (line, clean) in [
+        ("(November) 1, 2026", "November 1, 2026"),
+        ("((November)) 1, 2026", "November 1, 2026"),
+        ("(((November))) 1, 2026", "November 1, 2026"),
+        ("((((November)))) 1, 2026", "November 1, 2026"),
+        ("[[[November]]] 1, 2026", "November 1, 2026"),
+        ("([{November}]) 1, 2026", "November 1, 2026"),
+        ("{November} 1, 2026", "November 1, 2026"),
+        ("((Nov)) 1, 2026", "November 1, 2026"),
+        ("(((November))) 1 2026", "November 1 2026"),
+        (
+            "Sunday after ((November)) 1, 2026",
+            "Sunday after November 1, 2026",
+        ),
+        (
+            "Sunday after (((Nov))) 1, 2026",
+            "Sunday after November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(line, clean);
+        r34e_keep_twin(line, clean);
+    }
+    // A trailing date group beside the spliced
+    // month is compared as garnish, as beside the
+    // spliced day.
+    r34e_for_twin(
+        "(((November))) 1, 2026 (November 8, 2026)",
+        "November 1, 2026 (November 8, 2026)",
+    );
+    r34e_keep_twin(
+        "(((November))) 1, 2026 (November 8, 2026)",
+        "November 1, 2026 (November 8, 2026)",
+    );
+    // The boundaries, stated outright: a group
+    // holding no month word is never spliced, and
+    // a month group standing anywhere but the
+    // month slot keeps its standing silence.
+    for line in [
+        "(((notes))) 1, 2026",
+        "notes ((November)) 1, 2026",
+        "November (November) 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no month splice stands there");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: no month splice keeps there");
+    }
+}
+
+#[test]
+fn r39f_mark_inside_a_doubled_day_group_reads_as_its_clean_twin() {
+    // Round 39 (R39-F, F8 MINOR = red team RT39-6):
+    // a mark inside a doubled day group silenced
+    // the line — "November ((8!)), 2026" read
+    // nothing, where "November ((8.)), 2026" has
+    // read since R38-F and the clean doubled group
+    // reads. The nested descent
+    // (`nested_bare_day_group_inner`) reached the
+    // day token, but `bare_day_group_inner`'s edge
+    // trim took only "," and ".", so the mark
+    // standing against the number inside the
+    // nesting stopped the splice. The trim gains
+    // the sentence marks the group cleaning itself
+    // sheds. November 8, 2026 is a Sunday.
+    for line in [
+        "November ((8!)), 2026",
+        "November ((8?)), 2026",
+        "November ((8:)), 2026",
+        "November ((8;)), 2026",
+        "November (8!), 2026",
+        "November (((8!))), 2026",
+    ] {
+        r34e_for_twin(line, "November 8, 2026");
+        r34e_keep_twin(line, "November 8, 2026");
+    }
+    r34e_for_twin("November ((8!)), 2026", "(November ((8!)), 2026)");
+    r34e_keep_twin("November ((8!)), 2026", "(November ((8!)), 2026)");
+    // At a Sunday-after base the marked doubled
+    // group reads as its clean twin reads.
+    r34e_for_twin(
+        "Sunday after November ((8!)), 2026",
+        "Sunday after November ((8)), 2026",
+    );
+    r34e_keep_twin(
+        "Sunday after November ((8!)), 2026",
+        "Sunday after November ((8)), 2026",
+    );
+    // A marked group holding no day still refuses,
+    // on both routes.
+    let text = "For Sunday: November ((32!)), 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "no day stands in the marked group");
+    let text =
+        "For Sunday: November 1, 2026\nKeep-through: November ((32!)), 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "no day keeps in the marked group");
+}
+
+#[test]
+fn r39f_mark_at_the_day_tokens_head_reads_as_its_clean_twin() {
+    // Round 39 (R39-F, F8 MINOR = red team RT39-6):
+    // a mark at the day token's head silenced the
+    // line — "November !1, 2026" read nothing,
+    // where the grouped "(November !1, 2026)"
+    // reads (the group cleaning trims a token's
+    // head as its tail) and a mark at the token's
+    // tail has shed since R37-F. The shed gains
+    // the head slot: a mark standing against a day
+    // number's head, a month word before it and
+    // the date's comma after the number.
+    for (line, clean) in [
+        ("November !1, 2026", "November 1, 2026"),
+        ("November ?1, 2026", "November 1, 2026"),
+        ("November :1, 2026", "November 1, 2026"),
+        ("November ;1, 2026", "November 1, 2026"),
+        ("November !8, 2026", "November 8, 2026"),
+    ] {
+        r34e_for_twin(line, clean);
+        r34e_keep_twin(line, clean);
+    }
+    r34e_for_twin("November !1, 2026", "(November !1, 2026)");
+    r34e_keep_twin("November !1, 2026", "(November !1, 2026)");
+    // Under a disagreeing weekday frame the head
+    // mark refuses WITH the clean twin's record.
+    r34e_for_twin("November !1, 2026 (Monday)", "November 1, 2026 (Monday)");
+    r34e_keep_twin("November !1, 2026 (Monday)", "November 1, 2026 (Monday)");
+    // The anchor stands: a head mark before a
+    // number that is no day sheds nothing.
+    let text = "For Sunday: November !32, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "no day stands at the head mark");
+    let text =
+        "For Sunday: November 1, 2026\nKeep-through: November !32, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "no day keeps at the head mark");
+}
+
+#[test]
+fn r39f_quote_wrapped_month_and_day_words_read_as_their_bare_twins() {
+    // Round 39 (R39-F, F8 MINOR = red team RT39-7):
+    // a fully quote-wrapped month or day word
+    // silenced the line — "\"November\" 1, 2026"
+    // and "November \"1\", 2026" read nothing on
+    // either route, where the clean twins read.
+    // Past R38-F's quoted-weekday fix, the quoted
+    // DATE words at their own slots were the tail:
+    // a fully quote-wrapped date word is now
+    // transparent at its slot (`bare_date_quote_shed`),
+    // as the quoted weekday word became at R38-F.
+    // The slots are the month slot (the line's
+    // first token, or a Sunday-after phrase's
+    // base) and the day slot after a month word.
+    for (line, clean) in [
+        ("\"November\" 1, 2026", "November 1, 2026"),
+        ("'November' 1, 2026", "November 1, 2026"),
+        ("\u{201c}November\u{201d} 1, 2026", "November 1, 2026"),
+        ("\"November\" 8, 2026", "November 8, 2026"),
+        ("\"Nov\" 1, 2026", "November 1, 2026"),
+        ("November \"1\", 2026", "November 1, 2026"),
+        ("November '1', 2026", "November 1, 2026"),
+        ("November \u{201c}1\u{201d}, 2026", "November 1, 2026"),
+        ("November \"8\", 2026", "November 8, 2026"),
+        ("\"November\" \"1\", 2026", "November 1, 2026"),
+        ("November \"1\" 2026", "November 1 2026"),
+        (
+            "Sunday after \"November\" 1, 2026",
+            "Sunday after November 1, 2026",
+        ),
+        (
+            "Sunday after November \"1\", 2026",
+            "Sunday after November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(line, clean);
+        r34e_keep_twin(line, clean);
+    }
+    // The vocabulary and range anchors stand,
+    // stated outright: a quoted number that is no
+    // day sheds nothing, and a quoted word that is
+    // no month keeps its quotes and its silence.
+    for line in ["November \"32\", 2026", "\"notes\" 1, 2026"] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the quote anchor holds");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: the quote anchor holds");
+    }
+    // The interior-slot parity from the round-39
+    // review record stands unmoved: a quoted month
+    // word mid-line is its bare twin — silence in
+    // both dresses, on both routes.
+    r34e_for_twin("notes \"November\" 8, 2026", "notes November 8, 2026");
+    r34e_keep_twin("notes \"November\" 8, 2026", "notes November 8, 2026");
+    // And a quoted governor keeps the reading it
+    // has always had — it governs — because the
+    // shed's anchor is a month name or a day
+    // number, never a governor stem.
+    let text = "For Sunday: \"cancelled\" November 8, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the quoted governor still governs");
+}

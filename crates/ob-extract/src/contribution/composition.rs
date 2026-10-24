@@ -3606,6 +3606,25 @@ pub(super) fn balanced_spans(text: &str) -> Vec<(usize, usize)> {
 /// keeps its bytes: it splits no date word, and
 /// shedding it could only mint one (a governor's
 /// stem is not this pass's to complete).
+///
+/// Round 39 (R39-F, F8 = review R39-R8 + red team
+/// RT39-6): the shed stopped one mark short at
+/// four further places, each witnessed silent
+/// against a reading twin. The month and day
+/// slots judge a mark RUN as they judged one
+/// mark ("November!! 1, 2026", "November 1!!,
+/// 2026"), and the day slot's period with them
+/// ("November 1.., 2026"). The year-tail arm
+/// admits a year standing after a day number
+/// with whitespace between, comma or none
+/// ("November 1 2026!"). The interior arm sheds
+/// a run that ends in a mark as well as one that
+/// holds a mark inside, under the same
+/// vocabulary anchor ("Sun!day! after November
+/// 1, 2026"). And a mark standing at a day
+/// token's head, a month word before it and the
+/// date's comma after the number, is shed as a
+/// mark at its tail is ("November !1, 2026").
 pub(super) fn bare_date_mark_shed(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut drop: Vec<usize> = Vec::new();
@@ -3613,39 +3632,86 @@ pub(super) fn bare_date_mark_shed(text: &str) -> Option<String> {
         if !matches!(b, b'!' | b'?' | b':' | b';' | b'.') {
             continue;
         }
+        // Round 39 (R39-F, F8 = review R39-R8 +
+        // red team RT39-6): the slots below judge
+        // the mark RUN the mark stands in, not the
+        // single mark — a run at the month or day
+        // slot ("November!! 1, 2026", "November
+        // 1!!, 2026", "November 1.., 2026") shed
+        // nothing, because at the run's first mark
+        // the next byte is its fellow and at its
+        // last the scan behind finds no word or
+        // number, where the grouped twins read
+        // through the run as they read through one
+        // mark. The run is the maximal run of
+        // sentence marks holding this mark.
+        let mut run_start = i;
+        while run_start > 0 && matches!(bytes[run_start - 1], b'!' | b'?' | b':' | b';' | b'.') {
+            run_start -= 1;
+        }
+        let mut run_end = i + 1;
+        while run_end < bytes.len() && matches!(bytes[run_end], b'!' | b'?' | b':' | b';' | b'.') {
+            run_end += 1;
+        }
         // The month slot: the letter run ending at
-        // the mark is a month word, and a day digit
-        // stands after the mark.
-        let mut start = i;
+        // the mark run is a month word, and a day
+        // digit stands after the run.
+        let mut start = run_start;
         while start > 0 && bytes[start - 1].is_ascii_alphabetic() {
             start -= 1;
         }
-        if start < i && word_at_is_month(text, start) {
-            let mut j = i + 1;
+        if start < run_start && word_at_is_month(text, start) {
+            let mut j = run_end;
             while j < bytes.len() && matches!(bytes[j], b' ' | b'\t') {
                 j += 1;
             }
             if j < bytes.len() && bytes[j].is_ascii_digit() {
-                drop.push(i);
+                drop.extend(run_start..run_end);
                 continue;
             }
         }
         // The day slot: a day number (one or two
-        // digits, 1..=31) ends at the mark, and the
-        // date's comma stands immediately after it.
-        let mut start = i;
+        // digits, 1..=31) ends at the mark run, and
+        // the date's comma stands immediately after
+        // the run.
+        let mut start = run_start;
         while start > 0 && bytes[start - 1].is_ascii_digit() {
             start -= 1;
         }
-        let digits = &text[start..i];
+        let digits = &text[start..run_start];
         if !digits.is_empty()
             && digits.len() <= 2
             && digits
                 .parse::<u32>()
                 .is_ok_and(|day| (1..=31).contains(&day))
-            && bytes.get(i + 1) == Some(&b',')
+            && bytes.get(run_end) == Some(&b',')
         {
-            drop.push(i);
+            drop.extend(run_start..run_end);
+            continue;
+        }
+        // The day token's head (round 39, R39-F,
+        // F8 = red team RT39-6): a mark run standing
+        // against the head of a day number, with a
+        // month word before it and the date's comma
+        // after the number, is the same garnish at
+        // the token's other edge — "November !1,
+        // 2026" read nothing, where the grouped
+        // "(November !1, 2026)" reads, its cleaning
+        // trimming the token's head as its tail.
+        let mut dend = run_end;
+        while dend < bytes.len() && bytes[dend].is_ascii_digit() {
+            dend += 1;
+        }
+        let head_digits = &text[run_end..dend];
+        if !head_digits.is_empty()
+            && head_digits.len() <= 2
+            && head_digits
+                .parse::<u32>()
+                .is_ok_and(|day| (1..=31).contains(&day))
+            && bytes.get(dend) == Some(&b',')
+            && word_before_is_month(text, run_start)
+        {
+            drop.extend(run_start..run_end);
         }
     }
     // Round 38 (R38-F): the year tail and the
@@ -3692,7 +3758,28 @@ pub(super) fn bare_date_mark_shed(text: &str) -> Option<String> {
                 while before > 0 && matches!(bytes[before - 1], b' ' | b'\t') {
                     before -= 1;
                 }
-                if before > 0 && bytes[before - 1] == b',' {
+                // Round 39 (R39-F, F8 = review
+                // R39-R8): the comma the arm has
+                // always required is the date's own
+                // comma, which the comma-less form
+                // lawfully lacks — "November 1
+                // 2026!" read nothing where the
+                // clean comma-less form serves and
+                // the grouped twin reads. A year
+                // standing after a day number with
+                // whitespace between, comma or
+                // none, carries the same tail.
+                let mut dstart = before;
+                while dstart > 0 && bytes[dstart - 1].is_ascii_digit() {
+                    dstart -= 1;
+                }
+                let day_digits = &text[dstart..before];
+                let after_day = !day_digits.is_empty()
+                    && day_digits.len() <= 2
+                    && day_digits
+                        .parse::<u32>()
+                        .is_ok_and(|day| (1..=31).contains(&day));
+                if (before > 0 && bytes[before - 1] == b',') || after_day {
                     for m in tail_marks {
                         let width = text[m..]
                             .chars()
@@ -3727,9 +3814,29 @@ pub(super) fn bare_date_mark_shed(text: &str) -> Option<String> {
         {
             end += 1;
         }
+        // Round 39 (R39-F, F8 = red team RT39-6):
+        // the run may END in a mark as well as hold
+        // one inside — "Sun!day! after November 1,
+        // 2026" shed nothing, because the run's
+        // last byte is the second mark, not a
+        // letter, where the single-mark form held
+        // in R38-F's family. A run holding at least
+        // one mark between two letters, whose
+        // letters joined are a month or weekday
+        // name under the same vocabulary anchor,
+        // sheds every mark it holds; a word wearing
+        // only a trailing mark ("Sunday!") is not
+        // this arm's — it holds no interior mark,
+        // and its standing readers judge it as
+        // they always have.
+        let has_interior = (start + 1..end.saturating_sub(1)).any(|p| {
+            matches!(bytes[p], b'!' | b'?' | b':' | b';')
+                && bytes[p - 1].is_ascii_alphabetic()
+                && bytes[p + 1].is_ascii_alphabetic()
+        });
         if end - start > 1
             && bytes[start].is_ascii_alphabetic()
-            && bytes[end - 1].is_ascii_alphabetic()
+            && (bytes[end - 1].is_ascii_alphabetic() || has_interior)
         {
             let joined: String = text[start..end]
                 .chars()
@@ -3779,6 +3886,143 @@ pub(super) fn bare_date_mark_shed(text: &str) -> Option<String> {
         .map(|(_, b)| *b)
         .collect();
     Some(String::from_utf8(shed_bytes).expect("only whole marks were dropped"))
+}
+
+/// `text` with the quote dress of a fully
+/// quote-wrapped date word removed, when one
+/// stands at its own slot (round 39, R39-F, F8 =
+/// red team RT39-7): past R38-F's quoted-weekday
+/// fix, the quoted DATE words at their own slots
+/// still silenced the line — "\"November\" 1,
+/// 2026" and "November \"1\", 2026" read nothing
+/// on either route, where the clean twins read.
+/// A fully quote-wrapped word is transparent at
+/// the slot where its bare twin is judged, as the
+/// quoted weekday word became at R38-F: the month
+/// word standing as the line's first token or at
+/// a Sunday-after phrase's base slot, in
+/// any quote form (the straight pair, the
+/// apostrophe pair, the curly family, mixed), and
+/// the day number standing after a month word,
+/// bare or itself quoted, with the date's comma
+/// after its closing quote. The removal drops
+/// the two quote characters only; every other
+/// byte stands as written. The anchors are the
+/// standing vocabulary and the day range: a
+/// quoted word that is not a month name keeps its
+/// quotes (a quoted governor's dress is not this
+/// pass's to strip — it is judged by the readers
+/// that judge it bare), and a quoted number after
+/// any other word keeps its quotes too.
+pub(super) fn bare_date_quote_shed(text: &str) -> Option<String> {
+    // The line's tokens, as byte ranges.
+    let mut tokens: Vec<(usize, usize)> = Vec::new();
+    let mut at: Option<usize> = None;
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            if let Some(start) = at.take() {
+                tokens.push((start, i));
+            }
+        } else if at.is_none() {
+            at = Some(i);
+        }
+    }
+    if let Some(start) = at {
+        tokens.push((start, text.len()));
+    }
+    // A fully quote-wrapped token's inner word and
+    // the byte widths of its two quote characters,
+    // when it is wrapped: an opening quote of the
+    // family at its head and a closing quote at
+    // its tail, distinct characters.
+    fn unquoted(token: &str) -> Option<(&str, usize, usize)> {
+        let first = token.chars().next()?;
+        let last = token.chars().last()?;
+        if !matches!(first, '"' | '\'' | '\u{201c}' | '\u{2018}')
+            || !matches!(last, '"' | '\'' | '\u{201d}' | '\u{2019}')
+        {
+            return None;
+        }
+        let open = first.len_utf8();
+        let close = last.len_utf8();
+        if token.len() <= open + close {
+            return None;
+        }
+        Some((&token[open..token.len() - close], open, close))
+    }
+    let mut drop: Vec<(usize, usize)> = Vec::new();
+    // The month slot: the line's first token, or
+    // the base slot of a Sunday-after phrase (the
+    // two places `month_group_reading` splices a
+    // grouped month) — a quoted month standing
+    // after any other words is the interior-slot
+    // parity the round-39 review record states
+    // (quoted == bare silence there), not this
+    // pass's to move.
+    let cleaned_prefix: Vec<String> = tokens
+        .iter()
+        .take(3)
+        .map(|&(s, e)| group_token(&text[s..e]))
+        .collect();
+    let month_idx = if cleaned_prefix.first().map(String::as_str) == Some("sunday")
+        && cleaned_prefix.get(1).map(String::as_str) == Some("after")
+    {
+        2
+    } else if cleaned_prefix.first().map(String::as_str) == Some("the")
+        && cleaned_prefix.get(1).map(String::as_str) == Some("sunday")
+        && cleaned_prefix.get(2).map(String::as_str) == Some("after")
+    {
+        3
+    } else {
+        0
+    };
+    let &(mstart, mend) = tokens.get(month_idx)?;
+    let month_token = &text[mstart..mend];
+    let month_bare =
+        month_token.chars().all(|c| c.is_ascii_alphabetic()) && word_at_is_month(month_token, 0);
+    let month_quoted = match unquoted(month_token) {
+        Some((inner, open, close))
+            if inner.chars().all(|c| c.is_ascii_alphabetic()) && word_at_is_month(inner, 0) =>
+        {
+            drop.push((mstart, mstart + open));
+            drop.push((mend - close, mend));
+            true
+        }
+        _ => false,
+    };
+    if month_bare || month_quoted {
+        if let Some(&(dstart, dend)) = tokens.get(month_idx + 1) {
+            let day_token = &text[dstart..dend];
+            let core = day_token.strip_suffix(',').unwrap_or(day_token);
+            if let Some((inner, open, close)) = unquoted(core) {
+                let digits_ok = !inner.is_empty()
+                    && inner.len() <= 2
+                    && inner.chars().all(|c| c.is_ascii_digit())
+                    && inner
+                        .parse::<u32>()
+                        .is_ok_and(|day| (1..=31).contains(&day));
+                if digits_ok {
+                    drop.push((dstart, dstart + open));
+                    drop.push((dstart + core.len() - close, dstart + core.len()));
+                }
+            }
+        }
+    }
+    if drop.is_empty() {
+        return None;
+    }
+    drop.sort_unstable();
+    let shed_text: String = {
+        let mut out = String::with_capacity(text.len());
+        let mut at = 0usize;
+        for (s, e) in &drop {
+            out.push_str(&text[at..*s]);
+            at = *e;
+        }
+        out.push_str(&text[at..]);
+        out
+    };
+    Some(shed_text)
 }
 
 /// `text` with the stray group marks the shared
@@ -3966,6 +4210,18 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
 /// trailing stray is. The mid-line hold stands:
 /// a stray with a word, a comma, or a date after
 /// its run is not spaced here.
+///
+/// Round 39 (R39-F, F8 = review R39-R8): the run
+/// set gains the closing-quote family — the
+/// straight pair, the apostrophe, and the curly
+/// opening and closing quotes, the same family
+/// the year-tail peel sheds — so a stray standing
+/// before a closing quote is spaced as a stray
+/// standing before a sentence mark is
+/// ("November 1, 2026)”", "November 1, 2026)'"
+/// read nothing, where "November 1, 2026)!” —
+/// the quote in the year tail, no stray — and
+/// the wrapped twins read).
 fn stray_closer_is_spaced(text: &str, i: usize) -> bool {
     let bytes = text.as_bytes();
     if text[i + 1..].trim().is_empty() {
@@ -3975,7 +4231,20 @@ fn stray_closer_is_spaced(text: &str, i: usize) -> bool {
         c.is_whitespace()
             || matches!(
                 c,
-                ')' | ']' | '}' | '.' | '!' | '?' | ':' | ';' | '\u{2026}'
+                ')' | ']'
+                    | '}'
+                    | '.'
+                    | '!'
+                    | '?'
+                    | ':'
+                    | ';'
+                    | '\u{2026}'
+                    | '"'
+                    | '\''
+                    | '\u{201c}'
+                    | '\u{201d}'
+                    | '\u{2018}'
+                    | '\u{2019}'
             )
     }) {
         return true;
@@ -4191,6 +4460,130 @@ pub(super) fn mid_date_group_reading(
     None
 }
 
+/// A group standing at the month slot holding only
+/// a month word is the month, standing where the
+/// bare month stands (round 39, R39-F, F8 = red
+/// team RT39-6): "(((November))) 1, 2026" read
+/// nothing, while the doubled whole-date group and
+/// the doubled day group at their own slots have
+/// read since R38-F — the day at this very slot is
+/// spliced by `mid_date_group_reading` when the
+/// group holding it stands between a bare month
+/// and its year. The month group had no splice at
+/// any depth: the de-grouped core ("; 1, 2026")
+/// names no month, and the group holding one
+/// contributes no date of its own. When the
+/// group's inner text, unwrapped layer by layer
+/// through its nesting, is a month word and
+/// nothing else, the candidate is rebuilt with
+/// the month standing in the group's place and
+/// read again — the same splice shape as the day
+/// group's, at the date's other component slot.
+/// The group may stand at the line's head or at a
+/// Sunday-after phrase's base slot, the two places
+/// a bare month stands in a date this reader
+/// reads; a group holding anything else (a word, a
+/// whole date, a day) is never spliced here.
+pub(super) fn month_group_reading(
+    text: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+    trailing_groups: &[SimpleDate],
+    trailing_alternatives: &[SimpleDate],
+) -> Option<DateLineReading> {
+    for (start, end) in balanced_spans(text) {
+        let prefix = text[..start].trim();
+        // The only nonempty month-slot prefixes
+        // are the Sunday-after phrase's words —
+        // three short tokens at most — so a longer
+        // prefix is not the slot, and its length is
+        // checked before any token is cleaned: a
+        // line carrying thousands of groups must
+        // not pay a prefix scan per group.
+        let at_month_slot = prefix.is_empty()
+            || (prefix.len() <= 32 && {
+                let prefix_tokens: Vec<String> =
+                    prefix.split_whitespace().map(group_token).collect();
+                prefix_tokens == ["sunday".to_string(), "after".to_string()]
+                    || prefix_tokens
+                        == ["the".to_string(), "sunday".to_string(), "after".to_string()]
+            });
+        if !at_month_slot {
+            continue;
+        }
+        let inner = &text[start + 1..end - 1];
+        let Some(month) = nested_month_group_inner(inner) else {
+            continue;
+        };
+        let mut spliced = String::with_capacity(text.len());
+        spliced.push_str(&text[..start]);
+        spliced.push_str(&month);
+        spliced.push_str(&text[end..]);
+        let spliced_core = strip_all_trailing_parenthesized(spliced.trim()).to_string();
+        let spliced_raw = Some(spliced_core.clone());
+        let (spliced_date, _) = date_line_inner(&spliced_raw, today);
+        let Some(read) = spliced_date else {
+            continue;
+        };
+        let mut all_groups: Vec<SimpleDate> = Vec::new();
+        if let Some(d) = group_date(inner, today, anchor) {
+            all_groups.push(d);
+        }
+        for g in trailing_groups {
+            if !all_groups.contains(g) {
+                all_groups.push(*g);
+            }
+        }
+        let parenthesized_mismatch = mismatch_from_groups(&all_groups, read, false);
+        let mut second_dates = second_dates_in_line(&spliced_core, today, read);
+        for d in trailing_alternatives {
+            if *d != read && !second_dates.contains(d) {
+                second_dates.push(*d);
+            }
+        }
+        return Some(DateLineReading {
+            date: Some(read),
+            weekday_mismatch: None,
+            parenthesized_mismatch,
+            second_dates,
+        });
+    }
+    None
+}
+
+/// The month word a month-slot group's inner text
+/// holds through its nesting, when it holds one
+/// and nothing else (round 39, R39-F, F8): the
+/// inner text is unwrapped layer by layer — each
+/// layer a balanced group standing as the whole
+/// remaining text, in any of the three pairs, the
+/// descent `nested_bare_day_group_inner` walks
+/// for the day — until the word itself stands,
+/// which is a month only when it is a month name
+/// or abbreviation whole, letters and nothing
+/// else. Returned as written.
+fn nested_month_group_inner(inner: &str) -> Option<String> {
+    let mut cur = inner.trim();
+    loop {
+        let first = cur.chars().next()?;
+        if !matches!(first, '(' | '[' | '{') {
+            break;
+        }
+        let Some((start, end)) = first_balanced_span(cur) else {
+            break;
+        };
+        if start != 0 || end != cur.len() {
+            break;
+        }
+        cur = cur[start + 1..end - 1].trim();
+    }
+    if !cur.is_empty() && cur.chars().all(|c| c.is_ascii_alphabetic()) && word_at_is_month(cur, 0) {
+        Some(cur.to_string())
+    } else {
+        None
+    }
+}
+
 /// The bare day number a mid-date group's inner text
 /// holds, when it holds one and nothing else (round
 /// 37, R37-F, F10): one or two digits naming 1..=31,
@@ -4229,7 +4622,14 @@ fn nested_bare_day_group_inner(inner: &str) -> Option<String> {
 }
 
 fn bare_day_group_inner(inner: &str) -> Option<String> {
-    let word = inner.trim().trim_matches([',', '.']);
+    // Round 39 (R39-F, F8 = red team RT39-6): the
+    // edge trim gains the sentence marks the group
+    // cleaning itself sheds — a mark standing
+    // inside the nesting, against the day number's
+    // edge ("November ((8!)), 2026"), stopped the
+    // descent's last step, where "November
+    // ((8.)), 2026" has read since R38-F.
+    let word = inner.trim().trim_matches([',', '.', '!', '?', ':', ';']);
     let digits = word
         .strip_suffix("st")
         .or_else(|| word.strip_suffix("nd"))
@@ -6316,6 +6716,13 @@ pub(super) fn trailing_dates_after_core_governance(
     // shed is garnish there as well.
     let mark_shed = bare_date_mark_shed(text);
     let text: &str = mark_shed.as_deref().unwrap_or(text);
+    // Round 39 (R39-F, F8): the same quote shed as
+    // the date lines (see `date_line`), for the
+    // same reason — the fallback reads the line's
+    // bare words too, and a quote-wrapped date word
+    // is transparent there as well.
+    let quote_shed = bare_date_quote_shed(text);
+    let text: &str = quote_shed.as_deref().unwrap_or(text);
     // Round 38 (R38-D, F4): the same leading-governor
     // unwrap as the date lines (see `date_line`), for
     // the same reason — the fallback composes the
@@ -7014,6 +7421,20 @@ pub(super) fn date_line(
         },
         None => None,
     };
+    // Round 39 (R39-F, F8): the whole line is
+    // likewise read with a fully quote-wrapped
+    // date word's dress removed (see
+    // `bare_date_quote_shed`) — a quoted month or
+    // day word at its own slot is the word it
+    // names, as the quoted weekday word is since
+    // R38-F.
+    let effective_raw: Option<String> = match effective_raw {
+        Some(text) => match bare_date_quote_shed(&text) {
+            Some(shed) => Some(shed),
+            None => Some(text),
+        },
+        None => None,
+    };
     // Round 38 (R38-D, F4): the whole line is
     // likewise read with a leading governor group
     // unwrapped (see
@@ -7218,6 +7639,22 @@ pub(super) fn date_line(
             second_dates: Vec::new(),
         };
     }
+    // Round 39 (R39-F, F8): a group standing at the
+    // month slot holding only a month word is the
+    // month (see `month_group_reading`), spliced as
+    // the day group below is spliced at its slot.
+    // The consultation stands BEFORE the whole-line
+    // composition, not beside the mid-date splice
+    // after it: a month-only group contributes no
+    // date of its own, so the composition's
+    // groups-only branch answers a line holding one
+    // with a no-date reading and the splice would
+    // never be reached — the mid-date shape needs
+    // no such placement because the composition's
+    // own mid-date guard returns None for it.
+    if let Some(reading) = month_group_reading(text, today, anchor, &groups, &alternatives) {
+        return reading;
+    }
     // Round 21 (R21-1/R21-2/R21-3): the whole-line
     // composition — a group standing anywhere but
     // the trailing run, or a content-headed /
@@ -7236,6 +7673,7 @@ pub(super) fn date_line(
     if let Some(reading) = mid_date_group_reading(text, today, anchor, &groups, &alternatives) {
         return reading;
     }
+
     // Round 11 (R11-6): the core re-read below no
     // longer waits for a group to have contributed.
     // A group that contributes nothing — several

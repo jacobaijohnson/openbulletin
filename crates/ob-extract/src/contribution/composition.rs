@@ -3723,7 +3723,21 @@ pub(super) fn bare_date_mark_shed(text: &str) -> Option<String> {
     // group readers' standing silence, not this
     // pass's to move.
     let spans = balanced_spans(text);
-    let inside_group = |pos: usize| spans.iter().any(|(s, e)| pos > *s && pos < *e);
+    // Round 39 (R39-G, F9/F11): the spans are the
+    // top-level balanced spans — sorted by start
+    // and disjoint — so the span that could hold
+    // `pos` is the last one starting before it,
+    // found by binary search. The linear scan this
+    // replaces answered the same question per mark,
+    // and a line carrying thousands of groups and
+    // thousands of marks (the semicolon-group line)
+    // paid groups × marks for it: quadratic time.
+    // The predicate is the standing one, word for
+    // word: `pos` strictly inside that one span.
+    let inside_group = |pos: usize| {
+        let at = spans.partition_point(|(s, _)| *s < pos);
+        at > 0 && pos < spans[at - 1].1
+    };
     // The year slot: peel the line's end — sentence
     // marks and closing quotes, whitespace between
     // and around them — and judge what stands
@@ -4110,6 +4124,51 @@ pub(super) fn bare_date_quote_shed(text: &str) -> Option<String> {
 /// themselves.
 pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
+    // Round 39 (R39-G, F9): the trailing-garnish
+    // suffix table the stray test below reads —
+    // `tail_garnish[p]` is whether every character
+    // of `text[p..]` is whitespace or a member of
+    // the trailing run set (closers, sentence marks,
+    // the closing quotes), the question the test's
+    // first two arms ask of the remainder after a
+    // stray. Computed once, in one reverse pass:
+    // the per-stray remainder scans this replaces
+    // cost a whole remainder per stray closer, and
+    // the unmatched-opener filter further down made
+    // the same shape of rescan per opener (a linear
+    // `contains` over the walk's own lists inside a
+    // per-byte `all`), so a line of thousands of
+    // unclosed mixed openers ("([({([({…") paid
+    // quadratic-to-cubic time for this one pass.
+    // Every table below states the standing
+    // predicate, position for position; no judgment
+    // changes.
+    let mut tail_garnish: Vec<bool> = vec![true; bytes.len() + 1];
+    {
+        let mut good = true;
+        for (idx, c) in text.char_indices().rev() {
+            good = (c.is_whitespace()
+                || matches!(
+                    c,
+                    ')' | ']'
+                        | '}'
+                        | '.'
+                        | '!'
+                        | '?'
+                        | ':'
+                        | ';'
+                        | '\u{2026}'
+                        | '"'
+                        | '\''
+                        | '\u{201c}'
+                        | '\u{201d}'
+                        | '\u{2018}'
+                        | '\u{2019}'
+                ))
+                && good;
+            tail_garnish[idx] = good;
+        }
+    }
     let mut stack: Vec<usize> = Vec::new();
     let mut closed_openers: Vec<usize> = Vec::new();
     let mut stray: Vec<usize> = Vec::new();
@@ -4124,7 +4183,7 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
                 .is_some_and(|&open| group_closer(bytes[open]) == b)
             {
                 closed_openers.push(stack.pop().expect("a matched opener stands"));
-            } else if stray_closer_is_spaced(text, i) {
+            } else if stray_closer_is_spaced(text, i, &tail_garnish) {
                 // Round 36 (R36-F, F8 = review R36-8):
                 // the stray closer glued to a word's
                 // head is spaced for all three pairs,
@@ -4142,11 +4201,45 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
             }
         }
     }
+    // Round 39 (R39-G, F9): the filter's membership
+    // questions, read off tables built in one pass
+    // each (see the head note): `closed_set` is
+    // `closed_openers` as a per-byte table,
+    // `unmatched_set` is the surviving stack as one,
+    // and `prefix_good[p]` is the head arm's `all`
+    // over `bytes[..p]` — every byte before `p` is
+    // ASCII whitespace or an unmatched opener —
+    // accumulated as a prefix conjunction, which is
+    // the same predicate: the arm's scan is a pure
+    // conjunction over a prefix.
+    let closed_set: Vec<bool> = {
+        let mut set = vec![false; bytes.len()];
+        for &open in &closed_openers {
+            set[open] = true;
+        }
+        set
+    };
+    let unmatched_set: Vec<bool> = {
+        let mut set = vec![false; bytes.len()];
+        for &open in &stack {
+            set[open] = true;
+        }
+        set
+    };
+    let prefix_good: Vec<bool> = {
+        let mut good = vec![true; bytes.len() + 1];
+        for j in 0..bytes.len() {
+            good[j + 1] = good[j]
+                && (bytes[j].is_ascii_whitespace()
+                    || (is_group_opener(bytes[j]) && unmatched_set[j]));
+        }
+        good
+    };
     stray.extend(stack.iter().copied().filter(|&open| {
         bytes[open] == b'('
             || (open + 1 < bytes.len()
                 && is_group_opener(bytes[open + 1])
-                && closed_openers.contains(&(open + 1)))
+                && closed_set[open + 1])
             // Round 36 (R36-F, F8 = review R36-8): an
             // unmatched "[" or "{" standing at the
             // head of the line — nothing before it but
@@ -4159,10 +4252,7 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
             // standing after other content keeps its
             // bytes: that is the R26-C surface, and it
             // is not this ruling's to move.
-            || (bytes[open] != b'('
-                && bytes[..open].iter().enumerate().all(|(j, &b)| {
-                    b.is_ascii_whitespace() || (is_group_opener(b) && stack.contains(&j))
-                }))
+            || (bytes[open] != b'(' && prefix_good[open])
     }));
     if stray.is_empty() {
         return None;
@@ -4222,31 +4312,19 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
 /// read nothing, where "November 1, 2026)!” —
 /// the quote in the year tail, no stray — and
 /// the wrapped twins read).
-fn stray_closer_is_spaced(text: &str, i: usize) -> bool {
+fn stray_closer_is_spaced(text: &str, i: usize, tail_garnish: &[bool]) -> bool {
     let bytes = text.as_bytes();
-    if text[i + 1..].trim().is_empty() {
-        return true;
-    }
-    if text[i + 1..].chars().all(|c| {
-        c.is_whitespace()
-            || matches!(
-                c,
-                ')' | ']'
-                    | '}'
-                    | '.'
-                    | '!'
-                    | '?'
-                    | ':'
-                    | ';'
-                    | '\u{2026}'
-                    | '"'
-                    | '\''
-                    | '\u{201c}'
-                    | '\u{201d}'
-                    | '\u{2018}'
-                    | '\u{2019}'
-            )
-    }) {
+    // Round 39 (R39-G, F9): the first two arms —
+    // the remainder is all whitespace, or every
+    // character of it stands in the trailing run
+    // set — are the one suffix question
+    // `tail_garnish[i + 1]` answers (the caller's
+    // table, built once per line): an all-whitespace
+    // remainder satisfies the run set's predicate
+    // character for character, and an empty
+    // remainder satisfies both, so the table states
+    // the two arms together, exactly.
+    if tail_garnish[i + 1] {
         return true;
     }
     let mut j = i + 1;
@@ -4562,20 +4640,69 @@ pub(super) fn month_group_reading(
 /// which is a month only when it is a month name
 /// or abbreviation whole, letters and nothing
 /// else. Returned as written.
+/// Every matched opener of `text` with the byte
+/// index of its closer, from one balancing walk
+/// (round 39, R39-G, F9): the walk is
+/// `balanced_spans`' own discipline — an opener
+/// pushes, a closer that matches the stack top's
+/// expected closer pops it and pairs the two — run
+/// once over the whole text, so a reader that
+/// descends a nesting layer by layer reads each
+/// layer's span off the table instead of re-walking
+/// the remaining text per layer. The pairing is
+/// the walk's, pair for pair; only the bookkeeping
+/// differs (every pair is kept, not only the
+/// top-level spans).
+fn group_match_closers(text: &str) -> Vec<Option<usize>> {
+    let bytes = text.as_bytes();
+    let mut matches: Vec<Option<usize>> = vec![None; bytes.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        if is_group_opener(b) {
+            stack.push(i);
+            continue;
+        }
+        if is_group_closer(b) {
+            if let Some(&open) = stack.last() {
+                if group_closer(bytes[open]) == b {
+                    stack.pop();
+                    matches[open] = Some(i);
+                }
+            }
+        }
+    }
+    matches
+}
+
 fn nested_month_group_inner(inner: &str) -> Option<String> {
+    // Round 39 (R39-G, F9): the descent reads its
+    // layers off one match table (`group_match_closers`,
+    // above) instead of calling `first_balanced_span`
+    // per layer — that call re-walked the whole
+    // remaining text each layer, so a group nested k
+    // deep paid k walks of a shrinking remainder:
+    // quadratic time in the nesting depth. The
+    // descent itself is the standing one, step for
+    // step: `cur` is `inner[off..off + cur.len()]`
+    // throughout, trimmed at both ends; a layer
+    // unwraps exactly when the opener at its head is
+    // paired with the closer at its tail, which is
+    // the span test the per-layer walk answered
+    // (start 0, end the whole remainder).
+    let matches = group_match_closers(inner);
+    let mut off = inner.len() - inner.trim_start().len();
     let mut cur = inner.trim();
     loop {
         let first = cur.chars().next()?;
         if !matches!(first, '(' | '[' | '{') {
             break;
         }
-        let Some((start, end)) = first_balanced_span(cur) else {
-            break;
-        };
-        if start != 0 || end != cur.len() {
+        if matches[off] != Some(off + cur.len() - 1) {
             break;
         }
-        cur = cur[start + 1..end - 1].trim();
+        let inside = &inner[off + 1..off + cur.len() - 1];
+        off = off + 1 + (inside.len() - inside.trim_start().len());
+        cur = inside.trim();
     }
     if !cur.is_empty() && cur.chars().all(|c| c.is_ascii_alphabetic()) && word_at_is_month(cur, 0) {
         Some(cur.to_string())
@@ -4604,19 +4731,24 @@ fn nested_month_group_inner(inner: &str) -> Option<String> {
 /// anything beside the nested group (a word, a
 /// second group) stops the descent and is no day.
 fn nested_bare_day_group_inner(inner: &str) -> Option<String> {
+    // Round 39 (R39-G, F9): the same one-walk
+    // descent as `nested_month_group_inner` above —
+    // layers read off the match table, not re-walked
+    // per layer.
+    let matches = group_match_closers(inner);
+    let mut off = inner.len() - inner.trim_start().len();
     let mut cur = inner.trim();
     loop {
         let first = cur.chars().next()?;
         if !matches!(first, '(' | '[' | '{') {
             break;
         }
-        let Some((start, end)) = first_balanced_span(cur) else {
-            break;
-        };
-        if start != 0 || end != cur.len() {
+        if matches[off] != Some(off + cur.len() - 1) {
             break;
         }
-        cur = cur[start + 1..end - 1].trim();
+        let inside = &inner[off + 1..off + cur.len() - 1];
+        off = off + 1 + (inside.len() - inside.trim_start().len());
+        cur = inside.trim();
     }
     bare_day_group_inner(cur)
 }
@@ -7032,10 +7164,47 @@ pub(super) fn group_beside_relative_core(
         at = *end;
     }
     segments.push(&text[at..]);
+    // Round 39 (R39-G, F9/F11): the suffix judgments
+    // read a word list maintained as the walk
+    // descends, not a rejoined suffix string per
+    // position. The join this replaces rebuilt the
+    // whole remaining suffix — and the shape readers
+    // re-tokenized and re-cleaned it — at every
+    // segment boundary, so a line of thousands of
+    // groups (whose segments are the empty strings
+    // and ";" marks between them) paid quadratic
+    // bytes of joining and cleaning for a question
+    // about at most a phrase's worth of words. The
+    // words are the shapes' own: the text forms of
+    // both shapes tokenize on whitespace, clean by
+    // `group_token`, and drop the empty words, and
+    // the joined suffix's token stream is the
+    // segments' token streams in order (the join's
+    // space is a separator, as a segment edge is),
+    // so the per-segment lists concatenate to
+    // exactly the word list the joined string's
+    // shapes read. The judgments below are the
+    // standing token forms of the same two shapes.
+    let segment_words: Vec<Vec<String>> = segments
+        .iter()
+        .map(|segment| {
+            segment
+                .split_whitespace()
+                .map(group_token)
+                .filter(|w| !w.is_empty())
+                .collect()
+        })
+        .collect();
+    let mut suffix_words: Vec<String> = Vec::new();
     for p in (1..segments.len()).rev() {
-        let suffix = segments[p..].join(" ");
-        let suffix_trim = suffix.trim();
-        if !relative_sunday_shape(suffix_trim) && !sunday_after_relative_shape(suffix_trim) {
+        let mut words: Vec<String> =
+            Vec::with_capacity(segment_words[p].len() + suffix_words.len());
+        words.extend(segment_words[p].iter().cloned());
+        words.extend(suffix_words.iter().cloned());
+        suffix_words = words;
+        if !relative_sunday_shape_tokens(&suffix_words)
+            && !sunday_after_relative_shape_tokens(&suffix_words)
+        {
             continue;
         }
         // No signal of any kind stands in the words

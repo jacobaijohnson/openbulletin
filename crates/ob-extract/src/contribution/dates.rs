@@ -887,11 +887,44 @@ pub(super) fn split_last_trailing_group(text: &str) -> Option<(&str, &str)> {
     let mut text = text;
     loop {
         let trimmed = text.trim_end();
-        match trimmed.rsplit_once(char::is_whitespace) {
-            Some((head, last)) if nothing_token(last) => {
-                text = head.trim_end_matches(['.', ',']);
+        // Round 39 (R39-G, F9/F11): the last token is
+        // found by a bounded reverse scan, not a
+        // whole-text split search. The scan this
+        // replaces (`rsplit_once` on whitespace)
+        // walked the entire remaining text on every
+        // call to find a token that stands at its
+        // end, and the strip loops call here once per
+        // trailing group — a line of thousands of
+        // trailing groups paid a whole-line scan per
+        // group. The scan below asks the same
+        // question from the end: the first
+        // alphanumeric met ends it (the last token
+        // holds that character, and a token holding
+        // an alphanumeric is never a nothing —
+        // `nothing_token`'s two arms both require
+        // none), and the first whitespace met is the
+        // text's last whitespace, whose following
+        // token is the last token, judged by
+        // `nothing_token` exactly as before. A text
+        // with neither is one token, and stands.
+        let mut peel_at: Option<usize> = None;
+        for (ci, c) in trimmed.char_indices().rev() {
+            if c.is_alphanumeric() {
+                break;
             }
-            _ => {
+            if c.is_whitespace() {
+                let last = &trimmed[ci + c.len_utf8()..];
+                if nothing_token(last) {
+                    peel_at = Some(ci);
+                }
+                break;
+            }
+        }
+        match peel_at {
+            Some(w) => {
+                text = trimmed[..w].trim_end_matches(['.', ',']);
+            }
+            None => {
                 text = trimmed;
                 break;
             }
@@ -1001,6 +1034,25 @@ pub(super) fn relative_shape_matches(text: &str, shape: fn(&[String]) -> bool) -
         .filter(|(_, t)| !t.2.is_empty())
         .map(|(i, _)| i)
         .collect();
+    // Round 39 (R39-G, F9): the alphanumeric
+    // population of every byte range of `text`, as
+    // a prefix count over its characters — built
+    // once here so the word assembly below can
+    // settle a clipped head or tail part's cleaning
+    // from its size class instead of re-cleaning
+    // the part whole (see `relative_shape_words`).
+    let alnum_prefix: Vec<u32> = {
+        let mut prefix = vec![0u32; text.len() + 1];
+        let mut count = 0u32;
+        for (i, c) in text.char_indices() {
+            prefix[i] = count;
+            if c.is_alphanumeric() {
+                count += 1;
+            }
+            prefix[i + c.len_utf8()] = count;
+        }
+        prefix
+    };
     let mut rest = text;
     loop {
         rest = rest.trim_start_matches(BOUNDARY_TRIM);
@@ -1019,7 +1071,7 @@ pub(super) fn relative_shape_matches(text: &str, shape: fn(&[String]) -> bool) -
         rest = rest.trim_start_matches(BOUNDARY_TRIM);
         rest = rest.trim_end_matches(BOUNDARY_TRIM);
         let lo = rest.as_ptr() as usize - text.as_ptr() as usize;
-        if relative_shape_words(text, &toks, &ne, lo, lo + rest.len(), shape) {
+        if relative_shape_words(text, &toks, &ne, &alnum_prefix, lo, lo + rest.len(), shape) {
             return true;
         }
         // Round 21 (R21-1): a LEADING group is garnish
@@ -1027,9 +1079,12 @@ pub(super) fn relative_shape_matches(text: &str, shape: fn(&[String]) -> bool) -
         // "(November 8) next Sunday" names its Sunday
         // in words the way "next Sunday (November 8)"
         // does, the group's date remembered separately.
-        match strip_trailing_parenthesized(rest).or_else(|| strip_leading_parenthesized(rest)) {
+        let next = strip_trailing_parenthesized(rest).or_else(|| strip_leading_parenthesized(rest));
+        match next {
             Some(stripped) => rest = stripped,
-            None => return false,
+            None => {
+                return false;
+            }
         }
     }
 }
@@ -1048,10 +1103,57 @@ fn relative_shape_words(
     text: &str,
     toks: &[(usize, usize, String)],
     ne: &[usize],
+    alnum_prefix: &[u32],
     lo: usize,
     hi: usize,
     shape: fn(&[String]) -> bool,
 ) -> bool {
+    // Round 39 (R39-G, F9): a cut part's cleaning,
+    // settled by the part's letter-and-digit count
+    // where the count alone decides it. The strip
+    // loop above calls here once per group it peels,
+    // and on a line whose groups are glued into one
+    // line-long token every call re-cleaned the
+    // whole clipped remainder — the cleaning walks
+    // the part end to end — so k groups paid k
+    // whole-line cleanings. The count decides two
+    // classes exactly:
+    //
+    // - No letter or digit: `group_token` answers
+    //   the empty word for every such token — the
+    //   round-24 rule for the plain path, and the
+    //   bracketed path's governor exception reads a
+    //   cleaned inner word, which no letterless part
+    //   can supply (its inner word is letterless
+    //   too, and no governor or cancellation phrase
+    //   is letterless).
+    // - More than forty letters or digits, and not
+    //   a wholly bracketed token: the cleaning is
+    //   the part's own word with its wrapping off —
+    //   every letter and digit of the part survives
+    //   `clean_group_word` in order, so the word is
+    //   longer than forty characters. This assembly
+    //   reads a head or tail word only for whether
+    //   it is empty, whether it is "on" or "the",
+    //   and through the two shapes, whose every
+    //   comparison is against a literal of at most
+    //   six letters or a weekday name of at most
+    //   nine — a stand-in word of forty-one letters
+    //   answers all of those exactly as the true
+    //   word does. A bracketed part is cleaned
+    //   exactly as before: its governor exception
+    //   can turn on any window of the inner word,
+    //   so no size class settles it.
+    let clean_part = |a: usize, b: usize| -> String {
+        let letters = alnum_prefix[b] - alnum_prefix[a];
+        if letters == 0 {
+            return String::new();
+        }
+        if letters > 40 && !is_bracketed_token(&text[a..b]) {
+            return "x".repeat(41);
+        }
+        group_token(&text[a..b])
+    };
     // The tokens the range holds: the first whose
     // end passes `lo`, through the last whose start
     // precedes `hi`. A token cut by either edge is
@@ -1078,8 +1180,8 @@ fn relative_shape_words(
     // exactly the in-range part, so no tail word
     // stands beside it.
     let tail_cut = toks[t_last].1 > hi && !(t_last == t_first && head_cut);
-    let head: Option<String> = head_cut.then(|| group_token(&text[lo..toks[t_first].1.min(hi)]));
-    let tail: Option<String> = tail_cut.then(|| group_token(&text[toks[t_last].0..hi]));
+    let head: Option<String> = head_cut.then(|| clean_part(lo, toks[t_first].1.min(hi)));
+    let tail: Option<String> = tail_cut.then(|| clean_part(toks[t_last].0, hi));
     let first_in = if head_cut { t_first + 1 } else { t_first };
     // The whole tokens between the cut edges, as
     // the index range [first_in, past_in): a token
@@ -1467,13 +1569,39 @@ pub(super) fn bracketed_weekday_word(raw: &str) -> Option<u32> {
 pub(super) fn strip_leading_boundary_tokens(text: &str) -> &str {
     let mut rest = text.trim_start();
     loop {
-        let Some(first) = rest.split_whitespace().next() else {
-            return rest;
-        };
-        if rest.len() <= first.len() || !token_has_no_letters_or_digits(first) {
+        // Round 39 (R39-G, F9): the first token is
+        // scanned only as far as the judgment reads:
+        // an alphanumeric standing before any
+        // whitespace makes the token no boundary
+        // token (the standing test is the token's
+        // own `token_has_no_letters_or_digits`, a
+        // scan for exactly that character class),
+        // and a whitespace standing first ends the
+        // token with no alphanumeric in it. The scan
+        // this replaces materialized the whole first
+        // token on every call — on a line whose
+        // tokens are glued group runs the first token
+        // is the whole line, and the relative-shape
+        // loop calls here once per group it strips.
+        let mut token_end: Option<usize> = None;
+        let mut has_alnum = false;
+        for (i, c) in rest.char_indices() {
+            if c.is_whitespace() {
+                token_end = Some(i);
+                break;
+            }
+            if c.is_alphanumeric() {
+                has_alnum = true;
+                break;
+            }
+        }
+        if has_alnum {
             return rest;
         }
-        rest = rest[first.len()..].trim_start();
+        let Some(end) = token_end else {
+            return rest;
+        };
+        rest = rest[end..].trim_start();
     }
 }
 
@@ -1483,13 +1611,29 @@ pub(super) fn strip_leading_boundary_tokens(text: &str) -> &str {
 pub(super) fn strip_trailing_boundary_tokens(text: &str) -> &str {
     let mut rest = text.trim_end();
     loop {
-        let Some(last) = rest.split_whitespace().next_back() else {
-            return rest;
-        };
-        if rest.len() <= last.len() || !token_has_no_letters_or_digits(last) {
+        // Round 39 (R39-G, F9): the trailing twin of
+        // the bounded scan above — the last token is
+        // read from the end, an alphanumeric or a
+        // whitespace ending the scan the same way.
+        let mut token_start: Option<usize> = None;
+        let mut has_alnum = false;
+        for (i, c) in rest.char_indices().rev() {
+            if c.is_whitespace() {
+                token_start = Some(i + c.len_utf8());
+                break;
+            }
+            if c.is_alphanumeric() {
+                has_alnum = true;
+                break;
+            }
+        }
+        if has_alnum {
             return rest;
         }
-        rest = rest[..rest.len() - last.len()].trim_end();
+        let Some(start) = token_start else {
+            return rest;
+        };
+        rest = rest[..start].trim_end();
     }
 }
 

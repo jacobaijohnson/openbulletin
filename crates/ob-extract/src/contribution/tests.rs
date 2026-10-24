@@ -19181,6 +19181,156 @@ fn r31c_semicolon_groups_on_a_for_line_parse_without_the_cliff() {
     );
 }
 
+// Round 39 (R39-G, F9 + F11): the four superlinear
+// shapes the round-39 red team and the R39-CI
+// production finding measured on the tree before
+// this batch, each pinned in the r33d ratio form
+// against a linear control the fixes do not touch.
+// The rescans, now bounded: the relative-shape
+// loop re-cleaned its clipped remainder whole per
+// group it stripped (a line-long glued token paid
+// a whole-line cleaning per group) and found its
+// trailing tokens by whole-text split searches;
+// the stray-mark spacing pass re-scanned a
+// remainder per stray closer and searched its own
+// walk lists per unmatched opener; the nested
+// group descents re-walked the remaining text per
+// nesting layer; the mark shed's inside-a-group
+// test scanned every span per mark; the plain
+// scans' weekday-modifier test collected the next
+// words before asking whether the word was a
+// weekday at all, so every nothing-cleaning token
+// paid a walk across the nothing-run ahead of it;
+// and the group-beside-relative segment walk
+// rejoined and re-cleaned its whole suffix per
+// segment boundary. Quiet-window witness on the
+// pre-fix tree (d9d8028, debug frame, min-of-3,
+// load 3.7–6.9; probe in round39-out/g/): the
+// "(notes)" group run grew 8.2x/15.2x/17.3x per 4x
+// of groups (640 groups: 1,098 ms against a
+// 1.7 ms long-word control), the mixed unclosed
+// run 77x then 13.9x per 4x (240 repetitions:
+// 1,153 ms), the nested day groups 5.9x/18.9x per
+// 4x (depth 1,600: 223 ms), and the semicolon
+// shape 5.6x per doubling at the top size
+// (64,000 groups: 153.5 s against the 30x pin
+// bound the 32,000-group pin below carries).
+// Fixed-tree ratios stand in each pin's note.
+fn r39g_notes_control_at(n: usize) -> String {
+    let line = vec!["notes"; n].join(" ");
+    format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n")
+}
+
+fn r39g_word_run_control(bytes: usize) -> String {
+    format!(
+        "For Sunday: {}\n\n## Announcement\n\nHi.\n",
+        "x".repeat(bytes)
+    )
+}
+
+#[test]
+fn r39g_semicolon_groups_second_size_at_64000() {
+    // The R34-D second size for the r31c semicolon
+    // pin above (32,000 groups, bound 30x — that
+    // pin and its bound stand exactly as R39-CI
+    // left them): the same witness at one doubling,
+    // the pin's own multiple, the same control.
+    // R39-CI measured this size superlinear on the
+    // production tree (interleaved 31.3x against the
+    // 30x bound; the round-39 quiet witness, singles:
+    // 153.5 s). On the fixed tree the witness stands
+    // at ~5x the control, flat against its 32,000
+    // ratio, as linear code's ratios stand.
+    let groups = vec!["(November 1, 2026)"; 64000].join("; ");
+    let text = format!("For Sunday: November 1, 2026; {groups}\n\n## Announcement\n\nHi.\n");
+    let control = r39ci_repeated_date_control();
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, Some(nov(1)));
+    assert!(
+        witness_best < control_best * 30,
+        "the semicolon-group witness at 64,000 groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 30x the control)"
+    );
+}
+
+#[test]
+fn r39g_repeated_notes_groups_parse_without_the_cliff() {
+    // F9's first shape: a run of groups naming no
+    // date. The control is the same words standing
+    // bare (no group machinery stands over them, and
+    // no fix of this batch touches that road).
+    // Fixed tree: the witness stands at ~2.3x the
+    // control at both sizes (probe frame, min-of-3);
+    // pre-fix it stood at 36.6x at 1,280 groups in
+    // this suite's own interleaved frame (3.98 s
+    // against 108.7 ms) and ~81x at 2,560 in the
+    // probe frame, against the same control class.
+    for n in [1280usize, 2560] {
+        let text = format!(
+            "For Sunday: {}\n\n## Announcement\n\nHi.\n",
+            "(notes)".repeat(n)
+        );
+        let control = r39g_notes_control_at(n);
+        let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+        assert_eq!(c.for_date, None);
+        assert!(
+            witness_best < control_best * 10,
+            "the repeated notes-group witness at {n} groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 10x the control)"
+        );
+    }
+}
+
+#[test]
+fn r39g_unclosed_mixed_groups_parse_without_the_cliff() {
+    // F9's second shape: openers of all three pairs,
+    // none of them closed. The control is a single
+    // long word of the witness's byte size — the
+    // no-group line, whose cost no fix here touches.
+    // Fixed tree: the witness stands under the
+    // control itself (~0.6x); pre-fix it stood at
+    // thousands of times the control (240
+    // repetitions: 1,153 ms against ~1 ms).
+    for n in [480usize, 960] {
+        let text = format!(
+            "For Sunday: {}\n\n## Announcement\n\nHi.\n",
+            "([({".repeat(n)
+        );
+        let control = r39g_word_run_control(4 * n);
+        let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+        assert_eq!(c.for_date, None);
+        assert!(
+            witness_best < control_best * 20,
+            "the unclosed mixed-group witness at {n} repetitions took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
+        );
+    }
+}
+
+#[test]
+fn r39g_nested_day_groups_parse_without_the_cliff() {
+    // F9's third shape: the day group nested inside
+    // itself. The control is the long-word line at
+    // the witness's byte size, as above. Fixed
+    // tree: the witness stands at ~2–3x the control
+    // at both depths; pre-fix, depth 1,600 stood at
+    // ~140x in the probe frame (223 ms against
+    // ~1.6 ms), and in this suite's frame the pin
+    // bites at the second size: depth 3,200 took
+    // 395.2 ms against the control's 14.1 ms (28.0x).
+    for n in [1600usize, 3200] {
+        let text = format!(
+            "For Sunday: November {}8{}, 2026\n\n## Announcement\n\nHi.\n",
+            "(".repeat(n),
+            ")".repeat(n)
+        );
+        let control = r39g_word_run_control(2 * n + 16);
+        let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+        assert_eq!(c.for_date, Some(nov(8)));
+        assert!(
+            witness_best < control_best * 20,
+            "the nested day-group witness at depth {n} took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
+        );
+    }
+}
+
 #[test]
 fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026)"; 75000].join(" and ");

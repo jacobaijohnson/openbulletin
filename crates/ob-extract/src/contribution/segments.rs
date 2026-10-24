@@ -1336,6 +1336,24 @@ pub(super) fn segment_subject_before(segment: &[String], off: usize) -> bool {
 /// plain signal scans, the claim reach's
 /// between-words test, and the lone-framed fence.
 pub(super) fn weekday_modifier_at(tokens: &[String], i: usize) -> bool {
+    // Round 39 (R39-G, F9/F11): the weekday test
+    // stands first — the judgment is a conjunction
+    // whose first conjunct is the weekday test, so
+    // a token that names no weekday answers false
+    // without the forward collection below. Before
+    // this the collection ran first for EVERY token
+    // the plain scans asked about, and on a core
+    // carrying thousands of nothing-cleaning tokens
+    // (the de-grouped core of a semicolon-group line
+    // is mostly ";" markers) each token's collection
+    // walked the whole nothing-run ahead of it —
+    // quadratic time in the run's length, for a
+    // conjunct that was false at every one of them.
+    // The collection itself, and every judgment it
+    // feeds, is unchanged.
+    if weekday_word(&tokens[i]).is_none() {
+        return false;
+    }
     // Round 27 (R27-A, F3): the words the weekday
     // would modify are the next words that are
     // something — a token that cleans to nothing
@@ -1350,12 +1368,11 @@ pub(super) fn weekday_modifier_at(tokens: &[String], i: usize) -> bool {
         }
         j += 1;
     }
-    weekday_word(&tokens[i]).is_some()
-        && (next.first().is_some_and(|&n| noun_like_word(&tokens[n]))
-            || (next
-                .first()
-                .is_some_and(|&n| is_finite_verb_form(&tokens[n]))
-                && next.get(1).is_some_and(|&n| noun_like_word(&tokens[n]))))
+    next.first().is_some_and(|&n| noun_like_word(&tokens[n]))
+        || (next
+            .first()
+            .is_some_and(|&n| is_finite_verb_form(&tokens[n]))
+            && next.get(1).is_some_and(|&n| noun_like_word(&tokens[n])))
 }
 
 /// Whether the weekday word at `i` in `tokens` is

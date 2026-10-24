@@ -1799,10 +1799,14 @@ fn skip_framing_garnish(mut rest: &str) -> &str {
 /// reads, field for field, on both routes.
 /// Companion groups keep their dress and their own
 /// standing judgments: only the governor's wrapper
-/// comes off. A group holding anything more than a
-/// governor phrase (a date, a weekday, inert words,
-/// a governor beside other words) is not this
-/// pass's: its standing readers judge it whole.
+/// comes off. A group holding a date, a weekday, or
+/// inert words alone is not this pass's: its
+/// standing readers judge it whole. Round 39
+/// (R39-H2): a group whose contents mix a governor
+/// phrase with other words IS this pass's — the
+/// contents are judged as the bare governor text is
+/// judged (see `governor_group_words`) — at this
+/// slot as at the trailing and mid-line slots.
 ///
 /// Scope, per the coordinator's ruling
 /// (r38d-ruling.md, option (a)): the LEADING slot
@@ -1894,25 +1898,67 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
     Some(buf)
 }
 
-/// The words of a group whose whole contents are a
-/// governor phrase, when they are (round 38, R38-D;
-/// stated once for the governor passes): the group's
-/// cleaned words — `segment_tokens` over its inner
-/// words, the standing cleaning — judged by the
-/// standing phrase judgments (`is_governor_phrase` /
-/// `is_cancellation_phrase`), the same judgments the
-/// bare line's segment scan applies. A group holding
-/// anything more than a governor phrase (a date, a
-/// weekday, inert words, a governor beside other
-/// words) yields None: its standing readers judge it
-/// whole, at every slot.
+/// The words of a group whose contents carry a
+/// governor, when they do (round 38, R38-D; stated
+/// once for the governor passes): the group's cleaned
+/// words — `segment_tokens` over its inner words, the
+/// standing cleaning — judged as the bare governor
+/// text is judged. The pure arm is the standing one:
+/// the whole contents are a governor phrase, judged
+/// by the standing phrase judgments
+/// (`is_governor_phrase` / `is_cancellation_phrase`).
+/// Round 39 (R39-H2, the impure single-group family)
+/// adds the impure arm: the bare line's segment scan
+/// does not judge a run of words whole — it finds a
+/// governor phrase at every phrase position in the
+/// run (the scan in `segment_tokens`) — so contents
+/// mixing a governor phrase with other words
+/// ("cancelled today", "today cancelled", "meeting
+/// cancelled") are judged by that same scan: a
+/// governor phrase standing at any position of the
+/// cleaned words makes the group a governor group,
+/// and the unwrapping stands ALL its words bare, so
+/// the line reads its bare-contents twin word for
+/// word. Two holdings stay outside both arms, as
+/// they are not governor text in any dress: contents
+/// holding a date (a month word, a weekday word, or
+/// a digit stands among the words — a date-carrying
+/// or weekday-carrying group is judged whole by its
+/// standing readers, its split a different family's),
+/// and contents holding no governor phrase at any
+/// position (inert words alone) yield None: their
+/// standing readers judge them whole, at every slot.
 fn governor_group_words(inner: &str) -> Option<Vec<String>> {
     let raw_words: Vec<&str> = inner.split_whitespace().collect();
     let words: Vec<String> = segment_tokens(&raw_words)
         .into_iter()
         .filter(|w| !w.is_empty())
         .collect();
-    if !words.is_empty() && (is_governor_phrase(&words) || is_cancellation_phrase(&words)) {
+    if words.is_empty() {
+        return None;
+    }
+    if is_governor_phrase(&words) || is_cancellation_phrase(&words) {
+        return Some(words);
+    }
+    // The impure arm (R39-H2): a governor phrase at
+    // any phrase position of the contents, judged by
+    // the segment scan's own window (one to three
+    // words at every start), in contents holding no
+    // date and no weekday.
+    let holds_date_or_weekday = words.iter().any(|w| {
+        word_at_is_month(w, 0) || weekday_word(w).is_some() || w.chars().any(|c| c.is_ascii_digit())
+    });
+    if holds_date_or_weekday {
+        return None;
+    }
+    let has_governor_position = (0..words.len()).any(|s| {
+        (1..=3usize).any(|len| {
+            words
+                .get(s..s + len)
+                .is_some_and(|p| is_governor_phrase(p) || is_cancellation_phrase(p))
+        })
+    });
+    if has_governor_position {
         Some(words)
     } else {
         None
@@ -2186,10 +2232,17 @@ fn midline_governor_before_plain_date(
 /// group followed by more words at the line's end,
 /// which is not the trailing slot (the run must
 /// close the line, as the walks define it). A group
-/// holding more than a governor phrase is not this
-/// pass's either (see `governor_group_words`), at
-/// any slot, exactly as at the leading slot since
-/// R38-D.
+/// holding a date, a weekday, or inert words alone
+/// is not this pass's either (see
+/// `governor_group_words`), at any slot, exactly as
+/// at the leading slot since R38-D; a group whose
+/// contents mix a governor phrase with other words
+/// is this pass's since R39-H2, at the slots this
+/// pass already judges and no others — the slot
+/// guards above (the base-trailing exclusion, the
+/// open-phrase guard, the trailing run closing the
+/// line) are untouched, so the impure dress moves
+/// only where the pure dress already moved.
 fn unwrapped_trailing_or_midline_governor_group(text: &str, today: SimpleDate) -> Option<String> {
     let spans = balanced_spans(text);
     if spans.is_empty() {

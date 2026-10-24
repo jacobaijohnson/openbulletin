@@ -29095,6 +29095,317 @@ fn r39h_wrapped_governor_governs_as_its_bare_twin_at_the_trailing_and_midline_sl
 }
 
 #[test]
+fn r39h2_impure_single_group_governs_as_its_bare_twin_at_the_judged_slots() {
+    // Round 39 (R39-H2, the impure single-group
+    // family — the boundary R39-H §7 reported): a
+    // group whose contents mix a governor phrase
+    // with other words ("cancelled today", "today
+    // cancelled", "meeting cancelled", "cancelled
+    // briefly", "notes cancelled") is not a governor
+    // PHRASE under the whole-contents judgment, so
+    // before this batch the wrapped form served at
+    // every slot — leading included, since R38-D —
+    // while its bare twin governed: the split was
+    // total on the probe (149 pairs, both routes) at
+    // the leading, trailing, and mid-line slots for
+    // all five contents forms, in all three pairs,
+    // doubled, in mixed runs, and marked. The
+    // adjudicated mechanism is the contents judgment
+    // itself: the group's contents are judged as the
+    // bare governor text is judged — the segment
+    // scan finds a governor phrase at every phrase
+    // position of a run, not only when the whole run
+    // is one — so an impure governor group unwraps
+    // (all its words standing bare) at exactly the
+    // slots the passes already judge, and nowhere
+    // else: the slot guards (base-trailing excluded
+    // by slot, the open-phrase guard, before-phrase
+    // company, the trailing run closing the line)
+    // are untouched, and contents holding a date or
+    // a weekday are outside the judgment entirely,
+    // judged whole by their standing readers.
+    // Every pair below compares the wrapped line's
+    // FULL record against its bare-contents twin's
+    // (the r34e helpers), on the For line and the
+    // Keep-through line. November 1 and November 8,
+    // 2026 are Sundays.
+    for (wrapped, bare) in [
+        // Leading, all three pairs, the headline form.
+        (
+            "(cancelled today) November 8, 2026",
+            "cancelled today November 8, 2026",
+        ),
+        (
+            "[cancelled today] November 8, 2026",
+            "cancelled today November 8, 2026",
+        ),
+        (
+            "{cancelled today} November 8, 2026",
+            "cancelled today November 8, 2026",
+        ),
+        // Leading, the remaining contents forms.
+        (
+            "(today cancelled) November 8, 2026",
+            "today cancelled November 8, 2026",
+        ),
+        (
+            "(meeting cancelled) November 8, 2026",
+            "meeting cancelled November 8, 2026",
+        ),
+        (
+            "(cancelled briefly) November 8, 2026",
+            "cancelled briefly November 8, 2026",
+        ),
+        (
+            "(notes cancelled) November 8, 2026",
+            "notes cancelled November 8, 2026",
+        ),
+        // Trailing, all three pairs and every form.
+        (
+            "November 1, 2026 (cancelled today)",
+            "November 1, 2026 cancelled today",
+        ),
+        (
+            "November 1, 2026 [cancelled today]",
+            "November 1, 2026 cancelled today",
+        ),
+        (
+            "November 1, 2026 {cancelled today}",
+            "November 1, 2026 cancelled today",
+        ),
+        (
+            "November 1, 2026 (today cancelled)",
+            "November 1, 2026 today cancelled",
+        ),
+        (
+            "November 1, 2026 (meeting cancelled)",
+            "November 1, 2026 meeting cancelled",
+        ),
+        (
+            "November 1, 2026 (cancelled briefly)",
+            "November 1, 2026 cancelled briefly",
+        ),
+        (
+            "November 1, 2026 (notes cancelled)",
+            "November 1, 2026 notes cancelled",
+        ),
+        // Mid-line, all three pairs and every form.
+        (
+            "notes (cancelled today) November 8, 2026",
+            "notes cancelled today November 8, 2026",
+        ),
+        (
+            "notes [cancelled today] November 8, 2026",
+            "notes cancelled today November 8, 2026",
+        ),
+        (
+            "notes {cancelled today} November 8, 2026",
+            "notes cancelled today November 8, 2026",
+        ),
+        (
+            "notes (today cancelled) November 8, 2026",
+            "notes today cancelled November 8, 2026",
+        ),
+        (
+            "notes (meeting cancelled) November 8, 2026",
+            "notes meeting cancelled November 8, 2026",
+        ),
+        (
+            "notes (cancelled briefly) November 8, 2026",
+            "notes cancelled briefly November 8, 2026",
+        ),
+        (
+            "notes (notes cancelled) November 8, 2026",
+            "notes notes cancelled November 8, 2026",
+        ),
+        // Doubled, spaced and glued, at every slot.
+        (
+            "(cancelled today) (cancelled today) November 8, 2026",
+            "cancelled today cancelled today November 8, 2026",
+        ),
+        (
+            "November 1, 2026 (cancelled today) (cancelled today)",
+            "November 1, 2026 cancelled today cancelled today",
+        ),
+        (
+            "notes (cancelled today)(cancelled today) November 8, 2026",
+            "notes cancelled today cancelled today November 8, 2026",
+        ),
+        // Marked contents.
+        (
+            "(cancelled today!) November 8, 2026",
+            "cancelled today! November 8, 2026",
+        ),
+        (
+            "November 1, 2026 (cancelled today!)",
+            "November 1, 2026 cancelled today!",
+        ),
+        (
+            "notes (cancelled today!) November 8, 2026",
+            "notes cancelled today! November 8, 2026",
+        ),
+        // Mixed runs: an inert group beside the
+        // impure group, either order, mid-line and
+        // trailing (the R39-H mixed-run family in
+        // impure dress).
+        (
+            "notes (notes) (cancelled today) November 8, 2026",
+            "notes (notes) cancelled today November 8, 2026",
+        ),
+        (
+            "notes (cancelled today) (notes) November 8, 2026",
+            "notes cancelled today (notes) November 8, 2026",
+        ),
+        (
+            "November 1, 2026 (notes) (cancelled today)",
+            "November 1, 2026 (notes) cancelled today",
+        ),
+        // Beside a weekday group mid-line, both
+        // orders: standing AFTER the weekday group
+        // the impure governor twins against the
+        // governing bare form; standing BEFORE it,
+        // against the lapsing bare form — the pair
+        // serves in both dresses, as the pure pair
+        // served.
+        (
+            "notes (Monday) (cancelled today) November 1, 2026",
+            "notes (Monday) cancelled today November 1, 2026",
+        ),
+        (
+            "notes (cancelled today) (Monday) November 1, 2026",
+            "notes cancelled today (Monday) November 1, 2026",
+        ),
+        // The pure marked control: already governing
+        // before this batch, stated so the boundary
+        // between the pure and impure arms is pinned.
+        (
+            "November 1, 2026 (cancelled!)",
+            "November 1, 2026 cancelled",
+        ),
+        // Before-phrase company, both dresses alike,
+        // as the pure family stands: before a
+        // relative phrase the line reads nothing.
+        (
+            "notes (cancelled today) next Sunday",
+            "notes cancelled today next Sunday",
+        ),
+    ] {
+        r34e_for_twin(wrapped, bare);
+        r34e_keep_twin(wrapped, bare);
+    }
+    // The headline shapes, stated outright: no date
+    // reads on either route and no record stands.
+    for line in [
+        "(cancelled today) November 8, 2026",
+        "November 1, 2026 (cancelled today)",
+        "notes (cancelled today) November 8, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the impure governor governs");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{line}");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{line}: the impure governor governs the keep line"
+        );
+    }
+    // The standing controls, stated outright and
+    // unmoved. Base-trailing in impure dress: the
+    // lone form serves the resolution, as it served
+    // (the slot is excluded by slot, in every dress).
+    let text =
+        "For Sunday: Sunday after November 1, 2026 (cancelled today)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the base-trailing impure group is garnish, as the pure is"
+    );
+    assert_eq!(c.named_weekday_mismatch, None);
+    // Base-trailing beside a weekday group: the
+    // weekday's refusal stands against the base, as
+    // it stands in the pure dress (R39-H §4 recorded
+    // this slot distinction for the pure forms too:
+    // the exclusion is by slot, not by outcome).
+    let text = "For Sunday: Sunday after November 1, 2026 (cancelled today) (Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the base-trailing weekday refusal stands");
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the base-trailing weekday record stands");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, nov(1));
+    // Before a Sunday-after phrase the impure group
+    // is garnish, as its bare twin is: the
+    // resolution serves.
+    let text = "For Sunday: notes (cancelled today) Sunday after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "before the phrase the impure governor is garnish, as the bare is"
+    );
+    // Contents holding a date or a weekday are not
+    // this judgment's: both groups keep their
+    // standing readings outright (the date-carrying
+    // outright is R34-E's, standing since R39-H).
+    let text =
+        "For Sunday: November 1, 2026 (cancelled, November 8, 2026)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "a date-carrying group keeps its standing reading"
+    );
+    let text = "For Sunday: November 1, 2026 (cancelled Monday)\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "a weekday-carrying group keeps its standing reading"
+    );
+    // The carried neighbours, unmoved in impure
+    // dress: the after-"after" group serves the
+    // base, and a trailing group followed by more
+    // words is not at the trailing slot.
+    let text =
+        "For Sunday: Sunday after (cancelled today) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the after-after neighbour serves the base, unmoved"
+    );
+    let text =
+        "For Sunday: November 1, 2026 (cancelled today) and more\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "a group followed by words keeps its standing reading"
+    );
+    // The inert control, stated unmoved: contents
+    // holding no governor phrase at any position are
+    // still garnish and the date serves, both routes.
+    let text = "For Sunday: (meeting today) November 8, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "contents with no governor phrase serve"
+    );
+    let text = "For Sunday: November 1, 2026\nKeep-through: (meeting today) November 8, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "the inert group serves");
+}
+
+#[test]
 fn r38e_separator_chain_at_the_month_day_slot_takes_its_spaced_reading() {
     // Round 38 (R38-E, F5 MAJOR = red team RT38-3 +
     // F6 MINOR = red team RT38-6): the R37-C chain

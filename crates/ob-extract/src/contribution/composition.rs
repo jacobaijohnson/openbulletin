@@ -1813,7 +1813,12 @@ fn skip_framing_garnish(mut rest: &str) -> &str {
 /// — keeps its standing reading byte for byte this
 /// round; the wrapped/bare split at those slots is
 /// carried to round 39 as a doctrine question, not
-/// widened here.
+/// widened here. Round 39 (R39-H, F10) adjudicated
+/// that question and extended the doctrine to the
+/// trailing slot and the date's segment mid-line;
+/// that extension is the companion pass
+/// (`unwrapped_trailing_or_midline_governor_group`)
+/// below, and this pass's scope is unchanged.
 fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
     let trimmed = text.trim_start();
     let head_offset = text.len() - trimmed.len();
@@ -1854,12 +1859,7 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
             break;
         }
         let inner = &text[p + 1..p + end - 1];
-        let raw_words: Vec<&str> = inner.split_whitespace().collect();
-        let words: Vec<String> = segment_tokens(&raw_words)
-            .into_iter()
-            .filter(|w| !w.is_empty())
-            .collect();
-        if !words.is_empty() && (is_governor_phrase(&words) || is_cancellation_phrase(&words)) {
+        if let Some(words) = governor_group_words(inner) {
             let bare = words.join(" ");
             let buf = out.get_or_insert_with(|| String::with_capacity(text.len()));
             buf.push_str(&text[cursor..p]);
@@ -1892,6 +1892,334 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
     let mut buf = out?;
     buf.push_str(&text[cursor..]);
     Some(buf)
+}
+
+/// The words of a group whose whole contents are a
+/// governor phrase, when they are (round 38, R38-D;
+/// stated once for the governor passes): the group's
+/// cleaned words — `segment_tokens` over its inner
+/// words, the standing cleaning — judged by the
+/// standing phrase judgments (`is_governor_phrase` /
+/// `is_cancellation_phrase`), the same judgments the
+/// bare line's segment scan applies. A group holding
+/// anything more than a governor phrase (a date, a
+/// weekday, inert words, a governor beside other
+/// words) yields None: its standing readers judge it
+/// whole, at every slot.
+fn governor_group_words(inner: &str) -> Option<Vec<String>> {
+    let raw_words: Vec<&str> = inner.split_whitespace().collect();
+    let words: Vec<String> = segment_tokens(&raw_words)
+        .into_iter()
+        .filter(|w| !w.is_empty())
+        .collect();
+    if !words.is_empty() && (is_governor_phrase(&words) || is_cancellation_phrase(&words)) {
+        Some(words)
+    } else {
+        None
+    }
+}
+
+/// `text` with the given group spans (byte ranges,
+/// in written order) replaced by their governor
+/// words standing bare, every other byte as written
+/// — the replacement the governor passes share: a
+/// space separates the bare words from a word or a
+/// group they stand glued against, on either side,
+/// as in `unwrapped_leading_governor_group`.
+fn apply_governor_unwraps(text: &str, unwraps: &[(usize, usize, Vec<String>)]) -> Option<String> {
+    if unwraps.is_empty() {
+        return None;
+    }
+    let mut buf = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    for (start, end, words) in unwraps {
+        buf.push_str(&text[cursor..*start]);
+        if buf
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_alphanumeric() || matches!(c, ')' | ']' | '}'))
+        {
+            buf.push(' ');
+        }
+        buf.push_str(&words.join(" "));
+        if text[*end..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || matches!(c, '(' | '[' | '{'))
+        {
+            buf.push(' ');
+        }
+        cursor = *end;
+    }
+    buf.push_str(&text[cursor..]);
+    Some(buf)
+}
+
+/// The last plain date a token scan of `text`
+/// reads, when one stands: every token position is
+/// tried as a date's start (`parse_date_prefix`,
+/// whose word budget bounds each try), and the last
+/// date read in written order is the text's nearest
+/// preceding date for a group standing after it.
+fn last_plain_date_in(text: &str, today: SimpleDate) -> Option<SimpleDate> {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut last = None;
+    for i in 0..tokens.len() {
+        if let Some((date, _)) = parse_date_prefix(&tokens[i..], today) {
+            last = Some(date);
+        }
+    }
+    last
+}
+
+/// Whether the nearest plain date standing in
+/// `prefix` (the text before a group) is a
+/// Sunday-after phrase's consumed base: the group
+/// then stands in base-trailing company, where the
+/// governor is garnish in every dress (round-39
+/// synthesis, adjudication 4 — the base-trailing
+/// slot is uniform and does not move), and no
+/// governor pass unwraps it there.
+fn nearest_date_is_sunday_after_base(prefix: &str, today: SimpleDate) -> bool {
+    match last_plain_date_in(prefix, today) {
+        Some(date) => sunday_after_consumed_bases(prefix, today).contains(&date),
+        None => false,
+    }
+}
+
+/// The group run closing `text` (one or more
+/// top-level groups standing at the line's end,
+/// sentence punctuation and a trailing separator
+/// token aside, as the standing trailing readers
+/// peel them), when one stands: the run's spans in
+/// written order and the byte where the run starts.
+/// The run's members stand against each other with
+/// only the sequence walks' separations between
+/// them — whitespace, commas, the sentence
+/// separators ";" "." ":", and a group's suffix
+/// marks "!" "?" U+201D U+2019 (round 39, R39-C) —
+/// a glued pair's gap empty: the trailing walk's
+/// own run definition (`trailing_group_sequence`),
+/// stated for a run of any length, a single group
+/// included, because the lone trailing group is
+/// this slot's headline form.
+fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
+    let mut end = text.len();
+    loop {
+        let peeled = text[..end]
+            .trim_end_matches([
+                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}',
+            ])
+            .len();
+        if peeled != end {
+            end = peeled;
+            continue;
+        }
+        let core = &text[..end];
+        let Some((ws, wc)) = core.char_indices().rev().find(|(_, c)| c.is_whitespace()) else {
+            break;
+        };
+        let token = &core[ws + wc.len_utf8()..];
+        if !token.is_empty() && token.chars().all(|c| c == '*' || c == '|') {
+            end = ws;
+            continue;
+        }
+        break;
+    }
+    let core = text[..end].trim_end();
+    let spans = balanced_spans(core);
+    let last = spans.len().checked_sub(1)?;
+    if spans[last].1 != core.len() {
+        return None;
+    }
+    let mut run_first = last;
+    while run_first > 0 {
+        let gap = &core[spans[run_first - 1].1..spans[run_first].0];
+        if !gap.chars().all(|c| {
+            matches!(
+                c,
+                ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
+            ) || c.is_whitespace()
+        }) {
+            break;
+        }
+        run_first -= 1;
+    }
+    Some((spans[run_first..=last].to_vec(), spans[run_first].0))
+}
+
+/// Whether the group at `spans[idx]` stands in the
+/// date's segment before a plain date (see
+/// `unwrapped_trailing_or_midline_governor_group`):
+/// companion groups and the sequence walks'
+/// separations aside, a plain date stands directly
+/// after the run the group belongs to, and the
+/// group does not stand inside a Sunday-after
+/// phrase whose base has not yet been written —
+/// after the phrase's "after", or after a "Sunday
+/// ... after" head the base has not followed — nor
+/// in base-trailing company (its nearest preceding
+/// plain date the phrase's consumed base).
+fn midline_governor_before_plain_date(
+    text: &str,
+    spans: &[(usize, usize)],
+    idx: usize,
+    today: SimpleDate,
+) -> bool {
+    let (start, mut pos) = spans[idx];
+    let prefix = &text[..start];
+    let raw_words: Vec<&str> = prefix.split_whitespace().collect();
+    let words: Vec<String> = segment_tokens(&raw_words)
+        .into_iter()
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.last().is_some_and(|w| w == "after") {
+        return false;
+    }
+    if let Some(after_pos) = words.iter().rposition(|w| w == "after") {
+        let sunday_before = words[..after_pos].iter().any(|w| w == "sunday");
+        let base_after = words[after_pos + 1..]
+            .iter()
+            .any(|w| word_at_is_month(w, 0));
+        if sunday_before && !base_after {
+            return false;
+        }
+    }
+    if nearest_date_is_sunday_after_base(prefix, today) {
+        return false;
+    }
+    for &(next_start, next_end) in &spans[idx + 1..] {
+        let gap = &text[pos..next_start];
+        if !gap.chars().all(|c| {
+            matches!(
+                c,
+                ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
+            ) || c.is_whitespace()
+        }) {
+            break;
+        }
+        pos = next_end;
+    }
+    let rest = text[pos..].trim_start_matches([
+        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}',
+    ]);
+    if matches!(rest.chars().next(), Some('(' | '[' | '{')) {
+        return false;
+    }
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    parse_date_prefix(&tokens, today).is_some()
+}
+
+/// `text` with a trailing-slot or mid-line governor
+/// group unwrapped: the group's own governor words
+/// standing bare at the slot, every other byte as
+/// written (round 39, R39-H, F10 — the doctrine
+/// change adjudicated in the round-39 synthesis,
+/// adjudication 3, extending the round-38 leading
+/// doctrine of `unwrapped_leading_governor_group`).
+///
+/// The doctrine statement, as adjudicated: governor
+/// contents in a group are judged as the bare
+/// governor is judged wherever the bare governor is
+/// judged — the leading slot (R38-D), the trailing
+/// slot, and the date's segment mid-line; weekday-
+/// group judgment remains framing-slot only (cell
+/// (a)(i) stands closed, not re-opened — a weekday
+/// companion in a trailing or mid-line run keeps
+/// its own standing judgment, and only the
+/// governor's wrapper comes off, so the companions'
+/// judgments stand as the walks give them).
+///
+/// The trailing slot is the group run closing the
+/// line after a plain date (see
+/// `trailing_group_run`): every wrapper, glued,
+/// doubled, mixed, marked, with companions in
+/// either order. Inside a judged trailing sequence
+/// the dress decided outcomes before this pass:
+/// beside a date group the wrapped form served the
+/// written date with the group as garnish
+/// ("November 1, 2026 (cancelled)(November 8, 2026)"
+/// served November 1) where the bare form served
+/// the group's date with the written date demoted;
+/// beside a disagreeing weekday group the wrapped
+/// form left the sender-correcting record standing
+/// where the bare form deleted it with the date.
+/// The unwrapped line is the bare twin, so every
+/// reader below reads the line its bare-governor
+/// twin reads, field for field, on both routes.
+///
+/// The mid-line form is a governor group standing
+/// in the date's segment before a plain date: the
+/// bare stamp's judgment there is a segment
+/// judgment, not a slot judgment — it governs
+/// anywhere inside the date's segment — and the
+/// wrapped form's whole exemption was one ordinary
+/// word standing before it ("notes (cancelled)
+/// November 8, 2026" served in every dress while
+/// "notes cancelled November 8, 2026" governs).
+/// This arm is scoped to where the bare stamp
+/// itself governs: before a plain date in-segment.
+///
+/// Where the bare stamp is itself garnish, the
+/// wrapped form does not move, by construction:
+/// after a Sunday-after base in every dress (the
+/// base-trailing slot is uniform — a run whose
+/// nearest preceding plain date is the phrase's
+/// consumed base is never unwrapped, and a mid-line
+/// group in that company is held by the same test);
+/// before phrases in both dresses (no plain date
+/// stands after the group — a Sunday-after phrase,
+/// a relative phrase — so neither arm reaches it);
+/// beside a weekday group mid-line in the order
+/// where the bare stamp lapses (the governor
+/// standing before the weekday group unwraps to
+/// that very lapsing twin — "notes cancelled
+/// (Monday) November 1, 2026" — and the line serves
+/// as it served); at the Sunday-after phrase's
+/// interior positions (the split position, where no
+/// plain date follows the group, and a group
+/// standing after the phrase's "after" with the
+/// base not yet standing, held by the open-phrase
+/// guard in `midline_governor_before_plain_date` —
+/// the carried neighbour whose wrapped form serves
+/// the base is not this batch's to move); and a
+/// group followed by more words at the line's end,
+/// which is not the trailing slot (the run must
+/// close the line, as the walks define it). A group
+/// holding more than a governor phrase is not this
+/// pass's either (see `governor_group_words`), at
+/// any slot, exactly as at the leading slot since
+/// R38-D.
+fn unwrapped_trailing_or_midline_governor_group(text: &str, today: SimpleDate) -> Option<String> {
+    let spans = balanced_spans(text);
+    if spans.is_empty() {
+        return None;
+    }
+    // The trailing arm's slot judgment, made once:
+    // the run closing the line stands after a plain
+    // date that is not a Sunday-after base.
+    let trailing_run: Vec<(usize, usize)> = match trailing_group_run(text) {
+        Some((run, run_start)) => {
+            let prefix = &text[..run_start];
+            match last_plain_date_in(prefix, today) {
+                Some(date) if !sunday_after_consumed_bases(prefix, today).contains(&date) => run,
+                _ => Vec::new(),
+            }
+        }
+        None => Vec::new(),
+    };
+    let mut unwraps: Vec<(usize, usize, Vec<String>)> = Vec::new();
+    for (idx, &(start, end)) in spans.iter().enumerate() {
+        let Some(words) = governor_group_words(&text[start + 1..end - 1]) else {
+            continue;
+        };
+        if trailing_run.contains(&(start, end))
+            || midline_governor_before_plain_date(text, &spans, idx, today)
+        {
+            unwraps.push((start, end, words));
+        }
+    }
+    apply_governor_unwraps(text, &unwraps)
 }
 
 /// The group sequence standing at the leading slot
@@ -6864,6 +7192,16 @@ pub(super) fn trailing_dates_after_core_governance(
     // the keep-through date the twin never stands.
     let unwrapped = unwrapped_leading_governor_group(text);
     let text: &str = unwrapped.as_deref().unwrap_or(text);
+    // Round 39 (R39-H, F10): the same trailing /
+    // mid-line governor unwrap as the date lines
+    // (see `date_line`), for the same reason — the
+    // fallback composes the whole line, and on the
+    // wrapped text the composition served the date
+    // the bare-governor twin's line governs,
+    // standing it back up as the keep-through date
+    // the twin never stands.
+    let unwrapped_trailing = unwrapped_trailing_or_midline_governor_group(text, today);
+    let text: &str = unwrapped_trailing.as_deref().unwrap_or(text);
     if let Some(reading) = whole_line_composition(text, today, anchor) {
         return reading.date.into_iter().collect();
     }
@@ -7617,6 +7955,25 @@ pub(super) fn date_line(
     // readings (coordinator ruling, r38d-ruling.md).
     let effective_raw: Option<String> = match effective_raw {
         Some(text) => match unwrapped_leading_governor_group(&text) {
+            Some(unwrapped) => Some(unwrapped),
+            None => Some(text),
+        },
+        None => None,
+    };
+    // Round 39 (R39-H, F10): the whole line is
+    // likewise read with a trailing-slot or mid-line
+    // governor group unwrapped (see
+    // `unwrapped_trailing_or_midline_governor_group`)
+    // — governor contents in a group are judged as
+    // the bare governor is judged wherever the bare
+    // governor is judged: the leading slot (R38-D),
+    // the trailing slot, and the date's segment
+    // mid-line. The base-trailing slot is uniform
+    // garnish in every dress and does not move: the
+    // pass never unwraps a group whose nearest
+    // preceding plain date is a Sunday-after base.
+    let effective_raw: Option<String> = match effective_raw {
+        Some(text) => match unwrapped_trailing_or_midline_governor_group(&text, today) {
             Some(unwrapped) => Some(unwrapped),
             None => Some(text),
         },

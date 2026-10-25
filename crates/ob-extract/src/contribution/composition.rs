@@ -807,25 +807,40 @@ pub(super) fn trailing_parenthesized_dates(
         .collect()
 }
 
-/// Every alternative a trailing parenthesized group
-/// offers, in written order (round 11, R11-6): a
-/// group that offers two or more dates contributes
-/// none of them, and these are named on the line's
-/// second-date note instead.
-pub(super) fn trailing_group_alternatives(
+/// The trailing groups' contributed dates and
+/// offered alternatives, read off the one
+/// `trailing_group_analyses` computation (round
+/// 40, R40-C, F2): `trailing_parenthesized_dates`
+/// and `trailing_group_alternatives` are the two
+/// projections of that computation — the dates
+/// in the first's order, the alternatives in the
+/// second's — and a caller needing both (the
+/// `date_line` composition) pays the analyses
+/// once per line instead of once per projection.
+/// On a line of thousands of trailing groups the
+/// duplicated pass was a full second walk of the
+/// sequence readers over the same groups. (The
+/// standalone alternatives projection was round
+/// 11's `trailing_group_alternatives`, R11-6: a
+/// group that offers two or more dates
+/// contributes none of them, and these are named
+/// on the line's second-date note instead.)
+pub(super) fn trailing_dates_and_alternatives(
     text: &str,
     today: SimpleDate,
     anchor: SimpleDate,
-) -> Vec<SimpleDate> {
-    let mut found: Vec<SimpleDate> = Vec::new();
-    for (_, a) in trailing_group_analyses(text, today, anchor) {
-        for d in a.alternatives {
-            if !found.contains(&d) {
-                found.push(d);
+) -> (Vec<SimpleDate>, Vec<SimpleDate>) {
+    let analyses = trailing_group_analyses(text, today, anchor);
+    let dates: Vec<SimpleDate> = analyses.iter().filter_map(|(_, a)| a.contributed).collect();
+    let mut alternatives: Vec<SimpleDate> = Vec::new();
+    for (_, a) in &analyses {
+        for d in &a.alternatives {
+            if !alternatives.contains(d) {
+                alternatives.push(*d);
             }
         }
     }
-    found
+    (dates, alternatives)
 }
 
 /// Whether a group carries an actual target claim
@@ -3412,7 +3427,20 @@ fn respaced_glued_weekday_groups(text: &str) -> Option<String> {
             j += 1;
         }
         if j == word_start || weekday_word(&text[word_start..j]).is_none() {
-            i += 1;
+            // Round 40 (R40-C, F2): the failure is
+            // the whole opener run's — every
+            // position inside the run shares the
+            // run's end, the word standing there,
+            // and the closers after it, so each
+            // would fail this same test — and the
+            // scan resumes at the run's end, not
+            // one byte in. A run of openers whose
+            // word is no weekday (a nested date:
+            // "(((…November…)))") otherwise
+            // restarts the run scan at every
+            // position, one whole-run scan per
+            // nesting layer.
+            i = word_start;
             continue;
         }
         while j < bytes.len() && matches!(bytes[j], b'.' | b',' | b':' | b';' | b'/') {
@@ -3423,7 +3451,7 @@ fn respaced_glued_weekday_groups(text: &str) -> Option<String> {
             j += 1;
         }
         if j == closers_start {
-            i += 1;
+            i = word_start;
             continue;
         }
         if i > 0 {
@@ -8130,12 +8158,14 @@ pub(super) fn date_line(
     } else {
         (date, weekday_mismatch)
     };
-    let groups = trailing_parenthesized_dates(text, today, anchor);
     // Round 11 (R11-6): the alternatives a trailing
     // group offers instead of contributing are named
     // on the second-date note, beside whatever the
-    // line itself reads.
-    let alternatives = trailing_group_alternatives(text, today, anchor);
+    // line itself reads. Round 40 (R40-C, F2): the
+    // groups and the alternatives are read off the
+    // one trailing-analyses computation (see
+    // `trailing_dates_and_alternatives`).
+    let (groups, alternatives) = trailing_dates_and_alternatives(text, today, anchor);
     // Round 22 (R22-3): a wrong-weekday framed date
     // standing in a plain segment of the composition
     // speaks first, exactly as it does without the

@@ -19393,6 +19393,171 @@ fn r40b_empty_group_run_parses_without_the_cliff() {
     }
 }
 
+// Round 40 (R40-C, F2 = red team RT40-H +
+// review R40-R2): the group-sequence and
+// nesting readers past the R39-G pinned range.
+// The nested shapes (a date standing inside a
+// run of opening delimiters) steepen ~9–16x per
+// 4x step to depth 25,600 (a 51 KB line): the
+// glued-weekday re-spacing scan
+// (`respaced_glued_weekday_groups`) restarts its
+// opener-run scan one byte into the run at every
+// position, so a run of n openers whose word is
+// no weekday costs n whole-run scans — the
+// per-group-start walk the lanes named, in the
+// one pass every nested line pays twice. The
+// fix resumes the scan at the run's end on a
+// failed shape (every position in a run shares
+// the run's end, its word, and its closers, so
+// the failure is the run's), and the plain
+// sequence walks lose one of their duplicated
+// whole-line computations (the trailing groups'
+// dates and alternatives are two projections of
+// the one trailing-analyses pass, now computed
+// once in `date_line`). Readings are preserved
+// at every size; the controls are the long-word
+// line at each witness's byte size, as in the
+// R39-G pins above. Pre-fix interleaved ratios
+// (probe frame, this batch's windows): nested
+// day 17.5x at depth 25,600, nested month
+// 14.2x, nested whole 15.8x, nested trailing
+// group 7.5x, trailing sequence 13.8x at
+// 25,600 groups; the fixed tree stands at
+// ~1.4–2x (nested) and ~8.5x (trailing
+// sequence) — the tables are in
+// round40-out/coord/r40c-record.md.
+#[test]
+fn r40c_nested_day_groups_parse_without_the_cliff() {
+    for n in [6400usize, 25600] {
+        let text = format!(
+            "For Sunday: November {}8{}, 2026\n\n## Announcement\n\nHi.\n",
+            "(".repeat(n),
+            ")".repeat(n)
+        );
+        let control = r39g_word_run_control(2 * n + 16);
+        let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+        assert_eq!(c.for_date, Some(nov(8)));
+        assert!(
+            witness_best < control_best * 10,
+            "the nested day-group witness at depth {n} took {witness_best:?} against the interleaved control's {control_best:?} (bound: 10x the control)"
+        );
+    }
+}
+
+#[test]
+fn r40c_nested_month_groups_parse_without_the_cliff() {
+    for n in [6400usize, 25600] {
+        let text = format!(
+            "For Sunday: {}November{} 1, 2026\n\n## Announcement\n\nHi.\n",
+            "(".repeat(n),
+            ")".repeat(n)
+        );
+        let control = r39g_word_run_control(2 * n + 16);
+        let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+        assert_eq!(c.for_date, Some(nov(1)));
+        assert!(
+            witness_best < control_best * 10,
+            "the nested month-group witness at depth {n} took {witness_best:?} against the interleaved control's {control_best:?} (bound: 10x the control)"
+        );
+    }
+}
+
+#[test]
+fn r40c_nested_whole_groups_parse_without_the_cliff() {
+    for n in [6400usize, 25600] {
+        let text = format!(
+            "For Sunday: {}(November 1, 2026){}\n\n## Announcement\n\nHi.\n",
+            "(".repeat(n),
+            ")".repeat(n)
+        );
+        let control = r39g_word_run_control(2 * n + 18);
+        let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+        assert_eq!(c.for_date, Some(nov(1)));
+        assert!(
+            witness_best < control_best * 6,
+            "the nested whole-group witness at depth {n} took {witness_best:?} against the interleaved control's {control_best:?} (bound: 6x the control)"
+        );
+    }
+}
+
+#[test]
+fn r40c_nested_trailing_group_parses_without_the_cliff() {
+    for n in [6400usize, 25600] {
+        let text = format!(
+            "For Sunday: November 1, 2026 {}(Monday){}\n\n## Announcement\n\nHi.\n",
+            "(".repeat(n),
+            ")".repeat(n)
+        );
+        let control = r39g_word_run_control(2 * n + 25);
+        let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+        assert_eq!(c.for_date, Some(nov(1)));
+        assert!(
+            witness_best < control_best * 5,
+            "the nested trailing-group witness at depth {n} took {witness_best:?} against the interleaved control's {control_best:?} (bound: 5x the control)"
+        );
+    }
+}
+
+#[test]
+fn r40c_trailing_group_sequence_parses_without_the_cliff() {
+    // The trailing arm of the sequence family.
+    // Its bound is a steepness ceiling over the
+    // fixed tree's in-suite standings (8.4–8.7x
+    // solo, to 10.9x under parallel contention),
+    // for the reason the base-trailing pin below
+    // states; the batch's bite evidence for this
+    // arm is the solo-frame failure at a 10x
+    // bound (11.5x at 12,800 groups), in
+    // round40-out/coord/c/pin-prefix-bite2.log.
+    for n in [12800usize, 25600] {
+        let text = format!(
+            "For Sunday: November 1, 2026 {}\n\n## Announcement\n\nHi.\n",
+            "(notes) ".repeat(n)
+        );
+        let control = r39g_word_run_control(8 * n + 17);
+        let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+        assert_eq!(c.for_date, Some(nov(1)));
+        assert!(
+            witness_best < control_best * 16,
+            "the trailing group-sequence witness at {n} groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 16x the control)"
+        );
+    }
+}
+
+#[test]
+fn r40c_base_trailing_group_sequence_parses_without_the_cliff() {
+    // The base-trailing arm of the sequence
+    // family: the plain "(notes)" run after a
+    // Sunday-after base. Its ratios stand closer
+    // together than the nested shapes' (pre-fix
+    // 10.1x at 25,600 groups solo in-suite,
+    // fixed 7.3x), and the two sequence
+    // witnesses' ratios inflate under parallel
+    // test contention (to 13.7x in one post-fix
+    // run of this pin set), so — as the family's
+    // wide-bound pins stand over their fixed
+    // ratios — the bound here is a steepness
+    // ceiling over the fixed tree's worst
+    // in-suite standing, not a bite bound; the
+    // batch's bite evidence for this arm is the
+    // solo-frame failure at a 9x bound, in
+    // round40-out/coord/c/pin-prefix-bite.log's
+    // companion logs (see r40c-record.md).
+    for n in [12800usize, 25600] {
+        let text = format!(
+            "For Sunday: Sunday after November 1, 2026 {}\n\n## Announcement\n\nHi.\n",
+            "(notes) ".repeat(n)
+        );
+        let control = r39g_word_run_control(8 * n + 30);
+        let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+        assert_eq!(c.for_date, Some(nov(8)));
+        assert!(
+            witness_best < control_best * 20,
+            "the base-trailing group-sequence witness at {n} groups took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
+        );
+    }
+}
+
 #[test]
 fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026)"; 75000].join(" and ");

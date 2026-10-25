@@ -2247,4 +2247,185 @@ mod tests {
             Some("Words: Martin Luther (1483-1546). Music: Johann Sebastian Bach.")
         );
     }
+
+    /// The round-41 crafts (red team RT41-A +
+    /// RT41-B), assembled byte by byte over the
+    /// caller's Stored entries, in the fonts door's
+    /// crafter shape: the four equal-set spellings in
+    /// a 2,000-byte gap before the real directory
+    /// ("eqorder" / "equncomp" / "eqextra" /
+    /// "eqversion"), the "clean" control on the same
+    /// layout, and the fake zip64 pair spellings in a
+    /// 5,000-byte locator-to-end-record gap
+    /// ("fakepair99" / "fakepair45").
+    fn r41a_archive_mxl(entries: &[(&[u8], &[u8])], shape: &str) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries {
+            locals.push(body.len() as u32);
+            let crc = stored_crc(data);
+            body.extend_from_slice(b"PK\x03\x04");
+            body.extend_from_slice(&20u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&crc.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(name);
+            body.extend_from_slice(data);
+        }
+        let cd_offset = body.len() as u32;
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&plain_central(name, data, locals[i], &[]));
+        }
+        if shape.starts_with("fakepair") {
+            let needed: u16 = if shape == "fakepair99" { 99 } else { 45 };
+            let mut out = body;
+            out.extend_from_slice(&centrals);
+            let record_at = out.len() as u64;
+            out.extend_from_slice(b"PK\x06\x06");
+            out.extend_from_slice(&44u64.to_le_bytes());
+            out.extend_from_slice(&45u16.to_le_bytes());
+            out.extend_from_slice(&45u16.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            out.extend_from_slice(&(centrals.len() as u64).to_le_bytes());
+            out.extend_from_slice(&(cd_offset as u64).to_le_bytes());
+            out.extend_from_slice(b"PK\x06\x07");
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&record_at.to_le_bytes());
+            out.extend_from_slice(&1u32.to_le_bytes());
+            let mut gap = vec![b'G'; 5000];
+            let fake_at = (out.len() + 200) as u64;
+            gap[200..204].copy_from_slice(b"PK\x06\x06");
+            gap[204..212].copy_from_slice(&44u64.to_le_bytes());
+            gap[212..214].copy_from_slice(&45u16.to_le_bytes());
+            gap[214..216].copy_from_slice(&needed.to_le_bytes());
+            gap[216..224].copy_from_slice(&0u64.to_le_bytes());
+            gap[224..232].copy_from_slice(&(entries.len() as u64).to_le_bytes());
+            gap[232..240].copy_from_slice(&(entries.len() as u64).to_le_bytes());
+            gap[240..248].copy_from_slice(&(centrals.len() as u64).to_le_bytes());
+            gap[248..256].copy_from_slice(&(cd_offset as u64).to_le_bytes());
+            gap[256..260].copy_from_slice(b"PK\x06\x07");
+            gap[260..264].copy_from_slice(&0u32.to_le_bytes());
+            gap[264..272].copy_from_slice(&fake_at.to_le_bytes());
+            gap[272..276].copy_from_slice(&1u32.to_le_bytes());
+            out.extend_from_slice(&gap);
+            out.extend_from_slice(b"PK\x05\x06");
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&u16::MAX.to_le_bytes());
+            out.extend_from_slice(&u16::MAX.to_le_bytes());
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            return out;
+        }
+        body.extend_from_slice(&vec![b'G'; 2000]);
+        if shape != "clean" {
+            let ut_extra: &[u8] = b"\x55\x54\x05\x00\x01\x00\x00\x00\x00";
+            let order: Vec<usize> = if shape == "eqorder" {
+                (0..entries.len()).rev().collect()
+            } else {
+                (0..entries.len()).collect()
+            };
+            let mut fake_recs: Vec<u8> = Vec::new();
+            for i in order {
+                let (name, data) = entries[i];
+                let extra: &[u8] = if shape == "eqextra" { ut_extra } else { &[] };
+                let mut rec = plain_central(name, data, locals[i], extra);
+                if shape == "equncomp" {
+                    rec[24..28].copy_from_slice(&1u32.to_le_bytes());
+                }
+                if shape == "eqversion" {
+                    rec[4..6].copy_from_slice(&99u16.to_le_bytes());
+                }
+                fake_recs.extend_from_slice(&rec);
+            }
+            let plant_at = cd_offset as usize + 100;
+            body[plant_at..plant_at + fake_recs.len()].copy_from_slice(&fake_recs);
+            let eocd = plain_eocd(
+                entries.len() as u16,
+                fake_recs.len() as u32,
+                plant_at as u32,
+                0,
+                &[],
+            );
+            let eocd_at = plant_at + fake_recs.len();
+            body[eocd_at..eocd_at + 22].copy_from_slice(&eocd);
+        }
+        let real_cd = body.len() as u32;
+        let mut out = body;
+        out.extend_from_slice(&centrals);
+        out.extend_from_slice(&plain_eocd(
+            entries.len() as u16,
+            centrals.len() as u32,
+            real_cd,
+            0,
+            &[],
+        ));
+        out
+    }
+
+    #[test]
+    fn r41a_an_equal_set_plant_or_a_fake_zip64_pair_never_steers_the_container() {
+        // Round 41, F1 + F2 (red team RT41-A +
+        // RT41-B): an equal-offset-set plant differing
+        // from the real directory only in facts the
+        // round-40 comparison never read was judged
+        // as the container's directory, and a fake
+        // zip64 pair differing only in version-needed
+        // 99 was spliced into the prefix-free view,
+        // where the reader refused the good container
+        // outright. The compared facts take the whole
+        // record in walk order now, and the splice's
+        // pair choice validates the version
+        // consistency the reader judges: in every
+        // shape the real directory is judged — the
+        // disagreeing duplicate refuses in the
+        // standing words exactly as the clean control
+        // refuses, and the same shapes carrying one
+        // score load it.
+        let score_a = TINY_SCORE.replace("A Tiny Test Hymn", "First Test Hymn!");
+        let score_b = TINY_SCORE.replace("A Tiny Test Hymn", "Other Test Hymn!");
+        let filler = vec![b'A'; 2000];
+        for shape in [
+            "clean",
+            "eqorder",
+            "equncomp",
+            "eqextra",
+            "eqversion",
+            "fakepair99",
+            "fakepair45",
+        ] {
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"META-INF/container.xml", CONTAINER_FOR_SCORE),
+                (b"score.musicxml", score_a.as_bytes()),
+                (b"score.musicxml", score_b.as_bytes()),
+                (b"filler.bin", filler.as_slice()),
+            ];
+            let bytes = r41a_archive_mxl(&entries, shape);
+            let err = load_music(&bytes).expect_err("the disagreeing duplicate refuses");
+            assert!(
+                err.contains("two parts named score.musicxml"),
+                "{shape}: {err}"
+            );
+
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"META-INF/container.xml", CONTAINER_FOR_SCORE),
+                (b"score.musicxml", score_a.as_bytes()),
+                (b"filler.bin", filler.as_slice()),
+            ];
+            let bytes = r41a_archive_mxl(&entries, shape);
+            let (_xml, info) = load_music(&bytes).expect("the single score loads");
+            assert_eq!(info.title.as_deref(), Some("First Test Hymn!"), "{shape}");
+        }
+    }
 }

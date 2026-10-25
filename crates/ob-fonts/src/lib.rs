@@ -4079,4 +4079,221 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// The round-41 crafts (red team RT41-A +
+    /// RT41-B), assembled byte by byte over the
+    /// caller's Stored entries: the four equal-set
+    /// spellings — a fake directory in a 2,000-byte
+    /// gap before the real directory, declaring
+    /// exactly the real offset set, its records the
+    /// real ones in reverse walk order ("eqorder"),
+    /// with an uncompressed size of 1 ("equncomp"),
+    /// with a UT extra field ("eqextra"), or with a
+    /// version-made-by of 99 ("eqversion") — the
+    /// "clean" control on the same gapped layout, and
+    /// the fake zip64 pair spellings: a zip64 host
+    /// with a 5,000-byte locator-to-end-record gap
+    /// carrying a fake record+locator pair differing
+    /// from the real pair only in its version-needed
+    /// ("fakepair99" / "fakepair45").
+    fn r41a_archive_pack(entries: &[(&[u8], &[u8])], shape: &str) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries {
+            locals.push(body.len() as u32);
+            let crc = crc32_ieee(data);
+            body.extend_from_slice(b"PK\x03\x04");
+            body.extend_from_slice(&20u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&crc.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(name);
+            body.extend_from_slice(data);
+        }
+        let cd_offset = body.len() as u32;
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&plain_central(name, data, locals[i], &[]));
+        }
+        if shape.starts_with("fakepair") {
+            let needed: u16 = if shape == "fakepair99" { 99 } else { 45 };
+            let mut out = body;
+            out.extend_from_slice(&centrals);
+            let record_at = out.len() as u64;
+            out.extend_from_slice(b"PK\x06\x06");
+            out.extend_from_slice(&44u64.to_le_bytes());
+            out.extend_from_slice(&45u16.to_le_bytes());
+            out.extend_from_slice(&45u16.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            out.extend_from_slice(&(centrals.len() as u64).to_le_bytes());
+            out.extend_from_slice(&(cd_offset as u64).to_le_bytes());
+            out.extend_from_slice(b"PK\x06\x07");
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&record_at.to_le_bytes());
+            out.extend_from_slice(&1u32.to_le_bytes());
+            let mut gap = vec![b'G'; 5000];
+            let fake_at = (out.len() + 200) as u64;
+            gap[200..204].copy_from_slice(b"PK\x06\x06");
+            gap[204..212].copy_from_slice(&44u64.to_le_bytes());
+            gap[212..214].copy_from_slice(&45u16.to_le_bytes());
+            gap[214..216].copy_from_slice(&needed.to_le_bytes());
+            gap[216..224].copy_from_slice(&0u64.to_le_bytes());
+            gap[224..232].copy_from_slice(&(entries.len() as u64).to_le_bytes());
+            gap[232..240].copy_from_slice(&(entries.len() as u64).to_le_bytes());
+            gap[240..248].copy_from_slice(&(centrals.len() as u64).to_le_bytes());
+            gap[248..256].copy_from_slice(&(cd_offset as u64).to_le_bytes());
+            gap[256..260].copy_from_slice(b"PK\x06\x07");
+            gap[260..264].copy_from_slice(&0u32.to_le_bytes());
+            gap[264..272].copy_from_slice(&fake_at.to_le_bytes());
+            gap[272..276].copy_from_slice(&1u32.to_le_bytes());
+            out.extend_from_slice(&gap);
+            out.extend_from_slice(b"PK\x05\x06");
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&u16::MAX.to_le_bytes());
+            out.extend_from_slice(&u16::MAX.to_le_bytes());
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
+            out.extend_from_slice(&u32::MAX.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            return out;
+        }
+        body.extend_from_slice(&vec![b'G'; 2000]);
+        if shape != "clean" {
+            let ut_extra: &[u8] = b"\x55\x54\x05\x00\x01\x00\x00\x00\x00";
+            let order: Vec<usize> = if shape == "eqorder" {
+                (0..entries.len()).rev().collect()
+            } else {
+                (0..entries.len()).collect()
+            };
+            let mut fake_recs: Vec<u8> = Vec::new();
+            for i in order {
+                let (name, data) = entries[i];
+                let extra: &[u8] = if shape == "eqextra" { ut_extra } else { &[] };
+                let mut rec = plain_central(name, data, locals[i], extra);
+                if shape == "equncomp" {
+                    rec[24..28].copy_from_slice(&1u32.to_le_bytes());
+                }
+                if shape == "eqversion" {
+                    rec[4..6].copy_from_slice(&99u16.to_le_bytes());
+                }
+                fake_recs.extend_from_slice(&rec);
+            }
+            let plant_at = cd_offset as usize + 100;
+            body[plant_at..plant_at + fake_recs.len()].copy_from_slice(&fake_recs);
+            let eocd = plain_eocd(
+                entries.len() as u16,
+                fake_recs.len() as u32,
+                plant_at as u32,
+                0,
+                &[],
+            );
+            let eocd_at = plant_at + fake_recs.len();
+            body[eocd_at..eocd_at + 22].copy_from_slice(&eocd);
+        }
+        let real_cd = body.len() as u32;
+        let mut out = body;
+        out.extend_from_slice(&centrals);
+        out.extend_from_slice(&plain_eocd(
+            entries.len() as u16,
+            centrals.len() as u32,
+            real_cd,
+            0,
+            &[],
+        ));
+        out
+    }
+
+    #[test]
+    fn r41a_an_equal_set_plant_or_a_fake_zip64_pair_never_steers_the_pack() {
+        // Round 41, F1 + F2 (red team RT41-A +
+        // RT41-B): an equal-offset-set plant differing
+        // from the real directory only in facts the
+        // round-40 comparison never read was judged
+        // as the directory — at this door, the
+        // reversed-walk plant steered the canonical
+        // name to the Bold face (MyFont.ttf held Bold,
+        // Regular landed under the hashed name) —
+        // and a fake zip64 pair differing only in
+        // version-needed 99 was spliced into the
+        // prefix-free view, where the reader refused
+        // the good pack outright. The compared facts
+        // take the whole record in walk order now, and
+        // the splice's pair choice validates the
+        // version consistency the reader judges: in
+        // every shape both faces land as the clean
+        // control lands them — Regular under the clean
+        // name, Bold under its hashed name — and the
+        // single-face shapes land Regular.
+        let regular = bundled("LiberationSans-Regular.ttf");
+        let bold = bundled("LiberationSans-Bold.ttf");
+        let filler = vec![b'A'; 2000];
+        for shape in [
+            "clean",
+            "eqorder",
+            "equncomp",
+            "eqextra",
+            "eqversion",
+            "fakepair99",
+            "fakepair45",
+        ] {
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"MyFont.ttf", &regular),
+                (b"MyFont.ttf", &bold),
+                (b"filler.bin", filler.as_slice()),
+            ];
+            let bytes = r41a_archive_pack(&entries, shape);
+            let dir = temp_dir(&format!("r41a-{shape}"));
+            let lib = FontLibrary::open(dir.clone()).expect("open");
+            let results = lib.add_zip_bytes(&bytes);
+            assert_eq!(
+                results.len(),
+                2,
+                "{shape}: one result per copy: {results:?}"
+            );
+            let first = results[0].as_ref().expect("the first copy lands");
+            let second = results[1].as_ref().expect("the second copy lands");
+            assert_eq!(first.file_name, "MyFont.ttf", "{shape}");
+            assert_eq!(
+                first.sha256,
+                inspect(&regular, "MyFont.ttf")
+                    .expect("inspect regular")
+                    .sha256,
+                "{shape}: the canonical name holds the Regular face"
+            );
+            let bold_info = inspect(&bold, "MyFont.ttf").expect("inspect bold");
+            assert_eq!(second.sha256, bold_info.sha256, "{shape}");
+            let short: String = bold_info.sha256.chars().take(8).collect();
+            assert_eq!(second.file_name, format!("MyFont.ttf-{short}"), "{shape}");
+            assert_eq!(lib.read(first).expect("read first"), regular, "{shape}");
+            assert_eq!(lib.read(second).expect("read second"), bold, "{shape}");
+            let _ = std::fs::remove_dir_all(&dir);
+
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"MyFont.ttf", &regular),
+                (b"filler.bin", filler.as_slice()),
+            ];
+            let bytes = r41a_archive_pack(&entries, shape);
+            let dir = temp_dir(&format!("r41a-single-{shape}"));
+            let lib = FontLibrary::open(dir.clone()).expect("open");
+            let results = lib.add_zip_bytes(&bytes);
+            assert_eq!(
+                results.len(),
+                1,
+                "{shape}: the single face lands: {results:?}"
+            );
+            let first = results[0].as_ref().expect("the single face lands");
+            assert_eq!(first.file_name, "MyFont.ttf", "{shape}");
+            assert_eq!(lib.read(first).expect("read single"), regular, "{shape}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
 }

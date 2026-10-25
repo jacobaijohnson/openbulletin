@@ -199,6 +199,29 @@
 //! directory, and a plant standing in the gap is
 //! spliced away with it.
 //!
+//! Round 41, F1 + F2: the round-40 equal-set rule's
+//! compared facts took only a record's name and spot,
+//! grouped per local offset, so a plant declaring
+//! exactly the real directory's offset set escaped
+//! wherever it differed only in a fact that
+//! comparison never read — the walk order across
+//! offsets, the uncompressed size, an extra field,
+//! the version-made-by. The compared facts take the
+//! whole record now, compared as sequences in walk
+//! order, so mirror-standing is confined to
+//! candidates whose records agree in every field and
+//! in their order. And the round-40 splice chose
+//! between zip64 record+locator pairs on fields it
+//! never validated: a fake pair in the
+//! locator-to-end-record gap differing from the real
+//! pair only in a version-needed of 99 was laid into
+//! the view, and the reader — which refuses a zip64
+//! record whose version-needed exceeds its
+//! version-made-by — then refused the good archive
+//! at every door. The splice's pair choice validates
+//! that version consistency now, so the view carries
+//! a pair the reader will judge.
+//!
 //! This lives in ob-model, the lowest crate every zip
 //! door can reach, stated over raw bytes the way
 //! `read_capped` is stated over `Read`, so this crate
@@ -1149,21 +1172,52 @@ fn directory_local_offsets(bytes: &[u8], directory: &CentralDirectory) -> Vec<u6
     offsets
 }
 
+/// One central record's whole judged fact (round 41,
+/// F1): everything the doors or the zip reader can
+/// read out of the record — the decoded name and its
+/// raw bytes, the spot (method, compressed size,
+/// checksum, local offset in the file's own
+/// coordinates, the sizes and offset resolved through
+/// the zip64 extra field), the versions made by and
+/// needed, the flags, the modification time and
+/// date, the declared uncompressed size, the disk
+/// the entry starts on, the internal and external
+/// attributes, and the raw extra and comment fields.
+/// The round-40 fact carried only the name and the
+/// spot, so a plant differing in any other field —
+/// or only in the walk's order — read as an exact
+/// mirror of the real directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordFact {
+    name: String,
+    spot: CentralSpot,
+    version_made_by: u16,
+    version_needed: u16,
+    flags: u16,
+    mod_time: u16,
+    mod_date: u16,
+    uncomp_size: u32,
+    disk_start: u16,
+    internal_attrs: u16,
+    external_attrs: u32,
+    name_bytes: Vec<u8>,
+    extra: Vec<u8>,
+    comment: Vec<u8>,
+}
+
 /// Every judged fact one candidate's walk declares,
-/// record by record, in walk order: the decoded name
-/// and the spot (method, compressed size, checksum,
-/// local offset in the file's own coordinates) of
-/// each record its directory holds. Two candidates
-/// over one body of local headers are told apart by
-/// these facts where their offset sets agree (round
-/// 40, F4): a planted directory whose records rename
-/// an entry, invent one at an offset already named,
-/// or truncate a declared size declares the same
-/// offsets as the real directory and different facts.
-fn directory_record_facts(
-    bytes: &[u8],
-    directory: &CentralDirectory,
-) -> Vec<(String, CentralSpot)> {
+/// record by record, in walk order: the whole record
+/// (`RecordFact`) of each record its directory holds.
+/// Two candidates over one body of local headers are
+/// told apart by these facts where their offset sets
+/// agree (round 40, F4, completed round 41, F1): a
+/// planted directory whose records rename an entry,
+/// invent one at an offset already named, truncate a
+/// declared size, reorder the walk, rewrite an
+/// uncompressed size or an extra field, or restate a
+/// version declares the same offsets as the real
+/// directory and different facts.
+fn directory_record_facts(bytes: &[u8], directory: &CentralDirectory) -> Vec<RecordFact> {
     let mut facts = Vec::new();
     let mut at = directory.cd_start;
     for _ in 0..directory.total {
@@ -1194,7 +1248,26 @@ fn directory_record_facts(
         let name = decode_entry_name(&bytes[header_end..name_end], flags);
         let mut spot = raw_spot(header, extra);
         spot.local_offset = spot.local_offset.saturating_add(directory.archive_offset);
-        facts.push((name, spot));
+        let fact = RecordFact {
+            name,
+            spot,
+            version_made_by: u16_at(bytes, at + 4),
+            version_needed: u16_at(bytes, at + 6),
+            flags,
+            mod_time: u16_at(bytes, at + 12),
+            mod_date: u16_at(bytes, at + 14),
+            uncomp_size: u32_at(bytes, at + 24),
+            disk_start: u16_at(bytes, at + 34),
+            internal_attrs: u16_at(bytes, at + 36),
+            external_attrs: u32_at(bytes, at + 38),
+            name_bytes: bytes[header_end..name_end].to_vec(),
+            extra: extra.to_vec(),
+            comment: bytes
+                .get(extra_end..extra_end + comment_len)
+                .unwrap_or(&[])
+                .to_vec(),
+        };
+        facts.push(fact);
         match extra_end.checked_add(comment_len) {
             Some(next) => at = next,
             None => break,
@@ -1204,38 +1277,25 @@ fn directory_record_facts(
 }
 
 /// Whether two candidates' record facts disagree in
-/// any judged fact, compared per local offset (round
-/// 40, F4): for every offset the first candidate
-/// declares, the records it declares there — their
-/// count, order, names, and spots — against the
-/// records the second declares there. An exact
-/// mirror (no offset's records differ) does not
+/// any judged fact (round 40, F4, completed round
+/// 41, F1): the two walks compared as sequences, in
+/// walk order, whole record against whole record —
+/// a disagreement in any record's any field, or the
+/// same records standing in a different walk order,
+/// is a disagreement. The round-40 comparison
+/// grouped the records per local offset and read
+/// only the name and the spot, so a plant that
+/// merely reordered the walk across offsets, or
+/// rewrote a field it never read, grouped identically
+/// to the real directory. An exact mirror (the same
+/// whole records in the same order) does not
 /// disagree: it judges identically whichever
 /// candidate stands, so subordinating it would cost
 /// the standing mirror disciplines (an appended or
 /// comment-planted copy over a duplicate-free body)
 /// their real candidate for nothing.
-fn record_facts_differ(mine: &[(String, CentralSpot)], theirs: &[(String, CentralSpot)]) -> bool {
-    if mine.len() != theirs.len() {
-        return true;
-    }
-    let mut offsets: Vec<u64> = Vec::new();
-    for (_, spot) in mine.iter().chain(theirs.iter()) {
-        if !offsets.contains(&spot.local_offset) {
-            offsets.push(spot.local_offset);
-        }
-    }
-    offsets.iter().any(|offset| {
-        let mine_at: Vec<&(String, CentralSpot)> = mine
-            .iter()
-            .filter(|(_, spot)| spot.local_offset == *offset)
-            .collect();
-        let theirs_at: Vec<&(String, CentralSpot)> = theirs
-            .iter()
-            .filter(|(_, spot)| spot.local_offset == *offset)
-            .collect();
-        mine_at != theirs_at
-    })
+fn record_facts_differ(mine: &[RecordFact], theirs: &[RecordFact]) -> bool {
+    mine != theirs
 }
 
 /// Whether the gap fill of the candidate owning
@@ -1249,14 +1309,15 @@ fn record_facts_differ(mine: &[(String, CentralSpot)], theirs: &[(String, Centra
 /// strict-superset guard that keeps an appended
 /// second directory from swallowing the real one),
 /// or the two candidates' records differ in any
-/// judged fact for the offsets they share, in which
+/// judged fact — the whole records, compared as
+/// sequences in walk order (round 41, F1) — in which
 /// case the plant is a rewriting of the owner's
 /// records, not a copy of them.
 fn gap_fill_subordinates(
     plant_offsets: &[u64],
-    plant_facts: &[(String, CentralSpot)],
+    plant_facts: &[RecordFact],
     owner_offsets: &[u64],
-    owner_facts: &[(String, CentralSpot)],
+    owner_facts: &[RecordFact],
 ) -> bool {
     if !plant_offsets
         .iter()
@@ -1476,6 +1537,16 @@ fn zip64_structural_span(
 /// declared offset set equals the owner's, while an
 /// exact mirror — no judged fact differing — judges
 /// identically either way and may stand.
+///
+/// Round 41, F1: the judged facts are the whole
+/// record now, compared as sequences in walk order
+/// (see `RecordFact`): a candidate in the extent
+/// whose records differ from the extent owner's in
+/// any field of any record — the walk order itself
+/// included — is subordinated even where every
+/// round-40 fact agreed, and mirror-standing is
+/// confined to candidates whose whole records agree
+/// in every field and in their order.
 pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
     judged_directory(bytes).map(|(_, directory)| directory)
 }
@@ -1549,7 +1620,7 @@ fn judged_directory(bytes: &[u8]) -> Option<(usize, CentralDirectory)> {
         .iter()
         .map(|(_, _, _, directory)| directory_local_offsets(bytes, directory))
         .collect();
-    let record_facts: Vec<Vec<(String, CentralSpot)>> = derived
+    let record_facts: Vec<Vec<RecordFact>> = derived
         .iter()
         .map(|(_, _, _, directory)| directory_record_facts(bytes, directory))
         .collect();
@@ -1600,23 +1671,28 @@ fn judged_directory(bytes: &[u8]) -> Option<(usize, CentralDirectory)> {
                     // directory that accounts for them
                     // all is not inside its fill) or a
                     // record-level disagreement in any
-                    // judged fact for the offsets they
-                    // share (round 40, F4: a plant whose
-                    // declared offset set *equals* the
-                    // real directory's, renaming an
+                    // judged fact (round 40, F4, completed
+                    // round 41, F1: the facts are the
+                    // whole records, compared as
+                    // sequences in walk order — a plant
+                    // whose declared offset set *equals*
+                    // the real directory's, renaming an
                     // entry, inventing one at a named
-                    // offset, or truncating a declared
-                    // size, is the extent owner's bytes,
+                    // offset, truncating a declared size,
+                    // reordering the walk, or rewriting
+                    // a field beyond the name and the
+                    // spot, is the extent owner's bytes,
                     // not its directory). A second
                     // directory that mirrors the real
                     // one's records exactly — same
-                    // offsets, no judged fact differing
-                    // (an appended or comment-planted
-                    // copy over a body with no
-                    // duplicates) — is subordinated by
-                    // neither arm: it judges identically
-                    // to the real one either way, and
-                    // its fill swallows nothing.
+                    // offsets, the same whole records in
+                    // the same order (an appended or
+                    // comment-planted copy over a body
+                    // with no duplicates) — is
+                    // subordinated by neither arm: it
+                    // judges identically to the real one
+                    // either way, and its fill swallows
+                    // nothing.
                     || (walked_extents[j]
                         .is_some_and(|(start, end)| *at >= start && *at < end)
                         && gap_fill_subordinates(
@@ -1717,13 +1793,23 @@ fn tail_layout(bytes: &[u8], eocd: usize, directory: &CentralDirectory) -> Optio
 /// `record_at` when it is the judged directory's own
 /// record: the locator at `locator_at` declares it at
 /// `declared_record`, its disk fields agree, its
-/// fields name the judged directory (its total, and
-/// its directory offset read through the judged
-/// archive offset landing on the judged directory's
-/// start, its directory size the walk's length,
-/// counted signature record included or not), and
-/// its declared length ends at or before the
-/// locator.
+/// version fields are consistent the way the zip
+/// reader judges them (round 41, F2: the reader
+/// refuses a zip64 record whose version-needed
+/// exceeds its version-made-by, so a record carrying
+/// that inconsistency is not a pair the splice may
+/// lay into the view — a fake pair standing in the
+/// locator-to-end-record gap, field-identical to the
+/// real pair except a version-needed of 99 against a
+/// version-made-by of 45, was the pair the splice
+/// chose, and the reader then refused the good
+/// archive at every door), its fields name the judged
+/// directory (its total, and its directory offset
+/// read through the judged archive offset landing on
+/// the judged directory's start, its directory size
+/// the walk's length, counted signature record
+/// included or not), and its declared length ends at
+/// or before the locator.
 fn zip64_record_layout_at(
     bytes: &[u8],
     record_at: usize,
@@ -1746,6 +1832,9 @@ fn zip64_record_layout_at(
         return None;
     }
     if !zip64_disk_fields_agree(bytes, record_at, locator_at) {
+        return None;
+    }
+    if u16_at(bytes, record_at + 14) > u16_at(bytes, record_at + 12) {
         return None;
     }
     let archive_offset = u64::try_from(record_at)
@@ -4332,5 +4421,343 @@ mod tests {
         assert_eq!(spots[0].0, "a.txt", "mirror");
         assert_eq!(spots[0].1.comp_size, 9, "mirror");
         assert_eq!(payload_span(&bytes, &spots[0].1), Some((35, 44)), "mirror");
+    }
+
+    /// One central record in the round-41 crafters'
+    /// shape: like `r40a_central`, with the extra
+    /// field stated outright (the eqextra plant
+    /// carries a UT extra field the real records do
+    /// not).
+    fn r41a_central(
+        name: &[u8],
+        local_offset: u32,
+        comp: u32,
+        uncomp: u32,
+        extra: &[u8],
+    ) -> Vec<u8> {
+        let mut rec: Vec<u8> = Vec::new();
+        rec.extend_from_slice(b"PK\x01\x02");
+        rec.extend_from_slice(&45u16.to_le_bytes());
+        rec.extend_from_slice(&20u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u32.to_le_bytes());
+        rec.extend_from_slice(&comp.to_le_bytes());
+        rec.extend_from_slice(&uncomp.to_le_bytes());
+        rec.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        rec.extend_from_slice(&(extra.len() as u16).to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u32.to_le_bytes());
+        rec.extend_from_slice(&local_offset.to_le_bytes());
+        rec.extend_from_slice(name);
+        rec.extend_from_slice(extra);
+        rec
+    }
+
+    /// The round-41 equal-set crafts (red team
+    /// RT41-A), assembled byte by byte over the
+    /// caller's Stored entries: a 2,000-byte gap
+    /// between the last entry's payload and the real
+    /// directory, and inside the gap a fake directory
+    /// (at gap head + 100) whose records declare
+    /// exactly the real directory's local-offset set
+    /// — one record per real entry — differing from
+    /// the real records in exactly one fact the
+    /// round-40 comparison never read: "eqorder" the
+    /// real records in reverse walk order, "equncomp"
+    /// an uncompressed size of 1 on every record,
+    /// "eqextra" a UT extra field on every record,
+    /// "eqversion" a version-made-by of 99 on every
+    /// record. "mirror" carries byte-identical copies
+    /// of the real records; "clean" carries no plant.
+    /// Returns the bytes and the real directory's
+    /// start.
+    fn r41a_gap_archive(entries: &[(&[u8], &[u8])], shape: &str) -> (Vec<u8>, usize) {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries {
+            locals.push(body.len() as u32);
+            body.extend_from_slice(&r40a_local(name, data));
+        }
+        let plant_at = body.len() + 100;
+        body.extend_from_slice(&vec![b'G'; 2000]);
+        if shape != "clean" {
+            let ut_extra: &[u8] = b"\x55\x54\x05\x00\x01\x00\x00\x00\x00";
+            let order: Vec<usize> = if shape == "eqorder" {
+                (0..entries.len()).rev().collect()
+            } else {
+                (0..entries.len()).collect()
+            };
+            let mut fake_recs: Vec<u8> = Vec::new();
+            for i in order {
+                let (name, data) = entries[i];
+                let uncomp = if shape == "equncomp" {
+                    1
+                } else {
+                    data.len() as u32
+                };
+                let extra: &[u8] = if shape == "eqextra" { ut_extra } else { &[] };
+                let mut rec = r41a_central(name, locals[i], data.len() as u32, uncomp, extra);
+                if shape == "eqversion" {
+                    rec[4..6].copy_from_slice(&99u16.to_le_bytes());
+                }
+                fake_recs.extend_from_slice(&rec);
+            }
+            body[plant_at..plant_at + fake_recs.len()].copy_from_slice(&fake_recs);
+            let eocd = plain_eocd(
+                entries.len() as u16,
+                fake_recs.len() as u32,
+                plant_at as u32,
+                0,
+                &[],
+            );
+            let eocd_at = plant_at + fake_recs.len();
+            body[eocd_at..eocd_at + 22].copy_from_slice(&eocd);
+        }
+        let cd_start = body.len();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&r41a_central(
+                name,
+                locals[i],
+                data.len() as u32,
+                data.len() as u32,
+                &[],
+            ));
+        }
+        let cd_size = centrals.len() as u32;
+        body.extend_from_slice(&centrals);
+        body.extend_from_slice(&plain_eocd(
+            entries.len() as u16,
+            cd_size,
+            cd_start as u32,
+            0,
+            &[],
+        ));
+        (body, cd_start)
+    }
+
+    #[test]
+    fn r41a_an_equal_offset_set_plant_differing_only_in_unread_facts_never_steers() {
+        // Round 41, F1 (red team RT41-A): the round-40
+        // equal-set rule compared, per local offset,
+        // only the decoded name and the spot (method,
+        // compressed size, checksum, local offset), so
+        // a plant declaring exactly the real
+        // directory's offset set escaped it wherever
+        // it differed only in a fact that comparison
+        // never read — the walk order itself, the
+        // uncompressed size, an extra field, or the
+        // version-made-by — and was judged as the
+        // archive's directory (at the fonts door,
+        // steering the canonical name to the other
+        // face). The compared facts take the whole
+        // record now, in walk order: the real
+        // directory is judged in every spelling, on a
+        // duplicate-bearing entry set and a
+        // duplicate-free one alike. The byte-identical
+        // mirror plant still carries no disagreement,
+        // so it may stand — its judged facts are the
+        // real directory's, stated outright either way.
+        let filler: &[u8] = &[b'A'; 600];
+        let entry_sets: [Vec<(&[u8], &[u8])>; 2] = [
+            vec![
+                (b"a.txt", b"first copy"),
+                (b"a.txt", b"second copy!"),
+                (b"filler.bin", filler),
+            ],
+            vec![(b"a.txt", b"first copy"), (b"filler.bin", filler)],
+        ];
+        for entries in &entry_sets {
+            for shape in ["clean", "eqorder", "equncomp", "eqextra", "eqversion"] {
+                let (bytes, cd_start) = r41a_gap_archive(entries, shape);
+                let directory = central_directory(&bytes).expect("the real directory derives");
+                assert_eq!(directory.archive_offset, 0, "{shape}");
+                assert_eq!(directory.total, entries.len() as u64, "{shape}");
+                assert_eq!(directory.cd_start, cd_start, "{shape}");
+                let spots = central_spots(&bytes);
+                let names: Vec<&str> = spots.iter().map(|(name, _)| name.as_str()).collect();
+                let want_names: Vec<&str> = entries
+                    .iter()
+                    .map(|(name, _)| std::str::from_utf8(name).expect("name"))
+                    .collect();
+                assert_eq!(names, want_names, "{shape}: the real walk order");
+                for (i, (_, data)) in entries.iter().enumerate() {
+                    assert_eq!(
+                        spots[i].1.comp_size,
+                        data.len() as u64,
+                        "{shape}: record {i} is the real one"
+                    );
+                    let span = payload_span(&bytes, &spots[i].1).expect("the payload reads back");
+                    assert_eq!(&bytes[span.0..span.1], *data, "{shape}: record {i}");
+                }
+            }
+            let (clean, _) = r41a_gap_archive(entries, "clean");
+            let (mirror, _) = r41a_gap_archive(entries, "mirror");
+            let directory = central_directory(&mirror).expect("a directory derives");
+            assert_eq!(directory.total, entries.len() as u64, "mirror");
+            assert_eq!(
+                central_spots(&mirror),
+                central_spots(&clean),
+                "mirror: the judged facts are the real directory's either way"
+            );
+        }
+    }
+
+    /// The round-41 fake-pair crafts (red team
+    /// RT41-B), assembled byte by byte over the
+    /// caller's Stored entries: a zip64 host whose
+    /// locator-to-end-record gap is 5,000 bytes, with
+    /// — where `fake_needed` is set — a fake zip64
+    /// record+locator pair standing in that gap at
+    /// offset 200, the fake record field-identical to
+    /// the real one except its version-needed, which
+    /// the fake locator declares at its own position.
+    /// Returns the bytes, the real directory's start,
+    /// and the directory walk's end.
+    fn r41a_fakepair_archive(
+        entries: &[(&[u8], &[u8])],
+        fake_needed: Option<u16>,
+    ) -> (Vec<u8>, usize, usize) {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries {
+            locals.push(body.len() as u32);
+            body.extend_from_slice(&r40a_local(name, data));
+        }
+        let cd_start = body.len();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&r41a_central(
+                name,
+                locals[i],
+                data.len() as u32,
+                data.len() as u32,
+                &[],
+            ));
+        }
+        let cd_len = centrals.len();
+        let mut out = body;
+        out.extend_from_slice(&centrals);
+        let record_at = out.len() as u64;
+        out.extend_from_slice(b"PK\x06\x06");
+        out.extend_from_slice(&44u64.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(cd_len as u64).to_le_bytes());
+        out.extend_from_slice(&(cd_start as u64).to_le_bytes());
+        out.extend_from_slice(b"PK\x06\x07");
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_at.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        let mut gap = vec![b'G'; 5000];
+        if let Some(needed) = fake_needed {
+            let fake_at = out.len() + 200;
+            let mut fake_rec: Vec<u8> = Vec::new();
+            fake_rec.extend_from_slice(b"PK\x06\x06");
+            fake_rec.extend_from_slice(&44u64.to_le_bytes());
+            fake_rec.extend_from_slice(&45u16.to_le_bytes());
+            fake_rec.extend_from_slice(&needed.to_le_bytes());
+            fake_rec.extend_from_slice(&0u32.to_le_bytes());
+            fake_rec.extend_from_slice(&0u32.to_le_bytes());
+            fake_rec.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            fake_rec.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            fake_rec.extend_from_slice(&(cd_len as u64).to_le_bytes());
+            fake_rec.extend_from_slice(&(cd_start as u64).to_le_bytes());
+            gap[200..200 + fake_rec.len()].copy_from_slice(&fake_rec);
+            let fake_loc_at = 200 + fake_rec.len();
+            gap[fake_loc_at..fake_loc_at + 4].copy_from_slice(b"PK\x06\x07");
+            gap[fake_loc_at + 4..fake_loc_at + 8].copy_from_slice(&0u32.to_le_bytes());
+            gap[fake_loc_at + 8..fake_loc_at + 16].copy_from_slice(&(fake_at as u64).to_le_bytes());
+            gap[fake_loc_at + 16..fake_loc_at + 20].copy_from_slice(&1u32.to_le_bytes());
+        }
+        out.extend_from_slice(&gap);
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        (out, cd_start, cd_start + cd_len)
+    }
+
+    #[test]
+    fn r41a_the_splice_never_lays_a_fake_zip64_pair_into_the_prefix_free_view() {
+        // Round 41, F2 (red team RT41-B): the
+        // prefix-free splice chose between zip64
+        // record+locator pairs on fields it never
+        // validated, so a fake pair standing in the
+        // locator-to-end-record gap, differing from
+        // the real pair only in a version-needed of
+        // 99 (against a version-made-by of 45), was
+        // the pair laid into the view — and the zip
+        // reader, which refuses a zip64 record whose
+        // version-needed exceeds its version-made-by,
+        // then refused the good archive at every door.
+        // The splice's pair choice validates that pair
+        // consistency now: the view carries the real
+        // pair in every shape, the version-needed = 45
+        // fake pair (field-identical to the real one)
+        // serves as the standing control, and the
+        // judged directory is the real one throughout.
+        let filler: &[u8] = &[b'A'; 600];
+        let entries: [(&[u8], &[u8]); 3] = [
+            (b"a.txt", b"first copy"),
+            (b"a.txt", b"second copy!"),
+            (b"filler.bin", filler),
+        ];
+        for fake_needed in [None, Some(45u16), Some(99u16)] {
+            let label = match fake_needed {
+                None => "clean-gap".to_string(),
+                Some(needed) => format!("fakepair{needed}"),
+            };
+            let (bytes, cd_start, walk_end) = r41a_fakepair_archive(&entries, fake_needed);
+            let directory = central_directory(&bytes).expect("the real directory derives");
+            assert_eq!(directory.cd_start, cd_start, "{label}");
+            assert_eq!(directory.total, 3, "{label}");
+            let view = prefix_free(&bytes);
+            assert_eq!(
+                view.len(),
+                walk_end + 56 + 20 + 22,
+                "{label}: the spliced view is the walk, the pair, and the end record"
+            );
+            let view_directory = central_directory(&view).expect("the view derives its directory");
+            assert_eq!(view_directory.cd_start, cd_start, "{label}");
+            assert_eq!(view_directory.total, 3, "{label}");
+            assert_eq!(central_spots(&view), central_spots(&bytes), "{label}");
+            // Every zip64 record standing in the view
+            // is a pair the reader will judge: its
+            // version-needed does not exceed its
+            // version-made-by.
+            let mut records = 0usize;
+            let mut at = 0usize;
+            while at + 16 <= view.len() {
+                if view[at..].starts_with(b"PK\x06\x06") {
+                    records += 1;
+                    let made = u16::from_le_bytes([view[at + 12], view[at + 13]]);
+                    let needed = u16::from_le_bytes([view[at + 14], view[at + 15]]);
+                    assert!(
+                        needed <= made,
+                        "{label}: the view's zip64 record declares \
+                         version-needed {needed} against version-made-by {made}"
+                    );
+                }
+                at += 1;
+            }
+            assert_eq!(
+                records, 1,
+                "{label}: exactly the real record stands in the view"
+            );
+        }
     }
 }

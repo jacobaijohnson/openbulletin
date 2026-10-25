@@ -2141,12 +2141,18 @@ fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
 /// companion groups and the sequence walks'
 /// separations aside, a plain date stands directly
 /// after the run the group belongs to, and the
-/// group does not stand inside a Sunday-after
-/// phrase whose base has not yet been written —
-/// after the phrase's "after", or after a "Sunday
-/// ... after" head the base has not followed — nor
-/// in base-trailing company (its nearest preceding
-/// plain date the phrase's consumed base).
+/// group does not stand after a "Sunday ... after"
+/// head the base has not followed — nor in
+/// base-trailing company (its nearest preceding
+/// plain date the phrase's consumed base). Round
+/// 40 (R40-D, F5): a group standing after the
+/// phrase's own "after", with the base standing
+/// after the group's run, is the Sunday-after
+/// interior slot, judged since that round (see
+/// the interior test in the body); the head guard
+/// above it is the split position's and the
+/// before-phrase shapes', where no plain date
+/// follows the group.
 fn midline_governor_before_plain_date(
     text: &str,
     spans: &[(usize, usize)],
@@ -2160,16 +2166,68 @@ fn midline_governor_before_plain_date(
         .into_iter()
         .filter(|w| !w.is_empty())
         .collect();
-    if words.last().is_some_and(|w| w == "after") {
-        return false;
+    // Round 40 (R40-D, F5): the Sunday-after
+    // interior slot is no longer held by the
+    // open-phrase guard below. Round 40 graded the
+    // carried neighbour (synthesis adjudication 4):
+    // governor contents standing between the
+    // phrase's "after" and its base are judged as a
+    // governor in every dress, so a governor group
+    // there unwraps as at every other mid-line slot
+    // this pass judges — subject to the same checks
+    // below (the base-trailing test, and a plain
+    // date standing after the group's run: a
+    // weekday-bearing base fails that test as it
+    // does at every mid-line slot, so the
+    // weekday-bearing family at this slot keeps its
+    // standing refusal). The slot is read off the
+    // prefix's PLAIN words (the text between its
+    // spans, as `group_split_sunday_after_phrase`
+    // tokenizes them), so a companion group
+    // standing in the run before this group
+    // ("Sunday after (Monday)(cancelled) ...")
+    // contributes no word to the prefix: the
+    // phrase's "Sunday" stands immediately before
+    // its "after", and nothing but the framing
+    // stack ("the" / "on") stands between that
+    // "after" and this group's run.
+    let mut plain_words: Vec<String> = Vec::new();
+    let mut seg_start = 0usize;
+    for &(s, e) in &spans[..idx] {
+        plain_words.extend(
+            text[seg_start..s]
+                .split_whitespace()
+                .map(group_token)
+                .filter(|w| !w.is_empty()),
+        );
+        seg_start = e;
     }
-    if let Some(after_pos) = words.iter().rposition(|w| w == "after") {
-        let sunday_before = words[..after_pos].iter().any(|w| w == "sunday");
-        let base_after = words[after_pos + 1..]
-            .iter()
-            .any(|w| word_at_is_month(w, 0));
-        if sunday_before && !base_after {
+    plain_words.extend(
+        text[seg_start..start]
+            .split_whitespace()
+            .map(group_token)
+            .filter(|w| !w.is_empty()),
+    );
+    let interior = plain_words
+        .iter()
+        .rposition(|w| w == "after")
+        .is_some_and(|p| {
+            p > 0
+                && plain_words[p - 1] == "sunday"
+                && plain_words[p + 1..].iter().all(|w| w == "the" || w == "on")
+        });
+    if !interior {
+        if words.last().is_some_and(|w| w == "after") {
             return false;
+        }
+        if let Some(after_pos) = words.iter().rposition(|w| w == "after") {
+            let sunday_before = words[..after_pos].iter().any(|w| w == "sunday");
+            let base_after = words[after_pos + 1..]
+                .iter()
+                .any(|w| word_at_is_month(w, 0));
+            if sunday_before && !base_after {
+                return false;
+            }
         }
     }
     if nearest_date_is_sunday_after_base(prefix, today) {
@@ -2194,7 +2252,22 @@ fn midline_governor_before_plain_date(
         return false;
     }
     let tokens: Vec<&str> = rest.split_whitespace().collect();
-    parse_date_prefix(&tokens, today).is_some()
+    // Round 40 (R40-D, F5): at the interior slot
+    // the base may wear its framing stack ("the" /
+    // "on" standing between the group and the base
+    // is the base's own dress, as the split-phrase
+    // guard's base reading allows it), so the plain
+    // date is read past the stack there. At every
+    // other slot the standing test is untouched.
+    let skip = if interior {
+        tokens
+            .iter()
+            .take_while(|t| matches!(group_token(t).as_str(), "the" | "on"))
+            .count()
+    } else {
+        0
+    };
+    parse_date_prefix(&tokens[skip..], today).is_some()
 }
 
 /// `text` with a trailing-slot or mid-line governor
@@ -2263,27 +2336,38 @@ fn midline_governor_before_plain_date(
 /// that very lapsing twin — "notes cancelled
 /// (Monday) November 1, 2026" — and the line serves
 /// as it served); at the Sunday-after phrase's
-/// interior positions (the split position, where no
-/// plain date follows the group, and a group
-/// standing after the phrase's "after" with the
-/// base not yet standing, held by the open-phrase
-/// guard in `midline_governor_before_plain_date` —
-/// the carried neighbour whose wrapped form serves
-/// the base is not this batch's to move); and a
-/// group followed by more words at the line's end,
-/// which is not the trailing slot (the run must
-/// close the line, as the walks define it). A group
-/// holding a date, a weekday, or inert words alone
-/// is not this pass's either (see
-/// `governor_group_words`), at any slot, exactly as
-/// at the leading slot since R38-D; a group whose
-/// contents mix a governor phrase with other words
-/// is this pass's since R39-H2, at the slots this
-/// pass already judges and no others — the slot
-/// guards above (the base-trailing exclusion, the
-/// open-phrase guard, the trailing run closing the
+/// split position, where no plain date follows the
+/// group; and a group followed by more words at
+/// the line's end, which is not the trailing slot
+/// (the run must close the line, as the walks
+/// define it). A group holding a date, a weekday,
+/// or inert words alone is not this pass's either
+/// (see `governor_group_words`), at any slot,
+/// exactly as at the leading slot since R38-D; a
+/// group whose contents mix a governor phrase with
+/// other words is this pass's since R39-H2, at the
+/// slots this pass already judges and no others —
+/// the slot guards above (the base-trailing
+/// exclusion, the open-phrase guard outside the
+/// interior slot, the trailing run closing the
 /// line) are untouched, so the impure dress moves
-/// only where the pure dress already moved.
+/// only where the pure dress already moved. Round
+/// 40 (R40-D, F5, adjudication 4): the Sunday-after
+/// interior slot — a governor group standing
+/// between the phrase's "after" and its base, in
+/// every dress (spaced, glued on either or both
+/// sides, any pair, impure contents, framing words
+/// on either side of the group) — is a slot this
+/// pass judges since that round: the open-phrase
+/// guard in `midline_governor_before_plain_date`
+/// no longer holds it, and the unwrapped line is
+/// its bare-governor twin, which reads nothing.
+/// The inert group at the slot is not this pass's
+/// (see `governor_group_words`) and keeps serving
+/// the base; a weekday-bearing base fails the
+/// pass's plain-date test as at every mid-line
+/// slot, so that family keeps its standing
+/// refusal with its record.
 fn unwrapped_trailing_or_midline_governor_group(text: &str, today: SimpleDate) -> Option<String> {
     let spans = balanced_spans(text);
     if spans.is_empty() {
@@ -7467,6 +7551,76 @@ pub(super) fn composition_segment_weekday_mismatch(
     None
 }
 
+/// `text` with every fully quote-wrapped DATE
+/// group re-dressed as its paren twin — the
+/// opening quote character replaced by "(" and the
+/// closing quote by ")" — when any stand (round
+/// 40, R40-D, F6 = red team RT40-B). A quoted span
+/// is a group here only when its whole contents
+/// parse as a date under the guard's own judgment
+/// (`group_date`, the judgment
+/// `group_split_sunday_after_phrase` applies to a
+/// bracket group's contents): a quoted weekday, a
+/// quoted governor, and every other quoted span
+/// keep their bytes, so this pass cannot mint a
+/// group for any other reader's contents class.
+/// The quote family is the standing one — straight
+/// "...", curly “...”, and single '...' quotes,
+/// mixed as the bare quote shed allows. The scan
+/// takes the first closing-family quote after an
+/// opening one as the span's end; a span whose
+/// contents are no date is stepped over at its
+/// closing quote, which is reconsidered as an
+/// opener once (a glued neighbour span), and a
+/// line whose quotes never close costs one scan —
+/// the pass is linear in the line beside the date
+/// judgments themselves.
+pub(super) fn quoted_date_groups_as_parens(
+    text: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> Option<String> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    // (open byte start, open byte len, close byte
+    // start, close byte len) per re-dressed span.
+    let mut spans: Vec<(usize, usize, usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let (start, c) = chars[i];
+        if !matches!(c, '"' | '\'' | '\u{201c}' | '\u{2018}') {
+            i += 1;
+            continue;
+        }
+        let Some(j) = (i + 1..chars.len())
+            .find(|&k| matches!(chars[k].1, '"' | '\'' | '\u{201d}' | '\u{2019}'))
+        else {
+            break;
+        };
+        let (close_start, close_c) = chars[j];
+        let inner = &text[start + c.len_utf8()..close_start];
+        if !inner.trim().is_empty() && group_date(inner, today, anchor).is_some() {
+            spans.push((start, c.len_utf8(), close_start, close_c.len_utf8()));
+            i = j + 1;
+        } else {
+            i = j;
+        }
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for (open, open_len, close, close_len) in &spans {
+        out.push_str(&text[at..*open]);
+        out.push('(');
+        out.push_str(&text[open + open_len..*close]);
+        out.push(')');
+        at = close + close_len;
+    }
+    out.push_str(&text[at..]);
+    Some(out)
+}
+
 /// Whether a line is a group — any of the three
 /// wrapper pairs — standing beside a core that is
 /// only a relative Sunday phrase (round 36, R36-D,
@@ -8043,6 +8197,37 @@ pub(super) fn date_line(
         Some(text) => match bare_date_quote_shed(&text) {
             Some(shed) => Some(shed),
             None => Some(text),
+        },
+        None => None,
+    };
+    // Round 40 (R40-D, F6): the whole line is
+    // likewise read with a fully quote-wrapped date
+    // group re-dressed as its paren twin, but only
+    // where the interior-slot guard
+    // (`group_beside_relative_core`) fires on the
+    // re-dressed line (or its trailing-stripped
+    // core, as the guard is consulted below) — a
+    // quoted date group at a position the guard
+    // covers is judged exactly as its bracket twin
+    // is judged there, same outcome and same
+    // records, while a quoted date group standing
+    // anywhere else keeps its standing plain
+    // reading byte for byte, and quoted weekday
+    // and governor groups (not date contents) are
+    // never re-dressed at all.
+    let effective_raw: Option<String> = match effective_raw {
+        Some(text) => match quoted_date_groups_as_parens(&text, today, anchor) {
+            Some(candidate)
+                if group_beside_relative_core(&candidate, today, anchor)
+                    || group_beside_relative_core(
+                        strip_all_trailing_parenthesized(&candidate),
+                        today,
+                        anchor,
+                    ) =>
+            {
+                Some(candidate)
+            }
+            _ => Some(text),
         },
         None => None,
     };

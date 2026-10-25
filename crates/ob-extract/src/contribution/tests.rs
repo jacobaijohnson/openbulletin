@@ -29280,18 +29280,24 @@ fn r39h_wrapped_governor_governs_as_its_bare_twin_at_the_trailing_and_midline_sl
     assert_eq!(c.named_weekday_mismatch, None);
     // The R38-C held neighbours, stated as controls:
     // a governor group at the split position is
-    // silent in both pairs, and the carried
-    // after-"after" neighbour serves the base, as it
-    // served — neither is this batch's to move.
+    // silent in both pairs — that arm is unmoved.
+    // The carried after-"after" arm is RESTATED
+    // OUTRIGHT in round 40 (R40-D, per the
+    // coordinator's ruling r40d-ruling.md): round 40
+    // graded the neighbour (F5, adjudication 4) and
+    // adjudicated that governor contents at the
+    // Sunday-after interior slot are judged in every
+    // dress, so the line now reads nothing, as its
+    // bare form does — the arm below no longer
+    // asserts the served reading it carried here.
     let text = "For Sunday: Sunday (cancelled) after November 1, 2026\n\n## Announcement\n\nHi.\n";
     let c = parse_contribution(text, today()).expect("parses");
     assert_eq!(c.for_date, None, "the split position stands silent");
     let text = "For Sunday: Sunday after (cancelled) November 1, 2026\n\n## Announcement\n\nHi.\n";
     let c = parse_contribution(text, today()).expect("parses");
     assert_eq!(
-        c.for_date,
-        Some(nov(1)),
-        "the after-after neighbour serves the base, unmoved"
+        c.for_date, None,
+        "the after-after neighbour is judged in R40-D: the line reads nothing (restated arm)"
     );
     // A trailing group followed by more words is not
     // at the trailing slot, as the walks define it:
@@ -29594,17 +29600,22 @@ fn r39h2_impure_single_group_governs_as_its_bare_twin_at_the_judged_slots() {
         Some(nov(1)),
         "a weekday-carrying group keeps its standing reading"
     );
-    // The carried neighbours, unmoved in impure
-    // dress: the after-"after" group serves the
-    // base, and a trailing group followed by more
-    // words is not at the trailing slot.
+    // The carried neighbours in impure dress: a
+    // trailing group followed by more words is not
+    // at the trailing slot — that arm is unmoved.
+    // The after-"after" arm is RESTATED OUTRIGHT in
+    // round 40 (R40-D, per the coordinator's ruling
+    // r40d-ruling.md): round 40 graded the neighbour
+    // (F5, adjudication 4) and adjudicated that
+    // governor contents at the Sunday-after interior
+    // slot are judged in every dress, impure contents
+    // included, so the line now reads nothing.
     let text =
         "For Sunday: Sunday after (cancelled today) November 1, 2026\n\n## Announcement\n\nHi.\n";
     let c = parse_contribution(text, today()).expect("parses");
     assert_eq!(
-        c.for_date,
-        Some(nov(1)),
-        "the after-after neighbour serves the base, unmoved"
+        c.for_date, None,
+        "the after-after neighbour is judged in R40-D: the line reads nothing (restated arm)"
     );
     let text =
         "For Sunday: November 1, 2026 (cancelled today) and more\n\n## Announcement\n\nHi.\n";
@@ -31927,4 +31938,594 @@ fn r39f_quote_wrapped_month_and_day_words_read_as_their_bare_twins() {
     let text = "For Sunday: \"cancelled\" November 8, 2026\n\n## Announcement\n\nHi.\n";
     let c = parse_contribution(text, today()).expect("parses");
     assert_eq!(c.for_date, None, "the quoted governor still governs");
+}
+
+// Round 40 (R40-D, F5 MAJOR = review R40-R1 + red
+// team RT40-C; reading per the round-40 synthesis,
+// adjudication 4, and the coordinator's ruling
+// r40d-ruling.md): governor contents standing
+// between "after" and the base of a Sunday-after
+// phrase escaped governance entirely — the wrapped
+// form served the written base live on both routes
+// with no record of any kind, in every pair,
+// doubled, glued to "after", impure, and
+// framing-word forms, while its bare twin read
+// nothing; glued against the base it served the
+// phrase's RESOLUTION (November 8 at base
+// November 1; November 15 at base November 8),
+// companions included, and glued on both sides it
+// read nothing — three outcomes for one contents
+// family at one slot, decided by which side of
+// the group the space stood on. The adjudicated
+// reading: governor contents at the interior slot
+// are judged as a governor in every dress, so the
+// line reads nothing, as its bare form does;
+// inert groups at the slot keep serving the base
+// exactly as they did. Every pair below compares
+// the wrapped line's FULL record against its
+// governor-bared twin's (the r34e helpers), on the
+// For line and the Keep-through line; the headline
+// readings and the controls are stated outright.
+// November 1 and November 8, 2026 are Sundays.
+
+#[test]
+fn r40d_governor_group_between_after_and_base_governs_in_every_dress() {
+    for (wrapped, bare) in [
+        // Spaced, every pair, and the governor family.
+        (
+            "Sunday after (cancelled) November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        (
+            "Sunday after [cancelled] November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        (
+            "Sunday after {cancelled} November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        (
+            "Sunday after (postponed) November 1, 2026",
+            "Sunday after postponed November 1, 2026",
+        ),
+        (
+            "Sunday after (called off) November 1, 2026",
+            "Sunday after called off November 1, 2026",
+        ),
+        // Doubled and mixed nests.
+        (
+            "Sunday after ((cancelled)) November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        (
+            "Sunday after ([cancelled]) November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        // Glued to "after".
+        (
+            "Sunday after(cancelled) November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        (
+            "Sunday after[cancelled] November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        // Glued to the base (the resolution serve
+        // collapses into the judged reading).
+        (
+            "Sunday after (cancelled)November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        (
+            "Sunday after [cancelled]November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        (
+            "Sunday after ((cancelled))November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        // Glued on both sides.
+        (
+            "Sunday after(cancelled)November 1, 2026",
+            "Sunday after cancelled November 1, 2026",
+        ),
+        // Impure contents, spaced and glued to the
+        // base.
+        (
+            "Sunday after (cancelled today) November 1, 2026",
+            "Sunday after cancelled today November 1, 2026",
+        ),
+        (
+            "Sunday after [cancelled today] November 1, 2026",
+            "Sunday after cancelled today November 1, 2026",
+        ),
+        (
+            "Sunday after (cancelled today)November 1, 2026",
+            "Sunday after cancelled today November 1, 2026",
+        ),
+        // Framing words between "after" and the
+        // group, and between the group and the base
+        // (the base's own framing stack).
+        (
+            "Sunday after the (cancelled) November 1, 2026",
+            "Sunday after the cancelled November 1, 2026",
+        ),
+        (
+            "Sunday after on (cancelled) November 1, 2026",
+            "Sunday after on cancelled November 1, 2026",
+        ),
+        (
+            "Sunday after (cancelled) the November 1, 2026",
+            "Sunday after cancelled the November 1, 2026",
+        ),
+        (
+            "Sunday after (cancelled) on November 1, 2026",
+            "Sunday after cancelled on November 1, 2026",
+        ),
+        // Separator dresses between the group and
+        // the base.
+        (
+            "Sunday after (cancelled), November 1, 2026",
+            "Sunday after cancelled, November 1, 2026",
+        ),
+        (
+            "Sunday after (cancelled); November 1, 2026",
+            "Sunday after cancelled; November 1, 2026",
+        ),
+        (
+            "Sunday after (cancelled). November 1, 2026",
+            "Sunday after cancelled. November 1, 2026",
+        ),
+        (
+            "Sunday after (cancelled): November 1, 2026",
+            "Sunday after cancelled: November 1, 2026",
+        ),
+        (
+            "Sunday after (cancelled),, November 1, 2026",
+            "Sunday after cancelled,, November 1, 2026",
+        ),
+        (
+            "Sunday after (cancelled)! November 1, 2026",
+            "Sunday after cancelled! November 1, 2026",
+        ),
+        // Companions: an inert group standing after
+        // the governor group, spaced, spaced apart,
+        // and glued against the base; and beside a
+        // framing word.
+        (
+            "Sunday after (cancelled)(notes) November 1, 2026",
+            "Sunday after cancelled (notes) November 1, 2026",
+        ),
+        (
+            "Sunday after (cancelled) (notes) November 1, 2026",
+            "Sunday after cancelled (notes) November 1, 2026",
+        ),
+        (
+            "Sunday after (cancelled)(notes)November 1, 2026",
+            "Sunday after cancelled (notes)November 1, 2026",
+        ),
+        (
+            "Sunday after the (cancelled) (notes) November 1, 2026",
+            "Sunday after the cancelled (notes) November 1, 2026",
+        ),
+        // A companion group standing before the
+        // governor group in the same run at the
+        // slot: the governor is judged there too.
+        (
+            "Sunday after (notes)(cancelled) November 1, 2026",
+            "Sunday after (notes) cancelled November 1, 2026",
+        ),
+        // An agreeing base (November 8): the wrapped
+        // form served the base itself, not the
+        // phrase's resolution — it governs now.
+        (
+            "Sunday after (cancelled) November 8, 2026",
+            "Sunday after cancelled November 8, 2026",
+        ),
+        (
+            "Sunday after (cancelled)November 8, 2026",
+            "Sunday after cancelled November 8, 2026",
+        ),
+        // Ordinary lead-in words before the phrase.
+        (
+            "choir Sunday after (cancelled) November 1, 2026",
+            "choir Sunday after cancelled November 1, 2026",
+        ),
+        // A trailing group beside the phrase.
+        (
+            "Sunday after (cancelled) November 1, 2026 (notes)",
+            "Sunday after cancelled November 1, 2026 (notes)",
+        ),
+        (
+            "Sunday after (cancelled)November 1, 2026 (notes)",
+            "Sunday after cancelled November 1, 2026 (notes)",
+        ),
+    ] {
+        r34e_for_twin(wrapped, bare);
+        r34e_keep_twin(wrapped, bare);
+    }
+    // The headline reading, stated outright: no
+    // date reads on either route and no record of
+    // any kind stands.
+    let text = "For Sunday: Sunday after (cancelled) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the interior governor governs");
+    assert_eq!(c.named_weekday_mismatch, None);
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after (cancelled) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through, None,
+        "the interior governor governs the keep line"
+    );
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+    // The inert control, stated unmoved: a group
+    // holding no governor phrase at the slot is
+    // garnish and the base serves, both routes.
+    let text = "For Sunday: Sunday after (notes) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the inert group keeps serving the base"
+    );
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after (notes) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(1)),
+        "the inert group serves on the keep line"
+    );
+}
+
+#[test]
+fn r40d_governor_group_between_after_and_base_weekday_bearing_bases() {
+    // The weekday-bearing base family, whole (the
+    // R40-R1 witness): a disagreeing weekday word
+    // standing between the group and the base is
+    // the base's own framing, judged on the line
+    // as it stands — the wrapped form refuses with
+    // the sender-correcting record, in plain,
+    // framing, and impure dress, on both routes;
+    // the bare-governor form serves silently (the
+    // standing lapsing reading of a bare word
+    // before a framed date, outside this batch);
+    // the governor-and-weekday contents in ONE
+    // group hold a weekday, so they are judged
+    // whole by their standing readers and serve,
+    // as the weekday-carrying controls stand at
+    // every other slot; and an agreeing weekday
+    // base is twin-equal in both dresses.
+    for line in [
+        "Sunday after (cancelled) Monday November 1, 2026",
+        "Sunday after [cancelled] Monday November 1, 2026",
+        "Sunday after (postponed) Monday November 1, 2026",
+        "Sunday after (cancelled today) Monday November 1, 2026",
+        "Sunday after the (cancelled) Monday November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the weekday-bearing base refuses");
+        let m = c
+            .named_weekday_mismatch
+            .as_ref()
+            .expect("the weekday record stands");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, None, "{line}: the keep line refuses");
+        let m = c
+            .keep_through_weekday_mismatch
+            .as_ref()
+            .expect("the keep weekday record stands");
+        assert_eq!(m.named, "Monday", "{line}");
+        assert_eq!(m.date, nov(1), "{line}");
+    }
+    // The bare dress, stated outright and unmoved.
+    let text =
+        "For Sunday: Sunday after cancelled Monday November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the bare-governor weekday base serves"
+    );
+    assert_eq!(c.named_weekday_mismatch, None);
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after cancelled Monday November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(1)),
+        "the bare form serves the keep line"
+    );
+    // One group holding both contents serves, as
+    // its standing readers judge it whole.
+    let text =
+        "For Sunday: Sunday after (cancelled Monday) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the weekday-carrying group serves"
+    );
+    assert_eq!(c.named_weekday_mismatch, None);
+    // The agreeing weekday base is twin-equal.
+    r34e_for_twin(
+        "Sunday after (cancelled) Sunday November 1, 2026",
+        "Sunday after cancelled Sunday November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sunday after (cancelled) Sunday November 1, 2026",
+        "Sunday after cancelled Sunday November 1, 2026",
+    );
+    let text =
+        "For Sunday: Sunday after (cancelled) Sunday November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the agreeing weekday base serves the base"
+    );
+    // A weekday group companion at the slot, in
+    // either order, is twin-equal with its bare
+    // governor form (the companions' own judgments
+    // stand as the walks give them).
+    r34e_for_twin(
+        "Sunday after (cancelled)(Monday) November 1, 2026",
+        "Sunday after cancelled (Monday) November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sunday after (cancelled)(Monday) November 1, 2026",
+        "Sunday after cancelled (Monday) November 1, 2026",
+    );
+    r34e_for_twin(
+        "Sunday after (Monday)(cancelled) November 1, 2026",
+        "Sunday after (Monday) cancelled November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sunday after (Monday)(cancelled) November 1, 2026",
+        "Sunday after (Monday) cancelled November 1, 2026",
+    );
+    // A governor group standing after a bare
+    // weekday word at the slot, stated as a
+    // control: the line reads nothing and no
+    // record stands, as it read before this batch.
+    let text =
+        "For Sunday: Sunday after Monday (cancelled) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "the after-weekday governor group reads nothing"
+    );
+    assert_eq!(c.named_weekday_mismatch, None);
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after Monday (cancelled) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "and keeps nothing");
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+}
+
+// Round 40 (R40-D, F6 MAJOR = red team RT40-B): a
+// fully quote-wrapped DATE group escaped the
+// R38-C / R39-B guard (`group_beside_relative_core`
+// / `group_split_sunday_after_phrase`) at every
+// position the guard covers for bracket groups —
+// the guard is built for balanced bracket groups,
+// and a date wrapped in straight "...", curly
+// “...”, or single '...' quotes is not a group to
+// it, so the plain readers adopted the quoted date
+// where the bracket twins are judged. Uniform
+// across quote forms, both routes: at the split
+// position the quoted group was adopted with the
+// written base demoted to a second-date note (the
+// twins read nothing); between "after" and the
+// base it became a phantom base and the line
+// served the resolution computed from it (the
+// twins serve the base with a
+// ParenthesizedDateMismatch record); after a
+// framing word it was adopted (the twins serve
+// the base with the record); and after a weekday
+// word it manufactured a WeekdayMismatch refusal
+// (the twins adopt the group's date). The
+// adjudicated reading: a quoted date group is
+// judged exactly as its bracket twin at the same
+// position — same outcome, same records, both
+// routes. Quoted WEEKDAY and quoted GOVERNOR
+// groups at these slots were already at parity
+// with their bracket twins (the red team's held
+// lines) and do not move: the extension is scoped
+// to date-content groups. Every pair below asserts
+// the quoted line's FULL record equals its paren
+// twin's (the r34e helpers); the headline readings
+// are stated outright on the quoted lines
+// themselves. November 1 and November 8, 2026 are
+// Sundays; "next Sunday" resolves October 25.
+
+#[test]
+fn r40d_quoted_date_group_takes_its_bracket_twin_reading_at_the_guard_positions() {
+    let quote_pairs: [(&str, &str); 3] = [("\"", "\""), ("\u{201c}", "\u{201d}"), ("'", "'")];
+    for (open, close) in quote_pairs {
+        for (quoted, paren) in [
+            // The split position, disagreeing and
+            // agreeing, and the short form.
+            (
+                format!("Sunday {open}November 8, 2026{close} after November 1, 2026"),
+                "Sunday (November 8, 2026) after November 1, 2026".to_string(),
+            ),
+            (
+                format!("Sunday {open}November 1, 2026{close} after November 1, 2026"),
+                "Sunday (November 1, 2026) after November 1, 2026".to_string(),
+            ),
+            (
+                format!("Sunday {open}November 8{close} after November 1, 2026"),
+                "Sunday (November 8) after November 1, 2026".to_string(),
+            ),
+            // Between "after" and the base,
+            // disagreeing, restating, and short.
+            (
+                format!("Sunday after {open}November 8, 2026{close} November 1, 2026"),
+                "Sunday after (November 8, 2026) November 1, 2026".to_string(),
+            ),
+            (
+                format!("Sunday after {open}November 1, 2026{close} November 1, 2026"),
+                "Sunday after (November 1, 2026) November 1, 2026".to_string(),
+            ),
+            (
+                format!("Sunday after {open}November 8{close} November 1, 2026"),
+                "Sunday after (November 8) November 1, 2026".to_string(),
+            ),
+            // After a framing word (the group at the
+            // split, the base wearing its framing).
+            (
+                format!("Sunday {open}November 8, 2026{close} after the November 1, 2026"),
+                "Sunday (November 8, 2026) after the November 1, 2026".to_string(),
+            ),
+            // After a weekday word, before a relative
+            // phrase: a Monday prefix and the Sunday
+            // prefix, and the short form.
+            (
+                format!("Monday {open}November 8, 2026{close} next Sunday"),
+                "Monday (November 8, 2026) next Sunday".to_string(),
+            ),
+            (
+                format!("Sunday {open}November 8, 2026{close} next Sunday"),
+                "Sunday (November 8, 2026) next Sunday".to_string(),
+            ),
+            (
+                format!("Monday {open}November 8{close} next Sunday"),
+                "Monday (November 8) next Sunday".to_string(),
+            ),
+            // Beside a trailing group, at the split
+            // and between-"after" positions.
+            (
+                format!("Sunday {open}November 8, 2026{close} after November 1, 2026 (notes)"),
+                "Sunday (November 8, 2026) after November 1, 2026 (notes)".to_string(),
+            ),
+            (
+                format!("Sunday after {open}November 8, 2026{close} November 1, 2026 (notes)"),
+                "Sunday after (November 8, 2026) November 1, 2026 (notes)".to_string(),
+            ),
+            // Past an ordinary word, before a
+            // relative phrase (the guard's
+            // non-leading pre-phrase position).
+            (
+                format!("notes {open}November 8, 2026{close} next Sunday"),
+                "notes (November 8, 2026) next Sunday".to_string(),
+            ),
+        ] {
+            r34e_for_twin(&quoted, &paren);
+            r34e_keep_twin(&quoted, &paren);
+        }
+    }
+    // The headline readings, stated outright on the
+    // quoted lines themselves. Split position:
+    // total silence on both routes.
+    let text = "For Sunday: Sunday \"November 8, 2026\" after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the quoted split group reads no date");
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday \"November 8, 2026\" after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "the quoted split group keeps nothing");
+    // Between "after" and the base: the written
+    // base is served and the group is recorded
+    // against it, on both routes.
+    let text = "For Sunday: Sunday after \"November 8, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the base is served, not the phantom resolution"
+    );
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the quoted group is recorded against the base");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after \"November 8, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(1)),
+        "the keep line serves the base"
+    );
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the quoted group is recorded on the keep line");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    // After a framing word: the base is served with
+    // the group recorded.
+    let text = "For Sunday: Sunday \"November 8, 2026\" after the November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "the framed base is served");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the quoted group is recorded against the framed base");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    // After a weekday word: the group's date is
+    // adopted, the relative resolution named as
+    // second date, and no weekday record stands.
+    let text = "For Sunday: Monday \"November 8, 2026\" next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(8)),
+        "the quoted group's date is adopted"
+    );
+    assert_eq!(
+        c.named_weekday_mismatch, None,
+        "no manufactured refusal stands"
+    );
+    assert_eq!(c.for_sunday_second_dates, vec![oct(25)]);
+    let text = "For Sunday: November 1, 2026\nKeep-through: Monday \"November 8, 2026\" next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(8)), "the keep line adopts it too");
+    assert_eq!(c.keep_through_weekday_mismatch, None);
+    assert_eq!(c.keep_through_second_dates, vec![oct(25)]);
+    // The held parity controls, stated unmoved:
+    // quoted governor and quoted weekday groups at
+    // the same slots already read as their bracket
+    // twins, and a quoted date standing alone (no
+    // guard position on the line) keeps its
+    // standing reading — silence on both routes.
+    r34e_for_twin(
+        "Sunday \"cancelled\" after November 1, 2026",
+        "Sunday (cancelled) after November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sunday \"cancelled\" after November 1, 2026",
+        "Sunday (cancelled) after November 1, 2026",
+    );
+    r34e_for_twin(
+        "Sunday after \"cancelled\" November 1, 2026",
+        "Sunday after cancelled November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sunday after \"cancelled\" November 1, 2026",
+        "Sunday after cancelled November 1, 2026",
+    );
+    r34e_for_twin(
+        "Sunday \"Monday\" after November 1, 2026",
+        "Sunday (Monday) after November 1, 2026",
+    );
+    r34e_keep_twin(
+        "Sunday \"Monday\" after November 1, 2026",
+        "Sunday (Monday) after November 1, 2026",
+    );
+    let text = "For Sunday: \"November 8, 2026\"\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "a quoted date alone keeps its standing silence"
+    );
+    let text = "For Sunday: November 1, 2026\nKeep-through: \"November 8, 2026\"\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "and keeps nothing on the keep line");
 }

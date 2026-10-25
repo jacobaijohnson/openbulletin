@@ -542,11 +542,12 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         ]);
         // Round 39 (R39-E, F7): the base's trailing
         // garnish word is read through
-        // `cleaned_weekday`, so one interior sentence
-        // mark is shed as at the plain line's garnish
-        // slots — "Sunday after November 1, 2026
-        // (Mon!day)" is judged here as its bare twin
-        // is.
+        // `cleaned_weekday`, so its interior sentence
+        // marks are shed as at the plain line's
+        // garnish slots (the bare path's whole scope
+        // since round 40, R40-F) — "Sunday after
+        // November 1, 2026 (Mon!day)" is judged here
+        // as its bare twin is.
         if let Some((named, named_number)) = cleaned_weekday(word) {
             trailing = Some((named, named_number));
             if i + 1 == tokens.len() {

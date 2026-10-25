@@ -2969,24 +2969,24 @@ pub(super) fn group_sequence_weekday_mismatch(
 /// records.
 ///
 /// Scope, by construction: the walk starts at the
-/// line's head (the framing garnish stack aside)
-/// and stops at the first item that is neither a
-/// group nor a bare governor phrase — a bare word
-/// standing before the company ("notes
-/// (cancelled)(Monday) ...", the mid-line form) is
-/// a different reader's territory and is not
-/// claimed here, and a bare weekday or month word
-/// ends a bare run, so bare weekday framing keeps
-/// its standing readers. A bare run counts as the
+/// line's head (the framing garnish stack aside),
+/// steps over ordinary lead-in words standing
+/// before the company's first item (round 41,
+/// R41-B — see the extension note below), and stops
+/// at the first item, once the company has begun,
+/// that is neither a group nor a bare governor
+/// phrase; a bare weekday or month word ends a
+/// bare run, so bare weekday framing keeps its
+/// standing readers. A bare run counts as the
 /// company's governor only when its governor phrase
 /// stands at the run's own head: a governor word
 /// standing behind ordinary bare words ("notes
 /// cancelled (Monday) ...") is a mid-line segment
-/// governor, the same text shape the mid-line form
-/// wears, and this walk does not claim it — while a
-/// governor GROUP's contents are judged whole, at
-/// any position of the contents, by
-/// `governor_group_words`, as at every other slot.
+/// governor, and this walk does not claim that
+/// bare dress — while a governor GROUP's contents
+/// count when a governor phrase stands at the
+/// contents' own head (`governor_group_at_head`),
+/// the same head window in grouped dress.
 /// The company must frame a plain date directly: a
 /// company standing before a phrase (a Sunday-after
 /// phrase, a relative phrase) fails the plain-date
@@ -3000,29 +3000,79 @@ pub(super) fn group_sequence_weekday_mismatch(
 /// mismatch a disagreeing weekday group in it
 /// records (None when every weekday group in it
 /// agrees — the company then composes silently),
-/// and whether any group in the company was read
-/// through the crossed-pair fallback: `date_line`
-/// needs that flag, because the stray-mark pass
-/// re-dresses a crossed group as bare words before
-/// the inner reader sees the line, so a crossed
-/// company is judged on the pre-stray text there
-/// and restored only through that flag.
+/// whether any group in the company was read
+/// through the crossed-pair fallback, and whether
+/// the company stood behind ordinary lead-in words
+/// (the mid-line form): `date_line` needs those
+/// flags, because the stray-mark pass re-dresses
+/// a crossed group as bare words before the inner
+/// reader sees the line, so a crossed company is
+/// judged on the pre-stray text there and restored
+/// only through that flag — and a mid-line company
+/// is likewise judged there, because the mid-line
+/// governor unwrap below bares its governor group
+/// into the very bare run whose company the inner
+/// readers leave unjudged (round 41, R41-B, F3).
+///
+/// Round 41 (R41-B, F3 — doctrine, round-41
+/// synthesis adjudication 1, extending this
+/// judgment): the company is judged wherever its
+/// sequence stands, behind ordinary lead-in words
+/// as at the head. The walk therefore steps over
+/// ordinary bare words and number tokens standing
+/// before the company's first item (the lead-in),
+/// recording that it did so in the fourth return
+/// value. The scope walls stand: a lead-in run
+/// whose first word is a weekday or month word is
+/// not stepped over (bare weekday framing and the
+/// date's own words keep their readers), a lead-in
+/// holding "after" is not stepped over (the
+/// Sunday-after interior slot is a different
+/// slot's), and the lone weekday group behind
+/// ordinary words — no governor companion anywhere
+/// in the sequence — is never claimed, because no
+/// governor is seen: (a)(i) stands for it,
+/// untouched. A group's governor contents count
+/// toward the company only when a governor phrase
+/// stands at the contents' own head (see
+/// `governor_group_at_head`): the governor-
+/// completion boundary the R40-E walk held for
+/// bare runs holds for groups in the same way, in
+/// leading and mid-line positions alike.
 pub(super) fn leading_governor_company_judgment(
     text: &str,
     today: SimpleDate,
-) -> Option<(SimpleDate, Option<WeekdayMismatch>, bool)> {
+) -> Option<(SimpleDate, Option<WeekdayMismatch>, bool, bool)> {
     const SEPARATORS: [char; 10] = [
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}',
     ];
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut governor_seen = false;
     let mut crossed_seen = false;
+    let mut company_started = false;
+    let mut behind_lead_in = false;
     let mut weekdays: Vec<(String, u32)> = Vec::new();
     loop {
         rest = rest.trim_start_matches(SEPARATORS);
         let Some(first) = rest.chars().next() else {
             break;
         };
+        if !company_started && first.is_ascii_digit() {
+            // An ordinary lead-in number token
+            // ("123 (cancelled)(Monday) ..."): the
+            // token is stepped over as lead-in, up
+            // to the whitespace or group standing
+            // after it.
+            let tok_end = rest
+                .find(|ch: char| ch.is_whitespace() || matches!(ch, '(' | '[' | '{'))
+                .unwrap_or(rest.len());
+            if tok_end == 0 {
+                break;
+            }
+            behind_lead_in = true;
+            rest = &rest[tok_end..];
+            continue;
+        }
         if matches!(first, '(' | '[' | '{') {
             let end = match first_balanced_span(rest) {
                 Some((0, end)) => end,
@@ -3046,7 +3096,8 @@ pub(super) fn leading_governor_company_judgment(
                 break;
             }
             let inner = &rest[1..end - 1];
-            if governor_group_words(inner).is_some() {
+            company_started = true;
+            if governor_group_at_head(inner) {
                 governor_seen = true;
             } else if let Some(weekday) = garnish_group_weekday(inner) {
                 weekdays.push(weekday);
@@ -3119,9 +3170,38 @@ pub(super) fn leading_governor_company_judgment(
                     .is_some_and(|p| is_governor_phrase(p) || is_cancellation_phrase(p))
             });
             if !has_governor {
-                break;
+                if company_started {
+                    break;
+                }
+                // Round 41 (R41-B, F3): a bare run
+                // standing before the company's first
+                // item is ordinary lead-in ("notes",
+                // "notes from Sue", "please note") and
+                // is stepped over, so the company
+                // behind it is reached as the company
+                // at the head is reached. Two lead-ins
+                // are not stepped over: one holding
+                // "after" (the Sunday-after interior
+                // slot is a different slot's, and its
+                // company keeps its standing serve),
+                // and one whose first word is a
+                // weekday or month word (handled by
+                // the break above this window). The
+                // run is stepped over whole: a
+                // governor phrase standing inside it
+                // ("notes cancelled (Monday) ...") is
+                // the mid-line segment governor's
+                // shape, not this walk's — that bare
+                // dress keeps its standing reading.
+                if words.iter().any(|w| w == "after") {
+                    break;
+                }
+                behind_lead_in = true;
+                rest = scan;
+                continue;
             }
             governor_seen = true;
+            company_started = true;
             rest = scan;
             continue;
         }
@@ -3159,7 +3239,53 @@ pub(super) fn leading_governor_company_judgment(
             named: named.clone(),
             date,
         });
-    Some((date, mismatch, crossed_seen))
+    Some((date, mismatch, crossed_seen, behind_lead_in))
+}
+
+/// Whether a group's contents carry a governor
+/// phrase at their own head, judged as the bare
+/// run's head window judges a bared group (round
+/// 41, R41-B, F3): the pure arm (the whole contents
+/// are a governor phrase, the standing
+/// `is_governor_phrase` / `is_cancellation_phrase`
+/// judgments over the group's cleaned words), and
+/// the governor-first impure arm ("cancelled
+/// today" — a governor phrase standing at the
+/// contents' head, in a one-to-three-word window,
+/// in contents holding no date and no weekday).
+/// A governor phrase standing behind other words
+/// in the contents ("today cancelled", "meeting
+/// cancelled") is NOT this judgment's: no walk
+/// completes a governor phrase standing behind
+/// other words, in either dress, at the leading
+/// slot or mid-line — the boundary the round-41
+/// review held in both positions. Contents
+/// holding a date or a weekday are judged whole
+/// by their standing readers, as in
+/// `governor_group_words`.
+fn governor_group_at_head(inner: &str) -> bool {
+    let raw_words: Vec<&str> = inner.split_whitespace().collect();
+    let words: Vec<String> = segment_tokens(&raw_words)
+        .into_iter()
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.is_empty() {
+        return false;
+    }
+    if is_governor_phrase(&words) || is_cancellation_phrase(&words) {
+        return true;
+    }
+    let holds_date_or_weekday = words.iter().any(|w| {
+        word_at_is_month(w, 0) || weekday_word(w).is_some() || w.chars().any(|c| c.is_ascii_digit())
+    });
+    if holds_date_or_weekday {
+        return false;
+    }
+    (1..=3usize).any(|len| {
+        words
+            .get(..len)
+            .is_some_and(|p| is_governor_phrase(p) || is_cancellation_phrase(p))
+    })
 }
 
 /// Read one of a contribution's two date lines: the
@@ -4142,7 +4268,7 @@ pub(super) fn date_line_inner(
     // behind the bared governor word and the
     // mid-line fallback would serve the date (see
     // `leading_governor_company_judgment`).
-    if let Some((_, mismatch, _)) = leading_governor_company_judgment(text, today) {
+    if let Some((_, mismatch, _, _)) = leading_governor_company_judgment(text, today) {
         return (None, mismatch);
     }
     // Round 37 (R37-D, F7): a weekday group standing
@@ -8587,6 +8713,17 @@ pub(super) fn date_line(
     // inner reading, under its crossed flag and only
     // where the inner reading served the company's
     // own framed date (see the restore below).
+    // Round 41 (R41-B, F3): the judgment now also
+    // reaches the company behind ordinary lead-in
+    // words, and the restore below takes it under
+    // its lead-in flag as well: the passes between
+    // here and the inner reading bare the mid-line
+    // governor group, leaving the inner reader the
+    // bare run whose company it does not claim, so
+    // a mid-line company whose inner reading served
+    // its framed date — or read nothing in silence,
+    // the weekday-first and marked arms — takes the
+    // composed outcome judged here.
     let leading_company = effective_raw
         .as_deref()
         .and_then(|text| leading_governor_company_judgment(text, today));
@@ -8786,8 +8923,21 @@ pub(super) fn date_line(
     // behind. A refused inner reading already
     // stands, and a company with no crossed group
     // was the inner reader's own to compose.
-    if let Some((framed, mismatch, crossed)) = &leading_company {
-        if *crossed && date == Some(*framed) {
+    // Round 41 (R41-B, F3): the same restore for a
+    // company standing behind ordinary lead-in
+    // words. Its inner reading either served the
+    // very date the company frames (governor-first
+    // orders, the serving mark dresses) or read
+    // nothing in silence (weekday-first orders, the
+    // collapsing mark dresses, the third-group arm)
+    // — both take the composed outcome judged on
+    // the pre-unwrap text. An inner reading that
+    // refused with a record, or served any other
+    // date, already stands.
+    if let Some((framed, mismatch, crossed, behind_lead_in)) = &leading_company {
+        if (*crossed || *behind_lead_in)
+            && (date == Some(*framed) || (date.is_none() && weekday_mismatch.is_none()))
+        {
             return DateLineReading {
                 date: None,
                 weekday_mismatch: mismatch.clone(),

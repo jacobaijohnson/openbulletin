@@ -29151,25 +29151,51 @@ fn r39h_wrapped_governor_governs_as_its_bare_twin_at_the_trailing_and_midline_sl
             "notes cancelled; (notes) November 8, 2026",
         ),
         (
-            "notes (cancelled)(Monday) November 1, 2026",
-            "notes cancelled (Monday) November 1, 2026",
-        ),
-        (
             "notes (Monday)(cancelled) November 1, 2026",
             "notes (Monday) cancelled November 1, 2026",
-        ),
-        (
-            "notes (cancelled)(Sunday) November 1, 2026",
-            "notes cancelled (Sunday) November 1, 2026",
         ),
         (
             "notes (Sunday)(cancelled) November 1, 2026",
             "notes (Sunday) cancelled November 1, 2026",
         ),
+        // Round 41 (R41-B, F3) RESTATES the two
+        // governor-first mid-line company pairs
+        // outright, flagged here and in the batch
+        // record: "notes (cancelled)(Monday)
+        // November 1, 2026" / "notes cancelled
+        // (Monday) November 1, 2026" and "notes
+        // (cancelled)(Sunday) November 1, 2026" /
+        // "notes cancelled (Sunday) November 1,
+        // 2026" stood in this loop asserting the
+        // wrapped and bare forms twin (both served
+        // silently). Under adjudication 1 of the
+        // round-41 synthesis the GROUPED company
+        // takes the composed outcome and the bare
+        // dress keeps its standing serve, so the
+        // pairs no longer twin; both are asserted
+        // outright in the restated block after this
+        // loop. The weekday-first pairs above still
+        // twin (both dresses take the composed
+        // outcome) and stand in the loop unmoved.
     ] {
         r34e_for_twin(wrapped, bare);
         r34e_keep_twin(wrapped, bare);
     }
+    // Round 41 (R41-B, F3) RESTATED arms, stated
+    // outright (see the flagged note in the loop
+    // above): the grouped governor-first mid-line
+    // company is governed WITH its weekday record
+    // (disagreeing) or governed silently (agreeing),
+    // on both routes, while its bare-governor twin
+    // keeps the standing lapsing serve.
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_serves_silent("notes cancelled (Monday) November 1, 2026", nov(1));
+    r40e_governed_silent("notes (cancelled)(Sunday) November 1, 2026");
+    r40e_serves_silent("notes cancelled (Sunday) November 1, 2026", nov(1));
     // The sequence witnesses, stated outright: the
     // dress decided which date was primary and
     // whether the weekday record stood. Beside a
@@ -29294,19 +29320,30 @@ fn r39h_wrapped_governor_governs_as_its_bare_twin_at_the_trailing_and_midline_sl
         Some(nov(8)),
         "before the phrase the wrapped governor is garnish, as the bare is"
     );
-    // Mid-line beside a weekday group, the lapsing
-    // order stated outright: the line serves, as the
-    // wrapped form served and as the bare form
-    // serves — the control the doctrine's scope
-    // names.
+    // Mid-line beside a weekday group, the
+    // governor-first order stated outright.
+    // Round 41 (R41-B, F3) RESTATES this arm,
+    // flagged here and in the batch record: it
+    // asserted the line SERVES November 1 ("the
+    // governor before the weekday group lapses, in
+    // both dresses"). Under adjudication 1 of the
+    // round-41 synthesis the grouped company takes
+    // the composed outcome — governed, WITH the
+    // weekday record — while the bare form keeps
+    // the lapsing serve (asserted in the restated
+    // block after the twin loop above).
     let text = "For Sunday: notes (cancelled)(Monday) November 1, 2026\n\n## Announcement\n\nHi.\n";
     let c = parse_contribution(text, today()).expect("parses");
     assert_eq!(
-        c.for_date,
-        Some(nov(1)),
-        "the governor before the weekday group lapses, in both dresses"
+        c.for_date, None,
+        "the grouped governor company governs mid-line (R41-B restated arm)"
     );
-    assert_eq!(c.named_weekday_mismatch, None);
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the weekday record stands in the mid-line company (R41-B)");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, nov(1));
     // The R38-C held neighbours, stated as controls:
     // a governor group at the split position is
     // silent in both pairs — that arm is unmoved.
@@ -29530,10 +29567,22 @@ fn r39h2_impure_single_group_governs_as_its_bare_twin_at_the_judged_slots() {
             "notes (Monday) (cancelled today) November 1, 2026",
             "notes (Monday) cancelled today November 1, 2026",
         ),
-        (
-            "notes (cancelled today) (Monday) November 1, 2026",
-            "notes cancelled today (Monday) November 1, 2026",
-        ),
+        // Round 41 (R41-B, F3) RESTATES the
+        // governor-first impure mid-line company
+        // pair outright, flagged here and in the
+        // batch record: "notes (cancelled today)
+        // (Monday) November 1, 2026" / "notes
+        // cancelled today (Monday) November 1, 2026"
+        // stood in this loop asserting the wrapped
+        // and bare forms twin (both served). Under
+        // adjudication 1 of the round-41 synthesis
+        // the GROUPED company (its governor phrase
+        // at the contents' head) takes the composed
+        // outcome and the bare dress keeps its
+        // standing serve, so the pair no longer
+        // twins; both are asserted outright after
+        // this loop. The weekday-first impure pair
+        // below still twins and stands unmoved.
         // The pure marked control: already governing
         // before this batch, stated so the boundary
         // between the pure and impure arms is pinned.
@@ -29552,6 +29601,18 @@ fn r39h2_impure_single_group_governs_as_its_bare_twin_at_the_judged_slots() {
         r34e_for_twin(wrapped, bare);
         r34e_keep_twin(wrapped, bare);
     }
+    // Round 41 (R41-B, F3) RESTATED arms, stated
+    // outright (see the flagged note in the loop
+    // above): the grouped governor-first impure
+    // mid-line company is governed WITH its weekday
+    // record on both routes, while its bare-governor
+    // twin keeps the standing lapsing serve.
+    r40e_governed_with_record(
+        "notes (cancelled today) (Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_serves_silent("notes cancelled today (Monday) November 1, 2026", nov(1));
     // The headline shapes, stated outright: no date
     // reads on either route and no record stands.
     for line in [
@@ -32892,18 +32953,32 @@ fn r40e_leading_governor_company_controls_unmoved() {
     // The mid-line governor company one word
     // further in is a different reader's territory
     // (the mid-line governor unwrap, R39-H, not the
-    // leading sequence machinery): its standing
-    // composition — the governor before the weekday
-    // group lapses, in both dresses — is pinned
-    // here as witnessed, unmoved by this batch; the
-    // split is reported in the batch record rather
-    // than forced. The same text shape one slot
-    // earlier — impure governor contents whose
-    // governor phrase does not stand at the bared
-    // run's head — is one shape with it at the
+    // leading sequence machinery).
+    // Round 41 (R41-B, F3) RESTATES the grouped arm
+    // of this control, flagged here and in the
+    // batch record: "notes (cancelled)(Monday)
+    // November 1, 2026" stood here asserting the
+    // governor before the weekday group lapses, in
+    // both dresses, pinned as witnessed and unmoved
+    // by R40-E, the split reported rather than
+    // forced. Under adjudication 1 of the round-41
+    // synthesis the company is judged wherever it
+    // stands, so the grouped form now takes the
+    // composed outcome — governed WITH the weekday
+    // record — while its bare dress keeps the
+    // standing lapsing serve below, unmoved. The
+    // same text shape one slot earlier — impure
+    // governor contents whose governor phrase does
+    // not stand at the bared run's head ("today
+    // cancelled") — is one shape with it at the
     // inner reader and keeps the same lapsing
-    // reading in both dresses.
-    r40e_serves_silent("notes (cancelled)(Monday) November 1, 2026", nov(1));
+    // reading in both dresses, as the next two
+    // arms stand.
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
     r40e_serves_silent("notes cancelled (Monday) November 1, 2026", nov(1));
     r40e_serves_silent("(today cancelled)(Monday) November 1, 2026", nov(1));
     r40e_serves_silent("today cancelled (Monday) November 1, 2026", nov(1));
@@ -32939,6 +33014,327 @@ fn r40e_leading_governor_company_controls_unmoved() {
     r40e_governed_with_record("(Monday) November 1, 2026", "Monday", nov(1));
     r40e_governed_with_record("(notes)(Monday) November 1, 2026", "Monday", nov(1));
     r40e_governed_with_record("(Monday)(notes) November 1, 2026", "Monday", nov(1));
+}
+
+// Round 41 (R41-B, F3 MAJOR, doctrine — round-41
+// synthesis adjudication 1, extending R40-E's
+// adjudication 3): a leading group sequence
+// containing BOTH a governor group and a weekday
+// group, in any order, with companions, is judged
+// as a company WHEREVER that sequence stands — at
+// the line head (R40-E) or behind ordinary lead-in
+// words (mid-line company, this batch). The
+// composed outcome everywhere in the company: the
+// governor governs (the date does not serve) AND
+// the weekday records its WeekdayMismatch where it
+// disagrees; the agreeing companion composes
+// silently. Scope wall: the lone weekday group
+// behind ordinary words with NO governor companion
+// (`notes (Monday) …` in running text) keeps its
+// standing (a)(i) UNJUDGED reading, and the lone
+// mid-line governor alone stays judged as it was.
+// The pins below state the full company outright
+// against the composed reading, on both routes,
+// with full records (the r40e helpers). November 1
+// and November 8, 2026 are Sundays.
+
+#[test]
+fn r41b_midline_governor_first_weekday_company_composes_governed_with_the_record() {
+    // The pinned cell, stated outright: the cell
+    // R40-E recorded serving silently now takes the
+    // composed outcome.
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // Every lead-in word the witnesses held (red
+    // team RT41-D1's 14 forms, plus review's
+    // family): any ordinary lead-in, any distance.
+    for line in [
+        "choir (cancelled)(Monday) November 1, 2026",
+        "reminder (cancelled)(Monday) November 1, 2026",
+        "please note (cancelled)(Monday) November 1, 2026",
+        "a (cancelled)(Monday) November 1, 2026",
+        "the notes (cancelled)(Monday) November 1, 2026",
+        "notes from Sue (cancelled)(Monday) November 1, 2026",
+        "123 (cancelled)(Monday) November 1, 2026",
+        "notes: (cancelled)(Monday) November 1, 2026",
+        "notes, (cancelled)(Monday) November 1, 2026",
+        "notes; (cancelled)(Monday) November 1, 2026",
+        "on notes (cancelled)(Monday) November 1, 2026",
+        "for notes (cancelled)(Monday) November 1, 2026",
+        "see notes (cancelled)(Monday) November 1, 2026",
+        "choir notes (cancelled)(Monday) November 1, 2026",
+        "notes from Sue and choir (cancelled)(Monday) November 1, 2026",
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+    }
+    // Every pair dress: paren, bracket, brace,
+    // doubled, mixed, crossed — glued and spaced.
+    for line in [
+        "notes [cancelled][Monday] November 1, 2026",
+        "notes {cancelled}{Monday} November 1, 2026",
+        "notes ((cancelled))((Monday)) November 1, 2026",
+        "notes ([cancelled])[(Monday)] November 1, 2026",
+        "notes [cancelled)(Monday] November 1, 2026",
+        "notes (cancelled] [Monday) November 1, 2026",
+        "notes [cancelled] (Monday) November 1, 2026",
+        "notes (cancelled) [Monday] November 1, 2026",
+        "notes (cancelled)(Monday)November 1, 2026",
+        "notes(cancelled)(Monday) November 1, 2026",
+        "notes (cancelled) (Monday) November 1, 2026",
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+    }
+    // Governor phrases, and disagreeing weekday
+    // companions, each named as written.
+    for line in [
+        "notes (postponed)(Monday) November 1, 2026",
+        "notes [postponed][Monday] November 1, 2026",
+        "notes (called off)(Monday) November 1, 2026",
+        "notes (called off) (Monday) November 1, 2026",
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+    }
+    for (line, named) in [
+        ("notes (cancelled)(Tuesday) November 1, 2026", "Tuesday"),
+        ("notes (cancelled)(Wednesday) November 1, 2026", "Wednesday"),
+        ("notes (cancelled)(Saturday) November 1, 2026", "Saturday"),
+        ("notes (postponed)(Tuesday) November 1, 2026", "Tuesday"),
+    ] {
+        r40e_governed_with_record(line, named, nov(1));
+    }
+    // The record names the date the company
+    // frames: at November 8 it is the weekday at
+    // November 8.
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday) November 8, 2026",
+        "Monday",
+        nov(8),
+    );
+    r40e_governed_with_record(
+        "notes (cancelled)(Tuesday) November 8, 2026",
+        "Tuesday",
+        nov(8),
+    );
+    // Separators between the groups, and between
+    // the last group and the date.
+    for line in [
+        "notes (cancelled),(Monday) November 1, 2026",
+        "notes (cancelled), (Monday) November 1, 2026",
+        "notes (cancelled); (Monday) November 1, 2026",
+        "notes (cancelled). (Monday) November 1, 2026",
+        "notes (cancelled): (Monday) November 1, 2026",
+        "notes (cancelled)(Monday); November 1, 2026",
+        "notes (cancelled)(Monday), November 1, 2026",
+        "notes (cancelled)(Monday). November 1, 2026",
+        "notes (cancelled)(Monday): November 1, 2026",
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+    }
+    // The bare weekday twin was already composed
+    // (the bare weekday is judged mid-line); the
+    // grouped company now reads field for field
+    // as it does.
+    r40e_governed_with_record(
+        "notes (cancelled) Monday November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r34e_for_twin(
+        "notes (cancelled)(Monday) November 1, 2026",
+        "notes (cancelled) Monday November 1, 2026",
+    );
+    r34e_keep_twin(
+        "notes (cancelled)(Monday) November 1, 2026",
+        "notes (cancelled) Monday November 1, 2026",
+    );
+    // Impure governor contents whose governor
+    // phrase stands at the contents' head compose
+    // mid-line as they compose at the head.
+    r40e_governed_with_record(
+        "notes (cancelled today)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // Words after the date are the remainder.
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday) November 1, 2026 for the picnic",
+        "Monday",
+        nov(1),
+    );
+}
+
+#[test]
+fn r41b_midline_company_orders_sizes_and_marks_take_the_composed_outcome() {
+    // Weekday-first orders (RT41-D1): the company
+    // collapsed to silent None; under the composed
+    // reading it is governed WITH the record. The
+    // bare-governor twin of the weekday-first order
+    // takes the same outcome.
+    r40e_governed_with_record(
+        "notes (Monday)(cancelled) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (Monday) cancelled November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (Monday)(cancelled)(notes) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (Monday)(notes)(cancelled) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // Three-group companies, the inert companion
+    // in every position, both orders.
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday)(notes) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (cancelled)(notes)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (notes)(cancelled)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (notes)(Monday)(cancelled) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // Two weekday groups: the first disagreeing
+    // one in written order records.
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday)(Tuesday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (cancelled)(Sunday)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday)(Sunday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // The agreeing companion composes silently in
+    // every order and company size: governed, no
+    // record — including the agreeing governor-
+    // first order, which served on the base tree.
+    for line in [
+        "notes (cancelled)(Sunday) November 1, 2026",
+        "notes (Sunday)(cancelled) November 1, 2026",
+        "notes (cancelled)(Sunday)(notes) November 1, 2026",
+        "notes (cancelled)(notes)(Sunday) November 1, 2026",
+        "notes (notes)(cancelled)(Sunday) November 1, 2026",
+        "notes (Sunday)(notes)(cancelled) November 1, 2026",
+    ] {
+        r40e_governed_silent(line);
+    }
+    // Marks after any group (RT41-D1's split set
+    // closed): ! ? ; : after the weekday group
+    // collapsed the line to silent None, and . ,
+    // served; every mark dress now takes the
+    // composed outcome, glued and spaced, after
+    // the weekday group and after the governor
+    // group alike.
+    for mark in ["!", "?", ";", ":", ".", ",", "\u{201d}", "\u{2019}"] {
+        let line = format!("notes (cancelled)(Monday){mark} November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("notes (cancelled) (Monday){mark} November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("notes (cancelled){mark} (Monday) November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r41b_midline_company_controls_unmoved() {
+    // The (a)(i) scope wall, stated unjudged and
+    // unchanged: the lone weekday group behind
+    // ordinary words, with NO governor companion,
+    // keeps its standing reading — the date serves,
+    // no record.
+    r40e_serves_silent("notes (Monday) November 1, 2026", nov(1));
+    r40e_serves_silent("notes (Monday)(notes) November 1, 2026", nov(1));
+    // The lone mid-line governor alone stays
+    // judged, alone and beside an inert companion.
+    r40e_governed_silent("notes (cancelled) November 1, 2026");
+    r40e_governed_silent("notes (cancelled)(notes) November 1, 2026");
+    // The bare dresses that are not the grouped
+    // company keep their standing readings: the
+    // bare governor before the weekday group lapses
+    // as it lapsed, the wholly bare form serves,
+    // and the bare weekday before the governor
+    // group is governed silently as it was.
+    r40e_serves_silent("notes cancelled (Monday) November 1, 2026", nov(1));
+    r40e_serves_silent("notes cancelled Monday November 1, 2026", nov(1));
+    r40e_governed_silent("notes Monday (cancelled) November 1, 2026");
+    // The governor-completion boundary, held in
+    // mid-line positions as at the head: a governor
+    // phrase standing behind other words in its
+    // group or run is not completed, in either
+    // dress.
+    r40e_serves_silent("(today cancelled)(Monday) November 1, 2026", nov(1));
+    r40e_serves_silent("notes (today cancelled)(Monday) November 1, 2026", nov(1));
+    r40e_serves_silent("today cancelled (Monday) November 1, 2026", nov(1));
+    r40e_serves_silent("notes cancelled today (Monday) November 1, 2026", nov(1));
+    // The Sunday-after interior company is the
+    // R40-D slot's, not this walk's: it keeps its
+    // standing serve, unmoved.
+    r40e_serves_silent(
+        "Sunday after notes (cancelled)(Monday) November 1, 2026",
+        nov(1),
+    );
+    r40e_serves_silent("Sunday after (cancelled)(Monday) November 1, 2026", nov(1));
+    // Trailing company: governed without the
+    // record, in both orders, and a word between
+    // the trailing date and its company does not
+    // disarm it.
+    r40e_governed_silent("November 1, 2026 (cancelled)(Monday)");
+    r40e_governed_silent("November 1, 2026 (Monday)(cancelled)");
+    r40e_governed_silent("November 1, 2026 notes (cancelled)(Monday)");
+    // Base-trailing company: refuses with the
+    // record in both orders; a bare word between
+    // the base and the trailing sequence disarms
+    // the sequence (the standing R5-D adjacency),
+    // and the resolution serves.
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (cancelled)(Monday)",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (Monday)(cancelled)",
+        "Monday",
+        nov(1),
+    );
+    r40e_serves_silent(
+        "Sunday after November 1, 2026 notes (cancelled)(Monday)",
+        nov(8),
+    );
+    // Before a Sunday-after phrase the company
+    // frames no plain date: the resolution serves,
+    // as at the head.
+    r40e_serves_silent(
+        "notes (cancelled)(Monday) Sunday after November 1, 2026",
+        nov(8),
+    );
 }
 
 // Round 40 (R40-F, F7 MAJOR = red team RT40-F +

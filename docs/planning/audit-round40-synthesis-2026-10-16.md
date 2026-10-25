@@ -641,3 +641,176 @@ bar is judged on round 41's audit of the closed
 tree; the Tier-2 final gate is not triggered
 (1/8/1) and is not the coordinator's to start in
 any case.
+
+## Coordinator close (2026-10-25)
+
+All twelve findings fixed or dispositioned in eight
+batches, one writer at a time, each batch committed +
+pushed + HEAD == origin confirmed, then `cargo clean`
+and cold verification replacing incremental, each
+batch record stating its hosted-CI conclusions.
+Final code tree: `406ded0` (R40-H). Suite: **1156
+passed / 0 failed** (1131 at the audited tree + 25
+new pins). Records: `round40-out/coord/r40{a..h}-
+record.md`.
+
+| Batch | Finding(s) | Tip | Suite | Hosted CI (all 3 OS legs) |
+|---|---|---|---|---|
+| R40-A | F3 + F4 (archive, both arms) | `98d4f3a` | 1135/0 | 40161570450 success ×3 |
+| R40-B | F1 (BLOCKER, `()` cliff) | `69c0405` | 1136/0 | 40168086542 success ×3 |
+| R40-C | F2 (nested + sequence walks) | `51268d8` | 1142/0 | 40177137616 success ×3 |
+| R40-D | F5 + F6 (Sunday-after slots) | `b71be06` | 1145/0 | 40185334796 success ×3 |
+| R40-E | F9 (doctrine, arms d+e) | `9d2da1b` | 1148/0 | 40191886932 success ×3 |
+| R40-F | F7 (interior marks; `.` arm stopped) | `5fa4d79` | 1151/0 | 40198134505 success ×3 |
+| R40-G | F8 (out-of-set suffixes) | `2c2c2bc` | 1155/0 | 40204790291 success ×3 |
+| R40-H | F10 (lock window, witnessed) | `406ded0` | 1156/0 | 40211842907 success ×3 |
+
+Desktop Runner Build green on every batch tip
+(40161570405 / 40168086528 / 40177137670 /
+40185334783 / 40191886904 / 40198134552 /
+40204790369 / 40211842919).
+
+**Five-leg evidence on the final tree `406ded0`:**
+(1) local cold — suite 1156/0 (SUITE_COLD_EXIT=0),
+clippy CLIPPY_COLD_EXIT=0, fmt FMT_COLD_EXIT=0
+(`round40-out/coord/h/*-cold-recovery.log`); booklet
+pin passes in-suite and on a direct run on the
+final tree (BOOKLET_EXIT=0), 31,717 imposed /
+34,977 reader byte-exact. (2) Fuzz as claims —
+verdict 40,000/0 md5 `79775844…`, composition
+497,024/0 md5 `5868726a…`, rights 5083 / 1024 /
+5275, safety_flips=0, byte-identical at every batch
+and on the final tree; M8 held for the twentieth
+consecutive round in the audit and unbroken through
+the fixes. (3) Hosted CI run 40211842907 — ubuntu /
+windows / macos all success. (4) Desktop Runner
+Build run 40211842919 success. (5) Windows bundle
+run 40216697724 — Gate + bundle both success.
+
+**Dispositions of record inside the batches.**
+R40-A's arms (4)/(5) needed one step beyond this
+synthesis's literal text: `prefix_free` splices a
+judged archive's non-contiguous tail into a
+contiguous owned view (the doors open the reader on
+that view before judging, and the reader refuses the
+clean locator-side hosts on the unspliced bytes);
+standing `prefix_free` pins pass unchanged and the
+outcome is the adjudicated one — accepted by the
+coordinator and named here for round 41's lanes.
+R40-D stopped once, correctly, on two standing
+control arms encoding the old after-"after" reading;
+the coordinator ruled the restatements in
+`round40-out/coord/r40d-ruling.md` (the synthesis's
+R40-D entry should have named them, as the R40-E
+entry named its two — the omission was the
+coordinator's) and the batch re-ran under the
+ruling. R40-E's two authorized restatements landed;
+its mid-line form (`notes (cancelled)(Monday)
+November 1, 2026`, serving silently under R39-H's
+standing arm) is a different reader's territory and
+is pinned unmoved — carried below. R40-F landed the
+two-mark shed as ONE shared statement
+(`interior_mark_shed`) so the bare and grouped
+paths cannot drift again; one r39e boundary-array
+arm that encoded the defect itself was removed and
+flagged in commit + test + record. **R40-F's `.`
+arm did not land**: per adjudication 6 the writer
+witnessed the family whole (the abbreviation forms
+refuse with the record in both dresses; the
+`(Mon.day)` split is the generic inert-contents
+split) and found every candidate ruling moves
+standing pins; the standing readings are pinned as
+they stand and the full witness table is in
+`r40f-record.md` — F7's `.` arm is dispositioned as
+a record, carried below, and F7 itself (the
+record-carrying two-mark arm) is fixed. R40-G held
+its scope: unwitnessed trailing `~` forms still
+serve, recorded as an observation in its record.
+R40-H witnessed its interleaving (the pin fails on
+the base tree) and fixed it on the witness, per
+adjudication 7.
+
+**Incidents.** Four runtime/VM restarts touched
+this round (the verify lane's suite run 2, R40-D
+mid-batch, and R40-H twice — the batch's first
+writer died mid-verification and its recovery
+writer died after the fuzz outputs were written,
+before writing the record; the coordinator
+completed `r40h-record.md` from the disk logs and
+checked its CI via `gh`). Every recovery verified
+death before touching state (process scan + mtime)
+and judged inherited work from disk before building
+on it; nothing was committed on an unverified
+claim. One load failure, dispositioned as load:
+the r40b ratio pin missed its bound at 22× inside a
+980 s saturated ob-extract leg during R40-H's first
+run, passed solo at its ~9× standing and inside
+both recovery suites; no bound was widened. The
+R40-C writer received a brief naming witness shapes
+(`((Date))`×n, `(Dec 25)`×n) that appear in no filed
+report, with function names that do not exist in
+the tree and canary numbers off measurement by up
+to 18×; it fixed the filed F2 family instead and
+flagged the brief in its record — the discrepancy
+stands in `r40c-record.md` and is recorded here so
+the round's provenance is complete. Phantom
+completion notices recurred in every lane and both
+recoveries; no verdict in this round rests on one.
+
+**Carried into round 41 (named targets):**
+(a) the mid-line governor company — `notes
+(cancelled)(Monday) November 1, 2026` serves
+silently (governor lapses, R39-H's standing arm;
+the same shape as `(today cancelled)(Monday) …`)
+— whether the R40-E composed judgment extends
+behind an ordinary leading word is round 41's
+doctrine question, with the company witnessed by
+both R40-E and the round-40 review lane;
+(b) F7's `.` arm as a record with R40-F's witness
+table (`(Mon.day)` grouped-serves / bare-dies, the
+abbreviation family refusing with the record named
+"Mon" in both dresses) — needs a coordinator
+ruling on interior `.` (sentence separator vs
+shed mark) before any batch;
+(c) R40-D's two recorded neighbours: a framing
+word standing between "after" and a quoted date
+group (`Sunday after the "November 8, 2026" …`
+still adopts where its paren twin serves with the
+record — unwitnessed by RT40-B, not guard-covered
+for brackets), and the leading-alone quoted date
+whose contribution in-words memories keep the
+quoted dress;
+(d) the R38-F peel residual with its round-40
+extensions (`(Monday) !!`, `(Monday) ! ?`,
+`(Monday) ) !`, `(Monday)]!`), the split-position
+governor uniformity note, the lock leading-newline
+pid spelling, and the recycled-pid residual — all
+standing as recorded;
+(e) R40-G's scope observation (unwitnessed trailing
+`~` forms still serve) and R40-C's sequence-pin
+calibration note (the two sequence pins ship as
+steepness ceilings at 16×/20× because in-suite
+parallel contention inflates their ratios ~1.7×;
+their solo-frame bite evidence is in
+`r40c-record.md`).
+
+**Build-cache disposition at this confirmed
+completion** (charter policy): final reading Sun
+2026-10-25 11:50 PDT (daytime window): **79% used /
+22G free**. The round's completion readings ran
+74–79%; no confirmed completion in the round read
+at/above the overnight 87% or daytime 94% line, and
+no over-limit reading latched at any point.
+Disposition: **CARRY** — the target dir carries
+into round 41. Boundary hygiene: batch scratch
+under `round40-out/coord/{b,c,e,f,g,h}` and the
+lane scratch stand as the round's evidence;
+registry untouched; no probe dirs created in the
+repo tree this round.
+
+**Exit bar: NOT met by round 40's audit**
+(1 BLOCKER / 8 MAJOR / 1 MINOR), so the bar is
+judged on round 41's audit of this closed tree.
+The Tier-2 Opus + GPT final gate is not triggered
+and is not the coordinator's to start in any case.
+HF-12 untouched.

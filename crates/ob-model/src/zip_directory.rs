@@ -167,6 +167,38 @@
 //! already carries: the signature record's own
 //! declared length closes the gap, counted or not.
 //!
+//! Round 40, F3 + F4: two more regions stood outside
+//! the discipline — everything *after* a candidate's
+//! directory walk (the gap between the directory and
+//! the end record, the gap after a signature record,
+//! and the three gaps inside a zip64 tail), where a
+//! planted directory was again the sole standing
+//! candidate; and the gap fill's strict-superset
+//! guard, which a plant whose declared local-offset
+//! set is *equal* to the real directory's escaped
+//! entirely (renamed, phantom, and truncated entries
+//! judged over the real ones). The walked extent
+//! accounts for the archive's tail as it accounts
+//! for its head and middle now — from the archive's
+//! start through the candidate's own end record —
+//! and the fill subordinates on judged facts, not
+//! offset sets alone: a candidate in another's
+//! extent whose records differ in any judged fact
+//! from the extent owner's records for the same
+//! offsets is the owner's bytes, while an exact
+//! mirror (no disagreement) judges identically
+//! either way and may stand. A host whose tail gaps
+//! make it underivable while its structures stand
+//! derives under a tail-gap derivation (the same
+//! repair class F2 gave the uncounted signature
+//! record), and the prefix-free view splices a
+//! judged archive's tail gaps out, so at the two
+//! locator-side zip64 gaps — whose clean hosts the
+//! reader refuses on the unspliced bytes — the view
+//! the doors hand the reader opens the real
+//! directory, and a plant standing in the gap is
+//! spliced away with it.
+//!
 //! This lives in ob-model, the lowest crate every zip
 //! door can reach, stated over raw bytes the way
 //! `read_capped` is stated over `Read`, so this crate
@@ -289,6 +321,35 @@ fn directory_walk_end(bytes: &[u8], cd_start: usize, total: u64) -> Option<usize
         at = extra_end.checked_add(comment_len)?;
     }
     Some(at)
+}
+
+/// The end of the directory walk starting at
+/// `cd_start`, and the end of the region that walk
+/// accounts for at its tail: the walk's own end, or
+/// the end of a digital-signature record standing
+/// there (its header and its declared data), when
+/// one stands and fits in the file. None when the
+/// walk does not complete.
+fn directory_walk_and_signature_end(
+    bytes: &[u8],
+    cd_start: usize,
+    total: u64,
+) -> Option<(usize, usize)> {
+    let walk_end = directory_walk_end(bytes, cd_start, total)?;
+    let mut extent_end = walk_end;
+    if walk_end < bytes.len() && bytes[walk_end..].starts_with(b"PK\x05\x05") {
+        if let Some(header_end) = walk_end.checked_add(6) {
+            if header_end <= bytes.len() {
+                let data_len = usize::from(u16_at(bytes, walk_end + 4));
+                if let Some(sig_end) = header_end.checked_add(data_len) {
+                    if sig_end <= bytes.len() {
+                        extent_end = sig_end;
+                    }
+                }
+            }
+        }
+    }
+    Some((walk_end, extent_end))
 }
 
 /// Whether a candidate directory is the real one, by
@@ -695,6 +756,195 @@ fn hunted_directory(bytes: &[u8], eocd: usize) -> Option<CentralDirectory> {
     None
 }
 
+/// The tail-gap derivation (round 40, F3): the one
+/// fallback for an archive whose end structures stand
+/// where its end record (or, for zip64, its locator)
+/// says they stand, but with unused bytes standing
+/// *after* the directory walk — between the directory
+/// and the end record, after a signature record at
+/// the walk's end, or inside a zip64 tail (directory
+/// to zip64 record, record to locator, locator to end
+/// record). The reader tolerates the plain and
+/// CD-side gaps — it locates the directory from the
+/// declared offsets and sizes, never by contiguity —
+/// so a host carrying one derived nothing while the
+/// reader served it, and a directory planted in the
+/// gap was the only candidate the scan derived. This
+/// derivation validates everything the arithmetic
+/// path and the hunt validate — the disk fields, the
+/// declared counts and sizes, a walk of the declared
+/// records whose length is exactly the declared
+/// directory size (a signature record at the walk's
+/// end counted in that size or not) — except tail
+/// contiguity: the walk's accounted end (the
+/// signature record's end, where one stands) must
+/// stand at or before the next end structure, and
+/// the bytes between are the archive's tail gap.
+/// Candidates are tried nearest the end record
+/// first, the way the tail itself is read: a
+/// directory standing nearer the archive's head
+/// validates only where the real directory nearer
+/// the end record does not, and the discipline at
+/// `central_directory` judges between every candidate
+/// that derives, this one included.
+fn tail_gap_directory(bytes: &[u8], eocd: usize) -> Option<CentralDirectory> {
+    let total_plain = u64::from(u16_at(bytes, eocd + 10));
+    let cd_size_plain = u64::from(u32_at(bytes, eocd + 12));
+    let cd_offset_plain = u64::from(u32_at(bytes, eocd + 16));
+    let zip64_needed = total_plain == u64::from(u16::MAX)
+        || cd_size_plain == u64::from(u32::MAX)
+        || cd_offset_plain == u64::from(u32::MAX);
+    if zip64_needed {
+        return tail_gap_zip64_directory(bytes, eocd);
+    }
+    if !plain_disk_fields_agree(bytes, eocd) {
+        return None;
+    }
+    let total = total_plain;
+    let cd_size = usize::try_from(cd_size_plain).ok()?;
+    if total == 0 || cd_size == 0 {
+        return None;
+    }
+    // The directory's first record stands at or after
+    // its declared offset in file coordinates (the
+    // hunt's own starting point), and its accounted
+    // end stands at or before the end record.
+    let first = usize::try_from(cd_offset_plain).ok()?;
+    let last = eocd.checked_sub(cd_size)?;
+    if last < first {
+        return None;
+    }
+    let mut at = last;
+    loop {
+        if bytes[at..].starts_with(b"PK\x01\x02") {
+            if let Some((walk_end, extent_end)) = directory_walk_and_signature_end(bytes, at, total)
+            {
+                let walked = walk_end - at;
+                let accounted = extent_end - at;
+                if (walked == cd_size || accounted == cd_size) && extent_end <= eocd {
+                    let archive_offset = u64::try_from(at).ok()?.checked_sub(cd_offset_plain)?;
+                    return Some(CentralDirectory {
+                        archive_offset,
+                        cd_start: at,
+                        total,
+                    });
+                }
+            }
+        }
+        if at == first {
+            return None;
+        }
+        at -= 1;
+    }
+}
+
+/// The zip64 arm of the tail-gap derivation: the
+/// locator stands somewhere before the end record —
+/// immediately before it on a contiguous tail,
+/// earlier where a gap stands between them — and the
+/// zip64 record stands somewhere before its locator,
+/// with gaps allowed on both sides. Nearest the end
+/// record first, as on the plain arm.
+fn tail_gap_zip64_directory(bytes: &[u8], eocd: usize) -> Option<CentralDirectory> {
+    if eocd < 20 {
+        return None;
+    }
+    let mut locator_at = eocd - 20;
+    loop {
+        if bytes[locator_at..].starts_with(b"PK\x06\x07") {
+            if let Some(directory) = tail_gap_zip64_at_locator(bytes, locator_at) {
+                return Some(directory);
+            }
+        }
+        if locator_at == 0 {
+            return None;
+        }
+        locator_at -= 1;
+    }
+}
+
+/// One locator candidate for the tail-gap zip64
+/// derivation, at `locator_at`: the zip64 record it
+/// names, validated the hunt's way but with the gaps
+/// on either side of it allowed — its own declared
+/// length (fixed part plus any extensible data
+/// sector) must end at or before the locator, its
+/// disk fields must agree, the archive offset its
+/// position implies is the one its directory fields
+/// are read through, and the directory those fields
+/// name must walk exactly its declared size and end
+/// at or before the record's own position.
+fn tail_gap_zip64_at_locator(bytes: &[u8], locator_at: usize) -> Option<CentralDirectory> {
+    let declared_record = u64_at(bytes, locator_at + 8);
+    if locator_at < 56 {
+        return None;
+    }
+    let mut record_at = locator_at - 56;
+    loop {
+        if bytes[record_at..].starts_with(b"PK\x06\x06") {
+            if let Some(directory) =
+                tail_gap_zip64_record(bytes, record_at, locator_at, declared_record)
+            {
+                return Some(directory);
+            }
+        }
+        if record_at == 0 {
+            return None;
+        }
+        record_at -= 1;
+    }
+}
+
+/// One zip64 record candidate for the tail-gap
+/// derivation, at `record_at`, against the locator at
+/// `locator_at` declaring it at `declared_record` (in
+/// the archive's own coordinates).
+fn tail_gap_zip64_record(
+    bytes: &[u8],
+    record_at: usize,
+    locator_at: usize,
+    declared_record: u64,
+) -> Option<CentralDirectory> {
+    let fixed_end = record_at.checked_add(56)?;
+    if fixed_end > bytes.len() {
+        return None;
+    }
+    let size_field = u64_at(bytes, record_at + 4);
+    if size_field < 44 {
+        return None;
+    }
+    let record_len = usize::try_from(size_field.checked_add(12)?).ok()?;
+    if record_at.checked_add(record_len)? > locator_at {
+        return None;
+    }
+    if !zip64_disk_fields_agree(bytes, record_at, locator_at) {
+        return None;
+    }
+    let archive_offset = u64::try_from(record_at)
+        .ok()?
+        .checked_sub(declared_record)?;
+    let total = u64_at(bytes, record_at + 32);
+    let cd_size = u64_at(bytes, record_at + 40);
+    let cd_offset = u64_at(bytes, record_at + 48);
+    if total == 0 {
+        return None;
+    }
+    let cd_start = usize::try_from(cd_offset.checked_add(archive_offset)?).ok()?;
+    let (walk_end, extent_end) = directory_walk_and_signature_end(bytes, cd_start, total)?;
+    let cd_size = usize::try_from(cd_size).ok()?;
+    if walk_end - cd_start != cd_size && extent_end - cd_start != cd_size {
+        return None;
+    }
+    if extent_end > record_at {
+        return None;
+    }
+    Some(CentralDirectory {
+        archive_offset,
+        cd_start,
+        total,
+    })
+}
+
 /// The byte span one central spot's local header
 /// occupies in `bytes`, computed from the local
 /// header's own fields alone — its fixed thirty
@@ -843,19 +1093,8 @@ fn directory_walked_spans(bytes: &[u8], directory: &CentralDirectory) -> Vec<(us
 /// candidate's bytes the way its accounted spans
 /// are. None when the walk does not complete.
 fn directory_walked_extent(bytes: &[u8], directory: &CentralDirectory) -> Option<(usize, usize)> {
-    let walk_end = directory_walk_end(bytes, directory.cd_start, directory.total)?;
-    let mut extent_end = walk_end;
-    if walk_end < bytes.len() && bytes[walk_end..].starts_with(b"PK\x05\x05") {
-        let header_end = walk_end.checked_add(6)?;
-        if header_end <= bytes.len() {
-            let data_len = usize::from(u16_at(bytes, walk_end + 4));
-            if let Some(sig_end) = header_end.checked_add(data_len) {
-                if sig_end <= bytes.len() {
-                    extent_end = sig_end;
-                }
-            }
-        }
-    }
+    let (_, extent_end) =
+        directory_walk_and_signature_end(bytes, directory.cd_start, directory.total)?;
     let archive_start = usize::try_from(directory.archive_offset).ok()?;
     if archive_start > extent_end {
         return None;
@@ -908,6 +1147,130 @@ fn directory_local_offsets(bytes: &[u8], directory: &CentralDirectory) -> Vec<u6
         }
     }
     offsets
+}
+
+/// Every judged fact one candidate's walk declares,
+/// record by record, in walk order: the decoded name
+/// and the spot (method, compressed size, checksum,
+/// local offset in the file's own coordinates) of
+/// each record its directory holds. Two candidates
+/// over one body of local headers are told apart by
+/// these facts where their offset sets agree (round
+/// 40, F4): a planted directory whose records rename
+/// an entry, invent one at an offset already named,
+/// or truncate a declared size declares the same
+/// offsets as the real directory and different facts.
+fn directory_record_facts(
+    bytes: &[u8],
+    directory: &CentralDirectory,
+) -> Vec<(String, CentralSpot)> {
+    let mut facts = Vec::new();
+    let mut at = directory.cd_start;
+    for _ in 0..directory.total {
+        let header_end = match at.checked_add(46) {
+            Some(end) => end,
+            None => break,
+        };
+        if header_end > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
+            break;
+        }
+        let name_len = usize::from(u16_at(bytes, at + 28));
+        let extra_len = usize::from(u16_at(bytes, at + 30));
+        let comment_len = usize::from(u16_at(bytes, at + 32));
+        let name_end = match header_end.checked_add(name_len) {
+            Some(end) => end,
+            None => break,
+        };
+        let extra_end = match name_end.checked_add(extra_len) {
+            Some(end) => end,
+            None => break,
+        };
+        if extra_end > bytes.len() {
+            break;
+        }
+        let header = &bytes[at..header_end];
+        let extra = &bytes[name_end..extra_end];
+        let flags = u16_at(bytes, at + 8);
+        let name = decode_entry_name(&bytes[header_end..name_end], flags);
+        let mut spot = raw_spot(header, extra);
+        spot.local_offset = spot.local_offset.saturating_add(directory.archive_offset);
+        facts.push((name, spot));
+        match extra_end.checked_add(comment_len) {
+            Some(next) => at = next,
+            None => break,
+        }
+    }
+    facts
+}
+
+/// Whether two candidates' record facts disagree in
+/// any judged fact, compared per local offset (round
+/// 40, F4): for every offset the first candidate
+/// declares, the records it declares there — their
+/// count, order, names, and spots — against the
+/// records the second declares there. An exact
+/// mirror (no offset's records differ) does not
+/// disagree: it judges identically whichever
+/// candidate stands, so subordinating it would cost
+/// the standing mirror disciplines (an appended or
+/// comment-planted copy over a duplicate-free body)
+/// their real candidate for nothing.
+fn record_facts_differ(mine: &[(String, CentralSpot)], theirs: &[(String, CentralSpot)]) -> bool {
+    if mine.len() != theirs.len() {
+        return true;
+    }
+    let mut offsets: Vec<u64> = Vec::new();
+    for (_, spot) in mine.iter().chain(theirs.iter()) {
+        if !offsets.contains(&spot.local_offset) {
+            offsets.push(spot.local_offset);
+        }
+    }
+    offsets.iter().any(|offset| {
+        let mine_at: Vec<&(String, CentralSpot)> = mine
+            .iter()
+            .filter(|(_, spot)| spot.local_offset == *offset)
+            .collect();
+        let theirs_at: Vec<&(String, CentralSpot)> = theirs
+            .iter()
+            .filter(|(_, spot)| spot.local_offset == *offset)
+            .collect();
+        mine_at != theirs_at
+    })
+}
+
+/// Whether the gap fill of the candidate owning
+/// `owner_offsets` / `owner_facts` subordinates the
+/// candidate declaring `plant_offsets` / `plant_facts`
+/// (round 39, F1, with the round-40 F4 rule): the
+/// owner's walk must account for every local header
+/// the plant's walk accounts for, and the plant must
+/// be the owner's bytes rather than its equal — the
+/// owner accounts for at least one header more (the
+/// strict-superset guard that keeps an appended
+/// second directory from swallowing the real one),
+/// or the two candidates' records differ in any
+/// judged fact for the offsets they share, in which
+/// case the plant is a rewriting of the owner's
+/// records, not a copy of them.
+fn gap_fill_subordinates(
+    plant_offsets: &[u64],
+    plant_facts: &[(String, CentralSpot)],
+    owner_offsets: &[u64],
+    owner_facts: &[(String, CentralSpot)],
+) -> bool {
+    if !plant_offsets
+        .iter()
+        .all(|offset| owner_offsets.contains(offset))
+    {
+        return false;
+    }
+    if owner_offsets
+        .iter()
+        .any(|offset| !plant_offsets.contains(offset))
+    {
+        return true;
+    }
+    record_facts_differ(plant_facts, owner_facts)
 }
 
 /// The byte spans one candidate directory's declared
@@ -1094,15 +1457,43 @@ fn zip64_structural_span(
 /// the signature allowance, so the real candidate
 /// stands and the plant inside that signature
 /// record is subordinated as on plain hosts.
+///
+/// Round 40, F3 + F4: the walked extent runs from
+/// the candidate's archive start through its own end
+/// record now — the post-directory gaps and, for
+/// zip64, the structural records and the gaps
+/// between them are the candidate's bytes the way
+/// the gaps before its directory are — and a host
+/// whose tail gaps make it underivable while its
+/// end structures stand derives under the tail-gap
+/// derivation (`tail_gap_directory`), so the real
+/// candidate stands and a plant in the tail is
+/// subordinated. The fill's accounting guard judges
+/// record facts, not offset sets alone: a candidate
+/// in the extent whose records differ in any judged
+/// fact from the extent owner's records for the
+/// same offsets is subordinated even where its
+/// declared offset set equals the owner's, while an
+/// exact mirror — no judged fact differing — judges
+/// identically either way and may stand.
 pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
+    judged_directory(bytes).map(|(_, directory)| directory)
+}
+
+/// The discipline above, returning the standing
+/// candidate with the position of the end record it
+/// was derived under: `prefix_free` lays the judged
+/// archive's tail out from that position.
+fn judged_directory(bytes: &[u8]) -> Option<(usize, CentralDirectory)> {
     // Every candidate that derives, in file order,
     // with the span its declared comment covers:
     // (end record position, comment start, comment
     // end, the directory it derives).
     let mut derived: Vec<(usize, usize, usize, CentralDirectory)> = Vec::new();
     for eocd in end_record_candidates(bytes) {
-        let Some(directory) =
-            arithmetic_directory(bytes, eocd).or_else(|| hunted_directory(bytes, eocd))
+        let Some(directory) = arithmetic_directory(bytes, eocd)
+            .or_else(|| hunted_directory(bytes, eocd))
+            .or_else(|| tail_gap_directory(bytes, eocd))
         else {
             continue;
         };
@@ -1138,13 +1529,29 @@ pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
         .iter()
         .map(|(_, _, _, directory)| directory_walked_spans(bytes, directory))
         .collect();
+    // The walked extent run through the candidate's
+    // own end record (round 40, F3): the tail gaps and
+    // the zip64 end structures standing between the
+    // walk's end and that end record are the
+    // candidate's bytes the way its gaps before the
+    // directory are, so a candidate planted anywhere
+    // in the tail stands inside the extent — judged,
+    // as every fill is, by the accounting guard below.
     let walked_extents: Vec<Option<(usize, usize)>> = derived
         .iter()
-        .map(|(_, _, _, directory)| directory_walked_extent(bytes, directory))
+        .map(|(eocd, _, _, directory)| {
+            directory_walked_extent(bytes, directory)
+                .filter(|(start, _)| *start <= *eocd)
+                .map(|(start, _)| (start, *eocd))
+        })
         .collect();
     let local_offsets: Vec<Vec<u64>> = derived
         .iter()
         .map(|(_, _, _, directory)| directory_local_offsets(bytes, directory))
+        .collect();
+    let record_facts: Vec<Vec<(String, CentralSpot)>> = derived
+        .iter()
+        .map(|(_, _, _, directory)| directory_record_facts(bytes, directory))
         .collect();
     for (i, (at, _, _, directory)) in derived.iter().enumerate() {
         if absorbed[i] {
@@ -1170,47 +1577,200 @@ pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
                         .any(|(start, end)| at >= start && at < end)
                     || zip64_spans[j].is_some_and(|(start, end)| *at >= start && *at < end)
                     // The walked extent's gap fill
-                    // (round 39, F1): this candidate's
-                    // end record stands between the
-                    // other candidate's archive start
-                    // and the end of its walk, in a gap
-                    // no accounted span covers — and
-                    // the other candidate's walk
-                    // accounts for every local header
-                    // this candidate's walk accounts
-                    // for, and at least one more. The
-                    // accounting guard is what keeps an
-                    // appended second directory from
-                    // swallowing the real one: the
-                    // appended directory names only the
+                    // (round 39, F1, extended round 40,
+                    // F3 + F4): this candidate's end
+                    // record stands between the other
+                    // candidate's archive start and its
+                    // own end record — the extent runs
+                    // through the tail now, so the post-
+                    // walk gaps and the zip64 end
+                    // structures are filled the way the
+                    // gaps before the directory are —
+                    // in a region no accounted span
+                    // covers, and the other candidate's
+                    // walk accounts for this candidate
+                    // as `gap_fill_subordinates` states:
+                    // every local header this candidate
+                    // accounts for, and either at least
+                    // one more (the strict-superset
+                    // guard that keeps an appended
+                    // second directory from swallowing
+                    // the real one — it names only the
                     // first copies' headers, so the
                     // directory that accounts for them
-                    // all is not inside its fill, while
-                    // a directory planted in the real
-                    // archive's gap names nothing the
-                    // real walk does not. The guard is
-                    // strict — a second directory that
-                    // mirrors the real one's headers
-                    // exactly (an appended or
-                    // comment-planted copy over a body
-                    // with no duplicates) accounts for
-                    // no more than the real one, and
+                    // all is not inside its fill) or a
+                    // record-level disagreement in any
+                    // judged fact for the offsets they
+                    // share (round 40, F4: a plant whose
+                    // declared offset set *equals* the
+                    // real directory's, renaming an
+                    // entry, inventing one at a named
+                    // offset, or truncating a declared
+                    // size, is the extent owner's bytes,
+                    // not its directory). A second
+                    // directory that mirrors the real
+                    // one's records exactly — same
+                    // offsets, no judged fact differing
+                    // (an appended or comment-planted
+                    // copy over a body with no
+                    // duplicates) — is subordinated by
+                    // neither arm: it judges identically
+                    // to the real one either way, and
                     // its fill swallows nothing.
                     || (walked_extents[j]
                         .is_some_and(|(start, end)| *at >= start && *at < end)
-                        && local_offsets[i]
-                            .iter()
-                            .all(|offset| local_offsets[j].contains(offset))
-                        && local_offsets[j]
-                            .iter()
-                            .any(|offset| !local_offsets[i].contains(offset))))
+                        && gap_fill_subordinates(
+                            &local_offsets[i],
+                            &record_facts[i],
+                            &local_offsets[j],
+                            &record_facts[j],
+                        )))
         });
         if in_structural {
             continue;
         }
-        return Some(*directory);
+        return Some((*at, *directory));
     }
     None
+}
+
+/// The judged archive's tail layout (round 40, F3):
+/// where its directory walk's accounted end stands,
+/// and — for a zip64 archive — where its zip64 record
+/// (with any extensible data sector, `record_len`
+/// long in all) and its locator stand, validated
+/// against the judged directory the way the tail-gap
+/// derivation validates them. None when the layout
+/// cannot be stated (a judged directory whose walk
+/// does not complete, or whose zip64 end structures
+/// do not stand in its tail): the view then keeps the
+/// archive's bytes as they stand.
+enum TailLayout {
+    Plain {
+        extent_end: usize,
+    },
+    Zip64 {
+        extent_end: usize,
+        record_at: usize,
+        record_len: usize,
+        locator_at: usize,
+    },
+}
+
+fn tail_layout(bytes: &[u8], eocd: usize, directory: &CentralDirectory) -> Option<TailLayout> {
+    let (walk_end, extent_end) =
+        directory_walk_and_signature_end(bytes, directory.cd_start, directory.total)?;
+    let total_plain = u64::from(u16_at(bytes, eocd + 10));
+    let cd_size_plain = u64::from(u32_at(bytes, eocd + 12));
+    let cd_offset_plain = u64::from(u32_at(bytes, eocd + 16));
+    let zip64_needed = total_plain == u64::from(u16::MAX)
+        || cd_size_plain == u64::from(u32::MAX)
+        || cd_offset_plain == u64::from(u32::MAX);
+    if !zip64_needed {
+        return Some(TailLayout::Plain { extent_end });
+    }
+    // The locator nearest the end record whose named
+    // record validates against the judged directory.
+    if eocd < 20 {
+        return None;
+    }
+    let mut locator_at = eocd - 20;
+    loop {
+        if bytes[locator_at..].starts_with(b"PK\x06\x07") {
+            let declared_record = u64_at(bytes, locator_at + 8);
+            if locator_at >= 56 {
+                let mut record_at = locator_at - 56;
+                loop {
+                    if bytes[record_at..].starts_with(b"PK\x06\x06") {
+                        if let Some(record_len) = zip64_record_layout_at(
+                            bytes,
+                            record_at,
+                            locator_at,
+                            declared_record,
+                            directory,
+                            walk_end,
+                            extent_end,
+                        ) {
+                            return Some(TailLayout::Zip64 {
+                                extent_end,
+                                record_at,
+                                record_len,
+                                locator_at,
+                            });
+                        }
+                    }
+                    if record_at == 0 {
+                        break;
+                    }
+                    record_at -= 1;
+                }
+            }
+        }
+        if locator_at == 0 {
+            return None;
+        }
+        locator_at -= 1;
+    }
+}
+
+/// The declared length of the zip64 record at
+/// `record_at` when it is the judged directory's own
+/// record: the locator at `locator_at` declares it at
+/// `declared_record`, its disk fields agree, its
+/// fields name the judged directory (its total, and
+/// its directory offset read through the judged
+/// archive offset landing on the judged directory's
+/// start, its directory size the walk's length,
+/// counted signature record included or not), and
+/// its declared length ends at or before the
+/// locator.
+fn zip64_record_layout_at(
+    bytes: &[u8],
+    record_at: usize,
+    locator_at: usize,
+    declared_record: u64,
+    directory: &CentralDirectory,
+    walk_end: usize,
+    extent_end: usize,
+) -> Option<usize> {
+    let fixed_end = record_at.checked_add(56)?;
+    if fixed_end > bytes.len() {
+        return None;
+    }
+    let size_field = u64_at(bytes, record_at + 4);
+    if size_field < 44 {
+        return None;
+    }
+    let record_len = usize::try_from(size_field.checked_add(12)?).ok()?;
+    if record_at.checked_add(record_len)? > locator_at {
+        return None;
+    }
+    if !zip64_disk_fields_agree(bytes, record_at, locator_at) {
+        return None;
+    }
+    let archive_offset = u64::try_from(record_at)
+        .ok()?
+        .checked_sub(declared_record)?;
+    if archive_offset != directory.archive_offset {
+        return None;
+    }
+    if u64_at(bytes, record_at + 32) != directory.total {
+        return None;
+    }
+    let cd_size = u64_at(bytes, record_at + 40);
+    let cd_offset = u64_at(bytes, record_at + 48);
+    if cd_offset.checked_add(archive_offset)? != u64::try_from(directory.cd_start).ok()? {
+        return None;
+    }
+    if cd_size != u64::try_from(walk_end - directory.cd_start).ok()?
+        && cd_size != u64::try_from(extent_end - directory.cd_start).ok()?
+    {
+        return None;
+    }
+    if extent_end > record_at {
+        return None;
+    }
+    Some(record_len)
 }
 
 /// The prefix-free view of an archive: the same bytes
@@ -1223,17 +1783,79 @@ pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
 /// its reader and its scans. Borrowed, unchanged, when
 /// no junk precedes the archive or no directory can be
 /// derived.
+///
+/// Round 40, F3: the view also splices the judged
+/// archive's tail gaps out — the bytes from the
+/// directory walk's accounted end through its own end
+/// record are laid out contiguously (the zip64
+/// record and locator, where they stand, moved up
+/// against the walk's end and each other, the
+/// locator's declared record offset rewritten to the
+/// record's position in the view; the end record and
+/// its comment follow). Every position a central
+/// record names stands before the walk's end, so no
+/// judged fact moves; what the splice removes is the
+/// unaccounted tail bytes — a plant standing in them
+/// included — and what it restores is the reader at
+/// the two locator-side zip64 gaps, whose clean hosts
+/// it refuses on the unspliced bytes (its zip64
+/// checks are contiguity checks) while a plant there
+/// used to make it open the planted directory
+/// instead. A tail already contiguous is never
+/// spliced: the view is the archive's own bytes, cut
+/// at its start as always.
 pub fn prefix_free(bytes: &[u8]) -> Cow<'_, [u8]> {
-    let Some(directory) = central_directory(bytes) else {
+    let Some((eocd, directory)) = judged_directory(bytes) else {
         return Cow::Borrowed(bytes);
     };
     let Ok(start) = usize::try_from(directory.archive_offset) else {
         return Cow::Borrowed(bytes);
     };
-    if start == 0 || start > bytes.len() {
+    if start > bytes.len() {
         return Cow::Borrowed(bytes);
     }
-    Cow::Owned(bytes[start..].to_vec())
+    let contiguous_view = |start: usize| {
+        if start == 0 {
+            Cow::Borrowed(bytes)
+        } else {
+            Cow::Owned(bytes[start..].to_vec())
+        }
+    };
+    let Some(layout) = tail_layout(bytes, eocd, &directory) else {
+        return contiguous_view(start);
+    };
+    let comment_end = eocd + 22 + usize::from(u16_at(bytes, eocd + 20));
+    match layout {
+        TailLayout::Plain { extent_end } => {
+            if extent_end == eocd {
+                return contiguous_view(start);
+            }
+            let mut view = bytes[start..extent_end].to_vec();
+            view.extend_from_slice(&bytes[eocd..comment_end]);
+            Cow::Owned(view)
+        }
+        TailLayout::Zip64 {
+            extent_end,
+            record_at,
+            record_len,
+            locator_at,
+        } => {
+            if extent_end == record_at
+                && record_at + record_len == locator_at
+                && locator_at + 20 == eocd
+            {
+                return contiguous_view(start);
+            }
+            let mut view = bytes[start..extent_end].to_vec();
+            view.extend_from_slice(&bytes[record_at..record_at + record_len]);
+            let mut locator = bytes[locator_at..locator_at + 20].to_vec();
+            let record_in_view = u64::try_from(extent_end - start).unwrap_or(u64::MAX);
+            locator[8..16].copy_from_slice(&record_in_view.to_le_bytes());
+            view.extend_from_slice(&locator);
+            view.extend_from_slice(&bytes[eocd..comment_end]);
+            Cow::Owned(view)
+        }
+    }
 }
 
 /// Where one central record's entry payload stands
@@ -3355,5 +3977,360 @@ mod tests {
                 "{shape}: the second copy's own record stands in the judged directory"
             );
         }
+    }
+
+    /// One Stored local header plus payload, in the
+    /// round-40 crafters' shape.
+    fn r40a_local(name: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name);
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// One central record in the round-40 crafters'
+    /// shape: Stored, no extra, no comment, the
+    /// declared compressed size stated outright (the
+    /// trunc craft declares a size the entry does not
+    /// carry).
+    fn r40a_central(name: &[u8], local_offset: u32, comp: u32, uncomp: u32) -> Vec<u8> {
+        let mut rec: Vec<u8> = Vec::new();
+        rec.extend_from_slice(b"PK\x01\x02");
+        rec.extend_from_slice(&45u16.to_le_bytes());
+        rec.extend_from_slice(&20u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u32.to_le_bytes());
+        rec.extend_from_slice(&comp.to_le_bytes());
+        rec.extend_from_slice(&uncomp.to_le_bytes());
+        rec.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u32.to_le_bytes());
+        rec.extend_from_slice(&local_offset.to_le_bytes());
+        rec.extend_from_slice(name);
+        rec
+    }
+
+    /// The round-40 tail crafts (red team RT40-A),
+    /// assembled byte by byte over Stored entries
+    /// a.txt in two disagreeing copies and a filler:
+    /// a 5,000-byte gap standing in one of the five
+    /// regions after the directory walk — between the
+    /// central directory and the end record
+    /// ("postcd"), after a signature record standing
+    /// at the walk's end ("sig"), or inside a zip64
+    /// tail, between the directory and the zip64
+    /// record ("z64gapcd"), between the zip64 record
+    /// and its locator ("z64gaprec"), or between the
+    /// locator and the end record ("z64gaploc") —
+    /// with ("-plant") or without ("-clean") a
+    /// complete fake directory (the first copies'
+    /// records plus its own end record) planted at
+    /// the gap's head. Returns the bytes and the real
+    /// directory's start.
+    fn r40a_tail_archive(shape: &str) -> (Vec<u8>, usize) {
+        let entries: [(&[u8], &[u8]); 3] = [
+            (b"a.txt", b"first copy"),
+            (b"a.txt", b"second copy!"),
+            (b"filler.bin", &[b'A'; 600]),
+        ];
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries {
+            locals.push(body.len() as u32);
+            body.extend_from_slice(&r40a_local(name, data));
+        }
+        let cd_start = body.len();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&r40a_central(
+                name,
+                locals[i],
+                data.len() as u32,
+                data.len() as u32,
+            ));
+        }
+        let cd_end = cd_start + centrals.len();
+        // The fake directory: the first copy's record
+        // for every name, in archive order, plus its
+        // own end record.
+        let mut fake_recs: Vec<u8> = Vec::new();
+        let mut fake_total: u16 = 0;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            if entries[..i].iter().any(|(other, _)| other == name) {
+                continue;
+            }
+            fake_recs.extend_from_slice(&r40a_central(
+                name,
+                locals[i],
+                data.len() as u32,
+                data.len() as u32,
+            ));
+            fake_total += 1;
+        }
+        let plant = |host: &mut Vec<u8>, at: usize| {
+            host[at..at + fake_recs.len()].copy_from_slice(&fake_recs);
+            let eocd = plain_eocd(fake_total, fake_recs.len() as u32, at as u32, 0, &[]);
+            host[at + fake_recs.len()..at + fake_recs.len() + 22].copy_from_slice(&eocd);
+        };
+        let zip64_tail = |host: &mut Vec<u8>, gap1: usize, gap2: usize, gap3: usize| {
+            host.extend_from_slice(&vec![b'G'; gap1]);
+            let record_at = host.len() as u64;
+            host.extend_from_slice(b"PK\x06\x06");
+            host.extend_from_slice(&44u64.to_le_bytes());
+            host.extend_from_slice(&45u16.to_le_bytes());
+            host.extend_from_slice(&45u16.to_le_bytes());
+            host.extend_from_slice(&0u32.to_le_bytes());
+            host.extend_from_slice(&0u32.to_le_bytes());
+            host.extend_from_slice(&3u64.to_le_bytes());
+            host.extend_from_slice(&3u64.to_le_bytes());
+            host.extend_from_slice(&(centrals.len() as u64).to_le_bytes());
+            host.extend_from_slice(&(cd_start as u64).to_le_bytes());
+            host.extend_from_slice(&vec![b'G'; gap2]);
+            host.extend_from_slice(b"PK\x06\x07");
+            host.extend_from_slice(&0u32.to_le_bytes());
+            host.extend_from_slice(&record_at.to_le_bytes());
+            host.extend_from_slice(&1u32.to_le_bytes());
+            host.extend_from_slice(&vec![b'G'; gap3]);
+            host.extend_from_slice(b"PK\x05\x06");
+            host.extend_from_slice(&0u16.to_le_bytes());
+            host.extend_from_slice(&0u16.to_le_bytes());
+            host.extend_from_slice(&u16::MAX.to_le_bytes());
+            host.extend_from_slice(&u16::MAX.to_le_bytes());
+            host.extend_from_slice(&u32::MAX.to_le_bytes());
+            host.extend_from_slice(&u32::MAX.to_le_bytes());
+            host.extend_from_slice(&0u16.to_le_bytes());
+        };
+        let mut out = body;
+        out.extend_from_slice(&centrals);
+        match shape {
+            "postcd-clean" | "postcd-plant" => {
+                out.extend_from_slice(&vec![b'G'; 5000]);
+                out.extend_from_slice(&plain_eocd(
+                    3,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    0,
+                    &[],
+                ));
+                if shape == "postcd-plant" {
+                    plant(&mut out, cd_end + 100);
+                }
+            }
+            "sig-clean" | "sig-plant" => {
+                out.extend_from_slice(b"PK\x05\x05");
+                out.extend_from_slice(&100u16.to_le_bytes());
+                out.extend_from_slice(&[b'S'; 100]);
+                out.extend_from_slice(&vec![b'G'; 5000]);
+                out.extend_from_slice(&plain_eocd(
+                    3,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    0,
+                    &[],
+                ));
+                if shape == "sig-plant" {
+                    plant(&mut out, cd_end + 106 + 100);
+                }
+            }
+            "z64gapcd-clean" | "z64gapcd-plant" => {
+                zip64_tail(&mut out, 5000, 0, 0);
+                if shape == "z64gapcd-plant" {
+                    plant(&mut out, cd_end + 100);
+                }
+            }
+            "z64gaprec-clean" | "z64gaprec-plant" => {
+                zip64_tail(&mut out, 0, 5000, 0);
+                if shape == "z64gaprec-plant" {
+                    plant(&mut out, cd_end + 56 + 100);
+                }
+            }
+            "z64gaploc-clean" | "z64gaploc-plant" => {
+                zip64_tail(&mut out, 0, 0, 5000);
+                if shape == "z64gaploc-plant" {
+                    plant(&mut out, cd_end + 56 + 20 + 100);
+                }
+            }
+            _ => unreachable!("unknown shape {shape}"),
+        }
+        (out, cd_start)
+    }
+
+    #[test]
+    fn r40a_a_directory_planted_after_the_directory_walk_never_steers_and_tail_gap_hosts_derive() {
+        // Round 40, F3 (red team RT40-A): everything
+        // after a candidate's directory walk was
+        // unaccounted, and the pattern of the earlier
+        // generations repeated in the archive's tail.
+        // A host whose tail carries a 5,000-byte gap
+        // in any of the five post-walk regions derived
+        // nothing while the reader served it (the
+        // plain and CD-side zip64 gaps) or while the
+        // reader served a plant standing in the gap
+        // (the locator-side zip64 gaps, whose clean
+        // hosts the reader refuses outright on the
+        // unspliced bytes); and a fake directory
+        // planted in the gap was the sole standing
+        // candidate and steered every door. The real
+        // directory is derived and judged in every
+        // shape now, the second copy under its own
+        // record, and the prefix-free view the doors
+        // hand the reader derives the same directory
+        // — on the locator-side zip64 shapes the view
+        // is the spliced tail the reader can open, so
+        // the clean hosts serve through the doors and
+        // the planted hosts judge the real,
+        // duplicate-bearing directory there too.
+        for shape in [
+            "postcd-clean",
+            "postcd-plant",
+            "sig-clean",
+            "sig-plant",
+            "z64gapcd-clean",
+            "z64gapcd-plant",
+            "z64gaprec-clean",
+            "z64gaprec-plant",
+            "z64gaploc-clean",
+            "z64gaploc-plant",
+        ] {
+            let (bytes, cd_start) = r40a_tail_archive(shape);
+            let directory = central_directory(&bytes).expect("the real directory derives");
+            assert_eq!(directory.archive_offset, 0, "{shape}");
+            assert_eq!(directory.total, 3, "{shape}");
+            assert_eq!(directory.cd_start, cd_start, "{shape}");
+            let spots = central_spots(&bytes);
+            let names: Vec<&str> = spots.iter().map(|(name, _)| name.as_str()).collect();
+            assert_eq!(names, ["a.txt", "a.txt", "filler.bin"], "{shape}");
+            assert_eq!(spots[0].1.comp_size, 10, "{shape}: the first copy's record");
+            assert_eq!(
+                spots[1].1.comp_size, 12,
+                "{shape}: the second copy's own record stands in the judged directory"
+            );
+            let first_span = payload_span(&bytes, &spots[0].1).expect("the first payload");
+            assert_eq!(&bytes[first_span.0..first_span.1], b"first copy", "{shape}");
+            let second_span = payload_span(&bytes, &spots[1].1).expect("the second payload");
+            assert_eq!(
+                &bytes[second_span.0..second_span.1],
+                b"second copy!",
+                "{shape}"
+            );
+            let view = prefix_free(&bytes);
+            let view_directory =
+                central_directory(&view).expect("the prefix-free view derives its directory");
+            assert_eq!(view_directory.archive_offset, 0, "{shape}");
+            assert_eq!(view_directory.total, 3, "{shape}");
+            assert_eq!(view_directory.cd_start, cd_start, "{shape}");
+            let view_spots = central_spots(&view);
+            let view_names: Vec<&str> = view_spots.iter().map(|(name, _)| name.as_str()).collect();
+            assert_eq!(view_names, ["a.txt", "a.txt", "filler.bin"], "{shape}");
+        }
+    }
+
+    /// The round-40 equal-set crafts (review R40-R5),
+    /// assembled byte by byte: one real entry
+    /// a.txt = "real data", a 400-byte gap between
+    /// its payload and the real directory, and inside
+    /// the gap a fake directory whose records declare
+    /// exactly the real directory's local-offset set
+    /// ({0}) — "rename" naming offset 0 as evil.txt,
+    /// "phantom" carrying two records at offset 0,
+    /// "trunc" declaring a compressed size of 4 for
+    /// the 9-byte entry, "mirror" carrying an exact
+    /// copy of the real record. "clean" carries no
+    /// plant. The real directory stands at 444 in
+    /// every shape.
+    fn r40a_gap_set_archive(shape: &str) -> Vec<u8> {
+        let name: &[u8] = b"a.txt";
+        let data: &[u8] = b"real data";
+        let mut body: Vec<u8> = Vec::new();
+        body.extend_from_slice(&r40a_local(name, data));
+        let gap_start = body.len();
+        body.extend_from_slice(&vec![b'G'; 400]);
+        let fake_cd_at = gap_start + 16;
+        let fake_recs: Vec<u8> = match shape {
+            "rename" => r40a_central(b"evil.txt", 0, 9, 9),
+            "phantom" => {
+                let mut recs = r40a_central(name, 0, 9, 9);
+                recs.extend_from_slice(&r40a_central(b"evil.txt", 0, 9, 9));
+                recs
+            }
+            "trunc" => r40a_central(name, 0, 4, 4),
+            "mirror" => r40a_central(name, 0, 9, 9),
+            _ => Vec::new(),
+        };
+        if shape != "clean" {
+            let total: u16 = if shape == "phantom" { 2 } else { 1 };
+            body[fake_cd_at..fake_cd_at + fake_recs.len()].copy_from_slice(&fake_recs);
+            let eocd = plain_eocd(total, fake_recs.len() as u32, fake_cd_at as u32, 0, &[]);
+            let eocd_at = fake_cd_at + fake_recs.len();
+            body[eocd_at..eocd_at + 22].copy_from_slice(&eocd);
+        }
+        let cd_start = body.len();
+        assert_eq!(cd_start, 444, "the craft's real directory stands at 444");
+        let real_rec = r40a_central(name, 0, 9, 9);
+        let cd_size = real_rec.len() as u32;
+        body.extend_from_slice(&real_rec);
+        body.extend_from_slice(&plain_eocd(1, cd_size, cd_start as u32, 0, &[]));
+        body
+    }
+
+    #[test]
+    fn r40a_an_equal_offset_set_plant_in_the_gap_before_the_directory_never_steers() {
+        // Round 40, F4 (review R40-R5): the walked
+        // extent's gap fill subordinated a plant only
+        // where the filling candidate accounted for
+        // every local header the plant accounted for
+        // and at least one more, so a plant inside the
+        // gap before the directory whose declared
+        // offset set is EQUAL to the real directory's
+        // escaped the guard entirely and steered the
+        // scan — renamed, phantom, and truncated
+        // entries judged while the reader served the
+        // real archive. A candidate standing in
+        // another candidate's walked extent whose
+        // records differ in any judged fact from that
+        // candidate's records for the same offsets is
+        // the extent owner's bytes now: the real
+        // directory is judged in every differing
+        // shape. The exact-mirror plant carries no
+        // disagreement, so it may stand — its judged
+        // facts are the real directory's, stated
+        // outright below either way.
+        for shape in ["clean", "rename", "phantom", "trunc"] {
+            let bytes = r40a_gap_set_archive(shape);
+            let directory = central_directory(&bytes).expect("the real directory derives");
+            assert_eq!(directory.archive_offset, 0, "{shape}");
+            assert_eq!(directory.total, 1, "{shape}");
+            assert_eq!(directory.cd_start, 444, "{shape}");
+            let spots = central_spots(&bytes);
+            assert_eq!(spots.len(), 1, "{shape}");
+            assert_eq!(spots[0].0, "a.txt", "{shape}");
+            assert_eq!(spots[0].1.comp_size, 9, "{shape}");
+            assert_eq!(payload_span(&bytes, &spots[0].1), Some((35, 44)), "{shape}");
+        }
+        let bytes = r40a_gap_set_archive("mirror");
+        let directory = central_directory(&bytes).expect("a directory derives");
+        assert_eq!(directory.total, 1, "mirror");
+        let spots = central_spots(&bytes);
+        assert_eq!(spots.len(), 1, "mirror");
+        assert_eq!(spots[0].0, "a.txt", "mirror");
+        assert_eq!(spots[0].1.comp_size, 9, "mirror");
+        assert_eq!(payload_span(&bytes, &spots[0].1), Some((35, 44)), "mirror");
     }
 }

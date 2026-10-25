@@ -2898,6 +2898,354 @@ mod tests {
         }
     }
 
+    /// The round-40 tail crafts (red team RT40-A),
+    /// assembled byte by byte over the caller's Stored
+    /// entries in the planted-directory crafters'
+    /// shape: a 5,000-byte gap standing in one of the
+    /// five regions after the directory walk — between
+    /// the central directory and the end record
+    /// ("postcd"), after a signature record at the
+    /// walk's end ("sig"), or inside a zip64 tail
+    /// ("z64gapcd" / "z64gaprec" / "z64gaploc") — with
+    /// ("-plant") or without ("-clean") a complete
+    /// fake directory (the first copies' records plus
+    /// its own end record) planted at the gap's head.
+    fn r40a_archive_pack(entries: &[(&[u8], &[u8])], shape: &str) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries {
+            locals.push(body.len() as u32);
+            let crc = crc32_ieee(data);
+            body.extend_from_slice(b"PK\x03\x04");
+            body.extend_from_slice(&20u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&crc.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(name);
+            body.extend_from_slice(data);
+        }
+        let cd_offset = body.len() as u32;
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&plain_central(name, data, locals[i], &[]));
+        }
+        let cd_end = cd_offset as usize + centrals.len();
+        // The fake directory: the first copy's record
+        // for every name, in archive order, plus its
+        // own end record.
+        let mut fake_recs: Vec<u8> = Vec::new();
+        let mut fake_total: u16 = 0;
+        for (i, (name, data)) in entries.iter().enumerate() {
+            if entries[..i].iter().any(|(other, _)| other == name) {
+                continue;
+            }
+            fake_recs.extend_from_slice(&plain_central(name, data, locals[i], &[]));
+            fake_total += 1;
+        }
+        let fake_len = fake_recs.len();
+        let plant = |host: &mut Vec<u8>, at: usize| {
+            host[at..at + fake_len].copy_from_slice(&fake_recs);
+            let eocd = plain_eocd(fake_total, fake_len as u32, at as u32, 0, &[]);
+            host[at + fake_len..at + fake_len + 22].copy_from_slice(&eocd);
+        };
+        let zip64_tail = |host: &mut Vec<u8>, gap1: usize, gap2: usize, gap3: usize| {
+            host.extend_from_slice(&vec![b'G'; gap1]);
+            let record_at = host.len() as u64;
+            host.extend_from_slice(b"PK\x06\x06");
+            host.extend_from_slice(&44u64.to_le_bytes());
+            host.extend_from_slice(&45u16.to_le_bytes());
+            host.extend_from_slice(&45u16.to_le_bytes());
+            host.extend_from_slice(&0u32.to_le_bytes());
+            host.extend_from_slice(&0u32.to_le_bytes());
+            host.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            host.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            host.extend_from_slice(&(centrals.len() as u64).to_le_bytes());
+            host.extend_from_slice(&(cd_offset as u64).to_le_bytes());
+            host.extend_from_slice(&vec![b'G'; gap2]);
+            host.extend_from_slice(b"PK\x06\x07");
+            host.extend_from_slice(&0u32.to_le_bytes());
+            host.extend_from_slice(&record_at.to_le_bytes());
+            host.extend_from_slice(&1u32.to_le_bytes());
+            host.extend_from_slice(&vec![b'G'; gap3]);
+            host.extend_from_slice(b"PK\x05\x06");
+            host.extend_from_slice(&0u16.to_le_bytes());
+            host.extend_from_slice(&0u16.to_le_bytes());
+            host.extend_from_slice(&u16::MAX.to_le_bytes());
+            host.extend_from_slice(&u16::MAX.to_le_bytes());
+            host.extend_from_slice(&u32::MAX.to_le_bytes());
+            host.extend_from_slice(&u32::MAX.to_le_bytes());
+            host.extend_from_slice(&0u16.to_le_bytes());
+        };
+        let mut out = body;
+        out.extend_from_slice(&centrals);
+        match shape {
+            "postcd-clean" | "postcd-plant" => {
+                out.extend_from_slice(&vec![b'G'; 5000]);
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &[],
+                ));
+                if shape == "postcd-plant" {
+                    plant(&mut out, cd_end + 100);
+                }
+            }
+            "sig-clean" | "sig-plant" => {
+                out.extend_from_slice(b"PK\x05\x05");
+                out.extend_from_slice(&100u16.to_le_bytes());
+                out.extend_from_slice(&[b'S'; 100]);
+                out.extend_from_slice(&vec![b'G'; 5000]);
+                out.extend_from_slice(&plain_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_offset,
+                    0,
+                    &[],
+                ));
+                if shape == "sig-plant" {
+                    plant(&mut out, cd_end + 106 + 100);
+                }
+            }
+            "z64gapcd-clean" | "z64gapcd-plant" => {
+                zip64_tail(&mut out, 5000, 0, 0);
+                if shape == "z64gapcd-plant" {
+                    plant(&mut out, cd_end + 100);
+                }
+            }
+            "z64gaprec-clean" | "z64gaprec-plant" => {
+                zip64_tail(&mut out, 0, 5000, 0);
+                if shape == "z64gaprec-plant" {
+                    plant(&mut out, cd_end + 56 + 100);
+                }
+            }
+            "z64gaploc-clean" | "z64gaploc-plant" => {
+                zip64_tail(&mut out, 0, 0, 5000);
+                if shape == "z64gaploc-plant" {
+                    plant(&mut out, cd_end + 56 + 20 + 100);
+                }
+            }
+            _ => unreachable!("unknown shape {shape}"),
+        }
+        out
+    }
+
+    #[test]
+    fn r40a_a_directory_planted_after_the_directory_walk_never_steers_the_pack() {
+        // Round 40, F3 (red team RT40-A): everything
+        // after a candidate's directory walk was
+        // unaccounted, so a host whose tail carries a
+        // gap in any of the five post-walk regions
+        // derived nothing while the reader served it
+        // (or, at the locator-side zip64 gaps, while
+        // the reader served a plant standing in the
+        // gap and refused the clean host outright),
+        // and a directory planted in any of those gaps
+        // was the sole standing candidate and steered
+        // the pack — only the Regular face landed. The
+        // walked extent accounts for the archive's
+        // tail now, the tail-gap hosts derive under
+        // the derivation repair, and the prefix-free
+        // view splices the tail gaps out so the reader
+        // opens the real directory at every door: both
+        // faces land in every shape, the first under
+        // the clean name and the second under its
+        // hashed name, exactly as the clean controls
+        // land them; the same shapes carrying one face
+        // land it.
+        let regular = bundled("LiberationSans-Regular.ttf");
+        let bold = bundled("LiberationSans-Bold.ttf");
+        let filler = vec![b'A'; 2000];
+        for shape in [
+            "postcd-clean",
+            "postcd-plant",
+            "sig-clean",
+            "sig-plant",
+            "z64gapcd-clean",
+            "z64gapcd-plant",
+            "z64gaprec-clean",
+            "z64gaprec-plant",
+            "z64gaploc-clean",
+            "z64gaploc-plant",
+        ] {
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"MyFont.ttf", &regular),
+                (b"MyFont.ttf", &bold),
+                (b"filler.bin", filler.as_slice()),
+            ];
+            let bytes = r40a_archive_pack(&entries, shape);
+            let dir = temp_dir(&format!("r40a-f3-{shape}"));
+            let lib = FontLibrary::open(dir.clone()).expect("open");
+            let results = lib.add_zip_bytes(&bytes);
+            assert_eq!(
+                results.len(),
+                2,
+                "{shape}: one result per copy: {results:?}"
+            );
+            let first = results[0].as_ref().expect("the first copy lands");
+            let second = results[1].as_ref().expect("the second copy lands");
+            assert_eq!(first.file_name, "MyFont.ttf", "{shape}");
+            assert_eq!(
+                first.sha256,
+                inspect(&regular, "MyFont.ttf")
+                    .expect("inspect regular")
+                    .sha256,
+                "{shape}"
+            );
+            let bold_info = inspect(&bold, "MyFont.ttf").expect("inspect bold");
+            assert_eq!(second.sha256, bold_info.sha256, "{shape}");
+            let short: String = bold_info.sha256.chars().take(8).collect();
+            assert_eq!(second.file_name, format!("MyFont.ttf-{short}"), "{shape}");
+            assert_eq!(lib.read(first).expect("read first"), regular, "{shape}");
+            assert_eq!(lib.read(second).expect("read second"), bold, "{shape}");
+            let _ = std::fs::remove_dir_all(&dir);
+
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"MyFont.ttf", &regular),
+                (b"filler.bin", filler.as_slice()),
+            ];
+            let bytes = r40a_archive_pack(&entries, shape);
+            let dir = temp_dir(&format!("r40a-f3-single-{shape}"));
+            let lib = FontLibrary::open(dir.clone()).expect("open");
+            let results = lib.add_zip_bytes(&bytes);
+            assert_eq!(
+                results.len(),
+                1,
+                "{shape}: the single face lands: {results:?}"
+            );
+            let first = results[0].as_ref().expect("the single face lands");
+            assert_eq!(first.file_name, "MyFont.ttf", "{shape}");
+            assert_eq!(lib.read(first).expect("read single"), regular, "{shape}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// The round-40 equal-set crafts (review R40-R5)
+    /// on a font-pack host, assembled byte by byte:
+    /// the caller's entries, a 400-byte gap between
+    /// the last entry's payload and the real
+    /// directory, and inside the gap a fake directory
+    /// whose records declare exactly the real
+    /// directory's local-offset set — one record per
+    /// real entry, at the same offsets — with one
+    /// judged fact changed on the first entry's
+    /// record: "rename" names its header (offset 0)
+    /// as Other.ttf, "trunc" declares a compressed
+    /// size of 4 for it. "clean" carries no plant.
+    fn r40a_gapset_pack(entries: &[(&[u8], &[u8])], shape: &str) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries {
+            locals.push(body.len() as u32);
+            let crc = crc32_ieee(data);
+            body.extend_from_slice(b"PK\x03\x04");
+            body.extend_from_slice(&20u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&crc.to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(name);
+            body.extend_from_slice(data);
+        }
+        let gap_start = body.len();
+        body.extend_from_slice(&vec![b'G'; 400]);
+        if shape != "clean" {
+            let mut fake_recs: Vec<u8> = Vec::new();
+            for (i, (name, data)) in entries.iter().enumerate() {
+                let fake_name: &[u8] = if i == 0 && shape == "rename" {
+                    b"Other.ttf"
+                } else {
+                    name
+                };
+                let mut rec = plain_central(fake_name, data, locals[i], &[]);
+                if i == 0 && shape == "trunc" {
+                    rec[20..24].copy_from_slice(&4u32.to_le_bytes());
+                }
+                fake_recs.extend_from_slice(&rec);
+            }
+            let fake_at = gap_start + 16;
+            body[fake_at..fake_at + fake_recs.len()].copy_from_slice(&fake_recs);
+            let eocd = plain_eocd(
+                entries.len() as u16,
+                fake_recs.len() as u32,
+                fake_at as u32,
+                0,
+                &[],
+            );
+            let eocd_at = fake_at + fake_recs.len();
+            body[eocd_at..eocd_at + 22].copy_from_slice(&eocd);
+        }
+        let cd_offset = body.len() as u32;
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&plain_central(name, data, locals[i], &[]));
+        }
+        let mut out = body;
+        out.extend_from_slice(&centrals);
+        out.extend_from_slice(&plain_eocd(
+            entries.len() as u16,
+            centrals.len() as u32,
+            cd_offset,
+            0,
+            &[],
+        ));
+        out
+    }
+
+    #[test]
+    fn r40a_an_equal_offset_set_plant_in_the_gap_before_the_directory_never_steers_the_pack() {
+        // Round 40, F4 (review R40-R5): the gap fill's
+        // strict-superset guard let a plant inside the
+        // gap before the directory escape wherever its
+        // declared offset set equalled the real
+        // directory's — a record renaming the first
+        // entry's header judged the pack (the face
+        // landed under the planted name), and a record
+        // truncating its declared size judged a
+        // four-byte payload (no face landed). A
+        // candidate standing in another candidate's
+        // walked extent whose records differ in any
+        // judged fact from that candidate's records
+        // for the same offsets is the extent owner's
+        // bytes now: the real directory is judged in
+        // every shape, and the face lands under its
+        // own name, exactly as the clean control lands
+        // it.
+        let regular = bundled("LiberationSans-Regular.ttf");
+        let filler = vec![b'A'; 2000];
+        for shape in ["clean", "rename", "trunc"] {
+            let entries: Vec<(&[u8], &[u8])> = vec![
+                (b"MyFont.ttf", &regular),
+                (b"filler.bin", filler.as_slice()),
+            ];
+            let bytes = r40a_gapset_pack(&entries, shape);
+            let dir = temp_dir(&format!("r40a-f4-{shape}"));
+            let lib = FontLibrary::open(dir.clone()).expect("open");
+            let results = lib.add_zip_bytes(&bytes);
+            assert_eq!(
+                results.len(),
+                1,
+                "{shape}: the single face lands: {results:?}"
+            );
+            let first = results[0].as_ref().expect("the face lands");
+            assert_eq!(first.file_name, "MyFont.ttf", "{shape}");
+            assert_eq!(lib.read(first).expect("read single"), regular, "{shape}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn r36a_a_second_directory_never_steers_the_pack() {
         // Round 36, F6 (review R36-6 + red team

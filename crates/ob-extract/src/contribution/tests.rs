@@ -34050,3 +34050,283 @@ fn r40g_sequence_tail_suffixes_judge_at_the_leading_slot() {
     );
     r40e_serves_silent("(Sunday)(notes)~ November 1, 2026", nov(1));
 }
+
+// Round 41 (R41-C, F4 MAJOR = review R41-R1 + red
+// team RT41-D2): a fully quote-wrapped DATE group
+// standing after a framing word between a
+// Sunday-after phrase's "after" and its written
+// base was ADOPTED as the line's date — the written
+// base demoted to a second-date note, no record of
+// any kind — where its paren and bracket twins at
+// the same position serve the base WITH a
+// ParenthesizedDateMismatch record. Uniform over
+// framing words (the / on / choir / for / at /
+// dear, and doubled stacks), quote forms
+// (straight / curly / single), full and short date
+// forms, and both routes; the glued arms read
+// silent None where the glued twins serve the base
+// with the record; and at the framing-before-split
+// position (a framing word between "Sunday" and
+// the split group) the outcomes were at parity but
+// the records diverged (the paren twin carries the
+// mismatch record, the quoted form second-date
+// notes only). The mechanism is R40-D's scope
+// edge: `date_line` re-dresses a quoted date group
+// only where the interior-slot guard
+// (`group_beside_relative_core`) fires, and at the
+// framing positions the guard does not fire even
+// for brackets — the bracket reading there is the
+// whole-line composition's. The adjudicated
+// reading (round-41 synthesis, F4): a quoted date
+// group standing at a position where the
+// composition judges a bracket group — the framing
+// positions, stacks included — is re-dressed as
+// its bracket twin and judged exactly as the twin
+// is judged, base served with the record, both
+// routes. The agreeing quoted form was at parity
+// and stays at parity. Scope: the re-dress stays
+// scoped to date contents by the guard's own
+// `group_date` judgment (quoted weekday / governor
+// groups do not move), and the alone positions
+// (leading-alone / trailing-alone / after-alone,
+// F5's territory, R41-D) do not move. Every pair
+// below asserts the quoted line's FULL record
+// equals its bracket twin's (the r34e helpers);
+// the headline readings are stated outright on the
+// quoted lines themselves. November 1 and
+// November 8, 2026 are Sundays.
+
+#[test]
+fn r41c_quoted_date_group_at_the_framing_position_takes_its_bracket_twin_reading() {
+    let quote_pairs: [(&str, &str); 3] = [("\"", "\""), ("\u{201c}", "\u{201d}"), ("'", "'")];
+    let framing_words = ["the", "on", "choir", "for", "at", "dear"];
+    for (open, close) in quote_pairs {
+        for word in framing_words {
+            let quoted =
+                format!("Sunday after {word} {open}November 8, 2026{close} November 1, 2026");
+            let paren = format!("Sunday after {word} (November 8, 2026) November 1, 2026");
+            r34e_for_twin(&quoted, &paren);
+            r34e_keep_twin(&quoted, &paren);
+        }
+        // Doubled framing stacks (red team RT41-D2).
+        for stack in ["the the", "on the"] {
+            let quoted =
+                format!("Sunday after {stack} {open}November 8, 2026{close} November 1, 2026");
+            let paren = format!("Sunday after {stack} (November 8, 2026) November 1, 2026");
+            r34e_for_twin(&quoted, &paren);
+            r34e_keep_twin(&quoted, &paren);
+        }
+        // The short date forms at the framing
+        // position split the same way on the base
+        // tree and take the twin reading here.
+        for contents in ["Nov 8, 2026", "November 8"] {
+            let quoted = format!("Sunday after the {open}{contents}{close} November 1, 2026");
+            let paren = format!("Sunday after the ({contents}) November 1, 2026");
+            r34e_for_twin(&quoted, &paren);
+            r34e_keep_twin(&quoted, &paren);
+        }
+    }
+    // The bracket twins, straight quotes, every
+    // framing word: the quoted form takes the
+    // bracket reading exactly as it takes the
+    // paren one.
+    for word in framing_words {
+        let quoted = format!("Sunday after {word} \"November 8, 2026\" November 1, 2026");
+        let bracket = format!("Sunday after {word} [November 8, 2026] November 1, 2026");
+        r34e_for_twin(&quoted, &bracket);
+        r34e_keep_twin(&quoted, &bracket);
+    }
+    // The headline reading, stated outright on the
+    // quoted line itself: the base serves WITH the
+    // mismatch record, both routes, no second date.
+    let text = "For Sunday: Sunday after the \"November 8, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the base is served, not the quoted group's date"
+    );
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the quoted group is recorded against the base");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after the \"November 8, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(1)),
+        "the keep line serves the base"
+    );
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the quoted group is recorded on the keep line");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    assert_eq!(c.keep_through_second_dates, Vec::<SimpleDate>::new());
+    // The agreeing form was at parity and stays at
+    // parity: the base serves silently in every
+    // dress, twin-equal and outright.
+    for (open, close) in quote_pairs {
+        let quoted = format!("Sunday after the {open}November 1, 2026{close} November 1, 2026");
+        let paren = "Sunday after the (November 1, 2026) November 1, 2026".to_string();
+        r34e_for_twin(&quoted, &paren);
+        r34e_keep_twin(&quoted, &paren);
+    }
+    let text = "For Sunday: Sunday after the \"November 1, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "the agreeing base serves");
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after the \"November 1, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)));
+    assert_eq!(c.keep_through_parenthesized_mismatch, None);
+    assert_eq!(c.keep_through_second_dates, Vec::<SimpleDate>::new());
+}
+
+#[test]
+fn r41c_quoted_date_group_glued_at_the_framing_position_takes_its_bracket_twin_reading() {
+    // The glued arms (red team RT41-D2): on the
+    // base tree both read silent None, where the
+    // glued paren twins serve the base with the
+    // record — a third outcome for the same
+    // contents at the same slot. Here they take
+    // the twin outcome.
+    let quote_pairs: [(&str, &str); 3] = [("\"", "\""), ("\u{201c}", "\u{201d}"), ("'", "'")];
+    for (open, close) in quote_pairs {
+        // Glued against the framing word.
+        let quoted = format!("Sunday after the{open}November 8, 2026{close} November 1, 2026");
+        let paren = "Sunday after the(November 8, 2026) November 1, 2026".to_string();
+        r34e_for_twin(&quoted, &paren);
+        r34e_keep_twin(&quoted, &paren);
+        // Glued against the base.
+        let quoted = format!("Sunday after the {open}November 8, 2026{close}November 1, 2026");
+        let paren = "Sunday after the (November 8, 2026)November 1, 2026".to_string();
+        r34e_for_twin(&quoted, &paren);
+        r34e_keep_twin(&quoted, &paren);
+    }
+    // Stated outright on the straight-quote glued
+    // forms: the base serves with the record, both
+    // routes.
+    for line in [
+        "Sunday after the\"November 8, 2026\" November 1, 2026",
+        "Sunday after the \"November 8, 2026\"November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(1)), "{line}: the base serves");
+        let m = c
+            .for_sunday_parenthesized_mismatch
+            .expect("the glued quoted group is recorded against the base");
+        assert_eq!(m.named, nov(8), "{line}");
+        assert_eq!(m.read, nov(1), "{line}");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(1)), "{line}: the base keeps");
+        let m = c
+            .keep_through_parenthesized_mismatch
+            .expect("the glued quoted group is recorded on the keep line");
+        assert_eq!(m.named, nov(8), "{line}");
+        assert_eq!(m.read, nov(1), "{line}");
+    }
+}
+
+#[test]
+fn r41c_framing_before_the_split_group_takes_its_bracket_twin_record() {
+    // The partial arm (review R41-R1): a framing
+    // word standing BEFORE the split group —
+    // "Sunday the "November 8, 2026" after
+    // November 1, 2026" — served at parity with
+    // its paren twin on the base tree (both read
+    // October 18, the Sunday the composition
+    // resolves there) but the records diverged:
+    // the paren twin carries the
+    // ParenthesizedDateMismatch record and names
+    // the written base alone as a second date,
+    // where the quoted form carried both dates as
+    // second-date notes and no record. The quoted
+    // form takes the twin's record here.
+    let quote_pairs: [(&str, &str); 3] = [("\"", "\""), ("\u{201c}", "\u{201d}"), ("'", "'")];
+    for (open, close) in quote_pairs {
+        let quoted = format!("Sunday the {open}November 8, 2026{close} after November 1, 2026");
+        let paren = "Sunday the (November 8, 2026) after November 1, 2026".to_string();
+        r34e_for_twin(&quoted, &paren);
+        r34e_keep_twin(&quoted, &paren);
+    }
+    let quoted = "Sunday the \"November 8, 2026\" after November 1, 2026".to_string();
+    let bracket = "Sunday the [November 8, 2026] after November 1, 2026".to_string();
+    r34e_for_twin(&quoted, &bracket);
+    r34e_keep_twin(&quoted, &bracket);
+    // Stated outright on the quoted line itself,
+    // both routes: the twin's date, the twin's
+    // record, the twin's second-date note.
+    let text = "For Sunday: Sunday the \"November 8, 2026\" after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(18)), "the twin's date serves");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the quoted group carries the twin's mismatch record");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, oct(18));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday the \"November 8, 2026\" after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(18)), "the twin's date keeps");
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the quoted group carries the twin's record on the keep line");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, oct(18));
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+}
+
+#[test]
+fn r41c_framing_fix_scope_controls_unmoved() {
+    // The alone positions are F5's territory
+    // (R41-D), not this batch's: the quoted forms
+    // there keep their standing readings byte for
+    // byte. Each control below stands on the base
+    // tree and must stand after the fix.
+    // Leading-alone: total silence, no memory.
+    let text = "For Sunday: \"November 8, 2026\" next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "leading-alone stays silent");
+    assert_eq!(c.for_sunday_in_words, None);
+    assert_eq!(c.for_sunday_parenthesized_date, None);
+    let text = "For Sunday: November 1, 2026\nKeep-through: \"November 8, 2026\" next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "leading-alone keeps nothing");
+    // Trailing-alone: the resolution serves with
+    // the quoted date demoted to a second-date
+    // note, as it stood.
+    let text = "For Sunday: next Sunday \"November 8, 2026\"\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(25)), "trailing-alone stands");
+    assert_eq!(c.for_sunday_second_dates, vec![nov(8)]);
+    // After-alone (the parity arm): the quoted
+    // form resolves exactly as its bare twin does.
+    let text = "For Sunday: Sunday after \"November 8, 2026\"\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(15)), "after-alone stands");
+    assert_eq!(c.for_sunday_parenthesized_mismatch, None);
+    // A quoted date standing alone keeps its
+    // standing silence (R40-D's corrected pin,
+    // restated as this batch's control).
+    let text = "For Sunday: \"November 8, 2026\"\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "a lone quoted date stays silent");
+    // The Sunday-after interior company R41-B
+    // preserved: a lead-in containing "after" is
+    // never stepped over, and the interior slot
+    // keeps its standing serve beside the framing
+    // machinery this batch extends.
+    r40e_serves_silent("Sunday after (cancelled)(Monday) November 1, 2026", nov(1));
+    r40e_serves_silent(
+        "Sunday after notes (cancelled)(Monday) November 1, 2026",
+        nov(1),
+    );
+}

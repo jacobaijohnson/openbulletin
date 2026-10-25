@@ -1577,9 +1577,16 @@ pub(super) fn clean(t: &str) -> &str {
     // trailing "November 1, 2026 “Monday”") is the
     // word it names, as one wearing the straight
     // pair already is.
+    // Round 40 (R40-G, F8): the set gains the
+    // ellipsis U+2026 — a weekday word wearing one
+    // ("Monday…", "(Monday)…") is the word it
+    // names, as one wearing ";" or "!" already is;
+    // the suffix stood in no reader's set, so it
+    // disarmed the framing judgment it followed
+    // and the bare weekday lost its record.
     t.trim_matches([
         '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-        '\u{201c}', '\u{2018}', '\u{2019}',
+        '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
     ])
 }
 
@@ -2131,9 +2138,15 @@ fn nearest_date_is_sunday_after_base(prefix: &str, today: SimpleDate) -> bool {
 fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
     let mut end = text.len();
     loop {
+        // Round 40 (R40-G, F8): the peel set gains
+        // the ellipsis U+2026 — a run closing the
+        // line in front of one ("November 8, 2026
+        // (cancelled)…") is the run it names, so
+        // the trailing governor unwraps and governs
+        // instead of the cancelled date serving.
         let peeled = text[..end]
             .trim_end_matches([
-                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}',
+                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}',
             ])
             .len();
         if peeled != end {
@@ -2478,8 +2491,23 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut inners: Vec<String> = Vec::new();
     loop {
+        // Round 40 (R40-G, F8): the trims below gain
+        // the witnessed out-of-set suffixes — the
+        // ellipsis U+2026 and the sequence-tail set
+        // "~", "*", "#", "-", "—" (U+2014) — which
+        // stood in no reader's set, so a sequence
+        // wearing one ("(Monday)(notes)~ November 1,
+        // 2026", "(Monday)… (notes) November 1,
+        // 2026") was no sequence at all and its
+        // weekday went unjudged, while the same
+        // sequence wearing a standing mark ("..",
+        // "!!", "??", "!?", ":;") judged with the
+        // record. The marks are garnish dress here
+        // as the standing marks are: between the
+        // groups and after the last group alike.
         rest = rest.trim_start_matches([
-            ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}',
+            ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
+            '#', '-', '\u{2014}',
         ]);
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             break;
@@ -2498,7 +2526,8 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         return None;
     }
     let rest = rest.trim_start_matches([
-        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}',
+        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
+        '-', '\u{2014}',
     ]);
     Some((inners, rest))
 }
@@ -2541,11 +2570,17 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     // here, and the lone trailing form wearing
     // U+2019 ("November 1, 2026 (Monday)’") is
     // judged.
+    // Round 40 (R40-G, F8): the peel set gains the
+    // ellipsis U+2026 — a sequence closing the
+    // line in front of one ("November 1, 2026
+    // (Monday)(notes)…") is the sequence it names,
+    // so its weekday groups are judged instead of
+    // the date serving in silence.
     let mut end = text.len();
     loop {
         let peeled = text[..end]
             .trim_end_matches([
-                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}',
+                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}',
             ])
             .len();
         if peeled != end {
@@ -2766,6 +2801,52 @@ fn leading_single_group_behind_head_separators(text: &str) -> Option<(String, &s
     Some((inner.to_string(), rest))
 }
 
+/// The single group standing at the leading slot
+/// wearing one of the witnessed out-of-set suffix
+/// marks glued to its closer (round 40, R40-G, F8):
+/// "~", "*", "#", "-", or "—" (U+2014) standing
+/// directly after the group, before the date the
+/// group frames. Returns the group's inner text
+/// and the text standing after the suffix (its own
+/// separators and standing suffix marks taken off
+/// with the witnessed mark, as the sequence walk's
+/// trims take them). A group wearing no witnessed
+/// mark glued to it is the lone form, judged by
+/// the standing readers, and is not returned here:
+/// the witnessed marks are what disarm those
+/// readers at this slot — the shared cleaning
+/// sheds the standing marks ("(Monday).. November
+/// 1, 2026" is judged), but it sheds none of these
+/// five, and "*" cannot join the cleaning without
+/// moving the glued-weekday readings ("*Monday"
+/// is a glued word, not dress on one) — so the
+/// suffixed lone group went unjudged and its date
+/// served in silence, while its sequence twin is
+/// walked by `leading_group_sequence` above.
+fn leading_single_group_wearing_suffix(text: &str) -> Option<(String, &str)> {
+    let rest = skip_framing_garnish(text.trim_start());
+    if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
+        return None;
+    }
+    let (start, end) = first_balanced_span(rest)?;
+    if start != 0 {
+        return None;
+    }
+    let after = &rest[end..];
+    if !matches!(
+        after.chars().next(),
+        Some('~' | '*' | '#' | '-' | '\u{2014}')
+    ) {
+        return None;
+    }
+    let inner = &rest[start + 1..end - 1];
+    let rest = after.trim_start_matches([
+        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
+        '-', '\u{2014}',
+    ]);
+    Some((inner.to_string(), rest))
+}
+
 pub(super) fn group_sequence_weekday_mismatch(
     text: &str,
     today: SimpleDate,
@@ -2789,6 +2870,22 @@ pub(super) fn group_sequence_weekday_mismatch(
     // readers are disarmed by the separator token
     // (see `leading_single_group_behind_head_separators`).
     if let Some((inner, rest)) = leading_single_group_behind_head_separators(text) {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if let Some((date, _)) = parse_date_prefix(&tokens, today) {
+            if let Some((named, number)) = garnish_group_weekday(&inner) {
+                if date.weekday() != number {
+                    return Some(WeekdayMismatch { named, date });
+                }
+            }
+        }
+    }
+    // Round 40 (R40-G, F8): the single leading
+    // group wearing a witnessed out-of-set suffix
+    // mark, judged as its unsuffixed twin is — the
+    // sequence walk above takes two or more, and
+    // the lone readers are disarmed by the mark
+    // (see `leading_single_group_wearing_suffix`).
+    if let Some((inner, rest)) = leading_single_group_wearing_suffix(text) {
         let tokens: Vec<&str> = rest.split_whitespace().collect();
         if let Some((date, _)) = parse_date_prefix(&tokens, today) {
             if let Some((named, number)) = garnish_group_weekday(&inner) {
@@ -3901,8 +3998,15 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
         // do — a garnish followed by either mark is
         // peeled to here exactly as one followed by
         // ";" or the closing quote already is.
+        // Round 40 (R40-G, F8): the peel set gains
+        // the ellipsis U+2026, as the trailing
+        // walks' peels do — a glued garnish followed
+        // by one is peeled to here exactly as one
+        // followed by ";" already is.
         let peeled = text[..end]
-            .trim_end_matches(['.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}'])
+            .trim_end_matches([
+                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2026}',
+            ])
             .len();
         if peeled != end {
             end = peeled;
@@ -4094,9 +4198,16 @@ pub(super) fn date_line_inner(
         // here as its straight-quoted twin is, in
         // both its arms: the disagreeing one refused
         // with the record, the agreeing one read.
+        // Round 40 (R40-G, F8): the set gains the
+        // ellipsis U+2026, as `clean` does — a
+        // trailing garnish wearing one ("November 1,
+        // 2026 Monday…", "November 1, 2026
+        // (Monday)…") is judged here as one wearing
+        // ";" already is, instead of passing as
+        // ordinary text and losing its record.
         let word = tokens[i].trim_matches([
             '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-            '\u{201c}', '\u{2018}', '\u{2019}',
+            '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
         ]);
         // Round 39 (R39-E, F7): the trailing garnish
         // word is read through `cleaned_weekday`, so

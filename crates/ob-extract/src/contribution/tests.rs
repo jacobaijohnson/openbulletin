@@ -33390,3 +33390,267 @@ fn r40f_interior_period_family_keeps_its_standing_readings() {
         assert_eq!(c.keep_through_weekday_mismatch, None, "{line}: no record");
     }
 }
+
+// Round 40 (R40-G, F8 MAJOR = red team RT40-G;
+// round-40 synthesis adjudication 5): a trailing
+// suffix standing in NO reader's peel/suffix set
+// disarmed the judgment it followed. The suffix
+// (U+2026 "…", and at sequence tails also "~",
+// "*", "#", "-", "—" U+2014) is garnish dress:
+// the judgments read through it as they read
+// through the standing marks — a wrapped governor
+// governs, a weekday records its mismatch, a bare
+// weekday keeps its record. Witnessed on the base
+// tree (today pinned 2026-10-20 in the lane's
+// runs; November 1, 2026 is a Sunday):
+// "November 8, 2026 (cancelled)…" SERVED its
+// cancelled date live where the bare twin
+// "cancelled…" governs; the grouped weekday arms
+// served silently at the trailing, leading, and
+// Sunday-after base-trailing slots; the bare
+// weekday arms read None with NO record where the
+// clean bare forms refuse with
+// WeekdayMismatch(Monday@2026-11-01) (at the
+// base-trailing slot the bare form served the
+// resolution instead); and "(Monday)(notes)"
+// wearing "~", "*", "#", "-", or "—" at the
+// leading slot served silently while the same
+// sequence wearing "..", "!!", "??", "!?", or
+// ":;" judged with the record — the split exactly
+// membership in the standing suffix sets. Every
+// pair below compares the suffixed line's FULL
+// record against its clean twin's via the r34e
+// helpers, on the For line and the Keep-through
+// line, and the headline arms are stated outright.
+
+fn r40g_refuses_with_record(line: &str, named: &str, date: SimpleDate) {
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: no date reads");
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the disagreeing weekday is recorded through the suffix");
+    assert_eq!(m.named, named, "{line}");
+    assert_eq!(m.date, date, "{line}");
+    let text =
+        format!("For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "{line}: no keep date reads");
+    let m = c
+        .keep_through_weekday_mismatch
+        .as_ref()
+        .expect("the disagreeing weekday is recorded on the keep line");
+    assert_eq!(m.named, named, "{line}");
+    assert_eq!(m.date, date, "{line}");
+}
+
+#[test]
+fn r40g_trailing_wrapped_governor_governs_through_an_ellipsis() {
+    // The headline arm, stated outright, both
+    // routes: the trailing wrapped governor
+    // governs as its bare twin governs — no date
+    // reads, no record (a governor carries none).
+    r40e_governed_silent("November 8, 2026 (cancelled)\u{2026}");
+    // Full-record twins: the clean grouped form,
+    // the clean bare form, and the bare form
+    // wearing the same suffix (which governed on
+    // the base tree too — a control, unmoved).
+    for twin in [
+        "November 8, 2026 (cancelled)",
+        "November 8, 2026 cancelled",
+        "November 8, 2026 cancelled\u{2026}",
+    ] {
+        r34e_for_twin("November 8, 2026 (cancelled)\u{2026}", twin);
+        r34e_keep_twin("November 8, 2026 (cancelled)\u{2026}", twin);
+    }
+    // Controls at the leading slot, unmoved: the
+    // lone and sequenced wrapped governors wearing
+    // the ellipsis governed on the base tree and
+    // govern still.
+    r40e_governed_silent("(cancelled)\u{2026} November 8, 2026");
+    r40e_governed_silent("(cancelled)(notes)\u{2026} November 8, 2026");
+    r34e_for_twin(
+        "(cancelled)\u{2026} November 8, 2026",
+        "(cancelled) November 8, 2026",
+    );
+    r34e_keep_twin(
+        "(cancelled)(notes)\u{2026} November 8, 2026",
+        "(cancelled)(notes) November 8, 2026",
+    );
+}
+
+#[test]
+fn r40g_grouped_weekday_is_judged_through_an_ellipsis() {
+    // The witnessed arms, each twin-equal to its
+    // clean grouped form, both routes, full
+    // records: trailing lone, trailing sequence
+    // (both orders), leading lone, leading
+    // sequence, and the Sunday-after base-trailing
+    // slot.
+    for (suffixed, clean) in [
+        (
+            "November 1, 2026 (Monday)\u{2026}",
+            "November 1, 2026 (Monday)",
+        ),
+        (
+            "November 1, 2026 (Monday)(notes)\u{2026}",
+            "November 1, 2026 (Monday)(notes)",
+        ),
+        (
+            "November 1, 2026 (notes)(Monday)\u{2026}",
+            "November 1, 2026 (notes)(Monday)",
+        ),
+        (
+            "(Monday)\u{2026} November 1, 2026",
+            "(Monday) November 1, 2026",
+        ),
+        (
+            "(Monday)(notes)\u{2026} November 1, 2026",
+            "(Monday)(notes) November 1, 2026",
+        ),
+        (
+            "Sunday after November 1, 2026 (Monday)\u{2026}",
+            "Sunday after November 1, 2026 (Monday)",
+        ),
+        (
+            "Sunday after November 1, 2026 (Monday)(notes)\u{2026}",
+            "Sunday after November 1, 2026 (Monday)(notes)",
+        ),
+    ] {
+        r34e_for_twin(suffixed, clean);
+        r34e_keep_twin(suffixed, clean);
+    }
+    // Stated outright: the disagreeing grouped
+    // weekday refuses with its record through the
+    // suffix, at every witnessed slot.
+    for line in [
+        "November 1, 2026 (Monday)\u{2026}",
+        "November 1, 2026 (Monday)(notes)\u{2026}",
+        "(Monday)\u{2026} November 1, 2026",
+        "(Monday)(notes)\u{2026} November 1, 2026",
+        "Sunday after November 1, 2026 (Monday)\u{2026}",
+    ] {
+        r40g_refuses_with_record(line, "Monday", nov(1));
+    }
+    // The agreeing grouped weekday reads its date
+    // through the suffix, twin-equal to its clean
+    // form, at the same slots.
+    for (suffixed, clean, read) in [
+        (
+            "November 1, 2026 (Sunday)\u{2026}",
+            "November 1, 2026 (Sunday)",
+            nov(1),
+        ),
+        (
+            "(Sunday)\u{2026} November 1, 2026",
+            "(Sunday) November 1, 2026",
+            nov(1),
+        ),
+        (
+            "Sunday after November 1, 2026 (Sunday)\u{2026}",
+            "Sunday after November 1, 2026 (Sunday)",
+            nov(8),
+        ),
+    ] {
+        r34e_for_twin(suffixed, clean);
+        r34e_keep_twin(suffixed, clean);
+        r40e_serves_silent(suffixed, read);
+    }
+}
+
+#[test]
+fn r40g_bare_weekday_keeps_its_record_through_an_ellipsis() {
+    // The bare arms: the record the clean bare
+    // forms carry is restored through the suffix —
+    // trailing and leading refuse with the record
+    // instead of reading None in silence, and the
+    // base-trailing bare form takes its clean
+    // twin's outcome (refusal with the record)
+    // instead of serving the resolution.
+    for (suffixed, clean) in [
+        ("November 1, 2026 Monday\u{2026}", "November 1, 2026 Monday"),
+        ("Monday\u{2026} November 1, 2026", "Monday November 1, 2026"),
+        (
+            "Sunday after November 1, 2026 Monday\u{2026}",
+            "Sunday after November 1, 2026 Monday",
+        ),
+    ] {
+        r34e_for_twin(suffixed, clean);
+        r34e_keep_twin(suffixed, clean);
+        r40g_refuses_with_record(suffixed, "Monday", nov(1));
+    }
+    // The agreeing bare weekday reads its date
+    // through the suffix, as its clean twin does.
+    r34e_for_twin("November 1, 2026 Sunday\u{2026}", "November 1, 2026 Sunday");
+    r34e_keep_twin("November 1, 2026 Sunday\u{2026}", "November 1, 2026 Sunday");
+    r40e_serves_silent("November 1, 2026 Sunday\u{2026}", nov(1));
+}
+
+#[test]
+fn r40g_sequence_tail_suffixes_judge_at_the_leading_slot() {
+    // The closed-list family: "(Monday)(notes)"
+    // wearing "~", "*", "#", "-", or "—" (U+2014)
+    // after the sequence — and the lone group and
+    // the between-groups shapes of the same
+    // families — judge with the record, twin-equal
+    // to the clean forms. The ellipsis stands at
+    // the between-groups slot of its family too.
+    for mark in ["~", "*", "#", "-", "\u{2014}", "\u{2026}"] {
+        for (suffixed, clean) in [
+            (
+                format!("(Monday)(notes){mark} November 1, 2026"),
+                "(Monday)(notes) November 1, 2026".to_string(),
+            ),
+            (
+                format!("(Monday){mark} November 1, 2026"),
+                "(Monday) November 1, 2026".to_string(),
+            ),
+            (
+                format!("(Monday){mark} (notes) November 1, 2026"),
+                "(Monday) (notes) November 1, 2026".to_string(),
+            ),
+        ] {
+            r34e_for_twin(&suffixed, &clean);
+            r34e_keep_twin(&suffixed, &clean);
+        }
+        let seq = format!("(Monday)(notes){mark} November 1, 2026");
+        r40g_refuses_with_record(&seq, "Monday", nov(1));
+    }
+    // The controls, unmoved: the standing suffix
+    // sets' members at the same slots judged with
+    // the record on the base tree and judge still,
+    // twin-equal to the clean forms.
+    for mark in ["..", "!!", "??", "!?", ":;"] {
+        for (suffixed, clean) in [
+            (
+                format!("(Monday)(notes){mark} November 1, 2026"),
+                "(Monday)(notes) November 1, 2026".to_string(),
+            ),
+            (
+                format!("(Monday){mark} November 1, 2026"),
+                "(Monday) November 1, 2026".to_string(),
+            ),
+            (
+                format!("(Monday){mark} (notes) November 1, 2026"),
+                "(Monday) (notes) November 1, 2026".to_string(),
+            ),
+        ] {
+            r34e_for_twin(&suffixed, &clean);
+            r34e_keep_twin(&suffixed, &clean);
+        }
+        let seq = format!("(Monday)(notes){mark} November 1, 2026");
+        r40g_refuses_with_record(&seq, "Monday", nov(1));
+    }
+    // The agreeing sequence wearing a sequence-tail
+    // suffix reads its date, twin-equal to clean.
+    r34e_for_twin(
+        "(Sunday)(notes)~ November 1, 2026",
+        "(Sunday)(notes) November 1, 2026",
+    );
+    r34e_keep_twin(
+        "(Sunday)(notes)~ November 1, 2026",
+        "(Sunday)(notes) November 1, 2026",
+    );
+    r40e_serves_silent("(Sunday)(notes)~ November 1, 2026", nov(1));
+}

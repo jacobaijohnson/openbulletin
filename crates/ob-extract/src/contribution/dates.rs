@@ -268,8 +268,16 @@ pub(super) fn weekday_word(word: &str) -> Option<u32> {
     // Round 25 (R25-A, M6): format characters are
     // stripped here too, as at every cleaning site.
     let cleaned = strip_format_chars(word);
+    // Round 40 (R40-G, F8): the trailing trim gains
+    // the ellipsis U+2026 — a leading weekday word
+    // wearing one ("Monday… November 1, 2026")
+    // names its weekday here, as one wearing a
+    // boundary ending already does, so
+    // `named_weekday_mismatch` records the mismatch
+    // the clean bare form records instead of the
+    // line dying with no record.
     let w = cleaned
-        .trim_end_matches(['.', ',', ':', ';', '/'])
+        .trim_end_matches(['.', ',', ':', ';', '/', '\u{2026}'])
         .to_ascii_lowercase();
     Some(match w.as_str() {
         "sun" | "sunday" => 0,
@@ -334,7 +342,14 @@ pub(super) fn named_weekday_mismatch(
         return None;
     }
     Some(WeekdayMismatch {
-        named: named_word.trim_end_matches([',', '.']).to_string(),
+        // Round 40 (R40-G, F8): the recorded name
+        // sheds the ellipsis with the comma and
+        // period — the record names the word the
+        // sender wrote, not its garnish dress, as
+        // the clean form's record names it.
+        named: named_word
+            .trim_end_matches([',', '.', '\u{2026}'])
+            .to_string(),
         date,
     })
 }
@@ -536,9 +551,16 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         // straight-quoted twin is; the pair was
         // only half trimmed before, and the garnish
         // passed as ordinary text.
+        // Round 40 (R40-G, F8): the set gains the
+        // ellipsis U+2026, as the plain line's
+        // trailing sets do — a base garnish wearing
+        // one ("Sunday after November 1, 2026
+        // Monday…") is judged here as one wearing
+        // ";" already is, instead of the line
+        // serving its resolution with no record.
         let word = tokens[i].trim_matches([
             '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-            '\u{201c}', '\u{2018}', '\u{2019}',
+            '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
         ]);
         // Round 39 (R39-E, F7): the base's trailing
         // garnish word is read through
@@ -751,8 +773,15 @@ fn base_trailing_sequence_mismatch(
         // after November 1, 2026 (Monday)’") is
         // judged, and its pair U+201D was already
         // here.
+        // Round 40 (R40-G, F8): the peel set gains
+        // the ellipsis U+2026, as at the plain
+        // trailing walk — a base sequence closing
+        // the line in front of one ("Sunday after
+        // November 1, 2026 (Monday)(notes)…") is the
+        // sequence it names, so its weekday groups
+        // are judged against the base.
         let peeled = rest.trim_end().trim_end_matches([
-            '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}',
+            '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}',
         ]);
         if peeled.len() != rest.len() {
             rest = peeled;

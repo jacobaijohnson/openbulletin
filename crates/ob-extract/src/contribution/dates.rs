@@ -858,84 +858,23 @@ fn base_leading_named(lead_word: &str) -> String {
         .to_string()
 }
 
-/// The last trailing group of `text`, split as (the
-/// words before it, the group's own words). The
-/// group's opening delimiter is found by balancing,
-/// so a nested group ("(note (November 1))") is one
-/// trailing group, not a defect that poisons the
-/// line it trails (round 11, R11-6). Round 34
-/// (R34-E, F3): brackets and braces are group
-/// delimiters alongside parentheses — a bracketed
-/// group is judged as its paren twin (the
-/// adjudicated reading) — so the balance walk is a
-/// stack over all three pairs: a closer closes the
-/// opener it matches, and a closer matching nothing
-/// on the stack closes nothing. On parenthesis-only
-/// text the stack is the depth count it replaces,
-/// step for step.
-pub(super) fn split_last_trailing_group(text: &str) -> Option<(&str, &str)> {
-    let text = text.trim_end_matches(['.', ',']);
-    // Round 28 (R28-A, F2 = review MINOR-2): a
-    // nothing-token trailing the group in the raw
-    // text ("(moved … to November 8) \u{200b}", "…
-    // ) *") is nothing after it — the group still
-    // ends the line, so trailing whitespace-
-    // separated nothings come off before the
-    // closing-paren test. The slices returned are
-    // slices of the text with those nothings (and
-    // the punctuation above) removed.
-    let mut text = text;
-    loop {
-        let trimmed = text.trim_end();
-        // Round 39 (R39-G, F9/F11): the last token is
-        // found by a bounded reverse scan, not a
-        // whole-text split search. The scan this
-        // replaces (`rsplit_once` on whitespace)
-        // walked the entire remaining text on every
-        // call to find a token that stands at its
-        // end, and the strip loops call here once per
-        // trailing group — a line of thousands of
-        // trailing groups paid a whole-line scan per
-        // group. The scan below asks the same
-        // question from the end: the first
-        // alphanumeric met ends it (the last token
-        // holds that character, and a token holding
-        // an alphanumeric is never a nothing —
-        // `nothing_token`'s two arms both require
-        // none), and the first whitespace met is the
-        // text's last whitespace, whose following
-        // token is the last token, judged by
-        // `nothing_token` exactly as before. A text
-        // with neither is one token, and stands.
-        let mut peel_at: Option<usize> = None;
-        for (ci, c) in trimmed.char_indices().rev() {
-            if c.is_alphanumeric() {
-                break;
-            }
-            if c.is_whitespace() {
-                let last = &trimmed[ci + c.len_utf8()..];
-                if nothing_token(last) {
-                    peel_at = Some(ci);
-                }
-                break;
-            }
-        }
-        match peel_at {
-            Some(w) => {
-                text = trimmed[..w].trim_end_matches(['.', ',']);
-            }
-            None => {
-                text = trimmed;
-                break;
-            }
-        }
-    }
-    if !text.ends_with([')', ']', '}']) {
-        return None;
-    }
+/// The opener byte index of the group that ends
+/// `text` (which must end with a closer), found by
+/// balancing: a nested group ("(note (November
+/// 1))") is one trailing group, not a defect that
+/// poisons the line it trails (round 11, R11-6).
+/// Round 34 (R34-E, F3): brackets and braces are
+/// group delimiters alongside parentheses — a
+/// bracketed group is judged as its paren twin
+/// (the adjudicated reading) — so the balance
+/// walk is a stack over all three pairs: a closer
+/// closes the opener it matches, and a closer
+/// matching nothing on the stack closes nothing.
+/// On parenthesis-only text the stack is the
+/// depth count it replaces, step for step.
+fn trailing_group_open(text: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut stack: Vec<u8> = Vec::new();
-    let mut open = None;
     for i in (0..bytes.len()).rev() {
         match bytes[i] {
             b')' | b']' | b'}' => stack.push(bytes[i]),
@@ -948,25 +887,246 @@ pub(super) fn split_last_trailing_group(text: &str) -> Option<(&str, &str)> {
                 if stack.last() == Some(&want) {
                     stack.pop();
                     if stack.is_empty() {
-                        open = Some(i);
-                        break;
+                        return Some(i);
                     }
                 }
             }
             _ => {}
         }
     }
-    let open = open?;
-    Some((text[..open].trim_end(), &text[open + 1..text.len() - 1]))
+    None
 }
 
-/// `text` without a trailing group, when it ends
-/// with one: the words before the group. (The name
-/// is the standing one; since round 34 the group
-/// may wear brackets or braces as well as
-/// parentheses — see `split_last_trailing_group`.)
-pub(super) fn strip_trailing_parenthesized(text: &str) -> Option<&str> {
-    split_last_trailing_group(text).map(|(before, _)| before)
+/// A line's token-edge facts, computed once
+/// (round 40, R40-B, F1): the byte position of
+/// every whitespace character in the line and the
+/// alphanumeric population of every byte range,
+/// as a prefix count over its characters — the
+/// table pattern R39-G built inside
+/// `relative_shape_matches`, stated once for
+/// every strip loop the date readers run.
+///
+/// The loops this serves strip one trailing
+/// group at a time, and each step used to
+/// re-derive its edge facts by scanning: the
+/// nothing-token peel inside the trailing-group
+/// split walked back from the remainder's end to
+/// the first alphanumeric or whitespace, and the
+/// boundary-token strips in the relative-shape
+/// loop scanned in from their edge the same way.
+/// On a line holding a letter those scans stop
+/// within a token; on a line of empty groups
+/// — one letterless glued token, no whitespace
+/// anywhere — every scan ran the whole
+/// remaining line, one scan per group, across
+/// several whole-line passes: a 15,405-byte line
+/// of "()"×7,680 did not finish in 90 s. The
+/// facts those scans were after are properties
+/// of the line, not of the step, so they are
+/// computed once here and each step reads them
+/// off the table: the peel asks for the last
+/// whitespace standing in its range and whether
+/// any alphanumeric stands in the token after
+/// it; the boundary strips ask the same two
+/// questions at their edge. The judgments
+/// themselves are the standing ones — the peel
+/// still judges its token by `nothing_token`,
+/// the split still finds its group by the
+/// balance walk — only the search for the
+/// token's edge is tabled, so the strip loops'
+/// total work is linear in the line.
+pub(super) struct LineScan<'a> {
+    text: &'a str,
+    alnum_prefix: Vec<u32>,
+    ws_starts: Vec<usize>,
+}
+
+impl<'a> LineScan<'a> {
+    pub(super) fn new(text: &'a str) -> Self {
+        let mut alnum_prefix = vec![0u32; text.len() + 1];
+        let mut ws_starts: Vec<usize> = Vec::new();
+        let mut count = 0u32;
+        for (i, c) in text.char_indices() {
+            alnum_prefix[i] = count;
+            if c.is_alphanumeric() {
+                count += 1;
+            }
+            if c.is_whitespace() {
+                ws_starts.push(i);
+            }
+            alnum_prefix[i + c.len_utf8()] = count;
+        }
+        LineScan {
+            text,
+            alnum_prefix,
+            ws_starts,
+        }
+    }
+
+    /// The alphanumeric characters standing in
+    /// `text[a..b]` (both char boundaries).
+    fn alnum_between(&self, a: usize, b: usize) -> u32 {
+        self.alnum_prefix[b] - self.alnum_prefix[a]
+    }
+
+    /// The first whitespace character standing in
+    /// `text[at..hi]`, as its byte position.
+    fn first_whitespace(&self, at: usize, hi: usize) -> Option<usize> {
+        let i = self.ws_starts.partition_point(|&w| w < at);
+        self.ws_starts.get(i).copied().filter(|&w| w < hi)
+    }
+
+    /// The last whitespace character standing in
+    /// `text[lo..hi]`, as (byte position, byte
+    /// length).
+    fn last_whitespace(&self, lo: usize, hi: usize) -> Option<(usize, usize)> {
+        let past = self.ws_starts.partition_point(|&w| w < hi);
+        if past == 0 {
+            return None;
+        }
+        let w = self.ws_starts[past - 1];
+        if w < lo {
+            return None;
+        }
+        let c = self.text[w..].chars().next()?;
+        Some((w, c.len_utf8()))
+    }
+
+    /// The last trailing group of the slice
+    /// `text[lo..hi]`, split as (the words before
+    /// it, the group's own words) — returned as
+    /// absolute byte positions: the end of the
+    /// words before the group, and the group's
+    /// inner range. This is the split the strip
+    /// loops have always walked (the last trailing
+    /// group of a line, round 8, carried shape;
+    /// its opening delimiter found by balancing,
+    /// R11-6 / R34-E — see `trailing_group_open`).
+    /// Round 28 (R28-A, F2 = review MINOR-2): a
+    /// nothing-token trailing the group in the raw
+    /// text ("(moved … to November 8)
+    /// \u{200b}", "… ) *") is nothing after
+    /// it — the group still ends the line, so
+    /// trailing whitespace-separated nothings come
+    /// off before the closing-delimiter test, and
+    /// the parts are parts of the text with those
+    /// nothings (and the trailing '.' / ','
+    /// standing over them) removed. Round 39
+    /// (R39-G, F9/F11) replaced the peel's
+    /// whole-text split search with a bounded
+    /// reverse scan that stops at the first
+    /// alphanumeric (the token holding it is never
+    /// a nothing) or the first whitespace (the
+    /// token after it is judged by `nothing_token`,
+    /// exactly as before); round 40 (R40-B, F1)
+    /// tables that scan — its two stopping facts
+    /// are the table's two questions, and a slice
+    /// holding no whitespace at all is one token,
+    /// which the standing scan leaves standing
+    /// unjudged, exactly as the table's
+    /// no-whitespace answer leaves it.
+    pub(super) fn split_last(&self, lo: usize, hi: usize) -> Option<(usize, usize, usize)> {
+        let text = self.text;
+        let mut end = lo + text[lo..hi].trim_end_matches(['.', ',']).len();
+        loop {
+            let trimmed = lo + text[lo..end].trim_end().len();
+            let peel_at = match self.last_whitespace(lo, trimmed) {
+                Some((w, wlen)) if self.alnum_between(w + wlen, trimmed) == 0 => {
+                    let last = &text[w + wlen..trimmed];
+                    nothing_token(last).then_some(w)
+                }
+                _ => None,
+            };
+            match peel_at {
+                Some(w) => {
+                    end = lo + text[lo..w].trim_end_matches(['.', ',']).len();
+                }
+                None => {
+                    end = trimmed;
+                    break;
+                }
+            }
+        }
+        let slice = &text[lo..end];
+        if !slice.ends_with([')', ']', '}']) {
+            return None;
+        }
+        let open = trailing_group_open(slice)?;
+        let before = lo + slice[..open].trim_end().len();
+        Some((before, lo + open + 1, end - 1))
+    }
+
+    /// The slice `text[lo..hi]` with a standalone
+    /// boundary token at its head taken off,
+    /// repeatedly: the new start. The tabled form
+    /// of `strip_leading_boundary_tokens` (round
+    /// 24, R24-4), judged on a slice of a scanned
+    /// line: the standing scan reads the first
+    /// token only as far as the judgment reads
+    /// — an alphanumeric standing before any
+    /// whitespace makes the token no boundary
+    /// token, and a whitespace standing first
+    /// ends a token with no alphanumeric in it,
+    /// which comes off. The table answers the
+    /// same pair of questions per token: the
+    /// first whitespace at or after the head, and
+    /// whether any alphanumeric stands before it.
+    pub(super) fn strip_leading_boundary(&self, lo: usize, hi: usize) -> usize {
+        let text = self.text;
+        let mut start = hi - text[lo..hi].trim_start().len();
+        loop {
+            let Some(w) = self.first_whitespace(start, hi) else {
+                return start;
+            };
+            if self.alnum_between(start, w) > 0 {
+                return start;
+            }
+            start = hi - text[w..hi].trim_start().len();
+        }
+    }
+
+    /// The trailing twin of
+    /// `strip_leading_boundary`: the slice
+    /// `text[lo..hi]` with a standalone boundary
+    /// token at its tail taken off, repeatedly
+    /// (round 24, R24-4) — the new end. The
+    /// standing scan (`strip_trailing_boundary_
+    /// tokens`, whose place this takes) read the
+    /// last token from the end the same way: an
+    /// alphanumeric or a whitespace ending the
+    /// scan, the token after the last whitespace
+    /// coming off exactly when it holds no
+    /// alphanumeric.
+    pub(super) fn strip_trailing_boundary(&self, lo: usize, hi: usize) -> usize {
+        let text = self.text;
+        let mut end = lo + text[lo..hi].trim_end().len();
+        loop {
+            let Some((w, wlen)) = self.last_whitespace(lo, end) else {
+                return end;
+            };
+            if self.alnum_between(w + wlen, end) > 0 {
+                return end;
+            }
+            end = lo + text[lo..w].trim_end().len();
+        }
+    }
+
+    /// The successive trailing-group splits of
+    /// the whole line, last group first: the
+    /// sequence `split_last` yields when it is
+    /// called on its own before-part until it
+    /// answers None — every trailing group of
+    /// the line, each as (the words before it,
+    /// its inner text).
+    pub(super) fn trailing_splits(&self) -> Vec<(&'a str, &'a str)> {
+        let mut splits: Vec<(&'a str, &'a str)> = Vec::new();
+        let mut hi = self.text.len();
+        while let Some((before, inner_lo, inner_hi)) = self.split_last(0, hi) {
+            splits.push((&self.text[..before], &self.text[inner_lo..inner_hi]));
+            hi = before;
+        }
+        splits
+    }
 }
 
 /// Whether `text` names a relative-Sunday shape,
@@ -1041,22 +1201,30 @@ pub(super) fn relative_shape_matches(text: &str, shape: fn(&[String]) -> bool) -
     // settle a clipped head or tail part's cleaning
     // from its size class instead of re-cleaning
     // the part whole (see `relative_shape_words`).
-    let alnum_prefix: Vec<u32> = {
-        let mut prefix = vec![0u32; text.len() + 1];
-        let mut count = 0u32;
-        for (i, c) in text.char_indices() {
-            prefix[i] = count;
-            if c.is_alphanumeric() {
-                count += 1;
-            }
-            prefix[i + c.len_utf8()] = count;
-        }
-        prefix
-    };
-    let mut rest = text;
+    // Round 40 (R40-B, F1): the count is the
+    // line scan's now (`LineScan`), which also
+    // tables the line's whitespace; the strip
+    // loop below reads its boundary strips and
+    // its trailing split off the same scan, so a
+    // letterless line pays no per-group edge scan
+    // here either.
+    let scan = LineScan::new(text);
+    let alnum_prefix: &[u32] = &scan.alnum_prefix;
+    // Round 40 (R40-B, F1): the remainder is
+    // tracked as a byte range of the one line, so
+    // the loop's edge steps read the line scan
+    // instead of re-scanning the remainder: the
+    // boundary-token strips and the trailing split
+    // are the scan's (`strip_leading_boundary`,
+    // `strip_trailing_boundary`, `split_last`),
+    // each the standing judgment judged off the
+    // precomputed facts. The boundary trims and
+    // the leading split keep their standing forms.
+    let mut lo = 0usize;
+    let mut hi = text.len();
     loop {
-        rest = rest.trim_start_matches(BOUNDARY_TRIM);
-        rest = rest.trim_end_matches(BOUNDARY_TRIM);
+        lo = hi - text[lo..hi].trim_start_matches(BOUNDARY_TRIM).len();
+        hi = lo + text[lo..hi].trim_end_matches(BOUNDARY_TRIM).len();
         // Round 24 (R24-4): a standalone boundary
         // token at either end of the remainder ("*",
         // "•", "|", "~", "_", an emoji — the token
@@ -1066,12 +1234,11 @@ pub(super) fn relative_shape_matches(text: &str, shape: fn(&[String]) -> bool) -
         // are: "next Sunday * (November 8)" and
         // "(November 8) * next Sunday" remember
         // their Sundays as their comma twins do.
-        rest = strip_leading_boundary_tokens(rest);
-        rest = strip_trailing_boundary_tokens(rest);
-        rest = rest.trim_start_matches(BOUNDARY_TRIM);
-        rest = rest.trim_end_matches(BOUNDARY_TRIM);
-        let lo = rest.as_ptr() as usize - text.as_ptr() as usize;
-        if relative_shape_words(text, &toks, &ne, &alnum_prefix, lo, lo + rest.len(), shape) {
+        lo = scan.strip_leading_boundary(lo, hi);
+        hi = scan.strip_trailing_boundary(lo, hi);
+        lo = hi - text[lo..hi].trim_start_matches(BOUNDARY_TRIM).len();
+        hi = lo + text[lo..hi].trim_end_matches(BOUNDARY_TRIM).len();
+        if relative_shape_words(text, &toks, &ne, alnum_prefix, lo, hi, shape) {
             return true;
         }
         // Round 21 (R21-1): a LEADING group is garnish
@@ -1079,12 +1246,16 @@ pub(super) fn relative_shape_matches(text: &str, shape: fn(&[String]) -> bool) -
         // "(November 8) next Sunday" names its Sunday
         // in words the way "next Sunday (November 8)"
         // does, the group's date remembered separately.
-        let next = strip_trailing_parenthesized(rest).or_else(|| strip_leading_parenthesized(rest));
-        match next {
-            Some(stripped) => rest = stripped,
-            None => {
-                return false;
-            }
+        match scan.split_last(lo, hi) {
+            Some((before, _, _)) => hi = before,
+            None => match strip_leading_parenthesized(&text[lo..hi]) {
+                Some(stripped) => {
+                    lo = stripped.as_ptr() as usize - text.as_ptr() as usize;
+                }
+                None => {
+                    return false;
+                }
+            },
         }
     }
 }
@@ -1602,38 +1773,6 @@ pub(super) fn strip_leading_boundary_tokens(text: &str) -> &str {
             return rest;
         };
         rest = rest[end..].trim_start();
-    }
-}
-
-/// `text` with a standalone boundary token at its
-/// tail taken off, repeatedly (round 24, R24-4):
-/// the tail twin of `strip_leading_boundary_tokens`.
-pub(super) fn strip_trailing_boundary_tokens(text: &str) -> &str {
-    let mut rest = text.trim_end();
-    loop {
-        // Round 39 (R39-G, F9): the trailing twin of
-        // the bounded scan above — the last token is
-        // read from the end, an alphanumeric or a
-        // whitespace ending the scan the same way.
-        let mut token_start: Option<usize> = None;
-        let mut has_alnum = false;
-        for (i, c) in rest.char_indices().rev() {
-            if c.is_whitespace() {
-                token_start = Some(i + c.len_utf8());
-                break;
-            }
-            if c.is_alphanumeric() {
-                has_alnum = true;
-                break;
-            }
-        }
-        if has_alnum {
-            return rest;
-        }
-        let Some(start) = token_start else {
-            return rest;
-        };
-        rest = rest[..start].trim_end();
     }
 }
 

@@ -654,12 +654,18 @@ pub(super) fn trailing_group_analyses(
     today: SimpleDate,
     anchor: SimpleDate,
 ) -> Vec<(String, GroupAnalysis)> {
-    let mut inners: Vec<String> = Vec::new();
-    let mut rest = text;
-    while let Some((before, inner)) = split_last_trailing_group(rest) {
-        inners.push(inner.to_string());
-        rest = before;
-    }
+    // Round 40 (R40-B, F1): the splits are read
+    // off the line's precomputed scan
+    // (`LineScan::trailing_splits`) — the same
+    // sequence the loop here used to walk one
+    // split at a time, each split's edge facts
+    // tabled once for the line.
+    let scan = LineScan::new(text);
+    let mut inners: Vec<String> = scan
+        .trailing_splits()
+        .iter()
+        .map(|(_, inner)| inner.to_string())
+        .collect();
     inners.reverse();
     let mut analyses: Vec<GroupAnalysis> = inners
         .iter()
@@ -1064,11 +1070,15 @@ pub(super) fn chain_superseded_from_entries(
 /// a plain reading stands on once the groups have
 /// been remembered separately.
 pub(super) fn strip_all_trailing_parenthesized(text: &str) -> &str {
-    let mut rest = text;
-    while let Some(stripped) = strip_trailing_parenthesized(rest) {
-        rest = stripped;
+    // Round 40 (R40-B, F1): the final split's
+    // before-part, read off the line's precomputed
+    // scan — the same rest the loop here used to
+    // walk one strip at a time.
+    let scan = LineScan::new(text);
+    match scan.trailing_splits().last() {
+        Some((before, _)) => before,
+        None => text,
     }
-    rest
 }
 
 /// A For Sunday line that names a Sunday in words
@@ -1123,12 +1133,28 @@ pub(super) fn relative_phrase_resolution(
     today: SimpleDate,
     sunday_after: bool,
 ) -> SimpleDate {
-    let mut rest = text;
-    while let Some(stripped) =
-        strip_trailing_parenthesized(rest).or_else(|| strip_leading_parenthesized(rest))
-    {
-        rest = stripped;
+    // Round 40 (R40-B, F1): the strip loop is
+    // tracked as a byte range of the one line, its
+    // trailing strips read off the line's
+    // precomputed scan (`LineScan::split_last`) —
+    // the same alternation the loop here used to
+    // walk, trailing first, then leading.
+    let scan = LineScan::new(text);
+    let mut lo = 0usize;
+    let mut hi = text.len();
+    loop {
+        if let Some((before, _, _)) = scan.split_last(lo, hi) {
+            hi = before;
+            continue;
+        }
+        match strip_leading_parenthesized(&text[lo..hi]) {
+            Some(stripped) => {
+                lo = stripped.as_ptr() as usize - text.as_ptr() as usize;
+            }
+            None => break,
+        }
     }
+    let rest = &text[lo..hi];
     let next = rest
         .split_whitespace()
         .map(group_token)
@@ -6885,14 +6911,11 @@ pub(super) fn whole_line_composition(
     }
     // The trailing run: the groups the standing
     // readings already compose with the core.
-    let mut trailing_run = 0usize;
-    {
-        let mut rest = text;
-        while let Some(stripped) = strip_trailing_parenthesized(rest) {
-            trailing_run += 1;
-            rest = stripped;
-        }
-    }
+    // Round 40 (R40-B, F1): the run's length is
+    // the line scan's split count — the same run
+    // the loop here used to count one strip at a
+    // time.
+    let trailing_run = LineScan::new(text).trailing_splits().len();
     let has_non_trailing_group = spans.len() > trailing_run;
     // The core: the line with every group taken out.
     // A group leaves a clause break behind it — a

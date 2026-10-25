@@ -19334,6 +19334,65 @@ fn r39g_nested_day_groups_parse_without_the_cliff() {
     }
 }
 
+// Round 40 (R40-B, F1 = red team RT40-P1 +
+// review R40-R3): the letterless group run — a
+// line of empty groups, "()" repeated. The R39-G
+// record named this shape an observation (1,920
+// repetitions at 1,641 ms on its fixed tree) and
+// bounded the LETTERED shapes; the letterless arm
+// was left, and round 40 pushed the ladder: 480
+// repetitions 245–652 ms, 1,920 repetitions
+// ~2.7–4.2 s, 7,680 repetitions (a 15,405-byte
+// line) 61.65 s min-of-3 in review's completed
+// witness (interleaved ratio 1,041x against a
+// byte-matched long-word control) and DID NOT
+// FINISH in the red team's 90 s and 120 s windows.
+// The reading is None at every size — the shape
+// is pure cost. The mechanism, both lanes'
+// code-read and this batch's instrumented split:
+// the run is one letterless glued token, so the
+// token-edge scans in the shape/strip loops —
+// which stop at the first alphanumeric or
+// whitespace, and this line has neither — ran
+// whole-text per iteration, one iteration per
+// group: the nothing-token peel scan inside
+// `split_last_trailing_group` (the strip loops
+// call it once per trailing group), and the
+// boundary-token edge scans in the relative-shape
+// loop. The fix precomputes the line's
+// token/group-edge facts once (whitespace
+// positions, an alphanumeric prefix count — the
+// R39-G table pattern) and the strip loops read
+// their edge facts off the table, so total work
+// is linear in the line. The control is the
+// long-word line at the witness's byte size, as
+// in the R39-G pins above; the bound is 20x, the
+// nested/unclosed pins' multiple. Pre-fix bite,
+// in this suite's own interleaved frame: at
+// 1,920 repetitions the witness took 1.551 s
+// against the control's 8.117 ms — 191x, over
+// the bound. On the fixed tree the witness
+// stands at ~9x the control at both sizes
+// (interleaved best-of-three, probe frame,
+// ratios 9.40 / 8.36 at 1,920 / 3,840, flat at
+// 8.99 / 9.72 at 7,680 / 15,360 — a constant
+// factor, as linear code's ratios stand; the
+// tables are in round40-out/coord/
+// r40b-record.md).
+#[test]
+fn r40b_empty_group_run_parses_without_the_cliff() {
+    for n in [1920usize, 3840] {
+        let text = format!("For Sunday: {}\n\n## Announcement\n\nHi.\n", "()".repeat(n));
+        let control = r39g_word_run_control(2 * n);
+        let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+        assert_eq!(c.for_date, None);
+        assert!(
+            witness_best < control_best * 20,
+            "the empty-group witness at {n} repetitions took {witness_best:?} against the interleaved control's {control_best:?} (bound: 20x the control)"
+        );
+    }
+}
+
 #[test]
 fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026)"; 75000].join(" and ");

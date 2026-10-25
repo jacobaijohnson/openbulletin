@@ -982,3 +982,302 @@ round's recorded readings). HF-12 untouched.
 The Tier-2 final gate is not triggered (0/8/2)
 and is not the coordinator's to start in any
 case.
+
+## Coordinator close (2026-10-24)
+
+Final tree: `2786a6d` (R39-H2), on synthesis
+`bb9feac`. All ten findings are fixed or
+dispositioned below; the round's audit tally
+stands **0 BLOCKER / 8 MAJOR / 2 MINOR**, so the
+exit bar (a full round at zero BLOCKER + zero
+MAJOR) is **NOT met** and the Tier-2 final gate
+is not triggered. Round 40 is the next candidate.
+Suite: **1131 tests** (1094 + 37 pins across the
+batches), clippy clean.
+
+### Batches landed
+
+- **R39-A** (`ffe81aa`) — F1 + F2, archive
+  discipline. 10 pins; no standing pin restated.
+  Disclosed in its record and corrected there:
+  the batch's own `cargo clean` raced a
+  still-running suite, so the commit went up
+  without a completed incremental run; two
+  complete runs of the committed tree followed
+  (1103/1, the sole failure the r31c cliff pin
+  under co-tenant load, solo-quiet passes on
+  both trees).
+- **R39-B** (`7ff0b76`) — F3, interior-slot
+  guard. First writer errored mid-run; a
+  recovery writer completed the batch from its
+  tree (its detached suite had finished the leg)
+  with two small semantics-neutral repairs
+  (doc-comment placement; an MSRV clippy gate).
+  5 pins, tests.rs purely additive; the
+  governor-after-`after` forms stated unmoved.
+- **R39-CI** (`7a6a0fd`) — the cliff-pin
+  conversion; see the incident section below.
+- **R39-C** (`5b168dd`) — F4 arms (a)/(b)/(c)/(e)
+  under `r39c-ruling.md`: **arm (d) was dropped
+  as mis-framed** — the first writer's STOP
+  report falsified the run mechanism firsthand
+  (runs are taken by the walk; `(notes),,(Monday)`
+  refuses pre-fix) and isolated the real one:
+  governor-first unwrapping leaves the weekday
+  group at cell (a)(i)'s mid-line position,
+  pinned as governor/bare twins in R37-D and
+  R38-B at every separator width. The
+  governor-first + weekday-companion company is
+  carried to round 40 as a witnessed neighbour
+  of (a)(i), with the note that after F10 the
+  same company at the trailing slot refuses with
+  the record — the asymmetry is the (a)(i)
+  boundary itself, to be taken whole if a future
+  round takes it. The batch was stopped once for
+  the CI conversion (its partial diff preserved
+  as `r39c-partial-pre-conversion.patch`, judged
+  hunk-by-hunk and applied whole by the third
+  writer). 4 pins; R37-D/R38-B pass unchanged.
+- **R39-D** (`827fe6f`) — F5 + F6, chain links.
+  Witness correction, recorded in its record:
+  the chain forms did not reproduce on the
+  batch's pre-fix tree — bisection shows R39-B
+  had already moved them incidentally (chains
+  serve as the lanes witnessed at `ffe81aa` and
+  match their twins from `7ff0b76`), unclaimed
+  in R39-B's record — the adjudication-4 pattern
+  in the harmless direction. The dressed
+  singles were the load-bearing fix (7 lines
+  moved); the full fix shape landed anyway, so
+  the named helpers now state the adjudicated
+  set instead of the slot depending on R39-B's
+  by-product, and the chain pin stands as a
+  regression pin. Weekday arms: no movement.
+- **R39-E** (`8d26fa4`) — F7, grouped weekday
+  interior mark. Exactly 69 witness lines moved,
+  each landing field-identical to its bare twin;
+  the governor-completion and wrapped-month
+  boundaries pinned. 2 pins.
+- **R39-F** (`d9d8028`) — F8, bare-path tail.
+  8 pins, all bite on pre-fix production; no
+  standing pin restated (one flagged scope note:
+  single/double month groups were also silent
+  pre-fix — no month splice existed at any
+  depth — so the splice applies at every depth
+  by the day-group precedent). The batch's first
+  `month_group_reading` was itself quadratic and
+  was caught by the r31c ratio pin in its own
+  warm run; the landed form carries a length
+  guard (solo attribution in the record).
+- **R39-G** (`7a7fe1e` + comment-only correction
+  `63929d1`) — F9 + F11, performance. All four
+  shapes confirmed in a quiet-window witness on
+  the pre-fix tree and fixed with ratio pins
+  that bite pre-fix (group runs 36.6× in-suite;
+  mixed unclosed 2,067×; nested day 28.0×;
+  semicolon second size 68.4×): group runs
+  18,949 ms → 581 ms at 2,560 groups; mixed
+  unclosed 85,208 ms → 5.0 ms at 960; nested day
+  101.0 ms → 15.1 ms at depth 1,600; semicolon
+  153.5 s at 64,000 groups → linear (3.9/4.8× per
+  4× through 32,000), with the second-size pin
+  R39-CI's record proposed now standing at the
+  pin's own 30× multiple and the 32,000 pin's
+  30× bound left exactly as R39-CI set it.
+  Differential spot-family (72 reads)
+  byte-identical pre/post. One erratum disclosed
+  in the record (§9): three witness figures in a
+  pin header as first committed misstated the
+  durable log; `63929d1` restates them from the
+  log, comments only, zero non-comment diff.
+  **Residual recorded:** at nesting depth 6,400
+  (beyond the witnessed range) other
+  group-sequence readers still grow 9.9× on the
+  top step (148 ms) — bounded, documented in
+  the batch record, carried to round 40's lane
+  briefs, not fixed here.
+- **R39-H** (`2046cad`) — F10, the doctrine
+  change. A text-rewrite unwrapping pass,
+  mirrored in `date_line` and the keep-through
+  fallback and sharing the R38-D contents
+  judgment, judges a wrapped governor as its
+  bare twin at the trailing slot and mid-line
+  before a plain date. The stop term did not
+  fire: post-fix exactly four pins failed, all
+  in the named families (R34-E family 2, R37-D,
+  R38-B, R38-D scope control); the R35-F battery
+  passed pre-restatement (its five entries were
+  self-twins) and was restated on content — it
+  now bites, as do the new pin and every
+  restated family with the fix stashed. Fuzz:
+  no reading moved. One tasking correction,
+  recorded: the brief's `ctl-cancelword-*` glob
+  covers two battery entries (paren, bracket);
+  the third mixed cancelword entry already
+  carried the bare twin.
+- **R39-H2** (`2786a6d`) — the impure
+  single-group follow-on. R39-H's writer had
+  flagged `(cancelled today)`-class contents as
+  outside the pass (not a governor phrase under
+  whole-contents membership). The H2 probe
+  settled it firsthand: the split was real at
+  leading, trailing, and mid-line for all five
+  probed forms (bare governs, wrapped served).
+  Closed inside F10's own mechanism: the shared
+  contents judgment `governor_group_words`
+  gained an impure arm (the segment scan's own
+  test — a governor phrase at any 1–3-word
+  position of the contents); contents holding a
+  month word, weekday word, or digit stay
+  outside both arms. 92 wrapped readings moved,
+  all to parity; zero bare readings changed; no
+  standing pin restated; base-trailing,
+  before-phrase company, and the carried
+  neighbours unmoved.
+
+### The CI incident and its disposition (coordinator record)
+
+R39-B closed on local evidence whose batch record
+disclosed four r31c cliff-pin timing failures
+honestly as a load class. Hosted CI on the tip
+`7ff0b76` was in fact RED — run 40038323553,
+Ubuntu + Windows failing on two of those pins'
+absolute wall-clock asserts (readings passed;
+macOS and the desktop runner green) — and the
+loop proceeded to R39-C without checking it. The
+escalation gap was the coordinator's: a batch
+record's disclosed timing failures were
+adjudicated locally while the hosted legs of the
+same tip went unexamined, and "verified" language
+outran the five-leg gate this program adopted
+after the round-38-era CI incident. The
+correction stands appended to `r39b-record.md`:
+tip `7ff0b76` was not verified.
+
+Disposition, on Jacob's direct order (fix the
+operating-system legs so all three are green and
+building can continue reliably): batch R39-CI
+converted every absolute-time cliff assert in
+the contribution tests to the R33-D interleaved
+ratio-vs-control form — six pins (the r30d pin
+and all five r31c pins; the family held five,
+not four), eleven already-ratio pins audited
+untouched, reading assertions preserved, no
+bound widened, no production code touched. Bite
+check: the converted pins fail on the pre-fix
+trees (conjoined 150× vs the 75 bound, cancelled
+33.8× vs 10, relative 37.1× vs 20, r30d ~769× vs
+20 on its own pre-fix tree). The batch closed
+only on its closing condition: **hosted CI run
+40067676028, all three OS legs success** (jobs
+120794233918 / 120794234051 / 120794234191),
+Desktop Runner Build 40067676019 success —
+verified firsthand by the coordinator. The
+finding the conversion's bite check surfaced —
+the semicolon shape's superlinear term at
+larger sizes — is F11 above, fixed in R39-G.
+Standing consequence, recorded for future
+rounds: batch records state hosted-CI
+conclusions for their tip, and no tip is
+described as verified on local evidence alone.
+
+### Ratio-pin contention events
+
+Twice this round a converted pin failed in a
+warm in-suite run and passed on attribution:
+R39-E's warm run (`r31c_semicolon_groups`,
+31.1× vs the 30× bound; solo pre/post walls
+0.5% apart, cold in-suite pass, hosted legs
+green) and R39-H2's first warm run
+(`r31c_conjoined_groups`, witness 122.1 s vs
+control 1.458 s; solo pre/post indistinguishable
+at ~278 s, second full run green). No margin was
+adjusted in either case; both records carry the
+full attribution. The pins' frame sensitivity on
+this co-tenanted box is itself evidence for the
+F11 term's share at the pinned sizes; the pins
+stand as converted.
+
+### Records carried to round 40
+
+- The governor-first + weekday-companion company
+  (the (a)(i) neighbour isolated at R39-C) and
+  the governor-after-`after` forms (F3's scope
+  note; R39-B stated them unmoved again) — both
+  witnessed, neither graded in this round.
+- The nested-day residual at depth 6,400
+  (R39-G): other group-sequence readers grow
+  9.9× on the top step beyond the witnessed
+  range.
+- The R38-F peeled-tail residual and the F6/F9
+  recycled-pid residual: both stand as recorded;
+  the pid boundary was re-verified this round
+  (review's code read + the red team's lock
+  sweep incl. new shapes N13–N15, 0 deviations).
+- F10's unwitnessed shapes, pinned as controls
+  by R39-H and left by design: `(cancelled) and
+  more` (a group followed by words is not at the
+  trailing slot as the walks define it).
+
+### Five-leg evidence on the final tree (`2786a6d`)
+
+1. **Local cold** — R39-H2's cold verification
+   ran on this exact tree after `cargo clean`:
+   suite **1131 passed / 0 failed** (per-package
+   driver; ob-extract 474/0), cold clippy
+   `-D warnings` exit 0; the booklet pin
+   (31,717 imposed / 34,977 reader) passes
+   inside the suite.
+2. **Fuzz as claims** — coordinator's own close
+   run on the final tree (bin sources
+   md5-re-verified: verdict `a9cac6c3…`, comp
+   `4f85c605…`, rights `95a47ee1…` / `9346879d…`):
+   verdict 40,000 lines, 0 panics, stdout md5
+   `797758443d101f9339fdd778e14af430`; composition
+   497,024 lines, 0 panics, stdout md5
+   `5868726a9f55b131d86e81070557c5f4` — both
+   byte-identical to the standing baselines;
+   rights counters **5083 / 1024 / 5275,
+   safety_flips=0** on every axis (M8 held).
+   Logs: `round39-out/coord/close-fuzz/`.
+3. **Hosted CI ×3** — run **40137897360** on
+   `2786a6d`, checked per job: ubuntu ✓
+   (121003224889), windows ✓ (121003225088),
+   macos ✓ (121003225101). Verified firsthand
+   via `gh run view`.
+4. **Desktop runner build** — run
+   **40137897340** success (job 121003225202),
+   verified firsthand.
+5. **Windows bundle** — run **40148694655**
+   (dispatched at close; the workflow is
+   dispatch/tag-only): Gate ✓ (121035452164),
+   bundle ✓ (121037076425), verified firsthand.
+
+HEAD == origin/main == `2786a6d` at the close;
+tree clean. Boundary hygiene: lane reports and
+batch records in `~/workspace/openbulletin-
+audit-wave3/`; batch scratch under
+`round39-out/<batch>/` kept as evidence; the two
+scratch worktrees R39-CI created were removed by
+its writer; the fuzz bins stand at their
+recorded md5s, re-verified at this close.
+
+### Build-cache disposition
+
+At the confirmed completion: `df -h /home/hatch`
+reads **75% used / 26 G free** (Sat 2026-10-24
+~18:48 PDT, daytime window; line 94%). The
+round's confirmed-completion readings ranged
+63–75%; no reading at or above the overnight
+87% line was recorded at any completion, and no
+latch is armed. **Disposition: CARRY** — the
+cache carries into round 40; the tree stands
+cold-built from R39-H2's clean.
+
+Environment account for the round: the VM
+restarted repeatedly throughout (killing lane
+runs, suite attempts, and fuzz attempts — every
+killed run discarded and re-run, none quoted)
+and co-tenant (EV) load ran 2–13 on 2 cores;
+per-package suite drivers and detached runs were
+the working pattern. HF-12 untouched.

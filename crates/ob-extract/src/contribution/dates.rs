@@ -569,12 +569,19 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         // as one wearing the ellipsis already is,
         // instead of serving the resolution with
         // the record lost.
+        // Round 42 (R42-F, F9 = red team RT42-S4):
+        // the tail set gains the en dash (U+2013),
+        // the set's own hyphen's codepoint sibling,
+        // judged at this slot as "-" and "—" are —
+        // a base garnish wearing one takes its
+        // twins' reading here, as at the plain
+        // line's trailing slot.
         let word = tokens[i]
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
                 '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
             ])
-            .trim_end_matches(['~', '*', '#', '-', '\u{2014}'])
+            .trim_end_matches(['~', '*', '#', '-', '\u{2014}', '\u{2013}'])
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
                 '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
@@ -801,6 +808,22 @@ fn base_trailing_sequence_mismatch(
         }
         garnish.push_str(token);
     }
+    // Round 42 (R42-F, F9 = red team RT42-S4): an
+    // en dash (U+2013) standing at the garnish's
+    // own tail — glued to its last group, or
+    // spaced as its own token — is taken off
+    // before the walk below, and the walk's answer
+    // stands only when the sequence's FINAL group
+    // is a weekday group (the gate below, past the
+    // gap walk): the weekday-last base-trailing
+    // sequence, judged here as "-" and "—" judge
+    // it through the standing peels. A sequence
+    // whose final group is anything else keeps its
+    // standing reading under the mark.
+    let en_tail = garnish.trim_end().ends_with('\u{2013}');
+    if en_tail {
+        garnish = garnish.trim_end().trim_end_matches('\u{2013}').to_string();
+    }
     let mut rest = garnish.as_str();
     loop {
         // Round 38 (R38-B, F2): the peel set gains
@@ -972,6 +995,14 @@ fn base_trailing_sequence_mismatch(
         {
             return None;
         }
+    }
+    // Round 42 (R42-F, F9): the en-dash gate stated
+    // at the walk's head — a garnish the mark
+    // closed is this walk's only when its final
+    // group is a weekday group.
+    if en_tail {
+        let &(start, end) = spans.last()?;
+        garnish_group_weekday(&rest[start + 1..end - 1])?;
     }
     for (start, end) in &spans {
         let inner = &rest[start + 1..end - 1];
@@ -2082,11 +2113,17 @@ pub(super) fn nothing_token(raw: &str) -> bool {
 /// readings everywhere else; this predicate is read
 /// only by the trailing-slot arms that judge the word
 /// the suffix follows.
+/// Round 42 (R42-F, F9 = red team RT42-S4): the set
+/// gains the en dash (U+2013), the set's own hyphen's
+/// codepoint sibling, judged wherever "-" and "—"
+/// are judged — a spaced en dash standing after a
+/// trailing garnish is that garnish's dress here, as
+/// the two judged dashes are.
 pub(super) fn suffix_tail_token(raw: &str) -> bool {
     !raw.is_empty()
         && raw
             .chars()
-            .all(|c| matches!(c, '~' | '*' | '#' | '-' | '\u{2014}'))
+            .all(|c| matches!(c, '~' | '*' | '#' | '-' | '\u{2014}' | '\u{2013}'))
 }
 
 /// One group token with its wrapping punctuation off,

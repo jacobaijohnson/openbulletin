@@ -2217,22 +2217,46 @@ fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
     // witnessed arm exactly: the peeled core must
     // end in the en dash, the run it closes must
     // hold two or more groups, and the run's FINAL
-    // group must be a governor group — the lone
-    // trailing governor wearing the en dash, the
-    // governor-first sequence, and the weekday-
-    // last sequence keep their standing readings
-    // (the closed-peel record, round 42 F9's
-    // territory, unmoved here).
+    // group must be a governor group.
+    // Round 42 (R42-F, F9 = red team RT42-S4): the
+    // retry gains the LONE arm — a run of one
+    // governor group wearing the en dash, the lone
+    // trailing governor of S4's witness table,
+    // judged here as "-" and "—" judge it through
+    // the standing peels. The governor-first
+    // sequence keeps its standing reading under
+    // both arms (its final group is no governor
+    // group, so neither retry returns it), and the
+    // weekday-last sequence is judged by the
+    // sequence walk's own en-dash gate, not here.
     let core = core.strip_suffix('\u{2013}')?;
     let end = trailing_run_peeled_end(text, core.len());
     let core = text[..end].trim_end();
     let run = trailing_run_in_core(core)?;
-    if run.0.len() < 2 {
-        return None;
-    }
     let (last_start, last_end) = *run.0.last()?;
-    governor_group_words(&core[last_start + 1..last_end - 1])?;
-    Some(run)
+    if governor_group_words(&core[last_start + 1..last_end - 1]).is_some() {
+        return Some(run);
+    }
+    // Round 42 (R42-F, F9): the COMPANY arm — a
+    // run whose final group is a weekday group
+    // with a governor group standing in it takes
+    // the run too, so its governor unwraps exactly
+    // as its "-" / "—" twins' governors unwrap
+    // through the standing peels, and the composed
+    // outcome is the unwrapped line's, as theirs
+    // is. A governor-free weekday-last run is not
+    // returned here: it is the sequence walk's
+    // en-dash gate's, above.
+    if run.0.len() >= 2
+        && garnish_group_weekday(&core[last_start + 1..last_end - 1]).is_some()
+        && run
+            .0
+            .iter()
+            .any(|&(s, e)| governor_group_words(&core[s + 1..e - 1]).is_some())
+    {
+        return Some(run);
+    }
+    None
 }
 
 /// The end the trailing run's peels leave on
@@ -2751,6 +2775,24 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
 /// that separator token and the unseparated twin
 /// is judged.
 fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
+    // Round 42 (R42-F, F9 = red team RT42-S4): an
+    // en dash (U+2013) standing at the sequence's
+    // own tail — glued to its last group, or spaced
+    // as its own token — is taken off before the
+    // walk below, and the walk's answer stands only
+    // when the run's FINAL group is a weekday
+    // group: the weekday-last trailing sequence of
+    // S4's witness table, judged here as "-" and
+    // "—" judge it through the standing peels. A
+    // sequence whose final group is anything else
+    // keeps its standing reading under the mark —
+    // the governor-final sequences are the governor
+    // unwraps' (R42-D), and a sequence closing on
+    // an inert group is no witnessed arm.
+    let (text, en_tail) = match text.trim_end().strip_suffix('\u{2013}') {
+        Some(head) => (head, true),
+        None => (text, false),
+    };
     // The suffix layers the sequence may stand in
     // front of, peeled as in
     // `spaced_trailing_weekday_garnish`: sentence
@@ -2900,6 +2942,14 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     for (start, end) in &spans[run_first..=last] {
         let inner = &core[start + 1..end - 1];
         inners.push(inner.to_string());
+    }
+    // Round 42 (R42-F, F9): the en-dash gate stated
+    // at the walk's head — the run the mark closed
+    // is this walk's only when its final group is
+    // a weekday group.
+    if en_tail {
+        let last_inner = inners.last()?;
+        garnish_group_weekday(last_inner)?;
     }
     Some((inners, prefix))
 }
@@ -3058,6 +3108,14 @@ fn leading_single_group_behind_head_separators(text: &str) -> Option<(String, &s
 /// suffixed lone group went unjudged and its date
 /// served in silence, while its sequence twin is
 /// walked by `leading_group_sequence` above.
+/// Round 42 (R42-F, F9 = red team RT42-S4): the
+/// mark set gains the en dash (U+2013), the set's
+/// own hyphen's codepoint sibling, judged at this
+/// slot as "-" and "—" are — a leading group
+/// wearing one takes its twins' reading here.
+/// The governor arm at this slot already holds
+/// under the same mark (its unwraps shed it in
+/// the group cleaning) and is not moved.
 fn leading_single_group_wearing_suffix(text: &str) -> Option<(String, &str)> {
     let rest = skip_framing_garnish(text.trim_start());
     if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
@@ -3070,14 +3128,14 @@ fn leading_single_group_wearing_suffix(text: &str) -> Option<(String, &str)> {
     let after = &rest[end..];
     if !matches!(
         after.chars().next(),
-        Some('~' | '*' | '#' | '-' | '\u{2014}')
+        Some('~' | '*' | '#' | '-' | '\u{2014}' | '\u{2013}')
     ) {
         return None;
     }
     let inner = &rest[start + 1..end - 1];
     let rest = after.trim_start_matches([
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}',
+        '-', '\u{2014}', '\u{2013}',
     ]);
     Some((inner.to_string(), rest))
 }
@@ -4801,12 +4859,19 @@ pub(super) fn date_line_inner(
         // already is, while a word merely standing
         // behind one of the marks ("*Monday") keeps
         // its standing glued reading.
+        // Round 42 (R42-F, F9 = red team RT42-S4):
+        // the tail set gains the en dash (U+2013),
+        // the set's own hyphen's codepoint sibling,
+        // judged at this slot as "-" and "—" are —
+        // a garnish wearing one takes its twins'
+        // reading here, as at the Sunday-after
+        // base's trailing slot.
         let word = tokens[i]
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
                 '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
             ])
-            .trim_end_matches(['~', '*', '#', '-', '\u{2014}'])
+            .trim_end_matches(['~', '*', '#', '-', '\u{2014}', '\u{2013}'])
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
                 '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',

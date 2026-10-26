@@ -34418,11 +34418,30 @@ fn r42d_trailing_seats_scope_controls_unmoved() {
     // it at an INTERIOR seat of a trailing
     // sequence serves, exactly as on the base
     // tree.
-    r40e_serves_silent("November 8, 2026 (cancelled)\u{2013}", nov(8));
+    // RESTATED IN PART (round 42, R42-F, F9 = red
+    // team RT42-S4; the restatement the R42-D
+    // batch record and ruling flagged in advance
+    // as expected and adjudicated, not a surprise):
+    // exactly the arms S4's witness table covers
+    // are restated below — the lone trailing
+    // governor wearing the en dash now GOVERNS
+    // (it no longer serves), and the grouped
+    // weekday wearing it, lone and weekday-last
+    // in a trailing sequence, now REFUSES WITH
+    // its record (it no longer serves in
+    // silence). Every other arm of this pin
+    // stands unmoved as a control: the
+    // governor-first sequence wearing the en
+    // dash serves, and a governor wearing it at
+    // an INTERIOR seat of a trailing sequence
+    // serves, exactly as on the base tree. The
+    // full en-dash family is pinned in the R42-F
+    // tests below.
+    r40e_governed_silent("November 8, 2026 (cancelled)\u{2013}");
     r40e_serves_silent("November 8, 2026 (cancelled)(notes)\u{2013}", nov(8));
-    r40e_serves_silent("November 1, 2026 (Monday)\u{2013}", nov(1));
+    r40g_refuses_with_record("November 1, 2026 (Monday)\u{2013}", "Monday", nov(1));
     r40e_serves_silent("November 8, 2026 (cancelled)\u{2013} (notes)", nov(8));
-    r40e_serves_silent("November 1, 2026 (notes)(Monday)\u{2013}", nov(1));
+    r40g_refuses_with_record("November 1, 2026 (notes)(Monday)\u{2013}", "Monday", nov(1));
     // The R41-E trailing controls, unweakened,
     // restated over the set: the lone wrapped
     // governor governs and the grouped weekday
@@ -34434,6 +34453,442 @@ fn r42d_trailing_seats_scope_controls_unmoved() {
         r40e_governed_silent(&governor);
         let grouped = format!("November 1, 2026 (Monday){mark}");
         r40g_refuses_with_record(&grouped, "Monday", nov(1));
+    }
+}
+
+// Round 42 (R42-F, F9 MINOR = red team RT42-S4;
+// round-42 synthesis adjudication 7): the en dash
+// (U+2013) is the one mark of S4's 35-mark trailing
+// table that was never in any judged set yet is the
+// codepoint sibling of the judged set's own "-"
+// (U+002D, standing in the set as written) and "—"
+// (U+2014) — the dash a typist actually produces —
+// and the codebase's own trim sets elsewhere
+// already shed it. Witnessed on the base tree
+// (today pinned 2026-10-20 in the lane's runs;
+// November 1 and November 8, 2026 are Sundays):
+// at the trailing slot the lone governor wearing
+// it SERVED its cancelled date live, the grouped
+// weekday served in silence, and the bare weekday
+// read None with its record LOST, where "-" and
+// "—" govern, refuse with the record, and refuse
+// with the record; at the leading slot the weekday
+// arm was disarmed by it (served silently) while
+// the governor arm HELD under the same mark; at
+// the base-trailing slot the weekday arm served
+// the resolution silently, grouped and bare. The
+// adjudicated reading: U+2013 is judged at the
+// arms where "-" and "—" are judged, per S4's
+// witness table — the arms below, stated outright
+// and twin-compared on both routes. The
+// governor-last trailing seat for U+2013 is
+// R42-D's (its pin 3), not claimed here. The
+// remaining marks of S4's table stand as recorded
+// (the control pin at the end of this block).
+
+#[test]
+fn r42f_en_dash_trailing_governor_and_weekday_arms_take_their_twins_readings() {
+    // The trailing headline arms, stated outright,
+    // both routes (the helpers read the For line
+    // and the Keep-through line): the lone
+    // trailing governor wearing the en dash
+    // governs silently, glued and spaced, as its
+    // "-" and "—" twins do.
+    r40e_governed_silent("November 8, 2026 (cancelled)\u{2013}");
+    r40e_governed_silent("November 8, 2026 (cancelled) \u{2013}");
+    // The grouped weekday refuses with its record,
+    // glued and spaced.
+    r40g_refuses_with_record("November 1, 2026 (Monday)\u{2013}", "Monday", nov(1));
+    r40g_refuses_with_record("November 1, 2026 (Monday) \u{2013}", "Monday", nov(1));
+    // The bare weekday's record is restored: it
+    // refuses with the record, glued and spaced,
+    // where on the base tree it read nothing in
+    // silence on either route, its record lost.
+    r40g_refuses_with_record("November 1, 2026 Monday\u{2013}", "Monday", nov(1));
+    r40g_refuses_with_record("November 1, 2026 Monday \u{2013}", "Monday", nov(1));
+    // Full-record twins against both judged
+    // dashes and the clean forms, both routes, at
+    // every trailing arm above.
+    for twin in [
+        "November 8, 2026 (cancelled)-",
+        "November 8, 2026 (cancelled)\u{2014}",
+        "November 8, 2026 (cancelled)",
+    ] {
+        r34e_for_twin("November 8, 2026 (cancelled)\u{2013}", twin);
+        r34e_keep_twin("November 8, 2026 (cancelled)\u{2013}", twin);
+    }
+    for twin in [
+        "November 1, 2026 (Monday)-",
+        "November 1, 2026 (Monday)\u{2014}",
+        "November 1, 2026 (Monday)",
+    ] {
+        r34e_for_twin("November 1, 2026 (Monday)\u{2013}", twin);
+        r34e_keep_twin("November 1, 2026 (Monday)\u{2013}", twin);
+    }
+    for twin in [
+        "November 1, 2026 Monday-",
+        "November 1, 2026 Monday\u{2014}",
+        "November 1, 2026 Monday",
+    ] {
+        r34e_for_twin("November 1, 2026 Monday\u{2013}", twin);
+        r34e_keep_twin("November 1, 2026 Monday\u{2013}", twin);
+    }
+    // The agreeing forms read their date through
+    // the mark, twin-equal to both dashes: the
+    // agreeing grouped weekday and the agreeing
+    // bare weekday serve November 1, no record.
+    for line in [
+        "November 1, 2026 (Sunday)\u{2013}",
+        "November 1, 2026 Sunday\u{2013}",
+    ] {
+        r40e_serves_silent(line, nov(1));
+    }
+    r34e_for_twin(
+        "November 1, 2026 (Sunday)\u{2013}",
+        "November 1, 2026 (Sunday)-",
+    );
+    r34e_keep_twin(
+        "November 1, 2026 Sunday\u{2013}",
+        "November 1, 2026 Sunday\u{2014}",
+    );
+    // The weekday-last trailing sequence refuses
+    // with its record through the mark, glued and
+    // spaced, twin-equal to both dashes.
+    r40g_refuses_with_record("November 1, 2026 (notes)(Monday)\u{2013}", "Monday", nov(1));
+    r40g_refuses_with_record(
+        "November 1, 2026 (notes)(Monday) \u{2013}",
+        "Monday",
+        nov(1),
+    );
+    r34e_for_twin(
+        "November 1, 2026 (notes)(Monday)\u{2013}",
+        "November 1, 2026 (notes)(Monday)-",
+    );
+    r34e_keep_twin(
+        "November 1, 2026 (notes)(Monday)\u{2013}",
+        "November 1, 2026 (notes)(Monday)\u{2014}",
+    );
+    // The trailing company wearing the mark takes
+    // its twins' composed outcome — governed
+    // silently, no weekday record — as the clean
+    // trailing company composes (the R40-E
+    // controls above).
+    r40e_governed_silent("November 1, 2026 (cancelled)(Monday)\u{2013}");
+    r34e_for_twin(
+        "November 1, 2026 (cancelled)(Monday)\u{2013}",
+        "November 1, 2026 (cancelled)(Monday)-",
+    );
+    r34e_keep_twin(
+        "November 1, 2026 (cancelled)(Monday)\u{2013}",
+        "November 1, 2026 (cancelled)(Monday)",
+    );
+}
+
+#[test]
+fn r42f_en_dash_leading_and_base_trailing_weekday_arms_take_their_twins_readings() {
+    // The leading weekday arm, stated outright:
+    // the lone leading group wearing the en dash
+    // refuses with its record, as its "-" and "—"
+    // twins do — on the base tree it served
+    // November 1 in silence.
+    r40g_refuses_with_record("(Monday)\u{2013} November 1, 2026", "Monday", nov(1));
+    r34e_for_twin(
+        "(Monday)\u{2013} November 1, 2026",
+        "(Monday)- November 1, 2026",
+    );
+    r34e_keep_twin(
+        "(Monday)\u{2013} November 1, 2026",
+        "(Monday)\u{2014} November 1, 2026",
+    );
+    r34e_for_twin(
+        "(Monday)\u{2013} November 1, 2026",
+        "(Monday) November 1, 2026",
+    );
+    r34e_keep_twin(
+        "(Monday)\u{2013} November 1, 2026",
+        "(Monday) November 1, 2026",
+    );
+    // The agreeing leading group reads its date
+    // through the mark.
+    r40e_serves_silent("(Sunday)\u{2013} November 1, 2026", nov(1));
+    // The leading GOVERNOR arm already holds under
+    // the same mark and is not moved: it governs
+    // silently, twin-equal to both dashes, exactly
+    // as on the base tree.
+    r40e_governed_silent("(cancelled)\u{2013} November 8, 2026");
+    r34e_for_twin(
+        "(cancelled)\u{2013} November 8, 2026",
+        "(cancelled)- November 8, 2026",
+    );
+    r34e_keep_twin(
+        "(cancelled)\u{2013} November 8, 2026",
+        "(cancelled) November 8, 2026",
+    );
+    // The spaced leading form was at parity on the
+    // base tree — the spaced token is no judged
+    // dash's dress at this slot either — and stays
+    // at parity: twin-equal to the spaced "-"
+    // form, both serving in silence.
+    r34e_for_twin(
+        "(Monday) \u{2013} November 1, 2026",
+        "(Monday) - November 1, 2026",
+    );
+    r34e_keep_twin(
+        "(Monday) \u{2013} November 1, 2026",
+        "(Monday) - November 1, 2026",
+    );
+    r40e_serves_silent("(Monday) \u{2013} November 1, 2026", nov(1));
+    // The base-trailing weekday arms, stated
+    // outright: the grouped and bare garnish
+    // wearing the en dash refuse with the record
+    // against the base, glued and spaced, where on
+    // the base tree both served the resolution
+    // (November 8) in silence.
+    r40g_refuses_with_record(
+        "Sunday after November 1, 2026 (Monday)\u{2013}",
+        "Monday",
+        nov(1),
+    );
+    r40g_refuses_with_record(
+        "Sunday after November 1, 2026 (Monday) \u{2013}",
+        "Monday",
+        nov(1),
+    );
+    r40g_refuses_with_record(
+        "Sunday after November 1, 2026 Monday\u{2013}",
+        "Monday",
+        nov(1),
+    );
+    r40g_refuses_with_record(
+        "Sunday after November 1, 2026 Monday \u{2013}",
+        "Monday",
+        nov(1),
+    );
+    for twin in [
+        "Sunday after November 1, 2026 (Monday)-",
+        "Sunday after November 1, 2026 (Monday)\u{2014}",
+        "Sunday after November 1, 2026 (Monday)",
+    ] {
+        r34e_for_twin("Sunday after November 1, 2026 (Monday)\u{2013}", twin);
+        r34e_keep_twin("Sunday after November 1, 2026 (Monday)\u{2013}", twin);
+    }
+    r34e_for_twin(
+        "Sunday after November 1, 2026 Monday\u{2013}",
+        "Sunday after November 1, 2026 Monday-",
+    );
+    r34e_keep_twin(
+        "Sunday after November 1, 2026 Monday\u{2013}",
+        "Sunday after November 1, 2026 Monday",
+    );
+    // The weekday-last base-trailing sequence
+    // refuses with its record through the mark,
+    // and the base-trailing company takes its
+    // twins' composed refusal with the record.
+    r40g_refuses_with_record(
+        "Sunday after November 1, 2026 (notes)(Monday)\u{2013}",
+        "Monday",
+        nov(1),
+    );
+    r34e_for_twin(
+        "Sunday after November 1, 2026 (notes)(Monday)\u{2013}",
+        "Sunday after November 1, 2026 (notes)(Monday)-",
+    );
+    r40g_refuses_with_record(
+        "Sunday after November 1, 2026 (cancelled)(Monday)\u{2013}",
+        "Monday",
+        nov(1),
+    );
+    r34e_keep_twin(
+        "Sunday after November 1, 2026 (cancelled)(Monday)\u{2013}",
+        "Sunday after November 1, 2026 (cancelled)(Monday)",
+    );
+    // The agreeing base garnish serves the
+    // resolution through the mark, and the
+    // base-trailing GOVERNOR arm is parity — the
+    // clean form serves the resolution there — and
+    // is not moved.
+    r40e_serves_silent("Sunday after November 1, 2026 (Sunday)\u{2013}", nov(8));
+    r40e_serves_silent("Sunday after November 1, 2026 (cancelled)\u{2013}", nov(8));
+    r34e_for_twin(
+        "Sunday after November 1, 2026 (cancelled)\u{2013}",
+        "Sunday after November 1, 2026 (cancelled)-",
+    );
+}
+
+#[test]
+fn r42f_en_dash_scope_controls_unmoved() {
+    // Controls, passing on the base tree: the arms
+    // S4's witness table does not cover keep their
+    // standing readings under the en dash, exactly
+    // as recorded. The governor-first trailing
+    // sequence serves (its final group is no
+    // governor and no weekday), and a governor
+    // wearing the mark at an INTERIOR seat of a
+    // trailing sequence serves, glued and spaced
+    // token alike.
+    r40e_serves_silent("November 8, 2026 (cancelled)(notes)\u{2013}", nov(8));
+    r40e_serves_silent("November 8, 2026 (cancelled)\u{2013} (notes)", nov(8));
+    r40e_serves_silent("November 8, 2026 (cancelled) \u{2013} (notes)", nov(8));
+    // A trailing sequence closing on an inert
+    // group serves in silence — the weekday group
+    // inside it is not the run's final group, and
+    // no witnessed arm judges it at this seat —
+    // at the plain and base-trailing slots alike.
+    r40e_serves_silent("November 1, 2026 (Monday)(notes)\u{2013}", nov(1));
+    r40e_serves_silent(
+        "Sunday after November 1, 2026 (Monday)(notes)\u{2013}",
+        nov(8),
+    );
+    // A leading sequence wearing the mark after
+    // its weekday group serves in silence: the
+    // lone leading arm above is the witnessed one,
+    // and the sequence walk's trims are not this
+    // batch's to widen.
+    r40e_serves_silent("(Monday)(notes)\u{2013} November 1, 2026", nov(1));
+    // The governor-last trailing seat is R42-D's,
+    // governed on the base tree and governed
+    // still — restated here only as a control, not
+    // claimed (R42-D's pin 3 is its pin).
+    r40e_governed_silent("November 8, 2026 (notes)(cancelled)\u{2013}");
+    // Mid-line parity (cell (a)(i)) stands: the
+    // lone weekday group behind ordinary words,
+    // wearing the mark, is twin-equal to its "-"
+    // form — both routes read exactly as the
+    // judged dash reads there, unjudged.
+    r34e_for_twin(
+        "notes (Monday)\u{2013} November 1, 2026",
+        "notes (Monday)- November 1, 2026",
+    );
+    r34e_keep_twin(
+        "notes (Monday)\u{2013} November 1, 2026",
+        "notes (Monday)- November 1, 2026",
+    );
+    // The bare governor wearing the mark was
+    // already judged (the token cleaning sheds
+    // it) and governs still, twin-equal to clean.
+    r40e_governed_silent("November 8, 2026 cancelled\u{2013}");
+    r34e_for_twin(
+        "November 8, 2026 cancelled\u{2013}",
+        "November 8, 2026 cancelled",
+    );
+}
+
+/// One S4-table mark's bare-weekday standing
+/// record at the trailing slot (R42-F control):
+/// the line reads nothing on either route and
+/// records nothing — the record is lost, and the
+/// date with it, exactly as the lane's audited
+/// log records the family (its "loses its
+/// record" is this whole silence).
+fn r42f_bare_record_lost(line: &str) {
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: no date reads on the For route");
+    assert_eq!(c.named_weekday_mismatch, None, "{line}: the record is lost");
+    let text =
+        format!("For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "{line}: no date reads on the Keep route");
+    assert_eq!(
+        c.keep_through_weekday_mismatch, None,
+        "{line}: no record on the keep line either"
+    );
+}
+
+#[test]
+fn r42f_remaining_marks_of_the_s4_table_stand_as_recorded() {
+    // The control pin over the rest of RT42-S4's
+    // table, passing on the base tree: every mark
+    // of the table except the en dash (moved
+    // above) and the already-judged "-" / "—"
+    // stands at the witnessed arms exactly as the
+    // lane recorded it — the closed-peel record,
+    // witnessed here, not anecdotal. The table's
+    // 35 marks divide as the lane's own log
+    // divides them: the 23 never-judged marks
+    // below (with the en dash, the table's 24
+    // unsafe marks), and the sentence/closer marks
+    // the standing peels already judge.
+    //
+    // The never-judged marks, at the trailing
+    // arms: the lone governor's date SERVES, the
+    // grouped weekday SERVES in silence, and the
+    // bare weekday loses its record — the exact
+    // readings the en dash is moved FROM, standing
+    // here for the marks no adjudication took.
+    for mark in [
+        "\u{2015}", "_", "+", "=", "/", "\\", "%", "@", "&", "$", "^", "|", "`", ">", "<",
+        "\u{2022}", "\u{00b7}", "\u{00b0}", "\u{2030}", "\u{223c}", "\u{ff5e}", "\u{2217}",
+        "\u{ff03}",
+    ] {
+        let governor = format!("November 8, 2026 (cancelled){mark}");
+        r40e_serves_silent(&governor, nov(8));
+        let grouped = format!("November 1, 2026 (Monday){mark}");
+        r40e_serves_silent(&grouped, nov(1));
+        // The bare arm loses the record for every
+        // never-judged mark but the slash, whose
+        // own arm is stated outright below.
+        if mark != "/" {
+            let bare = format!("November 1, 2026 Monday{mark}");
+            r42f_bare_record_lost(&bare);
+        }
+        // The bare governor wearing any mark of
+        // the table is judged by the token
+        // cleaning and governs, as it governed on
+        // the base tree (the lane's bgov family is
+        // uniform over the whole table).
+        let bare_governor = format!("November 8, 2026 cancelled{mark}");
+        r40e_governed_silent(&bare_governor);
+    }
+    // One witnessed exception inside the bare arm,
+    // stated outright: the slash is shed at the
+    // word's tail by the token boundary rule, so
+    // the bare weekday wearing it refuses — but
+    // its record names the word as written,
+    // "Monday/", not "Monday".
+    let text = "For Sunday: November 1, 2026 Monday/\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the slash form refuses");
+    let m = c
+        .named_weekday_mismatch
+        .as_ref()
+        .expect("the slash form's record stands");
+    assert_eq!(m.named, "Monday/", "the record names the word as written");
+    assert_eq!(m.date, nov(1));
+    // The sentence/closer marks of the table were
+    // already judged by the standing peels and
+    // stand judged: the governor governs and the
+    // grouped and bare weekdays refuse with the
+    // record, at the trailing arms.
+    for mark in ["'", ")", "]", "}", ":", ";", "!", "?", ".", ","] {
+        let governor = format!("November 8, 2026 (cancelled){mark}");
+        r40e_governed_silent(&governor);
+        let grouped = format!("November 1, 2026 (Monday){mark}");
+        r40g_refuses_with_record(&grouped, "Monday", nov(1));
+        let bare = format!("November 1, 2026 Monday{mark}");
+        r40g_refuses_with_record(&bare, "Monday", nov(1));
+        let bare_governor = format!("November 8, 2026 cancelled{mark}");
+        r40e_governed_silent(&bare_governor);
+    }
+    // The leading and base-trailing arms of the
+    // table (the lane's second generator witnessed
+    // "%", "|", "•" there): the leading governor
+    // HOLDS under every mark of the table (it
+    // governs), the leading weekday serves in
+    // silence, the base-trailing weekday serves
+    // the resolution in silence, and the
+    // base-trailing governor is at parity (the
+    // resolution serves, as its clean form's
+    // does) — all standing as recorded.
+    for mark in ["%", "|", "\u{2022}"] {
+        let leading_governor = format!("(cancelled){mark} November 8, 2026");
+        r40e_governed_silent(&leading_governor);
+        let leading_weekday = format!("(Monday){mark} November 1, 2026");
+        r40e_serves_silent(&leading_weekday, nov(1));
+        let base_weekday = format!("Sunday after November 1, 2026 (Monday){mark}");
+        r40e_serves_silent(&base_weekday, nov(8));
+        let base_governor = format!("Sunday after November 8, 2026 (cancelled){mark}");
+        r40e_serves_silent(&base_governor, nov(15));
     }
 }
 

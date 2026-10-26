@@ -1111,7 +1111,18 @@ pub(super) fn sunday_after_relative_phrase(
     today: SimpleDate,
 ) -> Option<String> {
     let text = raw.as_deref()?.trim();
-    if !relative_shape_matches(text, sunday_after_relative_shape_tokens) {
+    // Round 41 (R41-D, F5): the shape and the
+    // leading-group gate below are judged on the
+    // re-dressed text where the re-dress
+    // consultation fires, exactly as in
+    // `relative_sunday_phrase` (see there) — a
+    // quoted date group standing alone beside a
+    // Sunday-after phrase was forgotten with the
+    // phrase, and the memory returned is still the
+    // line as written.
+    let redressed = quoted_groups_redressed_where_judged(text, today, today);
+    let judged: &str = redressed.as_deref().unwrap_or(text);
+    if !relative_shape_matches(judged, sunday_after_relative_shape_tokens) {
         return None;
     }
     // Round 21 (R21-1), bounded by the R10-10c
@@ -1128,9 +1139,9 @@ pub(super) fn sunday_after_relative_phrase(
     // leading group never entered this machinery at
     // all: it was adopted as the line's date by the
     // generic reading and the phrase forgotten.
-    if matches!(text.trim_start().chars().next(), Some('(' | '[' | '{')) {
-        let resolution = relative_phrase_resolution(text, today, true);
-        if !leading_group_disagrees(text, today, resolution) {
+    if matches!(judged.trim_start().chars().next(), Some('(' | '[' | '{')) {
+        let resolution = relative_phrase_resolution(judged, today, true);
+        if !leading_group_disagrees(judged, today, resolution) {
             return None;
         }
     }
@@ -1297,7 +1308,26 @@ pub(super) fn sunday_after_relative_shape_tokens(words: &[String]) -> bool {
 /// line saying anything more is not this shape.
 pub(super) fn relative_sunday_phrase(raw: &Option<String>, today: SimpleDate) -> Option<String> {
     let text = raw.as_deref()?.trim();
-    if !relative_shape_matches(text, relative_sunday_shape_tokens) {
+    // Round 41 (R41-D, F5): the shape and the
+    // leading-group gate below are judged on the
+    // re-dressed text where the re-dress
+    // consultation fires (see
+    // `quoted_groups_redressed_where_judged`) — a
+    // quoted date group standing alone beside the
+    // phrase is a group to the date readers there,
+    // and the phrase is its bracket twins' phrase;
+    // judged as written, the quoted group is no
+    // group, the shape fails, and the phrase was
+    // forgotten in silence. The memory returned is
+    // still the line as written, quoted dress and
+    // all (the R36-D rule): only the judgment
+    // moves to the re-dressed text, never the
+    // sender's words. The consultation here is
+    // judged with `today` as its anchor, as every
+    // group judgment in this reader already is.
+    let redressed = quoted_groups_redressed_where_judged(text, today, today);
+    let judged: &str = redressed.as_deref().unwrap_or(text);
+    if !relative_shape_matches(judged, relative_sunday_shape_tokens) {
         return None;
     }
     // Round 21 (R21-1), bounded by the R10-10c
@@ -1307,9 +1337,9 @@ pub(super) fn relative_sunday_phrase(raw: &Option<String>, today: SimpleDate) ->
     // different Sunday is remembered with the phrase.
     // Round 36 (R36-D, F4): the leading group may
     // wear any of the three pairs, as there.
-    if matches!(text.trim_start().chars().next(), Some('(' | '[' | '{')) {
-        let resolution = relative_phrase_resolution(text, today, false);
-        if !leading_group_disagrees(text, today, resolution) {
+    if matches!(judged.trim_start().chars().next(), Some('(' | '[' | '{')) {
+        let resolution = relative_phrase_resolution(judged, today, false);
+        if !leading_group_disagrees(judged, today, resolution) {
             return None;
         }
     }
@@ -7896,6 +7926,18 @@ pub(super) fn trailing_dates_after_core_governance(
     // too.
     let stray_spaced = stray_mark_spaced(text);
     let text: &str = stray_spaced.as_deref().unwrap_or(text);
+    // Round 41 (R41-D, F5): the re-dress
+    // consultation is first taken here, on the
+    // line as written past the stray-mark spacing,
+    // as in `date_line` (see there) — the mark
+    // shed below eats a line-end quoted group's
+    // closing quote, and the trailing-alone group
+    // must stand as a group when the composition
+    // below reads the line. The standing
+    // consultation after the sheds still runs when
+    // this one does not fire.
+    let redressed_early = quoted_groups_redressed_where_judged(text, today, anchor);
+    let text: &str = redressed_early.as_deref().unwrap_or(text);
     // Round 37 (R37-F, F9): the same bare-mark shed
     // as the date lines (see `date_line`), for the
     // same reason — the fallback reads the line's
@@ -7910,6 +7952,23 @@ pub(super) fn trailing_dates_after_core_governance(
     // is transparent there as well.
     let quote_shed = bare_date_quote_shed(text);
     let text: &str = quote_shed.as_deref().unwrap_or(text);
+    // Round 41 (R41-D, F5): the same re-dress
+    // consultation as the date lines (see
+    // `date_line`), for the same reason — the
+    // fallback composes the line's groups against
+    // its core, and a quoted date group standing
+    // alone beside a relative core is a group to
+    // the composition it feeds: "(November 8,
+    // 2026) next Sunday" keeps through November 8
+    // here, while its quoted twin, whose group the
+    // fallback could not see standing as written,
+    // lost the keep-through date entirely.
+    let redressed = if redressed_early.is_none() {
+        quoted_groups_redressed_where_judged(text, today, anchor)
+    } else {
+        None
+    };
+    let text: &str = redressed.as_deref().unwrap_or(text);
     // Round 38 (R38-D, F4): the same leading-governor
     // unwrap as the date lines (see `date_line`), for
     // the same reason — the fallback composes the
@@ -8818,6 +8877,131 @@ pub(super) fn quoted_group_at_framing_position(
     false
 }
 
+/// Whether every group in a line stands ALONE
+/// beside a relative Sunday phrase core — each
+/// group before the phrase's first word or after
+/// its last word, the de-grouped core exactly a
+/// relative Sunday phrase (round 41, R41-D, F5 =
+/// review R41-R2 + red team RT41-D3). The text
+/// judged here is a re-dressing candidate (see
+/// `quoted_date_groups_as_parens`): its quoted
+/// date groups stand re-dressed as their paren
+/// twins, and this judgment is the alone
+/// positions' consultation. The guard
+/// (`group_beside_relative_core`) reaches a group
+/// standing before the phrase and at the phrase's
+/// interior, but not one standing after it, so a
+/// trailing-alone quoted group was never
+/// re-dressed: the line served the phrase's
+/// resolution with the group's date demoted to a
+/// second-date note, where the paren twin reads
+/// no date and remembers the group. A group
+/// standing BETWEEN the phrase's own words (the
+/// split positions) is not alone and is not this
+/// judgment's; a line that is only groups has no
+/// phrase beside it — its de-grouped core is no
+/// relative shape — and is not this judgment's
+/// either, so the lone quoted line keeps its
+/// standing silence.
+pub(super) fn quoted_group_alone_beside_relative_core(text: &str) -> bool {
+    let spans = balanced_spans(text);
+    if spans.is_empty() {
+        return false;
+    }
+    // The de-grouped core, built as the guard
+    // builds it: a semicolon where each group
+    // stood, read as words.
+    let mut core = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for (start, end) in &spans {
+        core.push_str(&text[at..*start]);
+        core.push(';');
+        at = *end;
+    }
+    core.push_str(&text[at..]);
+    let core_words = core.replace(';', " ");
+    let core_trim = core_words.trim();
+    if !relative_sunday_shape(core_trim) && !sunday_after_relative_shape(core_trim) {
+        return false;
+    }
+    // The plain words of the line, with byte
+    // ranges: the words of the text between the
+    // balanced spans, tokenized segment by segment
+    // as `group_split_sunday_after_phrase` reads
+    // them, so a group glued against the phrase's
+    // first or last word fuses no word.
+    let mut plain: Vec<(usize, usize)> = Vec::new();
+    let mut seg_start = 0usize;
+    for idx in 0..=spans.len() {
+        let seg_end = spans.get(idx).map(|(s, _)| *s).unwrap_or(text.len());
+        let segment = &text[seg_start..seg_end];
+        let mut word_at: Option<usize> = None;
+        for (i, c) in segment.char_indices() {
+            if c.is_whitespace() {
+                if let Some(s) = word_at.take() {
+                    if !group_token(&segment[s..i]).is_empty() {
+                        plain.push((seg_start + s, seg_start + i));
+                    }
+                }
+            } else if word_at.is_none() {
+                word_at = Some(i);
+            }
+        }
+        if let Some(s) = word_at {
+            if !group_token(&segment[s..]).is_empty() {
+                plain.push((seg_start + s, seg_start + segment.len()));
+            }
+        }
+        if let Some((_, e)) = spans.get(idx) {
+            seg_start = *e;
+        }
+    }
+    let (Some(first), Some(last)) = (plain.first(), plain.last()) else {
+        return false;
+    };
+    let (first_start, last_end) = (first.0, last.1);
+    spans
+        .iter()
+        .all(|(s, e)| *e <= first_start || *s >= last_end)
+}
+
+/// The line with its quoted DATE groups re-dressed
+/// as their paren twins, where a standing
+/// consultation judges a bracket group on the
+/// re-dressed line (round 40, R40-D; round 41,
+/// R41-C / R41-D): the interior-slot guard
+/// (`group_beside_relative_core`) on the candidate
+/// or its trailing-stripped core, the framing
+/// positions (`quoted_group_at_framing_position`),
+/// or the alone positions
+/// (`quoted_group_alone_beside_relative_core`).
+/// Every reader that must take a bracket twin's
+/// reading of a quoted group consults the line
+/// through this one door — `date_line`, the Keep
+/// route's group fallback, and the memory readers
+/// — so a quoted group is judged in the same
+/// places by each of them, and nowhere else: a
+/// quoted group at a position no consultation
+/// covers keeps its standing plain reading byte
+/// for byte, and quoted weekday and governor
+/// groups (never re-dressed) are untouched.
+pub(super) fn quoted_groups_redressed_where_judged(
+    text: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> Option<String> {
+    let candidate = quoted_date_groups_as_parens(text, today, anchor)?;
+    if group_beside_relative_core(&candidate, today, anchor)
+        || group_beside_relative_core(strip_all_trailing_parenthesized(&candidate), today, anchor)
+        || quoted_group_at_framing_position(&candidate, today, anchor)
+        || quoted_group_alone_beside_relative_core(&candidate)
+    {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
 /// Read one date line with its round-9 records: the
 /// plain readings are `date_line_inner`'s, and the
 /// trailing parenthesized dates compose around them.
@@ -8917,6 +9101,36 @@ pub(super) fn date_line(
         },
         None => None,
     };
+    // Round 41 (R41-D, F5): the re-dress
+    // consultation (see the standing consultation
+    // below) is first taken HERE, on the line as
+    // written past the stray-mark spacing. The mark
+    // shed below eats the closing quote of a quoted
+    // group standing at the line's end — its
+    // year-tail arm peels closing quotes as garnish
+    // against a bare year, and a quoted span is no
+    // balanced group to that arm — so a quoted
+    // group standing alone at the line's end (the
+    // trailing-alone position) is no group by the
+    // standing consultation point and was never
+    // re-dressed. Where the consultation fires
+    // here, the re-dressed line reads through the
+    // remaining passes exactly as its bracket
+    // twin's line does; where it does not fire, the
+    // standing consultation below runs as it always
+    // has, so a group the sheds themselves complete
+    // is consulted there.
+    let mut redressed_early = false;
+    let effective_raw: Option<String> = match effective_raw {
+        Some(text) => match quoted_groups_redressed_where_judged(&text, today, anchor) {
+            Some(candidate) => {
+                redressed_early = true;
+                Some(candidate)
+            }
+            None => Some(text),
+        },
+        None => None,
+    };
     // Round 37 (R37-F, F9): the whole line is
     // likewise read with a sentence mark glued to a
     // bare month word or day number removed (see
@@ -8977,22 +9191,33 @@ pub(super) fn date_line(
     // beyond the witnessed ones is consulted: the
     // alone positions keep their standing
     // readings.
+    // Round 41 (R41-D, F5): the consultation
+    // extends to the alone positions (see
+    // `quoted_group_alone_beside_relative_core`),
+    // and the consultation itself is the shared
+    // one (`quoted_groups_redressed_where_judged`)
+    // the memory readers and the Keep route's
+    // group fallback consult through the same
+    // door. At the trailing-alone position the
+    // quoted form served the phrase's resolution
+    // with its date demoted to a second-date note;
+    // it now reads no date, exactly as its twins
+    // read — the consultation for it is the early
+    // one above, taken before the mark shed eats
+    // its group's closing quote. At the
+    // leading-alone position the guard's leading
+    // arm already re-dressed the line for its date
+    // outcome — this batch's leading-alone work is
+    // in the memory readers and the fallback,
+    // which never consulted the re-dress at all.
     let effective_raw: Option<String> = match effective_raw {
-        Some(text) => match quoted_date_groups_as_parens(&text, today, anchor) {
-            Some(candidate)
-                if group_beside_relative_core(&candidate, today, anchor)
-                    || group_beside_relative_core(
-                        strip_all_trailing_parenthesized(&candidate),
-                        today,
-                        anchor,
-                    )
-                    || quoted_group_at_framing_position(&candidate, today, anchor) =>
-            {
-                Some(candidate)
+        Some(text) if !redressed_early => {
+            match quoted_groups_redressed_where_judged(&text, today, anchor) {
+                Some(candidate) => Some(candidate),
+                None => Some(text),
             }
-            _ => Some(text),
-        },
-        None => None,
+        }
+        other => other,
     };
     // Round 38 (R38-D, F4): the whole line is
     // likewise read with a leading governor group

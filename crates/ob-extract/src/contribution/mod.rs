@@ -468,6 +468,22 @@ pub fn parse_contribution_anchored(
     } else {
         None
     };
+    // Round 41 (R41-D, F5): the parenthesized
+    // memory below is read on the same re-dressed
+    // text the date readers consult where the
+    // re-dress consultation fires (see
+    // `quoted_groups_redressed_where_judged` in
+    // composition.rs) — a quoted date group
+    // standing alone beside the phrase is
+    // remembered as a group in its own right,
+    // carrying the date its bracket twins' groups
+    // carry, where as written it was no group to
+    // these readers and nothing was remembered at
+    // all.
+    let for_sunday_memory_text: Option<String> = raw
+        .for_sunday
+        .as_deref()
+        .and_then(|t| quoted_groups_redressed_where_judged(t, today, anchor));
     // A trailing parenthesized absolute date on a
     // relative phrase is remembered with the phrase
     // (round 8, carried shape): the verdict compares
@@ -476,9 +492,13 @@ pub fn parse_contribution_anchored(
     // a date is garnish and leaves no memory.
     let for_sunday_parenthesized_date =
         if for_sunday_in_words.is_some() || for_sunday_after_in_words.is_some() {
-            raw.for_sunday
-                .as_deref()
-                .and_then(|t| all_parenthesized_date(t, today, anchor))
+            raw.for_sunday.as_deref().and_then(|t| {
+                all_parenthesized_date(
+                    for_sunday_memory_text.as_deref().unwrap_or(t),
+                    today,
+                    anchor,
+                )
+            })
         } else {
             None
         };
@@ -493,7 +513,13 @@ pub fn parse_contribution_anchored(
         if for_sunday_in_words.is_some() || for_sunday_after_in_words.is_some() {
             raw.for_sunday
                 .as_deref()
-                .map(|t| all_parenthesized_dates(t, today, anchor))
+                .map(|t| {
+                    all_parenthesized_dates(
+                        for_sunday_memory_text.as_deref().unwrap_or(t),
+                        today,
+                        anchor,
+                    )
+                })
                 .unwrap_or_default()
         } else {
             Vec::new()

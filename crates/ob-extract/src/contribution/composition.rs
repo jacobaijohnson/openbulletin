@@ -3108,6 +3108,32 @@ pub(super) fn group_sequence_weekday_mismatch(
 /// completion boundary the R40-E walk held for
 /// bare runs holds for groups in the same way, in
 /// leading and mid-line positions alike.
+///
+/// Round 42 (R42-B, F5 — doctrine, round-42
+/// synthesis adjudications 3 and 5, extending the
+/// R41-B extension above): two edges of the walk
+/// are widened to the adjudicated reach. (a) The
+/// lead-in is stepped over whole: a weekday or
+/// month word occupying a NON-FIRST position in
+/// the lead-in run no longer collapses the company
+/// (the run segmentation treated it as a wall in
+/// any position; R41-B had named only the
+/// first-word wall). The first-word wall stands
+/// exactly as named — a lead-in whose first word
+/// is a weekday or month word is still never
+/// stepped over — and a lead-in holding the exact
+/// token "after" still breaks the walk, judged on
+/// the whole run; `after`-fragment words do not
+/// split. The extension is lead-in only: a bare
+/// run that is itself a company item (a governor
+/// phrase at its own head) still ends at a bare
+/// weekday or month word, exactly as before.
+/// (c) The walk's separators take the straight
+/// quote closers '"' and '\'' standing after a
+/// group, glued or spaced, at the head and
+/// mid-line — a straight quote that opens a
+/// member span (R42-A's arm) is not a closer and
+/// keeps the quoted-member reading.
 pub(super) fn leading_governor_company_judgment(
     text: &str,
     today: SimpleDate,
@@ -3173,6 +3199,39 @@ pub(super) fn leading_governor_company_judgment(
             }
             rest = &rest[end..];
             continue;
+        }
+        if matches!(first, '"' | '\'') {
+            // Round 42 (R42-B, F5 arm (c)): a straight
+            // quote standing after a group, glued or
+            // spaced, is a CLOSER, and a closer is a
+            // separator of this walk, as the curly
+            // closers in `SEPARATORS` already are —
+            // before this, `(cancelled)(Monday)"
+            // November 1, 2026` fell into the quoted-
+            // member arm below, found no closing
+            // quote, and the company collapsed to a
+            // silent serve, against R41-B's record
+            // claim of the quote closers after any
+            // group, glued or spaced (round-42
+            // synthesis adjudication 5). A straight
+            // quote OPENS a member span — the R42-A
+            // arm below — only when a closing-family
+            // quote stands after it and the span
+            // begins with a letter: `(cancelled)
+            // "Monday" ...` is a member, while
+            // `(cancelled)(Monday)" ...` and
+            // `(cancelled)(Monday) " ...` wear
+            // closers. A closer is skipped and the
+            // walk continues.
+            let after = &rest[first.len_utf8()..];
+            let opens_member = after.chars().next().is_some_and(|c| c.is_alphabetic())
+                && after
+                    .chars()
+                    .any(|c| matches!(c, '"' | '\'' | '\u{201d}' | '\u{2019}'));
+            if !opens_member {
+                rest = after;
+                continue;
+            }
         }
         if matches!(first, '"' | '\'' | '\u{201c}' | '\u{2018}') {
             // Round 42 (R42-A, F3 arm (c)): a company
@@ -3299,6 +3358,64 @@ pub(super) fn leading_governor_company_judgment(
                 if words.iter().any(|w| w == "after") {
                     break;
                 }
+                // Round 42 (R42-B, F5 arm (a),
+                // adjudication 3): the run above stops
+                // at a weekday or month word standing
+                // after its first word — that stop is
+                // the bare run's own boundary (the
+                // date's framing is not the run's), but
+                // for a lead-in it made ANY lead-in
+                // position fatal: "notes Monday
+                // (cancelled)(Monday) ..." segmented
+                // into "notes" + a fresh run whose
+                // first word was the weekday word, and
+                // the first-word wall below broke the
+                // walk, so the company collapsed to a
+                // silent serve where its ordinary-word
+                // twin composed. The lead-in is stepped
+                // over WHOLE: the remainder of the bare
+                // run is consumed here, weekday and
+                // month words in any non-first position
+                // included, and the walls are then
+                // judged on the whole run — its first
+                // word (judged above: this window is
+                // reached only when the first word is
+                // neither a weekday nor a month word)
+                // and the exact token "after" anywhere
+                // in it (`after`-fragment words —
+                // afterwards, hereafter, afterglow —
+                // are not the token and do not split).
+                // A governor phrase standing in the
+                // extension is not recomputed: a
+                // governor inside a lead-in run keeps
+                // the mid-line segment governor's
+                // standing reading, as above.
+                loop {
+                    scan = scan.trim_start_matches([' ', '\t']);
+                    let Some(c) = scan.chars().next() else {
+                        break;
+                    };
+                    if matches!(c, '(' | '[' | '{') || !c.is_alphabetic() {
+                        break;
+                    }
+                    let tok_end = scan
+                        .find(|ch: char| ch.is_whitespace() || matches!(ch, '(' | '[' | '{'))
+                        .unwrap_or(scan.len());
+                    let token = &scan[..tok_end];
+                    let cleaned: Vec<String> = segment_tokens(&[token])
+                        .into_iter()
+                        .filter(|w| !w.is_empty())
+                        .collect();
+                    if cleaned.len() != 1 {
+                        run_clean = false;
+                        break;
+                    }
+                    words.push(cleaned[0].clone());
+                    scan = &scan[tok_end..];
+                }
+                if !run_clean || words.iter().any(|w| w == "after") {
+                    break;
+                }
                 behind_lead_in = true;
                 rest = scan;
                 continue;
@@ -3366,7 +3483,7 @@ pub(super) fn leading_governor_company_judgment(
 /// holding a date or a weekday are judged whole
 /// by their standing readers, as in
 /// `governor_group_words`.
-fn governor_group_at_head(inner: &str) -> bool {
+pub(super) fn governor_group_at_head(inner: &str) -> bool {
     let raw_words: Vec<&str> = inner.split_whitespace().collect();
     let words: Vec<String> = segment_tokens(&raw_words)
         .into_iter()

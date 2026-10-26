@@ -33310,10 +33310,23 @@ fn r41b_midline_company_controls_unmoved() {
     r40e_governed_silent("November 1, 2026 (Monday)(cancelled)");
     r40e_governed_silent("November 1, 2026 notes (cancelled)(Monday)");
     // Base-trailing company: refuses with the
-    // record in both orders; a bare word between
-    // the base and the trailing sequence disarms
-    // the sequence (the standing R5-D adjacency),
-    // and the resolution serves.
+    // record in both orders.
+    // RESTATED (round 42, R42-B, F5 arm (b),
+    // round-42 synthesis adjudication 4): this
+    // pin's behind-a-word arm formerly read that a
+    // bare word between the base and the trailing
+    // sequence disarms the sequence (the standing
+    // R5-D adjacency) and the resolution serves.
+    // The adjudication rules this pin's scope is
+    // the direct slot — the company standing
+    // immediately at the base-trailing position —
+    // and the same company behind an ordinary word
+    // takes the composed reading, as the direct
+    // slot does. Exactly that arm is restated here,
+    // flagged; no other reading of this pin is
+    // weakened. The full behind-a-word family is
+    // pinned in
+    // `r42b_base_trailing_company_behind_an_ordinary_word_takes_the_direct_reading`.
     r40e_governed_with_record(
         "Sunday after November 1, 2026 (cancelled)(Monday)",
         "Monday",
@@ -33324,9 +33337,10 @@ fn r41b_midline_company_controls_unmoved() {
         "Monday",
         nov(1),
     );
-    r40e_serves_silent(
+    r40e_governed_with_record(
         "Sunday after November 1, 2026 notes (cancelled)(Monday)",
-        nov(8),
+        "Monday",
+        nov(1),
     );
     // Before a Sunday-after phrase the company
     // frames no plain date: the resolution serves,
@@ -33335,6 +33349,389 @@ fn r41b_midline_company_controls_unmoved() {
         "notes (cancelled)(Monday) Sunday after November 1, 2026",
         nov(8),
     );
+}
+
+// Round 42 (R42-B, F5 MAJOR = red team RT42-C1,
+// round-42 synthesis adjudications 3, 4, and 5):
+// the governor/weekday company's edges after
+// R41-B's EXTEND. (a) A weekday or month word in a
+// NON-FIRST lead-in position collapsed the company
+// to a silent serve — the leading walk's bare-run
+// segmentation treated the word as a wall wherever
+// it stood — where ordinary-word lead-ins compose
+// governed with the record; adjudication 3 composes
+// the company behind lead-in runs regardless of
+// which non-first position the word occupies, and
+// the first-word wall stands exactly as named.
+// (b) The base-trailing company behind an ordinary
+// word served the Sunday-after resolution silently
+// where the direct base-trailing company refuses
+// with the weekday record; adjudication 4 takes
+// the composed reading there (and restates the one
+// R41-B controls arm that pinned the behind-a-word
+// serve — see the flagged restatement in
+// `r41b_midline_company_controls_unmoved` above).
+// (c) The straight quote closers '"' and '\'' after
+// a group disarmed the company (the walk's
+// separator set carried the curly closers only),
+// against R41-B's record claim of "the quote
+// closers after any group, glued or spaced";
+// adjudication 5 makes the claim true at the head
+// and mid-line, glued and spaced. November 1 and
+// November 8, 2026 are both Sundays, so a Monday
+// or Tuesday or Wednesday group at either date
+// disagrees and a Sunday group agrees.
+
+#[test]
+fn r42b_lead_in_weekday_or_month_word_in_a_non_first_position_composes_the_company() {
+    // The witnessed families, stated outright,
+    // both routes (the helpers read the For line
+    // and the Keep-through line): a weekday word
+    // in the second lead-in position, a month word
+    // in the second position, and a weekday word
+    // in the third position with a disagreeing
+    // companion named as written.
+    r40e_governed_with_record(
+        "notes Monday (cancelled)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record("notes Monday (cancelled)(Monday) Nov 1", "Monday", nov(1));
+    r40e_governed_with_record(
+        "notes November (cancelled)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes on Monday (cancelled)(Wednesday) November 1, 2026",
+        "Wednesday",
+        nov(1),
+    );
+    // Several lead-in words, the weekday or month
+    // word standing deeper in the run, in either
+    // dress of punctuation on the run's words.
+    for line in [
+        "notes the Monday rehearsal (cancelled)(Monday) November 1, 2026",
+        "notes on Monday on (cancelled)(Monday) November 1, 2026",
+        "notes Tuesday (cancelled)(Monday) November 1, 2026",
+        "notes December (cancelled)(Monday) November 1, 2026",
+        "notes Monday, (cancelled)(Monday) November 1, 2026",
+        "notes, Monday (cancelled)(Monday) November 1, 2026",
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+    }
+    r40e_governed_with_record(
+        "notes on November (cancelled)(Tuesday) November 1, 2026",
+        "Tuesday",
+        nov(1),
+    );
+    // Both company orders behind the word: the
+    // weekday-first order composes WITH its record
+    // (on the base tree it governed in silence, the
+    // record lost), and a three-group company
+    // behind the word composes in either shape.
+    r40e_governed_with_record(
+        "notes Monday (Monday)(cancelled) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes Monday (cancelled)(Monday)(notes) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes Monday (notes)(cancelled)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // An `after`-fragment word standing behind the
+    // weekday word does not split the lead-in: the
+    // fragment is not the `after` token, and the
+    // company behind the run composes.
+    r40e_governed_with_record(
+        "notes Monday afterwards (cancelled)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // The agreeing companion composes silently
+    // behind the word, in either lead-in dress.
+    r40e_governed_silent("notes November (cancelled)(Sunday) November 1, 2026");
+    r40e_governed_silent("notes Monday (cancelled)(Sunday) November 1, 2026");
+    r40e_governed_silent("notes Friday (cancelled)(Sunday) November 1, 2026");
+    // The record names the date the company
+    // frames: at November 8 the record is the
+    // weekday at November 8.
+    r40e_governed_with_record(
+        "notes Monday (cancelled)(Monday) November 8, 2026",
+        "Monday",
+        nov(8),
+    );
+}
+
+#[test]
+fn r42b_lead_in_first_word_and_after_token_walls_unmoved() {
+    // Controls, passing on the base tree: the
+    // first-word wall stands exactly as R41-B
+    // named it — a lead-in whose FIRST word is a
+    // weekday or month word is never stepped over,
+    // and its lines keep their standing readings.
+    r40e_serves_silent("Monday notes (cancelled)(Monday) November 1, 2026", nov(1));
+    r40e_serves_silent("Sunday school (cancelled)(Monday) November 1, 2026", nov(1));
+    r40e_serves_silent(
+        "December notes (cancelled)(Monday) November 1, 2026",
+        nov(1),
+    );
+    // The walk starts at the line's head with the
+    // framing garnish stack (`on` / `the`) aside,
+    // as it always has: a weekday word standing
+    // immediately behind that stack is the first
+    // word of the run the walk sees, and the wall
+    // stands there too.
+    r40e_serves_silent("the Monday (cancelled)(Monday) November 1, 2026", nov(1));
+    r40e_serves_silent("on Monday (cancelled)(Monday) November 1, 2026", nov(1));
+    // A lead-in holding the exact token `after`
+    // still breaks the walk, in either position
+    // around the weekday word, and the
+    // Sunday-after interior company keeps its
+    // standing serve.
+    r40e_serves_silent(
+        "notes after Monday (cancelled)(Monday) November 1, 2026",
+        nov(1),
+    );
+    r40e_serves_silent(
+        "notes Monday after (cancelled)(Monday) November 1, 2026",
+        nov(1),
+    );
+    r40e_serves_silent(
+        "Sunday after notes (cancelled)(Monday) November 1, 2026",
+        nov(1),
+    );
+    // `after`-fragment words do NOT split and
+    // already compose: they keep composing.
+    r40e_governed_with_record(
+        "notes afterwards (cancelled)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes hereafter (cancelled)(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // The governor-completion boundary in every
+    // dress, held within the surface: `(today
+    // cancelled)(Monday)` serves at the head and
+    // mid-line as recorded.
+    r40e_serves_silent("(today cancelled)(Monday) November 1, 2026", nov(1));
+    r40e_serves_silent("notes (today cancelled)(Monday) November 1, 2026", nov(1));
+    // A bare governor run whose own head is the
+    // governor phrase still ends at a bare weekday
+    // word: that run is a company item, not a
+    // lead-in, and its standing serve stands.
+    r40e_serves_silent("cancelled Monday (Tuesday) November 1, 2026", nov(1));
+    // The bare weekday before a governor GROUP
+    // keeps its standing governed-silent reading
+    // behind a weekday lead-in word (no weekday
+    // group stands in the company, so this walk
+    // claims nothing there).
+    r40e_governed_silent("notes Monday (cancelled) November 1, 2026");
+    // The lone mid-line weekday group behind
+    // ordinary words — the (a)(i) unjudged
+    // reading — stands untouched.
+    r40e_serves_silent("notes (Monday) November 1, 2026", nov(1));
+}
+
+#[test]
+fn r42b_base_trailing_company_behind_an_ordinary_word_takes_the_direct_reading() {
+    // The witnessed family, stated outright, both
+    // routes: the company behind an ordinary word
+    // refuses with the weekday record, exactly as
+    // its direct-slot twin does.
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 notes (cancelled)(Monday)",
+        "Monday",
+        nov(1),
+    );
+    // The direct-slot twins, as controls.
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (cancelled)(Monday)",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (Monday)(cancelled)",
+        "Monday",
+        nov(1),
+    );
+    // The weekday-first order, an inert word, two
+    // words, a spaced company, a bracket company,
+    // and a three-group company behind the word.
+    for line in [
+        "Sunday after November 1, 2026 notes (Monday)(cancelled)",
+        "Sunday after November 1, 2026 rehearsal (cancelled)(Monday)",
+        "Sunday after November 1, 2026 for notes (cancelled)(Monday)",
+        "Sunday after November 1, 2026 notes (cancelled) (Monday)",
+        "Sunday after November 1, 2026 notes [cancelled][Monday]",
+        "Sunday after November 1, 2026 notes (cancelled)(notes)(Monday)",
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+    }
+    // The record names the base: at a November 8
+    // base the record is the weekday at November 8,
+    // behind the word as at the direct slot.
+    r40e_governed_with_record(
+        "Sunday after November 8, 2026 notes (cancelled)(Monday)",
+        "Monday",
+        nov(8),
+    );
+    r40e_governed_with_record(
+        "Sunday after November 8, 2026 (cancelled)(Monday)",
+        "Monday",
+        nov(8),
+    );
+    // The agreeing company is at parity behind the
+    // word, as at the direct slot: an agreeing (or
+    // weekday-free) sequence names nothing at this
+    // slot, and the resolution serves.
+    r40e_serves_silent("Sunday after November 1, 2026 (cancelled)(Sunday)", nov(8));
+    r40e_serves_silent(
+        "Sunday after November 1, 2026 notes (cancelled)(Sunday)",
+        nov(8),
+    );
+    // Scope controls: the judgment behind a word
+    // is the COMPANY's — a governor group and a
+    // weekday group standing in the sequence. A
+    // weekday sequence with no governor companion,
+    // a single weekday group, and a bare-governor
+    // dress behind a word keep their standing
+    // serves at this slot.
+    r40e_serves_silent(
+        "Sunday after November 1, 2026 notes (Monday)(notes)",
+        nov(8),
+    );
+    r40e_serves_silent("Sunday after November 1, 2026 notes (Monday)", nov(8));
+    r40e_serves_silent(
+        "Sunday after November 1, 2026 notes cancelled (Monday)",
+        nov(8),
+    );
+    // The held contrast: the same company at the
+    // trailing slot behind a word already composes
+    // (governed, as the trailing company is), and
+    // it stands composing.
+    r40e_governed_silent("November 1, 2026 notes (cancelled)(Monday)");
+}
+
+#[test]
+fn r42b_straight_quote_closers_after_a_group_compose_the_company() {
+    // The witnessed family at the head, stated
+    // outright, both routes: the glued straight
+    // closers '"' and '\'' after the last group
+    // take the composed reading WITH the record,
+    // as the curly closers (the controls below)
+    // already do.
+    r40e_governed_with_record("(cancelled)(Monday)\" November 1, 2026", "Monday", nov(1));
+    r40e_governed_with_record("(cancelled)(Monday)' November 1, 2026", "Monday", nov(1));
+    // Glued against the date the company frames,
+    // and the spaced forms at the head — on the
+    // base tree the spaced forms governed in
+    // silence, the weekday record lost; the record
+    // now stands.
+    r40e_governed_with_record("(cancelled)(Monday)\"November 1, 2026", "Monday", nov(1));
+    r40e_governed_with_record("(cancelled)(Monday) \" November 1, 2026", "Monday", nov(1));
+    r40e_governed_with_record("(cancelled)(Monday) ' November 1, 2026", "Monday", nov(1));
+    // Mid-line: the same closers, glued and
+    // spaced, compose the company behind its
+    // lead-in words, at either framed date.
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday)\" November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday)' November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday) \" November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday) ' November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday)\" November 8, 2026",
+        "Monday",
+        nov(8),
+    );
+    r40e_governed_with_record("(cancelled)(Monday)' November 8, 2026", "Monday", nov(8));
+    // A closer standing between the company's
+    // groups is a closer after a group too: spaced
+    // at the head, glued mid-line, in both company
+    // orders — and a closer after the last group
+    // with an inert group and words after the date
+    // standing behind it.
+    r40e_governed_with_record("(cancelled) \" (Monday) November 1, 2026", "Monday", nov(1));
+    r40e_governed_with_record(
+        "notes (cancelled)\" (Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record("(Monday) \" (cancelled) November 1, 2026", "Monday", nov(1));
+    r40e_governed_with_record(
+        "(cancelled)(Monday)\" (notes) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "(cancelled)(Monday)\" November 1, 2026 extra",
+        "Monday",
+        nov(1),
+    );
+    // The agreeing company behind a straight
+    // closer composes silently, as behind a curly
+    // one.
+    r40e_governed_silent("(cancelled)(Sunday)\" November 1, 2026");
+    // The curly closers, as controls: they were
+    // judged on the base tree and stand judged.
+    r40e_governed_with_record(
+        "(cancelled)(Monday)\u{201d} November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "(cancelled)(Monday)\u{2019} November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "notes (cancelled)(Monday)\u{201d} November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // The weekday-first order wearing the closer
+    // after its last group already composes on the
+    // base tree; it stands composing.
+    r40e_governed_with_record("(Monday)(cancelled)\" November 1, 2026", "Monday", nov(1));
+    // R42-A's quoted members are a different seat
+    // — a quote OPENING a member span after a
+    // group is not a closer, and those readings
+    // stand exactly as R42-A left them: the spaced
+    // quoted member composes with the record, the
+    // quoted governor composes with the record,
+    // and the glued quoted weekday member governs
+    // in silence (R42-A's recorded deviation (d)).
+    r40e_governed_with_record("(cancelled) \"Monday\" November 1, 2026", "Monday", nov(1));
+    r40e_governed_with_record(
+        "notes \"cancelled\" (Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_silent("(cancelled)\"Monday\" November 1, 2026");
 }
 
 // Round 40 (R40-F, F7 MAJOR = red team RT40-F +

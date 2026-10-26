@@ -769,7 +769,14 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
 /// it stands alone — and words standing after the
 /// sequence are the line's remainder, which ends
 /// the sequence, so the R5-D bare-word arm is
-/// untouched by construction.
+/// untouched by construction. Round 42 (R42-B,
+/// F5 arm (b), adjudication 4): ordinary bare
+/// words standing BEFORE the sequence no longer
+/// end it when the sequence is a governor/weekday
+/// company — the company behind a word takes the
+/// composed reading, as at the direct slot (see
+/// the arm in the body); every non-company shape
+/// behind a word keeps the R5-D reading.
 fn base_trailing_sequence_mismatch(
     core: &[&str],
     consumed: usize,
@@ -853,8 +860,52 @@ fn base_trailing_sequence_mismatch(
     if spans.len() < 2 && !(spans.len() == 1 && head_had_separator) {
         return None;
     }
-    if spans[0].0 != 0 || spans[spans.len() - 1].1 != rest.len() {
+    if spans[spans.len() - 1].1 != rest.len() {
         return None;
+    }
+    if spans[0].0 != 0 {
+        // Round 42 (R42-B, F5 arm (b), round-42
+        // synthesis adjudication 4): the company
+        // standing behind ordinary bare words
+        // between the base and the sequence — "Sunday
+        // after November 1, 2026 notes
+        // (cancelled)(Monday)" — is the direct-slot
+        // company one word further in, and it takes
+        // the composed reading the direct slot takes
+        // (refused, with the weekday record) instead
+        // of serving the resolution in silence. The
+        // R41-B controls pin that named the
+        // behind-a-word serve is restated for exactly
+        // this arm, flagged there and in the batch
+        // record; its scope was the direct slot.
+        // The arm is the COMPANY's: the words before
+        // the first span must be ordinary bare words
+        // (each token cleaning to one alphabetic
+        // word), the sequence must hold two or more
+        // groups, and among them must stand both a
+        // governor group (a governor phrase at its
+        // contents' own head, as the company walk
+        // judges it) and a weekday group. A weekday
+        // sequence with no governor companion, and
+        // every other shape standing behind a word,
+        // keeps the standing R5-D adjacency reading
+        // at this slot, untouched.
+        let prefix = &rest[..spans[0].0];
+        let words_are_bare = !prefix.trim().is_empty()
+            && prefix.split_whitespace().all(|t| {
+                let w = group_token(t);
+                !w.is_empty() && w.chars().all(|c| c.is_alphabetic())
+            });
+        let company = spans.len() >= 2
+            && spans
+                .iter()
+                .any(|&(s, e)| governor_group_at_head(&rest[s + 1..e - 1]))
+            && spans
+                .iter()
+                .any(|&(s, e)| garnish_group_weekday(&rest[s + 1..e - 1]).is_some());
+        if !words_are_bare || !company {
+            return None;
+        }
     }
     for pair in spans.windows(2) {
         let gap = &rest[pair[0].1..pair[1].0];

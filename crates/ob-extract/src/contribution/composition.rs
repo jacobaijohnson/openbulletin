@@ -2198,7 +2198,50 @@ fn nearest_date_is_sunday_after_base(prefix: &str, today: SimpleDate) -> bool {
 /// included, because the lone trailing group is
 /// this slot's headline form.
 fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
-    let mut end = text.len();
+    let end = trailing_run_peeled_end(text, text.len());
+    let core = text[..end].trim_end();
+    if let Some(run) = trailing_run_in_core(core) {
+        return Some(run);
+    }
+    // Round 42 (R42-D, F8 MINOR = red team
+    // RT42-S3, graded per round-42 synthesis
+    // adjudication 2): the en dash (U+2013) standing
+    // at the final group of a trailing sequence in
+    // GOVERNOR-LAST order — "(notes)(cancelled)–",
+    // glued or spaced — is the one mark of the
+    // governor-last table the standing peels never
+    // reached (it stands in no peel set; the rest
+    // of the table reaches this reader through the
+    // widened peels and the governor unwraps' own
+    // suffix shed). The retry is scoped to the
+    // witnessed arm exactly: the peeled core must
+    // end in the en dash, the run it closes must
+    // hold two or more groups, and the run's FINAL
+    // group must be a governor group — the lone
+    // trailing governor wearing the en dash, the
+    // governor-first sequence, and the weekday-
+    // last sequence keep their standing readings
+    // (the closed-peel record, round 42 F9's
+    // territory, unmoved here).
+    let core = core.strip_suffix('\u{2013}')?;
+    let end = trailing_run_peeled_end(text, core.len());
+    let core = text[..end].trim_end();
+    let run = trailing_run_in_core(core)?;
+    if run.0.len() < 2 {
+        return None;
+    }
+    let (last_start, last_end) = *run.0.last()?;
+    governor_group_words(&core[last_start + 1..last_end - 1])?;
+    Some(run)
+}
+
+/// The end the trailing run's peels leave on
+/// `text[..limit]`: sentence punctuation and the
+/// sequence-tail suffix set peeled from the end,
+/// alternating with spaced suffix tokens, until
+/// neither peels (see `trailing_group_run`).
+fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
+    let mut end = limit;
     loop {
         // Round 40 (R40-G, F8): the peel set gains
         // the ellipsis U+2026 — a run closing the
@@ -2216,7 +2259,18 @@ fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
         // live; the spaced form ("(cancelled) ~")
         // is a suffix token of the same set, taken
         // with the standing separator tokens below.
+        // Round 42 (R42-D, F7): the token peel below
+        // reads the whitespace-trimmed core, as the
+        // base-trailing walk in dates.rs reads its
+        // trimmed rest — a spaced DOUBLE suffix
+        // token ("(cancelled) ~ ~", "(cancelled)~
+        // ~") left a trailing space standing after
+        // the first token peeled, the token after it
+        // read as empty, and the run was no run at
+        // all, where the single spaced token and the
+        // glued double are judged.
         let peeled = text[..end]
+            .trim_end()
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
                 '*', '#', '-', '\u{2014}',
@@ -2226,7 +2280,7 @@ fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
             end = peeled;
             continue;
         }
-        let core = &text[..end];
+        let core = text[..end].trim_end();
         let Some((ws, wc)) = core.char_indices().rev().find(|(_, c)| c.is_whitespace()) else {
             break;
         };
@@ -2241,7 +2295,15 @@ fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
         }
         break;
     }
-    let core = text[..end].trim_end();
+    end
+}
+
+/// The run closing `core` (already peeled and
+/// whitespace-trimmed), when one stands: the spans
+/// of its member groups in written order and the
+/// byte where the run starts, the walk stated in
+/// `trailing_group_run`'s doc.
+fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
     let spans = balanced_spans(core);
     let last = spans.len().checked_sub(1)?;
     if spans[last].1 != core.len() {
@@ -2250,10 +2312,36 @@ fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
     let mut run_first = last;
     while run_first > 0 {
         let gap = &core[spans[run_first - 1].1..spans[run_first].0];
+        // Round 42 (R42-D, F7 MAJOR = red team
+        // RT42-S2): a gap may also carry the
+        // witnessed suffix set ("~", "*", "#", "-",
+        // "—" U+2014) and the ellipsis (U+2026)
+        // standing as the PRECEDING group's suffix —
+        // the peels strip the sequence's tail, so a
+        // suffix worn by a non-final group of the
+        // sequence ("(cancelled)~ (notes)") was
+        // never reached and its group stood outside
+        // the run; the run now crosses the set
+        // between its groups as the leading walk
+        // crosses it, so a suffix on ANY group of
+        // the sequence is judged, not only the
+        // sequence's tail.
         if !gap.chars().all(|c| {
             matches!(
                 c,
-                ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
+                ',' | ';'
+                    | '.'
+                    | ':'
+                    | '!'
+                    | '?'
+                    | '\u{201d}'
+                    | '\u{2019}'
+                    | '\u{2026}'
+                    | '~'
+                    | '*'
+                    | '#'
+                    | '-'
+                    | '\u{2014}'
             ) || c.is_whitespace()
         }) {
             break;
@@ -2693,6 +2781,7 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     let mut end = text.len();
     loop {
         let peeled = text[..end]
+            .trim_end()
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
                 '*', '#', '-', '\u{2014}',
@@ -2702,7 +2791,12 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
             end = peeled;
             continue;
         }
-        let core = &text[..end];
+        // Round 42 (R42-D, F7): the token peel
+        // reads the whitespace-trimmed core, as in
+        // `trailing_group_run` (see there) — spaced
+        // double suffix tokens peel as the glued
+        // doubles do.
+        let core = text[..end].trim_end();
         let Some((ws, wc)) = core.char_indices().rev().find(|(_, c)| c.is_whitespace()) else {
             break;
         };
@@ -2740,10 +2834,32 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     let mut run_first = last;
     while run_first > 0 {
         let gap = &core[spans[run_first - 1].1..spans[run_first].0];
+        // Round 42 (R42-D, F7 MAJOR = red team
+        // RT42-S2): a gap may also carry the
+        // witnessed suffix set ("~", "*", "#", "-",
+        // "—" U+2014) and the ellipsis (U+2026)
+        // standing as the preceding group's suffix,
+        // as in `trailing_group_run` (see there) —
+        // a weekday group wearing the set inside
+        // the sequence ("(Monday)~ (notes)") is a
+        // member of the sequence and is judged with
+        // it, not only the sequence's tail group.
         if !gap.chars().all(|c| {
             matches!(
                 c,
-                ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
+                ',' | ';'
+                    | '.'
+                    | ':'
+                    | '!'
+                    | '?'
+                    | '\u{201d}'
+                    | '\u{2019}'
+                    | '\u{2026}'
+                    | '~'
+                    | '*'
+                    | '#'
+                    | '-'
+                    | '\u{2014}'
             ) || c.is_whitespace()
         }) {
             break;

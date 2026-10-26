@@ -34026,6 +34026,417 @@ fn r42c_suffix_set_scope_controls_unmoved() {
     }
 }
 
+// Round 42 (R42-D, F7 MAJOR = red team RT42-S2,
+// F8 MINOR = red team RT42-S3 graded per round-42
+// synthesis adjudication 2, F10 MINOR = red team
+// RT42-D1; round-42 synthesis F7/F8/F10): the
+// TRAILING seats R41-E left behind. (F7) The
+// trailing peels strip a sequence's TAIL, so a
+// suffix worn by a NON-FINAL group of a trailing
+// sequence was never reached: "November 1, 2026
+// (Monday)~ (notes)" served silently (the weekday
+// record lost) and "November 8, 2026 (cancelled)~
+// (notes)" served the cancelled date live; and
+// spaced DOUBLE suffix tokens at the trailing
+// governor run ("(cancelled) ~ ~", "(cancelled)~
+// ~") served live where the single spaced token
+// and the glued double are judged — the peel's
+// one-token step stalled on the space the first
+// token left behind. (F8) At the same slot, in
+// governor-LAST order, the trailing
+// group-sequence reader now takes the full
+// witnessed set at its final group as it does in
+// governor-first order: on the audited tree the
+// glued "~", "#", "…", "–" (en dash U+2013),
+// "~~", and "~*" served the cancelled date live
+// while "*", "-", "—", the clean forms, and the
+// spaced forms governed — R42-C's governor-unwrap
+// suffix shed has since landed the set's own
+// marks at this order on this batch's base tree,
+// and the en dash, which stands in no peel or
+// shed set, is the cell that still serves here.
+// (F10) A suffix on a trailing-ALONE group
+// ("next Sunday (November 8, 2026)X", in paren
+// and in quoted dress) disarmed the R41-D memory
+// in both dresses and both routes for X in "*",
+// "#", "~", "…", "!", and for X in "-", "—" the
+// For memory survived but the Keep-route
+// keep-through was lost — the suffixed group was
+// no trailing group to the split the memory and
+// the keep fallback read. The adjudicated
+// readings (round-42 synthesis, R42-D batch
+// entry): a suffix on ANY group of a trailing
+// sequence is judged, not only the sequence's
+// tail; spaced double suffix tokens are judged
+// at the trailing governor run as the glued
+// doubles are; the governor-last order takes the
+// full witnessed set at its final group; and a
+// suffix on a trailing-alone group no longer
+// disarms the memory in either dress or route.
+// Every pair below compares the suffixed line's
+// FULL record against its clean twin's via the
+// r34e helpers, on the For line and the
+// Keep-through line, and the headline arms are
+// stated outright. November 1 and November 8,
+// 2026 are Sundays.
+
+#[test]
+fn r42d_trailing_sequence_suffix_on_a_nonfinal_group_is_judged() {
+    for mark in ["~", "*", "#", "-", "\u{2014}", "\u{2026}"] {
+        // The weekday arm, stated outright: the
+        // disagreeing weekday group wearing the
+        // mark inside the sequence refuses with
+        // its record — glued to the next group,
+        // spaced from it, and spaced as its own
+        // token — both routes, full records
+        // against the clean sequences.
+        for (suffixed, clean) in [
+            (
+                format!("November 1, 2026 (Monday){mark} (notes)"),
+                "November 1, 2026 (Monday) (notes)",
+            ),
+            (
+                format!("November 1, 2026 (Monday){mark}(notes)"),
+                "November 1, 2026 (Monday)(notes)",
+            ),
+            (
+                format!("November 1, 2026 (Monday) {mark} (notes)"),
+                "November 1, 2026 (Monday) (notes)",
+            ),
+        ] {
+            r34e_for_twin(&suffixed, clean);
+            r34e_keep_twin(&suffixed, clean);
+            r40g_refuses_with_record(&suffixed, "Monday", nov(1));
+        }
+        // The governor arm, stated outright: the
+        // governor group wearing the mark inside
+        // the sequence governs, in the same three
+        // dresses, both routes, full records.
+        for (suffixed, clean) in [
+            (
+                format!("November 8, 2026 (cancelled){mark} (notes)"),
+                "November 8, 2026 (cancelled) (notes)",
+            ),
+            (
+                format!("November 8, 2026 (cancelled){mark}(notes)"),
+                "November 8, 2026 (cancelled)(notes)",
+            ),
+            (
+                format!("November 8, 2026 (cancelled) {mark} (notes)"),
+                "November 8, 2026 (cancelled) (notes)",
+            ),
+        ] {
+            r34e_for_twin(&suffixed, clean);
+            r34e_keep_twin(&suffixed, clean);
+            r40e_governed_silent(&suffixed);
+        }
+        // The middle seat of a three-group
+        // sequence takes the same judgments.
+        let mid_weekday = format!("November 1, 2026 (notes) (Monday){mark} (more)");
+        r40g_refuses_with_record(&mid_weekday, "Monday", nov(1));
+        r34e_for_twin(&mid_weekday, "November 1, 2026 (notes) (Monday) (more)");
+        r34e_keep_twin(&mid_weekday, "November 1, 2026 (notes) (Monday) (more)");
+        let mid_governor = format!("November 8, 2026 (notes) (cancelled){mark} (more)");
+        r40e_governed_silent(&mid_governor);
+        r34e_for_twin(&mid_governor, "November 8, 2026 (notes) (cancelled) (more)");
+        r34e_keep_twin(&mid_governor, "November 8, 2026 (notes) (cancelled) (more)");
+        // An agreeing weekday group wearing the
+        // mark inside the sequence reads its date
+        // in silence, twin-equal to its clean form.
+        let agreeing = format!("November 1, 2026 (Sunday){mark} (notes)");
+        r34e_for_twin(&agreeing, "November 1, 2026 (Sunday) (notes)");
+        r34e_keep_twin(&agreeing, "November 1, 2026 (Sunday) (notes)");
+        r40e_serves_silent(&agreeing, nov(1));
+        // CONTROL, held on the base tree: a suffix
+        // on the inert LAST group of the sequence
+        // is already judged — the weekday record
+        // stands and the governor governs, exactly
+        // as on the base tree.
+        let last_weekday = format!("November 1, 2026 (Monday) (notes){mark}");
+        r40g_refuses_with_record(&last_weekday, "Monday", nov(1));
+        r34e_for_twin(&last_weekday, "November 1, 2026 (Monday) (notes)");
+        r34e_keep_twin(&last_weekday, "November 1, 2026 (Monday) (notes)");
+        let last_governor = format!("November 8, 2026 (cancelled) (notes){mark}");
+        r40e_governed_silent(&last_governor);
+        r34e_for_twin(&last_governor, "November 8, 2026 (cancelled) (notes)");
+        r34e_keep_twin(&last_governor, "November 8, 2026 (cancelled) (notes)");
+    }
+}
+
+#[test]
+fn r42d_spaced_double_suffix_tokens_judged_at_the_trailing_governor_run() {
+    // The witnessed spaced doubles serve the
+    // cancelled date live on the base tree, in
+    // every spacing of the pair; each now governs
+    // as the clean form governs, both routes, full
+    // records.
+    for line in [
+        "November 8, 2026 (cancelled) ~ ~",
+        "November 8, 2026 (cancelled)~ ~",
+        "November 8, 2026 (cancelled)~~ ~",
+        "November 8, 2026 (cancelled) ~ ~ ~",
+    ] {
+        r40e_governed_silent(line);
+        r34e_for_twin(line, "November 8, 2026 (cancelled)");
+        r34e_keep_twin(line, "November 8, 2026 (cancelled)");
+    }
+    // The weekday arm with spaced doubles is
+    // judged on the base tree too (held): the
+    // record stands through the pair.
+    for line in [
+        "November 1, 2026 (Monday) ~ ~",
+        "November 1, 2026 (Monday)~ ~",
+    ] {
+        r40g_refuses_with_record(line, "Monday", nov(1));
+        r34e_for_twin(line, "November 1, 2026 (Monday)");
+        r34e_keep_twin(line, "November 1, 2026 (Monday)");
+    }
+    // CONTROLS, judged on the base tree: the
+    // single spaced token, the glued double, and
+    // the spaced glued double at the governor run.
+    for line in [
+        "November 8, 2026 (cancelled) ~",
+        "November 8, 2026 (cancelled)~~",
+        "November 8, 2026 (cancelled) ~~",
+    ] {
+        r40e_governed_silent(line);
+        r34e_for_twin(line, "November 8, 2026 (cancelled)");
+        r34e_keep_twin(line, "November 8, 2026 (cancelled)");
+    }
+}
+
+#[test]
+fn r42d_governor_last_order_takes_the_full_witnessed_set_at_the_trailing_slot() {
+    // The clean governor-last forms govern at the
+    // trailing slot, glued and spaced — restated
+    // outright as the table's first row.
+    r40e_governed_silent("November 8, 2026 (notes)(cancelled)");
+    r40e_governed_silent("November 8, 2026 (notes) (cancelled)");
+    // RT42-S3's full table, driven whole: every
+    // mark of the table at the final group of a
+    // governor-last sequence, glued groups, spaced
+    // groups, and the mark spaced as its own token
+    // after either — governed silently, both
+    // routes, full records against the clean
+    // governor-last forms. (On the audited tree
+    // "~", "#", "…", "–", "~~", "~*" served; "*",
+    // "-", "—" governed. On THIS batch's base
+    // tree the set's own marks already govern via
+    // R42-C's shed, and the en dash "–" U+2013 is
+    // the arm that still serves — see the batch
+    // record.)
+    for mark in [
+        "\u{2026}", "~", "*", "#", "-", "\u{2014}", "\u{2013}", "~~", "~*",
+    ] {
+        for (suffixed, clean) in [
+            (
+                format!("November 8, 2026 (notes)(cancelled){mark}"),
+                "November 8, 2026 (notes)(cancelled)",
+            ),
+            (
+                format!("November 8, 2026 (notes) (cancelled){mark}"),
+                "November 8, 2026 (notes) (cancelled)",
+            ),
+            (
+                format!("November 8, 2026 (notes)(cancelled) {mark}"),
+                "November 8, 2026 (notes)(cancelled)",
+            ),
+            (
+                format!("November 8, 2026 (notes) (cancelled) {mark}"),
+                "November 8, 2026 (notes) (cancelled)",
+            ),
+        ] {
+            r34e_for_twin(&suffixed, clean);
+            r34e_keep_twin(&suffixed, clean);
+            r40e_governed_silent(&suffixed);
+        }
+        // The governor-FIRST order over the same
+        // marks, restated as its standing reading
+        // (R41-E's arm): governed — for the en dash
+        // that order is NOT this pin's arm and
+        // keeps its standing serve, stated in the
+        // scope controls below, so the en dash is
+        // excluded here.
+        if mark != "\u{2013}" {
+            let first = format!("November 8, 2026 (cancelled)(notes){mark}");
+            r40e_governed_silent(&first);
+            r34e_for_twin(&first, "November 8, 2026 (cancelled)(notes)");
+            r34e_keep_twin(&first, "November 8, 2026 (cancelled)(notes)");
+        }
+        // The base-trailing parity pin, UNMOVED:
+        // at the Sunday-after base's trailing slot
+        // the whole governor-last family stands at
+        // parity in every dress — it serves the
+        // resolution exactly as the clean governor
+        // does there, mark or no mark, both routes,
+        // full records.
+        for (suffixed, clean) in [
+            (
+                format!("Sunday after November 1, 2026 (notes)(cancelled){mark}"),
+                "Sunday after November 1, 2026 (notes)(cancelled)",
+            ),
+            (
+                format!("Sunday after November 1, 2026 (notes) (cancelled){mark}"),
+                "Sunday after November 1, 2026 (notes) (cancelled)",
+            ),
+        ] {
+            r34e_for_twin(&suffixed, clean);
+            r34e_keep_twin(&suffixed, clean);
+            r40e_serves_silent(&suffixed, nov(8));
+        }
+    }
+    r40e_serves_silent("Sunday after November 1, 2026 (notes)(cancelled)", nov(8));
+    // The three-group governor-last sequence takes
+    // the same reading through the marks that
+    // served on the audited tree, twin-equal to
+    // its clean form (governed silently).
+    for mark in ["~", "\u{2026}", "\u{2013}", "*"] {
+        let triple = format!("November 8, 2026 (Monday)(notes)(cancelled){mark}");
+        r40e_governed_silent(&triple);
+        r34e_for_twin(&triple, "November 8, 2026 (Monday)(notes)(cancelled)");
+        r34e_keep_twin(&triple, "November 8, 2026 (Monday)(notes)(cancelled)");
+    }
+}
+
+/// The trailing-alone reading, stated outright
+/// (R42-D, F10): no date reads, the phrase is
+/// remembered AS WRITTEN (suffix and all — the
+/// R36-D rule, and the standing "-" / "—" For
+/// reading on the base tree), the group is
+/// remembered as the parenthesized date, no
+/// second-date note stands, and the Keep route
+/// keeps through the group's date.
+fn r42d_alone_memory_outright(line: &str) {
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{line}: trailing-alone reads no date");
+    assert_eq!(
+        c.for_sunday_in_words.as_deref(),
+        Some(line),
+        "{line}: the phrase is remembered as written"
+    );
+    assert_eq!(
+        c.for_sunday_parenthesized_date,
+        Some(nov(8)),
+        "{line}: the group is remembered as a group"
+    );
+    assert_eq!(c.for_sunday_parenthesized_dates, vec![nov(8)], "{line}");
+    assert_eq!(
+        c.for_sunday_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}: the group's date is no second-date note"
+    );
+    let text =
+        format!("For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(8)),
+        "{line}: the Keep route keeps through the group's date"
+    );
+    assert_eq!(
+        c.keep_through_second_dates,
+        Vec::<SimpleDate>::new(),
+        "{line}"
+    );
+}
+
+#[test]
+fn r42d_trailing_alone_suffix_no_longer_disarms_the_memory() {
+    // The clean twins, stated outright first —
+    // the reading every suffixed form below now
+    // takes (the memory is the line as written, so
+    // each suffixed form's in-words memory carries
+    // its own suffix, exactly as the "-" / "—"
+    // forms' For memory already did on the base
+    // tree).
+    r42d_alone_memory_outright("next Sunday (November 8, 2026)");
+    r42d_alone_memory_outright("next Sunday \"November 8, 2026\"");
+    for mark in ["*", "#", "~", "\u{2026}", "!", "-", "\u{2014}"] {
+        // Both dresses, both routes, memory and
+        // keep-through stated outright per mark:
+        // for "*", "#", "~", "…", "!" the memory
+        // AND the keep-through were lost entirely
+        // on the base tree; for "-", "—" the For
+        // memory survived and the keep-through was
+        // lost (the Keep arm is pinned here with
+        // the rest).
+        let paren = format!("next Sunday (November 8, 2026){mark}");
+        r42d_alone_memory_outright(&paren);
+        let quoted = format!("next Sunday \"November 8, 2026\"{mark}");
+        r42d_alone_memory_outright(&quoted);
+        // HELD on the base tree, not moved: the
+        // LEADING-alone suffixes are judged for
+        // the whole set — the same outright memory
+        // and keep-through, in both dresses.
+        let lead_paren = format!("(November 8, 2026){mark} next Sunday");
+        let text = format!("For Sunday: {lead_paren}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{lead_paren}");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{lead_paren}"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_dates,
+            vec![nov(8)],
+            "{lead_paren}"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {lead_paren}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{lead_paren}");
+        let lead_quoted = format!("\"November 8, 2026\"{mark} next Sunday");
+        let text = format!("For Sunday: {lead_quoted}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{lead_quoted}");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{lead_quoted}"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {lead_quoted}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, Some(nov(8)), "{lead_quoted}");
+    }
+}
+
+#[test]
+fn r42d_trailing_seats_scope_controls_unmoved() {
+    // The en dash outside the governor-last arm
+    // keeps its standing readings (the
+    // closed-peel record — round 42 F9's
+    // territory, taken by R42-F, not moved here):
+    // the lone trailing governor wearing it
+    // serves, the governor-first sequence wearing
+    // it serves, the grouped weekday wearing it
+    // serves in silence, and a governor wearing
+    // it at an INTERIOR seat of a trailing
+    // sequence serves, exactly as on the base
+    // tree.
+    r40e_serves_silent("November 8, 2026 (cancelled)\u{2013}", nov(8));
+    r40e_serves_silent("November 8, 2026 (cancelled)(notes)\u{2013}", nov(8));
+    r40e_serves_silent("November 1, 2026 (Monday)\u{2013}", nov(1));
+    r40e_serves_silent("November 8, 2026 (cancelled)\u{2013} (notes)", nov(8));
+    r40e_serves_silent("November 1, 2026 (notes)(Monday)\u{2013}", nov(1));
+    // The R41-E trailing controls, unweakened,
+    // restated over the set: the lone wrapped
+    // governor governs and the grouped weekday
+    // refuses with its record at the line-final
+    // seat (the R41-D alone pins stand in their
+    // own tests, untouched).
+    for mark in ["~", "*", "#", "-", "\u{2014}", "\u{2026}"] {
+        let governor = format!("November 8, 2026 (cancelled){mark}");
+        r40e_governed_silent(&governor);
+        let grouped = format!("November 1, 2026 (Monday){mark}");
+        r40g_refuses_with_record(&grouped, "Monday", nov(1));
+    }
+}
+
 // Round 40 (R40-F, F7 MAJOR = red team RT40-F +
 // review R40-R4): R39-E gave the grouped weekday
 // readers a ONE-mark shed (`cleaned_weekday`), and

@@ -1194,7 +1194,30 @@ impl<'a> LineScan<'a> {
     /// no-whitespace answer leaves it.
     pub(super) fn split_last(&self, lo: usize, hi: usize) -> Option<(usize, usize, usize)> {
         let text = self.text;
-        let mut end = lo + text[lo..hi].trim_end_matches(['.', ',']).len();
+        // Round 42 (R42-D, F10 MINOR = red team
+        // RT42-D1): the end trims gain the witnessed
+        // suffix set ("~", "*", "#", "-", "—"
+        // U+2014, the ellipsis U+2026, and "!") — a
+        // trailing group wearing one ("next Sunday
+        // (November 8, 2026)~") ended its slice in
+        // the mark, so the group was no trailing
+        // group to this split at all: the relative
+        // shape's strip loop could not take it off
+        // (the alone memory was lost in both
+        // dresses) and the trailing-group analyses
+        // never saw it (the Keep route's
+        // keep-through was lost, for "-" / "—"
+        // as for the rest). The trims are the
+        // standing '.' / ',' trims widened to the
+        // set the trailing peels judge a group
+        // wearing; `end` still lands just past the
+        // closer, so the split's own facts are
+        // unchanged for every slice that already
+        // split.
+        let mut end = lo
+            + text[lo..hi]
+                .trim_end_matches(['.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!'])
+                .len();
         loop {
             let trimmed = lo + text[lo..end].trim_end().len();
             let peel_at = match self.last_whitespace(lo, trimmed) {
@@ -1206,7 +1229,12 @@ impl<'a> LineScan<'a> {
             };
             match peel_at {
                 Some(w) => {
-                    end = lo + text[lo..w].trim_end_matches(['.', ',']).len();
+                    end = lo
+                        + text[lo..w]
+                            .trim_end_matches([
+                                '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!',
+                            ])
+                            .len();
                 }
                 None => {
                     end = trimmed;

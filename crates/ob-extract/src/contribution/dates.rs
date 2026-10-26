@@ -579,12 +579,15 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         let word = tokens[i]
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}',
             ])
-            .trim_end_matches(['~', '*', '#', '-', '\u{2014}', '\u{2013}'])
+            .trim_end_matches([
+                '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
+                '\u{ff0d}', '\u{ff0a}', '\u{00ad}',
+            ])
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}',
             ]);
         // Round 39 (R39-E, F7): the base's trailing
         // garnish word is read through
@@ -847,7 +850,8 @@ fn base_trailing_sequence_mismatch(
         // standing separator tokens below.
         let peeled = rest.trim_end().trim_end_matches([
             '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
-            '#', '-', '\u{2014}',
+            '#', '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
+            '\u{ff01}', '\u{ff1f}', '\u{00ad}',
         ]);
         if peeled.len() != rest.len() {
             rest = peeled;
@@ -856,9 +860,22 @@ fn base_trailing_sequence_mismatch(
         match rest.rsplit_once(char::is_whitespace) {
             Some((head, token))
                 if !token.is_empty()
-                    && token
-                        .chars()
-                        .all(|c| matches!(c, '*' | '|' | '~' | '#' | '-' | '\u{2014}')) =>
+                    && token.chars().all(|c| {
+                        matches!(
+                            c,
+                            '*' | '|'
+                                | '~'
+                                | '#'
+                                | '-'
+                                | '\u{2014}'
+                                | '\u{2010}'
+                                | '\u{2011}'
+                                | '\u{2212}'
+                                | '\u{ff0d}'
+                                | '\u{ff0a}'
+                                | '\u{00ad}'
+                        )
+                    }) =>
             {
                 rest = head;
             }
@@ -1002,6 +1019,14 @@ fn base_trailing_sequence_mismatch(
                         | '-'
                         | '\u{2014}'
                         | '\u{2013}'
+                        | '\u{2010}'
+                        | '\u{2011}'
+                        | '\u{2212}'
+                        | '\u{ff0d}'
+                        | '\u{ff0a}'
+                        | '\u{ff01}'
+                        | '\u{ff1f}'
+                        | '\u{00ad}'
                 ) || c.is_whitespace()
             })
         {
@@ -1270,10 +1295,19 @@ impl<'a> LineScan<'a> {
         // group's date. Both trim sites in this
         // function take the mark, as they took the
         // R42-D set.
+        // Round 43 (R43-B, F2 + F3): both trim sites
+        // gain the sibling class whose twins stand
+        // in this set — the dash siblings (U+2010,
+        // U+2011, U+2212, U+FF0D), the fullwidth
+        // asterisk (U+FF0A) and "!" (U+FF01), and
+        // U+00AD. (U+FF1F does not join here: its
+        // twin "?" stands in no trim of this set.)
         let mut end = lo
             + text[lo..hi]
                 .trim_end_matches([
                     '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '\u{2013}',
+                    '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{ff01}',
+                    '\u{00ad}',
                 ])
                 .len();
         loop {
@@ -1291,7 +1325,8 @@ impl<'a> LineScan<'a> {
                         + text[lo..w]
                             .trim_end_matches([
                                 '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!',
-                                '\u{2013}',
+                                '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
+                                '\u{ff0a}', '\u{ff01}', '\u{00ad}',
                             ])
                             .len();
                 }
@@ -2147,11 +2182,31 @@ pub(super) fn nothing_token(raw: &str) -> bool {
 /// are judged — a spaced en dash standing after a
 /// trailing garnish is that garnish's dress here, as
 /// the two judged dashes are.
+/// Round 43 (R43-B, F2 + F3): the set gains the
+/// sibling class at the set level — the dash
+/// siblings (U+2010, U+2011, U+2212, U+FF0D), the
+/// fullwidth asterisk (U+FF0A), and U+00AD — so a
+/// spaced sibling token standing after a trailing
+/// garnish is that garnish's dress here, as its
+/// twin's token is.
 pub(super) fn suffix_tail_token(raw: &str) -> bool {
     !raw.is_empty()
-        && raw
-            .chars()
-            .all(|c| matches!(c, '~' | '*' | '#' | '-' | '\u{2014}' | '\u{2013}'))
+        && raw.chars().all(|c| {
+            matches!(
+                c,
+                '~' | '*'
+                    | '#'
+                    | '-'
+                    | '\u{2014}'
+                    | '\u{2013}'
+                    | '\u{2010}'
+                    | '\u{2011}'
+                    | '\u{2212}'
+                    | '\u{ff0d}'
+                    | '\u{ff0a}'
+                    | '\u{00ad}'
+            )
+        })
 }
 
 /// One group token with its wrapping punctuation off,

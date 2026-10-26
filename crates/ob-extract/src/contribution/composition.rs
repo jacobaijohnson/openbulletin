@@ -1614,9 +1614,15 @@ pub(super) fn clean(t: &str) -> &str {
     // the suffix stood in no reader's set, so it
     // disarmed the framing judgment it followed
     // and the bare weekday lost its record.
+    // Round 43 (R43-B, F3): the set gains the
+    // fullwidth "!" (U+FF01) and "?" (U+FF1F), the
+    // IME siblings of the judged marks — a word
+    // wearing one is the word it names, as one
+    // wearing "!" or "?" already is.
     t.trim_matches([
         '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-        '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
+        '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff01}',
+        '\u{ff1f}',
     ])
 }
 
@@ -2099,9 +2105,29 @@ fn governor_group_words(inner: &str) -> Option<Vec<String>> {
 /// `s` (round 42, R42-C, F6): the dress a group
 /// wears at its tail, which the judgments read
 /// through at every slot R40-G and R41-E judged.
+/// Round 43 (R43-B, F2 + F3): the set gains the
+/// sibling class at the set level — the dash
+/// siblings (U+2010, U+2011, U+2212, U+FF0D), the
+/// fullwidth asterisk (U+FF0A), and U+00AD — each
+/// judged wherever its twin is judged.
 fn suffix_set_run(s: &str) -> usize {
     s.chars()
-        .take_while(|c| matches!(c, '~' | '*' | '#' | '-' | '\u{2014}' | '\u{2026}'))
+        .take_while(|c| {
+            matches!(
+                c,
+                '~' | '*'
+                    | '#'
+                    | '-'
+                    | '\u{2014}'
+                    | '\u{2026}'
+                    | '\u{2010}'
+                    | '\u{2011}'
+                    | '\u{2212}'
+                    | '\u{ff0d}'
+                    | '\u{ff0a}'
+                    | '\u{00ad}'
+            )
+        })
         .map(char::len_utf8)
         .sum()
 }
@@ -2316,11 +2342,24 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
         // read as empty, and the run was no run at
         // all, where the single spaced token and the
         // glued double are judged.
+        // Round 43 (R43-B, F2 + F3): the peel set
+        // and the spaced-token predicate below gain
+        // the sibling class at the set level (the
+        // dash siblings, the fullwidth siblings of
+        // "*", "!", and "?", and U+00AD) — the
+        // siblings enter the peels directly, which
+        // is why no en-dash-style retry is built
+        // for them: the retry exists only for a
+        // mark kept OUT of the peels, and these are
+        // in. Their governor-first sequences take
+        // the twins' readings for the same reason,
+        // as the "-" governor-first sequence does.
         let peeled = text[..end]
             .trim_end()
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
-                '*', '#', '-', '\u{2014}',
+                '*', '#', '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
+                '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
             ])
             .len();
         if peeled != end {
@@ -2333,9 +2372,22 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
         };
         let token = &core[ws + wc.len_utf8()..];
         if !token.is_empty()
-            && token
-                .chars()
-                .all(|c| matches!(c, '*' | '|' | '~' | '#' | '-' | '\u{2014}'))
+            && token.chars().all(|c| {
+                matches!(
+                    c,
+                    '*' | '|'
+                        | '~'
+                        | '#'
+                        | '-'
+                        | '\u{2014}'
+                        | '\u{2010}'
+                        | '\u{2011}'
+                        | '\u{2212}'
+                        | '\u{ff0d}'
+                        | '\u{ff0a}'
+                        | '\u{00ad}'
+                )
+            })
         {
             end = ws;
             continue;
@@ -2397,6 +2449,14 @@ fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
                     | '-'
                     | '\u{2014}'
                     | '\u{2013}'
+                    | '\u{2010}'
+                    | '\u{2011}'
+                    | '\u{2212}'
+                    | '\u{ff0d}'
+                    | '\u{ff0a}'
+                    | '\u{ff01}'
+                    | '\u{ff1f}'
+                    | '\u{00ad}'
             ) || c.is_whitespace()
         }) {
             break;
@@ -2538,6 +2598,14 @@ fn midline_governor_before_plain_date(
                     | '-'
                     | '\u{2014}'
                     | '\u{2013}'
+                    | '\u{2010}'
+                    | '\u{2011}'
+                    | '\u{2212}'
+                    | '\u{ff0d}'
+                    | '\u{ff0a}'
+                    | '\u{ff01}'
+                    | '\u{ff1f}'
+                    | '\u{00ad}'
             ) || c.is_whitespace()
         }) {
             break;
@@ -2556,7 +2624,8 @@ fn midline_governor_before_plain_date(
     // later inherit it.
     let rest = text[pos..].trim_start_matches([
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}', '\u{2013}',
+        '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
+        '\u{ff01}', '\u{ff1f}', '\u{00ad}',
     ]);
     if matches!(rest.chars().next(), Some('(' | '[' | '{')) {
         return false;
@@ -2766,7 +2835,8 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         // groups and after the last group alike.
         rest = rest.trim_start_matches([
             ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
-            '#', '-', '\u{2014}',
+            '#', '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
+            '\u{ff01}', '\u{ff1f}', '\u{00ad}',
         ]);
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             break;
@@ -2786,7 +2856,8 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     }
     let rest = rest.trim_start_matches([
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}',
+        '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{ff01}',
+        '\u{ff1f}', '\u{00ad}',
     ]);
     Some((inners, rest))
 }
@@ -2868,7 +2939,8 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
             .trim_end()
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
-                '*', '#', '-', '\u{2014}',
+                '*', '#', '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
+                '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
             ])
             .len();
         if peeled != end {
@@ -2886,9 +2958,22 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         };
         let token = &core[ws + wc.len_utf8()..];
         if !token.is_empty()
-            && token
-                .chars()
-                .all(|c| matches!(c, '*' | '|' | '~' | '#' | '-' | '\u{2014}'))
+            && token.chars().all(|c| {
+                matches!(
+                    c,
+                    '*' | '|'
+                        | '~'
+                        | '#'
+                        | '-'
+                        | '\u{2014}'
+                        | '\u{2010}'
+                        | '\u{2011}'
+                        | '\u{2212}'
+                        | '\u{ff0d}'
+                        | '\u{ff0a}'
+                        | '\u{00ad}'
+                )
+            })
         {
             end = ws;
             continue;
@@ -2952,6 +3037,14 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                     | '-'
                     | '\u{2014}'
                     | '\u{2013}'
+                    | '\u{2010}'
+                    | '\u{2011}'
+                    | '\u{2212}'
+                    | '\u{ff0d}'
+                    | '\u{ff0a}'
+                    | '\u{ff01}'
+                    | '\u{ff1f}'
+                    | '\u{00ad}'
             ) || c.is_whitespace()
         }) {
             break;
@@ -3178,14 +3271,27 @@ fn leading_single_group_wearing_suffix(text: &str) -> Option<(String, &str)> {
     let after = &rest[end..];
     if !matches!(
         after.chars().next(),
-        Some('~' | '*' | '#' | '-' | '\u{2014}' | '\u{2013}')
+        Some(
+            '~' | '*'
+                | '#'
+                | '-'
+                | '\u{2014}'
+                | '\u{2013}'
+                | '\u{2010}'
+                | '\u{2011}'
+                | '\u{2212}'
+                | '\u{ff0d}'
+                | '\u{ff0a}'
+                | '\u{00ad}'
+        )
     ) {
         return None;
     }
     let inner = &rest[start + 1..end - 1];
     let rest = after.trim_start_matches([
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}', '\u{2013}',
+        '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
+        '\u{ff01}', '\u{ff1f}', '\u{00ad}',
     ]);
     Some((inner.to_string(), rest))
 }
@@ -3463,9 +3569,17 @@ pub(super) fn leading_governor_company_judgment(
     // trim and the walk's final trim alike), so
     // the mark joins the set and both seats take
     // their twins' composed outcomes.
-    const SEPARATORS: [char; 17] = [
+    // Round 43 (R43-B, F2 + F3): the set gains the
+    // sibling class — U+2010, U+2011, U+2212, and
+    // the fullwidth U+FF0D / U+FF0A / U+FF01 /
+    // U+FF1F, each joining the set its own twin
+    // stands in, and U+00AD (adjudication 7, see
+    // the batch record) — at the set level, so
+    // seats built later inherit the class.
+    const SEPARATORS: [char; 25] = [
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}', '\u{2013}',
+        '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
+        '\u{ff01}', '\u{ff1f}', '\u{00ad}',
     ];
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut governor_seen = false;
@@ -3638,7 +3752,10 @@ pub(super) fn leading_governor_company_judgment(
                 // cleaning "-" and "—", and this
                 // tail shed covers "~", "#", "…".
                 let word = cleaned[0]
-                    .trim_end_matches(['~', '#', '\u{2026}', '*', '-', '\u{2014}'])
+                    .trim_end_matches([
+                        '~', '#', '\u{2026}', '*', '-', '\u{2014}', '\u{2010}', '\u{2011}',
+                        '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{00ad}',
+                    ])
                     .to_string();
                 if !words.is_empty()
                     && (weekday_word(&word).is_some() || word_at_is_month(&word, 0))
@@ -3755,7 +3872,10 @@ pub(super) fn leading_governor_company_judgment(
                     // witnessed suffix set.
                     words.push(
                         cleaned[0]
-                            .trim_end_matches(['~', '#', '\u{2026}', '*', '-', '\u{2014}'])
+                            .trim_end_matches([
+                                '~', '#', '\u{2026}', '*', '-', '\u{2014}', '\u{2010}', '\u{2011}',
+                                '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{00ad}',
+                            ])
                             .to_string(),
                     );
                     scan = &scan[tok_end..];
@@ -4705,7 +4825,8 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
         let peeled = text[..end]
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2026}', '~', '*', '#',
-                '-', '\u{2014}',
+                '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
+                '\u{ff01}', '\u{ff1f}', '\u{00ad}',
             ])
             .len();
         if peeled != end {
@@ -4718,9 +4839,22 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
         };
         let token = &core[ws + wc.len_utf8()..];
         if !token.is_empty()
-            && token
-                .chars()
-                .all(|c| matches!(c, '*' | '|' | '~' | '#' | '-' | '\u{2014}'))
+            && token.chars().all(|c| {
+                matches!(
+                    c,
+                    '*' | '|'
+                        | '~'
+                        | '#'
+                        | '-'
+                        | '\u{2014}'
+                        | '\u{2010}'
+                        | '\u{2011}'
+                        | '\u{2212}'
+                        | '\u{ff0d}'
+                        | '\u{ff0a}'
+                        | '\u{00ad}'
+                )
+            })
         {
             end = ws;
             continue;
@@ -4927,15 +5061,26 @@ pub(super) fn date_line_inner(
         // a garnish wearing one takes its twins'
         // reading here, as at the Sunday-after
         // base's trailing slot.
+        // Round 43 (R43-B, F2 + F3): the trims here
+        // gain the sibling class at the set level —
+        // the tail set gains the dash siblings
+        // (U+2010, U+2011, U+2212, U+FF0D), the
+        // fullwidth asterisk (U+FF0A), and U+00AD,
+        // and the wrapping trims gain the fullwidth
+        // "!" and "?" (U+FF01, U+FF1F), as `clean`
+        // gains them.
         let word = tokens[i]
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}',
             ])
-            .trim_end_matches(['~', '*', '#', '-', '\u{2014}', '\u{2013}'])
+            .trim_end_matches([
+                '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
+                '\u{ff0d}', '\u{ff0a}', '\u{00ad}',
+            ])
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}',
             ]);
         // Round 39 (R39-E, F7): the trailing garnish
         // word is read through `cleaned_weekday`, so

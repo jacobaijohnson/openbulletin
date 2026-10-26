@@ -34788,7 +34788,10 @@ fn r42f_bare_record_lost(line: &str) {
     let text =
         format!("For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n");
     let c = parse_contribution(&text, today()).expect("parses");
-    assert_eq!(c.keep_through, None, "{line}: no date reads on the Keep route");
+    assert_eq!(
+        c.keep_through, None,
+        "{line}: no date reads on the Keep route"
+    );
     assert_eq!(
         c.keep_through_weekday_mismatch, None,
         "{line}: no record on the keep line either"

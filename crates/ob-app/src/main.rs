@@ -3745,7 +3745,10 @@ fn judge_displaced_instance_lock_at_claim_from(
 ///
 /// Displacement is conditional on generation (R32-A,
 /// F1): a claimant may displace only the exact lock
-/// generation it judged. The standing file is re-read
+/// generation it judged. The judged generation is
+/// itself judged for liveness on its own captured
+/// record (R42-E, F1), so a live generation is never
+/// displaced as if dead. The standing file is re-read
 /// immediately before the rename and must still parse to
 /// `judged`; if it changed, nothing is moved and the
 /// caller re-judges what stands there instead of
@@ -3796,6 +3799,21 @@ fn displace_instance_lock_from(
     // stale one takeable — is not displaced at all.
     if read_instance_lock_from(lock).as_ref() != judged {
         return false;
+    }
+    // The judged generation is itself judged live or
+    // not (R42-E, F1): displacement is for a generation
+    // no live peer holds, so a captured generation that
+    // names a live peer — above all a live winner who
+    // landed after the claimant's check, in the claim
+    // loop's two-read window — is never displaced as if
+    // dead, whoever captured it. The judgment is on the
+    // captured record in hand, not on a fresh read: the
+    // generation displaced is always the generation
+    // judged.
+    if let Some(info) = judged {
+        if instance_lock_names_live_peer(info, own_pid, own_token) {
+            return false;
+        }
     }
     // The displaced-path re-judgment (R40-H, F10): the
     // rename step below removes whatever stands at the
@@ -3876,22 +3894,34 @@ fn acquire_instance_lock_from(lock: &std::path::Path, own_pid: u32, own_token: &
             LockCreate::Created => return true,
             LockCreate::Failed => return false,
             LockCreate::AlreadyExists => {
-                // A lock stood at the path. Judge whoever
-                // holds it now, at write time: a live peer
-                // (or the winner of the create race) keeps
-                // it.
-                if peer_instance_alive_from(lock, own_pid, own_token) {
-                    return false;
-                }
-                if lock_names_instance(lock, own_pid, own_token) {
-                    return true;
-                }
-                // Capture the exact generation just
-                // judged takeable. No live peer holds it:
-                // take over through displacement of that
-                // generation only, then the same atomic
-                // create-new step.
+                // A lock stood at the path. Capture the
+                // standing generation and judge THAT
+                // generation itself, at write time
+                // (R42-E, F1): the liveness judgment is
+                // made on the captured record in hand —
+                // on the pid inside it — never on an
+                // earlier read of the path, so a live
+                // winner who landed since any earlier
+                // check is the generation judged here,
+                // and what is judged is exactly what a
+                // displacement below may move. A live
+                // peer (or the winner of the create race)
+                // keeps the lock; a generation naming
+                // this instance is already held; any
+                // other captured generation names no
+                // live peer, and the claim takes over
+                // through displacement of that generation
+                // only, then the same atomic create-new
+                // step.
                 let judged = read_instance_lock_from(lock);
+                if let Some(info) = judged.as_ref() {
+                    if info.pid == Some(own_pid) && info.token.as_deref() == Some(own_token) {
+                        return true;
+                    }
+                    if instance_lock_names_live_peer(info, own_pid, own_token) {
+                        return false;
+                    }
+                }
                 if !displace_instance_lock_from(lock, own_pid, own_token, judged.as_ref()) {
                     // The standing file was not the judged
                     // generation (or its displacement was
@@ -4085,10 +4115,27 @@ fn peer_instance_alive_from(lock: &std::path::Path, own_pid: u32, own_token: &st
     let Some(info) = read_instance_lock_from(lock) else {
         return false;
     };
+    instance_lock_names_live_peer(&info, own_pid, own_token)
+}
+
+/// The liveness half of `peer_instance_alive_from`,
+/// judged on a generation already captured in hand
+/// rather than on a fresh read of the path (R42-E,
+/// F1). The claim loop's judgment and its capture must
+/// be one judgment about one generation: a caller that
+/// checks liveness by reading the path and then
+/// captures the generation by reading it again has
+/// judged one generation and captured another whenever
+/// a winner lands between the two reads, and the
+/// captured live winner was displaced as if dead. This
+/// is the same decision table as the path form — the
+/// path form is this judgment over its own read — so
+/// there is still one liveness table on all platforms.
+fn instance_lock_names_live_peer(info: &InstanceLock, own_pid: u32, own_token: &str) -> bool {
     if info.token.as_deref() == Some(own_token) {
         return false;
     }
-    if lock_pid_cannot_name_a_process(&info) {
+    if lock_pid_cannot_name_a_process(info) {
         return false;
     }
     let Some(pid) = info.pid else {
@@ -8699,6 +8746,343 @@ mod settings_tests {
             "the judged generation stands displaced after the control claim"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r42e_claim_loop_must_judge_the_captured_generation_itself() {
+        // R42-E pin for F1 (red team RT42-L1, synthesis
+        // F1): the claim loop's AlreadyExists branch judged
+        // the holder through `peer_instance_alive_from`
+        // and then captured "the exact generation just
+        // judged takeable" through a SECOND read. The two
+        // reads are not one judgment: a live winner landing
+        // between the check and the capture is never the
+        // generation the check judged, yet the capture
+        // feeds that live winner's generation to
+        // displacement as if dead, and the claimant then
+        // creates over it — both hold at once (the red
+        // team's seam witness, probe42lock `lock42b.log`
+        // L8: `both_hold = true`, the winner's generation
+        // at the displaced path). This pin drives the same
+        // interleaving through the production functions
+        // themselves, in the branch's own order: A's peer
+        // check judges the standing dead generation
+        // takeable; winner W (a spawned live peer) takes
+        // the lock in the gap, in production order; A then
+        // captures the standing generation — now W's live
+        // generation — and attempts its displacement,
+        // creating only if the displacement succeeds, as
+        // `acquire_instance_lock_from` does. The captured
+        // generation is the generation judged: a live
+        // captured generation is never displaced, A's
+        // claim answers false while W lives, and W's lock
+        // stands byte for byte. The control arm: once W
+        // is provably gone, A's claim takes the lock in
+        // the ordinary way, with W's generation displaced.
+        let dir = std::env::temp_dir().join(format!(
+            "ob-app-r42e-captured-judgment-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        // The standing generation: a dead owner's lock.
+        let mut stale_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = stale_child.id();
+        stale_child.wait().expect("reap child");
+        let stale_lock = format!("{dead_pid}\nstale-token\n");
+        std::fs::write(&lock, &stale_lock).expect("stale lock");
+        let a_pid = std::process::id();
+        let a_token = "claimant-a-token";
+        // A's AlreadyExists check, in the branch's order:
+        // the standing generation names no live peer and
+        // does not name A.
+        assert!(
+            !peer_instance_alive_from(&lock, a_pid, a_token),
+            "A's check: the stale lock names no live peer"
+        );
+        assert!(
+            !lock_names_instance(&lock, a_pid, a_token),
+            "A's check: the stale lock does not name A"
+        );
+        // — The gap. Winner W, a spawned live peer, takes
+        // the lock in production order: displacement of
+        // the judged dead generation, then create-new.
+        let mut peer = spawn_live_peer_named(&dir, "openbulletin-peer-r42e");
+        let w_pid = peer.id();
+        let w_token = "winner-token";
+        let judged_s = read_instance_lock_from(&lock).expect("W judged a generation");
+        assert_eq!(judged_s.pid, Some(dead_pid));
+        assert!(
+            displace_instance_lock_from(&lock, w_pid, w_token, Some(&judged_s)),
+            "W's displacement of the judged dead generation succeeds"
+        );
+        assert!(
+            matches!(
+                try_create_instance_lock_from(&lock, w_pid, w_token),
+                LockCreate::Created
+            ),
+            "W's create-new takes the lock"
+        );
+        let w_bytes = std::fs::read(&lock).expect("read winner's lock");
+        // A now captures "the exact generation just
+        // judged takeable" — but the generation standing
+        // there is W's, which A's check never judged.
+        let a_judged = read_instance_lock_from(&lock).expect("A captured a generation");
+        assert_eq!(
+            a_judged.token.as_deref(),
+            Some(w_token),
+            "A's capture is the winner's generation, not the judged dead one"
+        );
+        assert!(
+            peer_instance_alive_from(&lock, a_pid, a_token),
+            "the captured generation names a live peer on a fresh read"
+        );
+        // A's displacement attempt, carrying the captured
+        // generation. It must refuse: the captured
+        // generation is live, and a live generation is
+        // never displaced as dead.
+        let a_displaced = displace_instance_lock_from(&lock, a_pid, a_token, Some(&a_judged));
+        assert!(
+            !a_displaced,
+            "A must not displace the live winner it captured but never judged"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after A's displacement attempt"),
+            w_bytes,
+            "the winner's lock stands byte for byte"
+        );
+        assert_eq!(
+            std::fs::read(&displaced).expect("read displaced file"),
+            stale_lock.as_bytes(),
+            "the displaced path still holds the dead generation W set aside"
+        );
+        // A's claim in full answers false while W lives,
+        // and the winner's record still stands.
+        assert!(
+            !acquire_instance_lock_from(&lock, a_pid, a_token),
+            "A's claim stands down while the winner lives"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after A's claim"),
+            w_bytes,
+            "the winner's lock survives A's claim byte for byte"
+        );
+        // Control: once W is provably gone, A's claim
+        // takes the lock in the ordinary way, with W's
+        // generation displaced.
+        let _ = peer.kill();
+        let _ = peer.wait();
+        assert!(peer_provably_gone(w_pid), "the winner is provably gone");
+        assert!(
+            acquire_instance_lock_from(&lock, a_pid, a_token),
+            "A's claim takes the lock once the winner is gone"
+        );
+        assert!(lock_names_instance(&lock, a_pid, a_token), "A holds");
+        assert_eq!(
+            std::fs::read(&displaced).expect("read displaced file after the control claim"),
+            w_bytes,
+            "the winner's generation stands displaced after the control claim"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r42e_claim_loop_capture_of_the_judged_dead_generation_refuses_after_a_winner_lands() {
+        // R42-E control pin for F1 (the red team's L8b
+        // control): A captures the very dead generation
+        // its check judged, BEFORE any winner lands; the
+        // winner then takes the lock in production order.
+        // A's displacement attempt, still carrying the
+        // dead generation it judged, must refuse through
+        // the generation check — the standing file is no
+        // longer the judged generation — on the base tree
+        // and the fixed tree alike. This is the control
+        // that isolates F1 to the capture-after-landing
+        // arm: the generation check itself was never the
+        // hole.
+        let dir = std::env::temp_dir().join(format!(
+            "ob-app-r42e-capture-control-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut stale_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = stale_child.id();
+        stale_child.wait().expect("reap child");
+        let stale_lock = format!("{dead_pid}\nstale-token\n");
+        std::fs::write(&lock, &stale_lock).expect("stale lock");
+        let a_pid = std::process::id();
+        let a_token = "claimant-a-token";
+        // A captures the judged dead generation itself.
+        let a_judged = read_instance_lock_from(&lock).expect("A judged a generation");
+        assert_eq!(a_judged.pid, Some(dead_pid));
+        // Winner W lands and takes the lock.
+        let mut peer = spawn_live_peer_named(&dir, "openbulletin-peer-r42e-ctl");
+        let w_pid = peer.id();
+        let w_token = "winner-token";
+        let judged_s = read_instance_lock_from(&lock).expect("W judged a generation");
+        assert!(
+            displace_instance_lock_from(&lock, w_pid, w_token, Some(&judged_s)),
+            "W's displacement of the judged dead generation succeeds"
+        );
+        assert!(
+            matches!(
+                try_create_instance_lock_from(&lock, w_pid, w_token),
+                LockCreate::Created
+            ),
+            "W's create-new takes the lock"
+        );
+        let w_bytes = std::fs::read(&lock).expect("read winner's lock");
+        // A's displacement attempt with the generation it
+        // judged refuses, and both files stand.
+        assert!(
+            !displace_instance_lock_from(&lock, a_pid, a_token, Some(&a_judged)),
+            "A's displacement refuses: the standing file is not the judged generation"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after A's displacement attempt"),
+            w_bytes,
+            "the winner's lock stands byte for byte"
+        );
+        assert_eq!(
+            std::fs::read(&displaced).expect("read displaced file"),
+            stale_lock.as_bytes(),
+            "the displaced path still holds the dead generation W set aside"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, a_pid, a_token),
+            "A's claim stands down while the winner lives"
+        );
+        let _ = peer.kill();
+        let _ = peer.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r42e_four_claimant_races_over_a_dead_lock_stand_single_winner() {
+        // R42-E composed pin for F1 (the red team's L3c
+        // shape): four claimants — four spawned live
+        // peers, each claiming under its own pid and
+        // token through `acquire_instance_lock_from` on
+        // its own thread — race over a lock naming a dead
+        // owner, thirty rounds, a fresh directory and a
+        // fresh dead generation per round. Every round
+        // stands single-winner: exactly one claim answers
+        // true, the lock names that claimant, and no live
+        // claimant's generation stands displaced as if
+        // dead. On the audited tree the red
+        // team's composed run of this shape ended with
+        // two winners in 3 of 30 rounds in one run (the
+        // two-read judgment of F1, composed).
+        let round_count = 30;
+        let mut claimants: Vec<std::process::Child> = (0..4)
+            .map(|i| {
+                let dir = std::env::temp_dir()
+                    .join(format!("ob-app-r42e-race-peer-{}-{i}", std::process::id()));
+                std::fs::create_dir_all(&dir).expect("temp dir");
+                let name = format!("openbulletin-peer-r42e-{i}");
+                spawn_live_peer_named(&dir, &name)
+            })
+            .collect();
+        let claimant_ids: Vec<(u32, String)> = claimants
+            .iter()
+            .enumerate()
+            .map(|(i, child)| {
+                let token = format!("claimant-{i}-token");
+                (child.id(), token)
+            })
+            .collect();
+        for round in 0..round_count {
+            let dir = std::env::temp_dir()
+                .join(format!("ob-app-r42e-race-{}-{round}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            let lock = dir.join("openbulletin.lock");
+            let displaced = displaced_instance_lock_path(&lock);
+            let mut stale_child = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg("exit 0")
+                .spawn()
+                .expect("spawn child");
+            let dead_pid = stale_child.id();
+            stale_child.wait().expect("reap child");
+            let stale_lock = format!("{dead_pid}\nstale-token\n");
+            std::fs::write(&lock, &stale_lock).expect("stale lock");
+            let handles: Vec<std::thread::JoinHandle<bool>> = claimant_ids
+                .iter()
+                .map(|(pid, token)| {
+                    let thread_lock = lock.clone();
+                    let thread_pid = *pid;
+                    let thread_token = token.clone();
+                    std::thread::spawn(move || {
+                        acquire_instance_lock_from(&thread_lock, thread_pid, &thread_token)
+                    })
+                })
+                .collect();
+            let results: Vec<bool> = handles
+                .into_iter()
+                .map(|handle| handle.join().expect("claimant thread"))
+                .collect();
+            let wins = results.iter().filter(|&&result| result).count();
+            assert_eq!(
+                wins, 1,
+                "round {round}: exactly one of four claimants holds (results {results:?})"
+            );
+            let winner = results
+                .iter()
+                .position(|&result| result)
+                .expect("the winning claimant");
+            let info = read_instance_lock_from(&lock).expect("the lock names the winner");
+            assert_eq!(
+                info.pid,
+                Some(claimant_ids[winner].0),
+                "round {round}: the lock names the winning claimant's pid"
+            );
+            assert_eq!(
+                info.token.as_deref(),
+                Some(claimant_ids[winner].1.as_str()),
+                "round {round}: the lock names the winning claimant's token"
+            );
+            // The displaced path holds the dead
+            // generation the winner set aside, or stands
+            // absent (a loser's audited displacement was
+            // restored, leaving the path empty), or holds
+            // a losing claimant's generation that a
+            // displacement in the rename gap set aside
+            // and the audit left standing beside the
+            // newer lock — the standing R33-A hold, whose
+            // owner returned false and whose generation
+            // survives there. What it must never hold is
+            // the WINNER's generation: a claimant that
+            // returned true with its generation displaced
+            // as if dead is F1 composed — two holders, or
+            // a holder whose lock stands aside.
+            if let Some(displaced_info) = read_instance_lock_from(&displaced) {
+                let winner_token = claimant_ids[winner].1.as_str();
+                assert_ne!(
+                    displaced_info.token.as_deref(),
+                    Some(winner_token),
+                    "round {round}: the winner's generation never stands displaced"
+                );
+            }
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        for claimant in &mut claimants {
+            let _ = claimant.kill();
+            let _ = claimant.wait();
+        }
     }
 
     #[cfg(unix)]

@@ -2174,9 +2174,20 @@ fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
         // (cancelled)…") is the run it names, so
         // the trailing governor unwraps and governs
         // instead of the cancelled date serving.
+        // Round 41 (R41-E, F6): the peel set gains
+        // the rest of the R40-G sequence-tail set —
+        // "~", "*", "#", "-", "—" (U+2014) — which
+        // R40-G judged only at the leading slot, so
+        // a run closing the line in front of one
+        // ("November 8, 2026 (cancelled)~") was no
+        // run at all and its cancelled date served
+        // live; the spaced form ("(cancelled) ~")
+        // is a suffix token of the same set, taken
+        // with the standing separator tokens below.
         let peeled = text[..end]
             .trim_end_matches([
-                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}',
+                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
+                '*', '#', '-', '\u{2014}',
             ])
             .len();
         if peeled != end {
@@ -2188,7 +2199,11 @@ fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
             break;
         };
         let token = &core[ws + wc.len_utf8()..];
-        if !token.is_empty() && token.chars().all(|c| c == '*' || c == '|') {
+        if !token.is_empty()
+            && token
+                .chars()
+                .all(|c| matches!(c, '*' | '|' | '~' | '#' | '-' | '\u{2014}'))
+        {
             end = ws;
             continue;
         }
@@ -2606,11 +2621,21 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     // (Monday)(notes)…") is the sequence it names,
     // so its weekday groups are judged instead of
     // the date serving in silence.
+    // Round 41 (R41-E, F6): the peel set gains the
+    // rest of the R40-G sequence-tail set — "~",
+    // "*", "#", "-", "—" (U+2014) — as at
+    // `trailing_group_run`: a sequence closing the
+    // line in front of one ("November 1, 2026
+    // (Monday)(notes)~") is the sequence it names,
+    // and the spaced form ("(Monday)(notes) ~") is
+    // a suffix token of the same set, taken with
+    // the standing separator tokens below.
     let mut end = text.len();
     loop {
         let peeled = text[..end]
             .trim_end_matches([
-                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}',
+                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
+                '*', '#', '-', '\u{2014}',
             ])
             .len();
         if peeled != end {
@@ -2622,7 +2647,11 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
             break;
         };
         let token = &core[ws + wc.len_utf8()..];
-        if !token.is_empty() && token.chars().all(|c| c == '*' || c == '|') {
+        if !token.is_empty()
+            && token
+                .chars()
+                .all(|c| matches!(c, '*' | '|' | '~' | '#' | '-' | '\u{2014}'))
+        {
             end = ws;
             continue;
         }
@@ -4159,9 +4188,16 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
         // walks' peels do — a glued garnish followed
         // by one is peeled to here exactly as one
         // followed by ";" already is.
+        // Round 41 (R41-E, F6): the peel set gains
+        // the rest of the R40-G sequence-tail set —
+        // "~", "*", "#", "-", "—" (U+2014) — as the
+        // trailing walks' peels do, and a spaced
+        // suffix token of the set is taken with the
+        // standing separator tokens below.
         let peeled = text[..end]
             .trim_end_matches([
-                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2026}',
+                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2026}', '~', '*', '#',
+                '-', '\u{2014}',
             ])
             .len();
         if peeled != end {
@@ -4173,7 +4209,11 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
             break;
         };
         let token = &core[ws + wc.len_utf8()..];
-        if !token.is_empty() && token.chars().all(|c| c == '*' || c == '|') {
+        if !token.is_empty()
+            && token
+                .chars()
+                .all(|c| matches!(c, '*' | '|' | '~' | '#' | '-' | '\u{2014}'))
+        {
             end = ws;
             continue;
         }
@@ -4361,10 +4401,27 @@ pub(super) fn date_line_inner(
         // (Monday)…") is judged here as one wearing
         // ";" already is, instead of passing as
         // ordinary text and losing its record.
-        let word = tokens[i].trim_matches([
-            '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-            '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
-        ]);
+        // Round 41 (R41-E, F6): the trailing garnish
+        // is read through the rest of the R40-G
+        // sequence-tail set — "~", "*", "#", "-",
+        // "—" (U+2014) — shed at the word's tail
+        // only, between the two standing trims, so
+        // a garnish wearing one ("November 1, 2026
+        // Monday~", "November 1, 2026 (Monday)~")
+        // is judged here as one wearing the ellipsis
+        // already is, while a word merely standing
+        // behind one of the marks ("*Monday") keeps
+        // its standing glued reading.
+        let word = tokens[i]
+            .trim_matches([
+                '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
+            ])
+            .trim_end_matches(['~', '*', '#', '-', '\u{2014}'])
+            .trim_matches([
+                '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
+            ]);
         // Round 39 (R39-E, F7): the trailing garnish
         // word is read through `cleaned_weekday`, so
         // its interior sentence marks are shed as at
@@ -4373,10 +4430,22 @@ pub(super) fn date_line_inner(
         // R40-F) — "(Mon!day)" is judged here as the
         // bare "Mon!day" is.
         if let Some((named, named_number)) = cleaned_weekday(word) {
+            // Round 41 (R41-E, F6): a spaced suffix
+            // token of the sequence-tail set standing
+            // after the garnish word ("November 1,
+            // 2026 Monday ~") is the word's dress, as
+            // the glued suffix is — when every token
+            // after the word is such a token, those
+            // tokens leave the rest with the word, so
+            // the date the word names is read and the
+            // record stands instead of the line dying
+            // in silence on a token that is no part
+            // of the date.
+            let dressed_close = tokens[i + 1..].iter().all(|t| suffix_tail_token(t));
             let rest: Vec<&str> = tokens
                 .iter()
                 .enumerate()
-                .filter(|(j, _)| *j != i)
+                .filter(|(j, _)| *j != i && !(dressed_close && *j > i))
                 .map(|(_, t)| *t)
                 .collect();
             if let Some(date) = parse_flexible_date(&rest.join(" "), today) {

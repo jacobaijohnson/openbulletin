@@ -558,10 +558,27 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         // Monday…") is judged here as one wearing
         // ";" already is, instead of the line
         // serving its resolution with no record.
-        let word = tokens[i].trim_matches([
-            '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-            '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
-        ]);
+        // Round 41 (R41-E, F6): the base garnish is
+        // read through the rest of the R40-G
+        // sequence-tail set — "~", "*", "#", "-",
+        // "—" (U+2014) — shed at the word's tail
+        // only, between the two standing trims, as
+        // at the plain line's trailing slot, so a
+        // base garnish wearing one ("Sunday after
+        // November 1, 2026 Monday~") is judged here
+        // as one wearing the ellipsis already is,
+        // instead of serving the resolution with
+        // the record lost.
+        let word = tokens[i]
+            .trim_matches([
+                '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
+            ])
+            .trim_end_matches(['~', '*', '#', '-', '\u{2014}'])
+            .trim_matches([
+                '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}',
+            ]);
         // Round 39 (R39-E, F7): the base's trailing
         // garnish word is read through
         // `cleaned_weekday`, so its interior sentence
@@ -572,13 +589,25 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         // as its bare twin is.
         if let Some((named, named_number)) = cleaned_weekday(word) {
             trailing = Some((named, named_number));
-            if i + 1 == tokens.len() {
+            // Round 41 (R41-E, F6): a spaced suffix
+            // token of the sequence-tail set standing
+            // after the garnish ("Sunday after
+            // November 1, 2026 Monday ~") is the
+            // garnish's dress, as the glued suffix
+            // is — when every token after the garnish
+            // is such a token, the garnish closes the
+            // line and those tokens leave the core
+            // with it, so the base reads whole and
+            // the record stands instead of the line
+            // serving its resolution in silence.
+            let dressed_close = tokens[i + 1..].iter().all(|t| suffix_tail_token(t));
+            if dressed_close {
                 trailing_token = Some(tokens[i]);
             }
             core = tokens
                 .iter()
                 .enumerate()
-                .filter(|(j, _)| *j != i)
+                .filter(|(j, _)| *j != i && !(dressed_close && *j > i))
                 .map(|(_, t)| *t)
                 .collect();
         }
@@ -780,8 +809,15 @@ fn base_trailing_sequence_mismatch(
         // November 1, 2026 (Monday)(notes)…") is the
         // sequence it names, so its weekday groups
         // are judged against the base.
+        // Round 41 (R41-E, F6): the peel set gains
+        // the rest of the R40-G sequence-tail set —
+        // "~", "*", "#", "-", "—" (U+2014) — as at
+        // the plain trailing walk, and a spaced
+        // suffix token of the set is taken with the
+        // standing separator tokens below.
         let peeled = rest.trim_end().trim_end_matches([
-            '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}',
+            '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
+            '#', '-', '\u{2014}',
         ]);
         if peeled.len() != rest.len() {
             rest = peeled;
@@ -789,7 +825,10 @@ fn base_trailing_sequence_mismatch(
         }
         match rest.rsplit_once(char::is_whitespace) {
             Some((head, token))
-                if !token.is_empty() && token.chars().all(|c| c == '*' || c == '|') =>
+                if !token.is_empty()
+                    && token
+                        .chars()
+                        .all(|c| matches!(c, '*' | '|' | '~' | '#' | '-' | '\u{2014}')) =>
             {
                 rest = head;
             }
@@ -1904,6 +1943,24 @@ pub(super) fn cf_only_token(raw: &str) -> bool {
 /// `r33d_nothing_token_is_the_flexible_readers_predicate`.
 pub(super) fn nothing_token(raw: &str) -> bool {
     ob_model::nothing_token(raw)
+}
+
+/// Whether a token is nothing but R40-G sequence-tail
+/// suffix marks ("~", "*", "#", "-", "—" U+2014): a
+/// spaced suffix standing after a judged trailing word
+/// or group is that word's dress, not line content
+/// (round 41, R41-E, F6 — the spaced form " ~" disarmed
+/// the trailing judgments as the glued form did). A
+/// standalone "~" is NOT a nothing token (see
+/// `nothing_token`) and keeps its standing boundary
+/// readings everywhere else; this predicate is read
+/// only by the trailing-slot arms that judge the word
+/// the suffix follows.
+pub(super) fn suffix_tail_token(raw: &str) -> bool {
+    !raw.is_empty()
+        && raw
+            .chars()
+            .all(|c| matches!(c, '~' | '*' | '#' | '-' | '\u{2014}'))
 }
 
 /// One group token with its wrapping punctuation off,

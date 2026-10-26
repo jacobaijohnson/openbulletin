@@ -672,3 +672,151 @@ bar is judged on round 43's audit of the closed
 tree; the Tier-2 final gate is not triggered
 (0/5/5) and is not the coordinator's to start in
 any case.
+
+## Coordinator close (successor coordinator, 2026-10-26)
+
+**Round 42 is closed.** All ten findings were fixed
+or dispositioned in six batches R42-A..R42-F; the
+fuzz hard term held at the standing baselines at
+every batch except the two adjudicated-visible
+re-baselines ruled below. Final code tree
+**`ae4064e`** (R42-F `c80f8ab` plus its fmt-only
+fix); suite **1208 passed / 0 failed**.
+
+| Batch | Tip | Disposition | Hosted CI |
+|---|---|---|---|
+| R42-A | `516719c` | F3 + F4 (quoted re-dress reach) | 40292943149 ×3 ✓, runner 40292943151 ✓ |
+| R42-B | `033dab4` | F5 (company edges) | 40306142282 ×3 ✓, runner 40306142363 ✓ |
+| R42-C | `1c1f859` | F6 (suffix at mid-line / inter-group) | 40320416840 ×3 ✓, runner 40320416865 ✓ |
+| R42-D | `45bf9d8` | F7 + F8 + F10 (trailing seats) | 40335709791 ×3 ✓, runner 40335709842 ✓ |
+| R42-E | `9ee2a1e` | F1 fixed; F2 attempted, carries | 40347862874 ×3 ✓, runner 40347862749 ✓ |
+| R42-F | `c80f8ab` + `ae4064e` | F9 (en dash, scoped) | 40376138733 ×3 ✓, runner 40376138966 ✓ |
+
+**Fuzz re-baselines of record (coordinator rulings,
+R34-E precedent):** R42-B moved the composition
+stdout `5868726a…` → `85965c04…` (single counter
+`for_none_keep_some` 2514 → 2643, the adjudicated
+reading made visible; ruling `r42b-ruling.md`), and
+R42-D moved it `85965c04…` → `e8b2e73b…` (single
+counter `soup:for_none_keep_some` 532 → 534, F10's
+adjudicated reading; ruling `r42d-ruling.md`).
+Totals and panics unchanged at both steps; the
+superseded baselines are preserved in the rulings.
+The CURRENT standing baselines are verdict
+`79775844…` / composition `e8b2e73b…`.
+
+**F2's disposition stands as adjudicated:** the
+narrowing of the rename step's own window was
+attempted in full inside R42-E (both shapes
+recorded in `r42e-record.md`, each with its own
+harm window), no clean shape landed, and F2
+carries to round 43 at the red team's witnessed
+1/400 in each of two runs, the displaced record
+surviving for the audit pass.
+
+**Five-leg close evidence on the final tree
+`ae4064e`:**
+
+1. Local cold, from the close-verify run's disk
+   logs (`round42-out/coord/close/`): `cargo clean`
+   (10.2 GiB), cold suite **1208/0** (TEST_EXIT=0),
+   CLIPPY_EXIT=0, FMT_EXIT=0; booklet 31,717 /
+   34,977 byte-exact (pin inside the suite).
+2. Fuzz as claims, the same close run, cold from
+   the final tree's code: bin sources at the
+   recorded md5s (`a9cac6c3…` / `4f85c605…`);
+   verdict stdout md5 `797758443d101f9339fdd778e14af430`
+   byte-identical, total_lines=40000, panics=0;
+   composition stdout md5 `e8b2e73b117c7013d867419da8fb0ab7`
+   byte-identical to the current baseline,
+   D_TOTAL=497024, D_PANICS=0; rights counters
+   5083 / 1024 / 5275 with safety_flips=0 on every
+   route — M8 held for the twenty-third
+   consecutive round. All four bins EXIT=0, stderr
+   empty.
+3. Hosted CI **40376138733** ✓ — ubuntu / windows /
+   macos all success.
+4. Desktop Runner Build **40376138966** ✓.
+5. Windows bundle **40379815977** ✓ (Gate +
+   bundle), dispatched at close.
+
+**CI incident of the round (closed):** R42-F's
+first commit `c80f8ab` failed hosted CI at the
+Format check on all three OS legs (and the
+Desktop Runner Build) — one unformatted hunk left
+by a post-fmt helper correction in the
+`r42f_bare_record_lost` helper. The fmt-only fix
+`ae4064e` (whitespace only; the batch's pins
+re-run green on the formatted tree) is green on
+every leg. Disclosed in `r42f-record.md`; no tip
+was called verified on local evidence alone, per
+the standing consequence of the R39-B incident.
+
+**Completion incident (of record):** the round's
+first coordinator errored mid-close, after
+launching the detached close-verify script and
+the Windows bundle dispatch. The successor
+coordinator established liveness and purpose
+before acting (process scan + mtime freshness +
+the script and its logs): the cold suite / clippy
+/ fmt legs were already complete on disk, and the
+fuzz leg's release build was still alive in
+`probe29v/target`, parented away from any live
+agent. It was left to finish; its outputs were
+judged from disk (leg 2 above). No duplicate
+verification was started against the same
+directories, and nothing was killed on suspicion.
+
+**Build-cache disposition:** confirmed completion
+Mon 2026-10-26 ~12:36 PDT; final reading 82% used
+/ 19G free (daytime window, 94% line); the round's
+recorded readings ran 80–82%, with no reading at
+or above the overnight 87% line at any confirmed
+completion and no latch armed. **CARRY.**
+
+**Boundary hygiene:** the lanes' round-42 working
+dirs stand in `round42-out/` with their records;
+`probe29v` is retained as the standing fuzz home
+at its recorded bin md5s; reports, syntheses,
+status notes, and fuzz records are kept as filed.
+No registry prune.
+
+**HF-12:** decided (Jacob, 2026-10-25) — typed
+core, plain words at the boundary, gradual from
+the import layer. Not a batch of this round; the
+first slice (ob-extract's open doors, per the
+review lane's readiness map) remains queued for
+the coordinator seat's between-rounds
+confirmation. Cited as decided, never as held.
+
+**Exit bar NOT met** — the round-42 audit was
+0 BLOCKER / 5 MAJOR / 5 MINOR. Majors trend:
+… → 8 → 8 → 5 → 5. The bar is judged on round
+43's audit of this closed tree. The Tier-2 Opus
++ GPT final gate is not triggered and is not the
+coordinator's to start.
+
+**Carried into round 43 (named targets):**
+(a) F2's residual rename-step window at the
+witnessed 1/400 (adjudication 6 disposition;
+R42-E's full attempt of record);
+(b) the witness-only straight closer at the
+base-trailing inter-group seat (R42-B deviation
+(c) / R42-C record) — still serves the resolution;
+(c) `nested_seq_mix`: a dedicated quiet-window
+measurement, and the standing question whether it
+earns an interleaved ratio pin of its own;
+(d) F9's re-grade trigger (adjudication 7): a
+witnessed typist-produced sibling of a judged
+mark, outside the set, splitting in the unsafe
+direction;
+(e) the standing records held whole: peeled-tail
+residual (cure = a peel-depth change),
+split-position governor uniformity, lock
+leading-newline pid spelling, and the
+recycled-pid residual (`peer_provably_gone` on
+`PeerLiveness::Dead` alone);
+(f) the R40-C calibration note, honest as
+recorded;
+(g) the HF-12 first slice, queued for the seat's
+between-rounds confirmation.

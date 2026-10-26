@@ -492,3 +492,156 @@ hygiene. HF-12 untouched. The exit bar is judged on
 round 42's audit of the closed tree; the Tier-2
 final gate is not triggered (0/5/2) and is not the
 coordinator's to start in any case.
+
+---
+
+## Coordinator close (successor coordinator, 2026-10-25/26)
+
+**Round 41 is closed.** All seven findings were fixed or
+dispositioned in six batches, R41-A..R41-F, on final code
+tree **`6dce513`** (R41-F). Suite 1156 → **1179 passed /
+0 failed** (+23 pins). The fuzz hard term stood
+byte-identical at every batch and at the close.
+
+| Batch | Tip | Finding | Hosted CI (×3 OS) | Runner |
+|---|---|---|---|---|
+| R41-A | `a71df58` | F1+F2 archive, fifth generation | 40234903169 ✓ | 40234903198 ✓ |
+| R41-B | `44d52f4` | F3 mid-line company doctrine | 40241652618 ✓ | 40241652623 ✓ |
+| R41-C | `d286a86` | F4 framing-word quoted dates | 40246996845 ✓ | 40246996860 ✓ |
+| R41-D | `ea52ba4` | F5 alone quoted dates | 40253454142 ✓ | 40253454141 ✓ |
+| R41-E | `c309591` | F6 suffix set at trailing slots | 40263953354 ✓ | 40263953360 ✓ |
+| R41-F | `6dce513` | F7 lock window — WITNESSED, fixed | 40271652341 ✓ | 40271652302 ✓ |
+
+Doctrine and rulings landed: F3 EXTEND, scoped
+(adjudication 1, in R41-B); the interior-`.` arm closed
+by ruling (adjudication 3 — interior `.` is a sentence
+separator / inert-contents boundary; no batch); F5
+graded MAJOR (adjudication 2, in R41-D); F7's fix landed
+only on its witness (adjudication 4, in R41-F — the
+in-tree-seam attempt reproduced the extraction's final
+state through the production functions, and the rename
+step now judges the displaced path at the last moment
+before its deletion). The R40-A `prefix_free` deviation
+stands accepted (adjudication 5; re-audited sound by
+review, claim-checked by verify).
+
+**Restated pins (flagged in their commits and records;
+no other standing pin weakened):** R41-B restated the
+named mid-line-company arms of three standing pins
+(`r40e_leading_governor_company_controls_unmoved`,
+`r39h_wrapped_governor_governs_as_its_bare_twin_at_the_trailing_and_midline_slots`,
+`r39h2_impure_single_group_governs_as_its_bare_twin_at_the_judged_slots`)
+per adjudication 1. R41-D restated exactly the
+leading-alone and trailing-alone arms of
+`r41c_framing_fix_scope_controls_unmoved`, which had
+stated the defective readings expressly as F5's
+territory. R41-F restated none (four standing call
+sites mechanically gained the claimant pid/token the
+rename step now judges by; no assertion changed).
+
+**Five-leg close evidence on the final tree `6dce513`:**
+1. Local cold (R41-F's clean-tree cold run from the
+   pushed tree, disk-logged in `round41-out/coord/f/`):
+   suite **1179/0**, clippy `-D warnings` exit 0,
+   fmt `--check` exit 0; the booklet pin
+   (31,717 / 34,977 byte-exact) passes inside.
+2. Fuzz as claims, coordinator's own close run
+   (`round41-out/coord/close-fuzz-*`): sources
+   md5-verified standing; all four bins EXIT=0,
+   stderrs 0 bytes, stdouts byte-identical — verdict
+   40,000 lines / 0 panics at `79775844…`, composition
+   497,024 / 0 at `5868726a…`, rights 5083 / 1024 /
+   5275, safety_flips=0. M8's rights safety axes held
+   for the twenty-first consecutive round at the
+   audit and stand at the close.
+3. Hosted CI **40271652341**: ubuntu ✓ windows ✓
+   macos ✓ (jobs checked individually).
+4. Desktop Runner Build **40271652302** ✓.
+5. Windows bundle **40274621843** ✓ (Gate + bundle),
+   dispatched at close.
+
+**HF-12 — DECIDED (Jacob, Sun 2026-10-25 21:48 PDT).**
+The held error-architecture item is decided: typed
+core errors with plain-words rendering at the user
+boundary, introduced gradually, crate by crate,
+starting at the import/library layer — typed where
+failure kinds matter, `Result<_, String>` left alone
+elsewhere, no big-bang migration, and no user-visible
+message changes. HF-12 is no longer a held item;
+future briefs cite it as decided 2026-10-25. The
+ruling does not displace the audit/fix sequence; the
+migration is a queued direction for round 42's
+planning (a scoped first step at the import layer is
+the expected opening move when the loop schedules it
+deliberately). No migration batch was started in this
+round. (Filed at `round41-out/coord/hf12-decision-2026-10-25.md`.)
+
+**Completion incidents (of record):** the round's
+first coordinator ended mid-R41-C (commit pushed,
+record a stub, cold legs half-launched); a successor
+coordinator judged R41-C's evidence from disk, found
+it sound, completed its cold legs, and finished the
+record — discovering en route that the predecessor had
+left a detached cold-suite run alive, which the
+successor's own duplicate briefly contended with
+(killed within ~2 minutes on discovery; the surviving
+run's verdict cross-checked; lesson: handover scans
+must look for detached cargo runs, not only writer
+agents). R41-D's session hit the environment's
+truncated-disk-log failure (every verdict
+re-evidenced via detached scripts; hosted CI
+independently covers the suite) and one contention
+flake of the r40b ratio pin under load ~9 (passed
+solo, on the base tree, and on all three CI legs; no
+bound widened; its record's cold totals are partial
+and say so). The R41-E writer was killed by a runtime
+restart drain at the final leg; its record's
+cold-fuzz sentence was ahead of its disk evidence,
+and the successor completed the cold fuzz from the
+pushed tree (byte-identical) with a completion note
+appended to `r41e-record.md`. No verdict in this
+round rests on a phantom completion notice.
+
+**Carried into round 42 (named targets):**
+(a) the `nested_seq_mix` ratio — the noisiest line in
+the round-41 perf sweep, flagged as an observation;
+(b) R41-E's scope observation: the governor-LAST
+order of a trailing sequence (`(notes)(cancelled)`
+wearing a suffix) serves under every suffix including
+the ellipsis control — a different reader's standing
+gap, reached by the widened peels for `*`, `-`, `—`
+only (`~` and `#` stand as on the base tree);
+unpinned, not moved;
+(c) the peeled-tail residual (R38-F with its
+round-40 extensions) — stands as recorded, cure
+unchanged (a peel-depth change);
+(d) the standing records: split-position governor
+uniformity, the lock leading-newline pid spelling,
+and the recycled-pid residual — all standing as
+recorded;
+(e) R40-C's sequence-pin calibration note (the two
+sequence pins ship as steepness ceilings) — stands;
+(f) the HF-12 migration as a queued direction per
+Jacob's ruling above — scheduled deliberately, not
+mid-round, with a scoped import-layer first step as
+the expected opening move.
+
+**Build-cache disposition at this confirmed
+completion** (charter policy): final reading Sun
+2026-10-25 22:51 PDT (daytime window): **80% used /
+21G free**. The round's readings ran 74–81%; no
+confirmed completion read at/above the overnight 87%
+or daytime 94% line, and no over-limit reading
+latched at any point. Disposition: **CARRY** — the
+target dir carries into round 42. Boundary hygiene:
+batch scratch under `round41-out/coord/{a,b,c,d,e,f}`
+plus the coordinator's close-fuzz logs stand as the
+round's evidence; registry untouched; no probe dirs
+created in the repo tree this round.
+
+**Exit bar: NOT met by round 41's audit** (0 BLOCKER
+/ 5 MAJOR / 2 MINOR — every finding fixed or
+dispositioned above), so the bar is judged on round
+42's audit of this closed tree. The Tier-2 Opus +
+GPT final gate is not triggered and is not the
+coordinator's to start in any case.

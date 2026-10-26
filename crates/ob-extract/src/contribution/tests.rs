@@ -35060,3 +35060,636 @@ fn r41d_alone_fix_scope_controls_unmoved() {
     let c = parse_contribution(text, today()).expect("parses");
     assert_eq!(c.keep_through, Some(nov(8)));
 }
+
+// Round 42 (R42-A, F3 MAJOR = red team RT42-Q1 +
+// review F-R42-1, merged per round-42 adjudication
+// 1; F4 MINOR = red team RT42-Q2): the quoted-group
+// re-dress consultations still missed positions
+// where the composition judges a bracket group.
+// (a) Framing stacks past the consulted widths:
+// `quoted_group_at_framing_position` capped the
+// framing stack at one or two words and stated the
+// framing-before-split arm for exactly one word,
+// while the whole-line composition judges bracket
+// groups at every stack width probed (three, four,
+// five, and six words, numbered stacks, month-word
+// stacks — the weekday-word stack is the one stack
+// the composition does not judge in this reading,
+// and it stays excluded). (b) Plain-line interior
+// positions: a quoted date group on an ordinary
+// date line was adopted at every interior position
+// where its bracket twins are judged, and beside a
+// governor group the split persisted in both
+// directions. (c) Quoted company members: a lone
+// quoted governor or weekday is judged as its paren
+// twin (held), but a company collapsed when a
+// member wore quotes. (d) Doubled quote forms at
+// the alone positions lost the R41-D memory
+// entirely. The pins below were witnessed FAILING
+// on the base tree (see the batch record for the
+// counts); every standing quoted-group pin stands
+// unweakened, and no scope control is restated by
+// this batch — no adjudicated arm of F3/F4 names
+// one.
+
+#[test]
+fn r42a_framing_stacks_past_two_words_take_the_paren_twin_reading() {
+    let quote_pairs: [(&str, &str); 3] = [("\"", "\""), ("\u{201c}", "\u{201d}"), ("'", "'")];
+    // Stacks of three and four words (the lanes'
+    // families: `the choir rehearsal`, `the choir
+    // hall`, `on the the`, `the on the`, the
+    // four-word stack), a five-word stack the
+    // coordinator's probe found the composition
+    // judging in the same reading, and month-word
+    // stacks, which the composition judges in this
+    // reading at width one and two alike.
+    let stacks = [
+        "the choir rehearsal",
+        "the choir hall",
+        "on the the",
+        "the on the",
+        "the choir rehearsal hall",
+        "the choir rehearsal hall stage",
+        "the November",
+        "November",
+    ];
+    for (open, close) in quote_pairs {
+        for stack in stacks {
+            let quoted =
+                format!("Sunday after {stack} {open}November 8, 2026{close} November 1, 2026");
+            let paren = format!("Sunday after {stack} (November 8, 2026) November 1, 2026");
+            r34e_for_twin(&quoted, &paren);
+            r34e_keep_twin(&quoted, &paren);
+        }
+    }
+    // The bracket twins, straight quotes.
+    for stack in ["the choir rehearsal", "the choir rehearsal hall"] {
+        let quoted = format!("Sunday after {stack} \"November 8, 2026\" November 1, 2026");
+        let bracket = format!("Sunday after {stack} [November 8, 2026] November 1, 2026");
+        r34e_for_twin(&quoted, &bracket);
+        r34e_keep_twin(&quoted, &bracket);
+    }
+    // The headline reading, stated outright: the
+    // base serves WITH the mismatch record, both
+    // routes, no second date (on the base tree the
+    // quoted form adopted the group's date and
+    // demoted the base to a second-date note).
+    let text = "For Sunday: Sunday after the choir rehearsal \"November 8, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "the base is served");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the quoted group is recorded against the base");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after the choir rehearsal \"November 8, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)), "the base keeps");
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the quoted group is recorded on the keep line");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    assert_eq!(c.keep_through_second_dates, Vec::<SimpleDate>::new());
+    // The agreeing form at a widened stack: the
+    // base serves silently in every dress.
+    for (open, close) in quote_pairs {
+        let quoted = format!(
+            "Sunday after the choir rehearsal {open}November 1, 2026{close} November 1, 2026"
+        );
+        let paren =
+            "Sunday after the choir rehearsal (November 1, 2026) November 1, 2026".to_string();
+        r34e_for_twin(&quoted, &paren);
+        r34e_keep_twin(&quoted, &paren);
+    }
+}
+
+#[test]
+fn r42a_framing_numbered_stack_takes_the_paren_twin_reading() {
+    // A stack holding a number token: on the base
+    // tree `Sunday after the 3 "November 8, 2026"
+    // November 1, 2026` served 2026-11-03 — the "3"
+    // read as a day — where the twins serve the
+    // base with the record.
+    let quote_pairs: [(&str, &str); 3] = [("\"", "\""), ("\u{201c}", "\u{201d}"), ("'", "'")];
+    for (open, close) in quote_pairs {
+        for stack in ["the 3", "3", "the 3 choir", "3 4"] {
+            let quoted =
+                format!("Sunday after {stack} {open}November 8, 2026{close} November 1, 2026");
+            let paren = format!("Sunday after {stack} (November 8, 2026) November 1, 2026");
+            r34e_for_twin(&quoted, &paren);
+            r34e_keep_twin(&quoted, &paren);
+        }
+    }
+    let quoted = "Sunday after the 3 \"November 8, 2026\" November 1, 2026".to_string();
+    let bracket = "Sunday after the 3 [November 8, 2026] November 1, 2026".to_string();
+    r34e_for_twin(&quoted, &bracket);
+    r34e_keep_twin(&quoted, &bracket);
+    // Stated outright: the base serves with the
+    // record; the stack's number is no day.
+    let text = "For Sunday: Sunday after the 3 \"November 8, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date,
+        Some(nov(1)),
+        "the base is served, not the stack's day"
+    );
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the quoted group is recorded against the base");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday after the 3 \"November 8, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)), "the base keeps");
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the quoted group is recorded on the keep line");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+}
+
+#[test]
+fn r42a_framing_glued_at_a_widened_stack_takes_the_paren_twin_reading() {
+    // The glued arms at a three-word stack: on the
+    // base tree the form glued against the framing
+    // word read silent None where its glued paren
+    // twin serves the base with the record.
+    let quote_pairs: [(&str, &str); 3] = [("\"", "\""), ("\u{201c}", "\u{201d}"), ("'", "'")];
+    for (open, close) in quote_pairs {
+        // Glued against the framing word.
+        let quoted =
+            format!("Sunday after the choir hall{open}November 8, 2026{close} November 1, 2026");
+        let paren = "Sunday after the choir hall(November 8, 2026) November 1, 2026".to_string();
+        r34e_for_twin(&quoted, &paren);
+        r34e_keep_twin(&quoted, &paren);
+        // Glued against the base.
+        let quoted =
+            format!("Sunday after the choir hall {open}November 8, 2026{close}November 1, 2026");
+        let paren = "Sunday after the choir hall (November 8, 2026)November 1, 2026".to_string();
+        r34e_for_twin(&quoted, &paren);
+        r34e_keep_twin(&quoted, &paren);
+    }
+}
+
+#[test]
+fn r42a_framing_before_split_stacks_take_the_paren_twin_record() {
+    // The framing-before-split arm one word wider
+    // than R41-C consulted, and every wider stack
+    // the composition judges: on the base tree the
+    // outcomes stood at parity (the resolution
+    // served) but the quoted form carried
+    // second-date notes only where the twins carry
+    // the mismatch record — and at stacks whose
+    // first word is no framing word the quoted form
+    // adopted the group's date outright.
+    let quote_pairs: [(&str, &str); 3] = [("\"", "\""), ("\u{201c}", "\u{201d}"), ("'", "'")];
+    let stacks = [
+        "the choir",
+        "on choir",
+        "the the",
+        "the choir hall",
+        "the choir hall stage",
+        "choir",
+        "choir hall",
+        "the 3",
+        "the November",
+        "next",
+        "Monday",
+    ];
+    for (open, close) in quote_pairs {
+        for stack in stacks {
+            let quoted =
+                format!("Sunday {stack} {open}November 8, 2026{close} after November 1, 2026");
+            let paren = format!("Sunday {stack} (November 8, 2026) after November 1, 2026");
+            r34e_for_twin(&quoted, &paren);
+            r34e_keep_twin(&quoted, &paren);
+        }
+    }
+    let quoted = "Sunday the choir \"November 8, 2026\" after November 1, 2026".to_string();
+    let bracket = "Sunday the choir [November 8, 2026] after November 1, 2026".to_string();
+    r34e_for_twin(&quoted, &bracket);
+    r34e_keep_twin(&quoted, &bracket);
+    // Stated outright, the framing-first arm: the
+    // twin's resolution, the twin's record, the
+    // twin's second-date note, both routes.
+    let text = "For Sunday: Sunday the choir \"November 8, 2026\" after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(oct(18)), "the twin's date serves");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the quoted group carries the twin's mismatch record");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, oct(18));
+    assert_eq!(c.for_sunday_second_dates, vec![nov(1)]);
+    let text = "For Sunday: November 1, 2026\nKeep-through: Sunday the choir \"November 8, 2026\" after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(oct(18)), "the twin's date keeps");
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the quoted group carries the twin's record on the keep line");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, oct(18));
+    assert_eq!(c.keep_through_second_dates, vec![nov(1)]);
+    // Stated outright, the ordinary-first arm: the
+    // base serves with the record and no second
+    // date, where the quoted form adopted the
+    // group's date on the base tree.
+    let text = "For Sunday: Sunday choir \"November 8, 2026\" after November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "the base serves");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the quoted group is recorded against the base");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+}
+
+#[test]
+fn r42a_interior_quoted_date_group_on_a_plain_line_takes_its_bracket_twin_reading() {
+    // The plain-line interior positions (RT42-Q1
+    // arm (b)): on an ordinary date line the quoted
+    // group was adopted at every interior position
+    // where its bracket twins are judged — the
+    // twins serve the plain date with the record.
+    let quote_pairs: [(&str, &str); 3] = [("\"", "\""), ("\u{201c}", "\u{201d}"), ("'", "'")];
+    for (open, close) in quote_pairs {
+        for (quoted, paren) in [
+            (
+                format!("notes {open}November 8, 2026{close} November 1, 2026"),
+                "notes (November 8, 2026) November 1, 2026".to_string(),
+            ),
+            (
+                format!("{open}November 8, 2026{close} November 1, 2026"),
+                "(November 8, 2026) November 1, 2026".to_string(),
+            ),
+            (
+                format!("notes {open}November 8, 2026{close} rehearsal November 1, 2026"),
+                "notes (November 8, 2026) rehearsal November 1, 2026".to_string(),
+            ),
+            (
+                format!("November 1, 2026 {open}November 8, 2026{close}"),
+                "November 1, 2026 (November 8, 2026)".to_string(),
+            ),
+            // The short form at the mid position.
+            (
+                format!("notes {open}Nov 8, 2026{close} November 1, 2026"),
+                "notes (Nov 8, 2026) November 1, 2026".to_string(),
+            ),
+        ] {
+            r34e_for_twin(&quoted, &paren);
+            r34e_keep_twin(&quoted, &paren);
+        }
+    }
+    // The bracket twins, straight quotes, every
+    // witnessed position.
+    for (quoted, bracket) in [
+        (
+            "notes \"November 8, 2026\" November 1, 2026",
+            "notes [November 8, 2026] November 1, 2026",
+        ),
+        (
+            "\"November 8, 2026\" November 1, 2026",
+            "[November 8, 2026] November 1, 2026",
+        ),
+        (
+            "notes \"November 8, 2026\" rehearsal November 1, 2026",
+            "notes [November 8, 2026] rehearsal November 1, 2026",
+        ),
+        (
+            "November 1, 2026 \"November 8, 2026\"",
+            "November 1, 2026 [November 8, 2026]",
+        ),
+    ] {
+        r34e_for_twin(quoted, bracket);
+        r34e_keep_twin(quoted, bracket);
+    }
+    // Stated outright at the mid position: the
+    // plain date serves WITH the record, both
+    // routes, no second date (the base tree adopted
+    // the group's date on the For route and kept
+    // through it on the Keep route).
+    let text =
+        "For Sunday: notes \"November 8, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "the plain date serves");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the quoted group is recorded against the plain date");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    let text = "For Sunday: November 1, 2026\nKeep-through: notes \"November 8, 2026\" November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, Some(nov(1)), "the plain date keeps");
+    let m = c
+        .keep_through_parenthesized_mismatch
+        .expect("the quoted group is recorded on the keep line");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    assert_eq!(c.keep_through_second_dates, Vec::<SimpleDate>::new());
+    // Stated outright at the trailing position: the
+    // record stands where the base tree demoted the
+    // quoted date to a second-date note with none.
+    let text = "For Sunday: November 1, 2026 \"November 8, 2026\"\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, Some(nov(1)), "the plain date serves");
+    let m = c
+        .for_sunday_parenthesized_mismatch
+        .expect("the quoted group is recorded against the plain date");
+    assert_eq!(m.named, nov(8));
+    assert_eq!(m.read, nov(1));
+    assert_eq!(c.for_sunday_second_dates, Vec::<SimpleDate>::new());
+    // The agreeing interior group: the plain date
+    // serves silently in every dress.
+    let quoted = "notes \"November 1, 2026\" November 1, 2026".to_string();
+    let paren = "notes (November 1, 2026) November 1, 2026".to_string();
+    r34e_for_twin(&quoted, &paren);
+    r34e_keep_twin(&quoted, &paren);
+}
+
+#[test]
+fn r42a_interior_quoted_date_group_beside_a_governor_group_takes_its_bracket_twin_reading() {
+    // With a governor group adjacent the split
+    // persisted in both directions on the base
+    // tree: `notes (cancelled) "Nov 8" Nov 1` served
+    // the plain date with the group's date demoted
+    // to a second-date note, and `"Nov 8"
+    // (cancelled) Nov 1` was silently forgotten —
+    // where the paren twins serve the group's date
+    // with the plain date noted.
+    let quote_pairs: [(&str, &str); 3] = [("\"", "\""), ("\u{201c}", "\u{201d}"), ("'", "'")];
+    for (open, close) in quote_pairs {
+        for (quoted, paren) in [
+            (
+                format!("notes (cancelled) {open}November 8, 2026{close} November 1, 2026"),
+                "notes (cancelled) (November 8, 2026) November 1, 2026".to_string(),
+            ),
+            (
+                format!("{open}November 8, 2026{close} (cancelled) November 1, 2026"),
+                "(November 8, 2026) (cancelled) November 1, 2026".to_string(),
+            ),
+        ] {
+            r34e_for_twin(&quoted, &paren);
+            r34e_keep_twin(&quoted, &paren);
+        }
+    }
+    for (quoted, bracket) in [
+        (
+            "notes (cancelled) \"November 8, 2026\" November 1, 2026",
+            "notes (cancelled) [November 8, 2026] November 1, 2026",
+        ),
+        (
+            "\"November 8, 2026\" (cancelled) November 1, 2026",
+            "[November 8, 2026] (cancelled) November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(quoted, bracket);
+        r34e_keep_twin(quoted, bracket);
+    }
+    // Stated outright, both directions: the group's
+    // date serves and the plain date is noted, both
+    // routes, no mismatch record.
+    for line in [
+        "notes (cancelled) \"November 8, 2026\" November 1, 2026",
+        "\"November 8, 2026\" (cancelled) November 1, 2026",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, Some(nov(8)), "{line}: the group's date serves");
+        assert_eq!(c.for_sunday_parenthesized_mismatch, None, "{line}");
+        assert_eq!(c.for_sunday_second_dates, vec![nov(1)], "{line}");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{line}: the group's date keeps"
+        );
+        assert_eq!(c.keep_through_parenthesized_mismatch, None, "{line}");
+        assert_eq!(c.keep_through_second_dates, vec![nov(1)], "{line}");
+    }
+}
+
+#[test]
+fn r42a_quoted_company_members_take_the_all_paren_company_reading() {
+    // The quoted-company family (RT42-Q1 arm (c)):
+    // a member wearing quotes collapsed the company
+    // to a silent serve where the all-paren company
+    // governs with the weekday record. Both orders,
+    // both dresses, head and mid-line. The mid-line
+    // quoted-weekday arm (`notes (cancelled)
+    // "Monday" ...`) already composes on the base
+    // tree via the bare-weekday path and stands
+    // here as the family's held arm — it does not
+    // move.
+    let paren_mid = "notes (cancelled)(Monday) November 1, 2026".to_string();
+    let paren_head = "(cancelled)(Monday) November 1, 2026".to_string();
+    for (quoted, paren) in [
+        // Governor quoted, mid-line and head.
+        (
+            "notes \"cancelled\" (Monday) November 1, 2026",
+            paren_mid.as_str(),
+        ),
+        (
+            "\"cancelled\" (Monday) November 1, 2026",
+            paren_head.as_str(),
+        ),
+        // Weekday quoted, head (the mid-line arm is
+        // the held one below).
+        (
+            "(cancelled) \"Monday\" November 1, 2026",
+            paren_head.as_str(),
+        ),
+        // Both members quoted, mid-line and head.
+        (
+            "notes \"cancelled\" \"Monday\" November 1, 2026",
+            paren_mid.as_str(),
+        ),
+        (
+            "\"cancelled\" \"Monday\" November 1, 2026",
+            paren_head.as_str(),
+        ),
+        // Weekday-first order, governor quoted.
+        (
+            "notes (Monday) \"cancelled\" November 1, 2026",
+            "notes (Monday)(cancelled) November 1, 2026",
+        ),
+        // Curly and single dresses of the quoted
+        // governor, mid-line.
+        (
+            "notes \u{201c}cancelled\u{201d} (Monday) November 1, 2026",
+            paren_mid.as_str(),
+        ),
+        (
+            "notes 'cancelled' (Monday) November 1, 2026",
+            paren_mid.as_str(),
+        ),
+        // The agreeing company in quoted dress
+        // governs silently, as its twin does.
+        (
+            "notes \"cancelled\" (Sunday) November 1, 2026",
+            "notes (cancelled)(Sunday) November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(quoted, paren);
+        r34e_keep_twin(quoted, paren);
+    }
+    // The bracket company as twin: the quoted
+    // governor takes the bracket company's reading
+    // exactly as it takes the paren one.
+    r34e_for_twin(
+        "notes \"cancelled\" (Monday) November 1, 2026",
+        "notes [cancelled] (Monday) November 1, 2026",
+    );
+    r34e_keep_twin(
+        "notes \"cancelled\" (Monday) November 1, 2026",
+        "notes [cancelled] (Monday) November 1, 2026",
+    );
+    // The held arm, stated as a control inside this
+    // pin: the mid-line quoted weekday already
+    // composes on the base tree and does not move.
+    r34e_for_twin(
+        "notes (cancelled) \"Monday\" November 1, 2026",
+        "notes (cancelled)(Monday) November 1, 2026",
+    );
+    r34e_keep_twin(
+        "notes (cancelled) \"Monday\" November 1, 2026",
+        "notes (cancelled)(Monday) November 1, 2026",
+    );
+    // Stated outright on the headline arm: the
+    // company governs and the weekday records, both
+    // routes (the base tree served the date
+    // silently).
+    let text =
+        "For Sunday: notes \"cancelled\" (Monday) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the company governs");
+    let m = c
+        .named_weekday_mismatch
+        .expect("the company's weekday records");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, nov(1));
+    let text = "For Sunday: November 1, 2026\nKeep-through: notes \"cancelled\" (Monday) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "the company governs on the keep line");
+    let m = c
+        .keep_through_weekday_mismatch
+        .expect("the company's weekday records on the keep line");
+    assert_eq!(m.named, "Monday");
+    assert_eq!(m.date, nov(1));
+    // Stated outright on the agreeing arm: governed
+    // silently, no record, both routes.
+    let text =
+        "For Sunday: notes \"cancelled\" (Sunday) November 1, 2026\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "the agreeing company governs");
+    assert_eq!(c.named_weekday_mismatch, None);
+}
+
+#[test]
+fn r42a_doubled_quoted_alone_group_takes_the_single_quote_reading() {
+    // F4 (RT42-Q2): the doubled quote forms at the
+    // alone positions read None with no memory and
+    // no keep-through on the base tree, where the
+    // single-quoted forms take the bracket twins'
+    // reading. The memory fields and the
+    // keep-through are stated outright here because
+    // the in-words memory is the line AS WRITTEN —
+    // doubled dress and all (the R36-D rule) — so a
+    // wrapper-normalized twin comparison cannot
+    // state it. The mixed-pair arm at the end is a
+    // control: mixed pairs were already remembered
+    // on the base tree and do not move.
+    let doubled_forms: [(&str, &str); 3] = [
+        ("\"\"November 8, 2026\"\"", "\"November 8, 2026\""),
+        (
+            "\u{201c}\u{201c}November 8, 2026\u{201d}\u{201d}",
+            "\u{201c}November 8, 2026\u{201d}",
+        ),
+        ("''November 8, 2026''", "'November 8, 2026'"),
+    ];
+    for (doubled, single) in doubled_forms {
+        // Leading-alone, both routes.
+        let line = format!("{doubled} next Sunday");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date is served");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(line.as_str()),
+            "{line}: the phrase is remembered as written"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{line}: the group is remembered"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{line}: the keep-through is the group's date, as the single-quote twin's is"
+        );
+        // Trailing-alone, both routes.
+        let line = format!("next Sunday {doubled}");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: no date is served");
+        assert_eq!(
+            c.for_sunday_in_words.as_deref(),
+            Some(line.as_str()),
+            "{line}: the phrase is remembered as written"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{line}: the group is remembered"
+        );
+        assert_eq!(
+            c.for_sunday_second_dates,
+            Vec::<SimpleDate>::new(),
+            "{line}: no second-date note stands"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{line}: the keep-through is the group's date"
+        );
+        // The single-quote twin carries the same
+        // fields (its in-words dress aside).
+        let single_line = format!("{single} next Sunday");
+        let text = format!("For Sunday: {single_line}\n\n## Announcement\n\nHi.\n");
+        let s = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(s.for_date, None, "{single_line}: the twin serves no date");
+        assert_eq!(s.for_sunday_parenthesized_date, Some(nov(8)));
+    }
+    // Control (held on the base tree): a mixed
+    // quote pair at the leading-alone position is
+    // remembered, and does not move.
+    let text = "For Sunday: \"November 8, 2026\u{201d} next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.for_date, None,
+        "the mixed pair reads no date, as it stood"
+    );
+    assert_eq!(c.for_sunday_parenthesized_date, Some(nov(8)));
+    let text = "For Sunday: November 1, 2026\nKeep-through: \"November 8, 2026\u{201d} next Sunday\n\n## Announcement\n\nHi.\n";
+    let c = parse_contribution(text, today()).expect("parses");
+    assert_eq!(
+        c.keep_through,
+        Some(nov(8)),
+        "the mixed pair keeps the group's date, as it stood"
+    );
+}

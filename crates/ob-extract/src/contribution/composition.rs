@@ -3073,6 +3073,16 @@ pub(super) fn group_sequence_weekday_mismatch(
 /// into the very bare run whose company the inner
 /// readers leave unjudged (round 41, R41-B, F3).
 ///
+/// Round 42 (R42-A, F3 arm (c)): a member of the
+/// company may wear quotes — a quoted governor or
+/// weekday span standing where a group stands is
+/// read as its bracket twin, its contents judged
+/// by the same head and garnish judgments, in
+/// either order, at the head or behind lead-in
+/// words. A lone quoted governor or weekday keeps
+/// its standing lone readings; only the company
+/// seat is this walk's.
+///
 /// Round 41 (R41-B, F3 — doctrine, round-41
 /// synthesis adjudication 1, extending this
 /// judgment): the company is judged wherever its
@@ -3155,6 +3165,40 @@ pub(super) fn leading_governor_company_judgment(
                 break;
             }
             let inner = &rest[1..end - 1];
+            company_started = true;
+            if governor_group_at_head(inner) {
+                governor_seen = true;
+            } else if let Some(weekday) = garnish_group_weekday(inner) {
+                weekdays.push(weekday);
+            }
+            rest = &rest[end..];
+            continue;
+        }
+        if matches!(first, '"' | '\'' | '\u{201c}' | '\u{2018}') {
+            // Round 42 (R42-A, F3 arm (c)): a company
+            // member wearing quotes is taken as its
+            // bracket twin — the quoted span is read
+            // as a group standing in the company, its
+            // contents judged by the same two
+            // judgments the bracket arm applies
+            // (`governor_group_at_head`,
+            // `garnish_group_weekday`). A lone quoted
+            // governor or weekday was already judged
+            // as its paren twin by the lone readers;
+            // only the company walk missed the dress,
+            // and the company collapsed to a silent
+            // serve. The span ends at the first
+            // closing-family quote, as the re-dress
+            // scan reads a quoted span.
+            let open_len = first.len_utf8();
+            let Some((at, c)) = rest[open_len..]
+                .char_indices()
+                .find(|(_, c)| matches!(c, '"' | '\'' | '\u{201d}' | '\u{2019}'))
+            else {
+                break;
+            };
+            let end = open_len + at + c.len_utf8();
+            let inner = &rest[open_len..open_len + at];
             company_started = true;
             if governor_group_at_head(inner) {
                 governor_seen = true;
@@ -8784,34 +8828,39 @@ pub(super) fn group_split_sunday_after_phrase(
 ///
 /// - The framing position proper: "Sunday after
 ///   <stack> (November 8, 2026) November 1, 2026" —
-///   a framing stack of one or two ordinary words
-///   (the witnessed words are "the" / "on" /
-///   "choir" / "for" / "at" / "dear", singly and in
-///   the doubled stacks "the the" / "on the")
-///   stands between the phrase's "after" and the
-///   group, and the words after the group are
-///   exactly the phrase's base, its own framing
-///   stack aside. The guard's between-"after"
-///   position ends at the first intervening word,
-///   so the bracket reading here is the whole-line
-///   composition's: the base served with the group
-///   recorded against it. The group may be glued
-///   against the framing word or against the base,
-///   as the twins may — the plain words are read
-///   off the text between the balanced spans,
-///   exactly as `group_split_sunday_after_phrase`
-///   reads them, so glue fuses no word.
+///   a framing stack of ordinary words (round 41
+///   witnessed "the" / "on" / "choir" / "for" /
+///   "at" / "dear", singly and in the doubled
+///   stacks "the the" / "on the"; round 42,
+///   R42-A, widened the stack to every width and
+///   word class the composition itself judges —
+///   see the arm's own note) stands between the
+///   phrase's "after" and the group, and the words
+///   after the group are exactly the phrase's
+///   base, its own framing stack aside. The
+///   guard's between-"after" position ends at the
+///   first intervening word, so the bracket
+///   reading here is the whole-line composition's:
+///   the base served with the group recorded
+///   against it. The group may be glued against
+///   the framing word or against the base, as the
+///   twins may — the plain words are read off the
+///   text between the balanced spans, exactly as
+///   `group_split_sunday_after_phrase` reads them,
+///   so glue fuses no word.
 /// - The framing-before-split position: "Sunday
 ///   the (November 8, 2026) after November 1,
-///   2026" — one framing word ("the" / "on", the
-///   framing stack's own words) stands between the
-///   phrase's "Sunday" and the group, and the
-///   group stands between that word and the
-///   phrase's "after", the base exactly after it.
-///   The composition reads the bracket form there
-///   with the group recorded; the guard's split
-///   position requires "Sunday" and "after" as
-///   consecutive plain words and never fires.
+///   2026" — a stack of words (round 41: exactly
+///   one framing word, "the" / "on"; round 42,
+///   R42-A, widened to every stack the composition
+///   judges there — see the arm's own note) stands
+///   between the phrase's "Sunday" and the group,
+///   and the group stands between that stack and
+///   the phrase's "after", the base exactly after
+///   it. The composition reads the bracket form
+///   there with the group recorded; the guard's
+///   split position requires "Sunday" and "after"
+///   as consecutive plain words and never fires.
 ///
 /// No other position is this judgment's: the alone
 /// positions (a quoted group leading or trailing a
@@ -8895,24 +8944,37 @@ pub(super) fn quoted_group_at_framing_position(
     };
     // The framing position proper: the line opens
     // with the phrase's own two words, a framing
-    // stack of one or two ordinary words stands
-    // between "after" and the group, and the words
-    // after the group are exactly the base, no
-    // group standing at or after the base's first
-    // word.
+    // stack of ordinary words stands between
+    // "after" and the group, and the words after
+    // the group are exactly the base, no group
+    // standing at or after the base's first word.
+    // Round 42 (R42-A, F3): the stack is no longer
+    // capped at two words — the whole-line
+    // composition judges the bracket group at
+    // every stack width probed (three, four, five,
+    // and six words), and at stacks holding a
+    // number token ("after the 3 ...", whose quoted
+    // form served the number as a day) or a month
+    // word, so the stack words are the alphanumeric
+    // words and number tokens at any width. Two
+    // exclusions stand, each on the composition's
+    // own reading: a weekday word in the stack is
+    // not judged in this reading (the paren form
+    // there adopts, by its own machinery), and
+    // "after" is the phrase's own word, never
+    // stack material.
     if plain.len() >= 2 && plain[0].3 == "sunday" && plain[1].3 == "after" {
         let after_end = plain[1].1;
         if first_span.0 >= after_end {
             let framing: Vec<usize> = (2..plain.len())
                 .take_while(|&i| plain[i].0 < first_span.0)
                 .collect();
-            let framing_ok = (1..=2).contains(&framing.len())
+            let framing_ok = !framing.is_empty()
                 && framing.iter().all(|&i| {
                     let w = plain[i].3.as_str();
                     !w.is_empty()
-                        && w.chars().all(|c| c.is_alphabetic())
+                        && w.chars().all(|c| c.is_alphanumeric())
                         && weekday_word(w).is_none()
-                        && !word_at_is_month(w, 0)
                         && w != "after"
                 });
             if framing_ok {
@@ -8928,19 +8990,41 @@ pub(super) fn quoted_group_at_framing_position(
             }
         }
     }
-    // The framing-before-split position: one
-    // framing word stands between "Sunday" and the
-    // group, the group stands between that word
+    // The framing-before-split position: a stack
+    // of words stands between "Sunday" and the
+    // group, the group stands between the stack
     // and "after", no group stands at or after the
     // "after", and the words after it are exactly
-    // the base.
+    // the base. Round 41 stated this arm for
+    // exactly one framing word ("the" / "on");
+    // round 42 (R42-A, F3) widens it to every stack
+    // the composition itself judges at this slot —
+    // framing-first stacks ("the choir", "on the
+    // choir", "the choir hall stage"), ordinary
+    // stacks ("choir", "choir hall"), and stacks
+    // holding a number token, a month word, a
+    // relative word, or a weekday word ("the 3",
+    // "the November", "next", "Monday") all carry
+    // the bracket reading there, the resolution
+    // arm or the base arm as the stack's own shape
+    // gives it — so the stack words are the
+    // alphanumeric words and number tokens at any
+    // width, and the "after" that ends the stack
+    // is the first one standing after "Sunday".
     if plain.len() >= 3 && plain[0].3 == "sunday" {
-        let framing_before_ok = matches!(plain[1].3.as_str(), "the" | "on")
-            && plain[1].1 <= first_span.0
-            && first_span.1 <= plain[2].0
-            && plain[2].3 == "after";
-        if framing_before_ok && !spans.iter().any(|(s, _)| *s >= plain[2].0) && base_consumes(3) {
-            return true;
+        if let Some(after_at) = (1..plain.len()).find(|&i| plain[i].3 == "after") {
+            let stack = &plain[1..after_at];
+            let framing_before_ok = !stack.is_empty()
+                && stack.iter().all(|(_, end, _, w)| {
+                    !w.is_empty() && w.chars().all(|c| c.is_alphanumeric()) && *end <= first_span.0
+                })
+                && first_span.1 <= plain[after_at].0;
+            if framing_before_ok
+                && !spans.iter().any(|(s, _)| *s >= plain[after_at].0)
+                && base_consumes(after_at + 1)
+            {
+                return true;
+            }
         }
     }
     false
@@ -9034,6 +9118,141 @@ pub(super) fn quoted_group_alone_beside_relative_core(text: &str) -> bool {
         .all(|(s, e)| *e <= first_start || *s >= last_end)
 }
 
+/// Whether a date group stands at a plain-line
+/// interior position the whole-line composition
+/// judges for bracket groups (round 42, R42-A, F3
+/// arm (b) = red team RT42-Q1(b)): the candidate
+/// line is an ordinary date line — groups aside,
+/// its words carry exactly one framed plain date
+/// and no Sunday-after phrase (a plain word
+/// "after" anywhere in the de-grouped core takes
+/// the line out of this judgment: the framing,
+/// split, and interior-company positions are the
+/// other consultations', and their standing
+/// readings do not move). At every such position
+/// the bracket twins are judged — the group before
+/// the plain date, after it, or with ordinary words
+/// around it, and with a governor group standing
+/// adjacent in either direction — so the quoted
+/// form is re-dressed there and takes the twin's
+/// reading outright. A line whose core carries no
+/// framed plain date (the alone positions, the
+/// split-relative adoption) or more than one is
+/// not this judgment's.
+pub(super) fn quoted_group_on_plain_date_line(
+    text: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> bool {
+    let spans = balanced_spans(text);
+    if spans.is_empty() {
+        return false;
+    }
+    // The de-grouped core, built as the guard
+    // builds it: a semicolon where each group
+    // stood, read as words.
+    let mut core = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for (start, end) in &spans {
+        core.push_str(&text[at..*start]);
+        core.push(';');
+        at = *end;
+    }
+    core.push_str(&text[at..]);
+    let core_words = core.replace(';', " ");
+    let core_trim = core_words.trim();
+    let tokens: Vec<&str> = core_trim.split_whitespace().collect();
+    let cleaned: Vec<String> = segment_tokens(&tokens);
+    if cleaned.iter().any(|w| w == "after") {
+        return false;
+    }
+    let signals = scan_plain_signals(&tokens, &cleaned, today, anchor);
+    signals.iter().filter(|s| s.framed).count() == 1
+}
+
+/// `text` with every DOUBLED quote-wrapped DATE
+/// group re-dressed as its paren twin — the doubled
+/// opening quotes replaced by "(" and the doubled
+/// closing quotes by ")", with no quote byte left
+/// standing (round 42, R42-A, F4 = red team
+/// RT42-Q2). The single-quote scan
+/// (`quoted_date_groups_as_parens`) reads a doubled
+/// form as a group wearing a stray quote on each
+/// side, and the stray quotes break the alone
+/// judgments' shape, so the doubled form was
+/// forgotten where its single-quoted twin is
+/// remembered. A doubled span is two of the same
+/// opening quote (`""`, `''`, `““`), date contents
+/// holding no quote byte, and two of the matching
+/// closing quote; anything else keeps its bytes.
+pub(super) fn doubled_quoted_date_groups_as_parens(
+    text: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> Option<String> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    // (open byte start, open byte len, close byte
+    // start, close byte len) per re-dressed span,
+    // the lens covering both quote bytes.
+    let mut spans: Vec<(usize, usize, usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < chars.len() {
+        let (start, c) = chars[i];
+        let closer = match (c, chars[i + 1].1) {
+            ('"', '"') => '"',
+            ('\'', '\'') => '\'',
+            ('\u{201c}', '\u{201c}') => '\u{201d}',
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        let mut close_at = None;
+        let mut k = i + 2;
+        while k + 1 < chars.len() {
+            if chars[k].1 == closer && chars[k + 1].1 == closer {
+                close_at = Some(k);
+                break;
+            }
+            k += 1;
+        }
+        let Some(k) = close_at else {
+            break;
+        };
+        let (close_start, _) = chars[k];
+        let open_len = 2 * c.len_utf8();
+        let inner = &text[start + open_len..close_start];
+        if !inner.trim().is_empty()
+            && !inner.chars().any(|ch| {
+                matches!(
+                    ch,
+                    '"' | '\'' | '\u{201c}' | '\u{201d}' | '\u{2018}' | '\u{2019}'
+                )
+            })
+            && group_date(inner, today, anchor).is_some()
+        {
+            spans.push((start, open_len, close_start, 2 * closer.len_utf8()));
+            i = k + 2;
+        } else {
+            i += 1;
+        }
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for (open, open_len, close, close_len) in &spans {
+        out.push_str(&text[at..*open]);
+        out.push('(');
+        out.push_str(&text[open + open_len..*close]);
+        out.push(')');
+        at = close + close_len;
+    }
+    out.push_str(&text[at..]);
+    Some(out)
+}
+
 /// The line with its quoted DATE groups re-dressed
 /// as their paren twins, where a standing
 /// consultation judges a bracket group on the
@@ -9042,8 +9261,14 @@ pub(super) fn quoted_group_alone_beside_relative_core(text: &str) -> bool {
 /// (`group_beside_relative_core`) on the candidate
 /// or its trailing-stripped core, the framing
 /// positions (`quoted_group_at_framing_position`),
-/// or the alone positions
-/// (`quoted_group_alone_beside_relative_core`).
+/// the alone positions
+/// (`quoted_group_alone_beside_relative_core`), or
+/// the plain-line interior positions
+/// (`quoted_group_on_plain_date_line`). A doubled
+/// quote form (`""November 8, 2026""`) is consulted
+/// only at the alone positions (round 42, R42-A,
+/// F4): at the framing and interior positions the
+/// doubled forms split nothing and are not moved.
 /// Every reader that must take a bracket twin's
 /// reading of a quoted group consults the line
 /// through this one door — `date_line`, the Keep
@@ -9059,16 +9284,37 @@ pub(super) fn quoted_groups_redressed_where_judged(
     today: SimpleDate,
     anchor: SimpleDate,
 ) -> Option<String> {
-    let candidate = quoted_date_groups_as_parens(text, today, anchor)?;
-    if group_beside_relative_core(&candidate, today, anchor)
-        || group_beside_relative_core(strip_all_trailing_parenthesized(&candidate), today, anchor)
-        || quoted_group_at_framing_position(&candidate, today, anchor)
-        || quoted_group_alone_beside_relative_core(&candidate)
-    {
-        Some(candidate)
-    } else {
-        None
+    // The doubled candidate is consulted FIRST,
+    // and only at the alone positions: the
+    // single-quote scan also returns a candidate
+    // for a doubled form — the group wearing a
+    // stray quote on each side — and that candidate
+    // passes the alone judgment's de-grouped shape
+    // while its stray quotes break the shape
+    // readers the memory machinery judges by, so
+    // consulting it first would hand those readers
+    // the broken candidate and the doubled form
+    // would stay forgotten.
+    if let Some(doubled) = doubled_quoted_date_groups_as_parens(text, today, anchor) {
+        if quoted_group_alone_beside_relative_core(&doubled) {
+            return Some(doubled);
+        }
     }
+    if let Some(candidate) = quoted_date_groups_as_parens(text, today, anchor) {
+        if group_beside_relative_core(&candidate, today, anchor)
+            || group_beside_relative_core(
+                strip_all_trailing_parenthesized(&candidate),
+                today,
+                anchor,
+            )
+            || quoted_group_at_framing_position(&candidate, today, anchor)
+            || quoted_group_alone_beside_relative_core(&candidate)
+            || quoted_group_on_plain_date_line(&candidate, today, anchor)
+        {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Read one date line with its round-9 records: the

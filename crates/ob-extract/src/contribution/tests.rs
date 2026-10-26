@@ -33734,6 +33734,298 @@ fn r42b_straight_quote_closers_after_a_group_compose_the_company() {
     r40e_governed_silent("(cancelled)\"Monday\" November 1, 2026");
 }
 
+// Round 42 (R42-C, F6 MAJOR = red team RT42-S1;
+// round-42 synthesis F6): R40-G judged the suffix
+// set ("~", "*", "#", "-", "—" U+2014) at the
+// leading slot and R41-E extended it to the
+// trailing and base-trailing LINE-FINAL seats, but
+// no peel claimed the set at the MID-LINE seats or
+// BETWEEN a company's groups, and no reader
+// claimed the ellipsis (U+2026) at any of those
+// seats either (the ellipsis was a judged suffix
+// only where R40-G's peels reached). Witnessed on
+// the base tree (today pinned 2026-10-20 in the
+// lane's runs; November 1 and November 8, 2026 are
+// Sundays): the lone mid-line governor wearing
+// any mark of the set or the ellipsis, glued or
+// spaced, SERVED its cancelled date live where
+// the clean line governs ("notes (cancelled)~
+// November 8, 2026"); a mid-line company wearing
+// a suffix on its governor member OR its weekday
+// member served November 1 silently where the
+// clean company composes governed WITH
+// WeekdayMismatch(Monday@2026-11-01), and spaced
+// double tokens disarmed the same way; the
+// inter-group seat inside a head company split by
+// subset ("~", "#", "…" served silently where
+// "*", "-", "—" in the same seat were judged);
+// and at the base-trailing company the inter-group
+// seat served the resolution silently for EVERY
+// mark, where the line-final form
+// "(cancelled)(Monday)~" composes (R41-E's arm,
+// intact). The adjudicated reading (round-42
+// synthesis, F6): judgments read through the full
+// witnessed set at the mid-line slots (lone
+// governor, company members), between a company's
+// groups (the inter-group subset unified to the
+// full set), and at the base-trailing company's
+// inter-group seat — judged as the line-final seat
+// is. Every pair below compares the suffixed
+// line's FULL record against its clean twin's via
+// the r34e helpers, on the For line and the
+// Keep-through line, and the headline arms are
+// stated outright.
+
+#[test]
+fn r42c_lone_midline_governor_judged_through_the_suffix_set() {
+    for mark in ["~", "*", "#", "-", "\u{2014}", "\u{2026}"] {
+        // The headline arms, stated outright, both
+        // routes: the lone mid-line governor governs
+        // through the mark, glued and spaced — no
+        // date reads, no record.
+        let glued = format!("notes (cancelled){mark} November 8, 2026");
+        r40e_governed_silent(&glued);
+        let spaced = format!("notes (cancelled) {mark} November 8, 2026");
+        r40e_governed_silent(&spaced);
+        // Full-record twins against the clean
+        // mid-line form, both routes.
+        for line in [&glued, &spaced] {
+            r34e_for_twin(line, "notes (cancelled) November 8, 2026");
+            r34e_keep_twin(line, "notes (cancelled) November 8, 2026");
+        }
+    }
+    // Doubles disarm identically on the base tree:
+    // glued, spaced, and mixed doubles govern as
+    // the clean form governs.
+    for line in [
+        "notes (cancelled)~~ November 8, 2026",
+        "notes (cancelled) ~ ~ November 8, 2026",
+        "notes (cancelled)~* November 8, 2026",
+    ] {
+        r40e_governed_silent(line);
+        r34e_for_twin(line, "notes (cancelled) November 8, 2026");
+        r34e_keep_twin(line, "notes (cancelled) November 8, 2026");
+    }
+}
+
+#[test]
+fn r42c_midline_company_suffix_on_either_member_composes_with_its_record() {
+    for mark in ["~", "*", "#", "-", "\u{2014}", "\u{2026}"] {
+        // The clean mid-line company composes
+        // governed WITH the record (witnessed on
+        // the base tree); a suffix on either member
+        // takes exactly that outcome, both routes,
+        // full records.
+        for (suffixed, clean) in [
+            (
+                format!("notes (cancelled){mark} (Monday) November 1, 2026"),
+                "notes (cancelled) (Monday) November 1, 2026",
+            ),
+            (
+                format!("notes (cancelled){mark}(Monday) November 1, 2026"),
+                "notes (cancelled)(Monday) November 1, 2026",
+            ),
+            (
+                format!("notes (cancelled) (Monday){mark} November 1, 2026"),
+                "notes (cancelled) (Monday) November 1, 2026",
+            ),
+            (
+                format!("notes (cancelled)(Monday){mark} November 1, 2026"),
+                "notes (cancelled)(Monday) November 1, 2026",
+            ),
+            (
+                format!("notes (cancelled) (Monday) {mark} November 1, 2026"),
+                "notes (cancelled) (Monday) November 1, 2026",
+            ),
+            (
+                format!("notes (Monday)(cancelled){mark} November 1, 2026"),
+                "notes (Monday)(cancelled) November 1, 2026",
+            ),
+            (
+                format!("notes (Monday){mark} (cancelled) November 1, 2026"),
+                "notes (Monday) (cancelled) November 1, 2026",
+            ),
+            (
+                format!("notes (Monday) (cancelled){mark} November 1, 2026"),
+                "notes (Monday) (cancelled) November 1, 2026",
+            ),
+        ] {
+            r34e_for_twin(&suffixed, clean);
+            r34e_keep_twin(&suffixed, clean);
+        }
+        // Stated outright: the disagreeing company
+        // refuses with its record through the
+        // suffix, on either member, either order.
+        let gov_side = format!("notes (cancelled){mark} (Monday) November 1, 2026");
+        r40e_governed_with_record(&gov_side, "Monday", nov(1));
+        let day_side = format!("notes (cancelled) (Monday){mark} November 1, 2026");
+        r40e_governed_with_record(&day_side, "Monday", nov(1));
+        let day_first = format!("notes (Monday)(cancelled){mark} November 1, 2026");
+        r40e_governed_with_record(&day_first, "Monday", nov(1));
+        // The agreeing companions compose silently:
+        // the governor governs (no date reads) and
+        // agreement leaves no record — twin-equal
+        // to the clean agreeing forms, whose own
+        // reading is governed silence, stated
+        // outright after the loop.
+        for (suffixed, clean) in [
+            (
+                format!("notes (cancelled){mark} (Sunday) November 1, 2026"),
+                "notes (cancelled) (Sunday) November 1, 2026",
+            ),
+            (
+                format!("notes (cancelled) (Sunday){mark} November 1, 2026"),
+                "notes (cancelled) (Sunday) November 1, 2026",
+            ),
+        ] {
+            r34e_for_twin(&suffixed, clean);
+            r34e_keep_twin(&suffixed, clean);
+            r40e_governed_silent(&suffixed);
+        }
+        r40e_governed_silent("notes (cancelled) (Sunday) November 1, 2026");
+    }
+    // Spaced double tokens between the members
+    // disarm on the base tree and compose here;
+    // the glued double takes the same reading.
+    for line in [
+        "notes (cancelled) ~ ~ (Monday) November 1, 2026",
+        "notes (cancelled)~~(Monday) November 1, 2026",
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+        r34e_for_twin(line, "notes (cancelled)(Monday) November 1, 2026");
+        r34e_keep_twin(line, "notes (cancelled)(Monday) November 1, 2026");
+    }
+}
+
+#[test]
+fn r42c_head_company_intergroup_suffix_unified_to_the_full_set() {
+    for mark in ["~", "*", "#", "-", "\u{2014}", "\u{2026}"] {
+        // The inter-group seat at the head: the
+        // "~", "#", "…" arms served silently on the
+        // base tree where the "*", "-", "—" arms in
+        // the same seat were judged with the record
+        // (a subset split); every mark now lands on
+        // the standing reading — the company
+        // composes, refusals carry the record, both
+        // routes, full records against the clean
+        // head companies.
+        for (suffixed, clean) in [
+            (
+                format!("(cancelled){mark} (Monday) November 1, 2026"),
+                "(cancelled) (Monday) November 1, 2026",
+            ),
+            (
+                format!("(cancelled){mark}(Monday) November 1, 2026"),
+                "(cancelled)(Monday) November 1, 2026",
+            ),
+        ] {
+            r34e_for_twin(&suffixed, clean);
+            r34e_keep_twin(&suffixed, clean);
+        }
+        let spaced = format!("(cancelled){mark} (Monday) November 1, 2026");
+        r40e_governed_with_record(&spaced, "Monday", nov(1));
+        let glued = format!("(cancelled){mark}(Monday) November 1, 2026");
+        r40e_governed_with_record(&glued, "Monday", nov(1));
+        // A suffix after the company's LAST group
+        // at the head takes the same reading.
+        let tail = format!("(cancelled) (Monday){mark} November 1, 2026");
+        r40e_governed_with_record(&tail, "Monday", nov(1));
+        r34e_for_twin(&tail, "(cancelled) (Monday) November 1, 2026");
+        r34e_keep_twin(&tail, "(cancelled) (Monday) November 1, 2026");
+        // The agreeing head company wearing the
+        // mark between its groups is governed
+        // silently, as its clean twin is.
+        let agreeing = format!("(cancelled){mark} (Sunday) November 1, 2026");
+        r40e_governed_silent(&agreeing);
+        r34e_for_twin(&agreeing, "(cancelled) (Sunday) November 1, 2026");
+        r34e_keep_twin(&agreeing, "(cancelled) (Sunday) November 1, 2026");
+    }
+    // The glued double between the groups takes
+    // the clean reading too.
+    r40e_governed_with_record("(cancelled)~~(Monday) November 1, 2026", "Monday", nov(1));
+}
+
+#[test]
+fn r42c_base_trailing_company_intergroup_suffix_judged_as_the_line_final_seat() {
+    for mark in ["~", "*", "#", "-", "\u{2014}", "\u{2026}"] {
+        // The inter-group seat at the base-trailing
+        // company served the resolution silently
+        // for EVERY mark on the base tree, where the
+        // clean company refuses against the base
+        // with the record and the line-final form
+        // "(cancelled)(Monday){mark}" composes
+        // (R41-E's arm). Glued and spaced inter-group
+        // forms take the clean company's reading,
+        // both routes, full records.
+        for (suffixed, clean) in [
+            (
+                format!("Sunday after November 1, 2026 (cancelled){mark}(Monday)"),
+                "Sunday after November 1, 2026 (cancelled)(Monday)",
+            ),
+            (
+                format!("Sunday after November 1, 2026 (cancelled){mark} (Monday)"),
+                "Sunday after November 1, 2026 (cancelled) (Monday)",
+            ),
+        ] {
+            r34e_for_twin(&suffixed, clean);
+            r34e_keep_twin(&suffixed, clean);
+        }
+        let glued = format!("Sunday after November 1, 2026 (cancelled){mark}(Monday)");
+        r40e_governed_with_record(&glued, "Monday", nov(1));
+        // The line-final twin, restated as the
+        // standing reading this seat now matches.
+        let line_final = format!("Sunday after November 1, 2026 (cancelled)(Monday){mark}");
+        r40e_governed_with_record(&line_final, "Monday", nov(1));
+        // The agreeing company at this slot stands
+        // at parity with or without the mark: the
+        // clean agreeing form serves the resolution
+        // (the base-trailing governor arm is parity,
+        // R41-E), and the inter-group form takes
+        // exactly that reading.
+        let agreeing = format!("Sunday after November 1, 2026 (cancelled){mark}(Sunday)");
+        r34e_for_twin(
+            &agreeing,
+            "Sunday after November 1, 2026 (cancelled)(Sunday)",
+        );
+        r34e_keep_twin(
+            &agreeing,
+            "Sunday after November 1, 2026 (cancelled)(Sunday)",
+        );
+        r40e_serves_silent(&agreeing, nov(8));
+    }
+}
+
+#[test]
+fn r42c_suffix_set_scope_controls_unmoved() {
+    // HELD, not moved: the lone mid-line WEEKDAY
+    // group wearing a suffix is parity, not an arm
+    // — it serves as its unjudged clean twin does
+    // (cell (a)(i) stands closed), over the full
+    // set and the ellipsis alike.
+    for mark in ["~", "*", "#", "-", "\u{2014}", "\u{2026}"] {
+        let line = format!("notes (Monday){mark} November 1, 2026");
+        r34e_for_twin(&line, "notes (Monday) November 1, 2026");
+        r34e_keep_twin(&line, "notes (Monday) November 1, 2026");
+        r40e_serves_silent(&line, nov(1));
+    }
+    // The leading slot's standing set, unweakened
+    // (R40-G): the sequence wearing a mark at the
+    // head refuses with the record, over the set
+    // and the ellipsis.
+    for mark in ["~", "*", "#", "-", "\u{2014}", "\u{2026}"] {
+        let seq = format!("(Monday)(notes){mark} November 1, 2026");
+        r40g_refuses_with_record(&seq, "Monday", nov(1));
+        // The trailing line-final set, unweakened
+        // (R41-E): the wrapped governor governs and
+        // the grouped weekday refuses with its
+        // record at the line-final seat.
+        let governor = format!("November 8, 2026 (cancelled){mark}");
+        r40e_governed_silent(&governor);
+        let grouped = format!("November 1, 2026 (Monday){mark}");
+        r40g_refuses_with_record(&grouped, "Monday", nov(1));
+    }
+}
+
 // Round 40 (R40-F, F7 MAJOR = red team RT40-F +
 // review R40-R4): R39-E gave the grouped weekday
 // readers a ONE-mark shed (`cleaned_weekday`), and

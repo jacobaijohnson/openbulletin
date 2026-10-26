@@ -1997,7 +1997,12 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
                 buf.push(' ');
             }
             buf.push_str(&bare);
-            let after = p + end;
+            // Round 42 (R42-C, F6): the suffix run
+            // glued after the group is shed with its
+            // wrapper, as in `apply_governor_unwraps`
+            // (see there) — the bared governor words
+            // stand as their clean twins stand.
+            let after = p + end + suffix_set_run(&text[p + end..]);
             if text[after..]
                 .chars()
                 .next()
@@ -2088,6 +2093,19 @@ fn governor_group_words(inner: &str) -> Option<Vec<String>> {
 /// space separates the bare words from a word or a
 /// group they stand glued against, on either side,
 /// as in `unwrapped_leading_governor_group`.
+/// The byte length of the run of the witnessed
+/// suffix set ("~", "*", "#", "-", "—" U+2014) and
+/// the ellipsis (U+2026) standing at the head of
+/// `s` (round 42, R42-C, F6): the dress a group
+/// wears at its tail, which the judgments read
+/// through at every slot R40-G and R41-E judged.
+fn suffix_set_run(s: &str) -> usize {
+    s.chars()
+        .take_while(|c| matches!(c, '~' | '*' | '#' | '-' | '\u{2014}' | '\u{2026}'))
+        .map(char::len_utf8)
+        .sum()
+}
+
 fn apply_governor_unwraps(text: &str, unwraps: &[(usize, usize, Vec<String>)]) -> Option<String> {
     if unwraps.is_empty() {
         return None;
@@ -2104,14 +2122,28 @@ fn apply_governor_unwraps(text: &str, unwraps: &[(usize, usize, Vec<String>)]) -
             buf.push(' ');
         }
         buf.push_str(&words.join(" "));
-        if text[*end..]
+        // Round 42 (R42-C, F6): the suffix run
+        // standing glued after the group being
+        // bared is the group's own dress and is
+        // shed with the wrapper, so the bared
+        // governor words stand as their clean
+        // twins stand ("(cancelled)~ (Sunday) ..."
+        // bares to "cancelled (Sunday) ...", whose
+        // governor the plain readers judge) instead
+        // of leaving the set glued to the bared
+        // word's tail, where no plain reader sheds
+        // it. Governor-scoped by construction: this
+        // splice runs only for groups
+        // `governor_group_words` judged.
+        let after = *end + suffix_set_run(&text[*end..]);
+        if text[after..]
             .chars()
             .next()
             .is_some_and(|c| c.is_alphanumeric() || matches!(c, '(' | '[' | '{'))
         {
             buf.push(' ');
         }
-        cursor = *end;
+        cursor = after;
     }
     buf.push_str(&text[cursor..]);
     Some(buf)
@@ -2329,12 +2361,39 @@ fn midline_governor_before_plain_date(
     if nearest_date_is_sunday_after_base(prefix, today) {
         return false;
     }
+    // Round 42 (R42-C, F6 MAJOR = red team
+    // RT42-S1): the witnessed suffix set ("~", "*",
+    // "#", "-", "—" U+2014) and the ellipsis
+    // (U+2026) standing after this governor group —
+    // glued to it, spaced as its own token, or
+    // doubled — are stepped over at this seat as
+    // they are at the slots R40-G and R41-E judged:
+    // the run below crosses them between this group
+    // and any group standing after it, and the rest
+    // trim sheds them before the plain date is
+    // read. The seat stays governor-scoped by
+    // construction (the caller unwraps only groups
+    // passing `governor_group_words`), so the lone
+    // mid-line WEEKDAY group's parity arm is
+    // untouched: no governor group stands there.
     for &(next_start, next_end) in &spans[idx + 1..] {
         let gap = &text[pos..next_start];
         if !gap.chars().all(|c| {
             matches!(
                 c,
-                ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
+                ',' | ';'
+                    | '.'
+                    | ':'
+                    | '!'
+                    | '?'
+                    | '\u{201d}'
+                    | '\u{2019}'
+                    | '\u{2026}'
+                    | '~'
+                    | '*'
+                    | '#'
+                    | '-'
+                    | '\u{2014}'
             ) || c.is_whitespace()
         }) {
             break;
@@ -2342,7 +2401,8 @@ fn midline_governor_before_plain_date(
         pos = next_end;
     }
     let rest = text[pos..].trim_start_matches([
-        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}',
+        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
+        '-', '\u{2014}',
     ]);
     if matches!(rest.chars().next(), Some('(' | '[' | '{')) {
         return false;
@@ -3134,12 +3194,43 @@ pub(super) fn group_sequence_weekday_mismatch(
 /// mid-line — a straight quote that opens a
 /// member span (R42-A's arm) is not a closer and
 /// keeps the quoted-member reading.
+///
+/// Round 42 (R42-C, F6 MAJOR = red team RT42-S1;
+/// round-42 synthesis F6): the walk's separators
+/// also take the witnessed suffix set ("~", "*",
+/// "#", "-", "—" U+2014) and the ellipsis
+/// (U+2026) standing between a company's groups
+/// or after its last group, glued or spaced,
+/// doubled included — the inter-group seat at
+/// the head and the member seats at the mid-line
+/// (R40-G judged the set at the leading line-final
+/// slot and R41-E at the trailing and
+/// base-trailing line-final seats; no peel
+/// claimed it between groups, and the inter-group
+/// seat split by subset because the phrase
+/// cleaning shed "*" and the group-word cleaning
+/// shed "-" and "—" but nothing shed "~",
+/// "#", or "…"). The widening is scoped to
+/// this walk by construction: the set is stepped
+/// over only inside a sequence the walk is
+/// already judging as a company (a governor group
+/// plus a weekday group), so the lone mid-line
+/// weekday group's parity arm (a)(i) is untouched
+/// — no governor is seen there and the walk
+/// never claims it. A bared governor word wearing
+/// the set at its tail (the leading unwrap leaves
+/// "cancelled~" when a head company's governor
+/// group is unwrapped with a suffix between it
+/// and the weekday group) is read as its clean
+/// twin by the bare-run word cleaning in this
+/// walk.
 pub(super) fn leading_governor_company_judgment(
     text: &str,
     today: SimpleDate,
 ) -> Option<(SimpleDate, Option<WeekdayMismatch>, bool, bool)> {
-    const SEPARATORS: [char; 10] = [
-        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}',
+    const SEPARATORS: [char; 16] = [
+        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
+        '-', '\u{2014}',
     ];
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut governor_seen = false;
@@ -3300,7 +3391,20 @@ pub(super) fn leading_governor_company_judgment(
                     run_clean = false;
                     break;
                 }
-                let word = cleaned[0].clone();
+                // R42-C (F6): the witnessed suffix
+                // set and the ellipsis standing at
+                // the word's own tail are shed, so a
+                // bared governor word wearing the
+                // set ("cancelled~", left by the
+                // leading unwrap at a head company's
+                // inter-group seat) reads as its
+                // clean twin; the phrase cleaning
+                // already sheds "*" and the group
+                // cleaning "-" and "—", and this
+                // tail shed covers "~", "#", "…".
+                let word = cleaned[0]
+                    .trim_end_matches(['~', '#', '\u{2026}', '*', '-', '\u{2014}'])
+                    .to_string();
                 if !words.is_empty()
                     && (weekday_word(&word).is_some() || word_at_is_month(&word, 0))
                 {
@@ -3410,7 +3514,15 @@ pub(super) fn leading_governor_company_judgment(
                         run_clean = false;
                         break;
                     }
-                    words.push(cleaned[0].clone());
+                    // R42-C (F6): the same tail shed
+                    // as the first scan's, so the two
+                    // scans cannot drift apart on the
+                    // witnessed suffix set.
+                    words.push(
+                        cleaned[0]
+                            .trim_end_matches(['~', '#', '\u{2026}', '*', '-', '\u{2014}'])
+                            .to_string(),
+                    );
                     scan = &scan[tok_end..];
                 }
                 if !run_clean || words.iter().any(|w| w == "after") {

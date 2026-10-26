@@ -907,6 +907,31 @@ fn base_trailing_sequence_mismatch(
             return None;
         }
     }
+    // Round 42 (R42-C, F6 MAJOR = red team
+    // RT42-S1): the inter-group seat at this
+    // base-trailing sequence takes the witnessed
+    // suffix set ("~", "*", "#", "-", "—" U+2014)
+    // and the ellipsis (U+2026) in its gaps, as the
+    // line-final seat at this same slot already
+    // does through the tail peels above (R41-E) —
+    // scoped to the COMPANY's sequences, judged
+    // exactly as the behind-a-word arm above judges
+    // company-ness (a governor phrase at some
+    // span's contents' own head, and a weekday
+    // group among the spans). A non-company
+    // sequence wearing the set between its groups
+    // keeps the standing reading below, unjudged
+    // here; and no quote mark joins the gap set —
+    // the straight closer standing between a
+    // company's groups at this slot is a different
+    // seat (the garnish walk's, R42-B deviation
+    // (c)) and is not claimed here.
+    let is_company = spans
+        .iter()
+        .any(|&(s, e)| governor_group_at_head(&rest[s + 1..e - 1]))
+        && spans
+            .iter()
+            .any(|&(s, e)| garnish_group_weekday(&rest[s + 1..e - 1]).is_some());
     for pair in spans.windows(2) {
         let gap = &rest[pair[0].1..pair[1].0];
         // Round 38 (R38-B, F2): a gap may carry the
@@ -917,12 +942,34 @@ fn base_trailing_sequence_mismatch(
         // also carry "!", "?", and U+201D standing
         // as the preceding group's suffix, the three
         // marks the lone forms judge a group wearing.
-        if !gap.chars().all(|c| {
+        if gap.chars().all(|c| {
             matches!(
                 c,
                 ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
             ) || c.is_whitespace()
         }) {
+            continue;
+        }
+        if !is_company
+            || !gap.chars().all(|c| {
+                matches!(
+                    c,
+                    ',' | ';'
+                        | '.'
+                        | ':'
+                        | '!'
+                        | '?'
+                        | '\u{201d}'
+                        | '\u{2019}'
+                        | '\u{2026}'
+                        | '~'
+                        | '*'
+                        | '#'
+                        | '-'
+                        | '\u{2014}'
+                ) || c.is_whitespace()
+            })
+        {
             return None;
         }
     }

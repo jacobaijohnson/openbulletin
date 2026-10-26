@@ -973,6 +973,17 @@ fn base_trailing_sequence_mismatch(
         }) {
             continue;
         }
+        // Round 43 (R43-A, F1): the company gap set
+        // gains the en dash (U+2013) — the
+        // base-trailing company wearing it between
+        // its groups ("(cancelled)–(Monday)"),
+        // glued or spaced, served the resolution
+        // silently where both twins refuse with the
+        // record against the base. The widening
+        // stays company-scoped exactly as R42-C
+        // scoped it: a non-company sequence wearing
+        // the mark between its groups keeps its
+        // standing reading.
         if !is_company
             || !gap.chars().all(|c| {
                 matches!(
@@ -990,6 +1001,7 @@ fn base_trailing_sequence_mismatch(
                         | '#'
                         | '-'
                         | '\u{2014}'
+                        | '\u{2013}'
                 ) || c.is_whitespace()
             })
         {
@@ -1245,9 +1257,24 @@ impl<'a> LineScan<'a> {
         // closer, so the split's own facts are
         // unchanged for every slice that already
         // split.
+        // Round 43 (R43-A, F1): the end trims gain
+        // the en dash (U+2013) — a trailing-alone
+        // group wearing it ("next Sunday (November
+        // 8, 2026)–") ended its slice in the mark, so
+        // the group was no trailing group to this
+        // split: the For-route memory survived
+        // through the relative shape's own boundary
+        // trims, but the Keep route's keep-through,
+        // which the fallback reads off this split,
+        // was lost, where both twins keep the
+        // group's date. Both trim sites in this
+        // function take the mark, as they took the
+        // R42-D set.
         let mut end = lo
             + text[lo..hi]
-                .trim_end_matches(['.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!'])
+                .trim_end_matches([
+                    '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '\u{2013}',
+                ])
                 .len();
         loop {
             let trimmed = lo + text[lo..end].trim_end().len();
@@ -1264,6 +1291,7 @@ impl<'a> LineScan<'a> {
                         + text[lo..w]
                             .trim_end_matches([
                                 '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!',
+                                '\u{2013}',
                             ])
                             .len();
                 }

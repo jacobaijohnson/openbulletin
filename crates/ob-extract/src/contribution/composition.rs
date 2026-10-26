@@ -2229,7 +2229,30 @@ fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
     // group, so neither retry returns it), and the
     // weekday-last sequence is judged by the
     // sequence walk's own en-dash gate, not here.
-    let core = core.strip_suffix('\u{2013}')?;
+    // Round 43 (R43-A, F1): the retry takes the
+    // en-dash RUN the mark closes, not a single
+    // mark — the glued and spaced doubles
+    // ("(cancelled)––", "(cancelled) – –") served
+    // the cancelled date live on the base tree,
+    // where both twins' doubles govern through
+    // the standing peels. This arm stands outside
+    // every set this batch widens: the peels
+    // judge the twins' doubles, but the en dash
+    // stands in no peel set, and widening a peel
+    // set would move the governor-first sequence
+    // closing on an inert group, which F1 does
+    // not name and the controls hold serving. The
+    // smallest change is the retry's own strip:
+    // the mark, repeated glued or spaced as its
+    // own token, comes off here, and the gates
+    // below (final group a governor group, or the
+    // company arm) scope the retry exactly as
+    // they scoped the single mark.
+    let mut head = core.strip_suffix('\u{2013}')?;
+    while let Some(stripped) = head.trim_end().strip_suffix('\u{2013}') {
+        head = stripped;
+    }
+    let core = head;
     let end = trailing_run_peeled_end(text, core.len());
     let core = text[..end].trim_end();
     let run = trailing_run_in_core(core)?;
@@ -2350,6 +2373,13 @@ fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
         // crosses it, so a suffix on ANY group of
         // the sequence is judged, not only the
         // sequence's tail.
+        // Round 43 (R43-A, F1): the gap set gains
+        // the en dash (U+2013) — a governor group
+        // wearing it at an interior seat of the
+        // sequence ("(cancelled)– (notes)") stood
+        // outside the run and its cancelled date
+        // served live, where both twins' interior
+        // governors are judged through this set.
         if !gap.chars().all(|c| {
             matches!(
                 c,
@@ -2366,6 +2396,7 @@ fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
                     | '#'
                     | '-'
                     | '\u{2014}'
+                    | '\u{2013}'
             ) || c.is_whitespace()
         }) {
             break;
@@ -2506,15 +2537,26 @@ fn midline_governor_before_plain_date(
                     | '#'
                     | '-'
                     | '\u{2014}'
+                    | '\u{2013}'
             ) || c.is_whitespace()
         }) {
             break;
         }
         pos = next_end;
     }
+    // Round 43 (R43-A, F1 MAJOR = red team RT43-E1 +
+    // review F43-1): the gap set above and the rest
+    // trim below gain the en dash (U+2013) — the
+    // lone mid-line governor wearing it, glued or
+    // spaced ("notes (cancelled)– November 8,
+    // 2026"), was stepped over by neither set, so
+    // its cancelled date served live where both
+    // twins govern. The mark joins the sets, as at
+    // every seat this batch widens, so seats built
+    // later inherit it.
     let rest = text[pos..].trim_start_matches([
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}',
+        '-', '\u{2014}', '\u{2013}',
     ]);
     if matches!(rest.chars().next(), Some('(' | '[' | '{')) {
         return false;
@@ -2886,6 +2928,13 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         // the sequence ("(Monday)~ (notes)") is a
         // member of the sequence and is judged with
         // it, not only the sequence's tail group.
+        // Round 43 (R43-A, F1): the gap set gains
+        // the en dash (U+2013) — a weekday group
+        // wearing it inside the sequence
+        // ("(Monday)– (notes)") stood outside the
+        // run and served in silence, its record
+        // lost, where both twins' interior weekday
+        // groups are judged through this set.
         if !gap.chars().all(|c| {
             matches!(
                 c,
@@ -2902,6 +2951,7 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                     | '#'
                     | '-'
                     | '\u{2014}'
+                    | '\u{2013}'
             ) || c.is_whitespace()
         }) {
             break;
@@ -3402,9 +3452,20 @@ pub(super) fn leading_governor_company_judgment(
     text: &str,
     today: SimpleDate,
 ) -> Option<(SimpleDate, Option<WeekdayMismatch>, bool, bool)> {
-    const SEPARATORS: [char; 16] = [
+    // Round 43 (R43-A, F1): `SEPARATORS` gains the
+    // en dash (U+2013) — a mid-line company wearing
+    // it on either member, or spaced between its
+    // groups, collapsed to a silent serve on the
+    // base tree, and the leading company wearing
+    // it after its last group governed but lost
+    // its record (R42-F deviation 4(a)); both seats
+    // read through this one set (the loop's head
+    // trim and the walk's final trim alike), so
+    // the mark joins the set and both seats take
+    // their twins' composed outcomes.
+    const SEPARATORS: [char; 17] = [
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}',
+        '-', '\u{2014}', '\u{2013}',
     ];
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut governor_seen = false;

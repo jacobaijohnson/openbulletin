@@ -3508,6 +3508,181 @@ mod tests {
         }
     }
 
+    /// One zip64 end-of-central-directory record in
+    /// the round-44 crafts' shape: see the twin
+    /// helper in ob-model's zip_directory tests.
+    fn r44g_zip64_record(total: u64, cd_size: u64, cd_offset: u64) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x06\x06");
+        out.extend_from_slice(&44u64.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out
+    }
+
+    /// One zip64 locator in the round-44 crafts'
+    /// shape, naming the record at `record_at`.
+    fn r44g_zip64_locator(record_at: u64) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x06\x07");
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_at.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out
+    }
+
+    /// The saturated plain end record a zip64 writer
+    /// leaves behind (round-44 crafts).
+    fn r44g_saturated_eocd() -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    /// The round-44 zip64 crafts (red team RT44-A1,
+    /// generator `mk44.py`), assembled byte by byte
+    /// over the round-43 entry sets: "clean" the real
+    /// archive alone, under a plain end record;
+    /// "zip64real" the real archive under a zip64
+    /// record carrying the TRUE directory, a locator
+    /// naming that record, and a saturated plain end
+    /// record; "wrongcd" the real locals, a
+    /// 4,000-byte gap holding the plant directory at
+    /// +300 (the plant body's own records, the key
+    /// entry's record describing the plant content),
+    /// then the real directory, then a zip64 record
+    /// carrying the PLANT directory's offset, size,
+    /// and count, a locator naming that record at its
+    /// true position, and a saturated plain end
+    /// record; "badlocator" the zip64-real shape with
+    /// its locator pointing at 0.
+    fn r44g_archive(entries: &[(&[u8], &[u8])], key: usize, plant: &[u8], shape: &str) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data) in entries.iter() {
+            locals.push(body.len() as u32);
+            body.extend_from_slice(&r43d_local(name, data, 0, false));
+        }
+        let cd_start = body.len();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&r43d_central(name, data, locals[i], 0));
+        }
+        let mut pbody: Vec<u8> = Vec::new();
+        let mut plocals: Vec<u32> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            plocals.push(pbody.len() as u32);
+            let pdata = if i == key { plant } else { data };
+            pbody.extend_from_slice(&r43d_local(name, pdata, 0, false));
+        }
+        let mut pcentrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            let pdata = if i == key { plant } else { data };
+            pcentrals.extend_from_slice(&r43d_central(name, pdata, plocals[i], 0));
+        }
+        let total = entries.len() as u64;
+        let body_len = body.len();
+        let mut out = body;
+        match shape {
+            "zip64real" => {
+                let record_at = (body_len + centrals.len()) as u64;
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r44g_zip64_record(
+                    total,
+                    centrals.len() as u64,
+                    cd_start as u64,
+                ));
+                out.extend_from_slice(&r44g_zip64_locator(record_at));
+                out.extend_from_slice(&r44g_saturated_eocd());
+            }
+            "wrongcd" => {
+                let mut gap = vec![b'H'; 4000];
+                gap[300..300 + pcentrals.len()].copy_from_slice(&pcentrals);
+                let record_at = (body_len + 4000 + centrals.len()) as u64;
+                out.extend_from_slice(&gap);
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r44g_zip64_record(
+                    total,
+                    pcentrals.len() as u64,
+                    (body_len + 300) as u64,
+                ));
+                out.extend_from_slice(&r44g_zip64_locator(record_at));
+                out.extend_from_slice(&r44g_saturated_eocd());
+            }
+            "badlocator" => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r44g_zip64_record(
+                    total,
+                    centrals.len() as u64,
+                    cd_start as u64,
+                ));
+                out.extend_from_slice(&r44g_zip64_locator(0));
+                out.extend_from_slice(&r44g_saturated_eocd());
+            }
+            _ => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    0,
+                    &[],
+                ));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn r44g_zip64_wrongcd_and_controls_match_the_clean_control_at_the_idml_door() {
+        // Round 44, F9 (red team RT44-A1): a zip64
+        // EOCD whose CD offset points at a gap plant
+        // directory was judged on all four entry sets.
+        // This door's outcomes held on the audited
+        // tree — the disagreeing duplicate story
+        // refuses under either directory, since the
+        // plant carries the real names — so this pin
+        // stands as the door's control: with the
+        // frame's directory judged, every outcome on
+        // the wrongcd crafts matches the clean control
+        // in all four entry sets, zip64-real is
+        // clean-identical, and the bad-locator shape
+        // refuses in the reader's standing
+        // could-not-find words.
+        for (set, (entries, key, plant)) in r43d_entry_sets().into_iter().enumerate() {
+            let slices: Vec<(&[u8], &[u8])> = entries
+                .iter()
+                .map(|(name, data)| (name.as_slice(), data.as_slice()))
+                .collect();
+            let clean = r44g_archive(&slices, key, &plant, "clean");
+            let control = r43d_idml_outcome(&clean);
+            for shape in ["zip64real", "wrongcd"] {
+                let bytes = r44g_archive(&slices, key, &plant, shape);
+                let outcome = r43d_idml_outcome(&bytes);
+                assert_eq!(outcome, control, "set {set} shape {shape}");
+            }
+            let bytes = r44g_archive(&slices, key, &plant, "badlocator");
+            let outcome = r43d_idml_outcome(&bytes);
+            assert!(
+                outcome.contains("Could not find EOCD"),
+                "set {set} badlocator: the uniform refusal: {outcome}"
+            );
+        }
+    }
+
     #[test]
     fn r43d_trailing_and_held_archives_match_the_clean_control_at_the_idml_door() {
         // Round 43, F6 (red team RT43-A1): a complete

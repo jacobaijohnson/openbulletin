@@ -247,6 +247,30 @@
 //! and the first complete directory is the directory
 //! judged.
 //!
+//! Round 44, F9: a seventh generation addressed its
+//! plant through the zip64 record instead of a walked
+//! extent — real locals, a gap holding a plant
+//! directory, the real directory, then a zip64 record
+//! carrying the PLANT directory's offset, size, and
+//! count, a locator, and a saturated plain end record.
+//! The plant derived through the tail-gap arm, the
+//! one derivation that believed a zip64 record's
+//! declared directory on its walk alone, without
+//! asking whether the record's own frame closed over
+//! it. The zip64 arm is subordinated now (stated at
+//! `tail_gap_zip64_record`): where a complete
+//! directory standing after the declared directory's
+//! accounted end walks the declared count for exactly
+//! the declared size and closes on the record's own
+//! position, that directory — the one the file's own
+//! frame supports — is judged, and the declared
+//! plant in the gap before it is not. And the
+//! prefix-free view lays a subordinated zip64 record
+//! into the view declaring the judged directory (its
+//! offset rewritten, as the locator's already was),
+//! so the reader the doors hand the view to opens the
+//! judged directory too.
+//!
 //! This lives in ob-model, the lowest crate every zip
 //! door can reach, stated over raw bytes the way
 //! `read_capped` is stated over `Read`, so this crate
@@ -986,11 +1010,101 @@ fn tail_gap_zip64_record(
     if extent_end > record_at {
         return None;
     }
+    // Round 44, F9: the declared directory is not
+    // believed on its walk alone where the record's
+    // own frame supports a different one — a
+    // complete directory standing wholly after the
+    // declared directory's accounted end, walking
+    // the declared count for exactly the declared
+    // size and closing on the record's own position,
+    // is the directory this record's frame names,
+    // and a declared directory standing in the gap
+    // before it (its offset rewritten to point at
+    // the plant, its walk ending in unused bytes
+    // before the record) is subordinated to it, the
+    // way the walked-extent and trailing arms
+    // subordinate their plants. A tail-gap host
+    // whose gap stands after its own directory
+    // places no such directory there, so its
+    // declared directory stands as it always has.
+    if let Some(frame_start) =
+        frame_closing_directory_start(bytes, extent_end, total, cd_size, record_at)
+    {
+        return Some(CentralDirectory {
+            archive_offset,
+            cd_start: frame_start,
+            total,
+        });
+    }
     Some(CentralDirectory {
         archive_offset,
         cd_start,
         total,
     })
+}
+
+/// The start of a complete directory closing a
+/// zip64 record's own frame (round 44, F9): a walk
+/// of `total` records for exactly `cd_size` bytes
+/// (a signature record at the walk's end counted in
+/// that size or not, as in the standing derivations)
+/// whose accounted end is the zip64 record's own
+/// position at `record_at`, standing wholly at or
+/// after `declared_extent_end` — the declared
+/// directory's accounted end — so neither the
+/// declared directory itself nor a directory
+/// overlapping it is ever named. The closing start
+/// is arithmetic, not a hunt: the accounted end is
+/// the record's position and the accounted length
+/// is the declared size, or, where an uncounted
+/// signature record stands between the walk and the
+/// record, that record's own declared length closes
+/// the remaining gap and the walk stands that much
+/// earlier. None where no directory closes the
+/// frame that way.
+fn frame_closing_directory_start(
+    bytes: &[u8],
+    declared_extent_end: usize,
+    total: u64,
+    cd_size: usize,
+    record_at: usize,
+) -> Option<usize> {
+    let direct = record_at.checked_sub(cd_size)?;
+    let mut starts: Vec<usize> = vec![direct];
+    // The uncounted-signature arm: a signature
+    // record whose own span ends exactly at the
+    // record places the walk's start one signature
+    // length before the direct start. The record
+    // stands within a declared length (a u16) of
+    // the zip64 record, so only that window is
+    // scanned, position by position, for its header.
+    let scan_from = record_at.saturating_sub(6 + usize::from(u16::MAX));
+    let mut at = scan_from;
+    while at + 6 <= record_at {
+        if bytes[at..].starts_with(b"PK\x05\x05") && signature_record_spans_to(bytes, at, record_at)
+        {
+            if let Some(start) = at.checked_sub(cd_size) {
+                starts.push(start);
+            }
+        }
+        at += 1;
+    }
+    for start in starts {
+        if start < declared_extent_end {
+            continue;
+        }
+        let Some((walk_end, extent_end)) = directory_walk_and_signature_end(bytes, start, total)
+        else {
+            continue;
+        };
+        if walk_end - start != cd_size && extent_end - start != cd_size {
+            continue;
+        }
+        if extent_end == record_at {
+            return Some(start);
+        }
+    }
+    None
 }
 
 /// The byte span one central spot's local header
@@ -1653,6 +1767,24 @@ fn zip64_structural_span(
 /// not a gap owner: the first complete directory is
 /// the directory judged, and the trailing archive is
 /// subordinated the way a gap plant is.
+///
+/// Round 44, F9: the zip64 addressing arm is
+/// subordinated in its own derivation (stated at
+/// `tail_gap_zip64_record`, the arm the plant
+/// derived through): a zip64 record whose declared
+/// directory stands in a gap while a complete
+/// directory after it closes the record's own frame
+/// — the declared count, the declared size, the
+/// walk ending on the record's own position —
+/// judges that frame's directory, not the declared
+/// plant. Legitimate zip64 shapes stand as they
+/// always have: a record carrying its directory's
+/// true offset derives it (arithmetically, by the
+/// hunt, or by the tail-gap arm where a gap follows
+/// the directory), zip64 extra-field offsets in a
+/// record are still read through the records
+/// themselves, and a locator pointing nowhere
+/// derives nothing.
 pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
     judged_directory(bytes).map(|(_, directory)| directory)
 }
@@ -1859,6 +1991,16 @@ enum TailLayout {
         record_at: usize,
         record_len: usize,
         locator_at: usize,
+        /// Whether the record's own directory offset
+        /// names the judged directory (round 44, F9):
+        /// a record the derivation subordinated — its
+        /// offset pointing at a gap plant the frame
+        /// overruled — is laid into the view with its
+        /// offset rewritten to the judged directory,
+        /// the way the locator's record offset is
+        /// rewritten, so the view never carries a pair
+        /// that steers its reader to the plant.
+        record_declares_judged: bool,
     },
 }
 
@@ -1887,7 +2029,7 @@ fn tail_layout(bytes: &[u8], eocd: usize, directory: &CentralDirectory) -> Optio
                 let mut record_at = locator_at - 56;
                 loop {
                     if bytes[record_at..].starts_with(b"PK\x06\x06") {
-                        if let Some(record_len) = zip64_record_layout_at(
+                        if let Some((record_len, record_declares_judged)) = zip64_record_layout_at(
                             bytes,
                             record_at,
                             locator_at,
@@ -1901,6 +2043,7 @@ fn tail_layout(bytes: &[u8], eocd: usize, directory: &CentralDirectory) -> Optio
                                 record_at,
                                 record_len,
                                 locator_at,
+                                record_declares_judged,
                             });
                         }
                     }
@@ -1933,12 +2076,22 @@ fn tail_layout(bytes: &[u8], eocd: usize, directory: &CentralDirectory) -> Optio
 /// version-made-by of 45, was the pair the splice
 /// chose, and the reader then refused the good
 /// archive at every door), its fields name the judged
-/// directory (its total, and its directory offset
-/// read through the judged archive offset landing on
-/// the judged directory's start, its directory size
-/// the walk's length, counted signature record
-/// included or not), and its declared length ends at
-/// or before the locator.
+/// directory (its total, and its directory size the
+/// walk's length, counted signature record included
+/// or not), and its declared length ends at or
+/// before the locator. Round 44, F9: the record's
+/// directory OFFSET is the one field the derivation
+/// itself may overrule — a subordinated record points
+/// at the gap plant the frame displaced — so a record
+/// whose offset read through the judged archive
+/// offset does not land on the judged directory's
+/// start still lays out, and the returned flag says
+/// whether the record declares the judged directory:
+/// the splice rewrites a displaced offset to the
+/// judged directory in the view, as it rewrites the
+/// locator's record offset, so the pair the view
+/// carries is a pair the reader will judge — the
+/// judged directory, never the plant.
 fn zip64_record_layout_at(
     bytes: &[u8],
     record_at: usize,
@@ -1947,7 +2100,7 @@ fn zip64_record_layout_at(
     directory: &CentralDirectory,
     walk_end: usize,
     extent_end: usize,
-) -> Option<usize> {
+) -> Option<(usize, bool)> {
     let fixed_end = record_at.checked_add(56)?;
     if fixed_end > bytes.len() {
         return None;
@@ -1977,9 +2130,8 @@ fn zip64_record_layout_at(
     }
     let cd_size = u64_at(bytes, record_at + 40);
     let cd_offset = u64_at(bytes, record_at + 48);
-    if cd_offset.checked_add(archive_offset)? != u64::try_from(directory.cd_start).ok()? {
-        return None;
-    }
+    let declares_judged =
+        cd_offset.checked_add(archive_offset)? == u64::try_from(directory.cd_start).ok()?;
     if cd_size != u64::try_from(walk_end - directory.cd_start).ok()?
         && cd_size != u64::try_from(extent_end - directory.cd_start).ok()?
     {
@@ -1988,7 +2140,7 @@ fn zip64_record_layout_at(
     if extent_end > record_at {
         return None;
     }
-    Some(record_len)
+    Some((record_len, declares_judged))
 }
 
 /// The prefix-free view of an archive: the same bytes
@@ -2022,6 +2174,19 @@ fn zip64_record_layout_at(
 /// instead. A tail already contiguous is never
 /// spliced: the view is the archive's own bytes, cut
 /// at its start as always.
+///
+/// Round 44, F9: one rewrite joins the locator's —
+/// where the judged directory is not the directory
+/// the zip64 record declares (the derivation
+/// subordinated the record's plant), the record is
+/// laid into the view with its directory offset
+/// rewritten to the judged directory's position in
+/// the view, its size already naming the judged
+/// walk. A tail already contiguous whose record
+/// declares a displaced directory is spliced for
+/// that rewrite alone: the view's pair is a pair the
+/// reader will judge, and it judges the directory
+/// the model judged.
 pub fn prefix_free(bytes: &[u8]) -> Cow<'_, [u8]> {
     let Some((eocd, directory)) = judged_directory(bytes) else {
         return Cow::Borrowed(bytes);
@@ -2057,15 +2222,33 @@ pub fn prefix_free(bytes: &[u8]) -> Cow<'_, [u8]> {
             record_at,
             record_len,
             locator_at,
+            record_declares_judged,
         } => {
             if extent_end == record_at
                 && record_at + record_len == locator_at
                 && locator_at + 20 == eocd
+                && record_declares_judged
             {
                 return contiguous_view(start);
             }
             let mut view = bytes[start..extent_end].to_vec();
-            view.extend_from_slice(&bytes[record_at..record_at + record_len]);
+            // A record the derivation subordinated
+            // (round 44, F9) is laid into the view
+            // declaring the JUDGED directory: its
+            // directory offset is rewritten to the
+            // judged directory's position in the view,
+            // the locator rewrite's twin, so neither
+            // the reader nor a scan of the view is
+            // steered to the plant the record named.
+            // Its size already names the judged walk —
+            // the layout validated that — and no other
+            // field moves.
+            let mut record = bytes[record_at..record_at + record_len].to_vec();
+            if !record_declares_judged {
+                let cd_in_view = u64::try_from(directory.cd_start - start).unwrap_or(u64::MAX);
+                record[48..56].copy_from_slice(&cd_in_view.to_le_bytes());
+            }
+            view.extend_from_slice(&record);
             let mut locator = bytes[locator_at..locator_at + 20].to_vec();
             let record_in_view = u64::try_from(extent_end - start).unwrap_or(u64::MAX);
             locator[8..16].copy_from_slice(&record_in_view.to_le_bytes());
@@ -5216,6 +5399,252 @@ mod tests {
                 (vec![b'h'; 333], 905),
             ),
         ]
+    }
+
+    /// One zip64 end-of-central-directory record in
+    /// the round-44 crafts' shape: the fixed 56-byte
+    /// record (its size field says 44, no extensible
+    /// data sector), a single disk, the entry count
+    /// stated for this disk and in whole, and the
+    /// directory's size and offset stated outright.
+    fn r44g_zip64_record(total: u64, cd_size: u64, cd_offset: u64) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x06\x06");
+        out.extend_from_slice(&44u64.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out
+    }
+
+    /// One zip64 locator in the round-44 crafts'
+    /// shape, naming the record at `record_at`.
+    fn r44g_zip64_locator(record_at: u64) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x06\x07");
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_at.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out
+    }
+
+    /// The saturated plain end record a zip64 writer
+    /// leaves behind (round-44 crafts): every plain
+    /// count and size field at its sentinel.
+    fn r44g_saturated_eocd() -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u16::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    /// The round-44 zip64 crafts (red team RT44-A1,
+    /// generator `mk44.py`), assembled byte by byte
+    /// over the round-43 entry sets: "clean" the real
+    /// archive alone, under a plain end record;
+    /// "zip64real" the real archive under a zip64
+    /// record carrying the TRUE directory (offset,
+    /// size, count), a locator naming that record,
+    /// and a saturated plain end record; "wrongcd"
+    /// the real locals, a 4,000-byte gap holding the
+    /// plant directory at +300 (the plant body's own
+    /// records — the real entries' names, the plant
+    /// body's local offsets, the key entry's record
+    /// describing the plant content), then the real
+    /// directory, then a zip64 record carrying the
+    /// PLANT directory's offset, size, and count, a
+    /// locator naming that record at its true
+    /// position, and a saturated plain end record;
+    /// "badlocator" the zip64-real shape with its
+    /// locator pointing at 0. Returns the bytes and
+    /// the real directory's start in them.
+    fn r44g_archive(
+        entries: &[(&[u8], &[u8], u32)],
+        key: usize,
+        plant: (&[u8], u32),
+        shape: &str,
+    ) -> (Vec<u8>, usize) {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (name, data, crc) in entries.iter() {
+            locals.push(body.len() as u32);
+            body.extend_from_slice(&r43d_local(name, data, *crc, 0, false));
+        }
+        let cd_start = body.len();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data, crc)) in entries.iter().enumerate() {
+            centrals.extend_from_slice(&r43d_central(name, data.len() as u32, *crc, locals[i], 0));
+        }
+        let mut pbody: Vec<u8> = Vec::new();
+        let mut plocals: Vec<u32> = Vec::new();
+        for (i, (name, data, crc)) in entries.iter().enumerate() {
+            plocals.push(pbody.len() as u32);
+            let (pdata, pcrc) = if i == key { plant } else { (*data, *crc) };
+            pbody.extend_from_slice(&r43d_local(name, pdata, pcrc, 0, false));
+        }
+        let mut pcentrals: Vec<u8> = Vec::new();
+        for (i, (name, data, crc)) in entries.iter().enumerate() {
+            let (pdata, pcrc) = if i == key { plant } else { (*data, *crc) };
+            pcentrals.extend_from_slice(&r43d_central(
+                name,
+                pdata.len() as u32,
+                pcrc,
+                plocals[i],
+                0,
+            ));
+        }
+        let total = entries.len() as u64;
+        let body_len = body.len();
+        let mut out = body;
+        match shape {
+            "zip64real" => {
+                let record_at = (body_len + centrals.len()) as u64;
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r44g_zip64_record(
+                    total,
+                    centrals.len() as u64,
+                    cd_start as u64,
+                ));
+                out.extend_from_slice(&r44g_zip64_locator(record_at));
+                out.extend_from_slice(&r44g_saturated_eocd());
+                (out, cd_start)
+            }
+            "wrongcd" => {
+                let mut gap = vec![b'H'; 4000];
+                gap[300..300 + pcentrals.len()].copy_from_slice(&pcentrals);
+                let record_at = (body_len + 4000 + centrals.len()) as u64;
+                out.extend_from_slice(&gap);
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r44g_zip64_record(
+                    total,
+                    pcentrals.len() as u64,
+                    (body_len + 300) as u64,
+                ));
+                out.extend_from_slice(&r44g_zip64_locator(record_at));
+                out.extend_from_slice(&r44g_saturated_eocd());
+                (out, body_len + 4000)
+            }
+            "badlocator" => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r44g_zip64_record(
+                    total,
+                    centrals.len() as u64,
+                    cd_start as u64,
+                ));
+                out.extend_from_slice(&r44g_zip64_locator(0));
+                out.extend_from_slice(&r44g_saturated_eocd());
+                (out, cd_start)
+            }
+            _ => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    entries.len() as u16,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    0,
+                    &[],
+                ));
+                (out, cd_start)
+            }
+        }
+    }
+
+    #[test]
+    fn r44g_a_zip64_directory_pointing_at_a_gap_plant_never_steers() {
+        // Round 44, F9 (red team RT44-A1): the seventh
+        // generation of the archive discipline — a
+        // zip64 EOCD whose central-directory offset
+        // points at a plant directory standing in the
+        // gap before the real directory was judged on
+        // all four entry sets (the plant position, not
+        // the real directory's), the judged spot list
+        // carrying the plant key record's checksum, and
+        // the doors refused where the clean controls
+        // read OK. The zip64 arm is subordinated now:
+        // the directory the zip64 record's own frame
+        // supports — the complete directory whose walk
+        // closes the declared size to the record's own
+        // position — is the directory judged, so the
+        // judged spots are the clean control's, spot
+        // for spot, checksums included, and the
+        // prefix-free view derives that same directory.
+        // The standing controls ride in the same pin:
+        // zip64-real (the record carrying the TRUE
+        // directory) is clean-identical, and the
+        // bad-locator shape derives no directory at
+        // all, the uniform refusal every door reports.
+        for (set, entries, key, plant) in r43d_entry_sets() {
+            let slices: Vec<(&[u8], &[u8], u32)> = entries
+                .iter()
+                .map(|(name, data, crc)| (name.as_slice(), data.as_slice(), *crc))
+                .collect();
+            let plant_ref = (plant.0.as_slice(), plant.1);
+            let (clean, clean_cd) = r44g_archive(&slices, key, plant_ref, "clean");
+            let control = central_directory(&clean).expect("the clean control derives");
+            assert_eq!(control.cd_start, clean_cd, "{set}: the control stands");
+            let clean_spots = central_spots(&clean);
+
+            let (real, real_cd) = r44g_archive(&slices, key, plant_ref, "zip64real");
+            let directory = central_directory(&real).expect("the zip64-real control derives");
+            assert_eq!(
+                directory.cd_start, real_cd,
+                "{set} zip64real: the true directory is judged"
+            );
+            assert_eq!(directory.cd_start, control.cd_start, "{set} zip64real");
+            assert_eq!(directory.total, control.total, "{set} zip64real");
+            assert_eq!(
+                central_spots(&real),
+                clean_spots,
+                "{set} zip64real: the judged spots are the clean control's"
+            );
+
+            let (bytes, real_cd) = r44g_archive(&slices, key, plant_ref, "wrongcd");
+            let directory = central_directory(&bytes).expect("the wrongcd craft derives");
+            assert_eq!(
+                directory.cd_start, real_cd,
+                "{set} wrongcd: the frame's directory is judged, not the gap plant"
+            );
+            assert_eq!(directory.total, control.total, "{set} wrongcd");
+            assert_eq!(
+                directory.archive_offset, control.archive_offset,
+                "{set} wrongcd"
+            );
+            assert_eq!(
+                central_spots(&bytes),
+                clean_spots,
+                "{set} wrongcd: the judged spots are the clean control's, checksums included"
+            );
+            let view = prefix_free(&bytes);
+            let view_directory =
+                central_directory(&view).expect("the prefix-free view derives its directory");
+            assert_eq!(
+                view_directory.cd_start, directory.cd_start,
+                "{set} wrongcd: the view derives the judged directory"
+            );
+            assert_eq!(
+                central_spots(&view),
+                clean_spots,
+                "{set} wrongcd: the view's judged spots are the clean control's"
+            );
+
+            let (bytes, _) = r44g_archive(&slices, key, plant_ref, "badlocator");
+            assert_eq!(
+                central_directory(&bytes),
+                None,
+                "{set} badlocator: no directory derives, the uniform refusal"
+            );
+        }
     }
 
     #[test]

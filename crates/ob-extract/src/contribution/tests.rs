@@ -19558,6 +19558,75 @@ fn r40c_base_trailing_group_sequence_parses_without_the_cliff() {
     }
 }
 
+// Round 43 (R43-E, carried item (c) closed,
+// round-43 synthesis adjudication 6): the
+// `nested_seq_mix` shape — a nested day group
+// followed by a long trailing "(notes)"
+// sequence on the same line — earns its own
+// interleaved ratio pin. This shape is a
+// standing measurement, not a defect: it
+// completes at every size the probe drove
+// (to n=102,400, a 461 KB line), nothing hangs
+// and nothing cliffs, and this pin passes on
+// the tree it lands on — its work is
+// regression-keeping, holding the measured
+// standing against a future change that
+// steepens it. The reading is the nested date
+// itself: November 8, 2026.
+// The pinned shape is the probe's witness at
+// n=25,600 exactly: "November " + 6,400
+// openers + "8" + 6,400 closers + ", 2026 " +
+// 12,800 "(notes) " groups (probe doclen
+// 115,262), against the `longline` control at
+// 102,800 (4n+400, the standing control
+// sizing the sibling pins use), judged
+// through `r33d_interleaved_best` (interleaved
+// best-of-3), as every sibling cliff pin is
+// judged.
+// Bound: 10x. Calibration of record: the
+// worst quiet-window reading at 25,600 across
+// two independent windows is 7.09 (round-43
+// verify; round 42's worst was 6.92), median
+// 6.31 — 10x carries ~1.4x headroom, the same
+// posture as the sibling
+// `r40c_nested_day_groups_...` pin (6,400 /
+// 25,600 at 10x).
+// The bound is calibrated to THIS shape only,
+// and this comment states the measured
+// size-climb so it is never read family-wide
+// (round-43 verify lane, quiet window, debug
+// frame): ratio medians 3.89 / 4.52 / 6.31 /
+// 8.64 / 11.94 at n = 1,600 / 6,400 / 25,600 /
+// 51,200 / 102,400. The witness's time
+// exponent is ~1.28 — a mild superlinearity,
+// nowhere near quadratic — and the control
+// is linear over the same range, so the climb
+// is the witness's own. At 51,200 the ratio
+// already reaches 8.82 and at 102,400 it
+// reaches 13.99, past this bound: the larger
+// sizes stay the probe's job, or earn their
+// own pin only with its own calibrated bound.
+// The standing load discipline applies
+// unchanged: a ratio miss under co-tenant
+// load is dispositioned solo, never by
+// widening the bound.
+#[test]
+fn r43e_nested_seq_mix_parses_without_the_cliff() {
+    let text = format!(
+        "For Sunday: November {}8{}, 2026 {}\n\n## Announcement\n\nHi.\n",
+        "(".repeat(6400),
+        ")".repeat(6400),
+        "(notes) ".repeat(12800)
+    );
+    let control = r39g_word_run_control(102800);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, Some(nov(8)));
+    assert!(
+        witness_best < control_best * 10,
+        "the nested sequence-mix witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 10x the control)"
+    );
+}
+
 #[test]
 fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026)"; 75000].join(" and ");

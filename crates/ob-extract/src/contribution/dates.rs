@@ -850,6 +850,24 @@ fn base_trailing_sequence_mismatch(
     // sequence still names no weekday record for
     // the governor-only company and the resolution
     // serves identically.
+    // Round 44 (R44-E, F4 MINOR = red team
+    // RT44-C3): a company standing in the garnish
+    // in fullwidth dress pairs — "（cancelled）
+    // （Monday）", and the mixed dress "(cancelled)
+    // （Monday）" — is no bracket span to the walk
+    // below, so the company collapsed and the
+    // resolution served in silence where the
+    // ASCII twin refuses with the record. The
+    // garnish is re-dressed first
+    // (`fullwidth_groups_as_ascii`, composition.rs)
+    // — it is this walk's own string, so the
+    // re-dress is local to it, and the quoted
+    // consultation below then reads the garnish
+    // with its groups standing as written.
+    let mut garnish = match fullwidth_groups_as_ascii(&garnish) {
+        Some(redressed) => redressed,
+        None => garnish,
+    };
     let member_redressed = quoted_members_as_parens(&garnish, today, false);
     let full_redressed = quoted_members_as_parens(&garnish, today, true);
     if let Some(full) = full_redressed {

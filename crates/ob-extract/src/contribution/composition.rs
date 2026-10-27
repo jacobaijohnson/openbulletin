@@ -2247,6 +2247,158 @@ fn nearest_date_is_sunday_after_base(prefix: &str, today: SimpleDate) -> bool {
     }
 }
 
+/// `text` with each FULLWIDTH dress pair —
+/// U+FF08/U+FF09, U+FF3B/U+FF3D, U+FF5B/U+FF5D,
+/// the fullwidth forms a CJK IME produces for
+/// the ordinary bracket keys — re-dressed as its
+/// ASCII twin pair, where the pair balances: a
+/// closer closes the opener it matches, and a
+/// closer matching nothing on the stack closes
+/// nothing, as `balanced_spans` reads the ASCII
+/// pairs. Every matched pair is re-dressed,
+/// nested pairs included. Returns None when no
+/// fullwidth pair balances in `text`.
+///
+/// Round 44 (R44-E, F4 MINOR = red team
+/// RT44-C3): the fullwidth pairs were no groups
+/// to the company readers — a base-trailing
+/// company in fullwidth dress served the
+/// resolution silently, a leading company was
+/// governed with its weekday record lost, and a
+/// fullwidth weekday member behind a judged
+/// governor was not consulted — while the lone
+/// trailing and mid-line governors in the same
+/// dress govern through the token readers. The
+/// re-dress is byte-length preserving, in the
+/// R44-B shape: each fullwidth bracket is three
+/// bytes where its ASCII twin is one, so the
+/// twin stands at the bracket's first byte,
+/// padded with spaces, and every span computed
+/// against the re-dressed text stands at its
+/// written offset in the original. The
+/// consultations are the company seats the
+/// quoted-member re-dress (R43-C) is consulted
+/// at — the leading company walk, the leading
+/// and trailing sequence judgments, the trailing
+/// group run, and the base-trailing garnish
+/// walk — each under its own standing gates.
+/// The NON-fullwidth exotic pairs («», 「」,
+/// ⟪⟫, etc.) are not re-dressed here: the
+/// closed-dress limit stands (round-44
+/// synthesis adjudication 8). A crossed
+/// fullwidth pair (a fullwidth opener closed by
+/// an ASCII closer, or the reverse) balances
+/// nothing here and keeps its standing reading.
+pub(super) fn fullwidth_groups_as_ascii(text: &str) -> Option<String> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let pairs = fullwidth_pairs(&chars);
+    if pairs.is_empty() {
+        return None;
+    }
+    Some(redress_fullwidth_pairs(text, &chars, &pairs))
+}
+
+/// The balanced fullwidth pairs of `text`, as
+/// (open, close) char indices: a closer closes
+/// the opener it matches, and a closer matching
+/// nothing on the stack closes nothing, as
+/// `balanced_spans` reads the ASCII pairs.
+fn fullwidth_pairs(chars: &[(usize, char)]) -> Vec<(usize, usize)> {
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut stack: Vec<(usize, char)> = Vec::new();
+    for (idx, (_, c)) in chars.iter().enumerate() {
+        let want = match c {
+            '\u{ff08}' => Some('\u{ff09}'),
+            '\u{ff3b}' => Some('\u{ff3d}'),
+            '\u{ff5b}' => Some('\u{ff5d}'),
+            _ => None,
+        };
+        if let Some(want) = want {
+            stack.push((idx, want));
+            continue;
+        }
+        if matches!(c, '\u{ff09}' | '\u{ff3d}' | '\u{ff5d}')
+            && stack.last().map(|&(_, want)| want) == Some(*c)
+        {
+            let (open, _) = stack.pop().expect("a matched opener stands");
+            pairs.push((open, idx));
+        }
+    }
+    pairs
+}
+
+/// `text` with the given fullwidth pairs
+/// re-dressed as their ASCII twins, byte-length
+/// preserving (see `fullwidth_groups_as_ascii`).
+fn redress_fullwidth_pairs(
+    text: &str,
+    chars: &[(usize, char)],
+    pairs: &[(usize, usize)],
+) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (idx, (_, c)) in chars.iter().enumerate() {
+        if pairs.iter().any(|&(o, _)| o == idx) {
+            match c {
+                '\u{ff08}' => out.push_str("(  "),
+                '\u{ff3b}' => out.push_str("[  "),
+                _ => out.push_str("{  "),
+            }
+        } else if pairs.iter().any(|&(_, cl)| cl == idx) {
+            match c {
+                '\u{ff09}' => out.push_str(")  "),
+                '\u{ff3d}' => out.push_str("]  "),
+                _ => out.push_str("}  "),
+            }
+        } else {
+            out.push(*c);
+        }
+    }
+    out
+}
+
+/// `text` with each fullwidth pair whose
+/// contents judge as a DATE group re-dressed as
+/// its ASCII twin pair — the fullwidth form of
+/// `quoted_date_groups_as_parens` (round 44,
+/// R44-E, F4 = red team RT44-C3): a date group
+/// standing in fullwidth dress ("next Sunday
+/// （November 8, 2026）") was no group to the
+/// date readers, so the trailing-alone group
+/// carried no parenthesized memory and kept
+/// nothing where its ASCII dress carries both.
+/// The date-content scoping is the quoted
+/// re-dress's own: contents judging as a date
+/// group under `group_date` — the judgment the
+/// quoted date arms apply — are re-dressed, and
+/// every other fullwidth pair (a governor, a
+/// weekday, an inert group) keeps its bytes, so
+/// a lone fullwidth governor group at a date
+/// seat keeps the standing reading the token
+/// readers give it. Byte-length preserving, as
+/// `fullwidth_groups_as_ascii`. Returns None
+/// when no fullwidth date group stands in
+/// `text`.
+pub(super) fn fullwidth_date_groups_as_ascii(
+    text: &str,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> Option<String> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let pairs: Vec<(usize, usize)> = fullwidth_pairs(&chars)
+        .into_iter()
+        .filter(|&(o, cl)| {
+            let (open_at, _) = chars[o];
+            let (close_at, _) = chars[cl];
+            let inner = &text[open_at + '\u{ff08}'.len_utf8()..close_at];
+            group_date(inner, today, anchor).is_some()
+        })
+        .collect();
+    if pairs.is_empty() {
+        return None;
+    }
+    Some(redress_fullwidth_pairs(text, &chars, &pairs))
+}
+
 /// `text` with each quoted COMPANY MEMBER span
 /// re-dressed as its bracket twin — the quote
 /// characters at the span's edges replaced by "("
@@ -2465,6 +2617,35 @@ fn trailing_group_run(text: &str, today: SimpleDate) -> Option<(Vec<(usize, usiz
     // under the same strict-extension gate.
     let standing = trailing_group_run_walk(text);
     if let Some(redressed) = quoted_members_as_parens(text, today, true) {
+        if redressed.len() == text.len() {
+            if let Some(redressed_run) = trailing_group_run_walk(&redressed) {
+                let extends = match &standing {
+                    None => true,
+                    Some((run, _)) => {
+                        redressed_run.0.len() > run.len()
+                            && run.iter().all(|span| redressed_run.0.contains(span))
+                    }
+                };
+                if extends {
+                    return Some(redressed_run);
+                }
+            }
+        }
+    }
+    // Round 44 (R44-E, F4 MINOR = red team
+    // RT44-C3): the fullwidth-dress retry — a
+    // member standing in a fullwidth dress pair
+    // ("November 1, 2026 (cancelled)（Monday）")
+    // is no bracket span, so the walk above never
+    // saw the run its ASCII twin walks and the
+    // governor's company served live. The walk is
+    // retried on the fullwidth re-dress
+    // (`fullwidth_groups_as_ascii`) under the
+    // same strict-extension gate as the quoted
+    // retry; the re-dress is byte-length
+    // preserving, so its spans are the original
+    // text's spans.
+    if let Some(redressed) = fullwidth_groups_as_ascii(text) {
         if redressed.len() == text.len() {
             if let Some(redressed_run) = trailing_group_run_walk(&redressed) {
                 let extends = match &standing {
@@ -3753,6 +3934,34 @@ pub(super) fn group_sequence_weekday_mismatch(
             }
         }
     }
+    // Round 44 (R44-E, F4 MINOR = red team
+    // RT44-C3): the fullwidth-dress retry — a
+    // governor-free leading sequence standing in
+    // fullwidth dress pairs ("（Monday）（notes）
+    // November 1, 2026") is no sequence to the
+    // walk above, so its weekday went unjudged
+    // where its ASCII twin refuses with the
+    // record. The sequence is read on the
+    // fullwidth re-dress
+    // (`fullwidth_groups_as_ascii`) and judged by
+    // the same weekday check; a sequence the
+    // standing walk already reads whole keeps its
+    // standing judgment (the arm above has
+    // answered or fallen through on it).
+    if let Some(redressed) = fullwidth_groups_as_ascii(text) {
+        if let Some((inners, rest)) = leading_group_sequence(&redressed) {
+            let tokens: Vec<&str> = rest.split_whitespace().collect();
+            if let Some((date, _)) = parse_date_prefix(&tokens, today) {
+                for inner in &inners {
+                    if let Some((named, number)) = garnish_group_weekday(inner) {
+                        if date.weekday() != number {
+                            return Some(WeekdayMismatch { named, date });
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Round 39 (R39-C, F4, arm (c)): the single
     // leading group behind head separators, judged
     // as its unseparated twin is — the sequence
@@ -3898,6 +4107,35 @@ fn trailing_sequence_weekday_mismatch(text: &str, today: SimpleDate) -> Option<W
                 text
             }
         }
+    };
+    // Round 44 (R44-E, F4 MINOR = red team
+    // RT44-C3): the fullwidth-dress reading — a
+    // governor-free trailing sequence standing in
+    // fullwidth dress pairs ("November 1, 2026
+    // （notes）（Monday）") is no sequence to the
+    // standing walk, so its weekday went unjudged
+    // where its ASCII twin refuses with the
+    // record. The re-dress
+    // (`fullwidth_groups_as_ascii`) is judged
+    // where the standing text was chosen above
+    // and its sequence is strictly longer and
+    // governor-free — the member reading's own
+    // two requirements at this seat.
+    let fw = fullwidth_groups_as_ascii(text);
+    let judged = match &fw {
+        Some(fw_text) if judged == text => {
+            let fw_seq = trailing_group_sequence(fw_text);
+            let fw_len = fw_seq.as_ref().map_or(0, |(inners, _)| inners.len());
+            let fw_governor_free = fw_seq.as_ref().map_or(true, |(inners, _)| {
+                !inners.iter().any(|inner| governor_group_at_head(inner))
+            });
+            if fw_len > standing_len && fw_governor_free {
+                fw_text.as_str()
+            } else {
+                judged
+            }
+        }
+        _ => judged,
     };
     let (inners, prefix) = trailing_group_sequence(judged)?;
     let stripped = strip_leading_group_run(prefix);
@@ -4153,6 +4391,27 @@ pub(super) fn leading_governor_company_judgment(
         '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}',
         '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
     ];
+    // Round 44 (R44-E, F4 MINOR = red team
+    // RT44-C3): a company standing in fullwidth
+    // dress pairs ("（cancelled）（Monday）
+    // November 1, 2026") is no group to the walk
+    // below — its governor governed through the
+    // token readers with the weekday record lost,
+    // and the mixed dress (a fullwidth governor
+    // before an ASCII weekday group) served in
+    // silence. The walk is taken on the fullwidth
+    // re-dress (`fullwidth_groups_as_ascii`) when
+    // one stands: the walk returns no text, only
+    // the framed date and the record, so the
+    // re-dress is local to the judgment. This
+    // walk's own holdings stand on the re-dressed
+    // text exactly as on the standing text — it
+    // answers only where a governor AND a weekday
+    // group stand in the company, so a lone
+    // fullwidth group at this slot keeps its
+    // standing reading untouched.
+    let redressed = fullwidth_groups_as_ascii(text);
+    let text = redressed.as_deref().unwrap_or(text);
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut governor_seen = false;
     let mut crossed_seen = false;
@@ -10518,6 +10777,36 @@ pub(super) fn quoted_groups_redressed_where_judged(
         }
     }
     if let Some(candidate) = quoted_date_groups_as_parens(text, today, anchor) {
+        if group_beside_relative_core(&candidate, today, anchor)
+            || group_beside_relative_core(
+                strip_all_trailing_parenthesized(&candidate),
+                today,
+                anchor,
+            )
+            || quoted_group_at_framing_position(&candidate, today, anchor)
+            || quoted_group_alone_beside_relative_core(&candidate)
+            || quoted_group_on_plain_date_line(&candidate, today, anchor)
+        {
+            return Some(candidate);
+        }
+    }
+    // Round 44 (R44-E, F4 MINOR = red team
+    // RT44-C3): the fullwidth candidate — a DATE
+    // group standing in a fullwidth dress pair
+    // (`fullwidth_date_groups_as_ascii`) is
+    // consulted at the same judged positions,
+    // under the same gates: a fullwidth date
+    // group standing alone beside a relative
+    // phrase ("next Sunday （November 8, 2026）")
+    // was no group to these readers, so the
+    // phrase's parenthesized memory and the
+    // Keep-through were lost where the ASCII
+    // dress carries both. The candidate is
+    // date-scoped, as the quoted candidates are:
+    // a fullwidth governor or weekday group is
+    // never re-dressed here, and its standing
+    // readings at these seats do not move.
+    if let Some(candidate) = fullwidth_date_groups_as_ascii(text, today, anchor) {
         if group_beside_relative_core(&candidate, today, anchor)
             || group_beside_relative_core(
                 strip_all_trailing_parenthesized(&candidate),

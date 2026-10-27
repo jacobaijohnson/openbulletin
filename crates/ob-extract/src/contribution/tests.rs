@@ -39045,17 +39045,33 @@ fn r44b_scope_controls_unmoved() {
     // claimed, still splits the trailing-alone
     // governor, which serves live.
     r40e_serves_silent("November 8, 2026 (cancelled)\u{2032}", nov(8));
-    // (4) The fullwidth DRESS pairs (R44-E's seat):
-    // a base-trailing company in fullwidth parens
-    // still serves the resolution in silence, and
-    // the leading fullwidth-paren company still
-    // reads with no date and no record, exactly as
-    // on the base tree.
-    r40e_serves_silent(
+    // (4) RESTATED, flagged (round 44, R44-E,
+    // F4 = red team RT44-C3; coordinator ruling
+    // 2026-10-27 extending the flagged restatement
+    // to exactly this arm): the fullwidth DRESS
+    // pairs are judged under R44-E at the company
+    // seats — a base-trailing company in fullwidth
+    // parens refuses WITH the weekday record, and
+    // the leading fullwidth-paren company is
+    // governed WITH the same record, exactly as
+    // their ASCII twins read. As recorded by
+    // R44-B these arms asserted the not-yet-judged
+    // base readings (the base-trailing line served
+    // the resolution in silence; the leading line
+    // read with no record); the restatement
+    // follows the seat this arm named ("R44-E's
+    // seat"). Arms (1)–(3) above stand as they
+    // are, untouched by this restatement.
+    r40e_governed_with_record(
         "Sunday after November 1, 2026 \u{ff08}cancelled\u{ff09}\u{ff08}Monday\u{ff09}",
-        nov(8),
+        "Monday",
+        nov(1),
     );
-    r40e_governed_silent("\u{ff08}cancelled\u{ff09}\u{ff08}Monday\u{ff09} November 1, 2026");
+    r40e_governed_with_record(
+        "\u{ff08}cancelled\u{ff09}\u{ff08}Monday\u{ff09} November 1, 2026",
+        "Monday",
+        nov(1),
+    );
 }
 
 // Round 44 (R44-C, F5 MAJOR as adjudicated,
@@ -39702,4 +39718,296 @@ fn r44d_scope_controls_unmoved() {
         let line = format!("November 8, 2026 (cancelled){mark}");
         r40e_serves_silent(&line, nov(8));
     }
+}
+
+// Round 44 (R44-E, F4 MINOR = red team RT44-C3):
+// the fullwidth dress pairs — U+FF08/U+FF09,
+// U+FF3B/U+FF3D, U+FF5B/U+FF5D, the same CJK IME
+// fullwidth path as F2/F3 — were not read as
+// groups at the company seats: a base-trailing
+// company in fullwidth dress served the
+// resolution silently, a leading company was
+// governed with its weekday record lost, a
+// fullwidth weekday member behind a judged
+// governor was not consulted, and a
+// trailing-alone fullwidth group carried no
+// memory. The lone trailing and mid-line
+// governors in fullwidth dress DO govern at
+// base (twin-identical) and stand below as
+// controls. The fix reads the fullwidth pairs
+// as groups at the company seats — a
+// byte-length-preserving re-dress to the ASCII
+// twins consulted where the quoted-member
+// re-dress (R43-C) is consulted — scoped to
+// the witnessed seats: the company
+// seats take the member re-dress, and the
+// trailing-alone seat takes the date-scoped
+// re-dress through the one consultation door
+// (`quoted_groups_redressed_where_judged`)
+// the quoted date groups use, under its
+// standing position gates — the alone split
+// itself is not widened (a first candidate
+// shape widening `split_last` moved the held
+// lone-governor control; see the batch
+// record). Every pair below compares the
+// fullwidth line's FULL
+// record against its ASCII twin's via the r34e
+// helpers, on the For line and the Keep-through
+// line, and the headline arms are stated
+// outright. November 1 and November 8, 2026
+// are Sundays.
+
+fn r44e_dress_pairs() -> [(&'static str, &'static str, &'static str, &'static str); 3] {
+    [
+        ("\u{ff08}", "\u{ff09}", "(", ")"),
+        ("\u{ff3b}", "\u{ff3d}", "[", "]"),
+        ("\u{ff5b}", "\u{ff5d}", "{", "}"),
+    ]
+}
+
+#[test]
+fn r44e_fullwidth_dress_base_trailing_company_refuses_with_the_record() {
+    // The headline family (contrib44.log indices
+    // 1109–1111 and their pair twins): the
+    // base-trailing company in fullwidth dress
+    // refuses WITH WeekdayMismatch(Monday@
+    // 2026-11-01), as its ASCII twin does — on
+    // the base tree it serves the resolution
+    // 2026-11-08 in silence, all three pairs.
+    // The quoted-member seat — a fullwidth
+    // weekday member behind a judged governor —
+    // is the same walk's garnish.
+    for (o, c, ao, ac) in r44e_dress_pairs() {
+        for (line, twin_line) in [
+            (
+                format!("Sunday after November 1, 2026 {o}cancelled{c}{o}Monday{c}"),
+                format!("Sunday after November 1, 2026 {ao}cancelled{ac}{ao}Monday{ac}"),
+            ),
+            (
+                format!("Sunday after November 1, 2026 (cancelled){o}Monday{c}"),
+                format!("Sunday after November 1, 2026 (cancelled){ao}Monday{ac}"),
+            ),
+            (
+                format!("Sunday after November 1, 2026 {o}cancelled{c}(Monday)"),
+                format!("Sunday after November 1, 2026 {ao}cancelled{ac}(Monday)"),
+            ),
+            (
+                format!("Sunday after November 1, 2026 {o}notes{c}{o}Monday{c}"),
+                format!("Sunday after November 1, 2026 {ao}notes{ac}{ao}Monday{ac}"),
+            ),
+            (
+                format!("Sunday after November 1, 2026 {o}cancelled{c}{o}Monday{c}{o}notes{c}"),
+                format!(
+                    "Sunday after November 1, 2026 {ao}cancelled{ac}{ao}Monday{ac}{ao}notes{ac}"
+                ),
+            ),
+            (
+                format!("Sunday after November 1, 2026 notes {o}cancelled{c}{o}Monday{c}"),
+                format!("Sunday after November 1, 2026 notes {ao}cancelled{ac}{ao}Monday{ac}"),
+            ),
+        ] {
+            r40e_governed_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, &twin_line);
+            r34e_keep_twin(&line, &twin_line);
+        }
+    }
+}
+
+#[test]
+fn r44e_fullwidth_dress_leading_company_refuses_with_the_record() {
+    // The leading family (contrib44.log index
+    // 1108 and its pair twins): the leading
+    // company in fullwidth dress refuses WITH
+    // the record, as its ASCII twin does — on
+    // the base tree the governor governs with
+    // the record lost (no date, no record). The
+    // mixed dress (a fullwidth governor before
+    // an ASCII weekday group) serves 2026-11-01
+    // in silence at base. The governor-free
+    // leading sequence and the mid-line company
+    // behind a lead-in word take their twins'
+    // readings at the same seats.
+    for (o, c, ao, ac) in r44e_dress_pairs() {
+        for (line, twin_line) in [
+            (
+                format!("{o}cancelled{c}{o}Monday{c} November 1, 2026"),
+                format!("{ao}cancelled{ac}{ao}Monday{ac} November 1, 2026"),
+            ),
+            (
+                format!("{o}cancelled{c}(Monday) November 1, 2026"),
+                format!("{ao}cancelled{ac}(Monday) November 1, 2026"),
+            ),
+            (
+                format!("{o}cancelled{c}{o}Monday{c}{o}notes{c} November 1, 2026"),
+                format!("{ao}cancelled{ac}{ao}Monday{ac}{ao}notes{ac} November 1, 2026"),
+            ),
+            (
+                format!("{o}Monday{c}{o}notes{c} November 1, 2026"),
+                format!("{ao}Monday{ac}{ao}notes{ac} November 1, 2026"),
+            ),
+            (
+                format!("notes {o}cancelled{c}{o}Monday{c} November 1, 2026"),
+                format!("notes {ao}cancelled{ac}{ao}Monday{ac} November 1, 2026"),
+            ),
+        ] {
+            r40e_governed_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, &twin_line);
+            r34e_keep_twin(&line, &twin_line);
+        }
+    }
+}
+
+#[test]
+fn r44e_fullwidth_dress_trailing_company_and_member_seats() {
+    // The trailing seats of the same family: a
+    // fullwidth weekday member behind a judged
+    // ASCII governor serves 2026-11-01 LIVE at
+    // base; under the fix the company governs in
+    // silence, as its twin does. A governor-free
+    // trailing sequence in fullwidth dress
+    // refuses WITH the record, as its twin does.
+    // The both-fullwidth trailing company
+    // (contrib44.log index 1107) already reads
+    // governed in silence at base, twin-identical,
+    // and stands as the family's parity arm.
+    for (o, c, ao, ac) in r44e_dress_pairs() {
+        let line = format!("November 1, 2026 (cancelled){o}Monday{c}");
+        let twin_line = format!("November 1, 2026 (cancelled){ao}Monday{ac}");
+        r40e_governed_silent(&line);
+        r34e_for_twin(&line, &twin_line);
+        r34e_keep_twin(&line, &twin_line);
+        let line = format!("November 1, 2026 {o}notes{c}{o}Monday{c}");
+        let twin_line = format!("November 1, 2026 {ao}notes{ac}{ao}Monday{ac}");
+        r40g_refuses_with_record(&line, "Monday", nov(1));
+        r34e_for_twin(&line, &twin_line);
+        r34e_keep_twin(&line, &twin_line);
+        let line = format!("November 1, 2026 {o}cancelled{c}{o}Monday{c}");
+        let twin_line = format!("November 1, 2026 {ao}cancelled{ac}{ao}Monday{ac}");
+        r40e_governed_silent(&line);
+        r34e_for_twin(&line, &twin_line);
+        r34e_keep_twin(&line, &twin_line);
+    }
+}
+
+#[test]
+fn r44e_fullwidth_dress_trailing_alone_memory_and_keep() {
+    // The trailing-alone family (contrib44.log
+    // index 1112 and its pair twins): the
+    // fullwidth group is read as the alone group
+    // — the For route remembers the phrase as
+    // written with paren=2026-11-08 and the Keep
+    // route keeps 2026-11-08, as the ASCII dress
+    // does (R42-D's outright helper). On the
+    // base tree the For route serves 2026-11-01
+    // (the bare phrase's reading) with the
+    // group's date standing as a second date,
+    // and the Keep route keeps 2026-11-01 with
+    // the group's date as its second date.
+    for (o, c, ao, ac) in r44e_dress_pairs() {
+        let line = format!("next Sunday {o}November 8, 2026{c}");
+        r42d_alone_memory_outright(&line);
+        let twin_line = format!("next Sunday {ao}November 8, 2026{ac}");
+        r34e_keep_twin(&line, &twin_line);
+        let line = format!("next Sunday {o}November 8, 2026{c}!");
+        r42d_alone_memory_outright(&line);
+        r34e_keep_twin(&line, "next Sunday (November 8, 2026)!");
+    }
+}
+
+#[test]
+fn r44e_fullwidth_dress_held_lone_governor_arms() {
+    // Controls, held within the surface at base
+    // (contrib44.log indices 1106, 1110 and their
+    // pair twins): the lone trailing governor and
+    // the mid-line governor in fullwidth dress DO
+    // govern (for=None, twin-identical), and the
+    // lone leading governor governs in silence as
+    // its twin does. These arms pass on the base
+    // tree by design and must not move.
+    for (o, c, ao, ac) in r44e_dress_pairs() {
+        for (line, twin_line) in [
+            (
+                format!("November 8, 2026 {o}cancelled{c}"),
+                format!("November 8, 2026 {ao}cancelled{ac}"),
+            ),
+            (
+                format!("notes {o}cancelled{c} November 8, 2026"),
+                format!("notes {ao}cancelled{ac} November 8, 2026"),
+            ),
+            (
+                format!("{o}cancelled{c} November 8, 2026"),
+                format!("{ao}cancelled{ac} November 8, 2026"),
+            ),
+        ] {
+            r40e_governed_silent(&line);
+            r34e_for_twin(&line, &twin_line);
+            r34e_keep_twin(&line, &twin_line);
+        }
+    }
+}
+
+#[test]
+fn r44e_scope_controls_unmoved() {
+    // Controls, passing on the base tree by
+    // design and unmoved by this batch.
+    // (1) The closed-dress limit (round-44
+    // synthesis adjudication 8): the NON-fullwidth
+    // exotic dress pairs («», 「」, ⟪⟫) are not
+    // read as groups at the company seats — the
+    // base-trailing company in exotic dress still
+    // serves the resolution in silence, the
+    // leading exotic company is governed with no
+    // record, and the trailing-alone exotic group
+    // still reads as the bare phrase with the
+    // group's date standing outside it.
+    for (o, c) in [
+        ("\u{ab}", "\u{bb}"),
+        ("\u{300c}", "\u{300d}"),
+        ("\u{27ea}", "\u{27eb}"),
+    ] {
+        let line = format!("Sunday after November 1, 2026 {o}cancelled{c}{o}Monday{c}");
+        r40e_serves_silent(&line, nov(8));
+        let line = format!("{o}cancelled{c}{o}Monday{c} November 1, 2026");
+        r40e_governed_silent(&line);
+        // The alone arm stated outright (the bare
+        // phrase's own serving date is the test
+        // frame's, so it is not named): the exotic
+        // group is no alone group — no
+        // parenthesized memory stands, and the
+        // group's date stands as a second date
+        // beside the bare phrase's serving.
+        let line = format!("next Sunday {o}November 8, 2026{c}");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let parsed = parse_contribution(&text, today()).expect("parses");
+        assert!(
+            parsed.for_date.is_some(),
+            "{line}: the bare phrase still serves"
+        );
+        assert_eq!(
+            parsed.for_sunday_parenthesized_date, None,
+            "{line}: no parenthesized memory"
+        );
+        assert_eq!(
+            parsed.for_sunday_second_dates,
+            vec![nov(8)],
+            "{line}: the group's date stands as a second date"
+        );
+    }
+    // (2) The seats this batch does NOT claim,
+    // witnessed standing on the base tree and
+    // stated in the batch record's reach
+    // statement: a LONE fullwidth group at a
+    // non-company seat keeps its standing
+    // reading — the lone base-trailing weekday
+    // group still serves the resolution in
+    // silence (the base-trailing walk judges
+    // sequences, and its lone-group record runs
+    // through a different reader), and the lone
+    // leading weekday group is still governed
+    // with no record.
+    r40e_serves_silent(
+        "Sunday after November 1, 2026 \u{ff08}Monday\u{ff09}",
+        nov(8),
+    );
+    r40e_governed_silent("\u{ff08}Monday\u{ff09} November 1, 2026");
 }

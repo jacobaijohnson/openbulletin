@@ -34517,8 +34517,23 @@ fn r42d_trailing_seats_scope_controls_unmoved() {
     // en-dash family at the round-43 seats is
     // pinned in the R43-A tests at the end of
     // this file.
+    // RESTATED IN PART AGAIN (round 44, R44-A,
+    // F1 = review F44-1; flagged in the R44-A
+    // batch record and the coordinator's ruling
+    // of 2026-10-27 extending the restatement to
+    // this pin): exactly one arm — the G1 arm,
+    // the governor-first trailing sequence
+    // closing on an inert group wearing the en
+    // dash — now GOVERNS silently (it no longer
+    // serves), as its "-" and "—" twins govern
+    // there through the sequence-tail peels
+    // R44-A widens (probe44c G1). The earlier
+    // blocks above stand as the record of their
+    // rounds; for this arm this block supersedes
+    // them. Every other arm of this pin stands
+    // unmoved as a control.
     r40e_governed_silent("November 8, 2026 (cancelled)\u{2013}");
-    r40e_serves_silent("November 8, 2026 (cancelled)(notes)\u{2013}", nov(8));
+    r40e_governed_silent("November 8, 2026 (cancelled)(notes)\u{2013}");
     r40g_refuses_with_record("November 1, 2026 (Monday)\u{2013}", "Monday", nov(1));
     r40e_governed_silent("November 8, 2026 (cancelled)\u{2013} (notes)");
     r40g_refuses_with_record("November 1, 2026 (notes)(Monday)\u{2013}", "Monday", nov(1));
@@ -34813,25 +34828,50 @@ fn r42f_en_dash_scope_controls_unmoved() {
     // outright, and the R43-A pins at the end of
     // this file pin the seat in full. Every other
     // arm of this pin stands unmoved as a control.
-    r40e_serves_silent("November 8, 2026 (cancelled)(notes)\u{2013}", nov(8));
+    // RESTATED IN PART AGAIN (round 44, R44-A,
+    // F1 = review F44-1; flagged in the R44-A
+    // batch record and the coordinator's ruling
+    // of 2026-10-27 extending the restatement to
+    // this pin): exactly the four arms below
+    // asserted the defective en-dash readings at
+    // the sequence-tail seats as controls. The
+    // G1 arm — the governor-first trailing
+    // sequence closing on an inert group — now
+    // GOVERNS silently (probe44c G1), and the
+    // three weekday arms — H3 at the plain
+    // trailing slot, G2 at the base-trailing
+    // slot, and G3 at the leading slot — now
+    // refuse WITH WeekdayMismatch(Monday@
+    // 2026-11-01) (probe44d H3, probe44c G2/G3),
+    // each restated to its twins' reading
+    // through the sequence-tail peels R44-A
+    // widens. The comments that headed these
+    // arms in their rounds stand superseded for
+    // these arms only; every other arm of this
+    // pin stands unmoved as a control, including
+    // the en-dash arms at the seats R43-A judged
+    // (the interior arms directly below).
+    r40e_governed_silent("November 8, 2026 (cancelled)(notes)\u{2013}");
     r40e_governed_silent("November 8, 2026 (cancelled)\u{2013} (notes)");
     r40e_governed_silent("November 8, 2026 (cancelled) \u{2013} (notes)");
-    // A trailing sequence closing on an inert
-    // group serves in silence — the weekday group
-    // inside it is not the run's final group, and
-    // no witnessed arm judges it at this seat —
-    // at the plain and base-trailing slots alike.
-    r40e_serves_silent("November 1, 2026 (Monday)(notes)\u{2013}", nov(1));
-    r40e_serves_silent(
+    // The weekday arms, restated per the block
+    // above: a trailing sequence closing on an
+    // inert group refuses with its record — the
+    // weekday group inside it is judged at this
+    // seat now — at the plain and base-trailing
+    // slots alike.
+    r40e_governed_with_record("November 1, 2026 (Monday)(notes)\u{2013}", "Monday", nov(1));
+    r40e_governed_with_record(
         "Sunday after November 1, 2026 (Monday)(notes)\u{2013}",
-        nov(8),
+        "Monday",
+        nov(1),
     );
-    // A leading sequence wearing the mark after
-    // its weekday group serves in silence: the
-    // lone leading arm above is the witnessed one,
-    // and the sequence walk's trims are not this
-    // batch's to widen.
-    r40e_serves_silent("(Monday)(notes)\u{2013} November 1, 2026", nov(1));
+    // The leading arm, restated per the block
+    // above: a leading sequence wearing the mark
+    // after its last group refuses with its
+    // record — the sequence walk's trims are
+    // widened by R44-A.
+    r40e_governed_with_record("(Monday)(notes)\u{2013} November 1, 2026", "Monday", nov(1));
     // The governor-last trailing seat is R42-D's,
     // governed on the base tree and governed
     // still — restated here only as a control, not
@@ -37736,21 +37776,34 @@ fn r43a_en_dash_scope_controls_unmoved() {
         "Monday",
         nov(1),
     );
-    // The governor-first trailing sequence closing
-    // on an inert group serves under the mark, at
-    // the plain and base-trailing slots alike —
-    // its final group is no governor and no
-    // weekday, and no arm of F1 judges it.
-    r40e_serves_silent("November 8, 2026 (cancelled)(notes)\u{2013}", nov(8));
-    r40e_serves_silent(
+    // RESTATED, flagged (round 44, R44-A, F1 =
+    // review F44-1; round-44 synthesis
+    // adjudication 4): the three arms below
+    // asserted the defective en-dash readings at
+    // the sequence-tail seats as controls, on this
+    // batch's presupposition that the twins serve
+    // there too. The round-44 review witness
+    // (probe44c G1/G2/G3, probe44d H1–H4) shows the
+    // twins GOVERN at the governor arm and refuse
+    // WITH WeekdayMismatch(Monday@2026-11-01) at
+    // the weekday arms, through the very peels
+    // R44-A widens; these arms are restated to the
+    // twins' readings, and no other arm of this
+    // pin is touched. The governor-first trailing
+    // sequence closing on an inert group now
+    // governs under the mark, as under its twins.
+    r40e_governed_silent("November 8, 2026 (cancelled)(notes)\u{2013}");
+    // The base-trailing weekday sequence closing
+    // on an inert group refuses with its record.
+    r40e_governed_with_record(
         "Sunday after November 1, 2026 (Monday)(notes)\u{2013}",
-        nov(8),
+        "Monday",
+        nov(1),
     );
     // A leading sequence wearing the mark after
-    // its weekday group serves in silence: the
-    // lone leading arm is R42-F's, and the
-    // sequence walk's trims are not widened here.
-    r40e_serves_silent("(Monday)(notes)\u{2013} November 1, 2026", nov(1));
+    // its last group refuses with its record: the
+    // sequence walk's trims are widened by R44-A.
+    r40e_governed_with_record("(Monday)(notes)\u{2013} November 1, 2026", "Monday", nov(1));
     // Mid-line parity (cell (a)(i)) stands: the
     // lone weekday group behind ordinary words,
     // wearing the mark, is twin-equal to its "-"
@@ -38051,16 +38104,27 @@ fn r43b_sibling_scope_controls_unmoved() {
         r34e_for_twin(&interior_agreeing, "November 1, 2026 (Sunday) (notes)");
         r34e_keep_twin(&interior_agreeing, "November 1, 2026 (Sunday) (notes)");
     }
-    // The en dash stands in no peel set after this
-    // batch either (R43-A's held control): the
-    // governor-first trailing sequence closing on
-    // an inert group still serves under the en
-    // dash, and the leading sequence wearing it
-    // still serves — this batch admits the sibling
-    // class at the sets, it does not re-open the
-    // en dash's own scoped admission.
-    r40e_serves_silent("November 8, 2026 (cancelled)(notes)\u{2013}", nov(8));
-    r40e_serves_silent("(Monday)(notes)\u{2013} November 1, 2026", nov(1));
+    // RESTATED IN PART (round 44, R44-A, F1 =
+    // review F44-1; flagged in the R44-A batch
+    // record and the coordinator's ruling of
+    // 2026-10-27 extending the restatement to
+    // this pin): on this batch's tree the en dash
+    // stood in no peel set (R43-A's held control)
+    // and the two arms below asserted its
+    // defective sequence-tail readings as
+    // controls. R44-A widens the sequence-tail
+    // peels to the mark, so exactly these two
+    // arms are restated to their twins' readings:
+    // the G1 arm — the governor-first trailing
+    // sequence closing on an inert group — now
+    // GOVERNS silently (probe44c G1), and the G3
+    // arm — the leading sequence wearing the mark
+    // after its last group — now refuses WITH
+    // WeekdayMismatch(Monday@2026-11-01)
+    // (probe44c G3). Every other arm of this pin
+    // stands unmoved as a control.
+    r40e_governed_silent("November 8, 2026 (cancelled)(notes)\u{2013}");
+    r40e_governed_with_record("(Monday)(notes)\u{2013} November 1, 2026", "Monday", nov(1));
 }
 
 // Round 43 (R43-C, F4 MAJOR = red team RT43-B1;
@@ -38402,5 +38466,225 @@ fn r43c_quote_dress_parity_controls_unmoved() {
     r34e_keep_twin(
         quoted_weekday_first,
         "November 1, 2026 (Monday) (cancelled)",
+    );
+}
+
+// Round 44 (R44-A, F1 MAJOR = review F44-1;
+// round-44 synthesis adjudication 4): a suffix on
+// the FINAL group of a trailing / base-trailing /
+// leading sequence is judged for every judged mark
+// and every R43-B admitted mark but was not judged
+// for the en dash (U+2013), which stood in no
+// sequence-tail peel set — its one retry (R43-A's
+// trailing_group_run retry) is gated to
+// governor/company final groups, so a sequence
+// closing on an inert or weekday group was never
+// reached under the mark. Cancelled dates served
+// live at the governor arms (review probe44c
+// G1/G4/G8, probe44d H1/H2) and weekday records
+// were lost at the weekday arms (probe44c
+// G2/G5/G3, probe44d H3/H4), both routes. The fix
+// admits U+2013 to the sequence-tail peel sets —
+// `trailing_run_peeled_end`'s trim list and token
+// predicate, `trailing_group_sequence`'s peel set,
+// `base_trailing_sequence_mismatch`'s peel set,
+// and `leading_group_sequence`'s trims — the
+// R43-B shape: the mark enters the peels directly
+// and no retry is built; the R42-F en-tail gates
+// in the two sequence walks are retired with it,
+// the walks now answering for the mark exactly as
+// for its twins. Every pair below compares the
+// en-dash line's FULL record against its twins'
+// via the r34e helpers, on the For line and the
+// Keep-through line, and the headline arms are
+// stated outright.
+
+#[test]
+fn r44a_en_dash_governor_tail_sequences_govern() {
+    // The governor arms, stated outright, both
+    // routes: G1 glued, G4 spaced, G8 spaced-token.
+    // On the base tree every one serves 2026-11-08
+    // live, where both twins govern.
+    for en in [
+        "November 8, 2026 (cancelled)(notes)\u{2013}",
+        "November 8, 2026 (cancelled) (notes)\u{2013}",
+        "November 8, 2026 (cancelled)(notes) \u{2013}",
+    ] {
+        r40e_governed_silent(en);
+    }
+    for (en, twin) in [
+        (
+            "November 8, 2026 (cancelled)(notes)\u{2013}",
+            "November 8, 2026 (cancelled)(notes)-",
+        ),
+        (
+            "November 8, 2026 (cancelled)(notes)\u{2013}",
+            "November 8, 2026 (cancelled)(notes)\u{2014}",
+        ),
+        (
+            "November 8, 2026 (cancelled) (notes)\u{2013}",
+            "November 8, 2026 (cancelled) (notes)-",
+        ),
+        (
+            "November 8, 2026 (cancelled) (notes)\u{2013}",
+            "November 8, 2026 (cancelled) (notes)\u{2014}",
+        ),
+        (
+            "November 8, 2026 (cancelled)(notes) \u{2013}",
+            "November 8, 2026 (cancelled)(notes) -",
+        ),
+        (
+            "November 8, 2026 (cancelled)(notes) \u{2013}",
+            "November 8, 2026 (cancelled)(notes) \u{2014}",
+        ),
+    ] {
+        r34e_for_twin(en, twin);
+        r34e_keep_twin(en, twin);
+    }
+}
+
+#[test]
+fn r44a_en_dash_weekday_tail_sequences_refuse_with_record() {
+    // The weekday arms, stated outright, both
+    // routes: G2 base-trailing, G5 trailing (spaced
+    // and glued H3), G3 leading. On the base tree
+    // every one serves its date silently, the
+    // record lost, where both twins refuse WITH
+    // WeekdayMismatch(Monday@2026-11-01).
+    for en in [
+        "Sunday after November 1, 2026 (Monday)(notes)\u{2013}",
+        "November 1, 2026 (Monday) (notes)\u{2013}",
+        "November 1, 2026 (Monday)(notes)\u{2013}",
+        "(Monday)(notes)\u{2013} November 1, 2026",
+    ] {
+        r40e_governed_with_record(en, "Monday", nov(1));
+    }
+    for (en, twin) in [
+        (
+            "Sunday after November 1, 2026 (Monday)(notes)\u{2013}",
+            "Sunday after November 1, 2026 (Monday)(notes)-",
+        ),
+        (
+            "Sunday after November 1, 2026 (Monday)(notes)\u{2013}",
+            "Sunday after November 1, 2026 (Monday)(notes)\u{2014}",
+        ),
+        (
+            "November 1, 2026 (Monday) (notes)\u{2013}",
+            "November 1, 2026 (Monday) (notes)-",
+        ),
+        (
+            "November 1, 2026 (Monday) (notes)\u{2013}",
+            "November 1, 2026 (Monday) (notes)\u{2014}",
+        ),
+        (
+            "November 1, 2026 (Monday)(notes)\u{2013}",
+            "November 1, 2026 (Monday)(notes)-",
+        ),
+        (
+            "November 1, 2026 (Monday)(notes)\u{2013}",
+            "November 1, 2026 (Monday)(notes)\u{2014}",
+        ),
+        (
+            "(Monday)(notes)\u{2013} November 1, 2026",
+            "(Monday)(notes)- November 1, 2026",
+        ),
+        (
+            "(Monday)(notes)\u{2013} November 1, 2026",
+            "(Monday)(notes)\u{2014} November 1, 2026",
+        ),
+    ] {
+        r34e_for_twin(en, twin);
+        r34e_keep_twin(en, twin);
+    }
+}
+
+#[test]
+fn r44a_en_dash_sequence_tail_scope_controls_unmoved() {
+    // Controls, passing on the base tree by design
+    // and unmoved by the peel widening.
+    // G6 parity: the base-trailing governor-first
+    // sequence closing on an inert group serves the
+    // composed Sunday-after resolution for EVERY
+    // mark, the twins included — its seat is
+    // upstream of the peels.
+    for line in [
+        "Sunday after November 1, 2026 (cancelled) (notes)-",
+        "Sunday after November 1, 2026 (cancelled) (notes)\u{2014}",
+        "Sunday after November 1, 2026 (cancelled) (notes)\u{2013}",
+        "Sunday after November 1, 2026 (cancelled) (notes)~",
+    ] {
+        r40e_serves_silent(line, nov(8));
+    }
+    // G7: the governor-last trailing sequence is
+    // judged on its final group under the mark, as
+    // under its twins (the R43-A retry's arm).
+    r40e_governed_silent("November 8, 2026 (notes) (cancelled)\u{2013}");
+    r34e_for_twin(
+        "November 8, 2026 (notes) (cancelled)\u{2013}",
+        "November 8, 2026 (notes) (cancelled)-",
+    );
+    r34e_keep_twin(
+        "November 8, 2026 (notes) (cancelled)\u{2013}",
+        "November 8, 2026 (notes) (cancelled)-",
+    );
+    // G9/G10: weekday sequences whose judgment sits
+    // on the final group refuse with the record
+    // under the mark, as under their twins.
+    for en in [
+        "November 1, 2026 (notes) (Monday)\u{2013}",
+        "November 1, 2026 (notes)(Monday)\u{2013}",
+    ] {
+        r40e_governed_with_record(en, "Monday", nov(1));
+    }
+    r34e_for_twin(
+        "November 1, 2026 (notes)(Monday)\u{2013}",
+        "November 1, 2026 (notes)(Monday)-",
+    );
+    r34e_keep_twin(
+        "November 1, 2026 (notes)(Monday)\u{2013}",
+        "November 1, 2026 (notes)(Monday)-",
+    );
+    // The seats F1 named, as R43-A left them: the
+    // lone trailing governor wearing the mark
+    // governs.
+    r40e_governed_silent("November 8, 2026 (cancelled)\u{2013}");
+    // The interior seats: a governor group wearing
+    // the mark between a trailing sequence's groups
+    // governs, and a weekday group wearing it there
+    // refuses with its record.
+    r40e_governed_silent("November 8, 2026 (notes) (cancelled)\u{2013} (more)");
+    r40g_refuses_with_record(
+        "November 1, 2026 (notes) (Monday)\u{2013} (more)",
+        "Monday",
+        nov(1),
+    );
+    // The leading company wearing the mark after
+    // its last group governs with its record.
+    r40e_governed_with_record(
+        "(cancelled)(Monday)\u{2013} November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // The base-trailing company wearing the mark
+    // between its groups refuses with its record.
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (cancelled)\u{2013}(Monday)",
+        "Monday",
+        nov(1),
+    );
+    // The base-trailing governor arm is parity —
+    // the clean form serves the resolution there.
+    r40e_serves_silent("Sunday after November 1, 2026 (cancelled)\u{2013}", nov(8));
+    // Mid-line parity stands: the lone weekday
+    // group behind ordinary words, wearing the
+    // mark, is twin-equal to its "-" form.
+    r40e_serves_silent("notes (Monday)\u{2013} November 1, 2026", nov(1));
+    r34e_for_twin(
+        "notes (Monday)\u{2013} November 1, 2026",
+        "notes (Monday)- November 1, 2026",
+    );
+    r34e_keep_twin(
+        "notes (Monday)\u{2013} November 1, 2026",
+        "notes (Monday)- November 1, 2026",
     );
 }

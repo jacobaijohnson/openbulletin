@@ -2391,6 +2391,19 @@ fn trailing_group_run_walk(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
     // below (final group a governor group, or the
     // company arm) scope the retry exactly as
     // they scoped the single mark.
+    // Round 44 (R44-A, F1 = review F44-1): the
+    // premise above is retired by that round's
+    // witness — the twins GOVERN at the
+    // governor-first inert-closing sequence
+    // through the peels, so the mark now stands
+    // in `trailing_run_peeled_end`'s peel set and
+    // the walk above reaches those runs directly.
+    // This retry and its gates stand as written
+    // for any shape the peels still leave behind;
+    // the governor-first sequence closing on an
+    // inert group takes its twins' governed
+    // reading through the peels, which is the
+    // cure the review lane named.
     let mut head = core.strip_suffix('\u{2013}')?;
     while let Some(stripped) = head.trim_end().strip_suffix('\u{2013}') {
         head = stripped;
@@ -2471,12 +2484,27 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
         // in. Their governor-first sequences take
         // the twins' readings for the same reason,
         // as the "-" governor-first sequence does.
+        // Round 44 (R44-A, F1 = review F44-1): the
+        // peel set and the spaced-token predicate
+        // gain the en dash (U+2013) itself — a
+        // suffix on the FINAL group of a trailing
+        // sequence ("November 8, 2026
+        // (cancelled)(notes)–") was judged for
+        // every twin and admitted mark but not for
+        // the en dash, which stood in no peel set,
+        // so the run its governor stood in was no
+        // run and the cancelled date served live.
+        // The mark enters the peels directly, as
+        // the R43-B class did; the gated retry in
+        // `trailing_group_run_walk` stays for the
+        // shapes the peels still leave it, its
+        // gates unchanged.
         let peeled = text[..end]
             .trim_end()
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
-                '*', '#', '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
-                '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+                '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
             ])
             .len();
         if peeled != end {
@@ -2497,6 +2525,7 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
                         | '#'
                         | '-'
                         | '\u{2014}'
+                        | '\u{2013}'
                         | '\u{2010}'
                         | '\u{2011}'
                         | '\u{2212}'
@@ -2962,10 +2991,19 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         // record. The marks are garnish dress here
         // as the standing marks are: between the
         // groups and after the last group alike.
+        // Round 44 (R44-A, F1 = review F44-1): the
+        // trims gain the en dash (U+2013) — a
+        // leading sequence wearing it after its
+        // last group ("(Monday)(notes)– November
+        // 1, 2026") left the mark standing in front
+        // of the date, the date never parsed, and
+        // the sequence served in silence, its
+        // record lost, where both twins refuse
+        // with the record.
         rest = rest.trim_start_matches([
             ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
-            '#', '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-            '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+            '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
+            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
         ]);
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             break;
@@ -2985,8 +3023,8 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     }
     let rest = rest.trim_start_matches([
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{ff01}',
-        '\u{ff1f}', '\u{00ad}',
+        '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
+        '\u{ff01}', '\u{ff1f}', '\u{00ad}',
     ]);
     Some((inners, rest))
 }
@@ -3020,21 +3058,19 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     // Round 42 (R42-F, F9 = red team RT42-S4): an
     // en dash (U+2013) standing at the sequence's
     // own tail — glued to its last group, or spaced
-    // as its own token — is taken off before the
-    // walk below, and the walk's answer stands only
-    // when the run's FINAL group is a weekday
+    // as its own token — was taken off before the
+    // walk below, and the walk's answer stood only
+    // when the run's FINAL group was a weekday
     // group: the weekday-last trailing sequence of
-    // S4's witness table, judged here as "-" and
-    // "—" judge it through the standing peels. A
-    // sequence whose final group is anything else
-    // keeps its standing reading under the mark —
-    // the governor-final sequences are the governor
-    // unwraps' (R42-D), and a sequence closing on
-    // an inert group is no witnessed arm.
-    let (text, en_tail) = match text.trim_end().strip_suffix('\u{2013}') {
-        Some(head) => (head, true),
-        None => (text, false),
-    };
+    // S4's witness table. Round 44 (R44-A, F1 =
+    // review F44-1): that gate is retired — the
+    // peel set below gains the mark itself, so the
+    // walk answers for the en dash exactly as for
+    // its twins, and a sequence closing on an
+    // inert group with a weekday member standing
+    // in it ("November 1, 2026 (Monday)
+    // (notes)–") is judged, its record standing,
+    // instead of serving in silence.
     // The suffix layers the sequence may stand in
     // front of, peeled as in
     // `spaced_trailing_weekday_garnish`: sentence
@@ -3068,8 +3104,8 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
             .trim_end()
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
-                '*', '#', '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
-                '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+                '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
             ])
             .len();
         if peeled != end {
@@ -3095,6 +3131,7 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                         | '#'
                         | '-'
                         | '\u{2014}'
+                        | '\u{2013}'
                         | '\u{2010}'
                         | '\u{2011}'
                         | '\u{2212}'
@@ -3226,14 +3263,13 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         let inner = &core[start + 1..end - 1];
         inners.push(inner.to_string());
     }
-    // Round 42 (R42-F, F9): the en-dash gate stated
-    // at the walk's head — the run the mark closed
-    // is this walk's only when its final group is
-    // a weekday group.
-    if en_tail {
-        let last_inner = inners.last()?;
-        garnish_group_weekday(last_inner)?;
-    }
+    // Round 42 (R42-F, F9) stood an en-dash gate
+    // here — the run the mark closed was this
+    // walk's only when its final group was a
+    // weekday group. Round 44 (R44-A) retires it
+    // with the gate at the walk's head: the mark
+    // stands in the peels above, so the walk's
+    // answer stands for it as for every twin.
     Some((inners, prefix))
 }
 

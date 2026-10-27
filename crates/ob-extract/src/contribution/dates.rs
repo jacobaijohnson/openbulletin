@@ -833,20 +833,19 @@ fn base_trailing_sequence_mismatch(
     }
     // Round 42 (R42-F, F9 = red team RT42-S4): an
     // en dash (U+2013) standing at the garnish's
-    // own tail — glued to its last group, or
-    // spaced as its own token — is taken off
-    // before the walk below, and the walk's answer
-    // stands only when the sequence's FINAL group
-    // is a weekday group (the gate below, past the
-    // gap walk): the weekday-last base-trailing
-    // sequence, judged here as "-" and "—" judge
-    // it through the standing peels. A sequence
-    // whose final group is anything else keeps its
-    // standing reading under the mark.
-    let en_tail = garnish.trim_end().ends_with('\u{2013}');
-    if en_tail {
-        garnish = garnish.trim_end().trim_end_matches('\u{2013}').to_string();
-    }
+    // own tail was taken off before the walk
+    // below, and the walk's answer stood only when
+    // the sequence's FINAL group was a weekday
+    // group (the gate below, past the gap walk).
+    // Round 44 (R44-A, F1 = review F44-1): that
+    // gate is retired — the peel set below gains
+    // the mark itself, so the walk answers for the
+    // en dash exactly as for its twins, and a
+    // base-trailing sequence closing on an inert
+    // group with a weekday member standing in it
+    // ("Sunday after November 1, 2026
+    // (Monday)(notes)–") refuses with its record
+    // instead of serving the resolution silently.
     let mut rest = garnish.as_str();
     loop {
         // Round 38 (R38-B, F2): the peel set gains
@@ -870,8 +869,8 @@ fn base_trailing_sequence_mismatch(
         // standing separator tokens below.
         let peeled = rest.trim_end().trim_end_matches([
             '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
-            '#', '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-            '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+            '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
+            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
         ]);
         if peeled.len() != rest.len() {
             rest = peeled;
@@ -888,6 +887,7 @@ fn base_trailing_sequence_mismatch(
                                 | '#'
                                 | '-'
                                 | '\u{2014}'
+                                | '\u{2013}'
                                 | '\u{2010}'
                                 | '\u{2011}'
                                 | '\u{2212}'
@@ -1077,14 +1077,13 @@ fn base_trailing_sequence_mismatch(
             return None;
         }
     }
-    // Round 42 (R42-F, F9): the en-dash gate stated
-    // at the walk's head — a garnish the mark
-    // closed is this walk's only when its final
-    // group is a weekday group.
-    if en_tail {
-        let &(start, end) = spans.last()?;
-        garnish_group_weekday(&rest[start + 1..end - 1])?;
-    }
+    // Round 42 (R42-F, F9) stood an en-dash gate
+    // here — a garnish the mark closed was this
+    // walk's only when its final group was a
+    // weekday group. Round 44 (R44-A) retires it
+    // with the gate at the walk's head: the mark
+    // stands in the peels above, so the walk's
+    // answer stands for it as for every twin.
     for (start, end) in &spans {
         let inner = &rest[start + 1..end - 1];
         if let Some((named, number)) = garnish_group_weekday(inner) {

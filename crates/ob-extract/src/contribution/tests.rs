@@ -39025,3 +39025,244 @@ fn r44b_scope_controls_unmoved() {
     );
     r40e_governed_silent("\u{ff08}cancelled\u{ff09}\u{ff08}Monday\u{ff09} November 1, 2026");
 }
+
+// Round 44 (R44-C, F5 MAJOR as adjudicated,
+// adjudication 1 in the round-44 synthesis;
+// review F44-2, probe44e I-series and probe44b
+// Q8q, both routes, frame today 2026-10-16 —
+// this file's own `today()`): a quoted INERT
+// member still collapsed the trailing company.
+// `quoted_members_as_parens` (R43-C) re-dressed
+// only a quoted span whose contents judge as a
+// governor phrase or a weekday garnish; an inert
+// span was untouched, and no trailing reader
+// could see a run past it, so a company whose
+// non-final member was a quoted inert group had
+// no run and its governor never unwrapped —
+// `November 8, 2026 (cancelled) "notes"` served
+// the cancelled date live in every quote dress
+// where its paren and bracket twins govern. The
+// fix extends the re-dress consultation: an
+// inert quoted span (non-empty contents judging
+// neither as a governor, nor as a weekday, nor
+// as a DATE group — the quoted date group keeps
+// its own arms' reading, the R41-C/R41-D line)
+// counts as a sequence member at the three seats
+// R43-C named, under those seats' standing
+// scoping (the run retry's strict extension, the
+// sequence judgment's strictly-longer
+// governor-free requirement, the base-trailing
+// walk's own garnish re-dress). Every pair below
+// compares the quoted line's FULL record against
+// its paren twin's via the r34e helpers, on the
+// For line and the Keep-through line, and the
+// headline arms are stated outright.
+
+#[test]
+fn r44c_quoted_inert_members_take_their_bracket_twins_reading_at_the_trailing_run() {
+    // The headline arm (probe44e I2, probe44b
+    // Q8q), stated outright, both routes: the
+    // governor-first company closing on a quoted
+    // inert member governs in silence, in all
+    // three quote dresses. On the base tree every
+    // dress serves 2026-11-08 live.
+    for (open, close) in [("\"", "\""), ("'", "'"), ("\u{201c}", "\u{201d}")] {
+        let line = format!("November 8, 2026 (cancelled) {open}notes{close}");
+        r40e_governed_silent(&line);
+        r34e_for_twin(&line, "November 8, 2026 (cancelled) (notes)");
+        r34e_keep_twin(&line, "November 8, 2026 (cancelled) (notes)");
+    }
+    // The bracket twin (I3), stated outright: it
+    // governs on the base tree too — the family
+    // statement that the split was the quote
+    // dress, not the member.
+    r40e_governed_silent("November 8, 2026 (cancelled) [notes]");
+    r34e_for_twin(
+        "November 8, 2026 (cancelled) [notes]",
+        "November 8, 2026 (cancelled) (notes)",
+    );
+    r34e_keep_twin(
+        "November 8, 2026 (cancelled) [notes]",
+        "November 8, 2026 (cancelled) (notes)",
+    );
+    // The three-group company (I8): the quoted
+    // inert member stands between the governor
+    // and the weekday group; the company composes
+    // and governs in silence, as its paren twin
+    // does. On the base tree it serves 2026-11-08
+    // live (the company never composes).
+    let three_group = "November 8, 2026 (cancelled) \"notes\" (Monday)";
+    r40e_governed_silent(three_group);
+    r34e_for_twin(three_group, "November 8, 2026 (cancelled) (notes) (Monday)");
+    r34e_keep_twin(three_group, "November 8, 2026 (cancelled) (notes) (Monday)");
+    // Content independence (I13/I14): the split
+    // is the inert quoted span, not the word
+    // "notes" — a quoted choir aside in the same
+    // shape governs identically.
+    for contents in ["choir", "choir practice"] {
+        let line = format!("November 8, 2026 (cancelled) \"{contents}\"");
+        let twin = format!("November 8, 2026 (cancelled) ({contents})");
+        r40e_governed_silent(&line);
+        r34e_for_twin(&line, &twin);
+        r34e_keep_twin(&line, &twin);
+    }
+}
+
+#[test]
+fn r44c_quoted_inert_member_completes_the_trailing_sequence_weekday_record() {
+    // The weekday arm (probe44e I6), stated
+    // outright, both routes: the governor-free
+    // trailing sequence closing on a quoted inert
+    // member refuses WITH WeekdayMismatch(Monday@
+    // 2026-11-01), as its paren twin (I7) does.
+    // On the base tree the line serves 2026-11-01
+    // silently, the record lost.
+    let line = "November 1, 2026 (Monday) \"notes\"";
+    r40g_refuses_with_record(line, "Monday", nov(1));
+    r34e_for_twin(line, "November 1, 2026 (Monday) (notes)");
+    r34e_keep_twin(line, "November 1, 2026 (Monday) (notes)");
+    // The same completion at the base-trailing
+    // seat (the third seat R43-C named): the
+    // garnish sequence anchored by the bracket
+    // weekday group is completed by the quoted
+    // inert member, and the resolution refuses
+    // WITH the record, as its paren twin does.
+    // On the base tree the resolution serves in
+    // silence, the record lost.
+    let base_trailing = "Sunday after November 1, 2026 (Monday) \"notes\"";
+    r40e_governed_with_record(base_trailing, "Monday", nov(1));
+    r34e_for_twin(
+        base_trailing,
+        "Sunday after November 1, 2026 (Monday) (notes)",
+    );
+    r34e_keep_twin(
+        base_trailing,
+        "Sunday after November 1, 2026 (Monday) (notes)",
+    );
+    // The anchored three-member shapes: a bracket
+    // inert group anchors a sequence whose weekday
+    // member and second inert member both wear
+    // quotes — at the trailing seat and at
+    // base-trailing alike the completed sequence
+    // refuses with the record, as its paren twin
+    // does. On the base tree both serve in
+    // silence.
+    let anchored_trailing = "November 1, 2026 (notes) \"Monday\" \"choir\"";
+    r40g_refuses_with_record(anchored_trailing, "Monday", nov(1));
+    r34e_for_twin(
+        anchored_trailing,
+        "November 1, 2026 (notes) (Monday) (choir)",
+    );
+    r34e_keep_twin(
+        anchored_trailing,
+        "November 1, 2026 (notes) (Monday) (choir)",
+    );
+    let anchored_base = "Sunday after November 1, 2026 (notes) \"Monday\" \"choir\"";
+    r40e_governed_with_record(anchored_base, "Monday", nov(1));
+    r34e_for_twin(
+        anchored_base,
+        "Sunday after November 1, 2026 (notes) (Monday) (choir)",
+    );
+    r34e_keep_twin(
+        anchored_base,
+        "Sunday after November 1, 2026 (notes) (Monday) (choir)",
+    );
+}
+
+#[test]
+fn r44c_scope_controls_unmoved() {
+    // Controls, passing on the base tree by design
+    // and unmoved by this batch.
+    // I9: the quoted GOVERNOR member with a paren
+    // inert companion already governs, exactly as
+    // its paren twin.
+    let i9 = "November 8, 2026 \"cancelled\" (notes)";
+    r40e_governed_silent(i9);
+    r34e_for_twin(i9, "November 8, 2026 (cancelled) (notes)");
+    r34e_keep_twin(i9, "November 8, 2026 (cancelled) (notes)");
+    // I10: the quoted weekday member mid-sequence
+    // already composes — the company governs in
+    // silence, as its paren twin.
+    let i10 = "November 1, 2026 (notes) \"Monday\" (cancelled)";
+    r40e_governed_silent(i10);
+    r34e_for_twin(i10, "November 1, 2026 (notes) (Monday) (cancelled)");
+    r34e_keep_twin(i10, "November 1, 2026 (notes) (Monday) (cancelled)");
+    // I15: two quoted members alone (`"Monday"
+    // "notes"`) already read with no date and no
+    // record — stated by the quoted line's OWN
+    // record, not by twin parity: its paren twin
+    // `(Monday) (notes)` refuses WITH the record
+    // (the I7 shape), a standing split this batch
+    // does not claim, because here the weekday
+    // member is itself quoted and stands under
+    // the lone/company arms' judgment, not the
+    // trailing readers'. The inert extension must
+    // not mint a weekday record here either.
+    let i15 = "November 1, 2026 \"Monday\" \"notes\"";
+    r40e_governed_silent(i15);
+    // I16: the weekday-first company with a quoted
+    // inert member and a trailing governor group
+    // already governs in silence, as its twin.
+    let i16 = "November 1, 2026 (Monday) \"notes\" (cancelled)";
+    r40e_governed_silent(i16);
+    r34e_for_twin(i16, "November 1, 2026 (Monday) (notes) (cancelled)");
+    r34e_keep_twin(i16, "November 1, 2026 (Monday) (notes) (cancelled)");
+    // I11 vs I12 at base-trailing (the G6 parity
+    // arm): the quoted-inert and paren forms serve
+    // the Sunday-after resolution identically —
+    // no split at that slot, before or after.
+    let i11 = "Sunday after November 1, 2026 (cancelled) \"notes\"";
+    let i12 = "Sunday after November 1, 2026 (cancelled) (notes)";
+    r40e_serves_silent(i11, nov(8));
+    r40e_serves_silent(i12, nov(8));
+    r34e_for_twin(i11, i12);
+    r34e_keep_twin(i11, i12);
+    // The whole-cloth company at base-trailing: a
+    // garnish standing in quotes alone (`"Monday"
+    // "notes"`, no bracket group as written) keeps
+    // its standing reading — the resolution serves
+    // in silence, exactly as on the base tree; the
+    // anchor gate never completes a sequence from
+    // whole cloth at either sequence seat.
+    r40e_serves_silent("Sunday after November 1, 2026 \"Monday\" \"notes\"", nov(8));
+    // The quoted DATE group at these seats keeps
+    // its own arms' reading (the R41-C/R41-D
+    // line): it is judged as a date group, never
+    // re-dressed as an inert member. At the
+    // trailing run seat it takes its bracket
+    // twin's reading outright — the line serves
+    // the quoted group's date, the framed date
+    // standing as the second date.
+    let d1 = "November 8, 2026 (cancelled) \"November 15, 2026\"";
+    r40e_serves_silent(d1, nov(15));
+    r34e_for_twin(d1, "November 8, 2026 (cancelled) (November 15, 2026)");
+    r34e_keep_twin(d1, "November 8, 2026 (cancelled) (November 15, 2026)");
+    // At the sequence seat the quoted date group
+    // standing beside a weekday group leaves the
+    // standing refusal with its record untouched.
+    let d3 = "November 1, 2026 (Monday) \"November 8, 2026\"";
+    r40g_refuses_with_record(d3, "Monday", nov(1));
+    r34e_for_twin(d3, "November 1, 2026 (Monday) (November 8, 2026)");
+    r34e_keep_twin(d3, "November 1, 2026 (Monday) (November 8, 2026)");
+    // At the base-trailing seat the quoted date
+    // group in the garnish leaves the resolution
+    // serving exactly as its bracket twin serves
+    // it.
+    let d5 = "Sunday after November 1, 2026 (cancelled) \"November 8, 2026\"";
+    r40e_serves_silent(d5, nov(8));
+    r34e_for_twin(
+        d5,
+        "Sunday after November 1, 2026 (cancelled) (November 8, 2026)",
+    );
+    r34e_keep_twin(
+        d5,
+        "Sunday after November 1, 2026 (cancelled) (November 8, 2026)",
+    );
+    // And the agreeing quoted date group behind a
+    // governor already governs in silence through
+    // its own arms, as its bracket twin does.
+    let d9 = "November 8, 2026 (cancelled) \"November 8, 2026\"";
+    r40e_governed_silent(d9);
+    r34e_for_twin(d9, "November 8, 2026 (cancelled) (November 8, 2026)");
+    r34e_keep_twin(d9, "November 8, 2026 (cancelled) (November 8, 2026)");
+}

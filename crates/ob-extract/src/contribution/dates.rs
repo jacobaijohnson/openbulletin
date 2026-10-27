@@ -628,7 +628,7 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         // the lone trailing word below — the first
         // disagreeing weekday group in the sequence
         // records the lone form's mismatch.
-        if let Some(m) = base_trailing_sequence_mismatch(&core, used, trailing_token, base) {
+        if let Some(m) = base_trailing_sequence_mismatch(&core, used, trailing_token, base, today) {
             return Some(SundayAfter::Mismatch(m));
         }
         // The trailing weekday describes the base only
@@ -702,7 +702,7 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
     // sequence first (round 37, R37-G), then the
     // lone trailing weekday.
     let consumed = core.len() - lead_rest.len() + used;
-    if let Some(m) = base_trailing_sequence_mismatch(&core, consumed, trailing_token, base) {
+    if let Some(m) = base_trailing_sequence_mismatch(&core, consumed, trailing_token, base, today) {
         return Some(SundayAfter::Mismatch(m));
     }
     Some(match trailing {
@@ -792,6 +792,7 @@ fn base_trailing_sequence_mismatch(
     consumed: usize,
     trailing_token: Option<&str>,
     base: SimpleDate,
+    today: SimpleDate,
 ) -> Option<WeekdayMismatch> {
     let mut garnish = String::new();
     if let Some(last) = consumed.checked_sub(1).and_then(|i| core.get(i)) {
@@ -823,13 +824,51 @@ fn base_trailing_sequence_mismatch(
     // the resolution served in silence where the
     // paren twin refuses with the record. The
     // garnish is this walk's own string, so the
-    // re-dress is local to it; a quoted span whose
-    // contents judge neither as a governor nor as
-    // a weekday (a quoted date group above all) is
-    // untouched by the consultation and keeps its
-    // standing reading.
-    if let Some(redressed) = quoted_members_as_parens(&garnish) {
-        garnish = redressed;
+    // re-dress is local to it; a quoted DATE group
+    // is untouched by the consultation and keeps
+    // its standing reading.
+    // Round 44 (R44-C, F5 MAJOR as adjudicated):
+    // the consultation gains the INERT-including
+    // re-dress (see `quoted_members_as_parens`),
+    // so a quoted inert member standing in the
+    // garnish counts toward this walk's sequence
+    // as its bracket twin does — under the same
+    // anchor gate as the trailing sequence walk:
+    // the inert-including reading is taken only
+    // where a member re-dress already completes a
+    // sequence here (its span count strictly
+    // grows to two or more) or a member of the
+    // completed sequence stands in the garnish in
+    // brackets as written, never from whole cloth
+    // (a garnish standing in quotes alone,
+    // `"Monday" "notes"`, keeps its standing
+    // reading). The I11/I12 parity stands: a
+    // governor in the garnish is garnish at this
+    // slot in every dress, so the completed
+    // sequence still names no weekday record for
+    // the governor-only company and the resolution
+    // serves identically.
+    let member_redressed = quoted_members_as_parens(&garnish, today, false);
+    let full_redressed = quoted_members_as_parens(&garnish, today, true);
+    if let Some(full) = full_redressed {
+        let member_completed = member_redressed.as_ref().is_some_and(|member| {
+            let member_spans = balanced_spans(member).len();
+            member_spans >= 2 && member_spans > balanced_spans(&garnish).len()
+        });
+        let anchored = {
+            let bracket_inners: Vec<&str> = balanced_spans(&garnish)
+                .iter()
+                .map(|&(s, e)| garnish[s + 1..e - 1].trim())
+                .collect();
+            balanced_spans(&full)
+                .iter()
+                .any(|&(s, e)| bracket_inners.contains(&full[s + 1..e - 1].trim()))
+        };
+        if member_completed || anchored {
+            garnish = full;
+        } else if let Some(member) = member_redressed {
+            garnish = member;
+        }
     }
     // Round 42 (R42-F, F9 = red team RT42-S4): an
     // en dash (U+2013) standing at the garnish's

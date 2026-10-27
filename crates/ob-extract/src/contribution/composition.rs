@@ -1619,10 +1619,24 @@ pub(super) fn clean(t: &str) -> &str {
     // IME siblings of the judged marks — a word
     // wearing one is the word it names, as one
     // wearing "!" or "?" already is.
+    // Round 44 (R44-B, F2 MAJOR = red team
+    // RT44-C1): the set gains the fullwidth
+    // separators (U+FF0C, U+FF1B, U+FF1A, U+FF0E,
+    // U+3001, U+3002) — a word wearing one at its
+    // edge ("cancelled，" — the unwrapped leading
+    // company's bared governor word, glued to the
+    // separator its company stood across) is the
+    // word it names, as one wearing "," or ";" is.
+    // The set also gains the fullwidth quotes
+    // (U+FF02, U+FF07) — a word wearing them
+    // ("cancelled＂", "＂cancelled＂") is the word
+    // it names, as one wearing the straight or
+    // curly pair already is (R37-E's rule).
     t.trim_matches([
         '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
         '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff01}',
-        '\u{ff1f}',
+        '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}', '\u{3002}',
+        '\u{ff02}', '\u{ff07}',
     ])
 }
 
@@ -1966,9 +1980,32 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
         // governor group standing after it.
         let mut p = scan;
         while let Some(c) = text[p..].chars().next() {
+            // Round 44 (R44-B, F2 MAJOR = red team
+            // RT44-C1): the skip set gains the
+            // fullwidth separators (U+FF0C, U+FF1B,
+            // U+FF1A, U+FF0E, U+3001, U+3002) — a
+            // governor group standing after one in
+            // the leading run ("(notes)，(cancelled)
+            // November 8, 2026") was never reached,
+            // where its ASCII twin is unwrapped and
+            // governs.
             if matches!(
                 c,
-                ' ' | '\t' | ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
+                ' ' | '\t'
+                    | ','
+                    | ';'
+                    | '.'
+                    | ':'
+                    | '!'
+                    | '?'
+                    | '\u{201d}'
+                    | '\u{2019}'
+                    | '\u{ff0c}'
+                    | '\u{ff1b}'
+                    | '\u{ff1a}'
+                    | '\u{ff0e}'
+                    | '\u{3001}'
+                    | '\u{3002}'
             ) {
                 p += c.len_utf8();
             } else {
@@ -2239,6 +2276,14 @@ fn nearest_date_is_sunday_after_base(prefix: &str, today: SimpleDate) -> bool {
 /// composes. Those readers now consult this
 /// re-dress as an equivalent member reading, each
 /// at its own seat (see their notes).
+///
+/// Round 44 (R44-B, F2 MAJOR = red team RT44-C1):
+/// the opening- and closing-family sets gain the
+/// fullwidth quotes U+FF02 and U+FF07 — a member
+/// standing in fullwidth dress ("(cancelled)
+/// ＂Monday＂") was no quoted span to this scan, so
+/// no reader consulted it where its straight-dress
+/// twin is consulted.
 pub(super) fn quoted_members_as_parens(text: &str) -> Option<String> {
     let spans = balanced_spans(text);
     let chars: Vec<(usize, char)> = text.char_indices().collect();
@@ -2246,7 +2291,10 @@ pub(super) fn quoted_members_as_parens(text: &str) -> Option<String> {
     let mut i = 0usize;
     while i < chars.len() {
         let (at, c) = chars[i];
-        if !matches!(c, '"' | '\'' | '\u{201c}' | '\u{2018}') {
+        if !matches!(
+            c,
+            '"' | '\'' | '\u{201c}' | '\u{2018}' | '\u{ff02}' | '\u{ff07}'
+        ) {
             i += 1;
             continue;
         }
@@ -2254,9 +2302,12 @@ pub(super) fn quoted_members_as_parens(text: &str) -> Option<String> {
             i += 1;
             continue;
         }
-        let Some(j) = (i + 1..chars.len())
-            .find(|&j| matches!(chars[j].1, '"' | '\'' | '\u{201d}' | '\u{2019}'))
-        else {
+        let Some(j) = (i + 1..chars.len()).find(|&j| {
+            matches!(
+                chars[j].1,
+                '"' | '\'' | '\u{201d}' | '\u{2019}' | '\u{ff02}' | '\u{ff07}'
+            )
+        }) else {
             break;
         };
         let (close_at, close_c) = chars[j];
@@ -2276,9 +2327,27 @@ pub(super) fn quoted_members_as_parens(text: &str) -> Option<String> {
     let mut out = String::with_capacity(text.len());
     for (idx, (_, c)) in chars.iter().enumerate() {
         if pairs.iter().any(|&(o, _)| o == idx) {
-            out.push('(');
+            // Round 44 (R44-B, F2 = red team
+            // RT44-C1): a fullwidth quote (U+FF02 /
+            // U+FF07) is three bytes where "(" is
+            // one, so its re-dress pads to the
+            // mark's own byte width — the paren
+            // stands at the mark's first byte and
+            // the padding spaces after it — keeping
+            // the re-dress byte-length preserving and
+            // every other span at its written offset,
+            // as the straight dress's re-dress is.
+            if matches!(c, '\u{ff02}' | '\u{ff07}') {
+                out.push_str("(  ");
+            } else {
+                out.push('(');
+            }
         } else if pairs.iter().any(|&(_, cl)| cl == idx) {
-            out.push(')');
+            if matches!(c, '\u{ff02}' | '\u{ff07}') {
+                out.push_str(")  ");
+            } else {
+                out.push(')');
+            }
         } else {
             out.push(*c);
         }
@@ -2499,12 +2568,23 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
         // `trailing_group_run_walk` stays for the
         // shapes the peels still leave it, its
         // gates unchanged.
+        // Round 44 (R44-B, F2 MAJOR = red team
+        // RT44-C1): the peel set gains the fullwidth
+        // quote closers U+FF02 and U+FF07 — a run
+        // closing the line in front of one
+        // ("November 8, 2026 (cancelled)＂") was no
+        // run at all and its cancelled date served
+        // live, where the straight closers standing
+        // in this set govern. The fullwidth
+        // SEPARATORS do not join this peel: a mark
+        // trailing a single group as garnish is
+        // R44-D's suffix seat, not this batch's.
         let peeled = text[..end]
             .trim_end()
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
                 '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{00ad}',
             ])
             .len();
         if peeled != end {
@@ -2588,6 +2668,15 @@ fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
         // standing in this set since R39-C, are
         // judged, so the governor never unwrapped
         // and the cancelled date served live.
+        // Round 44 (R44-B, F2 MAJOR = red team
+        // RT44-C1): the gap set gains the fullwidth
+        // separators (U+FF0C, U+FF1B, U+FF1A, U+FF0E,
+        // U+3001, U+3002) and the fullwidth closers
+        // (U+FF02, U+FF07) — the same shapes in
+        // fullwidth dress ("(cancelled)，(Monday)",
+        // "(cancelled)(Monday)＂ (notes)") ended the
+        // run the same way, and the governed date
+        // served live at the trailing slot.
         if !gap.chars().all(|c| {
             matches!(
                 c,
@@ -2614,6 +2703,14 @@ fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
                     | '\u{ff0a}'
                     | '\u{ff01}'
                     | '\u{ff1f}'
+                    | '\u{ff0c}'
+                    | '\u{ff1b}'
+                    | '\u{ff1a}'
+                    | '\u{ff0e}'
+                    | '\u{3001}'
+                    | '\u{3002}'
+                    | '\u{ff02}'
+                    | '\u{ff07}'
                     | '\u{00ad}'
             ) || c.is_whitespace()
         }) {
@@ -2737,6 +2834,18 @@ fn midline_governor_before_plain_date(
     // passing `governor_group_words`), so the lone
     // mid-line WEEKDAY group's parity arm is
     // untouched: no governor group stands there.
+    // Round 44 (R44-B, F2 MAJOR = red team
+    // RT44-C1): the gap set below and the rest trim
+    // after it gain the fullwidth separators
+    // (U+FF0C, U+FF1B, U+FF1A, U+FF0E, U+3001,
+    // U+3002) — a companion group standing across
+    // one ("notes (cancelled)，(notes) November 8,
+    // 2026") was never stepped over, so its
+    // governor went unjudged where its ASCII twin
+    // governs. The fullwidth closers do not join
+    // these sets: their straight twins stand in
+    // neither, and the inter-group closer seat at
+    // mid-line is the company walk's.
     for &(next_start, next_end) in &spans[idx + 1..] {
         let gap = &text[pos..next_start];
         if !gap.chars().all(|c| {
@@ -2763,6 +2872,12 @@ fn midline_governor_before_plain_date(
                     | '\u{ff0a}'
                     | '\u{ff01}'
                     | '\u{ff1f}'
+                    | '\u{ff0c}'
+                    | '\u{ff1b}'
+                    | '\u{ff1a}'
+                    | '\u{ff0e}'
+                    | '\u{3001}'
+                    | '\u{3002}'
                     | '\u{00ad}'
             ) || c.is_whitespace()
         }) {
@@ -2783,7 +2898,8 @@ fn midline_governor_before_plain_date(
     let rest = text[pos..].trim_start_matches([
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
         '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-        '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+        '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}',
+        '\u{3002}', '\u{00ad}',
     ]);
     if matches!(rest.chars().next(), Some('(' | '[' | '{')) {
         return false;
@@ -3000,10 +3116,20 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         // the sequence served in silence, its
         // record lost, where both twins refuse
         // with the record.
+        // Round 44 (R44-B, F2 MAJOR = red team
+        // RT44-C1): the trims gain the fullwidth
+        // separators (U+FF0C, U+FF1B, U+FF1A,
+        // U+FF0E, U+3001, U+3002) — a leading
+        // sequence standing across one
+        // ("(cancelled)，(Monday) November 1, 2026")
+        // was no sequence at all and its weekday
+        // went unjudged, where its ASCII twin
+        // refuses with the record.
         rest = rest.trim_start_matches([
             ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
             '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
-            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}',
+            '\u{3001}', '\u{3002}', '\u{00ad}',
         ]);
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             break;
@@ -3024,7 +3150,8 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     let rest = rest.trim_start_matches([
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
         '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-        '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+        '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}',
+        '\u{3002}', '\u{00ad}',
     ]);
     Some((inners, rest))
 }
@@ -3100,12 +3227,22 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     // the standing separator tokens below.
     let mut end = text.len();
     loop {
+        // Round 44 (R44-B, F2 MAJOR = red team
+        // RT44-C1): the peel set gains the fullwidth
+        // quote closers U+FF02 and U+FF07 — a
+        // sequence closing the line in front of one
+        // ("(cancelled)(Monday)＂") was no sequence
+        // and served in silence, its record lost,
+        // where the straight closers standing in
+        // this set are judged. The fullwidth
+        // separators do not join this peel: the
+        // suffix seat is R44-D's, not this batch's.
         let peeled = text[..end]
             .trim_end()
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
                 '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{00ad}',
             ])
             .len();
         if peeled != end {
@@ -3195,6 +3332,13 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         // lost, where its curly twins U+201D /
         // U+2019, standing in this set since
         // R39-C, are judged.
+        // Round 44 (R44-B, F2 MAJOR = red team
+        // RT44-C1): the gap set gains the fullwidth
+        // separators (U+FF0C, U+FF1B, U+FF1A, U+FF0E,
+        // U+3001, U+3002) and the fullwidth closers
+        // (U+FF02, U+FF07) — the same shapes in
+        // fullwidth dress stood outside the run the
+        // same way and served in silence.
         if !gap.chars().all(|c| {
             matches!(
                 c,
@@ -3221,6 +3365,14 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                     | '\u{ff0a}'
                     | '\u{ff01}'
                     | '\u{ff1f}'
+                    | '\u{ff0c}'
+                    | '\u{ff1b}'
+                    | '\u{ff1a}'
+                    | '\u{ff0e}'
+                    | '\u{3001}'
+                    | '\u{3002}'
+                    | '\u{ff02}'
+                    | '\u{ff07}'
                     | '\u{00ad}'
             ) || c.is_whitespace()
         }) {
@@ -3811,10 +3963,22 @@ pub(super) fn leading_governor_company_judgment(
     // stands in, and U+00AD (adjudication 7, see
     // the batch record) — at the set level, so
     // seats built later inherit the class.
-    const SEPARATORS: [char; 25] = [
+    // Round 44 (R44-B, F2 MAJOR = red team
+    // RT44-C1): the set gains the fullwidth
+    // separators — U+FF0C, U+FF1B, U+FF1A, U+FF0E,
+    // and the CJK forms U+3001 / U+3002 — so a
+    // company standing across one, at the leading
+    // seat or behind a lead-in, is walked whole
+    // where its ASCII twin composes. (This set is
+    // also the walk's final trim before the framed
+    // date, so a separator standing after the
+    // company's last group is shed there as its
+    // ASCII twin is.)
+    const SEPARATORS: [char; 31] = [
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
         '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-        '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+        '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}',
+        '\u{3002}', '\u{00ad}',
     ];
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut governor_seen = false;
@@ -3875,7 +4039,7 @@ pub(super) fn leading_governor_company_judgment(
             rest = &rest[end..];
             continue;
         }
-        if matches!(first, '"' | '\'') {
+        if matches!(first, '"' | '\'' | '\u{ff02}' | '\u{ff07}') {
             // Round 42 (R42-B, F5 arm (c)): a straight
             // quote standing after a group, glued or
             // spaced, is a CLOSER, and a closer is a
@@ -3898,17 +4062,33 @@ pub(super) fn leading_governor_company_judgment(
             // `(cancelled)(Monday) " ...` wear
             // closers. A closer is skipped and the
             // walk continues.
+            // Round 44 (R44-B, F2 MAJOR = red team
+            // RT44-C1): the fullwidth quotes U+FF02
+            // and U+FF07 stand in this arm as the
+            // straight quotes do — a fullwidth closer
+            // after a group ("(cancelled)＂(Monday)
+            // ...", "(cancelled)(Monday)＂ ...") is
+            // skipped, and a fullwidth quote opening
+            // a member span ("＂cancelled＂ (Monday)
+            // ...") falls through to the quoted-
+            // member arm below.
             let after = &rest[first.len_utf8()..];
             let opens_member = after.chars().next().is_some_and(|c| c.is_alphabetic())
-                && after
-                    .chars()
-                    .any(|c| matches!(c, '"' | '\'' | '\u{201d}' | '\u{2019}'));
+                && after.chars().any(|c| {
+                    matches!(
+                        c,
+                        '"' | '\'' | '\u{201d}' | '\u{2019}' | '\u{ff02}' | '\u{ff07}'
+                    )
+                });
             if !opens_member {
                 rest = after;
                 continue;
             }
         }
-        if matches!(first, '"' | '\'' | '\u{201c}' | '\u{2018}') {
+        if matches!(
+            first,
+            '"' | '\'' | '\u{201c}' | '\u{2018}' | '\u{ff02}' | '\u{ff07}'
+        ) {
             // Round 42 (R42-A, F3 arm (c)): a company
             // member wearing quotes is taken as its
             // bracket twin — the quoted span is read
@@ -3924,11 +4104,16 @@ pub(super) fn leading_governor_company_judgment(
             // serve. The span ends at the first
             // closing-family quote, as the re-dress
             // scan reads a quoted span.
+            // Round 44 (R44-B, F2): the closing-family
+            // set gains the fullwidth quotes U+FF02
+            // and U+FF07, the arm's openers above.
             let open_len = first.len_utf8();
-            let Some((at, c)) = rest[open_len..]
-                .char_indices()
-                .find(|(_, c)| matches!(c, '"' | '\'' | '\u{201d}' | '\u{2019}'))
-            else {
+            let Some((at, c)) = rest[open_len..].char_indices().find(|(_, c)| {
+                matches!(
+                    c,
+                    '"' | '\'' | '\u{201d}' | '\u{2019}' | '\u{ff02}' | '\u{ff07}'
+                )
+            }) else {
                 break;
             };
             let end = open_len + at + c.len_utf8();

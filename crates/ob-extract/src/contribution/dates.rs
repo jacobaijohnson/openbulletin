@@ -867,10 +867,20 @@ fn base_trailing_sequence_mismatch(
         // the plain trailing walk, and a spaced
         // suffix token of the set is taken with the
         // standing separator tokens below.
+        // Round 44 (R44-B, F2 MAJOR = red team
+        // RT44-C1): the peel set gains the fullwidth
+        // quote closers U+FF02 and U+FF07 — a
+        // base-trailing sequence closing on one
+        // ("(cancelled)(Monday)＂") was no sequence
+        // and served the resolution with its record
+        // lost, where the straight closers standing
+        // in this set are judged. The fullwidth
+        // separators do not join this peel: the
+        // suffix seat is R44-D's, not this batch's.
         let peeled = rest.trim_end().trim_end_matches([
             '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
             '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
-            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{00ad}',
         ]);
         if peeled.len() != rest.len() {
             rest = peeled;
@@ -1024,10 +1034,35 @@ fn base_trailing_sequence_mismatch(
         // where its clean twin refuses with the
         // record — the seat R42-B deviation (c)
         // named and left.
+        // Round 44 (R44-B, F2 MAJOR = red team
+        // RT44-C1): the first gap set gains the
+        // fullwidth separators (U+FF0C, U+FF1B,
+        // U+FF1A, U+FF0E, U+3001, U+3002) and the
+        // fullwidth closers (U+FF02, U+FF07) — the
+        // named company "(cancelled)，(Monday)" and
+        // the weekday-only sequence served in
+        // silence through them, where their ASCII
+        // and straight twins refuse with the record.
         if gap.chars().all(|c| {
             matches!(
                 c,
-                ',' | ';' | '.' | ':' | '!' | '?' | '"' | '\'' | '\u{201d}' | '\u{2019}'
+                ',' | ';'
+                    | '.'
+                    | ':'
+                    | '!'
+                    | '?'
+                    | '"'
+                    | '\''
+                    | '\u{201d}'
+                    | '\u{2019}'
+                    | '\u{ff0c}'
+                    | '\u{ff1b}'
+                    | '\u{ff1a}'
+                    | '\u{ff0e}'
+                    | '\u{3001}'
+                    | '\u{3002}'
+                    | '\u{ff02}'
+                    | '\u{ff07}'
             ) || c.is_whitespace()
         }) {
             continue;
@@ -1043,6 +1078,14 @@ fn base_trailing_sequence_mismatch(
         // scoped it: a non-company sequence wearing
         // the mark between its groups keeps its
         // standing reading.
+        // Round 44 (R44-B, F2 MAJOR = red team
+        // RT44-C1): the company gap set gains the
+        // fullwidth separators (U+FF0C, U+FF1B,
+        // U+FF1A, U+FF0E, U+3001, U+3002) and the
+        // fullwidth closers (U+FF02, U+FF07), as the
+        // first gap set above gains them — the
+        // company-scope of this tier stands as
+        // R42-C scoped it.
         if !is_company
             || !gap.chars().all(|c| {
                 matches!(
@@ -1070,6 +1113,14 @@ fn base_trailing_sequence_mismatch(
                         | '\u{ff0a}'
                         | '\u{ff01}'
                         | '\u{ff1f}'
+                        | '\u{ff0c}'
+                        | '\u{ff1b}'
+                        | '\u{ff1a}'
+                        | '\u{ff0e}'
+                        | '\u{3001}'
+                        | '\u{3002}'
+                        | '\u{ff02}'
+                        | '\u{ff07}'
                         | '\u{00ad}'
                 ) || c.is_whitespace()
             })
@@ -2331,10 +2382,21 @@ fn clean_group_word(text: &str) -> String {
     // curly-quoted word ("“cancelled”",
     // "‘Sunday’") cleans to the word itself, at
     // parity with its straight-quoted twin.
+    // Round 44 (R44-B, F2 MAJOR = red team
+    // RT44-C1): the edge trim gains the fullwidth
+    // separators (U+FF0C, U+FF1B, U+FF1A, U+FF0E,
+    // U+3001, U+3002) — a word wearing one at its
+    // edge is the word it names, as one wearing
+    // "," / ";" / ":" / "." already is (the shared
+    // word cleaning, as in `clean`) — and the
+    // fullwidth quotes (U+FF02, U+FF07), which a
+    // word wearing at its edges sheds as it sheds
+    // the straight and curly pairs.
     stripped
         .trim_matches([
             '(', ')', '[', ']', '{', '}', ',', '.', ':', ';', '-', '\u{2013}', '\u{2014}', '/',
-            '!', '?', '\'', '"', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}',
+            '!', '?', '\'', '"', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}', '\u{ff0c}',
+            '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}', '\u{3002}', '\u{ff02}', '\u{ff07}',
         ])
         .to_ascii_lowercase()
 }

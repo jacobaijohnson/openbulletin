@@ -222,6 +222,31 @@
 //! that version consistency now, so the view carries
 //! a pair the reader will judge.
 //!
+//! Round 43, F6: a sixth generation appended a
+//! second complete archive after the first — plant
+//! locals, plant directory, plant end record, the
+//! plant records carrying the real entries' names
+//! and offsets with the key entry's record describing
+//! plant content. The trailing candidate derives with
+//! the real archive's frame (its end record declares
+//! its directory's absolute position), so its walked
+//! extent spans the whole file; and where the plant
+//! content matched the real key entry's length, its
+//! declared local-offset set equalled the real
+//! directory's, so the extent's record-facts arm read
+//! the REAL candidate as a rewriting standing in the
+//! trailing candidate's extent and subordinated it —
+//! the trailing directory was judged, and the one
+//! door that reads through the key record's checksum
+//! failed the craft its clean control reads. The fill
+//! does not reach back across a complete archive's
+//! end now: a candidate whose body stands again
+//! after the filled candidate's comment end, before
+//! its own directory (`trailing_body_restands`), is
+//! a trailing archive appended after that archive,
+//! and the first complete directory is the directory
+//! judged.
+//!
 //! This lives in ob-model, the lowest crate every zip
 //! door can reach, stated over raw bytes the way
 //! `read_capped` is stated over `Read`, so this crate
@@ -1334,6 +1359,70 @@ fn gap_fill_subordinates(
     record_facts_differ(plant_facts, owner_facts)
 }
 
+/// Whether the candidate owning `owner`'s frame has
+/// its body standing again after the candidate whose
+/// archive ends at `filled_comment_end` (round 43,
+/// F6): the owner's first record's local header
+/// stands at the position the owner's own frame
+/// predicts once that frame is moved to the filled
+/// candidate's comment end — a position that is not
+/// the owner's own named local — and the name it
+/// carries there is the name the owner's first record
+/// declares. That is a second, complete body of local
+/// headers standing between the filled archive's end
+/// and the owner's directory: the owner is a trailing
+/// archive appended after a complete first archive,
+/// not an archive whose gap bytes the filled
+/// candidate stands in, and its walked extent's span
+/// of the whole file is the concatenation's shape,
+/// not an accounting of the filled candidate's bytes.
+/// A gap plant's owner places no such body in the
+/// interval — between the plant's end and the owner's
+/// directory stand gap bytes, or the owner's own
+/// first local header in the owner's own frame — so
+/// the check is silent for every prior generation.
+fn trailing_body_restands(
+    bytes: &[u8],
+    filled_comment_end: usize,
+    owner: &CentralDirectory,
+    owner_offsets: &[u64],
+    owner_facts: &[RecordFact],
+) -> bool {
+    if filled_comment_end > owner.cd_start {
+        return false;
+    }
+    let (Some(&first_local), Some(first_fact)) = (owner_offsets.first(), owner_facts.first())
+    else {
+        return false;
+    };
+    let Some(relative) = first_local.checked_sub(owner.archive_offset) else {
+        return false;
+    };
+    let Ok(relative) = usize::try_from(relative) else {
+        return false;
+    };
+    let Some(at) = filled_comment_end.checked_add(relative) else {
+        return false;
+    };
+    if at >= owner.cd_start || u64::try_from(at).ok() == Some(first_local) {
+        return false;
+    }
+    let Some(header_end) = at.checked_add(30) else {
+        return false;
+    };
+    if header_end > bytes.len() || !bytes[at..].starts_with(b"PK\x03\x04") {
+        return false;
+    }
+    let name_len = usize::from(u16_at(bytes, at + 26));
+    let Some(name_end) = header_end.checked_add(name_len) else {
+        return false;
+    };
+    if name_end > bytes.len() {
+        return false;
+    }
+    bytes[header_end..name_end] == first_fact.name_bytes[..]
+}
+
 /// The byte spans one candidate directory's declared
 /// entries' payloads occupy in the file, per that
 /// candidate's own walk (round 37, F8): each central
@@ -1547,6 +1636,23 @@ fn zip64_structural_span(
 /// round-40 fact agreed, and mirror-standing is
 /// confined to candidates whose whole records agree
 /// in every field and in their order.
+///
+/// Round 43, F6: the extent's gap fill does not
+/// reach back across a complete archive's end. A
+/// second complete archive appended after the first
+/// derives with the first archive's own frame, so
+/// its walked extent spans the whole file and the
+/// first end record stands in it; where its plant
+/// content matched the real key entry's length, its
+/// declared offset set equalled the real directory's
+/// and the record-facts arm read the real candidate
+/// as a rewriting in its extent. But a candidate
+/// whose body stands again after the filled
+/// candidate's comment end, before its own directory
+/// (`trailing_body_restands`), is a trailing archive,
+/// not a gap owner: the first complete directory is
+/// the directory judged, and the trailing archive is
+/// subordinated the way a gap plant is.
 pub fn central_directory(bytes: &[u8]) -> Option<CentralDirectory> {
     judged_directory(bytes).map(|(_, directory)| directory)
 }
@@ -1624,7 +1730,7 @@ fn judged_directory(bytes: &[u8]) -> Option<(usize, CentralDirectory)> {
         .iter()
         .map(|(_, _, _, directory)| directory_record_facts(bytes, directory))
         .collect();
-    for (i, (at, _, _, directory)) in derived.iter().enumerate() {
+    for (i, (at, _, comment_end, directory)) in derived.iter().enumerate() {
         if absorbed[i] {
             continue;
         }
@@ -1692,9 +1798,32 @@ fn judged_directory(bytes: &[u8]) -> Option<(usize, CentralDirectory)> {
                     // subordinated by neither arm: it
                     // judges identically to the real one
                     // either way, and its fill swallows
-                    // nothing.
+                    // nothing. The fill does not reach
+                    // back across a complete archive's
+                    // end either (round 43, F6): where
+                    // the other candidate's body stands
+                    // again after this candidate's
+                    // comment end, before the other
+                    // candidate's directory
+                    // (`trailing_body_restands`), the
+                    // other candidate is a trailing
+                    // archive appended after this
+                    // complete one — its extent spans
+                    // this archive the way a
+                    // concatenation's does, not the way
+                    // a gap owner's accounts for a
+                    // plant — and this candidate stands
+                    // on its own: the first complete
+                    // directory is the directory judged.
                     || (walked_extents[j]
                         .is_some_and(|(start, end)| *at >= start && *at < end)
+                        && !trailing_body_restands(
+                            bytes,
+                            *comment_end,
+                            &derived[j].3,
+                            &local_offsets[j],
+                            &record_facts[j],
+                        )
                         && gap_fill_subordinates(
                             &local_offsets[i],
                             &record_facts[i],
@@ -4757,6 +4886,448 @@ mod tests {
             assert_eq!(
                 records, 1,
                 "{label}: exactly the real record stands in the view"
+            );
+        }
+    }
+
+    /// One Stored local header in the round-43
+    /// crafts' shape, with the checksum and flags
+    /// stated outright and the declared sizes zeroed
+    /// where the descriptor form asks for it.
+    fn r43d_local(name: &[u8], data: &[u8], crc: u32, flags: u16, zero_sizes: bool) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&crc.to_le_bytes());
+        let size = if zero_sizes { 0 } else { data.len() as u32 };
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name);
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// One central record in the round-43 crafts'
+    /// shape: the entry's name, its stated checksum,
+    /// its data length for both size fields, and its
+    /// local offset, with the flags stated outright.
+    fn r43d_central(
+        name: &[u8],
+        data_len: u32,
+        crc: u32,
+        local_offset: u32,
+        flags: u16,
+    ) -> Vec<u8> {
+        let mut rec: Vec<u8> = Vec::new();
+        rec.extend_from_slice(b"PK\x01\x02");
+        rec.extend_from_slice(&45u16.to_le_bytes());
+        rec.extend_from_slice(&20u16.to_le_bytes());
+        rec.extend_from_slice(&flags.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&crc.to_le_bytes());
+        rec.extend_from_slice(&data_len.to_le_bytes());
+        rec.extend_from_slice(&data_len.to_le_bytes());
+        rec.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u16.to_le_bytes());
+        rec.extend_from_slice(&0u32.to_le_bytes());
+        rec.extend_from_slice(&local_offset.to_le_bytes());
+        rec.extend_from_slice(name);
+        rec
+    }
+
+    /// One end record in the round-43 crafts' shape:
+    /// the disk number written to both disk fields, as
+    /// the generator's disk craft writes it (1 and 1).
+    fn r43d_eocd(total: u16, cd_size: u32, cd_offset: u32, disk: u16, comment: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&disk.to_le_bytes());
+        out.extend_from_slice(&disk.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&(comment.len() as u16).to_le_bytes());
+        out.extend_from_slice(comment);
+        out
+    }
+
+    /// The round-43 archive crafts (red team RT43-A1,
+    /// generator `mk43.py`), assembled byte by byte
+    /// over Stored entries whose checksums are stated
+    /// per entry — `(name, data, crc)`; the model reads
+    /// checksums as record facts, never as payload
+    /// facts, so a stated checksum is the craft's fact
+    /// at this level. `key` is the entry the crafts
+    /// mutate; `plant` is the `(data, crc)` the plant
+    /// directory's key record describes. Shapes:
+    /// "clean" the real archive alone; "trailing" a
+    /// complete second archive appended after the real
+    /// end record — plant locals, plant directory,
+    /// plant end record — whose records carry the real
+    /// entries' names and the plant body's own local
+    /// offsets while its end record declares its
+    /// directory's absolute file position, so its
+    /// archive offset derives to the real archive's;
+    /// "comment" the plant directory standing in a gap
+    /// before the real directory, with a fake end
+    /// record embedded in the real end record's
+    /// declared comment; "nameflip" the key entry's
+    /// local name case-flipped; "crcbad" the key
+    /// entry's local checksum falsified; "descriptor"
+    /// the key entry in descriptor form (local sizes
+    /// zero, bit-3 flag, a descriptor after its data,
+    /// its central record normal); "disk1" both
+    /// end-record disk fields set to 1; "count1" the
+    /// end record's entry counts falsified to 1.
+    /// Returns the bytes and the real directory's
+    /// start.
+    fn r43d_archive(
+        entries: &[(&[u8], &[u8], u32)],
+        key: usize,
+        plant: (&[u8], u32),
+        shape: &str,
+    ) -> (Vec<u8>, usize) {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (i, (name, data, crc)) in entries.iter().enumerate() {
+            locals.push(body.len() as u32);
+            if i == key && shape == "descriptor" {
+                let mut local = r43d_local(name, data, 0, 0x08, true);
+                local.extend_from_slice(b"PK\x07\x08");
+                local.extend_from_slice(&crc.to_le_bytes());
+                local.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                local.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                body.extend_from_slice(&local);
+            } else if i == key && shape == "nameflip" {
+                let flipped: Vec<u8> = name
+                    .iter()
+                    .map(|b| {
+                        if b.is_ascii_lowercase() {
+                            b.to_ascii_uppercase()
+                        } else if b.is_ascii_uppercase() {
+                            b.to_ascii_lowercase()
+                        } else {
+                            *b
+                        }
+                    })
+                    .collect();
+                body.extend_from_slice(&r43d_local(&flipped, data, *crc, 0, false));
+            } else if i == key && shape == "crcbad" {
+                body.extend_from_slice(&r43d_local(name, data, crc ^ 0xFFFF_FFFF, 0, false));
+            } else {
+                body.extend_from_slice(&r43d_local(name, data, *crc, 0, false));
+            }
+        }
+        let cd_start = body.len();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data, crc)) in entries.iter().enumerate() {
+            let flags = if i == key && shape == "descriptor" {
+                0x08
+            } else {
+                0
+            };
+            centrals.extend_from_slice(&r43d_central(
+                name,
+                data.len() as u32,
+                *crc,
+                locals[i],
+                flags,
+            ));
+        }
+        let total = entries.len() as u16;
+        let real_cd = if shape == "comment" {
+            cd_start + 5000
+        } else {
+            cd_start
+        };
+        // The plant body and directory: the real
+        // entries with the key entry's content swapped
+        // for the plant's, locals and records in the
+        // plant body's own frame.
+        let mut pbody: Vec<u8> = Vec::new();
+        let mut plocals: Vec<u32> = Vec::new();
+        for (i, (name, data, crc)) in entries.iter().enumerate() {
+            plocals.push(pbody.len() as u32);
+            let (pdata, pcrc) = if i == key { plant } else { (*data, *crc) };
+            pbody.extend_from_slice(&r43d_local(name, pdata, pcrc, 0, false));
+        }
+        let mut pcentrals: Vec<u8> = Vec::new();
+        for (i, (name, data, crc)) in entries.iter().enumerate() {
+            let (pdata, pcrc) = if i == key { plant } else { (*data, *crc) };
+            pcentrals.extend_from_slice(&r43d_central(
+                name,
+                pdata.len() as u32,
+                pcrc,
+                plocals[i],
+                0,
+            ));
+        }
+        let mut out = body;
+        match shape {
+            "trailing" => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    total,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    0,
+                    &[],
+                ));
+                let tcd = (out.len() + pbody.len()) as u32;
+                out.extend_from_slice(&pbody);
+                out.extend_from_slice(&pcentrals);
+                out.extend_from_slice(&r43d_eocd(total, pcentrals.len() as u32, tcd, 0, &[]));
+            }
+            "comment" => {
+                let mut gap = vec![b'G'; 5000];
+                gap[200..200 + pcentrals.len()].copy_from_slice(&pcentrals);
+                let fake = r43d_eocd(
+                    total,
+                    pcentrals.len() as u32,
+                    (cd_start + 200) as u32,
+                    0,
+                    &[],
+                );
+                let mut comment = b"CC".to_vec();
+                comment.extend_from_slice(&fake);
+                comment.extend_from_slice(b"DDDDDDDDDDDDDDDDDDDD");
+                out.extend_from_slice(&gap);
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    total,
+                    centrals.len() as u32,
+                    real_cd as u32,
+                    0,
+                    &comment,
+                ));
+            }
+            "disk1" => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    total,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    1,
+                    &[],
+                ));
+            }
+            "count1" => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    1,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    0,
+                    &[],
+                ));
+            }
+            _ => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    total,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    0,
+                    &[],
+                ));
+            }
+        }
+        (out, real_cd)
+    }
+
+    /// One round-43 entry set at model scale:
+    /// `(set, entries, key, plant)` — the set's name,
+    /// its `(name, data, crc)` entries, the key
+    /// entry's index, and the plant's `(data, crc)`.
+    type R43dSet = (
+        &'static str,
+        Vec<(Vec<u8>, Vec<u8>, u32)>,
+        usize,
+        (Vec<u8>, u32),
+    );
+
+    /// The four entry sets of the round-43 crafts, at
+    /// model scale: the generator's names and duplicate
+    /// shapes, with contents sized the way the
+    /// generator's stand — the idml, clip, and mxl key
+    /// contents the same length as their plant (so the
+    /// plant's declared local-offset set equals the
+    /// real directory's), the font key content a
+    /// different length from its plant (so it does
+    /// not). Owned contents; the caller maps them to
+    /// the builder's slices.
+    fn r43d_entry_sets() -> Vec<R43dSet> {
+        let filler = vec![b'A'; 600];
+        vec![
+            (
+                "idml",
+                vec![
+                    (b"designmap.xml".to_vec(), vec![b'd'; 79], 101),
+                    (b"Resources/Styles.xml".to_vec(), vec![b's'; 77], 102),
+                    (b"Stories/Story_u9.xml".to_vec(), vec![b'a'; 207], 103),
+                    (b"Stories/Story_u9.xml".to_vec(), vec![b'b'; 212], 104),
+                    (b"Spreads/Spread_u1.xml".to_vec(), vec![b'p'; 441], 105),
+                    (b"filler.bin".to_vec(), filler.clone(), 106),
+                ],
+                2,
+                (vec![b'z'; 207], 903),
+            ),
+            (
+                "font",
+                vec![
+                    (b"MyFont.ttf".to_vec(), vec![b'R'; 1000], 201),
+                    (b"MyFont.ttf".to_vec(), vec![b'B'; 900], 202),
+                    (b"filler.bin".to_vec(), filler.clone(), 203),
+                ],
+                0,
+                (vec![b'Q'; 800], 901),
+            ),
+            (
+                "clip",
+                vec![
+                    (b"pic.png".to_vec(), vec![b'r'; 69], 301),
+                    (b"pic.png".to_vec(), vec![b'u'; 69], 302),
+                    (b"filler.bin".to_vec(), filler.clone(), 303),
+                ],
+                0,
+                (vec![b'v'; 69], 904),
+            ),
+            (
+                "mxl",
+                vec![
+                    (b"META-INF/container.xml".to_vec(), vec![b'c'; 105], 401),
+                    (b"score.musicxml".to_vec(), vec![b'f'; 333], 402),
+                    (b"score.musicxml".to_vec(), vec![b'g'; 334], 403),
+                    (b"filler.bin".to_vec(), filler, 404),
+                ],
+                1,
+                (vec![b'h'; 333], 905),
+            ),
+        ]
+    }
+
+    #[test]
+    fn r43d_a_complete_trailing_archive_never_steers_the_derivation() {
+        // Round 43, F6 (red team RT43-A1): the sixth
+        // generation of the archive discipline — a
+        // second complete archive appended after the
+        // first (real body + real directory + real end
+        // record, then plant locals + plant directory +
+        // plant end record, the plant records carrying
+        // the real entries' names and offsets with the
+        // key entry's record describing plant content)
+        // was judged at the TRAILING directory for three
+        // of the four entry sets, and the clip door
+        // failed those crafts on the plant record's
+        // checksum where the clean controls read OK.
+        // The first complete directory is the directory
+        // judged now, in every set: the derived start is
+        // the real directory's, and the judged spots are
+        // the clean control's spot for spot, checksums
+        // included. The font set is the standing
+        // control inside the family: its plant content
+        // is a different length from the real key
+        // entry's, so its plant's offset set never
+        // equalled the real one's and the real directory
+        // was judged even before this fix.
+        for (set, entries, key, plant) in r43d_entry_sets() {
+            let slices: Vec<(&[u8], &[u8], u32)> = entries
+                .iter()
+                .map(|(name, data, crc)| (name.as_slice(), data.as_slice(), *crc))
+                .collect();
+            let plant_ref = (plant.0.as_slice(), plant.1);
+            let (clean, clean_cd) = r43d_archive(&slices, key, plant_ref, "clean");
+            let control = central_directory(&clean).expect("the clean control derives");
+            assert_eq!(control.cd_start, clean_cd, "{set}: the control stands");
+            let (bytes, real_cd) = r43d_archive(&slices, key, plant_ref, "trailing");
+            let directory = central_directory(&bytes).expect("the trailing craft derives");
+            assert_eq!(
+                directory.cd_start, real_cd,
+                "{set}: the first directory is judged, not the trailing one"
+            );
+            assert_eq!(directory.cd_start, control.cd_start, "{set}");
+            assert_eq!(directory.total, control.total, "{set}");
+            assert_eq!(directory.archive_offset, control.archive_offset, "{set}");
+            assert_eq!(
+                central_spots(&bytes),
+                central_spots(&clean),
+                "{set}: the judged spots are the clean control's, checksums included"
+            );
+        }
+    }
+
+    #[test]
+    fn r43d_held_archive_arms_stand_as_controls() {
+        // Round 43, F6's held surface (red team RT43-A1,
+        // the arms that held on the audited tree, pinned
+        // here as controls so this batch's change is
+        // witnessed not to move them): the
+        // comment-embedded end record subordinated whole,
+        // the local-header mutations (the key entry's
+        // local name case-flipped, its local checksum
+        // falsified, its descriptor form) and the
+        // end-record disk fields set to 1 all judge the
+        // real directory with the clean control's judged
+        // facts — name, checksum, compressed size, and
+        // method, spot for spot (the descriptor form
+        // shifts the later entries' local offsets by its
+        // sixteen bytes, which is the form's own shape,
+        // so offsets are not among the compared facts
+        // here) — and the entry count falsified to 1
+        // derives no directory at all, the uniform
+        // refusal every door reports. These arms pass
+        // on the base tree by design; they are controls,
+        // not witnesses.
+        for (set, entries, key, plant) in r43d_entry_sets() {
+            let slices: Vec<(&[u8], &[u8], u32)> = entries
+                .iter()
+                .map(|(name, data, crc)| (name.as_slice(), data.as_slice(), *crc))
+                .collect();
+            let plant_ref = (plant.0.as_slice(), plant.1);
+            let (clean, _) = r43d_archive(&slices, key, plant_ref, "clean");
+            let control = central_directory(&clean).expect("the clean control derives");
+            let clean_spots = central_spots(&clean);
+            for shape in ["comment", "nameflip", "crcbad", "descriptor", "disk1"] {
+                let (bytes, real_cd) = r43d_archive(&slices, key, plant_ref, shape);
+                let directory = central_directory(&bytes)
+                    .unwrap_or_else(|| panic!("{set} {shape}: the real directory derives"));
+                assert_eq!(directory.cd_start, real_cd, "{set} {shape}");
+                assert_eq!(directory.total, control.total, "{set} {shape}");
+                let spots = central_spots(&bytes);
+                assert_eq!(spots.len(), clean_spots.len(), "{set} {shape}");
+                for (spot, clean_spot) in spots.iter().zip(clean_spots.iter()) {
+                    assert_eq!(spot.0, clean_spot.0, "{set} {shape}: the name stands");
+                    assert_eq!(
+                        spot.1.crc32, clean_spot.1.crc32,
+                        "{set} {shape}: the checksum stands"
+                    );
+                    assert_eq!(
+                        spot.1.comp_size, clean_spot.1.comp_size,
+                        "{set} {shape}: the size stands"
+                    );
+                    assert_eq!(
+                        spot.1.method, clean_spot.1.method,
+                        "{set} {shape}: the method stands"
+                    );
+                }
+            }
+            let (bytes, _) = r43d_archive(&slices, key, plant_ref, "count1");
+            assert_eq!(
+                central_directory(&bytes),
+                None,
+                "{set} count1: no directory derives, the uniform refusal"
             );
         }
     }

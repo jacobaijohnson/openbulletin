@@ -3228,4 +3228,329 @@ mod tests {
             assert_eq!(dump.spans[0].text, "First story words here", "{shape}");
         }
     }
+
+    /// One Stored local header in the round-43
+    /// crafts' shape, with real checksums, the flags
+    /// stated outright, and the declared sizes zeroed
+    /// where the descriptor form asks for it.
+    fn r43d_local(name: &[u8], data: &[u8], flags: u16, zero_sizes: bool) -> Vec<u8> {
+        let crc = stored_crc(data);
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&(if zero_sizes { 0 } else { crc }).to_le_bytes());
+        let size = if zero_sizes { 0 } else { data.len() as u32 };
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name);
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// One central record in the round-43 crafts'
+    /// shape, with the flags stated outright.
+    fn r43d_central(name: &[u8], data: &[u8], local_offset: u32, flags: u16) -> Vec<u8> {
+        let mut rec = plain_central(name, data, local_offset, &[]);
+        if flags != 0 {
+            rec[8..10].copy_from_slice(&flags.to_le_bytes());
+        }
+        rec
+    }
+
+    /// One end record in the round-43 crafts' shape:
+    /// the disk number written to both disk fields, as
+    /// the generator's disk craft writes it (1 and 1).
+    fn r43d_eocd(total: u16, cd_size: u32, cd_offset: u32, disk: u16, comment: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&disk.to_le_bytes());
+        out.extend_from_slice(&disk.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&(comment.len() as u16).to_le_bytes());
+        out.extend_from_slice(comment);
+        out
+    }
+
+    /// The round-43 archive crafts (red team RT43-A1,
+    /// generator `mk43.py`), assembled byte by byte
+    /// over Stored entries: "clean" the real archive
+    /// alone; "trailing" a complete second archive
+    /// appended after the real end record whose
+    /// records carry the real entries' names and the
+    /// plant body's own local offsets, with the key
+    /// entry's record describing the plant content;
+    /// "comment" the plant directory in a gap before
+    /// the real directory with a fake end record in
+    /// the real end record's comment; "nameflip" the
+    /// key entry's local name case-flipped; "crcbad"
+    /// the key entry's local checksum falsified;
+    /// "descriptor" the key entry in descriptor form;
+    /// "disk1" both disk fields 1; "count1" the entry
+    /// counts falsified to 1.
+    fn r43d_archive(entries: &[(&[u8], &[u8])], key: usize, plant: &[u8], shape: &str) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::new();
+        let mut locals: Vec<u32> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            locals.push(body.len() as u32);
+            if i == key && shape == "descriptor" {
+                let mut local = r43d_local(name, data, 0x08, true);
+                local.extend_from_slice(b"PK\x07\x08");
+                local.extend_from_slice(&stored_crc(data).to_le_bytes());
+                local.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                local.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                body.extend_from_slice(&local);
+            } else if i == key && shape == "nameflip" {
+                let flipped: Vec<u8> = name
+                    .iter()
+                    .map(|b| {
+                        if b.is_ascii_lowercase() {
+                            b.to_ascii_uppercase()
+                        } else if b.is_ascii_uppercase() {
+                            b.to_ascii_lowercase()
+                        } else {
+                            *b
+                        }
+                    })
+                    .collect();
+                body.extend_from_slice(&r43d_local(&flipped, data, 0, false));
+            } else if i == key && shape == "crcbad" {
+                let mut local = r43d_local(name, data, 0, false);
+                let bad = stored_crc(data) ^ 0xFFFF_FFFF;
+                local[14..18].copy_from_slice(&bad.to_le_bytes());
+                body.extend_from_slice(&local);
+            } else {
+                body.extend_from_slice(&r43d_local(name, data, 0, false));
+            }
+        }
+        let cd_start = body.len();
+        let mut centrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            let flags = if i == key && shape == "descriptor" {
+                0x08
+            } else {
+                0
+            };
+            centrals.extend_from_slice(&r43d_central(name, data, locals[i], flags));
+        }
+        let total = entries.len() as u16;
+        let mut pbody: Vec<u8> = Vec::new();
+        let mut plocals: Vec<u32> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            plocals.push(pbody.len() as u32);
+            let pdata = if i == key { plant } else { data };
+            pbody.extend_from_slice(&r43d_local(name, pdata, 0, false));
+        }
+        let mut pcentrals: Vec<u8> = Vec::new();
+        for (i, (name, data)) in entries.iter().enumerate() {
+            let pdata = if i == key { plant } else { data };
+            pcentrals.extend_from_slice(&r43d_central(name, pdata, plocals[i], 0));
+        }
+        let mut out = body;
+        match shape {
+            "trailing" => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    total,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    0,
+                    &[],
+                ));
+                let tcd = (out.len() + pbody.len()) as u32;
+                out.extend_from_slice(&pbody);
+                out.extend_from_slice(&pcentrals);
+                out.extend_from_slice(&r43d_eocd(total, pcentrals.len() as u32, tcd, 0, &[]));
+            }
+            "comment" => {
+                let mut gap = vec![b'G'; 5000];
+                gap[200..200 + pcentrals.len()].copy_from_slice(&pcentrals);
+                let fake = r43d_eocd(
+                    total,
+                    pcentrals.len() as u32,
+                    (cd_start + 200) as u32,
+                    0,
+                    &[],
+                );
+                let mut comment = b"CC".to_vec();
+                comment.extend_from_slice(&fake);
+                comment.extend_from_slice(b"DDDDDDDDDDDDDDDDDDDD");
+                out.extend_from_slice(&gap);
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    total,
+                    centrals.len() as u32,
+                    (cd_start + 5000) as u32,
+                    0,
+                    &comment,
+                ));
+            }
+            "disk1" => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    total,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    1,
+                    &[],
+                ));
+            }
+            "count1" => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    1,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    0,
+                    &[],
+                ));
+            }
+            _ => {
+                out.extend_from_slice(&centrals);
+                out.extend_from_slice(&r43d_eocd(
+                    total,
+                    centrals.len() as u32,
+                    cd_start as u32,
+                    0,
+                    &[],
+                ));
+            }
+        }
+        out
+    }
+
+    /// A MusicXML score in the generator's shape.
+    fn r43d_score(title: &str) -> Vec<u8> {
+        let pre = "<?xml version=\"1.0\"?><score-partwise version=\"3.1\"><work><work-title>";
+        let post = "</work-title></work><part-list><score-part id=\"P1\"><part-name>Music</part-name></score-part></part-list><part id=\"P1\"><measure number=\"1\"><note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration></note></measure></part></score-partwise>";
+        let mut out = pre.to_string();
+        out.push_str(title);
+        out.push_str(post);
+        out.into_bytes()
+    }
+
+    /// One round-43 entry set: `(entries, key, plant)` —
+    /// its owned `(name, data)` entries, the key entry's
+    /// index, and the plant content.
+    type R43dSet = (Vec<(Vec<u8>, Vec<u8>)>, usize, Vec<u8>);
+
+    /// The four entry sets of the round-43 crafts:
+    /// `(entries, key, plant)` with owned contents —
+    /// the generator's names and duplicate shapes. The
+    /// idml set is this door's own package shape (the
+    /// witness parts, the key the first story); the
+    /// idml, clip, and mxl plant contents are the real
+    /// key contents' length; the font plant is not.
+    fn r43d_entry_sets() -> Vec<R43dSet> {
+        let filler = vec![b'A'; 600];
+        let story_a = one_paragraph_story("First story words here");
+        let story_b = one_paragraph_story("Secondcopy story words here");
+        let mut idml_parts = witness_parts(&[story_a, story_b]);
+        idml_parts.push((b"filler.bin".to_vec(), filler.clone()));
+        vec![
+            (
+                idml_parts,
+                2,
+                one_paragraph_story("PLANT story words here").into_bytes(),
+            ),
+            (
+                vec![
+                    (b"MyFont.ttf".to_vec(), vec![b'R'; 1000]),
+                    (b"MyFont.ttf".to_vec(), vec![b'B'; 900]),
+                    (b"filler.bin".to_vec(), filler.clone()),
+                ],
+                0,
+                vec![b'Q'; 800],
+            ),
+            (
+                vec![
+                    (b"pic.png".to_vec(), vec![b'P'; 69]),
+                    (b"pic.png".to_vec(), vec![b'Q'; 69]),
+                    (b"filler.bin".to_vec(), filler.clone()),
+                ],
+                0,
+                vec![b'Q'; 69],
+            ),
+            (
+                vec![
+                    (
+                        b"META-INF/container.xml".to_vec(),
+                        b"<?xml version=\"1.0\"?><container><rootfiles><rootfile full-path=\"score.musicxml\"/></rootfiles></container>".to_vec(),
+                    ),
+                    (b"score.musicxml".to_vec(), r43d_score("FirstScore")),
+                    (b"score.musicxml".to_vec(), r43d_score("SecondScore")),
+                    (b"filler.bin".to_vec(), filler),
+                ],
+                1,
+                r43d_score("PlantScore"),
+            ),
+        ]
+    }
+
+    /// This door's outcome on one archive, as a
+    /// comparable string: the loaded spans' text, or
+    /// the refusal's words.
+    fn r43d_idml_outcome(bytes: &[u8]) -> String {
+        match dump_from_idml(bytes, "witness.idml") {
+            Ok(dump) => {
+                let texts: Vec<&str> = dump.spans.iter().map(|span| span.text.as_str()).collect();
+                format!("OK {}", texts.join("|"))
+            }
+            Err(err) => format!("ERR {err}"),
+        }
+    }
+
+    #[test]
+    fn r43d_trailing_and_held_archives_match_the_clean_control_at_the_idml_door() {
+        // Round 43, F6 (red team RT43-A1): a complete
+        // second archive appended after the first was
+        // judged at its trailing directory for three of
+        // the four entry sets. This door's outcomes held
+        // on the audited tree — the disagreeing
+        // duplicate story refuses under either directory,
+        // since the plant carries the real names — so
+        // this pin stands as the door's control: with
+        // the first complete directory judged, every
+        // outcome on the trailing crafts matches the
+        // clean control in all four entry sets, the held
+        // arms (the comment-embedded end record, the
+        // local-header mutations, the disk fields set
+        // to 1) are clean-identical, and the count
+        // falsified to 1 refuses in the standing
+        // underivable words.
+        for (set, (entries, key, plant)) in r43d_entry_sets().into_iter().enumerate() {
+            let slices: Vec<(&[u8], &[u8])> = entries
+                .iter()
+                .map(|(name, data)| (name.as_slice(), data.as_slice()))
+                .collect();
+            let clean = r43d_archive(&slices, key, &plant, "clean");
+            let control = r43d_idml_outcome(&clean);
+            for shape in [
+                "trailing",
+                "comment",
+                "nameflip",
+                "crcbad",
+                "descriptor",
+                "disk1",
+            ] {
+                let bytes = r43d_archive(&slices, key, &plant, shape);
+                let outcome = r43d_idml_outcome(&bytes);
+                assert_eq!(outcome, control, "set {set} shape {shape}");
+            }
+            let bytes = r43d_archive(&slices, key, &plant, "count1");
+            let outcome = r43d_idml_outcome(&bytes);
+            assert!(
+                outcome.contains("central directory cannot be derived"),
+                "set {set} count1: the uniform refusal: {outcome}"
+            );
+        }
+    }
 }

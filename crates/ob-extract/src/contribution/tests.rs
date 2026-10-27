@@ -37993,3 +37993,345 @@ fn r43b_sibling_scope_controls_unmoved() {
     r40e_serves_silent("November 8, 2026 (cancelled)(notes)\u{2013}", nov(8));
     r40e_serves_silent("(Monday)(notes)\u{2013} November 1, 2026", nov(1));
 }
+
+// Round 43 (R43-C, F4 MAJOR = red team RT43-B1;
+// round-43 synthesis F4): the straight quote
+// closers '"' and '\'' (glued and spaced) disarm
+// governor/weekday companies at the inter-group
+// seats of two walks the company walk never
+// reaches — the base-trailing garnish walk's gap
+// set (named in R42-B deviation (c) and R42-C's
+// record) and the trailing group-sequence walk
+// (with its run arm, `trailing_group_run`). At
+// every seat below the straight closers are now
+// judged exactly as the curly closers U+201D /
+// U+2019 are judged there: a straight closer
+// between groups no longer disarms the company.
+// Witnessed on the base tree (4746ee2): every
+// family pin below fails in its witnessed cells
+// (the straight forms serve the date / resolution
+// in silence where the clean and curly twins
+// refuse or govern with their readings), and the
+// parity-controls pin passes whole, by design.
+// November 1 and November 8, 2026 are Sundays.
+
+#[test]
+fn r43c_base_trailing_named_seat_straight_closers_refuse_with_record() {
+    // Seat 1 (the named seat): the company at the
+    // base-trailing slot refuses against the base
+    // WITH WeekdayMismatch(Monday@2026-11-01),
+    // both routes, full records against the clean
+    // company and the curly-closer twins — glued,
+    // closer-spaced, spaced-closer, and both-spaced
+    // forms, for each straight closer.
+    let clean = "Sunday after November 1, 2026 (cancelled)(Monday)";
+    for (closer, curly) in [('"', '\u{201d}'), ('\'', '\u{2019}')] {
+        for line in [
+            format!("Sunday after November 1, 2026 (cancelled){closer}(Monday)"),
+            format!("Sunday after November 1, 2026 (cancelled){closer} (Monday)"),
+            format!("Sunday after November 1, 2026 (cancelled) {closer}(Monday)"),
+            format!("Sunday after November 1, 2026 (cancelled) {closer} (Monday)"),
+        ] {
+            r40e_governed_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, clean);
+            r34e_keep_twin(&line, clean);
+            let curly_line = line.replace(closer, &curly.to_string());
+            r34e_for_twin(&line, &curly_line);
+            r34e_keep_twin(&line, &curly_line);
+        }
+    }
+}
+
+#[test]
+fn r43c_trailing_slot_straight_closers_take_the_clean_readings() {
+    // Seat 2 (the trailing slot, plain date line):
+    // the governor arm governs in silence, as the
+    // clean trailing company does, and the weekday
+    // arm of the trailing sequence walk refuses
+    // with its record — glued and spaced forms,
+    // each straight closer, both routes, full
+    // records against the clean and curly twins.
+    // On the base tree the governor arm serves the
+    // cancelled date live.
+    let clean_company = "November 1, 2026 (cancelled)(Monday)";
+    let clean_weekday = "November 1, 2026 (Monday)(notes)";
+    for (closer, curly) in [('"', '\u{201d}'), ('\'', '\u{2019}')] {
+        for line in [
+            format!("November 1, 2026 (cancelled){closer}(Monday)"),
+            format!("November 1, 2026 (cancelled){closer} (Monday)"),
+            format!("November 1, 2026 (cancelled) {closer}(Monday)"),
+        ] {
+            r40e_governed_silent(&line);
+            r34e_for_twin(&line, clean_company);
+            r34e_keep_twin(&line, clean_company);
+            let curly_line = line.replace(closer, &curly.to_string());
+            r34e_for_twin(&line, &curly_line);
+            r34e_keep_twin(&line, &curly_line);
+        }
+        for line in [
+            format!("November 1, 2026 (Monday){closer}(notes)"),
+            format!("November 1, 2026 (Monday){closer} (notes)"),
+            format!("November 1, 2026 (Monday) {closer}(notes)"),
+        ] {
+            r40g_refuses_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, clean_weekday);
+            r34e_keep_twin(&line, clean_weekday);
+            let curly_line = line.replace(closer, &curly.to_string());
+            r34e_for_twin(&line, &curly_line);
+            r34e_keep_twin(&line, &curly_line);
+        }
+    }
+}
+
+#[test]
+fn r43c_base_trailing_reversed_order_straight_closers_refuse_with_record() {
+    // Seat 3 (reversed order at base-trailing):
+    // the weekday-first company refuses with the
+    // record through the closer standing between
+    // its groups, glued and spaced, each straight
+    // closer, both routes, full records against
+    // the clean reversed company and its curly
+    // twins. On the base tree it serves the
+    // resolution silently.
+    let clean = "Sunday after November 1, 2026 (Monday)(cancelled)";
+    for (closer, curly) in [('"', '\u{201d}'), ('\'', '\u{2019}')] {
+        for line in [
+            format!("Sunday after November 1, 2026 (Monday){closer}(cancelled)"),
+            format!("Sunday after November 1, 2026 (Monday){closer} (cancelled)"),
+            format!("Sunday after November 1, 2026 (Monday) {closer}(cancelled)"),
+        ] {
+            r40e_governed_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, clean);
+            r34e_keep_twin(&line, clean);
+            let curly_line = line.replace(closer, &curly.to_string());
+            r34e_for_twin(&line, &curly_line);
+            r34e_keep_twin(&line, &curly_line);
+        }
+    }
+}
+
+#[test]
+fn r43c_base_trailing_three_group_straight_closers_refuse_with_record() {
+    // Seat 4 (three-group companies at
+    // base-trailing): the closer after the
+    // governor, after an inert group, and after
+    // the weekday each take the clean three-group
+    // company's refusal with the record — glued
+    // and spaced forms, each straight closer,
+    // both routes, full records against the clean
+    // companies and the curly twins. On the base
+    // tree each serves the resolution silently.
+    for (closer, curly) in [('"', '\u{201d}'), ('\'', '\u{2019}')] {
+        for (line, clean) in [
+            (
+                format!("Sunday after November 1, 2026 (cancelled){closer}(notes)(Monday)"),
+                "Sunday after November 1, 2026 (cancelled)(notes)(Monday)",
+            ),
+            (
+                format!("Sunday after November 1, 2026 (cancelled){closer} (notes)(Monday)"),
+                "Sunday after November 1, 2026 (cancelled)(notes)(Monday)",
+            ),
+            (
+                format!("Sunday after November 1, 2026 (notes)(cancelled){closer}(Monday)"),
+                "Sunday after November 1, 2026 (notes)(cancelled)(Monday)",
+            ),
+            (
+                format!("Sunday after November 1, 2026 (notes) (cancelled) {closer}(Monday)"),
+                "Sunday after November 1, 2026 (notes)(cancelled)(Monday)",
+            ),
+            (
+                format!("Sunday after November 1, 2026 (cancelled)(Monday){closer}(notes)"),
+                "Sunday after November 1, 2026 (cancelled)(Monday)(notes)",
+            ),
+            (
+                format!("Sunday after November 1, 2026 (cancelled)(Monday){closer} (notes)"),
+                "Sunday after November 1, 2026 (cancelled)(Monday)(notes)",
+            ),
+        ] {
+            r40e_governed_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, clean);
+            r34e_keep_twin(&line, clean);
+            let curly_line = line.replace(closer, &curly.to_string());
+            r34e_for_twin(&line, &curly_line);
+            r34e_keep_twin(&line, &curly_line);
+        }
+    }
+}
+
+#[test]
+fn r43c_base_trailing_weekday_only_and_behind_a_word_straight_closers() {
+    // Seat 5 (weekday-only at base-trailing): the
+    // closer between an inert group and the
+    // weekday group no longer ends the walk — the
+    // clean (notes)(Monday) refusal with the
+    // record stands through it, glued and spaced,
+    // each straight closer, both routes.
+    // Seat 6 (behind an ordinary word at
+    // base-trailing): the company behind "notes"
+    // refuses with the record through the closer,
+    // as its clean twin does (the R42-B
+    // behind-a-word arm, in closer dress).
+    let clean_weekday = "Sunday after November 1, 2026 (notes)(Monday)";
+    let clean_word = "Sunday after November 1, 2026 notes (cancelled)(Monday)";
+    for (closer, curly) in [('"', '\u{201d}'), ('\'', '\u{2019}')] {
+        for line in [
+            format!("Sunday after November 1, 2026 (notes){closer}(Monday)"),
+            format!("Sunday after November 1, 2026 (notes){closer} (Monday)"),
+            format!("Sunday after November 1, 2026 (notes) {closer}(Monday)"),
+        ] {
+            r40e_governed_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, clean_weekday);
+            r34e_keep_twin(&line, clean_weekday);
+            let curly_line = line.replace(closer, &curly.to_string());
+            r34e_for_twin(&line, &curly_line);
+            r34e_keep_twin(&line, &curly_line);
+        }
+        for line in [
+            format!("Sunday after November 1, 2026 notes (cancelled){closer}(Monday)"),
+            format!("Sunday after November 1, 2026 notes (cancelled){closer} (Monday)"),
+            format!("Sunday after November 1, 2026 notes (cancelled) {closer}(Monday)"),
+        ] {
+            r40e_governed_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, clean_word);
+            r34e_keep_twin(&line, clean_word);
+            let curly_line = line.replace(closer, &curly.to_string());
+            r34e_for_twin(&line, &curly_line);
+            r34e_keep_twin(&line, &curly_line);
+        }
+    }
+}
+
+// Round 43 (R43-C, F5 MINOR = review F43-3;
+// round-43 synthesis F5): a whole group wearing
+// quotes instead of parens was never re-dressed
+// by the trailing readers (`trailing_group_run` /
+// `trailing_group_sequence`,
+// `base_trailing_sequence_mismatch`), so the
+// company collapsed at those seats where its
+// paren twin composes. The trailing readers now
+// take a quoted member as its bracket twin (the
+// re-dress consultation extended to those
+// readers, as an equivalent member reading), and
+// each witnessed line below takes its paren
+// twin's full reading, both routes. Witnessed on
+// the base tree (4746ee2): this pin fails in its
+// witnessed cells — the quoted-weekday trailing
+// line serves its cancelled date, and both
+// base-trailing lines serve the resolution
+// silently where their paren twins refuse with
+// the record.
+
+#[test]
+fn r43c_quoted_members_take_their_paren_twins_reading_at_the_trailing_readers() {
+    // The trailing slot, governor-first order,
+    // quoted weekday member (review probe F3c):
+    // the paren twin governs in silence.
+    for quote in ['"', '\''] {
+        let line = format!("November 1, 2026 (cancelled) {quote}Monday{quote}");
+        r40e_governed_silent(&line);
+        r34e_for_twin(&line, "November 1, 2026 (cancelled) (Monday)");
+        r34e_keep_twin(&line, "November 1, 2026 (cancelled) (Monday)");
+    }
+    // The trailing sequence walk's own arm: a
+    // quoted weekday member standing with an
+    // inert companion at the trailing slot refuses
+    // with its record, as its paren twin does —
+    // no governor stands in this line, so the
+    // sequence walk is the reader that judges it.
+    for quote in ['"', '\''] {
+        let line = format!("November 1, 2026 (notes) {quote}Monday{quote}");
+        r40g_refuses_with_record(&line, "Monday", nov(1));
+        r34e_for_twin(&line, "November 1, 2026 (notes) (Monday)");
+        r34e_keep_twin(&line, "November 1, 2026 (notes) (Monday)");
+    }
+    // The base-trailing slot, quoted governor
+    // member (review probe H2): the paren twin
+    // refuses with WeekdayMismatch(Monday@
+    // 2026-11-01).
+    for quote in ['"', '\''] {
+        let line = format!("Sunday after November 1, 2026 {quote}cancelled{quote} (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        r34e_for_twin(&line, "Sunday after November 1, 2026 (cancelled) (Monday)");
+        r34e_keep_twin(&line, "Sunday after November 1, 2026 (cancelled) (Monday)");
+    }
+    // The base-trailing slot, quoted weekday
+    // member standing after the governor group
+    // (the red team's arm in F4's log, counted in
+    // F5 per adjudication 4), glued and spaced:
+    // the paren twin refuses with the record.
+    for quote in ['"', '\''] {
+        for line in [
+            format!("Sunday after November 1, 2026 (cancelled){quote}Monday{quote}"),
+            format!("Sunday after November 1, 2026 (cancelled) {quote}Monday{quote}"),
+        ] {
+            r40e_governed_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, "Sunday after November 1, 2026 (cancelled)(Monday)");
+            r34e_keep_twin(&line, "Sunday after November 1, 2026 (cancelled)(Monday)");
+        }
+    }
+}
+
+#[test]
+fn r43c_quote_dress_parity_controls_unmoved() {
+    // Parity controls, stated outright: each
+    // passes on the base tree by design and must
+    // stand unmoved on the fixed tree.
+    // The line-final straight closer at
+    // base-trailing is already judged: the company
+    // closing on one refuses with the record.
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (cancelled)(Monday)\"",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (cancelled)(Monday)'",
+        "Monday",
+        nov(1),
+    );
+    // Head and mid-line inter-group straight
+    // closers already compose with the record
+    // (R42-B's seats).
+    r40e_governed_with_record("(cancelled)\"(Monday) November 1, 2026", "Monday", nov(1));
+    r40e_governed_with_record(
+        "notes (cancelled)\"(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // An agreeing company behind the closer at
+    // base-trailing serves exactly as its clean
+    // twin does.
+    let agreeing = "Sunday after November 1, 2026 (cancelled)\"(Sunday)";
+    r40e_serves_silent(agreeing, nov(8));
+    r34e_for_twin(
+        agreeing,
+        "Sunday after November 1, 2026 (cancelled)(Sunday)",
+    );
+    r34e_keep_twin(
+        agreeing,
+        "Sunday after November 1, 2026 (cancelled)(Sunday)",
+    );
+    // A lone governor behind the closer at
+    // base-trailing stands at its standing parity
+    // serve.
+    r40e_serves_silent("Sunday after November 1, 2026 (cancelled)\"", nov(8));
+    // The quoted GOVERNOR member at the trailing
+    // slot already composes: it governs exactly
+    // as its paren twin (review F43-3's control).
+    let quoted_governor = "November 1, 2026 \"cancelled\" (Monday)";
+    r40e_governed_silent(quoted_governor);
+    r34e_for_twin(quoted_governor, "November 1, 2026 (cancelled) (Monday)");
+    r34e_keep_twin(quoted_governor, "November 1, 2026 (cancelled) (Monday)");
+    // The weekday-first order with a quoted
+    // weekday member already governs, exactly as
+    // its paren twin (review F43-3's control).
+    let quoted_weekday_first = "November 1, 2026 \"Monday\" (cancelled)";
+    r34e_for_twin(
+        quoted_weekday_first,
+        "November 1, 2026 (Monday) (cancelled)",
+    );
+    r34e_keep_twin(
+        quoted_weekday_first,
+        "November 1, 2026 (Monday) (cancelled)",
+    );
+}

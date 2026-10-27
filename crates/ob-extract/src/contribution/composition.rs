@@ -2207,6 +2207,85 @@ fn nearest_date_is_sunday_after_base(prefix: &str, today: SimpleDate) -> bool {
     }
 }
 
+/// `text` with each quoted COMPANY MEMBER span
+/// re-dressed as its bracket twin — the quote
+/// characters at the span's edges replaced by "("
+/// and ")" — where a quoted span stands outside
+/// every bracket group and its contents judge as
+/// a company member: a governor phrase at the
+/// contents' own head (`governor_group_at_head`)
+/// or a weekday garnish (`garnish_group_weekday`),
+/// the two member judgments the company walk's
+/// quoted-member arm applies (round 42, R42-A, F3
+/// arm (c)). A span ends at the first
+/// closing-family quote after its opener, as the
+/// re-dress scan reads a quoted span. A quoted
+/// span whose contents judge neither way — a
+/// quoted date group above all — is untouched, as
+/// is a quote with no closing-family quote after
+/// it: a closer standing after a group (the F4
+/// dress) is not an opener here. Returns None
+/// when no member span stands in `text`.
+///
+/// Round 43 (R43-C, F5 MINOR = review F43-3):
+/// R42-A wired the quoted-member reading at the
+/// company walk's two call sites (the head and
+/// mid-line seats); the trailing readers
+/// (`trailing_group_run`, `trailing_group_sequence`,
+/// `base_trailing_sequence_mismatch`) never
+/// re-dressed a quoted member, so a company whose
+/// member wore quotes collapsed at the trailing
+/// and base-trailing seats where its paren twin
+/// composes. Those readers now consult this
+/// re-dress as an equivalent member reading, each
+/// at its own seat (see their notes).
+pub(super) fn quoted_members_as_parens(text: &str) -> Option<String> {
+    let spans = balanced_spans(text);
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let (at, c) = chars[i];
+        if !matches!(c, '"' | '\'' | '\u{201c}' | '\u{2018}') {
+            i += 1;
+            continue;
+        }
+        if spans.iter().any(|&(s, e)| at >= s && at < e) {
+            i += 1;
+            continue;
+        }
+        let Some(j) = (i + 1..chars.len())
+            .find(|&j| matches!(chars[j].1, '"' | '\'' | '\u{201d}' | '\u{2019}'))
+        else {
+            break;
+        };
+        let (close_at, close_c) = chars[j];
+        let close_end = close_at + close_c.len_utf8();
+        let overlaps = spans.iter().any(|&(s, e)| at < e && s < close_end);
+        let inner = &text[at + c.len_utf8()..close_at];
+        if !overlaps && (governor_group_at_head(inner) || garnish_group_weekday(inner).is_some()) {
+            pairs.push((i, j));
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    if pairs.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    for (idx, (_, c)) in chars.iter().enumerate() {
+        if pairs.iter().any(|&(o, _)| o == idx) {
+            out.push('(');
+        } else if pairs.iter().any(|&(_, cl)| cl == idx) {
+            out.push(')');
+        } else {
+            out.push(*c);
+        }
+    }
+    Some(out)
+}
+
 /// The group run closing `text` (one or more
 /// top-level groups standing at the line's end,
 /// sentence punctuation and a trailing separator
@@ -2224,6 +2303,44 @@ fn nearest_date_is_sunday_after_base(prefix: &str, today: SimpleDate) -> bool {
 /// included, because the lone trailing group is
 /// this slot's headline form.
 fn trailing_group_run(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
+    // Round 43 (R43-C, F5 MINOR = review F43-3):
+    // the quoted-member retry — a quoted member
+    // standing in the run ("November 1, 2026
+    // (cancelled) \"Monday\"") is no bracket span,
+    // so the walk below never saw the run its
+    // paren twin walks and the governor beside the
+    // member never unwrapped. The walk is retried
+    // on the member-redressed text
+    // (`quoted_members_as_parens`), and its run
+    // stands when it strictly extends the standing
+    // run (every standing span in it, and more):
+    // the extension is exactly the member the
+    // quotes hid, and a run the re-dress does not
+    // extend keeps its standing reading untouched.
+    // The retry is byte-length preserving (the
+    // straight-quote dress F5 witnesses), so its
+    // spans are the original text's spans.
+    let standing = trailing_group_run_walk(text);
+    if let Some(redressed) = quoted_members_as_parens(text) {
+        if redressed.len() == text.len() {
+            if let Some(redressed_run) = trailing_group_run_walk(&redressed) {
+                let extends = match &standing {
+                    None => true,
+                    Some((run, _)) => {
+                        redressed_run.0.len() > run.len()
+                            && run.iter().all(|span| redressed_run.0.contains(span))
+                    }
+                };
+                if extends {
+                    return Some(redressed_run);
+                }
+            }
+        }
+    }
+    standing
+}
+
+fn trailing_group_run_walk(text: &str) -> Option<(Vec<(usize, usize)>, usize)> {
     let end = trailing_run_peeled_end(text, text.len());
     let core = text[..end].trim_end();
     if let Some(run) = trailing_run_in_core(core) {
@@ -2432,6 +2549,16 @@ fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
         // outside the run and its cancelled date
         // served live, where both twins' interior
         // governors are judged through this set.
+        // Round 43 (R43-C, F4 MAJOR = red team
+        // RT43-B1): the gap set gains the straight
+        // quote closers '"' and '\'' — at the
+        // trailing slot a straight closer standing
+        // between a company's groups
+        // ("(cancelled)\"(Monday)") ended the run
+        // where its curly twins U+201D / U+2019,
+        // standing in this set since R39-C, are
+        // judged, so the governor never unwrapped
+        // and the cancelled date served live.
         if !gap.chars().all(|c| {
             matches!(
                 c,
@@ -2440,6 +2567,8 @@ fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
                     | ':'
                     | '!'
                     | '?'
+                    | '"'
+                    | '\''
                     | '\u{201d}'
                     | '\u{2019}'
                     | '\u{2026}'
@@ -3020,6 +3149,15 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         // run and served in silence, its record
         // lost, where both twins' interior weekday
         // groups are judged through this set.
+        // Round 43 (R43-C, F4 MAJOR = red team
+        // RT43-B1): the gap set gains the straight
+        // quote closers '"' and '\'' — a weekday
+        // group wearing one inside the sequence
+        // ("(Monday)\"(notes)") stood outside the
+        // run and served in silence, its record
+        // lost, where its curly twins U+201D /
+        // U+2019, standing in this set since
+        // R39-C, are judged.
         if !gap.chars().all(|c| {
             matches!(
                 c,
@@ -3028,6 +3166,8 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                     | ':'
                     | '!'
                     | '?'
+                    | '"'
+                    | '\''
                     | '\u{201d}'
                     | '\u{2019}'
                     | '\u{2026}'
@@ -3344,17 +3484,76 @@ pub(super) fn group_sequence_weekday_mismatch(
             }
         }
     }
-    if let Some((inners, prefix)) = trailing_group_sequence(text) {
-        let stripped = strip_leading_group_run(prefix);
-        let date =
-            parse_flexible_date(prefix, today).or_else(|| parse_flexible_date(stripped, today));
-        if let Some(date) = date {
-            for inner in &inners {
-                if let Some((named, number)) = garnish_group_weekday(inner) {
-                    if date.weekday() != number {
-                        return Some(WeekdayMismatch { named, date });
-                    }
-                }
+    // Round 43 (R43-C, F5 MINOR = review F43-3):
+    // the trailing arm is judged through
+    // `trailing_sequence_weekday_mismatch`, which
+    // consults the quoted-member re-dress
+    // (`quoted_members_as_parens`) as an equivalent
+    // member reading: a quoted member standing in
+    // the trailing sequence ("November 1, 2026
+    // (notes) \"Monday\"") was no bracket span, so
+    // the sequence walk never reached it and its
+    // weekday went unjudged where its paren twin
+    // refuses with the record.
+    trailing_sequence_weekday_mismatch(text, today)
+}
+
+/// The weekday mismatch the trailing group
+/// sequence of `text` names, when one does: the
+/// sequence judged on the text whose trailing
+/// sequence is the longer — the standing text, or
+/// its quoted-member re-dress
+/// (`quoted_members_as_parens`) when the re-dress
+/// completes a sequence the quotes had broken (a
+/// member the standing walk could not see as a
+/// span). A re-dress that completes nothing keeps
+/// the standing text's judgment untouched, so a
+/// sequence the standing walk already reads whole
+/// is judged exactly as it was.
+fn trailing_sequence_weekday_mismatch(text: &str, today: SimpleDate) -> Option<WeekdayMismatch> {
+    let redressed = quoted_members_as_parens(text);
+    let judged: &str = match &redressed {
+        Some(redressed) => {
+            let standing_len = trailing_group_sequence(text).map_or(0, |(inners, _)| inners.len());
+            let redressed_seq = trailing_group_sequence(redressed);
+            let redressed_len = redressed_seq.as_ref().map_or(0, |(inners, _)| inners.len());
+            // The re-dress is consulted only for a
+            // sequence holding no governor member:
+            // where a governor stands in the
+            // sequence, the composed reading is the
+            // governor unwrap's — on the paren twin
+            // the unwrap rewrites the line before
+            // this walk is consulted, and a quoted
+            // governor member at the trailing slot
+            // already composes through the lone
+            // readers (its standing parity serve,
+            // governed in silence), so a sequence
+            // judgment taken here on the re-dressed
+            // text would record a mismatch its twin
+            // never records. The governor-free
+            // sequence — a quoted weekday member
+            // standing with inert companions — is
+            // this walk's own seat, and the re-dress
+            // is judged there.
+            let governor_free = redressed_seq.as_ref().map_or(true, |(inners, _)| {
+                !inners.iter().any(|inner| governor_group_at_head(inner))
+            });
+            if redressed_len > standing_len && governor_free {
+                redressed.as_str()
+            } else {
+                text
+            }
+        }
+        None => text,
+    };
+    let (inners, prefix) = trailing_group_sequence(judged)?;
+    let stripped = strip_leading_group_run(prefix);
+    let date =
+        parse_flexible_date(prefix, today).or_else(|| parse_flexible_date(stripped, today))?;
+    for inner in &inners {
+        if let Some((named, number)) = garnish_group_weekday(inner) {
+            if date.weekday() != number {
+                return Some(WeekdayMismatch { named, date });
             }
         }
     }

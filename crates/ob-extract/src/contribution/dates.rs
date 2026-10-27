@@ -811,6 +811,26 @@ fn base_trailing_sequence_mismatch(
         }
         garnish.push_str(token);
     }
+    // Round 43 (R43-C, F5 MINOR = review F43-3): a
+    // quoted member standing in the garnish — a
+    // whole group wearing quotes instead of parens
+    // ("Sunday after November 1, 2026 \"cancelled\"
+    // (Monday)", "…(cancelled)\"Monday\"") — is
+    // re-dressed as its bracket twin
+    // (`quoted_members_as_parens`, composition.rs)
+    // before the walk below: this walk never
+    // re-dressed one, so the company collapsed and
+    // the resolution served in silence where the
+    // paren twin refuses with the record. The
+    // garnish is this walk's own string, so the
+    // re-dress is local to it; a quoted span whose
+    // contents judge neither as a governor nor as
+    // a weekday (a quoted date group above all) is
+    // untouched by the consultation and keeps its
+    // standing reading.
+    if let Some(redressed) = quoted_members_as_parens(&garnish) {
+        garnish = redressed;
+    }
     // Round 42 (R42-F, F9 = red team RT42-S4): an
     // en dash (U+2013) standing at the garnish's
     // own tail — glued to its last group, or
@@ -961,11 +981,18 @@ fn base_trailing_sequence_mismatch(
     // group among the spans). A non-company
     // sequence wearing the set between its groups
     // keeps the standing reading below, unjudged
-    // here; and no quote mark joins the gap set —
+    // here; and no quote mark joins THIS set —
     // the straight closer standing between a
     // company's groups at this slot is a different
     // seat (the garnish walk's, R42-B deviation
-    // (c)) and is not claimed here.
+    // (c)) and is not claimed here. Round 43
+    // (R43-C, F4): that seat is claimed now — the
+    // straight closers join the FIRST gap set
+    // below (this walk is the garnish walk
+    // deviation (c) named), at every sequence this
+    // walk judges, the weekday-only sequences
+    // included; the company set below carries them
+    // too, as it carries their curly twins.
     let is_company = spans
         .iter()
         .any(|&(s, e)| governor_group_at_head(&rest[s + 1..e - 1]))
@@ -982,10 +1009,25 @@ fn base_trailing_sequence_mismatch(
         // also carry "!", "?", and U+201D standing
         // as the preceding group's suffix, the three
         // marks the lone forms judge a group wearing.
+        // Round 43 (R43-C, F4 MAJOR = red team
+        // RT43-B1): a gap may also carry the
+        // straight quote closers '"' and '\''
+        // standing as the preceding group's suffix —
+        // at this slot the straight forms ended the
+        // walk where their curly twins U+201D /
+        // U+2019 are judged: the named company
+        // "(cancelled)\"(Monday)" served the
+        // resolution with its record lost, the
+        // reversed and three-group companies served
+        // in silence, and the weekday-only sequence
+        // "(notes)\"(Monday)" served in silence
+        // where its clean twin refuses with the
+        // record — the seat R42-B deviation (c)
+        // named and left.
         if gap.chars().all(|c| {
             matches!(
                 c,
-                ',' | ';' | '.' | ':' | '!' | '?' | '\u{201d}' | '\u{2019}'
+                ',' | ';' | '.' | ':' | '!' | '?' | '"' | '\'' | '\u{201d}' | '\u{2019}'
             ) || c.is_whitespace()
         }) {
             continue;
@@ -1010,6 +1052,8 @@ fn base_trailing_sequence_mismatch(
                         | ':'
                         | '!'
                         | '?'
+                        | '"'
+                        | '\''
                         | '\u{201d}'
                         | '\u{2019}'
                         | '\u{2026}'

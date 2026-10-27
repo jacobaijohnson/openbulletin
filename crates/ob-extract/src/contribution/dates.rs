@@ -576,6 +576,15 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         // a base garnish wearing one takes its
         // twins' reading here, as at the plain
         // line's trailing slot.
+        // Round 44 (R44-F, F8): the tail set gains
+        // the zero-width pair (U+200B, U+FEFF), as
+        // at the plain line's trailing slot (see
+        // `date_line_inner` in composition.rs) — a
+        // lone base garnish wearing one between
+        // its word and its suffix ("Sunday after
+        // November 1, 2026 (Monday)\u{200b}~")
+        // served the resolution in silence where
+        // its twin refuses with the record.
         let word = tokens[i]
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
@@ -584,7 +593,8 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
             ])
             .trim_end_matches([
                 '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}', '\u{200b}',
+                '\u{feff}',
             ])
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
@@ -944,11 +954,25 @@ fn base_trailing_sequence_mismatch(
         // standing in this set; the spaced-token
         // predicate below gains only the "~" / "#"
         // family (U+FF5E, U+FF03, U+02DC).
+        // Round 44 (R44-F, F8 MINOR = red team
+        // RT44-C6): the peel set, the spaced-token
+        // predicate, both gap sets below, and the
+        // head trim after the peels gain the
+        // zero-width pair (U+200B, U+FEFF) — the
+        // company "(cancelled)\u{200b}(Monday)"
+        // standing in the garnish was no sequence
+        // to this walk and the resolution served
+        // in silence, where the clean company
+        // refuses with its record; the same pair
+        // after the final group or after its
+        // suffix, and at the garnish's own head,
+        // disarmed the walk the same way.
         let peeled = rest.trim_end().trim_end_matches([
             '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
             '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
             '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{ff5e}', '\u{ff03}',
-            '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}',
+            '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}', '\u{200b}',
+            '\u{feff}',
         ]);
         if peeled.len() != rest.len() {
             rest = peeled;
@@ -975,6 +999,8 @@ fn base_trailing_sequence_mismatch(
                                 | '\u{ff03}'
                                 | '\u{2dc}'
                                 | '\u{00ad}'
+                                | '\u{200b}'
+                                | '\u{feff}'
                         )
                     }) =>
             {
@@ -992,7 +1018,8 @@ fn base_trailing_sequence_mismatch(
     // sequence standing behind a ";". Before this
     // the first span had to stand at the garnish's
     // first byte, so the separator ended the walk.
-    let head_trimmed = rest.trim_start_matches([' ', '\t', ',', ';', '.', ':']);
+    let head_trimmed =
+        rest.trim_start_matches([' ', '\t', ',', ';', '.', ':', '\u{200b}', '\u{feff}']);
     let head_had_separator = rest[..rest.len() - head_trimmed.len()]
         .chars()
         .any(|c| matches!(c, ',' | ';' | '.' | ':'));
@@ -1134,6 +1161,8 @@ fn base_trailing_sequence_mismatch(
                     | '\u{3002}'
                     | '\u{ff02}'
                     | '\u{ff07}'
+                    | '\u{200b}'
+                    | '\u{feff}'
             ) || c.is_whitespace()
         }) {
             continue;
@@ -1196,6 +1225,8 @@ fn base_trailing_sequence_mismatch(
                         | '\u{ff03}'
                         | '\u{2dc}'
                         | '\u{00ad}'
+                        | '\u{200b}'
+                        | '\u{feff}'
                 ) || c.is_whitespace()
             })
         {
@@ -1490,13 +1521,24 @@ impl<'a> LineScan<'a> {
         // join: their twins ":" / ";" stand in no
         // trim of this set, the same seat logic
         // that held U+FF1F out until now.
+        // Round 44 (R44-F, F8 MINOR = red team
+        // RT44-C6): both trim sites gain the
+        // zero-width pair (U+200B, U+FEFF) — a
+        // trailing-alone group wearing one between
+        // itself and its suffix, or after the
+        // suffix ("next Sunday (November 8, 2026)
+        // \u{200b}~", "… )~\u{feff}"), ended its
+        // slice in the artifact, so the group was
+        // no trailing group to this split and the
+        // alone memory and the Keep-through were
+        // lost whole.
         let mut end = lo
             + text[lo..hi]
                 .trim_end_matches([
                     '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '?', '\u{2013}',
                     '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{ff01}',
                     '\u{ff1f}', '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{2dc}',
-                    '\u{00ad}',
+                    '\u{200b}', '\u{00ad}', '\u{feff}',
                 ])
                 .len();
         loop {
@@ -1516,7 +1558,8 @@ impl<'a> LineScan<'a> {
                                 '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '?',
                                 '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
                                 '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff5e}', '\u{ff03}',
-                                '\u{ff0e}', '\u{ff0c}', '\u{2dc}', '\u{00ad}',
+                                '\u{ff0e}', '\u{ff0c}', '\u{2dc}', '\u{00ad}', '\u{200b}',
+                                '\u{feff}',
                             ])
                             .len();
                 }

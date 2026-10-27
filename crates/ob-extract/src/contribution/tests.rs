@@ -40011,3 +40011,268 @@ fn r44e_scope_controls_unmoved() {
     );
     r40e_governed_silent("\u{ff08}Monday\u{ff09} November 1, 2026");
 }
+
+#[test]
+fn r44f_zero_width_between_group_and_its_suffix_governs() {
+    // Round 44 (R44-F, F8 MINOR = red team RT44-C6):
+    // a zero-width paste artifact (U+200B ZERO
+    // WIDTH SPACE, U+FEFF BOM / zero-width no-break
+    // space) standing between a governor group and
+    // its judged suffix disarmed the judgment the
+    // visible text carries — "November 8, 2026
+    // (cancelled)\u{200b}~" served 2026-11-08 live
+    // on the base tree (contrib44.log indices 1506,
+    // 1541, both routes) where the clean twin
+    // governs. Every arm below reads exactly as
+    // its removal twin, both routes.
+    for line in [
+        "November 8, 2026 (cancelled)\u{200b}~",
+        "November 8, 2026 (cancelled)\u{feff}~",
+        "November 8, 2026 (cancelled)\u{200b}*",
+        "November 8, 2026 (cancelled)\u{200b}-",
+        "November 8, 2026 [cancelled]\u{200b}~",
+        "November 8, 2026 (cancelled) \u{200b}~",
+        "November 8, 2026 (cancelled)\u{200b} ~",
+        "November 8, 2026 (cancelled) \u{200b} ~",
+        "November 8, 2026 (cancelled)\u{200b}~~",
+        // The artifact alone after the group (no
+        // suffix standing after it) is the same
+        // seat: the clean twin "(cancelled)"
+        // governs, the artifact form served live.
+        "November 8, 2026 (cancelled)\u{200b}",
+        "November 8, 2026 (cancelled)\u{feff}",
+        "November 8, 2026 (cancelled) \u{200b}",
+    ] {
+        r40e_governed_silent(line);
+    }
+}
+
+#[test]
+fn r44f_zero_width_after_a_suffix_governs() {
+    // The after-a-suffix seat of the same finding
+    // (contrib44.log index 1507): "November 8,
+    // 2026 (cancelled)~\u{feff}" served live on
+    // the base tree where the clean twin governs.
+    for line in [
+        "November 8, 2026 (cancelled)~\u{feff}",
+        "November 8, 2026 (cancelled)~\u{200b}",
+        "November 8, 2026 (cancelled)~\u{200b}\u{feff}",
+        "November 8, 2026 (cancelled)~~\u{feff}",
+    ] {
+        r40e_governed_silent(line);
+    }
+}
+
+#[test]
+fn r44f_zero_width_at_the_base_trailing_company_seats() {
+    // The company seat of the finding
+    // (contrib44.log index 1540): "Sunday after
+    // November 1, 2026 (cancelled)\u{200b}(Monday)"
+    // served the resolution 2026-11-08 silently
+    // on the base tree where the clean company
+    // refuses WITH WeekdayMismatch(Monday@
+    // 2026-11-01). The same artifact at the
+    // garnish's other seats — after the final
+    // group, after its suffix, at the garnish's
+    // head, and between the weekday member and
+    // an inert companion — took the same silent
+    // serve. Every arm refuses with the record,
+    // both routes, as its removal twin does.
+    for line in [
+        "Sunday after November 1, 2026 (cancelled)\u{200b}(Monday)",
+        "Sunday after November 1, 2026 (cancelled)\u{feff}(Monday)",
+        "Sunday after November 1, 2026 (cancelled)\u{200b} (Monday)",
+        "Sunday after November 1, 2026 (cancelled)\u{200b}~(Monday)",
+        "Sunday after November 1, 2026 (cancelled)\u{200b}(Monday)~",
+        "Sunday after November 1, 2026 (Monday)\u{200b}(notes)",
+        "Sunday after November 1, 2026 (cancelled)(Monday)\u{200b}~",
+        "Sunday after November 1, 2026 (cancelled)(Monday)~\u{feff}",
+        "Sunday after November 1, 2026 (cancelled)(Monday)\u{200b}",
+        "Sunday after November 1, 2026 \u{200b}(cancelled)(Monday)",
+        // The lone base garnish wearing the pair
+        // at the same seats (between its word and
+        // its suffix, after the suffix) served
+        // the resolution in silence on the base
+        // tree where its twin refuses.
+        "Sunday after November 1, 2026 (Monday)\u{200b}~",
+        "Sunday after November 1, 2026 (Monday)~\u{feff}",
+        "Sunday after November 1, 2026 (Monday)\u{200b}",
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r44f_zero_width_at_the_trailing_and_leading_sequence_seats() {
+    // The same artifacts at the plain trailing
+    // and leading sequence seats: a governor
+    // group standing across one from its company
+    // served live on the base tree, and a weekday
+    // group standing across one lost its record.
+    for line in [
+        "November 8, 2026 (cancelled)\u{200b}(notes)",
+        "November 8, 2026 (cancelled)\u{feff}(notes)",
+        "November 8, 2026 (cancelled)(notes)\u{200b}~",
+        "November 8, 2026 (cancelled)\u{200b}~(notes)",
+        "November 8, 2026 (cancelled)\u{200b}~ (notes)",
+        "November 8, 2026 (cancelled)\u{200b}~ (Monday)",
+        "November 8, 2026 (cancelled)\u{200b}(Monday)",
+        "November 8, 2026 (cancelled) \u{200b} (Monday)",
+    ] {
+        r40e_governed_silent(line);
+    }
+    for line in [
+        "November 1, 2026 (Monday)\u{200b}(notes)",
+        "November 1, 2026 (Monday)(notes)\u{200b}~",
+        "November 1, 2026 (Monday)\u{200b}~",
+        "November 1, 2026 (Monday)~\u{feff}",
+        "November 1, 2026 (Monday)\u{200b}",
+        "November 1, 2026 (Monday)\u{200b} ~",
+        "(Monday)\u{200b}(notes) November 1, 2026",
+        "(cancelled)(Monday)\u{200b} November 1, 2026",
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r44f_zero_width_at_the_midline_and_trailing_alone_seats() {
+    // The mid-line governor wearing the artifact
+    // before its suffix, or the artifact after
+    // its suffix, served its date live on the
+    // base tree where the clean twin governs.
+    r40e_governed_silent("notes (cancelled)\u{200b}~ November 8, 2026");
+    r40e_governed_silent("notes (cancelled)~\u{feff} November 8, 2026");
+    // The mid-line company standing across the
+    // artifact served its date in silence where
+    // its twin refuses with the record.
+    r40e_governed_with_record(
+        "notes (cancelled)\u{200b} (Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    // The trailing-alone seat: the artifact
+    // between the alone group and its suffix, or
+    // after the suffix, lost the For-route
+    // memory and the Keep-through whole on the
+    // base tree (the line read nothing at all),
+    // where the clean twin remembers the group.
+    let line = "next Sunday (November 8, 2026)\u{200b}~";
+    r42d_alone_memory_outright(line);
+    r34e_keep_twin(line, "next Sunday (November 8, 2026)~");
+    let line = "next Sunday (November 8, 2026)~\u{feff}";
+    r42d_alone_memory_outright(line);
+    r34e_keep_twin(line, "next Sunday (November 8, 2026)~");
+}
+
+#[test]
+fn r44f_scope_controls_unmoved() {
+    // Controls, passing on the base tree by
+    // design and unmoved by this batch.
+    // (1) The held space-width family at the
+    // witnessed seats (contrib44.log indices
+    // 1512-1539, twin-identical at base): NBSP,
+    // narrow NBSP, thin, hair, ideographic, and
+    // en spaces are judged as their space twins
+    // at the group-to-suffix seat, at the
+    // base-trailing company seat, and at the
+    // mid-line governor's glued-date seat.
+    for sp in [
+        '\u{a0}', '\u{202f}', '\u{2009}', '\u{200a}', '\u{3000}', '\u{2002}',
+    ] {
+        let line = format!("November 8, 2026 (cancelled){sp}~");
+        r40e_governed_silent(&line);
+        let line = format!("Sunday after November 1, 2026 (cancelled){sp}(Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("notes (cancelled){sp}November 8, 2026");
+        r40e_governed_silent(&line);
+    }
+    // (2) The inside-date reading stands
+    // (contrib44.log index 1543, recorded, not
+    // graded): a zero-width artifact inside the
+    // date itself makes the date UNREADABLE
+    // rather than misread — the line reads
+    // nothing on either route, no record stands.
+    // This batch's seats are the garnish seats
+    // only; the inside-date seat does not move.
+    // The Sunday-after phrase's own interior is
+    // the same exclusion: the phrase broken by
+    // the artifact reads nothing.
+    for line in [
+        "November\u{200b}1, 2026 (Monday)",
+        "November\u{feff}1, 2026 (Monday)",
+        "Sunday after\u{200b} November 1, 2026 (Monday)",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, None, "{line}: the broken date reads nothing");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through, None,
+            "{line}: the broken date keeps nothing"
+        );
+        assert_eq!(c.keep_through_weekday_mismatch, None, "{line}: no record");
+    }
+    // (3) Seats the artifact already crossed at
+    // base, stated so the batch's reach is
+    // exact: inside a group's word (the shared
+    // token cleaning sheds format characters),
+    // at the line's head, between a date and
+    // its group, glued between a mid-line
+    // governor and its date, at the leading
+    // company's gap and after a leading
+    // governor's suffix, and glued to the
+    // Sunday-after base.
+    r40e_governed_silent("November 8, 2026 (cancel\u{200b}led)~");
+    r40e_governed_silent("\u{200b}November 8, 2026 (cancelled)~");
+    r40e_governed_silent("\u{feff}November 8, 2026 (cancelled)~");
+    r40e_governed_silent("November 8, 2026\u{200b}(cancelled)~");
+    r40e_governed_silent("notes (cancelled)\u{200b}November 8, 2026");
+    r40e_governed_silent("(cancelled)\u{200b}~ November 8, 2026");
+    r40e_governed_silent("(cancelled)~\u{feff} November 8, 2026");
+    r40e_governed_with_record(
+        "(cancelled)\u{200b}(Monday) November 1, 2026",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026\u{200b} (cancelled)(Monday)",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (cancelled) \u{200b}(Monday)",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (cancelled) \u{200b} (Monday)",
+        "Monday",
+        nov(1),
+    );
+    // (4) A weekday word carrying the artifact
+    // INSIDE it stands verbatim, outside this
+    // batch's garnish seats: "(Mon\u{200b}day)"
+    // is refused with the record naming the
+    // word as written, artifact included — the
+    // refusal stands; the name is the sender's
+    // own text, and the interior seat does not
+    // move. A bare garnish word wearing the
+    // pair at its TAIL, before its suffix, is
+    // the tail set's own seat (the garnish
+    // word's judged-suffix tail, shared by the
+    // grouped and bare forms): its refusal
+    // already stood on the base tree, and under
+    // this batch the record names the clean
+    // word, as its removal twin's record does.
+    r40e_governed_with_record(
+        "November 1, 2026 (Mon\u{200b}day)",
+        "Mon\u{200b}day",
+        nov(1),
+    );
+    r40e_governed_with_record("November 1, 2026 Monday\u{200b}~", "Monday", nov(1));
+}

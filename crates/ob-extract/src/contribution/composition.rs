@@ -2162,6 +2162,9 @@ fn suffix_set_run(s: &str) -> usize {
                     | '\u{2212}'
                     | '\u{ff0d}'
                     | '\u{ff0a}'
+                    | '\u{ff5e}'
+                    | '\u{ff03}'
+                    | '\u{2dc}'
                     | '\u{00ad}'
             )
         })
@@ -2650,12 +2653,25 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
         // SEPARATORS do not join this peel: a mark
         // trailing a single group as garnish is
         // R44-D's suffix seat, not this batch's.
+        // Round 44 (R44-D, F3 + F7 MINOR = red team
+        // RT44-C2 / RT44-C5): that suffix seat is
+        // taken now — the peel set gains the
+        // remaining fullwidth suffix siblings
+        // (U+FF5E of "~", U+FF03 of "#", U+FF0E of
+        // ".", U+FF0C of ",", U+FF1A of ":",
+        // U+FF1B of ";") and U+02DC SMALL TILDE
+        // beside its twin "~", each joining beside
+        // the twin standing in this set; the
+        // spaced-token predicate below gains only
+        // the "~" / "#" family (U+FF5E, U+FF03,
+        // U+02DC), whose twins stand in it.
         let peeled = text[..end]
             .trim_end()
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
                 '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{00ad}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{ff5e}',
+                '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}',
             ])
             .len();
         if peeled != end {
@@ -2682,6 +2698,9 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
                         | '\u{2212}'
                         | '\u{ff0d}'
                         | '\u{ff0a}'
+                        | '\u{ff5e}'
+                        | '\u{ff03}'
+                        | '\u{2dc}'
                         | '\u{00ad}'
                 )
             })
@@ -2782,6 +2801,9 @@ fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
                     | '\u{3002}'
                     | '\u{ff02}'
                     | '\u{ff07}'
+                    | '\u{ff5e}'
+                    | '\u{ff03}'
+                    | '\u{2dc}'
                     | '\u{00ad}'
             ) || c.is_whitespace()
         }) {
@@ -2949,6 +2971,9 @@ fn midline_governor_before_plain_date(
                     | '\u{ff0e}'
                     | '\u{3001}'
                     | '\u{3002}'
+                    | '\u{ff5e}'
+                    | '\u{ff03}'
+                    | '\u{2dc}'
                     | '\u{00ad}'
             ) || c.is_whitespace()
         }) {
@@ -2970,7 +2995,7 @@ fn midline_governor_before_plain_date(
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
         '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
         '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}',
-        '\u{3002}', '\u{00ad}',
+        '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
     ]);
     if matches!(rest.chars().next(), Some('(' | '[' | '{')) {
         return false;
@@ -3200,7 +3225,7 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
             ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
             '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
             '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}',
-            '\u{3001}', '\u{3002}', '\u{00ad}',
+            '\u{3001}', '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
         ]);
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             break;
@@ -3222,7 +3247,7 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
         '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
         '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}',
-        '\u{3002}', '\u{00ad}',
+        '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
     ]);
     Some((inners, rest))
 }
@@ -3308,12 +3333,19 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         // this set are judged. The fullwidth
         // separators do not join this peel: the
         // suffix seat is R44-D's, not this batch's.
+        // Round 44 (R44-D, F3 + F7): that suffix
+        // seat is taken now, as at
+        // `trailing_run_peeled_end` — the peel set
+        // gains U+FF5E, U+FF03, U+FF0E, U+FF0C,
+        // U+FF1A, U+FF1B, and U+02DC, each beside
+        // its twin standing in this set.
         let peeled = text[..end]
             .trim_end()
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
                 '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{00ad}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{ff5e}',
+                '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}',
             ])
             .len();
         if peeled != end {
@@ -3345,6 +3377,9 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                         | '\u{2212}'
                         | '\u{ff0d}'
                         | '\u{ff0a}'
+                        | '\u{ff5e}'
+                        | '\u{ff03}'
+                        | '\u{2dc}'
                         | '\u{00ad}'
                 )
             })
@@ -3444,6 +3479,9 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                     | '\u{3002}'
                     | '\u{ff02}'
                     | '\u{ff07}'
+                    | '\u{ff5e}'
+                    | '\u{ff03}'
+                    | '\u{2dc}'
                     | '\u{00ad}'
             ) || c.is_whitespace()
         }) {
@@ -3681,6 +3719,9 @@ fn leading_single_group_wearing_suffix(text: &str) -> Option<(String, &str)> {
                 | '\u{2212}'
                 | '\u{ff0d}'
                 | '\u{ff0a}'
+                | '\u{ff5e}'
+                | '\u{ff03}'
+                | '\u{2dc}'
                 | '\u{00ad}'
         )
     ) {
@@ -3690,7 +3731,8 @@ fn leading_single_group_wearing_suffix(text: &str) -> Option<(String, &str)> {
     let rest = after.trim_start_matches([
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
         '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-        '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+        '\u{ff01}', '\u{ff1f}', '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}',
+        '\u{ff1b}', '\u{2dc}', '\u{00ad}',
     ]);
     Some((inner.to_string(), rest))
 }
@@ -4097,11 +4139,19 @@ pub(super) fn leading_governor_company_judgment(
     // date, so a separator standing after the
     // company's last group is shed there as its
     // ASCII twin is.)
-    const SEPARATORS: [char; 31] = [
+    // Round 44 (R44-D, F3 + F7): the set gains
+    // U+FF5E and U+FF03 beside their twins "~" /
+    // "#" and U+02DC beside "~" — a company
+    // wearing one after its last group, or a
+    // bared word wearing one, is walked whole as
+    // under its twin. (The four fullwidth
+    // sentence siblings stand in this set since
+    // R44-B.)
+    const SEPARATORS: [char; 34] = [
         ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
         '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
         '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}',
-        '\u{3002}', '\u{00ad}',
+        '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
     ];
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut governor_seen = false;
@@ -4297,7 +4347,8 @@ pub(super) fn leading_governor_company_judgment(
                 let word = cleaned[0]
                     .trim_end_matches([
                         '~', '#', '\u{2026}', '*', '-', '\u{2014}', '\u{2010}', '\u{2011}',
-                        '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{00ad}',
+                        '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{ff5e}', '\u{ff03}', '\u{2dc}',
+                        '\u{00ad}',
                     ])
                     .to_string();
                 if !words.is_empty()
@@ -4417,7 +4468,8 @@ pub(super) fn leading_governor_company_judgment(
                         cleaned[0]
                             .trim_end_matches([
                                 '~', '#', '\u{2026}', '*', '-', '\u{2014}', '\u{2010}', '\u{2011}',
-                                '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{00ad}',
+                                '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{ff5e}', '\u{ff03}',
+                                '\u{2dc}', '\u{00ad}',
                             ])
                             .to_string(),
                     );
@@ -5369,7 +5421,8 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
             .trim_end_matches([
                 '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2026}', '~', '*', '#',
                 '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-                '\u{ff01}', '\u{ff1f}', '\u{00ad}',
+                '\u{ff01}', '\u{ff1f}', '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}',
+                '\u{ff1b}', '\u{2dc}', '\u{00ad}',
             ])
             .len();
         if peeled != end {
@@ -5395,6 +5448,9 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
                         | '\u{2212}'
                         | '\u{ff0d}'
                         | '\u{ff0a}'
+                        | '\u{ff5e}'
+                        | '\u{ff03}'
+                        | '\u{2dc}'
                         | '\u{00ad}'
                 )
             })
@@ -5615,15 +5671,17 @@ pub(super) fn date_line_inner(
         let word = tokens[i]
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}',
+                '\u{ff0e}', '\u{ff1a}', '\u{ff1b}',
             ])
             .trim_end_matches([
                 '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{00ad}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
             ])
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}',
+                '\u{ff0e}', '\u{ff1a}', '\u{ff1b}',
             ]);
         // Round 39 (R39-E, F7): the trailing garnish
         // word is read through `cleaned_weekday`, so

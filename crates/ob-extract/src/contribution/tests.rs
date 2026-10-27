@@ -34935,8 +34935,8 @@ fn r42f_remaining_marks_of_the_s4_table_stand_as_recorded() {
     // lane recorded it — the closed-peel record,
     // witnessed here, not anecdotal. The table's
     // 35 marks divide as the lane's own log
-    // divides them: the 23 never-judged marks
-    // below (with the en dash, the table's 24
+    // divides them: the 21 never-judged marks
+    // below (with the en dash, the table's 22
     // unsafe marks), and the sentence/closer marks
     // the standing peels already judge.
     //
@@ -34946,10 +34946,21 @@ fn r42f_remaining_marks_of_the_s4_table_stand_as_recorded() {
     // bare weekday loses its record — the exact
     // readings the en dash is moved FROM, standing
     // here for the marks no adjudication took.
+    // RESTATED, flagged (round 44, R44-D, F3 =
+    // red team RT44-C2): U+FF5E and U+FF03 are
+    // REMOVED from the never-judged list below —
+    // this pin predates the fullwidth
+    // adjudication, and R43-B's rationale (a CJK
+    // IME in fullwidth mode produces these for
+    // the ordinary keys) covers the whole block;
+    // both marks are now admitted beside their
+    // twins "~" / "#" at the suffix/peel seats
+    // and their arms are asserted judged in the
+    // r44d_* pins. Every other mark and arm of
+    // this pin stands exactly as recorded.
     for mark in [
         "\u{2015}", "_", "+", "=", "/", "\\", "%", "@", "&", "$", "^", "|", "`", ">", "<",
-        "\u{2022}", "\u{00b7}", "\u{00b0}", "\u{2030}", "\u{223c}", "\u{ff5e}", "\u{2217}",
-        "\u{ff03}",
+        "\u{2022}", "\u{00b7}", "\u{00b0}", "\u{2030}", "\u{223c}", "\u{2217}",
     ] {
         let governor = format!("November 8, 2026 (cancelled){mark}");
         r40e_serves_silent(&governor, nov(8));
@@ -38035,24 +38046,36 @@ fn r43b_soft_hyphen_admitted_with_the_sibling_class() {
 fn r43b_exotic_siblings_stand_as_recorded_controls() {
     // Controls, passing on the base tree by
     // design: the exotic siblings of adjudication
-    // 7 — U+2012 FIGURE DASH, U+02DC SMALL TILDE,
-    // U+2053 SWUNG DASH, U+2025 TWO DOT LEADER,
-    // U+22EF MIDLINE HORIZONTAL ELLIPSIS, U+FE61
-    // SMALL ASTERISK, U+2731 HEAVY ASTERISK, and
-    // U+266F MUSIC SHARP — are NOT admitted. They
-    // witnessed splitting identically to F2's
-    // marks but no ordinary typist path produces
-    // them; they are the closed-peel limit standing
-    // as recorded, pinned here so the limit is
+    // 7 — U+2012 FIGURE DASH, U+2053 SWUNG DASH,
+    // U+2025 TWO DOT LEADER, U+22EF MIDLINE
+    // HORIZONTAL ELLIPSIS, U+FE61 SMALL ASTERISK,
+    // U+2731 HEAVY ASTERISK, and U+266F MUSIC
+    // SHARP — are NOT admitted. They witnessed
+    // splitting identically to F2's marks but no
+    // ordinary typist path produces them; they
+    // are the closed-peel limit standing as
+    // recorded, pinned here so the limit is
     // witnessed, not anecdotal. At the five arms:
     // the governor's date serves, the grouped
     // weekday serves in silence, the bare weekday
     // loses its record, the leading weekday serves
     // in silence, and the base-trailing weekday
     // serves the resolution in silence.
+    // RESTATED, flagged (round 44, R44-D, F7 =
+    // red team RT44-C5; round-44 synthesis
+    // adjudication 3): U+02DC SMALL TILDE is
+    // REMOVED from this list — a documented
+    // ordinary path for it was witnessed (the
+    // macOS Option+N dead-tilde followed by
+    // Space produces U+02DC, not ASCII "~"), so
+    // it leaves the exotic list and is admitted
+    // beside its twin "~" at the peel/suffix
+    // seats; its arms are now asserted judged in
+    // `r44d_small_tilde_judged_as_its_twin_at_the_
+    // peel_arms`. The seven marks below stand
+    // exactly as recorded, no arm touched.
     for mark in [
-        "\u{2012}", "\u{2dc}", "\u{2053}", "\u{2025}", "\u{22ef}", "\u{fe61}", "\u{2731}",
-        "\u{266f}",
+        "\u{2012}", "\u{2053}", "\u{2025}", "\u{22ef}", "\u{fe61}", "\u{2731}", "\u{266f}",
     ] {
         r40e_serves_silent(&format!("November 8, 2026 (cancelled){mark}"), nov(8));
         r40e_serves_silent(&format!("November 1, 2026 (Monday){mark}"), nov(1));
@@ -38986,18 +39009,27 @@ fn r44b_scope_controls_unmoved() {
     // Controls, passing on the base tree by design
     // and unmoved by this batch. The seats this
     // batch does NOT claim:
-    // (1) The SUFFIX arms of R44-D's family — a
-    // fullwidth separator or suffix sibling
-    // trailing a single group as garnish: the lone
-    // trailing governor wearing one still serves
-    // its date live, on both routes, exactly as on
-    // the base tree (R44-D's seat, not this
-    // batch's inter-group seat).
+    // (1) RESTATED, flagged (round 44, R44-D,
+    // F3 = red team RT44-C2; coordinator ruling
+    // 2026-10-27 extending this batch's flagged
+    // restatements to exactly this arm): the
+    // SUFFIX arms of R44-D's family — a fullwidth
+    // separator or suffix sibling trailing a
+    // single group as garnish. As recorded by
+    // R44-B the lone trailing governor wearing
+    // one still served its date live (R44-D's
+    // seat, not that batch's inter-group seat);
+    // these arms are now judged under R44-D —
+    // the six marks stand beside their twins at
+    // the suffix/peel seats, so the governor is
+    // governed in silence, on both routes.
+    // Arms (2) onward of this pin stand exactly
+    // as recorded, untouched by the restatement.
     for mark in [
         "\u{ff0c}", "\u{ff1b}", "\u{ff1a}", "\u{ff0e}", "\u{ff5e}", "\u{ff03}",
     ] {
         let line = format!("November 8, 2026 (cancelled){mark}");
-        r40e_serves_silent(&line, nov(8));
+        r40e_governed_silent(&line);
     }
     // (2) The standing separator limits at the
     // inter-group seats: marks outside the
@@ -39265,4 +39297,409 @@ fn r44c_scope_controls_unmoved() {
     r40e_governed_silent(d9);
     r34e_for_twin(d9, "November 8, 2026 (cancelled) (November 8, 2026)");
     r34e_keep_twin(d9, "November 8, 2026 (cancelled) (November 8, 2026)");
+}
+
+// Round 44 (R44-D, F3 MINOR = red team RT44-C2,
+// F6 MINOR = red team RT44-C4, F7 MINOR = red
+// team RT44-C5; round-44 synthesis findings F3 /
+// F6 / F7 and adjudication 3): mark-set
+// completion at the suffix/peel seats. (F3) The
+// remaining fullwidth siblings of judged
+// suffix/sentence marks — U+FF5E (of "~"),
+// U+FF03 (of "#"), U+FF0E (of "."), U+FF0C (of
+// ","), U+FF1A (of ":"), U+FF1B (of ";") — stood
+// in no peel/suffix set: R44-B admitted the four
+// sentence siblings at the INTER-GROUP separator
+// seats only, and the peels gained the fullwidth
+// closers only, so a mark trailing a single group
+// or word as garnish split at every sweep arm
+// (contrib44.log m-fulltilde-* / m-fullnum-* /
+// m-fullperiod-* / m-fullcomma-* / m-fullcolon-*
+// / m-fullsemi-*, fourteen arms each): trailing
+// governors served live, bare weekday records
+// were lost, grouped/leading/base arms served
+// silently. (F6) "?" stood in no trim of
+// `LineScan::split_last` though it was admitted
+// beside "!" in the suffix peels in R39-C, so the
+// trailing-alone group wearing it lost the
+// For-route memory and the Keep-through where
+// "!" keeps both (contrib44b.log indices 0–8).
+// (F7) U+02DC SMALL TILDE, produced by the macOS
+// Option+N dead-tilde followed by Space (the
+// ordinary way a Mac typist produces a standalone
+// tilde), split totally at the peel arms beside
+// its twin "~". The fix is twin inheritance at
+// the suffix/peel seats, the R43-B shape: each
+// mark joins the sets its own twin stands in —
+// the peel sets, the spaced-token predicates
+// (only the "~" / "#" family, whose twins stand
+// in them), the gap/rest sets the suffix arms
+// read through, the trailing-word tail sets, the
+// company walk's SEPARATORS and word tail sheds,
+// and `split_last`'s end trims (where "?" also
+// joins beside "!", and U+FF1F follows it: its
+// R43-B exclusion rested expressly on its twin
+// standing in no trim of that set, a premise F6
+// retires). U+FF1A / U+FF1B do NOT join
+// `split_last`: their twins ":" / ";" stand in
+// no trim of it either — their alone-seat
+// judgment runs through the relative-shape
+// reader's BOUNDARY_TRIM, where both twins
+// stand, and their fullwidth siblings join that
+// trim beside them. Every pair below compares
+// the marked
+// line's FULL record against its twin's via the
+// r34e helpers, on the For line and the
+// Keep-through line, and the headline arms are
+// stated outright. November 1 and November 8,
+// 2026 are Sundays.
+
+fn r44d_marks() -> [(&'static str, &'static str); 6] {
+    [
+        ("\u{ff5e}", "~"),
+        ("\u{ff03}", "#"),
+        ("\u{ff0e}", "."),
+        ("\u{ff0c}", ","),
+        ("\u{ff1a}", ":"),
+        ("\u{ff1b}", ";"),
+    ]
+}
+
+/// The five S4 arms for one R44-D mark, stated
+/// outright and full-record twin-compared: the
+/// trailing governor, the trailing grouped
+/// weekday, the trailing bare weekday, the
+/// leading grouped weekday, and the base-trailing
+/// grouped weekday.
+fn r44d_s4_arms(mark: &str, twin: &str) {
+    let governor = format!("November 8, 2026 (cancelled){mark}");
+    r34e_for_twin(&governor, &format!("November 8, 2026 (cancelled){twin}"));
+    r34e_keep_twin(&governor, &format!("November 8, 2026 (cancelled){twin}"));
+    r40e_governed_silent(&governor);
+    let grouped = format!("November 1, 2026 (Monday){mark}");
+    r34e_for_twin(&grouped, &format!("November 1, 2026 (Monday){twin}"));
+    r34e_keep_twin(&grouped, &format!("November 1, 2026 (Monday){twin}"));
+    r40g_refuses_with_record(&grouped, "Monday", nov(1));
+    let bare = format!("November 1, 2026 Monday{mark}");
+    r34e_for_twin(&bare, &format!("November 1, 2026 Monday{twin}"));
+    r34e_keep_twin(&bare, &format!("November 1, 2026 Monday{twin}"));
+    r40g_refuses_with_record(&bare, "Monday", nov(1));
+    let leading = format!("(Monday){mark} November 1, 2026");
+    r34e_for_twin(&leading, &format!("(Monday){twin} November 1, 2026"));
+    r34e_keep_twin(&leading, &format!("(Monday){twin} November 1, 2026"));
+    r40g_refuses_with_record(&leading, "Monday", nov(1));
+    let base = format!("Sunday after November 1, 2026 (Monday){mark}");
+    r34e_for_twin(
+        &base,
+        &format!("Sunday after November 1, 2026 (Monday){twin}"),
+    );
+    r34e_keep_twin(
+        &base,
+        &format!("Sunday after November 1, 2026 (Monday){twin}"),
+    );
+    r40e_governed_with_record(&base, "Monday", nov(1));
+}
+
+#[test]
+fn r44d_fullwidth_suffix_siblings_at_the_s4_arms() {
+    // F3's six marks at the five S4 arms, both
+    // routes, against their twins. On the base
+    // tree every arm splits as RT44-C2 records:
+    // the governor serves 2026-11-08 live, the
+    // grouped and leading/base arms serve
+    // silently, and the bare arm reads None with
+    // no record.
+    for (mark, twin) in r44d_marks() {
+        r44d_s4_arms(mark, twin);
+    }
+}
+
+#[test]
+fn r44d_fullwidth_suffix_siblings_at_the_sequence_and_company_arms() {
+    // The remaining company/sequence arms of the
+    // fourteen-arm sweep: the base-trailing
+    // inter-group arms (glued and spaced), the
+    // mid-line governor arms (glued and spaced),
+    // the trailing interior arms (weekday and
+    // governor), and the trailing-sequence arm —
+    // every mark, both routes, against its twin.
+    for (mark, twin) in r44d_marks() {
+        for (line, twin_line) in [
+            (
+                format!("Sunday after November 1, 2026 (cancelled){mark}(Monday)"),
+                format!("Sunday after November 1, 2026 (cancelled){twin}(Monday)"),
+            ),
+            (
+                format!("Sunday after November 1, 2026 (cancelled) {mark} (Monday)"),
+                format!("Sunday after November 1, 2026 (cancelled) {twin} (Monday)"),
+            ),
+        ] {
+            r34e_for_twin(&line, &twin_line);
+            r34e_keep_twin(&line, &twin_line);
+            r40e_governed_with_record(&line, "Monday", nov(1));
+        }
+        for (line, twin_line) in [
+            (
+                format!("notes (cancelled){mark} November 8, 2026"),
+                format!("notes (cancelled){twin} November 8, 2026"),
+            ),
+            (
+                format!("notes (cancelled) {mark} November 8, 2026"),
+                format!("notes (cancelled) {twin} November 8, 2026"),
+            ),
+            (
+                format!("November 8, 2026 (cancelled){mark} (notes)"),
+                format!("November 8, 2026 (cancelled){twin} (notes)"),
+            ),
+            (
+                format!("November 1, 2026 (cancelled){mark}(Monday)"),
+                format!("November 1, 2026 (cancelled){twin}(Monday)"),
+            ),
+        ] {
+            r34e_for_twin(&line, &twin_line);
+            r34e_keep_twin(&line, &twin_line);
+            r40e_governed_silent(&line);
+        }
+        let interior = format!("November 1, 2026 (Monday){mark} (notes)");
+        let interior_twin = format!("November 1, 2026 (Monday){twin} (notes)");
+        r34e_for_twin(&interior, &interior_twin);
+        r34e_keep_twin(&interior, &interior_twin);
+        r40g_refuses_with_record(&interior, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r44d_fullwidth_suffix_siblings_at_the_alone_and_double_arms() {
+    // The arms R44-B's battery expressly left
+    // unmoved for these families: the trailing
+    // governor (stated in the S4 pin), the
+    // trailing-alone group, and the doubles.
+    for (mark, twin) in r44d_marks() {
+        // Trailing-alone: the outright memory
+        // (R42-D's helper — the in-words memory is
+        // the line as written, so it is stated per
+        // mark, not twin-compared) and the
+        // Keep-route full-record twin parity, both
+        // routes. For U+FF1A / U+FF1B the twins'
+        // own alone reading keeps NOTHING on the
+        // Keep route (":" / ";" stand in no trim
+        // of `split_last`, the seat the
+        // keep-through fallback reads), so their
+        // judged reading is stated in full below
+        // instead of through the helper: no date,
+        // the phrase remembered as written, the
+        // group remembered as a group, and no
+        // keep-through — twin-identical.
+        let alone = format!("next Sunday (November 8, 2026){mark}");
+        let alone_twin = format!("next Sunday (November 8, 2026){twin}");
+        if matches!(mark, "\u{ff1a}" | "\u{ff1b}") {
+            let text = format!("For Sunday: {alone}\n\n## Announcement\n\nHi.\n");
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(c.for_date, None, "{alone}: trailing-alone reads no date");
+            assert_eq!(
+                c.for_sunday_in_words.as_deref(),
+                Some(alone.as_str()),
+                "{alone}: the phrase is remembered as written"
+            );
+            assert_eq!(
+                c.for_sunday_parenthesized_date,
+                Some(nov(8)),
+                "{alone}: the group is remembered as a group"
+            );
+            let text = format!(
+                "For Sunday: November 1, 2026\nKeep-through: {alone}\n\n## Announcement\n\nHi.\n"
+            );
+            let c = parse_contribution(&text, today()).expect("parses");
+            assert_eq!(
+                c.keep_through, None,
+                "{alone}: the Keep route keeps nothing, as its twin keeps nothing"
+            );
+        } else {
+            r42d_alone_memory_outright(&alone);
+        }
+        r34e_keep_twin(&alone, &alone_twin);
+        // The glued double governs, as both twins'
+        // doubles govern.
+        let double = format!("November 8, 2026 (cancelled){mark}{mark}");
+        r34e_for_twin(
+            &double,
+            &format!("November 8, 2026 (cancelled){twin}{twin}"),
+        );
+        r34e_keep_twin(
+            &double,
+            &format!("November 8, 2026 (cancelled){twin}{twin}"),
+        );
+        r40e_governed_silent(&double);
+    }
+    // The spaced-token forms belong to the "~" /
+    // "#" family only (their twins stand in the
+    // spaced-token predicates; the sentence twins
+    // do not): the spaced single token and the
+    // spaced double govern, both routes.
+    for (mark, twin) in [("\u{ff5e}", "~"), ("\u{ff03}", "#")] {
+        for (line, twin_line) in [
+            (
+                format!("November 8, 2026 (cancelled) {mark}"),
+                format!("November 8, 2026 (cancelled) {twin}"),
+            ),
+            (
+                format!("November 8, 2026 (cancelled) {mark} {mark}"),
+                format!("November 8, 2026 (cancelled) {twin} {twin}"),
+            ),
+            (
+                format!("November 8, 2026 (cancelled){mark} {mark}"),
+                format!("November 8, 2026 (cancelled){twin} {twin}"),
+            ),
+        ] {
+            r34e_for_twin(&line, &twin_line);
+            r34e_keep_twin(&line, &twin_line);
+            r40e_governed_silent(&line);
+        }
+    }
+}
+
+#[test]
+fn r44d_question_mark_joins_split_last_at_the_alone_seat() {
+    // F6 (RT44-C4): the trailing-alone family for
+    // "?", stated outright through R42-D's own
+    // helper — the paren dress, the quoted dress,
+    // and the bracket dress (which on the base
+    // tree falls to a second-date reading), the
+    // stacks "??" and "?~", both routes, exactly
+    // as the "!" twins read. On the base tree
+    // every arm loses the For-route memory
+    // (paren=None, inwords=None) and the
+    // Keep-through (keep=None).
+    r42d_alone_memory_outright("next Sunday (November 8, 2026)?");
+    r42d_alone_memory_outright("next Sunday \"November 8, 2026\"?");
+    r42d_alone_memory_outright("next Sunday [November 8, 2026]?");
+    r42d_alone_memory_outright("next Sunday (November 8, 2026)??");
+    r42d_alone_memory_outright("next Sunday (November 8, 2026)?~");
+    // Keep-route full-record parity with the "!"
+    // twins (the For-route memory is the line as
+    // written, stated outright above).
+    for (line, twin) in [
+        (
+            "next Sunday (November 8, 2026)?",
+            "next Sunday (November 8, 2026)!",
+        ),
+        (
+            "next Sunday \"November 8, 2026\"?",
+            "next Sunday \"November 8, 2026\"!",
+        ),
+        (
+            "next Sunday [November 8, 2026]?",
+            "next Sunday [November 8, 2026]!",
+        ),
+        (
+            "next Sunday (November 8, 2026)??",
+            "next Sunday (November 8, 2026)!!",
+        ),
+        (
+            "next Sunday (November 8, 2026)?~",
+            "next Sunday (November 8, 2026)!~",
+        ),
+    ] {
+        r34e_keep_twin(line, twin);
+    }
+    // U+FF1F follows its twin into this seat: its
+    // R43-B exclusion rested expressly on "?"
+    // standing in no trim of `split_last`, and
+    // that premise is retired by this batch, so
+    // the fullwidth question mark takes the same
+    // outright memory at the alone seat, both
+    // dresses, both routes.
+    r42d_alone_memory_outright("next Sunday (November 8, 2026)\u{ff1f}");
+    r42d_alone_memory_outright("next Sunday \"November 8, 2026\"\u{ff1f}");
+    r34e_keep_twin(
+        "next Sunday (November 8, 2026)\u{ff1f}",
+        "next Sunday (November 8, 2026)?",
+    );
+}
+
+#[test]
+fn r44d_small_tilde_judged_as_its_twin_at_the_peel_arms() {
+    // F7 (RT44-C5): U+02DC at the five S4 arms
+    // against "~", both routes — on the base tree
+    // `(cancelled)˜` serves 2026-11-08 live and
+    // `Monday˜` loses its record whole.
+    r44d_s4_arms("\u{2dc}", "~");
+    // The sequence and company arms of the sweep.
+    for (line, twin_line) in [
+        (
+            "Sunday after November 1, 2026 (cancelled)\u{2dc}(Monday)",
+            "Sunday after November 1, 2026 (cancelled)~(Monday)",
+        ),
+        (
+            "Sunday after November 1, 2026 (cancelled) \u{2dc} (Monday)",
+            "Sunday after November 1, 2026 (cancelled) ~ (Monday)",
+        ),
+    ] {
+        r34e_for_twin(line, twin_line);
+        r34e_keep_twin(line, twin_line);
+        r40e_governed_with_record(line, "Monday", nov(1));
+    }
+    for (line, twin_line) in [
+        (
+            "notes (cancelled)\u{2dc} November 8, 2026",
+            "notes (cancelled)~ November 8, 2026",
+        ),
+        (
+            "notes (cancelled) \u{2dc} November 8, 2026",
+            "notes (cancelled) ~ November 8, 2026",
+        ),
+        (
+            "November 8, 2026 (cancelled)\u{2dc} (notes)",
+            "November 8, 2026 (cancelled)~ (notes)",
+        ),
+        (
+            "November 1, 2026 (cancelled)\u{2dc}(Monday)",
+            "November 1, 2026 (cancelled)~(Monday)",
+        ),
+    ] {
+        r34e_for_twin(line, twin_line);
+        r34e_keep_twin(line, twin_line);
+        r40e_governed_silent(line);
+    }
+    let interior = "November 1, 2026 (Monday)\u{2dc} (notes)";
+    r34e_for_twin(interior, "November 1, 2026 (Monday)~ (notes)");
+    r34e_keep_twin(interior, "November 1, 2026 (Monday)~ (notes)");
+    r40g_refuses_with_record(interior, "Monday", nov(1));
+    // The alone and double arms, outright as "~".
+    r42d_alone_memory_outright("next Sunday (November 8, 2026)\u{2dc}");
+    r40e_governed_silent("November 8, 2026 (cancelled)\u{2dc}\u{2dc}");
+    r40e_governed_silent("November 8, 2026 (cancelled) \u{2dc}");
+    r40e_governed_silent("November 8, 2026 (cancelled) \u{2dc} \u{2dc}");
+}
+
+#[test]
+fn r44d_scope_controls_unmoved() {
+    // Controls, passing on the base tree by design
+    // and unmoved by this batch.
+    // (1) F6's held arms (contrib44b.log indices
+    // 10–13): at the trailing slots "?" already
+    // governs and refuses with the record,
+    // twin-identical to "!" — the split was
+    // exactly the split_last seats.
+    r40e_governed_silent("November 8, 2026 (cancelled)?");
+    r34e_for_twin(
+        "November 8, 2026 (cancelled)?",
+        "November 8, 2026 (cancelled)!",
+    );
+    r34e_keep_twin(
+        "November 8, 2026 (cancelled)?",
+        "November 8, 2026 (cancelled)!",
+    );
+    r40g_refuses_with_record("November 1, 2026 (Monday)?", "Monday", nov(1));
+    r34e_for_twin("November 1, 2026 (Monday)?", "November 1, 2026 (Monday)!");
+    r34e_keep_twin("November 1, 2026 (Monday)?", "November 1, 2026 (Monday)!");
+    // (2) The CJK separator pair U+3001 / U+3002,
+    // admitted by R44-B at the inter-group seats,
+    // is not part of this batch's six-mark family:
+    // at the suffix arm the lone trailing governor
+    // wearing one keeps its standing reading.
+    for mark in ["\u{3001}", "\u{3002}"] {
+        let line = format!("November 8, 2026 (cancelled){mark}");
+        r40e_serves_silent(&line, nov(8));
+    }
 }

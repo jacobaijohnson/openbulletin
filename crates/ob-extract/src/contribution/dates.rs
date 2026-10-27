@@ -579,15 +579,17 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
         let word = tokens[i]
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}',
+                '\u{ff0e}', '\u{ff1a}', '\u{ff1b}',
             ])
             .trim_end_matches([
                 '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{00ad}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
             ])
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}',
+                '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}',
+                '\u{ff0e}', '\u{ff1a}', '\u{ff1b}',
             ]);
         // Round 39 (R39-E, F7): the base's trailing
         // garnish word is read through
@@ -916,10 +918,19 @@ fn base_trailing_sequence_mismatch(
         // in this set are judged. The fullwidth
         // separators do not join this peel: the
         // suffix seat is R44-D's, not this batch's.
+        // Round 44 (R44-D, F3 + F7): that suffix
+        // seat is taken now, as at the plain
+        // trailing walks — the peel set gains
+        // U+FF5E, U+FF03, U+FF0E, U+FF0C, U+FF1A,
+        // U+FF1B, and U+02DC, each beside its twin
+        // standing in this set; the spaced-token
+        // predicate below gains only the "~" / "#"
+        // family (U+FF5E, U+FF03, U+02DC).
         let peeled = rest.trim_end().trim_end_matches([
             '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
             '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
-            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{00ad}',
+            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{ff5e}', '\u{ff03}',
+            '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}',
         ]);
         if peeled.len() != rest.len() {
             rest = peeled;
@@ -942,6 +953,9 @@ fn base_trailing_sequence_mismatch(
                                 | '\u{2212}'
                                 | '\u{ff0d}'
                                 | '\u{ff0a}'
+                                | '\u{ff5e}'
+                                | '\u{ff03}'
+                                | '\u{2dc}'
                                 | '\u{00ad}'
                         )
                     }) =>
@@ -1160,6 +1174,9 @@ fn base_trailing_sequence_mismatch(
                         | '\u{3002}'
                         | '\u{ff02}'
                         | '\u{ff07}'
+                        | '\u{ff5e}'
+                        | '\u{ff03}'
+                        | '\u{2dc}'
                         | '\u{00ad}'
                 ) || c.is_whitespace()
             })
@@ -1435,11 +1452,32 @@ impl<'a> LineScan<'a> {
         // asterisk (U+FF0A) and "!" (U+FF01), and
         // U+00AD. (U+FF1F does not join here: its
         // twin "?" stands in no trim of this set.)
+        // Round 44 (R44-D, F6 MINOR = red team
+        // RT44-C4): both trim sites gain "?" itself,
+        // beside "!" — "?" was admitted beside "!"
+        // in the suffix peels in R39-C and the two
+        // are twin-identical at every other arm, so
+        // the trailing-alone group wearing it
+        // ("next Sunday (November 8, 2026)?") lost
+        // the For-route memory and the Keep-through
+        // where "!" keeps both. U+FF1F joins with
+        // it: its R43-B exclusion rested expressly
+        // on its twin standing in no trim of this
+        // set, and that premise is retired here.
+        // Both sites also gain the R44-D suffix
+        // siblings whose twins stand in this set —
+        // U+FF5E (of "~"), U+FF03 (of "#"), U+FF0E
+        // (of "."), U+FF0C (of ",") — and U+02DC
+        // beside "~" (F7). U+FF1A / U+FF1B do not
+        // join: their twins ":" / ";" stand in no
+        // trim of this set, the same seat logic
+        // that held U+FF1F out until now.
         let mut end = lo
             + text[lo..hi]
                 .trim_end_matches([
-                    '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '\u{2013}',
+                    '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '?', '\u{2013}',
                     '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{ff01}',
+                    '\u{ff1f}', '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{2dc}',
                     '\u{00ad}',
                 ])
                 .len();
@@ -1457,9 +1495,10 @@ impl<'a> LineScan<'a> {
                     end = lo
                         + text[lo..w]
                             .trim_end_matches([
-                                '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!',
+                                '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '?',
                                 '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
-                                '\u{ff0a}', '\u{ff01}', '\u{00ad}',
+                                '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff5e}', '\u{ff03}',
+                                '\u{ff0e}', '\u{ff0c}', '\u{2dc}', '\u{00ad}',
                             ])
                             .len();
                 }
@@ -1571,8 +1610,26 @@ pub(super) fn relative_shape_matches(text: &str, shape: fn(&[String]) -> bool) -
     // is separator punctuation, not words of the shape,
     // and the in-words memory survives it exactly as it
     // survives the space and comma twins.
-    const BOUNDARY_TRIM: [char; 10] = [
-        ' ', '\t', ';', ',', ':', '.', '/', '-', '\u{2013}', '\u{2014}',
+    // Round 44 (R44-D, F3 MINOR = red team
+    // RT44-C2): the trim gains the fullwidth
+    // siblings of its four sentence members —
+    // U+FF1B (of ";"), U+FF0C (of ","), U+FF1A
+    // (of ":"), U+FF0E (of ".") — because the
+    // trailing-alone arm is witnessed reading
+    // through this trim for the twins: "next
+    // Sunday (November 8, 2026):" keeps its
+    // in-words memory here, while the fullwidth
+    // form lost it. The dash siblings remain out
+    // (R43-B deviation 4(a) stands: no witnessed
+    // arm reads one through this trim, and
+    // U+FF5E / U+FF03 / U+02DC do not join either
+    // — their twins "~" / "#" are not members of
+    // this classification; their alone arms are
+    // judged through `split_last`'s trims, where
+    // their twins stand).
+    const BOUNDARY_TRIM: [char; 14] = [
+        ' ', '\t', ';', ',', ':', '.', '/', '-', '\u{2013}', '\u{2014}', '\u{ff1b}', '\u{ff0c}',
+        '\u{ff1a}', '\u{ff0e}',
     ];
     // Round 31 (R31-C, F4): the shape is judged on the
     // remainder's cleaned words, and the loop below
@@ -2337,6 +2394,9 @@ pub(super) fn suffix_tail_token(raw: &str) -> bool {
                     | '\u{2212}'
                     | '\u{ff0d}'
                     | '\u{ff0a}'
+                    | '\u{ff5e}'
+                    | '\u{ff03}'
+                    | '\u{2dc}'
                     | '\u{00ad}'
             )
         })

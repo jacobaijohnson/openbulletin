@@ -606,3 +606,159 @@ boundary hygiene. HF-12 is NOT a batch of this round
 44's audit of the closed tree; the Tier-2 final gate
 is not triggered (0/3/4) and is not the coordinator's
 to start in any case.
+
+## Coordinator close (successor coordinator, 2026-10-27)
+
+**Round 43 is closed.** All seven findings were
+fixed or dispositioned in five batches R43-A..R43-E
+plus the F7 record restatement carried below. The
+fuzz hard term held byte-identical at the CURRENT
+standing baselines at every batch — no re-baseline
+was needed this round. Final code tree **`f16d13e`**
+(R43-E, a test-only batch); suite **1236 passed /
+0 failed**.
+
+| Batch | Tip | Disposition | Hosted CI |
+|---|---|---|---|
+| R43-A | `390f593` | F1 (en dash completion at the R42-C/R42-D seats) | 40402036495 ×3 ✓, runner 40402036449 ✓ |
+| R43-B | `4746ee2` | F2 + F3 (typist sibling class admitted at the set level; U+00AD admitted per adjudication 7) | 40416945893 ×3 ✓, runner 40416946169 ✓ |
+| R43-C | `8e2c046` | F4 + F5 (straight closers at the trailing seats; quoted members re-dressed) | 40434853037 ×3 ✓, runner 40434852768 ✓ |
+| R43-D | `ace821f` | F6 (trailing archive subordinated to the first complete directory) | 40451491919 ×3 ✓, runner 40451491786 ✓ |
+| R43-E | `f16d13e` | Carried item (c) closed (the `nested_seq_mix` ratio pin, bound 10×) | 40461904465 ×3 ✓, runner 40461904458 ✓ |
+
+**F7 restatement, carried into the standing record
+(per adjudication 5):** the rename step's residual
+window in `rename_instance_lock_to_displaced_from`
+(judge of the displaced path → `remove_file` →
+rename) survives on the closed tree at a restated
+rate: **5/400 in the original sleep-lander shape
+and 153/2000 with a spin lander sweeping 0–500 µs**,
+with witnessed deletions at delays of 14–108 µs
+and the owner alive at the end in every printed
+witness (`lock43.log`, EXIT=0). Round 42's standing
+rate (1/400 in each of two runs) under-samples a
+window spanning tens of microseconds from the
+judge's read to the remove/rename pair and is
+superseded by this restatement. The harm class is
+unchanged (a live generation at the *displaced*
+path is destroyed; the lock-path record survives;
+no composed claim lost a lock-path generation),
+the disposition stands (record only; no production
+change attempted this round — R42-E's full attempt
+stands, and no clean shape is known), and
+attribution is closed on this tree: the R41-F pin
+shape re-driven stands the step down with both
+files byte-untouched when the live generation is
+already standing at the judge, and the claim
+succeeds after the landed owner dies.
+
+**Five-leg close evidence on the final tree
+`f16d13e`:**
+
+1. Local cold, from the close-verify run's disk
+   logs (`round43-out/coord/close/`): `cargo clean`
+   exit 0, cold suite **1236/0** (SUITE_EXIT=0,
+   SUITE_SUM passed=1236 failed=0), CLIPPY_EXIT=0,
+   FMT_EXIT=0; booklet 31,717 / 34,977 byte-exact
+   (pin inside the suite).
+2. Fuzz as claims, the same close run, cold from
+   the final tree's code: bin sources at the
+   recorded md5s (`a9cac6c3…` / `4f85c605…`);
+   verdict stdout md5 `797758443d101f9339fdd778e14af430`
+   byte-identical, total_lines=40000, panics=0;
+   composition stdout md5 `e8b2e73b117c7013d867419da8fb0ab7`
+   byte-identical to the current baseline,
+   D_TOTAL=497024, D_PANICS=0; rights counters
+   5083 / 1024 / 5275 with safety_flips=0 on every
+   route — M8 held for the twenty-fourth
+   consecutive round. All four bins EXIT=0, stderr
+   empty.
+3. Hosted CI **40461904465** ✓ — ubuntu / windows /
+   macos all success (jobs checked individually).
+4. Desktop Runner Build **40461904458** ✓.
+5. Windows bundle **40470669392** ✓.
+
+**Hosted CI flake of the round (of record):** the
+R42-E four-claimant race pin
+(`r42e_four_claimant_races_over_a_dead_lock_stand_single_winner`)
+flaked on hosted CI at three batch tips — R43-A
+(ubuntu, attempt 1), R43-C (macOS, attempts 1–3),
+R43-D (ubuntu, attempt 1) — each time re-run to
+green, and every batch tip stands green on all
+three OS legs in its record. No bound was widened
+and no pin was weakened; the pattern is recorded
+in the batch records for the lanes' attention.
+
+**Completion incident (of record):** the round's
+first coordinator died mid-close. Its first
+close-verify attempt was interrupted by a VM
+replacement after `cargo clean` (8.7 GiB) and a
+partial suite; its logs stand renamed in the close
+dir (`close-attempt1-vmreplaced.log`,
+`suite-attempt1-partial.log`) and no verdict was
+read from them. The second attempt
+(`close-verify2.nohup`, launched 2026-10-27
+08:31 UTC) was still alive when the successor
+coordinator took over — established by process
+scan, mtime freshness, and the script's own logs
+— and was left to finish; all five legs above
+were judged from its disk outputs. No duplicate
+verification was started against the same
+directories, and nothing was killed on suspicion.
+
+**Build-cache disposition:** confirmed completion
+Tue 2026-10-27 ~02:20 PDT; final reading 86% used
+/ 14G free (overnight window, 87% line); the
+round's recorded readings ran 81–86%, with no
+reading at or above the overnight 87% line and no
+latch armed. **CARRY.**
+
+**Boundary hygiene:** the lanes' round-43 working
+dirs stand in `round43-out/` with their records,
+including both close-verify attempts' logs;
+`probe29v` is retained as the standing fuzz home
+at its recorded bin md5s; reports, syntheses,
+status notes, and fuzz records are kept as filed.
+No registry prune.
+
+**HF-12:** decided (Jacob, 2026-10-25) — typed
+core, plain words at the boundary, gradual from
+the import layer. Not a batch of this round
+(adjudication 8); the first-slice proposal went
+to the coordinator seat with the synthesis and
+the migration starts deliberately, between
+rounds, on the seat's confirmation. Cited as
+decided, never as held.
+
+**Exit bar NOT met** — the round-43 audit was
+0 BLOCKER / 3 MAJOR / 4 MINOR. Majors trend:
+… → 5 → 5 → 3. The bar is judged on round 44's
+audit of this closed tree. The Tier-2 Opus + GPT
+final gate is not triggered and is not the
+coordinator's to start.
+
+**Carried into round 44 (named targets):**
+(a) F7's restated rate standing as a record (the
+rename-step window at 5/400 sleep-lander,
+153/2000 spin-lander; no clean shape known);
+(b) the L10/L11 lock-path step-level sibling as a
+standing observation (32/400 step-level moves, the
+production audit refusing 32/32, composed losses
+0/400 — the only production caller closes it);
+(c) the data-descriptor clip-door interaction
+(a standard streaming-zip shape on the idml entry
+set fails at the clip door where its clean
+control reads OK; mechanism unpinned, no clip
+content at stake in the witness as driven);
+(d) the exotic-sibling list standing as the
+closed-peel limit, pinned as controls in R43-B
+(U+2012, U+02DC, U+2053, U+2025, U+22EF, U+FE61,
+U+2731, U+266F — no ordinary typist path);
+(e) the standing records held whole: peeled-tail
+residual (cure = a peel-depth change),
+split-position governor uniformity, lock
+leading-newline pid spelling, recycled-pid
+residual; (f) the R40-C calibration note, standing
+honest as recorded (re-graded in this round's
+audit); (g) the HF-12 first slice, queued for the
+coordinator seat's between-rounds confirmation.

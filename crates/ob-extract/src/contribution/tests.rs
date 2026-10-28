@@ -19627,6 +19627,119 @@ fn r43e_nested_seq_mix_parses_without_the_cliff() {
     );
 }
 
+// Round 44 (R44-H, F10 = red team RT44-P1,
+// round-44 synthesis adjudication 5): the
+// QUOTED sibling of the R43-E pinned shape
+// above earns its own interleaved ratio pin,
+// on the fixed tree. The witness is the
+// probe's `nested_seq_mix_quoted` at n=25,600
+// exactly: "November " + 6,400 openers + "8" +
+// 6,400 closers + ", 2026 " + 12,800
+// "\"notes\" " groups (probe doclen 115,262) —
+// the R43-E shape with its trailing groups
+// standing in the R43-C quoted-member dress
+// instead of parens — against the `longline`
+// control at 102,800 (4n+400, the standing
+// control sizing the sibling pins use), judged
+// through `r33d_interleaved_best` (interleaved
+// best-of-3), as every sibling cliff pin is
+// judged. The reading this pin holds is the
+// shape's standing one, verified identical on
+// the base and fixed trees (see the R44-H
+// record): the nested date is NOT served
+// (`for_date` is None) — where the paren twin
+// serves November 8, 2026, the quoted trailing
+// sequence's standing reading serves nothing.
+// That reading is not this batch's to move:
+// F10 is a performance finding, the fix is a
+// perf fix, and any reading movement would
+// have been a stop-and-record.
+// The mechanism, established by profile on
+// the base tree (see the R44-H record): the
+// quoted-member consultation
+// (`quoted_members_as_parens`) re-judged every
+// quoted candidate at every seat that consults
+// it — the full governor / weekday / date-group
+// judgment per candidate per consultation, the
+// dominant term — and its re-dress build
+// rescanned the whole judged-pair list at
+// every char of the line (chars × pairs per
+// consultation, ~44% of the shape's base CPU
+// at n=6,400 under gprofng). The paren twin
+// pays neither: its consultations find no
+// quotes and return before either walk. The
+// fix is scoped to the consultation: the
+// member judgment is memoized per consultation
+// (a pure function of the contents, so the
+// memo states the standing verdict) and the
+// build walks the pair list with one advancing
+// cursor. The readings are unchanged by
+// construction — the round's 1,544-line
+// contribution battery is byte-identical
+// base-to-tip. What remains is the seats'
+// standing work over the re-dressed sequence,
+// paid additionally where the paren twin pays
+// it once on the standing text.
+// Base-tree standing (red team, debug frame):
+// median interleaved ratios 18.87 / 25.77 /
+// 34.63 at n = 1,600 / 6,400 / 25,600 against
+// the pinned shape's ~2.6 / 4.5 / 5.1
+// re-measured in the same windows — ~3.5x the
+// sibling's 10x bound at the pinned size, the
+// per-step climb matching the pinned shape's
+// exponent (~1.28). On the base tree this pin
+// FAILS (the bite is witnessed in the R44-H
+// record); on the fixed tree it passes with
+// the bound below.
+// Bound: 37x. Calibration of record: the
+// worst quiet-window reading at 25,600 on the
+// fixed tree, in this pin's own form, is
+// 26.37 (witness best 9.35s against the
+// interleaved control's 354.6ms; the same
+// window's other readings 24.93 and 25.08, at
+// 1-minute load ~1.7–2.6 with co-tenant load
+// standing in the 5-minute average — see the
+// R44-H record) — 37x carries ~1.4x headroom
+// over it, the posture of the sibling pins.
+// The bound is calibrated to THIS shape only.
+// The fixed tree's smaller-size readings in
+// the batch's windows (probe form, median
+// interleaved ratios, debug frame, under
+// co-tenant load) are 29.22 at n=1,600 and
+// 19.64 at n=6,400: load-noised at the small
+// sizes, and the ratio does not stand flat
+// with size, so the larger sizes stay the
+// probe's job, as at the sibling pin. The
+// standing load discipline applies unchanged:
+// a ratio miss under co-tenant load is
+// dispositioned solo, never by widening the
+// bound.
+// The brackets sibling (`nested_seq_mix_
+// brackets`, the mixed ([{ / }]) dress) was
+// witnessed in the same windows and is
+// recorded as witnessed-standing in the R44-H
+// record, not pinned here: it shares neither
+// consultation term (no quotes stand in it),
+// and on the fixed tree it reads at or below
+// the pinned paren shape in the batch's
+// windows (median 4.74 at n=25,600).
+#[test]
+fn r44h_nested_seq_mix_quoted_parses_without_the_cliff() {
+    let text = format!(
+        "For Sunday: November {}8{}, 2026 {}\n\n## Announcement\n\nHi.\n",
+        "(".repeat(6400),
+        ")".repeat(6400),
+        "\"notes\" ".repeat(12800)
+    );
+    let control = r39g_word_run_control(102800);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, None);
+    assert!(
+        witness_best < control_best * 37,
+        "the nested sequence-mix quoted witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 37x the control)"
+    );
+}
+
 #[test]
 fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026)"; 75000].join(" and ");

@@ -2487,6 +2487,32 @@ pub(super) fn fullwidth_date_groups_as_ascii(
 /// group standing in brackets as written anchors
 /// the completed sequence, never from whole
 /// cloth.
+///
+/// Round 44 (R44-H, F10 = red team RT44-P1): the
+/// member judgment is MEMOIZED per consultation,
+/// keyed by the candidate's contents. The
+/// judgment is a pure function of the contents
+/// (with `today` and `include_inert`, both fixed
+/// for the whole scan), so a contents string
+/// judged once in a scan is never judged again
+/// in it — the memo states the standing verdict,
+/// it does not compute a new one, and every
+/// reading is the standing reading by
+/// construction. Before this, a line carrying
+/// thousands of quoted groups paid the full
+/// three-arm judgment (governor / weekday / date
+/// group) at EVERY candidate of EVERY
+/// consultation — the seats consult this
+/// re-dress several times per line — and the
+/// pinned nested shape's quoted sibling
+/// (`nested_seq_mix_quoted`: the R43-E shape
+/// with its trailing groups in quotes) read
+/// ~5–7× its paren twin at every size, the
+/// per-candidate re-judgment being the dominant
+/// term under profile (see the R44-H record).
+/// A repeated group now costs one judgment per
+/// consultation, however many times it stands
+/// on the line.
 pub(super) fn quoted_members_as_parens(
     text: &str,
     today: SimpleDate,
@@ -2494,6 +2520,11 @@ pub(super) fn quoted_members_as_parens(
 ) -> Option<String> {
     let spans = balanced_spans(text);
     let chars: Vec<(usize, char)> = text.char_indices().collect();
+    // Round 44 (R44-H, F10): the per-consultation
+    // member memo (see the note above) — contents
+    // already judged in this scan, with their
+    // standing verdict.
+    let mut judged: std::collections::BTreeMap<&str, bool> = std::collections::BTreeMap::new();
     let mut pairs: Vec<(usize, usize)> = Vec::new();
     let mut i = 0usize;
     while i < chars.len() {
@@ -2529,11 +2560,23 @@ pub(super) fn quoted_members_as_parens(
         // arms) count as a sequence member; a quoted
         // date group is excluded and keeps its own
         // arms' reading.
-        let member = governor_group_at_head(inner)
-            || garnish_group_weekday(inner).is_some()
-            || (include_inert
-                && !inner.trim().is_empty()
-                && group_date(inner, today, today).is_none());
+        // Round 44 (R44-H, F10): the judgment is
+        // consulted through the memo — a contents
+        // string already judged in this scan
+        // answers with its standing verdict and is
+        // not judged again.
+        let member = match judged.get(inner) {
+            Some(&member) => member,
+            None => {
+                let member = governor_group_at_head(inner)
+                    || garnish_group_weekday(inner).is_some()
+                    || (include_inert
+                        && !inner.trim().is_empty()
+                        && group_date(inner, today, today).is_none());
+                judged.insert(inner, member);
+                member
+            }
+        };
         if !overlaps && member {
             pairs.push((i, j));
             i = j + 1;
@@ -2545,8 +2588,33 @@ pub(super) fn quoted_members_as_parens(
         return None;
     }
     let mut out = String::with_capacity(text.len());
+    // Round 44 (R44-H, F10 = red team RT44-P1):
+    // the re-dress walk below answers its two
+    // membership questions (is this char a pair's
+    // opener? its closer?) from ONE advancing
+    // cursor over `pairs`, not by rescanning the
+    // whole pair list at every char. The scan
+    // above pushes pairs in written order and
+    // jumps past each pair's closer (`i = j + 1`
+    // on a judged pair), so the pairs stand
+    // disjoint and ordered by opener and closer
+    // alike, and a single cursor that advances
+    // past a pair at its closer answers both
+    // questions exactly as the two full rescans
+    // did — the re-dress is byte-for-byte the
+    // standing one. The rescans were the quoted
+    // sibling's second term: at the pinned
+    // shape's size (12,800 quoted groups on a
+    // ~115,000-char line) each consultation's
+    // build cost chars × pairs membership steps,
+    // where the paren twin's consultations find
+    // no pairs and return before this walk. The
+    // dominant term is the scan's per-candidate
+    // re-judgment, answered by the memo above
+    // (see the function's note).
+    let mut pair_cursor = 0usize;
     for (idx, (_, c)) in chars.iter().enumerate() {
-        if pairs.iter().any(|&(o, _)| o == idx) {
+        if pair_cursor < pairs.len() && pairs[pair_cursor].0 == idx {
             // Round 44 (R44-B, F2 = red team
             // RT44-C1): a fullwidth quote (U+FF02 /
             // U+FF07) is three bytes where "(" is
@@ -2570,12 +2638,13 @@ pub(super) fn quoted_members_as_parens(
             } else {
                 out.push('(');
             }
-        } else if pairs.iter().any(|&(_, cl)| cl == idx) {
+        } else if pair_cursor < pairs.len() && pairs[pair_cursor].1 == idx {
             if matches!(c, '\u{ff02}' | '\u{ff07}' | '\u{201d}' | '\u{2019}') {
                 out.push_str(")  ");
             } else {
                 out.push(')');
             }
+            pair_cursor += 1;
         } else {
             out.push(*c);
         }

@@ -404,3 +404,183 @@ recorded readings), and boundary hygiene. The exit
 bar is judged on round 45's audit of the closed
 tree; the Tier-2 final gate is not triggered
 (0/3/7) and is not the coordinator's to start.
+
+## Round-44 close (coordinator, 2026-10-27)
+
+Final code tree: `34690e3` (R44-I). Round-44 audit:
+0 BLOCKER / 3 MAJOR / 7 MINOR; all ten findings fixed or
+dispositioned in nine batches, plus the HF-12 first slice
+under adjudication 6. The exit bar is judged on round
+45's audit of this tree.
+
+### Batches
+
+| Batch | Tip | Finding | Suite |
+|---|---|---|---|
+| R44-A | `f1323fb` | F1 (en-dash peels) | 1239 |
+| R44-B | `62fcc6a` | F2 (fullwidth separators/closers) | 1245 |
+| R44-C | `72fd6d0` | F5 (quoted inert members, anchor gate) | 1248 |
+| R44-D | `b50b3cb` | F3+F6+F7 (suffix siblings, `?` split_last, U+02DC) | 1254 |
+| R44-E | `a4dc5e9` | F4 (fullwidth dress pairs) | 1260 |
+| R44-F | `b25dd83` | F8 (zero-width garnish) | 1266 |
+| R44-G | `58e4f8a` | F9 (zip64 gap-plant subordination) | 1271 |
+| R44-H | `40b80ce` | F10 (quoted-shape cliff: bounded fix + pin) | 1272 |
+| R44-I | `34690e3` | HF-12 slice 1 (typed open-door error) | 1275 |
+
+Three batches (A, D, E) landed only after a writer's
+STOP-and-record on a standing-pin restatement the brief
+had not authorized; each was ruled in writing
+(`r44a-ruling.md`, `r44d-ruling.md`, `r44e-ruling.md` in
+`round44-out/coord/`) and the restatement extended to
+exactly the named witness arms. R44-I likewise stopped
+on a compile-witnessed gap in its readiness map and
+landed under `r44i-ruling.md`. Three writers died at or
+after their work was complete; every batch was judged
+from its record on disk and the gh API, never from an
+agent report alone.
+
+### Close evidence (five legs, final tree `34690e3`)
+
+- Local cold (coordinator close-verify, `cargo clean`
+  then the suite from the clean tree; logs in
+  `round44-out/coord/close/`): **1275 passed / 0
+  failed**, SUITE_EXIT=0; clippy `-D warnings`
+  CLIPPY_EXIT=0; fmt `--check` FMT_EXIT=0.
+- Fuzz as claims (bins rebuilt from this tree's code,
+  sources at their recorded md5s): verdict
+  `797758443d101f9339fdd778e14af430` (40,000 lines,
+  0 panics), composition `e8b2e73b117c7013d867419da8fb0ab7`
+  (497,024 lines, 0 panics), rights **5083 / 1024 /
+  5275, safety_flips=0** — all byte-identical to the
+  standing baselines; no re-baseline this round (the
+  rights safety axes hold for the twenty-fifth
+  consecutive round).
+- Hosted CI on `34690e3`: run 40631788809 — windows ✓,
+  ubuntu ✓, macos ✓ per-job conclusions.
+- Desktop Runner Build: run 40631788595 ✓ success.
+- Windows bundle: run 40636718032 ✓ success
+  (dispatched at the close on the final tree).
+
+### Hosted flake pattern this round (stated plainly)
+
+Six hosted flake events, two classes, every one re-run
+to green on an unchanged commit; no bound widened, no
+pin weakened, no production change made for any of
+them. Per-event detail: `round44-out/coord/ci-flake-
+accounting.md`.
+
+- Class 1 — the R42-E four-claimant OUTCOME flake
+  (3 events): CI 40573033666 att1 (macOS, R44-E tip),
+  CI 40590289083 att1 (Ubuntu, R44-F tip), CI
+  40623211515 att1 (macOS, R44-H tip) — the
+  composed-race outcome assertion, all four claimants
+  standing down in round 1 on a loaded hosted runner.
+  It also flaked three times in round 43. **The
+  recurrence rate now exceeds the round-43
+  disposition's "single flake" posture**; round 45
+  inherits it as a named target (below).
+- Class 2 — the ETXTBSY fake-helper SPAWN flake
+  (3 events): runner 40493362276 att1 (R44-A tip),
+  runner 40605594721 att1+att2 (R44-G tip) — two lock
+  tests failing at the "spawn live peer" step, code 26
+  ExecutableFileBusy; the standing disclosed class.
+
+### HF-12 first slice (decided 2026-10-25)
+
+Landed in R44-I: `OpenDoorError { TooLarge,
+Unreadable(io::Error) }` at the open-door surface of
+ob-extract, `Display` byte-for-byte the standing plain
+words, a `From` impl at the boundary, and — under
+`r44i-ruling.md` after the writer's compile-witnessed
+STOP — four one-line caller conversions in `windows.rs`
+(`e.to_string()` ×2, `.map_err(String::from)` ×2).
+`from_json`'s version refusal is expressly deferred to
+the second slice. **Correction to the readiness map,
+for future slices:** "no caller branches on error text"
+does not imply "callers compile unchanged" — call sites
+must be classified by conversion position (`?` /
+argument / chain / render), not by branching alone.
+
+### Cache disposition at the confirmed completion
+
+Inputs, all on the record: the round's peak reading was
+**88% used in the overnight window** at R44-A's start
+(latch armed under the standing rule, recorded in
+`r44a-ruling.md`); on 2026-10-27 the Jacob-approved
+sweep under the widened disk-clear ritual deleted the
+round 28–42 outputs and returned the disk to **69%
+used / 32G free**; per-batch readings after the sweep
+ran 68–69%; the completion reading at this close
+(22:46 PDT, daytime window, 94% line) is **69% used /
+32G free**. The close-verify itself executed
+`cargo clean` (8.7 GiB removed) and rebuilt the target
+cold from the final tree — the clear-and-cold-start the
+armed latch called for was performed as the close's
+own cold leg. **Disposition: the fresh cold cache
+carries into round 45.** The registry cache was not
+touched.
+
+### Disk-clear ritual terms (recorded for round 45)
+
+Per Jacob's 2026-10-27 approval (scope:
+`~/workspace/research/disk-clear-scope-2026-10-27/
+SCOPE.md`): keep the current round's out dir plus the
+previous round's; older round outs are sweep-eligible
+at round boundaries, executed by this lane;
+`openbulletin/target` is clearable at round boundaries
+when the latch has fired; `probe29v` is ACTIVE and
+excluded from the first sweep; **no deletion happens
+on the ritual's say-so alone — every sweep presents
+Jacob its exact list (paths, sizes, df reading) and
+runs only on his approval.** The first sweep executed
+2026-10-27 under his approved list (rounds 28–42
+deleted; sweep record in the scope dir). Boundary
+hygiene at this close: `round44-out` and `round43-out`
+kept; `probe29v` untouched (bin sources re-verified at
+their recorded md5s during the close fuzz leg); lane
+reports, syntheses, and close-status notes kept.
+
+### Carried into round 45
+
+1. **Named target: the R42-E four-claimant race pin's
+   scheduling sensitivity on hosted runners.** Fix
+   direction is the test's own composition (its round
+   window / stand-down tolerance), judged as a
+   test-harness finding — not a bound-widen and not a
+   production change unless new evidence points into
+   production code.
+2. F7's restated rename-step window rate stands as a
+   record (5/400 sleep-lander, 153/2000 spin-lander);
+   round-44 measurements at or under it; no clean shape
+   known; disposition unchanged.
+3. The L10/L11 lock-path step-level sibling stands as
+   an observation; the only production caller (the
+   audit) refuses every witnessed move.
+4. The standing records stand: peeled-tail residual,
+   split-position governor uniformity, lock
+   leading-newline pid spelling, recycled-pid residual,
+   the R40-C calibration note.
+5. The exotic-sibling closed-peel limit stands at
+   seven marks (U+2012 FIGURE DASH the weakest).
+6. R44-C's I15 standing split: a quoted inert member
+   at the sequence seat keeps its no-record reading,
+   pinned by the batch record; not claimed by the
+   anchor gate.
+7. The `nested_seq_mix_brackets` sibling is
+   witnessed-standing (at/below the paren shape at
+   n=25,600), not pinned; the quoted shape's residual
+   post-fix cost stands as pinned at 37× (R44-H) with
+   its architectural cause recorded.
+8. Adjudication-8 observations: emoji garnish seats,
+   grouped `(off)~` governor-vocabulary asymmetry,
+   non-fullwidth exotic dress pairs split at the same
+   seats as F4.
+9. HF-12 second slice: `from_json`'s typed version
+   refusal (its wording is pinned from a test helper
+   outside the file); then IDML's dump door
+   next-tightest per the readiness map — slice maps
+   classified by conversion position per the correction
+   above.
+
+Majors trend: … 5 (R42) → 3 (R43) → 3 (R44). Round
+45's audit of `34690e3` judges the exit bar.

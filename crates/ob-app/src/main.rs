@@ -3518,9 +3518,10 @@ fn lock_names_instance(lock: &std::path::Path, own_pid: u32, own_token: &str) ->
     read_instance_lock_from(lock) == Some(expected)
 }
 
-/// One step of the atomic claim: create the lock file
-/// new, write this instance's text into it, and re-read it
-/// before calling the create a win.
+/// One step of the atomic claim: stage this instance's
+/// text complete beside the lock path and link it onto
+/// the path (R45-A), then re-read the path before
+/// calling the create a win.
 enum LockCreate {
     /// The file was created by this call and the re-read
     /// names this instance.
@@ -3534,31 +3535,101 @@ enum LockCreate {
     Failed,
 }
 
-fn try_create_instance_lock_from(
+/// The staging path for one claimant's lock create
+/// (R45-A, F1/F2): the lock path with a per-claimant
+/// `.tmp` suffix appended, in the same directory as the
+/// lock, so the link step below lands on the same
+/// filesystem. The suffix carries the claimant's pid,
+/// this process's pid, and a process-wide counter, so
+/// two claimants staging at once never share a path.
+fn instance_lock_temp_path(lock: &std::path::Path, own_pid: u32) -> std::path::PathBuf {
+    static STAGE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = STAGE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let real_pid = std::process::id();
+    let suffix = format!(".tmp-{own_pid}-{real_pid}-{count}");
+    let mut temp_name = lock.as_os_str().to_owned();
+    temp_name.push(suffix);
+    std::path::PathBuf::from(temp_name)
+}
+
+/// The first step of the atomic claim (R45-A, F1/F2):
+/// write this instance's complete holder text to its
+/// staging file and sync it, answering the staging
+/// path. Nothing stands at the lock path yet: a rival
+/// reading the lock path during a create reads either
+/// the previous complete generation or no file at all,
+/// never a partial one. Before this fix the create
+/// opened the lock path itself with `create_new` and
+/// wrote into it afterwards, so a rival capturing in
+/// that window read an empty file — a `None` generation
+/// that acted as a wildcard in the displacement checks
+/// and let the rival move a file it never judged
+/// (witnesses L45a/L45b/L45d). On any failure the
+/// staging file is removed and the answer is `None`.
+fn stage_instance_lock_temp_from(
     lock: &std::path::Path,
     own_pid: u32,
     own_token: &str,
-) -> LockCreate {
+) -> Option<std::path::PathBuf> {
     use std::io::Write as _;
     let text = instance_lock_text(own_pid, own_token);
+    let temp = instance_lock_temp_path(lock, own_pid);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    let mut file = match options.open(lock) {
+    let mut file = match options.open(&temp) {
         Ok(file) => file,
+        Err(_) => return None,
+    };
+    if file.write_all(text.as_bytes()).is_err() || file.sync_all().is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(&temp);
+        return None;
+    }
+    drop(file);
+    Some(temp)
+}
+
+/// The second step of the atomic claim (R45-A, F1/F2):
+/// link the staged file onto the lock path in one
+/// atomic step. The file that lands at the lock path
+/// is complete at the moment it appears there, so no
+/// capture of the lock path can ever read a torn
+/// generation. `AlreadyExists` from the link is the
+/// create race's loss, exactly as `create_new`'s was.
+/// The staging file is unlinked on every answer, and
+/// the re-read of the lock path is the step's verdict,
+/// as it was for the direct create.
+fn link_staged_instance_lock_from(
+    lock: &std::path::Path,
+    temp: &std::path::Path,
+    own_pid: u32,
+    own_token: &str,
+) -> LockCreate {
+    let linked = std::fs::hard_link(temp, lock);
+    let _ = std::fs::remove_file(temp);
+    match linked {
+        Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             return LockCreate::AlreadyExists;
         }
         Err(_) => return LockCreate::Failed,
-    };
-    if file.write_all(text.as_bytes()).is_err() || file.sync_all().is_err() {
-        return LockCreate::Failed;
     }
-    drop(file);
     if lock_names_instance(lock, own_pid, own_token) {
         LockCreate::Created
     } else {
         LockCreate::Failed
     }
+}
+
+fn try_create_instance_lock_from(
+    lock: &std::path::Path,
+    own_pid: u32,
+    own_token: &str,
+) -> LockCreate {
+    let Some(temp) = stage_instance_lock_temp_from(lock, own_pid, own_token) else {
+        return LockCreate::Failed;
+    };
+    link_staged_instance_lock_from(lock, &temp, own_pid, own_token)
 }
 
 /// The path a displaced lock file is set aside to: the
@@ -9083,6 +9154,388 @@ mod settings_tests {
             let _ = claimant.kill();
             let _ = claimant.wait();
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r45a_torn_create_capture_must_not_stand_a_legitimate_creator_down() {
+        // R45-A pin for F2 (red team RT45-L2, witness
+        // L45a): W displaces the dead generation and
+        // stages its create; a rival L capturing in that
+        // window must not be able to move W's in-flight
+        // generation aside and stand every claimant down
+        // with the lock naming live W, who holds nothing.
+        // The create's steps are the production steps by
+        // name (`stage_instance_lock_temp_from`, then
+        // `link_staged_instance_lock_from`); on the base
+        // tree the first step opened the lock path itself
+        // and left an empty file standing there, and this
+        // pin's base form — the same interleaving with
+        // that step replicated verbatim — failed at "W
+        // holds: its create's re-read names W" (the
+        // witnessed L45a state).
+        let dir = std::env::temp_dir().join(format!("ob-app-r45a-l45a-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut stale_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = stale_child.id();
+        stale_child.wait().expect("reap child");
+        std::fs::write(&lock, format!("{dead_pid}\nS-token\n")).expect("stale lock");
+        let mut peer_w = spawn_live_peer_named(&dir, "openbulletin-peer-r45a-w");
+        let w_pid = peer_w.id();
+        let w_token = "W-token";
+        let mut peer_l = spawn_live_peer_named(&dir, "openbulletin-peer-r45a-l");
+        let l_pid = peer_l.id();
+        let l_token = "L-token";
+        let mut peer_c = spawn_live_peer_named(&dir, "openbulletin-peer-r45a-c");
+        let c_pid = peer_c.id();
+        let c_token = "C-token";
+        let mut peer_d = spawn_live_peer_named(&dir, "openbulletin-peer-r45a-d");
+        let d_pid = peer_d.id();
+        let d_token = "D-token";
+        // W's claim, production order: displacement of
+        // the judged dead generation.
+        let judged_s = read_instance_lock_from(&lock).expect("W judged a generation");
+        assert!(
+            displace_instance_lock_from(&lock, w_pid, w_token, Some(&judged_s)),
+            "W's displacement of the judged dead generation succeeds"
+        );
+        // W's create step, first half (production):
+        // the complete holder text is staged beside the
+        // lock path; nothing stands at the lock path.
+        let w_temp =
+            stage_instance_lock_temp_from(&lock, w_pid, w_token).expect("W stages its lock text");
+        assert!(
+            !lock.exists(),
+            "no file stands at the lock path during W's create"
+        );
+        assert_eq!(
+            read_instance_lock_from(&w_temp)
+                .expect("the staged file reads back")
+                .token
+                .as_deref(),
+            Some(w_token),
+            "the staged file already carries W's complete generation"
+        );
+        // L's AlreadyExists branch, production steps in
+        // production order, in the window:
+        assert!(
+            !peer_instance_alive_from(&lock, l_pid, l_token),
+            "L's check: no live peer stands at the vacant lock path"
+        );
+        let judged_l = read_instance_lock_from(&lock);
+        assert_eq!(judged_l, None, "L captures no generation in the window");
+        assert_eq!(
+            read_instance_lock_from(&lock).as_ref(),
+            judged_l.as_ref(),
+            "L's generation check passes in the window"
+        );
+        assert!(
+            matches!(
+                judge_displaced_instance_lock_at_claim_from(&lock, l_pid, l_token),
+                DisplacedLockJudgment::NoLiveGeneration
+            ),
+            "L's displaced judgment passes in the window"
+        );
+        let l_rename = rename_instance_lock_to_displaced_from(&lock, l_pid, l_token);
+        assert_eq!(
+            l_rename, None,
+            "L's rename step finds no file to move: W's create stands nowhere yet"
+        );
+        // W resumes its create (production): link the
+        // staged file onto the lock path; the step's
+        // verdict is its re-read of the lock path.
+        let w_create = link_staged_instance_lock_from(&lock, &w_temp, w_pid, w_token);
+        let w_names = matches!(w_create, LockCreate::Created);
+        // L's audit, when its rename landed (production
+        // displace calls the audit only on a landing):
+        let l_audit = l_rename
+            .as_ref()
+            .map(|landed| audit_displaced_instance_lock_from(&lock, landed, judged_l.as_ref()));
+        let _ = l_audit;
+        // The contract: W's create is a win (its re-read
+        // names W), the lock names W, W's generation
+        // never stands displaced, and every rival's full
+        // claim answers false.
+        assert!(w_names, "W holds: its create's re-read names W");
+        assert!(
+            lock_names_instance(&lock, w_pid, w_token),
+            "the lock names W"
+        );
+        assert_ne!(
+            read_instance_lock_from(&displaced)
+                .as_ref()
+                .and_then(|info| info.token.as_deref()),
+            Some(w_token),
+            "W's generation never stands displaced"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, l_pid, l_token),
+            "L's claim answers false"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, c_pid, c_token),
+            "C's claim answers false"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, d_pid, d_token),
+            "D's claim answers false"
+        );
+        assert!(lock_names_instance(&lock, w_pid, w_token), "W still holds");
+        let _ = peer_w.kill();
+        let _ = peer_w.wait();
+        let _ = peer_l.kill();
+        let _ = peer_l.wait();
+        let _ = peer_c.kill();
+        let _ = peer_c.wait();
+        let _ = peer_d.kill();
+        let _ = peer_d.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r45b_torn_create_audit_before_write_must_not_wedge_the_lock() {
+        // R45-A pin for F2's second audit timing (red
+        // team RT45-L2, witness L45b): the rival's audit
+        // runs BEFORE the creator's create lands. The
+        // creator must still hold, its generation must
+        // never complete at the displaced path, and no
+        // demoted-but-live generation may hold later
+        // claims off after the lock's holder is gone.
+        // Steps by name as in the r45a pin; the base form
+        // of this pin failed at the same "W holds"
+        // assertion (the witnessed L45b state).
+        let dir = std::env::temp_dir().join(format!("ob-app-r45b-l45b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut stale_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = stale_child.id();
+        stale_child.wait().expect("reap child");
+        std::fs::write(&lock, format!("{dead_pid}\nS-token\n")).expect("stale lock");
+        let mut peer_w = spawn_live_peer_named(&dir, "openbulletin-peer-r45b-w");
+        let w_pid = peer_w.id();
+        let w_token = "W-token";
+        let mut peer_l = spawn_live_peer_named(&dir, "openbulletin-peer-r45b-l");
+        let l_pid = peer_l.id();
+        let l_token = "L-token";
+        let mut peer_c = spawn_live_peer_named(&dir, "openbulletin-peer-r45b-c");
+        let c_pid = peer_c.id();
+        let c_token = "C-token";
+        let judged_s = read_instance_lock_from(&lock).expect("W judged a generation");
+        assert!(
+            displace_instance_lock_from(&lock, w_pid, w_token, Some(&judged_s)),
+            "W's displacement of the judged dead generation succeeds"
+        );
+        // W's create step, first half (production):
+        // staged complete beside the lock path; nothing
+        // stands at the lock path.
+        let w_temp =
+            stage_instance_lock_temp_from(&lock, w_pid, w_token).expect("W stages its lock text");
+        assert!(
+            !lock.exists(),
+            "no file stands at the lock path during W's create"
+        );
+        // L's steps in the window, in the slot where
+        // L45b's audit ran before the creator's write:
+        // the rename step finds no file to move, so no
+        // audit follows it — the production displacement
+        // calls the audit only on a landing, and there
+        // is nothing at the path to land.
+        let judged_l = read_instance_lock_from(&lock);
+        assert_eq!(judged_l, None, "L captures no generation in the window");
+        let l_rename = rename_instance_lock_to_displaced_from(&lock, l_pid, l_token);
+        assert_eq!(
+            l_rename, None,
+            "L's rename step finds no file to move: W's create stands nowhere yet"
+        );
+        // W's create lands (production): the link step,
+        // whose verdict is its re-read of the lock path.
+        let w_create = link_staged_instance_lock_from(&lock, &w_temp, w_pid, w_token);
+        let w_names = matches!(w_create, LockCreate::Created);
+        // The contract: W holds, L's claim answers
+        // false against the landed create, and W's
+        // generation never stands displaced.
+        assert!(w_names, "W holds: its create's re-read names W");
+        assert!(
+            !acquire_instance_lock_from(&lock, l_pid, l_token),
+            "L's claim answers false against W's landed create"
+        );
+        assert_eq!(
+            read_instance_lock_from(&displaced)
+                .as_ref()
+                .and_then(|info| info.token.as_deref()),
+            Some("S-token"),
+            "the displaced path holds only the dead generation W set aside"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, c_pid, c_token),
+            "C's claim answers false while W lives"
+        );
+        // No wedge: once W is gone, a fresh claim takes
+        // the lock in the ordinary way.
+        let _ = peer_w.kill();
+        let _ = peer_w.wait();
+        assert!(peer_provably_gone(w_pid), "W is provably gone");
+        let _ = peer_l.kill();
+        let _ = peer_l.wait();
+        assert!(
+            acquire_instance_lock_from(&lock, c_pid, c_token),
+            "C's claim takes the lock once W is gone: no demoted generation wedges it"
+        );
+        assert!(lock_names_instance(&lock, c_pid, c_token), "C holds");
+        let _ = peer_c.kill();
+        let _ = peer_c.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r45d_torn_create_capture_must_not_make_two_holders() {
+        // R45-A pin for F1 (red team RT45-L1, witness
+        // L45d): A displaces the dead generation and
+        // stages its create; B captures in that window,
+        // passes its generation check, and is
+        // descheduled while A completes its win; B's
+        // displacement then must not move A's completed
+        // live generation aside for a third claimant C
+        // to create into. Exactly one holder: A. Steps
+        // by name as in the r45a pin; the base form of
+        // this pin failed at "the lock still names A"
+        // (the witnessed L45d state). B's displacement
+        // is attempted through the production entry
+        // point, whose generation check re-reads the
+        // standing file: on the base tree B could resume
+        // mid-displacement carrying a torn `None` because
+        // the empty file its check had passed against
+        // was still the file the rename step moved; with
+        // nothing standing at the path during a create,
+        // a `None` capture is a capture of an absent
+        // path, and the entry point's re-read is the
+        // check the displacement answers to. (A claimant
+        // already mid-displacement whose rename lands
+        // after a winner is the standing R33-A window,
+        // pinned there and by the r41f pin, not this
+        // finding.)
+        let dir = std::env::temp_dir().join(format!("ob-app-r45d-l45d-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut stale_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = stale_child.id();
+        stale_child.wait().expect("reap child");
+        std::fs::write(&lock, format!("{dead_pid}\nS-token\n")).expect("stale lock");
+        let mut peer_a = spawn_live_peer_named(&dir, "openbulletin-peer-r45d-a");
+        let a_pid = peer_a.id();
+        let a_token = "A-token";
+        let mut peer_b = spawn_live_peer_named(&dir, "openbulletin-peer-r45d-b");
+        let b_pid = peer_b.id();
+        let b_token = "B-token";
+        let mut peer_c = spawn_live_peer_named(&dir, "openbulletin-peer-r45d-c");
+        let c_pid = peer_c.id();
+        let c_token = "C-token";
+        let mut peer_d = spawn_live_peer_named(&dir, "openbulletin-peer-r45d-d");
+        let d_pid = peer_d.id();
+        let d_token = "D-token";
+        // A displaces the judged dead generation
+        // (production), then stages its create
+        // (production): nothing stands at the lock path.
+        let judged_s = read_instance_lock_from(&lock).expect("A judged a generation");
+        assert!(
+            displace_instance_lock_from(&lock, a_pid, a_token, Some(&judged_s)),
+            "A's displacement of the judged dead generation succeeds"
+        );
+        let a_temp =
+            stage_instance_lock_temp_from(&lock, a_pid, a_token).expect("A stages its lock text");
+        assert!(
+            !lock.exists(),
+            "no file stands at the lock path during A's create"
+        );
+        // B's AlreadyExists branch capture and
+        // generation check, in the window: the capture
+        // is of an absent path, not of a torn file.
+        assert!(
+            !peer_instance_alive_from(&lock, b_pid, b_token),
+            "B's check: no live peer stands at the vacant lock path"
+        );
+        let b_judged = read_instance_lock_from(&lock);
+        assert_eq!(b_judged, None, "B captures no generation in the window");
+        assert_eq!(
+            read_instance_lock_from(&lock).as_ref(),
+            b_judged.as_ref(),
+            "B's generation check passes in the window"
+        );
+        // — B is descheduled. A completes its create
+        // (production): the link step, whose verdict is
+        // its re-read of the lock path.
+        let a_create = link_staged_instance_lock_from(&lock, &a_temp, a_pid, a_token);
+        let a_names = matches!(a_create, LockCreate::Created);
+        assert!(a_names, "A holds: its create's re-read names A");
+        // B resumes: its displacement, attempted
+        // through the production entry point carrying
+        // the captured `None`. The standing file is
+        // A's completed generation, not the absent path
+        // B judged, so the displacement refuses at its
+        // generation check and moves nothing.
+        let b_displaced = displace_instance_lock_from(&lock, b_pid, b_token, b_judged.as_ref());
+        assert!(
+            !b_displaced,
+            "B's displacement refuses: the standing file is not the generation B judged"
+        );
+        // C's ordinary production create, against A's
+        // standing lock:
+        let c_create = try_create_instance_lock_from(&lock, c_pid, c_token);
+        // The contract: exactly one holder. A's
+        // completed generation was never moved, C's
+        // create did not land, and B and D hold
+        // nothing.
+        assert!(
+            lock_names_instance(&lock, a_pid, a_token),
+            "the lock still names A: its completed generation was not moved"
+        );
+        assert!(
+            !matches!(c_create, LockCreate::Created),
+            "C's create does not land in a vacancy B's rename made"
+        );
+        assert_ne!(
+            read_instance_lock_from(&displaced)
+                .as_ref()
+                .and_then(|info| info.token.as_deref()),
+            Some(a_token),
+            "A's live generation never stands displaced"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, b_pid, b_token),
+            "B's claim answers false"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, d_pid, d_token),
+            "D's claim answers false"
+        );
+        assert!(lock_names_instance(&lock, a_pid, a_token), "A still holds");
+        let _ = peer_a.kill();
+        let _ = peer_a.wait();
+        let _ = peer_b.kill();
+        let _ = peer_b.wait();
+        let _ = peer_c.kill();
+        let _ = peer_c.wait();
+        let _ = peer_d.kill();
+        let _ = peer_d.wait();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(unix)]

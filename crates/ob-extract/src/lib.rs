@@ -44,11 +44,41 @@ use serde::{Deserialize, Serialize};
 /// read that follows is counted in actual bytes besides.
 pub const MAX_OPEN_DOOR_BYTES: u64 = 512 * 1024 * 1024;
 
-/// The door's refusal, in plain words.
-fn open_door_too_large() -> String {
-    "that file is too large to bring in: OpenBulletin can open files up to \
-     512 megabytes, and this one is bigger than that"
-        .to_string()
+/// How an open door can refuse (HF-12 first slice,
+/// round 44 R44-I): the file is past the size limit, or
+/// the file cannot be read at all. The typed core of the
+/// door surface; its `Display` renders byte-for-byte the
+/// plain words the doors have always spoken, so every
+/// boundary that still speaks `String` hears the same
+/// sentences it heard before the slice.
+#[derive(Debug)]
+pub enum OpenDoorError {
+    /// The file is bigger than the open-door limit.
+    TooLarge,
+    /// The file could not be read; the reader's own
+    /// error is carried whole.
+    Unreadable(std::io::Error),
+}
+
+impl std::fmt::Display for OpenDoorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenDoorError::TooLarge => write!(
+                f,
+                "that file is too large to bring in: OpenBulletin can open files up to \
+                 512 megabytes, and this one is bigger than that"
+            ),
+            OpenDoorError::Unreadable(e) => write!(f, "cannot read that file: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for OpenDoorError {}
+
+impl From<OpenDoorError> for String {
+    fn from(err: OpenDoorError) -> String {
+        err.to_string()
+    }
 }
 
 /// The metadata half of the door gate: refuse from the
@@ -56,10 +86,10 @@ fn open_door_too_large() -> String {
 /// whose metadata cannot be read passes here; the read
 /// itself will speak for that case, and the counted read
 /// below still bounds what arrives.
-pub fn check_open_door_size(path: &std::path::Path) -> Result<(), String> {
+pub fn check_open_door_size(path: &std::path::Path) -> Result<(), OpenDoorError> {
     if let Ok(meta) = std::fs::metadata(path) {
         if meta.len() > MAX_OPEN_DOOR_BYTES {
-            return Err(open_door_too_large());
+            return Err(OpenDoorError::TooLarge);
         }
     }
     Ok(())
@@ -70,34 +100,34 @@ pub fn check_open_door_size(path: &std::path::Path) -> Result<(), String> {
 /// so a file that grows between the two, or whose
 /// metadata understated it, is refused on the bytes that
 /// actually arrived.
-pub fn read_open_door_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+pub fn read_open_door_file(path: &std::path::Path) -> Result<Vec<u8>, OpenDoorError> {
     use std::io::Read as _;
     check_open_door_size(path)?;
-    let mut file = std::fs::File::open(path).map_err(|e| format!("cannot read that file: {e}"))?;
+    let mut file = std::fs::File::open(path).map_err(OpenDoorError::Unreadable)?;
     let mut bytes = Vec::new();
     file.by_ref()
         .take(MAX_OPEN_DOOR_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read that file: {e}"))?;
+        .map_err(OpenDoorError::Unreadable)?;
     if bytes.len() as u64 > MAX_OPEN_DOOR_BYTES {
-        return Err(open_door_too_large());
+        return Err(OpenDoorError::TooLarge);
     }
     Ok(bytes)
 }
 
 /// The same door for a text file: gated, counted in
 /// actual bytes, and read as text.
-pub fn read_open_door_text(path: &std::path::Path) -> Result<String, String> {
+pub fn read_open_door_text(path: &std::path::Path) -> Result<String, OpenDoorError> {
     use std::io::Read as _;
     check_open_door_size(path)?;
-    let mut file = std::fs::File::open(path).map_err(|e| format!("cannot read that file: {e}"))?;
+    let mut file = std::fs::File::open(path).map_err(OpenDoorError::Unreadable)?;
     let mut text = String::new();
     file.by_ref()
         .take(MAX_OPEN_DOOR_BYTES + 1)
         .read_to_string(&mut text)
-        .map_err(|e| format!("cannot read that file: {e}"))?;
+        .map_err(OpenDoorError::Unreadable)?;
     if text.len() as u64 > MAX_OPEN_DOOR_BYTES {
-        return Err(open_door_too_large());
+        return Err(OpenDoorError::TooLarge);
     }
     Ok(text)
 }
@@ -336,7 +366,11 @@ impl ExtractionDump {
 /// before lopdf sees a byte.
 pub fn extract_pdf(bytes: &[u8], source_name: &str) -> Result<ExtractionDump, String> {
     if bytes.len() as u64 > MAX_OPEN_DOOR_BYTES {
-        return Err(open_door_too_large());
+        // R44-I: this entry site rides the door's typed
+        // TooLarge kind through the From boundary;
+        // extract_pdf's own signature stays on String
+        // for this slice (the narrower diff).
+        return Err(String::from(OpenDoorError::TooLarge));
     }
     let doc = lopdf::Document::load_mem(bytes).map_err(|e| format!("not a readable PDF: {e}"))?;
     let mut pages = Vec::new();
@@ -584,15 +618,83 @@ mod tests {
 
     #[test]
     fn open_door_gate_refuses_an_oversize_file_before_any_read() {
+        // R44-I restatement (flagged): this pin asserted
+        // on the door functions' error strings; the doors
+        // now return the typed OpenDoorError, so it
+        // asserts the TooLarge kind and the same words
+        // through the Display rendering. No other part of
+        // the pin moved.
         let path = sparse_oversize_file("gate");
         let err = check_open_door_size(&path).expect_err("the gate refuses");
-        assert!(err.contains("too large"), "{err}");
-        assert!(err.contains("512 megabytes"), "{err}");
+        assert!(matches!(err, OpenDoorError::TooLarge), "{err}");
+        let words = err.to_string();
+        assert!(words.contains("too large"), "{words}");
+        assert!(words.contains("512 megabytes"), "{words}");
         let err = read_open_door_file(&path).expect_err("the counted read refuses at the gate");
-        assert!(err.contains("too large"), "{err}");
+        assert!(matches!(err, OpenDoorError::TooLarge), "{err}");
+        let words = err.to_string();
+        assert!(words.contains("too large"), "{words}");
         let err = read_open_door_text(&path).expect_err("the text door refuses at the gate");
-        assert!(err.contains("too large"), "{err}");
+        assert!(matches!(err, OpenDoorError::TooLarge), "{err}");
+        let words = err.to_string();
+        assert!(words.contains("too large"), "{words}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn r44i_open_door_error_renders_the_pre_slice_words_byte_for_byte() {
+        // (a) Both kinds render byte-for-byte the
+        // sentences the base tree's code produced: the
+        // TooLarge literal below is taken verbatim from
+        // the base tree's open_door_too_large(), and the
+        // Unreadable shape is its `cannot read that file:
+        // {e}` format with a fixed reader error.
+        assert_eq!(
+            OpenDoorError::TooLarge.to_string(),
+            "that file is too large to bring in: OpenBulletin can open files up to \
+             512 megabytes, and this one is bigger than that"
+        );
+        let err = OpenDoorError::Unreadable(std::io::Error::other("disk hiccup"));
+        assert_eq!(err.to_string(), "cannot read that file: disk hiccup");
+    }
+
+    #[test]
+    fn r44i_door_functions_return_the_typed_kinds_at_their_gates() {
+        // (b) TooLarge at the size gate, Unreadable on a
+        // missing file. This pin names the typed surface,
+        // so it cannot compile on the base tree.
+        let path = sparse_oversize_file("r44i-kinds");
+        let err = check_open_door_size(&path).expect_err("the gate refuses");
+        assert!(matches!(err, OpenDoorError::TooLarge), "{err}");
+        let err = read_open_door_file(&path).expect_err("the counted read refuses at the gate");
+        assert!(matches!(err, OpenDoorError::TooLarge), "{err}");
+        let err = read_open_door_text(&path).expect_err("the text door refuses at the gate");
+        assert!(matches!(err, OpenDoorError::TooLarge), "{err}");
+        let _ = std::fs::remove_file(&path);
+        let missing =
+            std::env::temp_dir().join(format!("ob-door-r44i-missing-{}.bin", std::process::id()));
+        let err = read_open_door_file(&missing).expect_err("a missing file cannot be read");
+        assert!(matches!(err, OpenDoorError::Unreadable(_)), "{err}");
+        let err = read_open_door_text(&missing).expect_err("a missing file cannot be read");
+        assert!(matches!(err, OpenDoorError::Unreadable(_)), "{err}");
+    }
+
+    #[test]
+    fn r44i_from_open_door_error_for_string_renders_the_same_words() {
+        // (c) The boundary conversion the standing String
+        // channels rely on renders the same words as the
+        // Display. This pin names the typed surface, so
+        // it cannot compile on the base tree.
+        let words = String::from(OpenDoorError::TooLarge);
+        assert_eq!(
+            words,
+            "that file is too large to bring in: OpenBulletin can open files up to \
+             512 megabytes, and this one is bigger than that"
+        );
+        let words = String::from(OpenDoorError::Unreadable(std::io::Error::other(
+            "disk hiccup",
+        )));
+        assert_eq!(words, "cannot read that file: disk hiccup");
     }
 
     #[test]

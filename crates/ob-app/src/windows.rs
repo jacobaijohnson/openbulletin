@@ -6618,7 +6618,7 @@ impl App {
         let text = match ob_extract::read_open_door_text(&path) {
             Ok(t) => t,
             Err(e) => {
-                self.fail(e);
+                self.fail(e.to_string());
                 return;
             }
         };
@@ -6659,7 +6659,7 @@ impl App {
         let bytes = match ob_extract::read_open_door_file(&path) {
             Ok(b) => b,
             Err(e) => {
-                self.fail(e);
+                self.fail(e.to_string());
                 return;
             }
         };
@@ -7687,9 +7687,11 @@ impl App {
                             })(),
                         },
                         Some(LearnKind::Indesign) => ob_extract::read_open_door_file(path)
+                            .map_err(String::from)
                             .and_then(|bytes| ob_extract::idml::dump_from_idml(&bytes, &name))
                             .map(|d| (d, None)),
                         Some(LearnKind::Scribus) => ob_extract::read_open_door_file(path)
+                            .map_err(String::from)
                             .and_then(|bytes| ob_extract::sla::dump_from_sla(&bytes, &name))
                             .map(|d| (d, None)),
                         Some(LearnKind::OpenBulletin) => ob_format::load(path).map(|doc| {

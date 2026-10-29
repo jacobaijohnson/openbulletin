@@ -341,3 +341,122 @@ arms the review probed — F9 scopes the exception).
 Majors trend: … 5 (R42) → 3 (R43) → 3 (R44) → this
 round's audit 1 BLOCKER / 4 MAJOR / 6 MINOR, judged on
 round 46's audit for the exit bar if all batches land.
+
+## Close (successor coordinator, 2026-10-29)
+
+Audit 1 BLOCKER / 4 MAJOR / 6 MINOR over `34690e3`.
+All eleven findings landed or dispositioned in eight
+batches; **the exit bar is NOT met** — the bar is a
+round auditing at zero BLOCKER and zero MAJOR, and
+this round's audit carried a BLOCKER. Round 46's audit
+judges the bar.
+
+| Batch | Findings | Tip | Suite |
+|---|---|---|---|
+| R45-A | F1 BLOCKER + F2 MAJOR (lock torn create) | `534eb31` | 1278 |
+| R45-B | F3 MAJOR (invisible/format set) | `d88b078` | 1285 |
+| R45-C | F4 MAJOR (governor-doorstep suffix) | `2884528` | 1288 |
+| R45-D | F5 MAJOR (fullwidth nested cliff) | `b07dbcb` | 1289 |
+| R45-E | F6 + F8 MINOR (leading seats) | `e4fa73d` | 1294 |
+| R45-F | F9 MINOR (dress pairs); F10 guard | `ae2a3d7` | 1298 |
+| R45-G | F7 MINOR (zip64 gen-8) | `f8b7d5a` | 1299 |
+| R45-H | F11 MINOR (flake-ledger addendum) | record only | — |
+
+Final tree **`f8b7d5af70b7643d9f3dc90b491da8b71e600220`**,
+suite **1299 passed / 0 failed** (base 1275 + 24 new
+pins). Batch records: `round45-out/coord/r45{a..h}-record.md`
+(R45-H written by the coordinator at the close; no code).
+
+Five legs, all verified firsthand by the coordinator for
+the final tip `f8b7d5a`:
+
+1. Local cold (coordinator's own run, after `cargo
+   clean`, from the pushed tree): fmt `--check` EXIT=0,
+   full suite `--no-fail-fast` EXIT=0, **1299/0**,
+   clippy `--workspace --all-targets -- -D warnings`
+   EXIT=0, booklet 31,717 / 34,977 exact. This clean
+   cold run supersedes R45-G's cold 1298/1 (single
+   R45-D timing pin at 27.37x vs a 27x bound,
+   dispositioned there by a green solo re-run, bound
+   untouched).
+2. Fuzz as claims, warm and cold across the batches and
+   in the close run, bin sources re-verified by md5
+   each run: verdict
+   `797758443d101f9339fdd778e14af430` (40,000 lines,
+   0 panics), composition
+   `e8b2e73b117c7013d867419da8fb0ab7` (497,024 lines,
+   0 panics), rights 5083/1024/5275, safety_flips=0 —
+   byte-identical to the standing baselines.
+3. Hosted CI on the final tip: run **40909651798**,
+   success on all three OS legs (macos, ubuntu,
+   windows), first attempt.
+4. Desktop Runner Build on the final tip: run
+   **40909651865**, success on attempt 3 (attempt 1
+   runner communication loss; attempt 2 r42e
+   four-claimant zero-winner flake; both named verbatim
+   in `r45g-record.md`).
+5. Windows bundle on the final tip (workflow_dispatch,
+   once per round at the close): run **40923123498**,
+   Gate + bundle both success.
+
+Coordinator rulings recorded in the batch records and
+`round45-out/coord/status.md`:
+
+- **F10 closed as NOT REPRODUCED, guard pin instead of
+  a cure.** The red team's own `analyze45d.txt:602`
+  SPLIT entry for the soft-hyphen line shows FOR
+  `paren=2026-11-08`, identical to the clean twin; the
+  only difference is the as-written in-words memory
+  string, standing behavior since round 8. The
+  synthesis's F10 statement is contradicted by the
+  lane's own primary evidence. (The writer's
+  "contrib45.log index 272" citation drifts in file;
+  substance confirmed by the coordinator's spot-check.)
+- **The «» re-base in R45-F accepted.** The synthesis
+  names «» in F9 and carries adjudication 8 with F9
+  as its exception; the new assertions are stricter
+  (refuse/govern WITH record vs silent); only «»
+  cells moved; trailing-alone and «»-siblings
+  untouched.
+
+Hosted flake events this round, all named verbatim in
+their batch records and re-run to green (no
+re-run-and-forget): R45-A ubuntu r42e zero-winner;
+R45-B ubuntu ETXTBSY; R45-E r42e across attempts 1–4
+(two-holder shapes on ubuntu/macos, zero-holder shape
+on macos attempt 3); R45-G runner communication loss +
+r42e zero-winner. R45-C, R45-D, R45-F: none. The
+composed-race residual behind the r42e events stands
+as recorded in `r45a-record.md` (rename-window family,
+R33-A/F7 standing record); closing it is a redesign
+of the rename step's generation contract, not a
+round-45 batch.
+
+Carried to round 46 (observations, not findings of
+this round): (a) R45-C neighbour `(notes)
+~(cancelled)` — suffix spaced from its group, glued
+to the governor — still serves live; (b) R45-E
+weekday-first whole-cloth quoted line `"Sunday"
+"notes"` still reads no date while its paren twin
+serves (safe direction, pinned); (c) R45-F
+governor-free leading sequences in exotic dress still
+lose the record (not a witnessed arm); (d) HF-12
+slice 2 (from_json version refusal, then IDML) is
+the first slice candidate per adjudication 6;
+(e) run 40396061207 stands red-on-a-superseded-
+non-batch-tip per adjudication 7, not an open defect.
+
+Cache-policy disposition at this confirmed completion:
+disk 52% / 72G free (daytime window; threshold 94%;
+also below the overnight 87%) — **CARRY**, no clean
+owed. (The close verification itself ran cold from a
+clean tree, per the per-batch discipline.)
+
+Disk-ritual note: `round45-out/` + `round44-out/`
+kept; `round43-out/` becomes sweep-eligible at this
+round-45 boundary — eligibility only; deletion waits
+for Jacob's approved list, per the standing guardrail.
+
+Majors trend: … 5 (R42) → 3 (R43) → 3 (R44) →
+audit 1 BLOCKER / 4 MAJOR / 6 MINOR (R45), all landed
+or dispositioned above.

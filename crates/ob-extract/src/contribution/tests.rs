@@ -40584,3 +40584,87 @@ fn r45b_invisible_set_is_stated_once() {
         "the once-stated R45-B set is the pinned set"
     );
 }
+
+/// The R45-C suffix set: the judged suffix marks
+/// the red team witnessed glued between an inert
+/// group and a following governor (RT45-C2) —
+/// tilde, ellipsis, doubled tilde, and the
+/// fullwidth twins of tilde and asterisk.
+fn r45c_governor_last_suffixes() -> [&'static str; 5] {
+    ["~", "…", "~~", "～", "＊"]
+}
+
+#[test]
+fn r45c_governor_last_suffix_shed_at_trailing_leading_midline() {
+    // Round 45 (R45-C, F4 = red team RT45-C2): a
+    // judged suffix glued between an inert group
+    // and a following governor disarms the
+    // governor on the base tree — the governed
+    // date serves live at trailing, leading, and
+    // mid-line seats, both routes. Every arm
+    // below reads exactly as its clean glued
+    // twin (governed, silent), both routes.
+    for s in r45c_governor_last_suffixes() {
+        let line = format!("November 8, 2026 (notes){s}(cancelled)");
+        r40e_governed_silent(&line);
+        let line = format!("(notes){s}(cancelled) November 8, 2026");
+        r40e_governed_silent(&line);
+        let line = format!("notes (notes){s}(cancelled) November 8, 2026");
+        r40e_governed_silent(&line);
+    }
+}
+
+#[test]
+fn r45c_weekday_first_governor_last_suffix_shed() {
+    // Round 45 (R45-C, F4, weekday-first
+    // trailing arm): `November 1, 2026
+    // (Monday)~(cancelled)` serves silently on
+    // the base tree — the governor disarmed and
+    // the record lost together. Every arm reads
+    // exactly as its clean glued twin, both
+    // routes: governed silent at trailing (the
+    // trailing governor-last company's standing
+    // reading), governed with the record at
+    // leading and mid-line (those seats already
+    // read the suffixed form as the clean twin
+    // on the base tree; they are pinned here so
+    // the cure cannot move them).
+    for s in r45c_governor_last_suffixes() {
+        let line = format!("November 1, 2026 (Monday){s}(cancelled)");
+        r40e_governed_silent(&line);
+        let line = format!("(Monday){s}(cancelled) November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("notes (Monday){s}(cancelled) November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r45c_governor_last_controls_hold() {
+    // Round 45 (R45-C, F4 controls, all
+    // witnessed holding on the base tree and
+    // pinned so the cure cannot move them):
+    // governor-first forms judged, the spaced
+    // form governs, the record seat keeps its
+    // record, and the asterisk twin governs at
+    // every seat (its base-trailing arm is the
+    // clean semantics of red-team observation
+    // O3, not this finding, and is not pinned
+    // here). Trailing governor-first company
+    // governs silently, as its clean twin does;
+    // leading and mid-line governor-first
+    // company govern with the record.
+    let line = "November 1, 2026 (cancelled)~(Monday)";
+    r40e_governed_silent(line);
+    let line = "(cancelled)~(Monday) November 1, 2026";
+    r40e_governed_with_record(line, "Monday", nov(1));
+    let line = "notes (cancelled)~(Monday) November 1, 2026";
+    r40e_governed_with_record(line, "Monday", nov(1));
+    r40e_governed_silent("November 8, 2026 (notes) ~ (cancelled)");
+    r40e_governed_silent("November 8, 2026 (notes)~ (cancelled)");
+    r40e_governed_with_record("November 1, 2026 (notes)~(Monday)", "Monday", nov(1));
+    r40e_governed_with_record("(notes)~(Monday) November 1, 2026", "Monday", nov(1));
+    r40e_governed_silent("November 8, 2026 (notes)*(cancelled)");
+    r40e_governed_silent("(notes)*(cancelled) November 8, 2026");
+    r40e_governed_silent("notes (notes)*(cancelled) November 8, 2026");
+}

@@ -1977,6 +1977,7 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
     let mut scan = head_offset + (trimmed.len() - rest.len());
     let mut out: Option<String> = None;
     let mut cursor = 0usize;
+    let mut passed_group = false;
     loop {
         // The separations the leading sequence walk
         // allows between the run's groups (round 38,
@@ -2000,24 +2001,43 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
             // November 8, 2026") was never reached,
             // where its ASCII twin is unwrapped and
             // governs.
-            if matches!(
-                c,
-                ' ' | '\t'
-                    | ','
-                    | ';'
-                    | '.'
-                    | ':'
-                    | '!'
-                    | '?'
-                    | '\u{201d}'
-                    | '\u{2019}'
-                    | '\u{ff0c}'
-                    | '\u{ff1b}'
-                    | '\u{ff1a}'
-                    | '\u{ff0e}'
-                    | '\u{3001}'
-                    | '\u{3002}'
-            ) {
+            // Round 45 (R45-C, F4 = red team
+            // RT45-C2): the skip set gains the
+            // witnessed suffix marks ("~", the
+            // ellipsis U+2026, the fullwidth tilde
+            // U+FF5E, the fullwidth asterisk
+            // U+FF0A) — but only between groups
+            // of the run: a governor group
+            // standing after an inert group
+            // wearing one ("(notes)~(cancelled)
+            // November 8, 2026") was never
+            // reached, where its clean twin is
+            // unwrapped and governs. A mark
+            // standing before the run's first
+            // group is not a separation and is
+            // not crossed.
+            let is_doorstep_suffix =
+                passed_group && matches!(c, '~' | '\u{2026}' | '\u{ff5e}' | '\u{ff0a}');
+            if is_doorstep_suffix
+                || matches!(
+                    c,
+                    ' ' | '\t'
+                        | ','
+                        | ';'
+                        | '.'
+                        | ':'
+                        | '!'
+                        | '?'
+                        | '\u{201d}'
+                        | '\u{2019}'
+                        | '\u{ff0c}'
+                        | '\u{ff1b}'
+                        | '\u{ff1a}'
+                        | '\u{ff0e}'
+                        | '\u{3001}'
+                        | '\u{3002}'
+                )
+            {
                 p += c.len_utf8();
             } else {
                 break;
@@ -2037,6 +2057,14 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
             let bare = words.join(" ");
             let buf = out.get_or_insert_with(|| String::with_capacity(text.len()));
             buf.push_str(&text[cursor..p]);
+            // Round 45 (R45-C, F4): the witnessed
+            // suffix standing on this governor's
+            // doorstep is shed here, as in
+            // `apply_governor_unwraps`, so the
+            // bared words stand as their clean
+            // twins stand ("(notes) cancelled",
+            // not "(notes)~cancelled").
+            shed_governor_doorstep_suffix(buf);
             // The bare words stand as words: a space
             // separates them from a word or a group
             // they stand glued against, on either
@@ -2067,6 +2095,7 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
             cursor = after;
         }
         scan = p + end;
+        passed_group = true;
     }
     let mut buf = out?;
     buf.push_str(&text[cursor..]);
@@ -2193,6 +2222,43 @@ fn suffix_set_run(s: &str) -> usize {
         .sum()
 }
 
+/// Round 45 (R45-C, F4 = red team RT45-C2): the
+/// witnessed suffix run standing glued between a
+/// group and the governor group that follows it
+/// ("~", the ellipsis U+2026, the fullwidth tilde
+/// U+FF5E, the fullwidth asterisk U+FF0A — a run,
+/// so "~~" sheds as one) is shed from the end of
+/// `buf` when it trails a group's closer. A suffix
+/// is shed when it trails a judged member; this
+/// is the doorstep the old splice missed — the
+/// suffix trails an inert group, so the text the
+/// splice copied verbatim left it glued to the
+/// bared governor words ("(notes)~cancelled"),
+/// where no plain reader sheds it, and the
+/// governed date served live. The closer gate
+/// keeps the shed to the witnessed shape: a run
+/// trailing a bare word ("notes~(cancelled)") or
+/// standing after whitespace keeps its standing
+/// reading.
+fn shed_governor_doorstep_suffix(buf: &mut String) {
+    let mut run_start = buf.len();
+    for (i, c) in buf.char_indices().rev() {
+        if matches!(c, '~' | '\u{2026}' | '\u{ff5e}' | '\u{ff0a}') {
+            run_start = i;
+        } else {
+            break;
+        }
+    }
+    if run_start < buf.len()
+        && buf[..run_start]
+            .chars()
+            .last()
+            .is_some_and(|c| matches!(c, ')' | ']' | '}'))
+    {
+        buf.truncate(run_start);
+    }
+}
+
 fn apply_governor_unwraps(text: &str, unwraps: &[(usize, usize, Vec<String>)]) -> Option<String> {
     if unwraps.is_empty() {
         return None;
@@ -2201,6 +2267,14 @@ fn apply_governor_unwraps(text: &str, unwraps: &[(usize, usize, Vec<String>)]) -
     let mut cursor = 0usize;
     for (start, end, words) in unwraps {
         buf.push_str(&text[cursor..*start]);
+        // Round 45 (R45-C, F4): a witnessed
+        // suffix standing on this governor's
+        // doorstep — trailing the group before
+        // it — is shed with the wrapper, as the
+        // suffix after the governor is shed
+        // below, so the bared words stand as
+        // their clean twins stand.
+        shed_governor_doorstep_suffix(&mut buf);
         if buf
             .chars()
             .last()

@@ -3642,15 +3642,32 @@ fn displaced_instance_lock_path(lock: &std::path::Path) -> std::path::PathBuf {
     std::path::PathBuf::from(displaced_name)
 }
 
-/// One step of a conditional displacement: move whatever
-/// file stands at the lock path aside in one rename, and
-/// name where it landed. On its own this step verifies
-/// nothing about the file it moves — the caller judges
+/// One step of a conditional displacement: move the file
+/// standing at the lock path aside in one rename, and
+/// name where it landed. This step verifies what it
+/// moves (R46-A, F1): at the last moment before the
+/// rename it re-reads the standing generation and stands
+/// down, both files untouched, when that generation names
+/// a live peer under the claim loop's own liveness table.
+/// Before this fix the step verified nothing about the
+/// file it moved — its generation check had passed
+/// against an earlier generation in `displace_instance_lock_from`,
+/// so a claimant paused mid-displacement resumed to move
+/// a live winner that landed since (the red team's
+/// RT46-L1 witness: B judged dead S, M displaced S and
+/// created, B's rename moved M aside, C created into the
+/// vacancy, two holders). A displacement is only ever
+/// for a generation no live peer holds, so a live
+/// standing generation is never a legitimate move,
+/// whoever judged what earlier. The caller still judges
 /// the move through `audit_displaced_instance_lock_from`
 /// before proceeding, and a move the audit refuses is
-/// restored there. Only a regular file is ever moved:
-/// anything else standing at the lock path (a directory
-/// obstructing it, say) is not a lock a claim may move.
+/// restored there: the audit guards the one window this
+/// step cannot close, the re-read→rename syscall gap,
+/// which holds no production step boundary. Only a
+/// regular file is ever moved: anything else standing
+/// at the lock path (a directory obstructing it, say)
+/// is not a lock a claim may move.
 ///
 /// The step does judge one thing: the displaced path, at
 /// the last moment before the deletion below (R41-F,
@@ -3673,6 +3690,21 @@ fn rename_instance_lock_to_displaced_from(
     match std::fs::metadata(lock) {
         Ok(metadata) if metadata.is_file() => {}
         _ => return None,
+    }
+    // The R46-A last-moment judgment of the file this
+    // step is about to move: a standing generation that
+    // names a live peer is never moved, whatever an
+    // earlier generation check passed against. A file
+    // with no parseable generation names no peer and
+    // moves as before; the caller's generation check in
+    // `displace_instance_lock_from` already refused a
+    // judged live generation, so this step's judgment
+    // only ever fires on a generation that changed
+    // since that check — the RT46-L1 shape.
+    if let Some(standing) = read_instance_lock_from(lock) {
+        if instance_lock_names_live_peer(&standing, own_pid, own_token) {
+            return None;
+        }
     }
     match judge_displaced_instance_lock_at_claim_from(lock, own_pid, own_token) {
         DisplacedLockJudgment::NoLiveGeneration => {}
@@ -8048,9 +8080,18 @@ mod settings_tests {
         let a_info = read_instance_lock_from(&lock).expect("A's generation reads back");
         let a_bytes = std::fs::read(&lock).expect("read A's lock");
         // B's displacement lands on A's generation.
-        let landed = rename_instance_lock_to_displaced_from(&lock, b_pid, b_token)
-            .expect("the rename step moves the standing file");
-        assert_eq!(landed, displaced, "the rename set the file aside");
+        // R46-A: the rename step now refuses a live
+        // standing generation — asserted here — so
+        // this audit state is constructed by the file
+        // move itself, the syscall-gap residue the
+        // audit guards, and the audit below is driven
+        // on that state.
+        assert_eq!(
+            rename_instance_lock_to_displaced_from(&lock, b_pid, b_token),
+            None,
+            "the rename step refuses the live standing generation"
+        );
+        std::fs::rename(&lock, &displaced).expect("the file move sets the file aside");
         assert!(
             !lock.exists(),
             "the lock path stands vacant after the rename step"
@@ -8230,9 +8271,18 @@ mod settings_tests {
         std::fs::write(&lock, &a_lock).expect("A's lock lands");
         let a_bytes = std::fs::read(&lock).expect("read A's lock");
         // B's rename step moves A's lock aside.
-        let landed = rename_instance_lock_to_displaced_from(&lock, b_pid, b_token)
-            .expect("the rename step moves the standing file");
-        assert_eq!(landed, displaced, "the rename set the file aside");
+        // R46-A: the rename step now refuses a live
+        // standing generation — asserted here — so
+        // this audit state is constructed by the file
+        // move itself, the syscall-gap residue the
+        // audit guards, and the audit below is driven
+        // on that state.
+        assert_eq!(
+            rename_instance_lock_to_displaced_from(&lock, b_pid, b_token),
+            None,
+            "the rename step refuses the live standing generation"
+        );
+        std::fs::rename(&lock, &displaced).expect("the file move sets the file aside");
         assert!(
             !lock.exists(),
             "the lock path stands vacant after the rename"
@@ -8333,9 +8383,18 @@ mod settings_tests {
         write_journal_to(&obd, &meta, &doc, &None, a_token).expect("A writes journal");
         let a_bytes = std::fs::read(&lock).expect("read A's lock");
         // B's rename step sets A's live lock aside.
-        let landed = rename_instance_lock_to_displaced_from(&lock, b_pid, b_token)
-            .expect("the rename step moves the standing file");
-        assert_eq!(landed, displaced, "the rename set the file aside");
+        // R46-A: the rename step now refuses a live
+        // standing generation — asserted here — so
+        // this audit state is constructed by the file
+        // move itself, the syscall-gap residue the
+        // audit guards, and the audit below is driven
+        // on that state.
+        assert_eq!(
+            rename_instance_lock_to_displaced_from(&lock, b_pid, b_token),
+            None,
+            "the rename step refuses the live standing generation"
+        );
+        std::fs::rename(&lock, &displaced).expect("the file move sets the file aside");
         assert!(
             !lock.exists(),
             "the lock path stands vacant after the rename step"
@@ -8567,9 +8626,18 @@ mod settings_tests {
         // C's rename step lands on P's live lock — P's
         // generation landed at the path after C judged —
         // and sets it aside to the displaced path.
-        let landed = rename_instance_lock_to_displaced_from(&lock, c_pid, c_token)
-            .expect("C's rename step moves the standing file");
-        assert_eq!(landed, displaced, "the rename set the file aside");
+        // R46-A: the rename step now refuses a live
+        // standing generation — asserted here — so
+        // this audit state is constructed by the file
+        // move itself, the syscall-gap residue the
+        // audit guards, and the audit below is driven
+        // on that state.
+        assert_eq!(
+            rename_instance_lock_to_displaced_from(&lock, c_pid, c_token),
+            None,
+            "the rename step refuses the live standing generation"
+        );
+        std::fs::rename(&lock, &displaced).expect("the file move sets the file aside");
         assert!(
             !lock.exists(),
             "the lock path stands vacant after C's rename step"
@@ -9535,6 +9603,240 @@ mod settings_tests {
         let _ = peer_c.wait();
         let _ = peer_d.kill();
         let _ = peer_d.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r46a_rename_window_two_holder_witness_must_not_reach_two_creates() {
+        // R46-A pin for F1 (red team RT46-L1, synthesis
+        // F1): the rename-window residual behind the r42e
+        // events, driven step by step through the
+        // production lock functions in production order,
+        // on the R45-A tree's complete generations — no
+        // torn, empty, or partial file anywhere. Actors:
+        // S, a dead generation; B, the claimant that
+        // judged S and pauses mid-displacement; M and C,
+        // spawned live peers. B judges S and pauses
+        // inside its displacement, after the generation
+        // re-read, the liveness check, and the
+        // displaced-path judgment — all passed against
+        // S. M displaces S; C passes its judgments in
+        // M's displace→create gap (vacant lock, dead
+        // displaced generation) and pauses before its
+        // create. M creates and holds. On the base tree
+        // B's resumed rename step moved M aside
+        // (its generation check had passed against S,
+        // and the step verified nothing about the file
+        // it moved), C's create landed in the vacancy,
+        // and the final state was lock C, displaced M,
+        // both creates `Created`, audit false — two
+        // holders. With the R46-A rename contract the
+        // resumed rename step re-reads the standing
+        // generation, finds live M, and stands down
+        // with both files untouched, so C's create
+        // loses to M's standing lock and exactly one
+        // holder stands: M. This pin is a clean repo
+        // pin for the witnessed interleaving, not the
+        // red team's worktree probe.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r46a-rename-window-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut stale_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = stale_child.id();
+        stale_child.wait().expect("reap child");
+        let stale_lock = format!("{dead_pid}\nstale-token\n");
+        std::fs::write(&lock, &stale_lock).expect("stale lock");
+        let b_pid = std::process::id() + 3000;
+        let b_token = "claimant-b-token";
+        // B judges S, then pauses mid-displacement.
+        let b_judged = read_instance_lock_from(&lock).expect("B judged a generation");
+        assert_eq!(b_judged.pid, Some(dead_pid));
+        assert_eq!(b_judged.token.as_deref(), Some("stale-token"));
+        assert!(
+            !peer_instance_alive_from(&lock, b_pid, b_token),
+            "B's check: S names no live peer"
+        );
+        assert!(
+            matches!(
+                judge_displaced_instance_lock_at_claim_from(&lock, b_pid, b_token),
+                DisplacedLockJudgment::NoLiveGeneration
+            ),
+            "B's displaced judgment: no live generation stands there"
+        );
+        // M displaces S (production), leaving the lock
+        // vacant and S displaced.
+        let mut peer_m = spawn_live_peer_named(&dir, "openbulletin-peer-r46a-m");
+        let m_pid = peer_m.id();
+        let m_token = "winner-m-token";
+        let judged_s = read_instance_lock_from(&lock).expect("M judged a generation");
+        assert_eq!(judged_s, b_judged, "M judged the same dead generation S");
+        assert!(
+            displace_instance_lock_from(&lock, m_pid, m_token, Some(&judged_s)),
+            "M's displacement of the judged dead generation succeeds"
+        );
+        assert!(
+            !lock.exists(),
+            "the lock stands vacant after M's displacement"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&displaced).expect("read displaced file"),
+            stale_lock,
+            "M's displacement set S aside"
+        );
+        // C passes its judgments in M's
+        // displace→create gap, then pauses before its
+        // create.
+        let mut peer_c = spawn_live_peer_named(&dir, "openbulletin-peer-r46a-c");
+        let c_pid = peer_c.id();
+        let c_token = "claimant-c-token";
+        assert!(
+            !peer_instance_alive_from(&lock, c_pid, c_token),
+            "C's check in the gap: no live peer stands at the vacant lock path"
+        );
+        assert!(
+            matches!(
+                judge_displaced_instance_lock_at_claim_from(&lock, c_pid, c_token),
+                DisplacedLockJudgment::NoLiveGeneration
+            ),
+            "C's displaced judgment in the gap: S is dead"
+        );
+        // M creates and holds.
+        let m_create = try_create_instance_lock_from(&lock, m_pid, m_token);
+        assert!(matches!(m_create, LockCreate::Created), "M's create lands");
+        assert!(lock_names_instance(&lock, m_pid, m_token), "M holds");
+        let m_bytes = std::fs::read(&lock).expect("read M's lock");
+        // B's rename step resumes. Under the R46-A
+        // contract it must stand down: the standing
+        // generation is live M, not judged S, and both
+        // files stay exactly as they stood.
+        assert_eq!(
+            rename_instance_lock_to_displaced_from(&lock, b_pid, b_token),
+            None,
+            "B's resumed rename step refuses the live standing generation M"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after B's rename step"),
+            m_bytes,
+            "B's refused rename leaves M's lock byte for byte"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&displaced).expect("read displaced file after B's rename"),
+            stale_lock,
+            "B's refused rename leaves S displaced byte for byte"
+        );
+        // C's create lands on an occupied path, not in
+        // a vacancy B's rename made.
+        let c_create = try_create_instance_lock_from(&lock, c_pid, c_token);
+        assert!(
+            !matches!(c_create, LockCreate::Created),
+            "C's create does not land: M holds the lock path"
+        );
+        // The forbidden final state is unreachable:
+        // the lock does not name C, the displaced file
+        // does not name M, and only M's create was a
+        // win. B's displacement of judged S now refuses
+        // at its generation check, and both rivals'
+        // full claims answer false before live M.
+        assert!(
+            !lock_names_instance(&lock, c_pid, c_token),
+            "the lock does not name C"
+        );
+        assert_ne!(
+            read_instance_lock_from(&displaced)
+                .as_ref()
+                .and_then(|info| info.token.as_deref()),
+            Some(m_token),
+            "M's live generation never stands displaced"
+        );
+        assert!(
+            !displace_instance_lock_from(&lock, b_pid, b_token, Some(&b_judged)),
+            "B's displacement refuses: the standing file is M, not judged S"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, b_pid, b_token),
+            "B's claim answers false before live M"
+        );
+        assert!(
+            !acquire_instance_lock_from(&lock, c_pid, c_token),
+            "C's claim answers false before live M"
+        );
+        assert!(lock_names_instance(&lock, m_pid, m_token), "M still holds");
+        let _ = peer_m.kill();
+        let _ = peer_m.wait();
+        let _ = peer_c.kill();
+        let _ = peer_c.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r46a_rename_step_refuses_a_live_standing_generation() {
+        // R46-A direct contract pin for the rename step:
+        // a standing generation naming a live peer is
+        // never moved, both files untouched; once that
+        // owner is provably gone the same step moves
+        // the generation aside, and the claimant's
+        // ordinary claim then takes the lock — the
+        // legitimate displacement behavior is preserved.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r46a-rename-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut peer = spawn_live_peer_named(&dir, "openbulletin-peer-r46a-p");
+        let p_pid = peer.id();
+        let p_token = "live-p-token";
+        let p_lock = format!("{p_pid}\n{p_token}\n");
+        std::fs::write(&lock, &p_lock).expect("live peer's lock");
+        let p_bytes = std::fs::read(&lock).expect("read live peer's lock");
+        let l_pid = std::process::id() + 5000;
+        let l_token = "claimant-l-token";
+        assert_eq!(
+            rename_instance_lock_to_displaced_from(&lock, l_pid, l_token),
+            None,
+            "the rename step refuses a live standing generation"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after the refused rename"),
+            p_bytes,
+            "the refused rename leaves the live lock byte for byte"
+        );
+        assert!(
+            !displaced.exists(),
+            "nothing stands displaced after the refusal"
+        );
+        let _ = peer.kill();
+        let _ = peer.wait();
+        assert!(
+            peer_provably_gone(p_pid),
+            "the landed owner is provably gone"
+        );
+        assert_eq!(
+            rename_instance_lock_to_displaced_from(&lock, l_pid, l_token),
+            Some(displaced.clone()),
+            "the rename step moves the generation once its owner is gone"
+        );
+        assert!(!lock.exists(), "the lock stands vacant after the rename");
+        assert_eq!(
+            std::fs::read(&displaced).expect("read displaced file"),
+            p_bytes,
+            "the displaced file holds the gone owner's generation byte for byte"
+        );
+        assert!(
+            acquire_instance_lock_from(&lock, l_pid, l_token),
+            "the claimant's claim takes the lock in the ordinary way"
+        );
+        assert!(
+            lock_names_instance(&lock, l_pid, l_token),
+            "the claimant holds"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

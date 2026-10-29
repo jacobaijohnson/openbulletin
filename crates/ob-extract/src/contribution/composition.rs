@@ -3667,6 +3667,20 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         // group, served in silence the same way.
         // Round 45 (R45-B, F3): this trim
         // also sheds the invisible/format set.
+        // Round 45 (R45-E, F8 MINOR = review
+        // MINOR 5): this trim also admits the
+        // whole whitespace family — the
+        // inter-group seat stood on ' ' and
+        // '\t' alone, so a leading two-group
+        // company joined by any other space
+        // character (NBSP first among them)
+        // was no sequence at all and its
+        // weekday went unjudged, where its
+        // space twin refuses with the record.
+        // The trailing seats admit the family
+        // through `is_whitespace` already, so
+        // this is twin alignment, not a new
+        // bound.
         rest = rest.trim_start_matches(|c: char| {
             [
                 ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~',
@@ -3677,6 +3691,7 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
             ]
             .contains(&c)
                 || is_invisible_format_char(c)
+                || c.is_whitespace()
         });
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             break;
@@ -3696,6 +3711,12 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     }
     // Round 45 (R45-B, F3): this trim also
     // sheds the invisible/format set.
+    // Round 45 (R45-E, F8): this trim gains
+    // the whitespace family beside the loop
+    // trim above, as the two trims have always
+    // carried the same set — the group->date
+    // seat already read twin-equal through
+    // the date tokenization, and stays so.
     let rest = rest.trim_start_matches(|c: char| {
         [
             ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
@@ -3706,6 +3727,7 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         ]
         .contains(&c)
             || is_invisible_format_char(c)
+            || c.is_whitespace()
     });
     Some((inners, rest))
 }
@@ -4273,6 +4295,71 @@ pub(super) fn group_sequence_weekday_mismatch(
             }
         }
     }
+    // Round 45 (R45-E, F6 MINOR = review MINOR 1):
+    // the quoted-member retry — no
+    // leading-sequence reader consulted
+    // `quoted_members_as_parens` at all, so a
+    // governor-free leading sequence standing
+    // in quotes ("(Monday) \"notes\" November
+    // 1, 2026", "\"Monday\" (notes) November 1,
+    // 2026") served or read nothing where its
+    // paren twin refuses with the record.
+    // The sequence is read on the member and
+    // the inert-including re-dresses and
+    // judged by the same weekday check, under
+    // the trailing seat's own two
+    // requirements: the re-dressed sequence
+    // is strictly longer than the standing
+    // one, and it holds no governor member —
+    // a governed company already composes
+    // through the company judgment above, and
+    // this retry never disturbs it. The
+    // trailing seat's anchor gate is not
+    // carried over: at leading the
+    // whole-cloth orders never shared a
+    // standing reading (one served, one read
+    // nothing), so there is no whole-cloth
+    // reading here to preserve, and the
+    // governor-free quoted sequence takes
+    // its paren twin's reading outright.
+    // The trailing and base-trailing
+    // whole-cloth controls stand untouched
+    // (their seat's function is not this
+    // arm).
+    {
+        let standing_len = leading_group_sequence(text).map_or(0, |(inners, _)| inners.len());
+        let member = quoted_members_as_parens(text, today, false);
+        let member_seq = member.as_deref().and_then(leading_group_sequence);
+        let member_len = member_seq.as_ref().map_or(0, |(inners, _)| inners.len());
+        let member_governor_free = member_seq.as_ref().map_or(true, |(inners, _)| {
+            !inners.iter().any(|inner| governor_group_at_head(inner))
+        });
+        let full = quoted_members_as_parens(text, today, true);
+        let full_seq = full.as_deref().and_then(leading_group_sequence);
+        let full_len = full_seq.as_ref().map_or(0, |(inners, _)| inners.len());
+        let full_governor_free = full_seq.as_ref().map_or(true, |(inners, _)| {
+            !inners.iter().any(|inner| governor_group_at_head(inner))
+        });
+        let judged_seq = if full_len > standing_len && full_governor_free {
+            full_seq
+        } else if member_len > standing_len && member_governor_free {
+            member_seq
+        } else {
+            None
+        };
+        if let Some((inners, rest)) = judged_seq {
+            let tokens: Vec<&str> = rest.split_whitespace().collect();
+            if let Some((date, _)) = parse_date_prefix(&tokens, today) {
+                for inner in &inners {
+                    if let Some((named, number)) = garnish_group_weekday(inner) {
+                        if date.weekday() != number {
+                            return Some(WeekdayMismatch { named, date });
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Round 39 (R39-C, F4, arm (c)): the single
     // leading group behind head separators, judged
     // as its unseparated twin is — the sequence
@@ -4748,8 +4835,21 @@ pub(super) fn leading_governor_company_judgment(
         // Round 45 (R45-B, F3): the separator
         // walk also sheds the invisible/format
         // set, beside the SEPARATORS themselves.
-        rest = rest
-            .trim_start_matches(|c: char| SEPARATORS.contains(&c) || is_invisible_format_char(c));
+        // Round 45 (R45-E, F8): the walk also
+        // admits the whole whitespace family
+        // between company items — the sequence
+        // walk's trim alone leaves the
+        // agreeing governed company unjudged
+        // (the walk breaks at the space and
+        // returns None for want of a weekday,
+        // so the governed date serves), where
+        // its space twin governs in silence.
+        // The disagreeing arm is already the
+        // sequence walk's; this arm is the
+        // same seat's company side.
+        rest = rest.trim_start_matches(|c: char| {
+            SEPARATORS.contains(&c) || is_invisible_format_char(c) || c.is_whitespace()
+        });
         let Some(first) = rest.chars().next() else {
             break;
         };

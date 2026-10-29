@@ -40760,3 +40760,285 @@ fn r45c_governor_last_controls_hold() {
     r40e_governed_silent("(notes)*(cancelled) November 8, 2026");
     r40e_governed_silent("notes (notes)*(cancelled) November 8, 2026");
 }
+
+#[test]
+fn r45e_quoted_members_complete_the_governor_free_leading_sequence() {
+    // Round 45 (R45-E, F6 MINOR = review MINOR 1):
+    // the governor-free leading sequence never
+    // consulted `quoted_members_as_parens`, so
+    // every quoted form below read against its
+    // paren twin's refusal. On the base tree the
+    // anchored arm serves 2026-11-01 silently,
+    // the member arm reads no date and no
+    // record, and the whole-cloth arms split
+    // between serving and reading nothing; the
+    // paren twins refuse WITH
+    // WeekdayMismatch(Monday@2026-11-01) in
+    // every arm. Both routes, full-record twins.
+    // The anchored arm in four quote dresses.
+    for (open, close) in [
+        ("\"", "\""),
+        ("'", "'"),
+        ("\u{201c}", "\u{201d}"),
+        ("\u{2018}", "\u{2019}"),
+    ] {
+        let line = format!("(Monday) {open}notes{close} November 1, 2026");
+        r40g_refuses_with_record(&line, "Monday", nov(1));
+        r34e_for_twin(&line, "(Monday) (notes) November 1, 2026");
+        r34e_keep_twin(&line, "(Monday) (notes) November 1, 2026");
+    }
+    // The member arm: a quoted weekday member
+    // beside a bracket inert group, straight
+    // and curly.
+    for (open, close) in [("\"", "\""), ("\u{201c}", "\u{201d}")] {
+        let line = format!("{open}Monday{close} (notes) November 1, 2026");
+        r40g_refuses_with_record(&line, "Monday", nov(1));
+        r34e_for_twin(&line, "(Monday) (notes) November 1, 2026");
+        r34e_keep_twin(&line, "(Monday) (notes) November 1, 2026");
+    }
+    // The whole-cloth arms, both orders: no
+    // bracket member as written, yet the
+    // governor-free quoted sequence is the
+    // paren twin's sequence, and refuses as it
+    // does. (At the trailing and base-trailing
+    // seats whole cloth keeps its standing
+    // reading under the anchor gate — see the
+    // standing `r44c_scope_controls_unmoved`
+    // pin, unmoved; at leading the two orders
+    // never shared a standing reading — one
+    // served, one read nothing — so there is
+    // no coherent whole-cloth reading here to
+    // preserve, and the twin reading is the
+    // cure.)
+    for line in [
+        "\"Monday\" \"notes\" November 1, 2026",
+        "\"notes\" \"Monday\" November 1, 2026",
+    ] {
+        r40g_refuses_with_record(line, "Monday", nov(1));
+        let twin = if line.starts_with("\"Monday\"") {
+            "(Monday) (notes) November 1, 2026"
+        } else {
+            "(notes) (Monday) November 1, 2026"
+        };
+        r34e_for_twin(line, twin);
+        r34e_keep_twin(line, twin);
+    }
+    // The anchored three-group arm and the
+    // bracket-dress anchor arm.
+    let three = "(Monday) \"notes\" (choir) November 1, 2026";
+    r40g_refuses_with_record(three, "Monday", nov(1));
+    r34e_for_twin(three, "(Monday) (notes) (choir) November 1, 2026");
+    r34e_keep_twin(three, "(Monday) (notes) (choir) November 1, 2026");
+    let bracket = "[Monday] \"notes\" November 1, 2026";
+    r40g_refuses_with_record(bracket, "Monday", nov(1));
+    r34e_for_twin(bracket, "[Monday] (notes) November 1, 2026");
+    r34e_keep_twin(bracket, "[Monday] (notes) November 1, 2026");
+    // Agreeing arms (controls inside the cured
+    // test): the retry judges but mints no
+    // record where the weekday agrees, and the
+    // date serves as its paren twin serves.
+    let agree = "(Sunday) \"notes\" November 1, 2026";
+    r40e_serves_silent(agree, nov(1));
+    r34e_for_twin(agree, "(Sunday) (notes) November 1, 2026");
+    r34e_keep_twin(agree, "(Sunday) (notes) November 1, 2026");
+    let agree_whole = "\"notes\" \"Sunday\" November 1, 2026";
+    r40e_serves_silent(agree_whole, nov(1));
+    r34e_for_twin(agree_whole, "(notes) (Sunday) November 1, 2026");
+    r34e_keep_twin(agree_whole, "(notes) (Sunday) November 1, 2026");
+}
+
+#[test]
+fn r45e_governed_leading_company_unmoved_by_the_quoted_retry() {
+    // Round 45 (R45-E, F6 constraint): quoted
+    // members already compose at leading
+    // whenever a governor is in the company —
+    // the retry is governor-free-gated, so
+    // these governed readings stand exactly,
+    // and no governed date starts serving.
+    // All four arms hold on the base tree.
+    let governed_record = "(cancelled) \"Monday\" November 1, 2026";
+    r40e_governed_with_record(governed_record, "Monday", nov(1));
+    r34e_for_twin(governed_record, "(cancelled) (Monday) November 1, 2026");
+    r34e_keep_twin(governed_record, "(cancelled) (Monday) November 1, 2026");
+    let quoted_governor = "\"cancelled\" \"Monday\" November 1, 2026";
+    r40e_governed_with_record(quoted_governor, "Monday", nov(1));
+    r34e_for_twin(quoted_governor, "(cancelled) (Monday) November 1, 2026");
+    r34e_keep_twin(quoted_governor, "(cancelled) (Monday) November 1, 2026");
+    let governed_silent = "(cancelled) \"notes\" November 8, 2026";
+    r40e_governed_silent(governed_silent);
+    r34e_for_twin(governed_silent, "(cancelled) (notes) November 8, 2026");
+    r34e_keep_twin(governed_silent, "(cancelled) (notes) November 8, 2026");
+    let governed_three = "(cancelled) \"notes\" (Monday) November 1, 2026";
+    r40e_governed_with_record(governed_three, "Monday", nov(1));
+    r34e_for_twin(
+        governed_three,
+        "(cancelled) (notes) (Monday) November 1, 2026",
+    );
+    r34e_keep_twin(
+        governed_three,
+        "(cancelled) (notes) (Monday) November 1, 2026",
+    );
+}
+
+#[test]
+fn r45e_space_width_family_at_the_leading_company_seats() {
+    // Round 45 (R45-E, F8 MINOR = review MINOR 5):
+    // the twelve witnessed space characters
+    // split a leading two-group company at its
+    // inter-group seat while twin-equal
+    // everywhere else. On the base tree every
+    // arm below serves its date silently (the
+    // governor unjudged at the governed arms,
+    // the record lost at the weekday arms);
+    // the space twins refuse with the record
+    // (governed arms) or govern in silence
+    // (agreeing governed arms). Both routes,
+    // full-record twins.
+    let spaces = [
+        '\u{a0}', '\u{202f}', '\u{2009}', '\u{200a}', '\u{3000}', '\u{2000}', '\u{2001}',
+        '\u{2007}', '\u{2008}', '\u{205f}', '\u{2028}', '\u{85}',
+    ];
+    for sp in spaces {
+        // Disagreeing governed company: the
+        // review witness shape.
+        let governed = format!("(cancelled){sp}(Monday) November 1, 2026");
+        r40e_governed_with_record(&governed, "Monday", nov(1));
+        r34e_for_twin(&governed, "(cancelled) (Monday) November 1, 2026");
+        r34e_keep_twin(&governed, "(cancelled) (Monday) November 1, 2026");
+        // Agreeing governed company: governed
+        // in silence, as the space twin governs
+        // — this arm is gated by the company
+        // walk's own inter-group trim, not the
+        // sequence walk's, and fails without it.
+        let agreeing = format!("(cancelled){sp}(Sunday) November 1, 2026");
+        r40e_governed_silent(&agreeing);
+        r34e_for_twin(&agreeing, "(cancelled) (Sunday) November 1, 2026");
+        r34e_keep_twin(&agreeing, "(cancelled) (Sunday) November 1, 2026");
+        // Governor-free weekday sequence.
+        let weekday = format!("(Monday){sp}(notes) November 1, 2026");
+        r40g_refuses_with_record(&weekday, "Monday", nov(1));
+        r34e_for_twin(&weekday, "(Monday) (notes) November 1, 2026");
+        r34e_keep_twin(&weekday, "(Monday) (notes) November 1, 2026");
+    }
+    // The rest of the whitespace family (the
+    // trailing seats admit it through
+    // `is_whitespace`, so the leading seat
+    // admits it whole): governed arm only.
+    let family = [
+        '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{1680}', '\u{2029}', '\u{b}',
+    ];
+    for sp in family {
+        let governed = format!("(cancelled){sp}(Monday) November 1, 2026");
+        r40e_governed_with_record(&governed, "Monday", nov(1));
+        r34e_for_twin(&governed, "(cancelled) (Monday) November 1, 2026");
+        r34e_keep_twin(&governed, "(cancelled) (Monday) November 1, 2026");
+    }
+}
+
+#[test]
+fn r45e_space_width_controls_at_the_other_seats_unmoved() {
+    // Round 45 (R45-E, F8 controls): the
+    // trailing, base-trailing, and group->date
+    // seats already read every witnessed space
+    // as the space twin reads it, on the base
+    // tree and on the tip — the leading trims
+    // move nothing here.
+    let spaces = [
+        '\u{a0}', '\u{202f}', '\u{2009}', '\u{200a}', '\u{3000}', '\u{2000}', '\u{2001}',
+        '\u{2007}', '\u{2008}', '\u{205f}', '\u{2028}', '\u{85}',
+    ];
+    // Trailing inter-group: governed silent.
+    let trailing_nbsp = "November 1, 2026 (cancelled)\u{a0}(Monday)";
+    r40e_governed_silent(trailing_nbsp);
+    for sp in spaces {
+        let line = format!("November 1, 2026 (cancelled){sp}(Monday)");
+        r34e_for_twin(&line, "November 1, 2026 (cancelled) (Monday)");
+        r34e_keep_twin(&line, "November 1, 2026 (cancelled) (Monday)");
+    }
+    // Base-trailing inter-group: refuses with
+    // the record.
+    let base_nbsp = "Sunday after November 1, 2026 (Monday)\u{a0}(notes)";
+    r40e_governed_with_record(base_nbsp, "Monday", nov(1));
+    for sp in spaces {
+        let line = format!("Sunday after November 1, 2026 (Monday){sp}(notes)");
+        r34e_for_twin(&line, "Sunday after November 1, 2026 (Monday) (notes)");
+        r34e_keep_twin(&line, "Sunday after November 1, 2026 (Monday) (notes)");
+    }
+    // Leading group->date: governed with the
+    // record, and weekday-only refusal.
+    let date_nbsp = "(cancelled) (Monday)\u{a0}November 1, 2026";
+    r40e_governed_with_record(date_nbsp, "Monday", nov(1));
+    for sp in spaces {
+        let governed = format!("(cancelled) (Monday){sp}November 1, 2026");
+        r34e_for_twin(&governed, "(cancelled) (Monday) November 1, 2026");
+        r34e_keep_twin(&governed, "(cancelled) (Monday) November 1, 2026");
+        let weekday = format!("(Monday) (notes){sp}November 1, 2026");
+        r34e_for_twin(&weekday, "(Monday) (notes) November 1, 2026");
+        r34e_keep_twin(&weekday, "(Monday) (notes) November 1, 2026");
+    }
+}
+
+#[test]
+fn r45e_word_prefix_neighbour_and_agreeing_whole_cloth_unmoved() {
+    // Round 45 (R45-E, F6 neighbours): a word
+    // prefix puts the quoted weekday mid-line,
+    // outside the leading sequence's reach, so
+    // its standing split is untouched — the
+    // quoted line reads no date and no record,
+    // its paren twin serves 2026-11-01 (the
+    // standing mid-line reading, review
+    // `cases-fin.txt` case 4). Both routes.
+    for (line, for_date, mismatch) in [
+        (
+            "Quotes \u{201c}Monday\u{201d} (notes) November 1, 2026",
+            None,
+            None,
+        ),
+        (
+            "Quotes (Monday) (notes) November 1, 2026",
+            Some(nov(1)),
+            None,
+        ),
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.for_date, for_date, "{line}: the For date stands");
+        assert_eq!(
+            c.named_weekday_mismatch, mismatch,
+            "{line}: the For record stands"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(c.keep_through, for_date, "{line}: the Keep date stands");
+        assert_eq!(
+            c.keep_through_weekday_mismatch, mismatch,
+            "{line}: the Keep record stands"
+        );
+    }
+    // The agreeing weekday-first whole-cloth
+    // line: the retry judges and agrees, so it
+    // mints no record; the line's downstream
+    // no-date reading stands (its paren twin
+    // serves — a downstream lone-arm split
+    // outside this batch's mismatch seat, not
+    // claimed and not moved).
+    let agree_whole = "\"Sunday\" \"notes\" November 1, 2026";
+    let text = format!("For Sunday: {agree_whole}\n\n## Announcement\n\nHi.\n");
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.for_date, None, "{agree_whole}: no date reads");
+    assert_eq!(
+        c.named_weekday_mismatch, None,
+        "{agree_whole}: no record is minted"
+    );
+    let text = format!(
+        "For Sunday: November 1, 2026\nKeep-through: {agree_whole}\n\n## Announcement\n\nHi.\n"
+    );
+    let c = parse_contribution(&text, today()).expect("parses");
+    assert_eq!(c.keep_through, None, "{agree_whole}: no Keep date reads");
+    assert_eq!(
+        c.keep_through_weekday_mismatch, None,
+        "{agree_whole}: no Keep record is minted"
+    );
+}

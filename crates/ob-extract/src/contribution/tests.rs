@@ -19740,6 +19740,98 @@ fn r44h_nested_seq_mix_quoted_parses_without_the_cliff() {
     );
 }
 
+// Round 45 (R45-D, F5 = red team RT45-P1): the
+// FULLWIDTH sibling of the R43-E pinned shape
+// earns its own interleaved ratio pin, on the
+// fixed tree. The witness is the probe's
+// `nested_seq_mix_fwgroups` at n=25,600 exactly:
+// "November " + 6,400 openers + "8" + 6,400
+// closers + ", 2026 " + 12,800 "(notes) " groups
+// standing in fullwidth dress (U+FF08/U+FF09,
+// the R44-E dress) — against the `longline`
+// control at 102,800 (4n+400, the standing
+// control sizing the sibling pins use), judged
+// through `r33d_interleaved_best`
+// (interleaved best-of-3), as every sibling
+// cliff pin is judged. The reading this pin
+// holds is the shape's standing one, verified
+// identical on the base and fixed trees (see the
+// R45-D record): the nested date is NOT served
+// (`for_date` is None) — where the paren twin
+// serves November 8, 2026, the fullwidth
+// trailing sequence's standing reading serves
+// nothing, as the quoted twin's does. That
+// reading is not this batch's to move: F5 is a
+// performance finding, the fix is a perf fix,
+// and any reading movement would have been a
+// stop-and-record.
+// The mechanism, established by reading on the
+// base tree (see the R45-D record): the
+// fullwidth re-dress build (`redress_fullwidth_
+// pairs`) rescanned the whole pair list at every
+// char of the line — chars x pairs membership
+// steps per consultation, at every company seat
+// that consults it — the superlinear term
+// behind the cliff (red team: 20.5x at n=1,600,
+// 67.6x at n=6,400, a >600 s timeout at
+// n=25,600). The fix precomputes one mark per
+// char index, so the build is chars + pairs per
+// consultation; the re-dress is byte-for-byte
+// the standing one. What remains is the seats'
+// standing linear work over the re-dressed
+// sequence, paid additionally where the paren
+// twin pays it once on the standing text — the
+// same shape as the quoted residual, and the
+// fixed shape reads at the quoted residual's
+// level in the batch's windows.
+// Base-tree standing: the pin FAILS on the base
+// tree (witness best 157.31 s against the
+// interleaved control's 637.34 ms = ratio 246.8,
+// `a/r45d-pins-base.log`); on the fixed tree it
+// passes with the bound below.
+// Bound: 27x. Calibration of record: pin-form
+// readings on the fixed tree, debug, three
+// runs in one window (witness bests 11.66 s /
+// 11.67 s / 11.36 s against control bests
+// 637.67 ms / 613.30 ms / 626.52 ms =
+// ratios 18.28 / 19.02 / 18.13,
+// `a/r45d-calib-{1,2,3}.log`; probe-form
+// 17.77 in the batch's other window) — worst
+// 19.02; 19.02 x 1.4 = 26.63 -> 27x, the sibling
+// pins' ~1.4x headroom posture. The bound is
+// calibrated to THIS shape only. The fixed
+// tree's smaller-size readings in the batch's
+// windows (probe form, interleaved best-of-3,
+// debug, under co-tenant load) are 15.92 at
+// n=1,600 and 16.81 at n=6,400: flat with size,
+// as linear code's ratios should be. The
+// standing load discipline applies unchanged:
+// a ratio miss under co-tenant load is
+// dispositioned solo, never by widening the
+// bound.
+// The paren shape and the quoted residual were
+// measured in-family in the same windows (see
+// the R45-D record): paren 3.98 at n=25,600
+// (inside its 10x bound), quoted 17.36 at
+// n=25,600 (inside its 37x bound) — the fix
+// moves neither family member.
+#[test]
+fn r45d_nested_seq_mix_fwgroups_parses_without_the_cliff() {
+    let text = format!(
+        "For Sunday: November {}8{}, 2026 {}\n\n## Announcement\n\nHi.\n",
+        "(".repeat(6400),
+        ")".repeat(6400),
+        "\u{ff08}notes\u{ff09} ".repeat(12800)
+    );
+    let control = r39g_word_run_control(102800);
+    let (c, witness_best, control_best) = r33d_interleaved_best(&text, &control);
+    assert_eq!(c.for_date, None);
+    assert!(
+        witness_best < control_best * 27,
+        "the nested sequence-mix fullwidth witness took {witness_best:?} against the interleaved control's {control_best:?} (bound: 27x the control)"
+    );
+}
+
 #[test]
 fn r31c_conjoined_groups_on_a_for_line_parse_without_the_cliff() {
     let groups = vec!["(November 1, 2026)"; 75000].join(" and ");

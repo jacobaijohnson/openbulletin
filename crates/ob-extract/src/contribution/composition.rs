@@ -2430,22 +2430,64 @@ fn redress_fullwidth_pairs(
     chars: &[(usize, char)],
     pairs: &[(usize, usize)],
 ) -> String {
+    // Round 45 (R45-D, F5 = red team RT45-P1): the
+    // build below answers its two membership
+    // questions (is this char a pair's opener?
+    // its closer?) from ONE precomputed mark per
+    // char index, not by rescanning the whole
+    // pair list at every char. Before this, each
+    // consultation's build cost chars x pairs
+    // membership steps — at the pinned shape's
+    // size (~115,000 chars x 12,800 pairs per
+    // consultation, and the line is consulted at
+    // every company seat) — the superlinear term
+    // behind the fullwidth-dress cliff: the work
+    // grows ~16x per 4x size step against a
+    // linear control, so the ratio climbs ~3-4x
+    // per step, and the pinned size does not
+    // finish at all. The same per-char rescan
+    // shape R44-H fixed in the quoted re-dress
+    // (advancing cursor) stood here unconverted;
+    // R44-H recorded it as a future lane, and
+    // this batch is that lane. The marks cost
+    // one byte per char and one pass over the
+    // pairs, so the build is chars + pairs per
+    // consultation. A char index is at most one
+    // pair's opener or closer (stack-matched
+    // pairs share no index), and where an index
+    // stood as both, the old if/else answered
+    // opener — the closer mark below is only
+    // written where no opener mark stands, so
+    // the re-dress is byte-for-byte the standing
+    // one and every reading is the standing
+    // reading by construction. Both call sites
+    // share this build (`fullwidth_groups_as_ascii`
+    // and `fullwidth_date_groups_as_ascii`), so
+    // the one edit bounds both.
+    const NONE: u8 = 0;
+    const OPEN: u8 = 1;
+    const CLOSE: u8 = 2;
+    let mut marks: Vec<u8> = vec![NONE; chars.len()];
+    for &(open, close) in pairs {
+        marks[open] = OPEN;
+        if marks[close] == NONE {
+            marks[close] = CLOSE;
+        }
+    }
     let mut out = String::with_capacity(text.len());
     for (idx, (_, c)) in chars.iter().enumerate() {
-        if pairs.iter().any(|&(o, _)| o == idx) {
-            match c {
+        match marks[idx] {
+            OPEN => match c {
                 '\u{ff08}' => out.push_str("(  "),
                 '\u{ff3b}' => out.push_str("[  "),
                 _ => out.push_str("{  "),
-            }
-        } else if pairs.iter().any(|&(_, cl)| cl == idx) {
-            match c {
+            },
+            CLOSE => match c {
                 '\u{ff09}' => out.push_str(")  "),
                 '\u{ff3d}' => out.push_str("]  "),
                 _ => out.push_str("}  "),
-            }
-        } else {
-            out.push(*c);
+            },
+            _ => out.push(*c),
         }
     }
     out

@@ -591,11 +591,18 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
                 '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}',
                 '\u{ff0e}', '\u{ff1a}', '\u{ff1b}',
             ])
-            .trim_end_matches([
-                '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}', '\u{200b}',
-                '\u{feff}',
-            ])
+            // Round 45 (R45-B, F3): the tail set
+            // also sheds the invisible/format
+            // set — see `is_invisible_format_char`.
+            .trim_end_matches(|c: char| {
+                [
+                    '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
+                    '\u{ff0d}', '\u{ff0a}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
+                    '\u{200b}', '\u{feff}',
+                ]
+                .contains(&c)
+                    || is_invisible_format_char(c)
+            })
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
                 '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}',
@@ -967,13 +974,19 @@ fn base_trailing_sequence_mismatch(
         // after the final group or after its
         // suffix, and at the garnish's own head,
         // disarmed the walk the same way.
-        let peeled = rest.trim_end().trim_end_matches([
-            '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
-            '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
-            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{ff5e}', '\u{ff03}',
-            '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}', '\u{200b}',
-            '\u{feff}',
-        ]);
+        // Round 45 (R45-B, F3): the peel set
+        // also sheds the invisible/format set.
+        let peeled = rest.trim_end().trim_end_matches(|c: char| {
+            [
+                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
+                '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{ff5e}',
+                '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}',
+                '\u{200b}', '\u{feff}',
+            ]
+            .contains(&c)
+                || is_invisible_format_char(c)
+        });
         if peeled.len() != rest.len() {
             rest = peeled;
             continue;
@@ -1001,7 +1014,7 @@ fn base_trailing_sequence_mismatch(
                                 | '\u{00ad}'
                                 | '\u{200b}'
                                 | '\u{feff}'
-                        )
+                        ) || is_invisible_format_char(c)
                     }) =>
             {
                 rest = head;
@@ -1019,7 +1032,12 @@ fn base_trailing_sequence_mismatch(
     // the first span had to stand at the garnish's
     // first byte, so the separator ended the walk.
     let head_trimmed =
-        rest.trim_start_matches([' ', '\t', ',', ';', '.', ':', '\u{200b}', '\u{feff}']);
+        // Round 45 (R45-B, F3): the head trim
+        // also sheds the invisible/format set.
+        rest.trim_start_matches(|c: char| {
+            [' ', '\t', ',', ';', '.', ':', '\u{200b}', '\u{feff}'].contains(&c)
+                || is_invisible_format_char(c)
+        });
     let head_had_separator = rest[..rest.len() - head_trimmed.len()]
         .chars()
         .any(|c| matches!(c, ',' | ';' | '.' | ':'));
@@ -1163,7 +1181,8 @@ fn base_trailing_sequence_mismatch(
                     | '\u{ff07}'
                     | '\u{200b}'
                     | '\u{feff}'
-            ) || c.is_whitespace()
+            ) || is_invisible_format_char(c)
+                || c.is_whitespace()
         }) {
             continue;
         }
@@ -1227,7 +1246,8 @@ fn base_trailing_sequence_mismatch(
                         | '\u{00ad}'
                         | '\u{200b}'
                         | '\u{feff}'
-                ) || c.is_whitespace()
+                ) || is_invisible_format_char(c)
+                    || c.is_whitespace()
             })
         {
             return None;
@@ -1534,12 +1554,19 @@ impl<'a> LineScan<'a> {
         // lost whole.
         let mut end = lo
             + text[lo..hi]
-                .trim_end_matches([
-                    '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '?', '\u{2013}',
-                    '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{ff01}',
-                    '\u{ff1f}', '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{2dc}',
-                    '\u{200b}', '\u{00ad}', '\u{feff}',
-                ])
+                // Round 45 (R45-B, F3): this
+                // trim also sheds the
+                // invisible/format set.
+                .trim_end_matches(|c: char| {
+                    [
+                        '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '?', '\u{2013}',
+                        '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}', '\u{ff01}',
+                        '\u{ff1f}', '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{2dc}',
+                        '\u{200b}', '\u{00ad}', '\u{feff}',
+                    ]
+                    .contains(&c)
+                        || is_invisible_format_char(c)
+                })
                 .len();
         loop {
             let trimmed = lo + text[lo..end].trim_end().len();
@@ -1554,13 +1581,20 @@ impl<'a> LineScan<'a> {
                 Some(w) => {
                     end = lo
                         + text[lo..w]
-                            .trim_end_matches([
-                                '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '?',
-                                '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
-                                '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff5e}', '\u{ff03}',
-                                '\u{ff0e}', '\u{ff0c}', '\u{2dc}', '\u{00ad}', '\u{200b}',
-                                '\u{feff}',
-                            ])
+                            // Round 45 (R45-B, F3): this
+                            // trim also sheds the
+                            // invisible/format set.
+                            .trim_end_matches(|c: char| {
+                                [
+                                    '.', ',', '~', '*', '#', '-', '\u{2014}', '\u{2026}', '!', '?',
+                                    '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
+                                    '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff5e}', '\u{ff03}',
+                                    '\u{ff0e}', '\u{ff0c}', '\u{2dc}', '\u{00ad}', '\u{200b}',
+                                    '\u{feff}',
+                                ]
+                                .contains(&c)
+                                    || is_invisible_format_char(c)
+                            })
                             .len();
                 }
                 None => {
@@ -2357,8 +2391,63 @@ pub(super) fn is_format_char(c: char) -> bool {
 /// Cf) removed: the cleaning step M6 adds at every
 /// site tokens are cleaned.
 pub(super) fn strip_format_chars(text: &str) -> String {
-    if text.chars().any(is_format_char) {
-        text.chars().filter(|c| !is_format_char(*c)).collect()
+    if text
+        .chars()
+        .any(|c| is_format_char(c) || is_invisible_format_char(c))
+    {
+        text.chars()
+            .filter(|c| !is_format_char(*c) && !is_invisible_format_char(*c))
+            .collect()
+    } else {
+        text.to_string()
+    }
+}
+
+/// The invisible/format set of round 45 (R45-B,
+/// F3 = red team RT45-C1 + review MINOR 2 +
+/// review MINOR 3), stated ONCE: the R44-F
+/// admitted pair (U+200B, U+FEFF), the red-team
+/// nine (U+200C, U+200D, U+2060, U+180E, U+200E,
+/// U+200F, U+061C, U+034F, U+FE0F), and the
+/// review lane's further eight (U+202A-U+202E,
+/// U+2064, U+2066, U+2069) — the union, nineteen
+/// codepoints, no more. Seventeen of the
+/// nineteen are already in `is_format_char`'s
+/// Cf class; the two that are not (U+034F CGJ
+/// and U+FE0F VS16, both Mn, not Cf) are why
+/// this set is stated separately instead of
+/// reusing that class: every seat that shed
+/// the pair sheds this set, through
+/// `is_invisible_format_char`, and the token
+/// cleaning above sheds it too.
+pub(super) const INVISIBLE_FORMAT_CHARS: [char; 19] = [
+    '\u{034f}', '\u{061c}', '\u{180e}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{200e}', '\u{200f}',
+    '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2060}', '\u{2064}', '\u{2066}',
+    '\u{2069}', '\u{fe0f}', '\u{feff}',
+];
+
+/// Whether `c` is a member of the R45-B
+/// invisible/format set above.
+pub(super) fn is_invisible_format_char(c: char) -> bool {
+    INVISIBLE_FORMAT_CHARS.contains(&c)
+}
+
+/// `text` with exactly the R45-B set removed
+/// (round 45, R45-B, F3): the remainder-seat
+/// cleaning — a date string a reader re-parses
+/// after a group or a date token has been taken
+/// out sheds the set, and nothing wider, so a
+/// remainder carrying one reads as its clean
+/// twin reads. This is deliberately narrower
+/// than `strip_format_chars` (the whole Cf
+/// class): the remainder seats are new seats
+/// for the pair itself, and the cure sheds the
+/// witnessed nineteen there, not the class.
+pub(super) fn strip_invisible_format_chars(text: &str) -> String {
+    if text.chars().any(is_invisible_format_char) {
+        text.chars()
+            .filter(|c| !is_invisible_format_char(*c))
+            .collect()
     } else {
         text.to_string()
     }

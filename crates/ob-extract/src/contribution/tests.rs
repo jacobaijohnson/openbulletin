@@ -40389,3 +40389,198 @@ fn r44f_scope_controls_unmoved() {
     );
     r40e_governed_with_record("November 1, 2026 Monday\u{200b}~", "Monday", nov(1));
 }
+
+/// The R45-B invisible/format set, exactly as
+/// witnessed: the R44-F admitted pair (U+200B,
+/// U+FEFF), the red-team nine (RT45-C1), and the
+/// review lane's further eight (MINOR 3:
+/// U+202A-U+202E, U+2064, U+2066, U+2069) — the
+/// union, nineteen codepoints, no more.
+fn r45b_invisible_chars() -> [char; 19] {
+    [
+        '\u{034f}', '\u{061c}', '\u{180e}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{200e}',
+        '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2060}',
+        '\u{2064}', '\u{2066}', '\u{2069}', '\u{fe0f}', '\u{feff}',
+    ]
+}
+
+#[test]
+fn r45b_invisible_class_at_trailing_governor_and_weekday_seats() {
+    // Round 45 (R45-B, F3 arm (a) = red team
+    // RT45-C1 + review MINOR 3): the rest of the
+    // invisible class splits at the seats R44-F
+    // judged for the pair alone. Trailing
+    // governor wearing one serves live on the
+    // base tree; trailing weekday group wearing
+    // one loses its WeekdayMismatch record.
+    // Every arm below reads exactly as its
+    // removal twin, both routes.
+    for c in r45b_invisible_chars() {
+        let line = format!("November 8, 2026 (cancelled){c}");
+        r40e_governed_silent(&line);
+        let line = format!("November 8, 2026 (cancelled){c}~");
+        r40e_governed_silent(&line);
+        let line = format!("November 8, 2026 (cancelled)~{c}");
+        r40e_governed_silent(&line);
+        let line = format!("November 1, 2026 (Monday){c}");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("November 1, 2026 (Monday){c} (notes)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r45b_invisible_class_at_base_trailing_company() {
+    // Arm (a), base-trailing company seat
+    // (RT45-C1 + review MINOR 3): "Sunday after
+    // November 1, 2026 (cancelled)<Cf>(Monday)"
+    // serves the resolution silently on the base
+    // tree where the clean company refuses with
+    // the record. Every arm refuses with the
+    // record, both routes.
+    for c in r45b_invisible_chars() {
+        let line = format!("Sunday after November 1, 2026 (cancelled){c}(Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("Sunday after November 1, 2026 (cancelled){c} (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r45b_invisible_class_inside_governor_and_weekday_words() {
+    // Arm (a), inside-word seats (RT45-C1): an
+    // invisible break inside the governor word
+    // ("(cancel<invisible>led)") disarms the
+    // governor on the base tree — the word must
+    // govern. Inside the weekday word the
+    // refusal stands, as it does for the
+    // admitted pair (the R44-F scope control
+    // pins the pair's record naming the word
+    // as written); the beyond-pair members must
+    // match that pair-twin reading, record
+    // standing, both routes.
+    for c in r45b_invisible_chars() {
+        let line = format!("November 8, 2026 (cancel{c}led)");
+        r40e_governed_silent(&line);
+        let line = format!("November 8, 2026 (cancel{c}led)~");
+        r40e_governed_silent(&line);
+        let word = format!("Mon{c}day");
+        let line = format!("November 1, 2026 ({word})");
+        r40e_governed_with_record(&line, &word, nov(1));
+    }
+}
+
+#[test]
+fn r45b_invisible_class_at_boundary_and_interior_seats() {
+    // Arm (b) (review MINOR 2), the seats R44-F
+    // missed, now with the whole class: the
+    // date-to-group boundary glued either side,
+    // the leading group-to-date boundary, the
+    // two-group trailing company, and date
+    // interiors at trailing seats. The interior
+    // arms must agree with the base-trailing
+    // refusal-with-record (the same interiors
+    // at base-trailing refuse with the record
+    // on the base tree) — never serve with the
+    // record lost. Every arm refuses with the
+    // record, both routes.
+    for c in r45b_invisible_chars() {
+        let line = format!("November 1, 2026{c} (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("November 1, 2026{c}(Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("(Monday){c} November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("(Monday){c}~ November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("November 1, 2026{c} (Monday) (notes)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("November{c} 1, 2026 (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("Novem{c}ber 1, 2026 (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("November 1{c}, 2026 (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+    // The base-trailing interior arms, pinned
+    // as the agreement target: they refuse with
+    // the record on the base tree and must keep
+    // doing so.
+    for c in r45b_invisible_chars() {
+        let line = format!("Sunday after November{c} 1, 2026 (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("Sunday after Novem{c}ber 1, 2026 (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("Sunday after November 1{c}, 2026 (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r45b_invisible_class_must_not_flip_which_date_serves() {
+    // Arm (b) knock-on (review MINOR 2, f.log
+    // cases 14/29): a zero-width after the
+    // first date of a two-date line flips which
+    // date serves on the base tree (Nov 1
+    // serves, Nov 8 becomes the second date).
+    // The clean line serves Nov 8 with Nov 1
+    // as second date; the class-carrying line
+    // must read identically, both routes.
+    for c in r45b_invisible_chars() {
+        let line = format!("November 1, 2026 (Monday){c} November 8, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let parsed = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(parsed.for_date, Some(nov(8)), "{line}: Nov 8 serves");
+        assert_eq!(
+            parsed.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: Nov 1 stands as second date"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let parsed = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            parsed.keep_through,
+            Some(nov(8)),
+            "{line}: keep Nov 8 serves"
+        );
+        assert_eq!(
+            parsed.keep_through_second_dates,
+            vec![nov(1)],
+            "{line}: keep Nov 1 stands as second date"
+        );
+    }
+}
+
+#[test]
+fn r45b_invisible_class_inter_group_at_leading_seat() {
+    // Arm (c) (red team RT45-C1): inter-group
+    // at the leading seat splits for U+034F /
+    // U+FE0F (the other members agree there on
+    // the base tree). The whole class must
+    // compose there as its removal twin does:
+    // governor company refuses with the record,
+    // weekday company refuses with the record,
+    // both routes.
+    for c in r45b_invisible_chars() {
+        let line = format!("(cancelled){c}(Monday) November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("(Monday){c}(notes) November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r45b_invisible_set_is_stated_once() {
+    // The production set the pins loop over is
+    // the once-stated set: if a future edit
+    // touches one side and not the other, this
+    // fails rather than letting the pins and
+    // the seats drift apart.
+    assert_eq!(
+        super::dates::INVISIBLE_FORMAT_CHARS,
+        r45b_invisible_chars(),
+        "the once-stated R45-B set is the pinned set"
+    );
+}

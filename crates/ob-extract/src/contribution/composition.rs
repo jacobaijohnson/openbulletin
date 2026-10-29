@@ -1632,12 +1632,23 @@ pub(super) fn clean(t: &str) -> &str {
     // ("cancelled＂", "＂cancelled＂") is the word
     // it names, as one wearing the straight or
     // curly pair already is (R37-E's rule).
-    t.trim_matches([
-        '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
-        '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff01}',
-        '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}', '\u{3002}',
-        '\u{ff02}', '\u{ff07}',
-    ])
+    // Round 45 (R45-B, F3): the set gains the
+    // invisible/format set at its edges — a
+    // weekday word wearing one glued to its
+    // group ("(Monday)<Cf> November 1, 2026")
+    // is the word it names, as its clean twin
+    // is, instead of passing as ordinary text
+    // and serving the date in silence.
+    t.trim_matches(|c: char| {
+        [
+            '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
+            '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff01}',
+            '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}', '\u{3002}',
+            '\u{ff02}', '\u{ff07}',
+        ]
+        .contains(&c)
+            || is_invisible_format_char(c)
+    })
 }
 
 /// Whether the weekday at `i` in `core` wears the
@@ -2156,6 +2167,8 @@ fn governor_group_words(inner: &str) -> Option<Vec<String>> {
 fn suffix_set_run(s: &str) -> usize {
     s.chars()
         .take_while(|c| {
+            // Round 45 (R45-B, F3): the run also
+            // crosses the invisible/format set.
             matches!(
                 c,
                 '~' | '*'
@@ -2174,7 +2187,7 @@ fn suffix_set_run(s: &str) -> usize {
                     | '\u{00ad}'
                     | '\u{200b}'
                     | '\u{feff}'
-            )
+            ) || is_invisible_format_char(*c)
         })
         .map(char::len_utf8)
         .sum()
@@ -2937,15 +2950,21 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
         // gaps, and separator sets at the group
         // seats); a zero-width character inside a
         // date or a word keeps its standing reading.
+        // Round 45 (R45-B, F3): the peel set
+        // also sheds the invisible/format set.
         let peeled = text[..end]
             .trim_end()
-            .trim_end_matches([
-                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
-                '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{ff5e}',
-                '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}',
-                '\u{200b}', '\u{feff}',
-            ])
+            .trim_end_matches(|c: char| {
+                [
+                    '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}',
+                    '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
+                    '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}',
+                    '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}',
+                    '\u{2dc}', '\u{00ad}', '\u{200b}', '\u{feff}',
+                ]
+                .contains(&c)
+                    || is_invisible_format_char(c)
+            })
             .len();
         if peeled != end {
             end = peeled;
@@ -2977,7 +2996,7 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
                         | '\u{00ad}'
                         | '\u{200b}'
                         | '\u{feff}'
-                )
+                ) || is_invisible_format_char(c)
             })
         {
             end = ws;
@@ -3088,7 +3107,8 @@ fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
                     | '\u{00ad}'
                     | '\u{200b}'
                     | '\u{feff}'
-            ) || c.is_whitespace()
+            ) || is_invisible_format_char(c)
+                || c.is_whitespace()
         }) {
             break;
         }
@@ -3260,7 +3280,8 @@ fn midline_governor_before_plain_date(
                     | '\u{00ad}'
                     | '\u{200b}'
                     | '\u{feff}'
-            ) || c.is_whitespace()
+            ) || is_invisible_format_char(c)
+                || c.is_whitespace()
         }) {
             break;
         }
@@ -3284,12 +3305,19 @@ fn midline_governor_before_plain_date(
     // 2026", "notes (cancelled)~\u{feff} November
     // 8, 2026") was stepped over by neither set
     // and its cancelled date served live.
-    let rest = text[pos..].trim_start_matches([
-        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-        '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}',
-        '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}', '\u{200b}', '\u{feff}',
-    ]);
+    // Round 45 (R45-B, F3): the rest trim
+    // also sheds the invisible/format set.
+    let rest = text[pos..].trim_start_matches(|c: char| {
+        [
+            ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
+            '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
+            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}',
+            '\u{3001}', '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}', '\u{200b}',
+            '\u{feff}',
+        ]
+        .contains(&c)
+            || is_invisible_format_char(c)
+    });
     if matches!(rest.chars().next(), Some('(' | '[' | '{')) {
         return false;
     }
@@ -3521,13 +3549,19 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         // ("(Monday)\u{200b}(notes) November 1,
         // 2026"), or wearing one after its last
         // group, served in silence the same way.
-        rest = rest.trim_start_matches([
-            ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
-            '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
-            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}',
-            '\u{3001}', '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}', '\u{200b}',
-            '\u{feff}',
-        ]);
+        // Round 45 (R45-B, F3): this trim
+        // also sheds the invisible/format set.
+        rest = rest.trim_start_matches(|c: char| {
+            [
+                ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~',
+                '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
+                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}',
+                '\u{ff0e}', '\u{3001}', '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
+                '\u{200b}', '\u{feff}',
+            ]
+            .contains(&c)
+                || is_invisible_format_char(c)
+        });
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
             break;
         }
@@ -3544,12 +3578,19 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
     if inners.len() < 2 {
         return None;
     }
-    let rest = rest.trim_start_matches([
-        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-        '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}', '\u{3001}',
-        '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}', '\u{200b}', '\u{feff}',
-    ]);
+    // Round 45 (R45-B, F3): this trim also
+    // sheds the invisible/format set.
+    let rest = rest.trim_start_matches(|c: char| {
+        [
+            ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
+            '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
+            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}', '\u{ff0e}',
+            '\u{3001}', '\u{3002}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}', '\u{200b}',
+            '\u{feff}',
+        ]
+        .contains(&c)
+            || is_invisible_format_char(c)
+    });
     Some((inners, rest))
 }
 
@@ -3648,15 +3689,21 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
         // (notes)\u{200b}~", or standing across
         // the pair, served in silence with its
         // record lost.
+        // Round 45 (R45-B, F3): the peel set
+        // also sheds the invisible/format set.
         let peeled = text[..end]
             .trim_end()
-            .trim_end_matches([
-                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}', '~',
-                '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}', '\u{ff5e}',
-                '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}',
-                '\u{200b}', '\u{feff}',
-            ])
+            .trim_end_matches(|c: char| {
+                [
+                    '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2019}', '\u{2026}',
+                    '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
+                    '\u{ff0d}', '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff02}', '\u{ff07}',
+                    '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}', '\u{ff1b}',
+                    '\u{2dc}', '\u{00ad}', '\u{200b}', '\u{feff}',
+                ]
+                .contains(&c)
+                    || is_invisible_format_char(c)
+            })
             .len();
         if peeled != end {
             end = peeled;
@@ -3693,7 +3740,7 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                         | '\u{00ad}'
                         | '\u{200b}'
                         | '\u{feff}'
-                )
+                ) || is_invisible_format_char(c)
             })
         {
             end = ws;
@@ -3797,7 +3844,8 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                     | '\u{00ad}'
                     | '\u{200b}'
                     | '\u{feff}'
-            ) || c.is_whitespace()
+            ) || is_invisible_format_char(c)
+                || c.is_whitespace()
         }) {
             break;
         }
@@ -4020,6 +4068,16 @@ fn leading_single_group_wearing_suffix(text: &str) -> Option<(String, &str)> {
         return None;
     }
     let after = &rest[end..];
+    // Round 45 (R45-B, F3): the invisible/format
+    // set standing between the group and its
+    // suffix is nothing there — the suffix check
+    // reads past it, and the rest trim below
+    // sheds it too, so a group wearing one
+    // before or after its suffix
+    // ("(Monday)<Cf>~ November 1, 2026",
+    // "(Monday)~<Cf> November 1, 2026") reads
+    // as its clean twin reads.
+    let after = after.trim_start_matches(is_invisible_format_char);
     if !matches!(
         after.chars().next(),
         Some(
@@ -4042,12 +4100,16 @@ fn leading_single_group_wearing_suffix(text: &str) -> Option<(String, &str)> {
         return None;
     }
     let inner = &rest[start + 1..end - 1];
-    let rest = after.trim_start_matches([
-        ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*', '#',
-        '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-        '\u{ff01}', '\u{ff1f}', '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}',
-        '\u{ff1b}', '\u{2dc}', '\u{00ad}',
-    ]);
+    let rest = after.trim_start_matches(|c: char| {
+        [
+            ' ', '\t', ',', ';', '.', ':', '!', '?', '\u{201d}', '\u{2019}', '\u{2026}', '~', '*',
+            '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}',
+            '\u{ff0a}', '\u{ff01}', '\u{ff1f}', '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}',
+            '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}',
+        ]
+        .contains(&c)
+            || is_invisible_format_char(c)
+    });
     Some((inner.to_string(), rest))
 }
 
@@ -4271,9 +4333,18 @@ fn trailing_sequence_weekday_mismatch(text: &str, today: SimpleDate) -> Option<W
         _ => judged,
     };
     let (inners, prefix) = trailing_group_sequence(judged)?;
-    let stripped = strip_leading_group_run(prefix);
+    // Round 45 (R45-B, F3): the prefix sheds the
+    // invisible/format set before it is parsed
+    // as the date — a two-group trailing company
+    // standing across one ("November 1,
+    // 2026<Cf> (Monday) (notes)") reads as its
+    // clean twin reads, instead of failing the
+    // date parse here and serving the
+    // resolution in silence.
+    let prefix = strip_invisible_format_chars(prefix);
+    let stripped = strip_leading_group_run(&prefix);
     let date =
-        parse_flexible_date(prefix, today).or_else(|| parse_flexible_date(stripped, today))?;
+        parse_flexible_date(&prefix, today).or_else(|| parse_flexible_date(stripped, today))?;
     for inner in &inners {
         if let Some((named, number)) = garnish_group_weekday(inner) {
             if date.weekday() != number {
@@ -4558,7 +4629,11 @@ pub(super) fn leading_governor_company_judgment(
     let mut behind_lead_in = false;
     let mut weekdays: Vec<(String, u32)> = Vec::new();
     loop {
-        rest = rest.trim_start_matches(SEPARATORS);
+        // Round 45 (R45-B, F3): the separator
+        // walk also sheds the invisible/format
+        // set, beside the SEPARATORS themselves.
+        rest = rest
+            .trim_start_matches(|c: char| SEPARATORS.contains(&c) || is_invisible_format_char(c));
         let Some(first) = rest.chars().next() else {
             break;
         };
@@ -4897,7 +4972,11 @@ pub(super) fn leading_governor_company_judgment(
     // weekday word, or any word that is neither a
     // month word nor a digit — is not framed by the
     // company and keeps its standing reading.
-    rest = rest.trim_start_matches(SEPARATORS);
+    // Round 45 (R45-B, F3): this trim also
+    // sheds the invisible/format set, beside
+    // the SEPARATORS themselves.
+    rest =
+        rest.trim_start_matches(|c: char| SEPARATORS.contains(&c) || is_invisible_format_char(c));
     let tokens: Vec<&str> = rest.split_whitespace().collect();
     let first_cleaned = group_token(tokens.first()?);
     if weekday_word(&first_cleaned).is_some() {
@@ -5822,13 +5901,19 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
         // ("(Monday)\u{200b}~", "(Monday)~
         // \u{feff}") was never converted to its
         // spaced form and its record was lost.
+        // Round 45 (R45-B, F3): the peel set
+        // also sheds the invisible/format set.
         let peeled = text[..end]
-            .trim_end_matches([
-                '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2026}', '~', '*', '#',
-                '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
-                '\u{ff01}', '\u{ff1f}', '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}', '\u{ff1a}',
-                '\u{ff1b}', '\u{2dc}', '\u{00ad}', '\u{200b}', '\u{feff}',
-            ])
+            .trim_end_matches(|c: char| {
+                [
+                    '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201d}', '\u{2026}', '~', '*', '#',
+                    '-', '\u{2014}', '\u{2010}', '\u{2011}', '\u{2212}', '\u{ff0d}', '\u{ff0a}',
+                    '\u{ff01}', '\u{ff1f}', '\u{ff5e}', '\u{ff03}', '\u{ff0e}', '\u{ff0c}',
+                    '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}', '\u{200b}', '\u{feff}',
+                ]
+                .contains(&c)
+                    || is_invisible_format_char(c)
+            })
             .len();
         if peeled != end {
             end = peeled;
@@ -5859,7 +5944,7 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
                         | '\u{00ad}'
                         | '\u{200b}'
                         | '\u{feff}'
-                )
+                ) || is_invisible_format_char(c)
             })
         {
             end = ws;
@@ -6094,11 +6179,18 @@ pub(super) fn date_line_inner(
                 '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}',
                 '\u{ff0e}', '\u{ff1a}', '\u{ff1b}',
             ])
-            .trim_end_matches([
-                '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
-                '\u{ff0d}', '\u{ff0a}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}', '\u{200b}',
-                '\u{feff}',
-            ])
+            // Round 45 (R45-B, F3): the tail set
+            // also sheds the invisible/format
+            // set — see `is_invisible_format_char`.
+            .trim_end_matches(|c: char| {
+                [
+                    '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
+                    '\u{ff0d}', '\u{ff0a}', '\u{ff5e}', '\u{ff03}', '\u{2dc}', '\u{00ad}',
+                    '\u{200b}', '\u{feff}',
+                ]
+                .contains(&c)
+                    || is_invisible_format_char(c)
+            })
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
                 '\u{201c}', '\u{2018}', '\u{2019}', '\u{2026}', '\u{ff01}', '\u{ff1f}', '\u{ff0c}',
@@ -6130,7 +6222,18 @@ pub(super) fn date_line_inner(
                 .filter(|(j, _)| *j != i && !(dressed_close && *j > i))
                 .map(|(_, t)| *t)
                 .collect();
-            if let Some(date) = parse_flexible_date(&rest.join(" "), today) {
+            // Round 45 (R45-B, F3): the rest
+            // sheds the invisible/format set
+            // before it is re-parsed as the
+            // date — a remainder carrying one
+            // ("November 1, 2026<Cf>", a date
+            // interior wearing one) reads as
+            // its clean twin reads, instead of
+            // failing here and serving the date
+            // in silence with the record lost.
+            if let Some(date) =
+                parse_flexible_date(&strip_invisible_format_chars(&rest.join(" ")), today)
+            {
                 if date.weekday() == named_number {
                     return (Some(date), None);
                 }
@@ -6219,10 +6322,23 @@ pub(super) fn date_line_inner(
         // line ever saw the weekday, and the line
         // read nothing in any quote form while its
         // bare and grouped twins served the date.
-        let word = tokens[i].trim_matches([
-            '(', ')', '[', ']', '{', '}', ',', '.', '"', '\'', '\u{201c}', '\u{201d}', '\u{2018}',
-            '\u{2019}',
-        ]);
+        // Round 45 (R45-B, F3): the word trim
+        // also sheds the invisible/format set
+        // at its edges — a weekday word wearing
+        // one after its group ("(Monday)<Cf>",
+        // standing before the second date of a
+        // two-date line) is the word it names,
+        // so the second date reads instead of
+        // the first serving with the second
+        // noted.
+        let word = tokens[i].trim_matches(|c: char| {
+            [
+                '(', ')', '[', ']', '{', '}', ',', '.', '"', '\'', '\u{201c}', '\u{201d}',
+                '\u{2018}', '\u{2019}',
+            ]
+            .contains(&c)
+                || is_invisible_format_char(c)
+        });
         // Round 29 (R29-A, F3 = red team RT29-T1):
         // the weekday word of a bare phrase unit is
         // judged on the unglued token vector, as

@@ -2001,24 +2001,31 @@ fn unwrapped_leading_governor_group(text: &str) -> Option<String> {
             // November 8, 2026") was never reached,
             // where its ASCII twin is unwrapped and
             // governs.
-            // Round 45 (R45-C, F4 = red team
-            // RT45-C2): the skip set gains the
-            // witnessed suffix marks ("~", the
-            // ellipsis U+2026, the fullwidth tilde
-            // U+FF5E, the fullwidth asterisk
-            // U+FF0A) — but only between groups
-            // of the run: a governor group
-            // standing after an inert group
-            // wearing one ("(notes)~(cancelled)
-            // November 8, 2026") was never
-            // reached, where its clean twin is
-            // unwrapped and governs. A mark
-            // standing before the run's first
-            // group is not a separation and is
-            // not crossed.
-            let is_doorstep_suffix =
-                passed_group && matches!(c, '~' | '\u{2026}' | '\u{ff5e}' | '\u{ff0a}');
+            // Round 46 (R46-B, F2 = red team
+            // RT46-C1): the skip set gains the
+            // gap characters and the widened
+            // doorstep set — a governor group
+            // standing across a spaced doorstep
+            // ("(notes) ~(cancelled) November 8,
+            // 2026", "(notes)\u{a0}~(cancelled)
+            // ...", "(notes)\u{200b}~(cancelled)
+            // ...") was never reached, because
+            // the walk stopped at the space-
+            // family or invisible character
+            // standing before the suffix (or
+            // between the suffix and the group),
+            // where its glued twin is unwrapped
+            // and governs. The doorstep suffix
+            // itself still requires a passed
+            // group, as before; only the gap
+            // characters join the general skip
+            // set, and the shed in
+            // `shed_governor_doorstep_suffix`
+            // below is what removes the suffix
+            // from the bared line.
+            let is_doorstep_suffix = passed_group && is_governor_doorstep_suffix_char(c);
             if is_doorstep_suffix
+                || is_doorstep_gap_char(c)
                 || matches!(
                     c,
                     ' ' | '\t'
@@ -2222,6 +2229,36 @@ fn suffix_set_run(s: &str) -> usize {
         .sum()
 }
 
+/// Whether `c` is a member of the governor
+/// doorstep suffix set: the R45-C set ("~", the
+/// ellipsis U+2026, the fullwidth tilde U+FF5E,
+/// the fullwidth asterisk U+FF0A) plus `#` and
+/// its fullwidth twin U+FF03 (round 46, R46-B,
+/// F2 = red team RT46-C1: the spaced hole is
+/// the R45-C set PLUS `#`, and the fullwidth
+/// `#` serves glued and spaced exactly as the
+/// ASCII `#` does).
+fn is_governor_doorstep_suffix_char(c: char) -> bool {
+    matches!(
+        c,
+        '~' | '\u{2026}' | '\u{ff5e}' | '\u{ff0a}' | '#' | '\u{ff03}'
+    )
+}
+
+/// Whether `c` is a gap character at the
+/// governor's doorstep: ordinary whitespace
+/// (which covers the space, tab, NBSP, and
+/// U+2003 spacing variants) or a member of the
+/// R45-B invisible/format set (which covers
+/// U+200B and U+FEFF). A gap character carries
+/// no semantics at this seat; it only stands
+/// between a group's closer and the doorstep
+/// suffix, or between the suffix and the
+/// governor group.
+fn is_doorstep_gap_char(c: char) -> bool {
+    c.is_whitespace() || is_invisible_format_char(c)
+}
+
 /// Round 45 (R45-C, F4 = red team RT45-C2): the
 /// witnessed suffix run standing glued between a
 /// group and the governor group that follows it
@@ -2237,25 +2274,42 @@ fn suffix_set_run(s: &str) -> usize {
 /// where no plain reader sheds it, and the
 /// governed date served live. The closer gate
 /// keeps the shed to the witnessed shape: a run
-/// trailing a bare word ("notes~(cancelled)") or
-/// standing after whitespace keeps its standing
-/// reading.
+/// trailing a bare word ("notes~(cancelled)")
+/// keeps its standing reading.
+/// Round 46 (R46-B, F2 = red team RT46-C1):
+/// the shed widens to the SPACED doorstep —
+/// the set gains `#` and its fullwidth twin,
+/// and the run may stand spaced from its group
+/// and/or from the governor by gap characters
+/// (whitespace or invisible/format marks on
+/// either side of the suffix: "(notes)
+/// ~(cancelled)", "(notes)\u{200b}~(cancelled)",
+/// "(notes)~\u{200b}(cancelled)"). The scan
+/// walks back over gap characters and suffix
+/// characters together, requires at least one
+/// suffix character, and requires the group's
+/// closer immediately behind the gap run — so
+/// the bare-word exclusion above is unchanged,
+/// and a suffix standing after whitespace with
+/// no group behind it is still not shed.
 fn shed_governor_doorstep_suffix(buf: &mut String) {
-    let mut run_start = buf.len();
+    let mut seen_suffix = false;
+    let mut truncate_to = None;
     for (i, c) in buf.char_indices().rev() {
-        if matches!(c, '~' | '\u{2026}' | '\u{ff5e}' | '\u{ff0a}') {
-            run_start = i;
-        } else {
-            break;
+        if is_doorstep_gap_char(c) {
+            continue;
         }
+        if is_governor_doorstep_suffix_char(c) {
+            seen_suffix = true;
+            continue;
+        }
+        if seen_suffix && matches!(c, ')' | ']' | '}') {
+            truncate_to = Some(i + c.len_utf8());
+        }
+        break;
     }
-    if run_start < buf.len()
-        && buf[..run_start]
-            .chars()
-            .last()
-            .is_some_and(|c| matches!(c, ')' | ']' | '}'))
-    {
-        buf.truncate(run_start);
+    if let Some(end) = truncate_to {
+        buf.truncate(end);
     }
 }
 

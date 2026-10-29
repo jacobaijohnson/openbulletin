@@ -40799,6 +40799,172 @@ fn r45c_governor_last_controls_hold() {
     r40e_governed_silent("notes (notes)*(cancelled) November 8, 2026");
 }
 
+/// The R46-B spaced doorstep suffix set: the
+/// R45-C glued set plus `#` and its fullwidth
+/// twin U+FF03 (the fullwidth `#` serves glued
+/// and spaced on the base tree exactly as the
+/// ASCII `#` does, so it joins the set beside
+/// the fullwidth twins already in it).
+fn r46b_spaced_doorstep_suffixes() -> [&'static str; 7] {
+    ["~", "…", "~~", "～", "＊", "#", "＃"]
+}
+
+#[test]
+fn r46b_spaced_doorstep_suffix_shed_at_trailing_leading_midline() {
+    // Round 46 (R46-B, F2 MAJOR = red team
+    // RT46-C1): a judged suffix spaced from its
+    // inert group and glued to the following
+    // governor ("(notes) ~(cancelled)") disarms
+    // the governor on the base tree — the
+    // governed date serves live at trailing,
+    // leading, and mid-line seats, both routes.
+    // Every arm below reads exactly as its clean
+    // glued twin (governed, silent), both routes.
+    for s in r46b_spaced_doorstep_suffixes() {
+        let line = format!("November 8, 2026 (notes) {s}(cancelled)");
+        r40e_governed_silent(&line);
+        let line = format!("(notes) {s}(cancelled) November 8, 2026");
+        r40e_governed_silent(&line);
+        let line = format!("notes (notes) {s}(cancelled) November 8, 2026");
+        r40e_governed_silent(&line);
+    }
+}
+
+#[test]
+fn r46b_spaced_doorstep_other_governors() {
+    // Round 46 (R46-B, F2): the spaced doorstep
+    // disarms every governor word tried, not
+    // only "cancelled" — the red team witnessed
+    // "postponed" and "called off" serving at
+    // trailing on the base tree. Both govern
+    // silent here, both routes.
+    r40e_governed_silent("November 8, 2026 (notes) ~(postponed)");
+    r40e_governed_silent("November 8, 2026 (notes) ~(called off)");
+    r40e_governed_silent("(notes) ~(postponed) November 8, 2026");
+    r40e_governed_silent("notes (notes) ~(postponed) November 8, 2026");
+}
+
+#[test]
+fn r46b_spaced_doorstep_weekday_first() {
+    // Round 46 (R46-B, F2, weekday-first arms):
+    // `November 1, 2026 (Monday) ~(cancelled)`
+    // serves 2026-11-01 on the base tree, the
+    // governor disarmed. Every arm reads exactly
+    // as its clean same-seat twin, both routes:
+    // governed silent at trailing (the trailing
+    // governor-last company's standing reading,
+    // as the R45-C glued pin already states it),
+    // governed WITH the record at leading and
+    // mid-line (those seats' standing readings,
+    // which the spaced form already matched on
+    // the base tree and the cure must not move).
+    for s in r46b_spaced_doorstep_suffixes() {
+        let line = format!("November 1, 2026 (Monday) {s}(cancelled)");
+        r40e_governed_silent(&line);
+        let line = format!("(Monday) {s}(cancelled) November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("notes (Monday) {s}(cancelled) November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r46b_spaced_doorstep_spacing_variants() {
+    // Round 46 (R46-B, F2): the hole is
+    // spacing-agnostic — double space, tab,
+    // NBSP, U+2003, U+200B, U+FEFF between the
+    // group and the suffix all serve on the base
+    // tree. Every variant governs silent at
+    // trailing, leading, and mid-line, both
+    // routes (single space is pinned in the
+    // suffix test above).
+    for sep in ["  ", "\t", "\u{a0}", "\u{2003}", "\u{200b}", "\u{feff}"] {
+        let line = format!("November 8, 2026 (notes){sep}~(cancelled)");
+        r40e_governed_silent(&line);
+        let line = format!("(notes){sep}~(cancelled) November 8, 2026");
+        r40e_governed_silent(&line);
+        let line = format!("notes (notes){sep}~(cancelled) November 8, 2026");
+        r40e_governed_silent(&line);
+    }
+    r40e_governed_silent("November 1, 2026 (Monday)\u{a0}~(cancelled)");
+}
+
+#[test]
+fn r46b_doorstep_suffix_invisible_adjacent() {
+    // Round 46 (R46-B, F2): an invisible/format
+    // character on EITHER side of the doorstep
+    // suffix breaks even the glued R45-C cure
+    // on the base tree — the six characters the
+    // red team tried, at trailing, leading, and
+    // mid-line, both routes. Every arm governs
+    // silent here, both routes.
+    for inv in [
+        "\u{200b}", "\u{200c}", "\u{fe0f}", "\u{034f}", "\u{061c}", "\u{2060}",
+    ] {
+        let line = format!("November 8, 2026 (notes){inv}~(cancelled)");
+        r40e_governed_silent(&line);
+        let line = format!("November 8, 2026 (notes)~{inv}(cancelled)");
+        r40e_governed_silent(&line);
+        let line = format!("(notes){inv}~(cancelled) November 8, 2026");
+        r40e_governed_silent(&line);
+        let line = format!("(notes)~{inv}(cancelled) November 8, 2026");
+        r40e_governed_silent(&line);
+        let line = format!("notes (notes){inv}~(cancelled) November 8, 2026");
+        r40e_governed_silent(&line);
+        let line = format!("notes (notes)~{inv}(cancelled) November 8, 2026");
+        r40e_governed_silent(&line);
+    }
+    // Combined spacing + invisible forms: a
+    // space-family gap carrying an invisible
+    // mark before the suffix, and an invisible
+    // mark with a space after the suffix.
+    r40e_governed_silent("November 8, 2026 (notes)\u{a0}\u{200b}~(cancelled)");
+    r40e_governed_silent("(notes) \u{200b}~ (cancelled) November 8, 2026");
+    r40e_governed_silent("November 8, 2026 (notes) \u{200b}~ (cancelled)");
+}
+
+#[test]
+fn r46b_spaced_doorstep_controls_hold() {
+    // Round 46 (R46-B, F2 controls, witnessed
+    // holding on the base tree and pinned so the
+    // cure cannot move them): the spaced-both-
+    // sides form governs at every seat; the
+    // governor-first spaced neighbour governs
+    // (silent at trailing, with the record at
+    // leading); base-trailing stays twin-equal
+    // (the spaced notes+governor company serves
+    // the resolution 2026-11-15 exactly as its
+    // clean twin does, and the weekday-carrying
+    // base company refuses with the record in
+    // both forms — base-trailing is NOT aligned
+    // with trailing by analogy); and the
+    // asterisk and dash spaced forms govern
+    // through their own path, untouched here.
+    r40e_governed_silent("November 8, 2026 (notes) ~ (cancelled)");
+    r40e_governed_silent("(notes) ~ (cancelled) November 8, 2026");
+    r40e_governed_silent("notes (notes) ~ (cancelled) November 8, 2026");
+    r40e_governed_silent("November 1, 2026 (cancelled) ~(Monday)");
+    r40e_governed_with_record("(notes) ~(Monday) November 1, 2026", "Monday", nov(1));
+    r40e_governed_with_record("November 1, 2026 (notes)~(Monday)", "Monday", nov(1));
+    r40e_serves_silent(
+        "Sunday after November 8, 2026 (notes) ~(cancelled)",
+        nov(15),
+    );
+    r40e_serves_silent("Sunday after November 8, 2026 (notes) (cancelled)", nov(15));
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (Monday) ~(cancelled)",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_with_record(
+        "Sunday after November 1, 2026 (Monday) (cancelled)",
+        "Monday",
+        nov(1),
+    );
+    r40e_governed_silent("November 8, 2026 (notes) *(cancelled)");
+    r40e_governed_silent("November 8, 2026 (notes) -(cancelled)");
+}
+
 #[test]
 fn r45e_quoted_members_complete_the_governor_free_leading_sequence() {
     // Round 45 (R45-E, F6 MINOR = review MINOR 1):

@@ -1062,6 +1062,27 @@ fn tail_gap_zip64_record(
 /// the remaining gap and the walk stands that much
 /// earlier. None where no directory closes the
 /// frame that way.
+///
+/// Round 45, F7: junk standing after the real
+/// directory — bytes that are neither a directory
+/// nor a signature record — breaks the exact close
+/// above, but the frame still names a directory:
+/// the complete directory standing wholly after the
+/// declared directory's accounted end, walking the
+/// declared count for exactly the declared size,
+/// whose accounted end stands nearest the record.
+/// The bytes between its end and the record are the
+/// junk, and no other complete directory stands
+/// nearer. The junk arm below scans the frame's end
+/// backward for it: for each candidate end the
+/// directory starting one declared size earlier is
+/// the only start that can close at that end, so
+/// the first start that walks exactly, with its
+/// accounted end at or before the record, is the
+/// nearest such directory. A tail-gap host whose
+/// gap holds no complete directory finds nothing
+/// here, and its declared directory stands as it
+/// always has.
 fn frame_closing_directory_start(
     bytes: &[u8],
     declared_extent_end: usize,
@@ -1103,6 +1124,42 @@ fn frame_closing_directory_start(
         if extent_end == record_at {
             return Some(start);
         }
+    }
+    // Round 45, F7: the junk arm. The exact arms
+    // above found nothing, so the frame's directory
+    // — if one stands — ends short of the record
+    // with junk between its end and the record. Scan
+    // the candidate end backward from the record: a
+    // directory closing at `end` starts exactly one
+    // declared size earlier, so only that start can
+    // answer for `end`, and the first start that
+    // walks the declared count for exactly the
+    // declared size (a signature record at the
+    // walk's end counted in that size or not), with
+    // its accounted end at or before the record, is
+    // the complete directory nearest the record. The
+    // lower bound keeps every candidate wholly at or
+    // after the declared directory's accounted end,
+    // the same guard the exact arms carry.
+    let mut end = record_at;
+    let lowest_end = declared_extent_end.checked_add(cd_size)?;
+    while end >= lowest_end {
+        let start = end - cd_size;
+        if bytes[start..].starts_with(b"PK\x01\x02") {
+            if let Some((walk_end, extent_end)) =
+                directory_walk_and_signature_end(bytes, start, total)
+            {
+                if (walk_end - start == cd_size || extent_end - start == cd_size)
+                    && extent_end <= record_at
+                {
+                    return Some(start);
+                }
+            }
+        }
+        if end == lowest_end {
+            break;
+        }
+        end -= 1;
     }
     None
 }
@@ -5643,6 +5700,223 @@ mod tests {
                 central_directory(&bytes),
                 None,
                 "{set} badlocator: no directory derives, the uniform refusal"
+            );
+        }
+    }
+
+    /// The position of the zip64 record at or after
+    /// `from` in a round-44/45 craft: the first
+    /// `PK\x06\x06` whose fixed 56 bytes are
+    /// immediately followed by the locator's
+    /// `PK\x06\x07`.
+    fn r45g_record_at(bytes: &[u8], from: usize) -> usize {
+        let mut at = from;
+        while at + 76 <= bytes.len() {
+            if bytes[at..].starts_with(b"PK\x06\x06") && bytes[at + 56..].starts_with(b"PK\x06\x07")
+            {
+                return at;
+            }
+            at += 1;
+        }
+        panic!("no zip64 record at or after {from}");
+    }
+
+    /// One digital-signature record in the review
+    /// lane's shape: `PK\x05\x05`, a 4-byte data
+    /// length, and four data bytes.
+    fn r45g_signature_record() -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"PK\x05\x05");
+        out.extend_from_slice(&4u16.to_le_bytes());
+        out.extend_from_slice(b"sign");
+        out
+    }
+
+    /// A round-44 craft with `insert` standing
+    /// between its real directory and its zip64
+    /// record: the insert's bytes go in at the
+    /// record's position, the record's declared
+    /// directory size is replaced when `new_cd_size`
+    /// is given, and the locator's declared record
+    /// offset moves by the insert's length, so the
+    /// pair still names the record at its true
+    /// position. Nothing else moves: the saturated
+    /// end record names no position.
+    fn r45g_splice_tail(
+        bytes: &[u8],
+        real_cd: usize,
+        insert: &[u8],
+        new_cd_size: Option<u64>,
+    ) -> Vec<u8> {
+        let record_at = r45g_record_at(bytes, real_cd);
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(&bytes[..record_at]);
+        out.extend_from_slice(insert);
+        out.extend_from_slice(&bytes[record_at..]);
+        let new_record_at = record_at + insert.len();
+        if let Some(size) = new_cd_size {
+            out[new_record_at + 40..new_record_at + 48].copy_from_slice(&size.to_le_bytes());
+        }
+        let locator_at = new_record_at + 56;
+        let declared = u64::from_le_bytes(
+            out[locator_at + 8..locator_at + 16]
+                .try_into()
+                .expect("the locator offset field stands"),
+        );
+        out[locator_at + 8..locator_at + 16]
+            .copy_from_slice(&(declared + insert.len() as u64).to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn r45g_a_zip64_frame_closing_survives_junk_after_the_real_directory() {
+        // Round 45, F7 (review MINOR 4): the eighth
+        // generation of the archive discipline — the
+        // generation-7 craft (a zip64 record pointing
+        // at a gap plant, the real directory standing
+        // after it) plus 37 junk bytes between the
+        // real directory and the zip64 record: the
+        // frame no longer closes, the R44-G
+        // frame-closing search finds nothing, and the
+        // declared plant directory is judged again.
+        // The cure is frame-closing across junk: the
+        // complete directory standing wholly after
+        // the declared directory's accounted end,
+        // walking the declared count for exactly the
+        // declared size, whose accounted end stands
+        // nearest the record, is the frame's
+        // directory, whatever unaccounted bytes stand
+        // between its end and the record. The pin
+        // drives the witnessed 37 bytes and two
+        // further lengths (1 and 1000) so the cure
+        // cannot be length-specific, and carries the
+        // controls the cure must not move: the
+        // generation-7 craft itself, the signature
+        // arms (V1 uncounted-signature wrongcd judges
+        // the real directory; V2 counted-signature
+        // wrongcd derives nothing, the standing
+        // refusal), the legitimate signed shapes
+        // (V2L counted and V2U uncounted, both with
+        // the TRUE offset), plain zip64-real, and
+        // the V5 tail-gap host (a gap standing after
+        // its own directory, the record declaring
+        // it). Every judged shape is compared spot
+        // for spot against its clean control,
+        // checksums included, and the prefix-free
+        // view must derive the same directory with
+        // the same spots.
+        for (set, entries, key, plant) in r43d_entry_sets() {
+            let slices: Vec<(&[u8], &[u8], u32)> = entries
+                .iter()
+                .map(|(name, data, crc)| (name.as_slice(), data.as_slice(), *crc))
+                .collect();
+            let plant_ref = (plant.0.as_slice(), plant.1);
+            let (clean, clean_cd) = r44g_archive(&slices, key, plant_ref, "clean");
+            let control = central_directory(&clean).expect("the clean control derives");
+            assert_eq!(control.cd_start, clean_cd, "{set}: the control stands");
+            let clean_spots = central_spots(&clean);
+
+            let (real, real_cd) = r44g_archive(&slices, key, plant_ref, "zip64real");
+            let directory = central_directory(&real).expect("the zip64-real control derives");
+            assert_eq!(
+                directory.cd_start, real_cd,
+                "{set} zip64real: the true directory is judged"
+            );
+            assert_eq!(central_spots(&real), clean_spots, "{set} zip64real spots");
+
+            let (wrongcd, real_cd) = r44g_archive(&slices, key, plant_ref, "wrongcd");
+            let centrals_len = (r45g_record_at(&wrongcd, real_cd) - real_cd) as u64;
+            let directory = central_directory(&wrongcd).expect("the generation-7 craft derives");
+            assert_eq!(
+                directory.cd_start, real_cd,
+                "{set} wrongcd: the frame's directory is judged, not the gap plant"
+            );
+            assert_eq!(central_spots(&wrongcd), clean_spots, "{set} wrongcd spots");
+
+            for junk_len in [1usize, 37, 1000] {
+                let junk = vec![b'J'; junk_len];
+                let bytes = r45g_splice_tail(&wrongcd, real_cd, &junk, None);
+                let directory =
+                    central_directory(&bytes).expect("the junk-after-directory craft derives");
+                assert_eq!(
+                    directory.cd_start, real_cd,
+                    "{set} junk{junk_len}: the frame's directory is judged, not the gap plant"
+                );
+                assert_eq!(
+                    central_spots(&bytes),
+                    clean_spots,
+                    "{set} junk{junk_len}: the judged spots are the clean control's"
+                );
+                let view = prefix_free(&bytes);
+                let view_directory =
+                    central_directory(&view).expect("the junk craft's view derives its directory");
+                assert_eq!(
+                    view_directory.cd_start, directory.cd_start,
+                    "{set} junk{junk_len}: the view derives the judged directory"
+                );
+                assert_eq!(
+                    central_spots(&view),
+                    clean_spots,
+                    "{set} junk{junk_len}: the view's judged spots are the clean control's"
+                );
+            }
+
+            let sig = r45g_signature_record();
+            let bytes = r45g_splice_tail(&wrongcd, real_cd, &sig, None);
+            let directory =
+                central_directory(&bytes).expect("the V1 uncounted-signature craft derives");
+            assert_eq!(
+                directory.cd_start, real_cd,
+                "{set} V1: the real directory is judged past the signature record"
+            );
+            assert_eq!(central_spots(&bytes), clean_spots, "{set} V1 spots");
+
+            let bytes = r45g_splice_tail(&wrongcd, real_cd, &sig, Some(centrals_len + 10));
+            assert_eq!(
+                central_directory(&bytes),
+                None,
+                "{set} V2: the counted-signature wrongcd derives nothing"
+            );
+
+            let (real, real_cd) = r44g_archive(&slices, key, plant_ref, "zip64real");
+            let real_centrals = (r45g_record_at(&real, real_cd) - real_cd) as u64;
+            let bytes = r45g_splice_tail(&real, real_cd, &sig, Some(real_centrals + 10));
+            let directory =
+                central_directory(&bytes).expect("the V2L legitimate counted-signature derives");
+            assert_eq!(
+                directory.cd_start, real_cd,
+                "{set} V2L: the true directory is judged"
+            );
+            assert_eq!(central_spots(&bytes), clean_spots, "{set} V2L spots");
+
+            let bytes = r45g_splice_tail(&real, real_cd, &sig, None);
+            let directory =
+                central_directory(&bytes).expect("the V2U legitimate uncounted-signature derives");
+            assert_eq!(
+                directory.cd_start, real_cd,
+                "{set} V2U: the true directory is judged"
+            );
+            assert_eq!(central_spots(&bytes), clean_spots, "{set} V2U spots");
+
+            let gap = vec![b'H'; 4000];
+            let bytes = r45g_splice_tail(&real, real_cd, &gap, None);
+            let directory = central_directory(&bytes).expect("the V5 tail-gap host derives");
+            assert_eq!(
+                directory.cd_start, real_cd,
+                "{set} V5: the host's own directory stands past its tail gap"
+            );
+            assert_eq!(central_spots(&bytes), clean_spots, "{set} V5 spots");
+            let view = prefix_free(&bytes);
+            let view_directory =
+                central_directory(&view).expect("the V5 host's view derives its directory");
+            assert_eq!(
+                view_directory.cd_start, directory.cd_start,
+                "{set} V5: the view derives the judged directory"
+            );
+            assert_eq!(
+                central_spots(&view),
+                clean_spots,
+                "{set} V5: the view's judged spots are the clean control's"
             );
         }
     }

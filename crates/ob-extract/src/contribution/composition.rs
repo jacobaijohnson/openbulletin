@@ -2536,6 +2536,248 @@ pub(super) fn fullwidth_date_groups_as_ascii(
     Some(redress_fullwidth_pairs(text, &chars, &pairs))
 }
 
+/// `text` with each witnessed CJK/mixed dress
+/// pair re-dressed as its ASCII twin pair —
+/// round 45 (R45-F, F9 = red team RT45-C3):
+/// the base-trailing and leading company
+/// walks consult only the seven matched
+/// pairs (paren, fullwidth, ASCII bracket and
+/// brace, curly quotes), so a company in any
+/// other witnessed dress collapsed at those
+/// two seats while agreeing at trailing and
+/// mid-line. The witnessed set here is
+/// exactly the red team's: six matched pairs
+/// (the five CJK pairs U+300A/U+300B,
+/// U+3010/U+3011, U+3014/U+3015,
+/// U+300E/U+300F, U+3008/U+3009, plus
+/// U+00AB/U+00BB) and eight mixed pairs (the
+/// fullwidth/ASCII crosses U+FF08 with ")",
+/// "(" with U+FF09, U+FF3B with "]", "[" with
+/// U+FF3D, U+FF5B with "}", "{" with U+FF5D,
+/// and the pure-ASCII crosses "(" with "]"
+/// and "[" with ")"). No other pair is
+/// re-dressed here: the review lane's exotic
+/// pairs («» aside, which this batch names)
+/// keep their standing closed-dress limit at
+/// every seat, and crossed pairs outside the
+/// witnessed set balance nothing, as
+/// `balanced_spans` reads them. Matched
+/// exotic pairs re-dress as parens; a mixed
+/// pair re-dresses its exotic side to its
+/// ASCII side's kind, and a pure-ASCII mixed
+/// pair re-dresses its closer to its
+/// opener's kind. Byte-length preserving, in
+/// the fullwidth shape: each exotic bracket
+/// stands at its first byte padded with
+/// spaces («» two bytes, the rest three),
+/// ASCII sides stand byte for byte, and every
+/// span computed against the re-dressed text
+/// stands at its written offset in the
+/// original. The consultations are exactly
+/// the two seats that split — the
+/// base-trailing garnish walk and the
+/// leading governor-company judgment — each
+/// after its standing fullwidth re-dress, so
+/// a matched fullwidth pair is already ASCII
+/// when this runs and only its mixed forms
+/// reach this matcher. Returns None when no
+/// witnessed pair balances in `text`.
+pub(super) fn cjk_mixed_groups_as_ascii(text: &str) -> Option<String> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let pairs = cjk_mixed_pairs(&chars);
+    if pairs.is_empty() {
+        return None;
+    }
+    Some(redress_cjk_mixed_pairs(text, &chars, &pairs))
+}
+
+/// The balanced witnessed pairs of `text`, as
+/// (open, close) char indices, in the
+/// `fullwidth_pairs` shape: a closer closes
+/// the opener it matches, and a closer
+/// matching nothing on the stack closes
+/// nothing. ASCII openers ride the stack
+/// with their own closers so a mixed pair's
+/// ASCII side pairs correctly; a standing
+/// ASCII pair is matched but not recorded,
+/// and only witnessed pairs are recorded.
+fn cjk_mixed_pairs(chars: &[(usize, char)]) -> Vec<(usize, usize)> {
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut stack: Vec<(usize, char)> = Vec::new();
+    for (idx, (_, c)) in chars.iter().enumerate() {
+        let want = match c {
+            '\u{300a}' => Some('\u{300b}'),
+            '\u{3010}' => Some('\u{3011}'),
+            '\u{3014}' => Some('\u{3015}'),
+            '\u{300e}' => Some('\u{300f}'),
+            '\u{3008}' => Some('\u{3009}'),
+            '\u{00ab}' => Some('\u{00bb}'),
+            '\u{ff08}' => Some('\u{ff09}'),
+            '\u{ff3b}' => Some('\u{ff3d}'),
+            '\u{ff5b}' => Some('\u{ff5d}'),
+            '(' => Some(')'),
+            '[' => Some(']'),
+            '{' => Some('}'),
+            _ => None,
+        };
+        if let Some(want) = want {
+            stack.push((idx, want));
+            continue;
+        }
+        let is_closer = matches!(
+            c,
+            ')' | ']'
+                | '}'
+                | '\u{300b}'
+                | '\u{3011}'
+                | '\u{3015}'
+                | '\u{300f}'
+                | '\u{3009}'
+                | '\u{00bb}'
+                | '\u{ff09}'
+                | '\u{ff3d}'
+                | '\u{ff5d}'
+        );
+        if !is_closer {
+            continue;
+        }
+        let Some(&(open, want)) = stack.last() else {
+            continue;
+        };
+        if want == *c {
+            stack.pop();
+            let (_, open_c) = chars[open];
+            if is_cjk_mixed_bracket(open_c) || is_cjk_mixed_bracket(*c) {
+                pairs.push((open, idx));
+            }
+        } else if matches!(
+            (chars[open].1, *c),
+            ('(', ']')
+                | ('[', ')')
+                | ('\u{ff08}', ')')
+                | ('\u{ff3b}', ']')
+                | ('\u{ff5b}', '}')
+                | ('(', '\u{ff09}')
+                | ('[', '\u{ff3d}')
+                | ('{', '\u{ff5d}')
+        ) {
+            stack.pop();
+            pairs.push((open, idx));
+        }
+    }
+    pairs
+}
+
+/// Whether `c` is an exotic side of a
+/// witnessed pair: a CJK or guillemet bracket,
+/// or a fullwidth bracket.
+fn is_cjk_mixed_bracket(c: char) -> bool {
+    matches!(
+        c,
+        '\u{300a}'
+            | '\u{300b}'
+            | '\u{3010}'
+            | '\u{3011}'
+            | '\u{3014}'
+            | '\u{3015}'
+            | '\u{300e}'
+            | '\u{300f}'
+            | '\u{3008}'
+            | '\u{3009}'
+            | '\u{00ab}'
+            | '\u{00bb}'
+            | '\u{ff08}'
+            | '\u{ff09}'
+            | '\u{ff3b}'
+            | '\u{ff3d}'
+            | '\u{ff5b}'
+            | '\u{ff5d}'
+    )
+}
+
+/// `text` with the given witnessed pairs
+/// re-dressed as their ASCII twins,
+/// byte-length preserving (see
+/// `cjk_mixed_groups_as_ascii`). The build
+/// answers its two membership questions (is
+/// this char a pair's opener? its closer?)
+/// from precomputed marks, one pass over the
+/// pairs and one pass over the chars, in the
+/// R45-D shape — never a rescan per char.
+/// A char index is at most one pair's opener
+/// or closer (stack-matched pairs share no
+/// index), and where an index stood as both,
+/// the closer mark is only written where no
+/// opener mark stands, so the opener wins as
+/// in `redress_fullwidth_pairs`.
+fn redress_cjk_mixed_pairs(
+    text: &str,
+    chars: &[(usize, char)],
+    pairs: &[(usize, usize)],
+) -> String {
+    let mut open_rep: Vec<Option<&'static str>> = vec![None; chars.len()];
+    let mut close_rep: Vec<Option<&'static str>> = vec![None; chars.len()];
+    for &(open, close) in pairs {
+        let open_c = chars[open].1;
+        let close_c = chars[close].1;
+        let (open_str, close_str): (Option<&'static str>, Option<&'static str>) =
+            match (open_c, close_c) {
+                // Matched exotic pair: parens.
+                ('\u{300a}', '\u{300b}')
+                | ('\u{3010}', '\u{3011}')
+                | ('\u{3014}', '\u{3015}')
+                | ('\u{300e}', '\u{300f}')
+                | ('\u{3008}', '\u{3009}')
+                | ('\u{00ab}', '\u{00bb}') => {
+                    let pad = if open_c == '\u{00ab}' { "( " } else { "(  " };
+                    let cpad = if close_c == '\u{00bb}' { ") " } else { ")  " };
+                    (Some(pad), Some(cpad))
+                }
+                // Matched fullwidth pair (only
+                // reached when the standing
+                // fullwidth re-dress did not run
+                // first): its own ASCII kind.
+                ('\u{ff08}', '\u{ff09}') => (Some("(  "), Some(")  ")),
+                ('\u{ff3b}', '\u{ff3d}') => (Some("[  "), Some("]  ")),
+                ('\u{ff5b}', '\u{ff5d}') => (Some("{  "), Some("}  ")),
+                // Mixed: exotic opener, ASCII
+                // closer — the opener takes
+                // the closer's kind.
+                ('\u{ff08}', ')') => (Some("(  "), None),
+                ('\u{ff3b}', ']') => (Some("[  "), None),
+                ('\u{ff5b}', '}') => (Some("{  "), None),
+                // Mixed: ASCII opener, exotic
+                // closer — the closer takes
+                // the opener's kind.
+                ('(', '\u{ff09}') => (None, Some(")  ")),
+                ('[', '\u{ff3d}') => (None, Some("]  ")),
+                ('{', '\u{ff5d}') => (None, Some("}  ")),
+                // Pure-ASCII mixed: the closer
+                // takes the opener's kind.
+                ('(', ']') => (None, Some(")")),
+                ('[', ')') => (None, Some("]")),
+                _ => (None, None),
+            };
+        if open_str.is_some() {
+            open_rep[open] = open_str;
+        }
+        if close_str.is_some() && open_rep[close].is_none() {
+            close_rep[close] = close_str;
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    for (idx, (_, c)) in chars.iter().enumerate() {
+        if let Some(rep) = open_rep[idx] {
+            out.push_str(rep);
+        } else if let Some(rep) = close_rep[idx] {
+            out.push_str(rep);
+        } else {
+            out.push(*c);
+        }
+    }
+    out
+}
+
 /// `text` with each quoted COMPANY MEMBER span
 /// re-dressed as its bracket twin — the quote
 /// characters at the span's edges replaced by "("
@@ -4825,6 +5067,28 @@ pub(super) fn leading_governor_company_judgment(
     // standing reading untouched.
     let redressed = fullwidth_groups_as_ascii(text);
     let text = redressed.as_deref().unwrap_or(text);
+    // Round 45 (R45-F, F9 MINOR = red team
+    // RT45-C3): a company standing in
+    // CJK/mixed dress pairs
+    // ("《cancelled》《Monday》 November 1,
+    // 2026") is no group to the walk below —
+    // its governor governed through the token
+    // readers with the weekday record lost.
+    // The walk is taken on the CJK/mixed
+    // re-dress (`cjk_mixed_groups_as_ascii`)
+    // after the fullwidth re-dress above:
+    // the walk returns no text, only the
+    // framed date and the record, so the
+    // re-dress is local to the judgment.
+    // This walk's own holdings stand on the
+    // re-dressed text exactly as on the
+    // standing text — it answers only where
+    // a governor AND a weekday group stand
+    // in the company, so a lone exotic group
+    // at this slot keeps its standing reading
+    // untouched.
+    let redressed_exotic = cjk_mixed_groups_as_ascii(text);
+    let text = redressed_exotic.as_deref().unwrap_or(text);
     let mut rest = skip_framing_garnish(text.trim_start());
     let mut governor_seen = false;
     let mut crossed_seen = false;
@@ -7340,10 +7604,153 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
             tail_garnish[idx] = good;
         }
     }
+    // Round 45 (R45-F, F9 = red team RT45-C3):
+    // a witnessed CJK/mixed pair standing
+    // as a member of an immediately adjacent
+    // two-group company is a closed group to
+    // this pass, not a stray mark, in both
+    // directions: an ASCII closer that closes
+    // such a pair — a fullwidth opener's
+    // ASCII closer ("（Monday)"), or a
+    // pure-ASCII mixed pair's closer
+    // ("(Monday]") — is never spaced, and an
+    // ASCII opener that a witnessed exotic
+    // closer closes ("(Monday）") is never
+    // spaced as an unmatched opener either.
+    // Without this the company does not
+    // survive whole to the readers below:
+    // the base-trailing walk's garnish lost
+    // its line-final closer here (leaving the
+    // company unclosed), and the leading
+    // walk's company lost its openers here
+    // (leaving bare words). The shape test
+    // is what keeps this narrow: a lone
+    // mismatched group — round 35's
+    // "(November 8, 2026, cancelled]", whose
+    // stray closer the adjudicated readings
+    // depend on — is no company member and
+    // keeps its standing test below. A pair
+    // counts as a company member when the
+    // next character after its closer opens
+    // a group (it is the company's first
+    // member), or when the character before
+    // its opener closes a group and its own
+    // inner text is a weekday word (it is
+    // the company's second member, behind a
+    // standing or witnessed first group) —
+    // either adjacency across at most the
+    // respacing's whitespace, never across
+    // words.
+    // The tables are built once from the one
+    // witnessed-pair walk
+    // (`cjk_mixed_pairs`): each preserved
+    // pair's closer byte position maps to
+    // its opener's byte position — the
+    // ASCII-closer table for closers this
+    // loop already visits, and the
+    // exotic-closer table, keyed by the
+    // closer's first byte, for closers it
+    // otherwise never visits. Where the
+    // opener stands on this stack's top it
+    // is popped as a matched close, exactly
+    // as a standing pair's is; where it does
+    // not — an exotic opener never stands
+    // on this ASCII stack — the closer is
+    // simply left standing, never spaced.
+    let (witnessed_closer_opener, witnessed_exotic_closer_opener): (
+        Vec<Option<usize>>,
+        Vec<Option<usize>>,
+    ) = {
+        let chars: Vec<(usize, char)> = text.char_indices().collect();
+        let mut ascii_table: Vec<Option<usize>> = vec![None; bytes.len()];
+        let mut exotic_table: Vec<Option<usize>> = vec![None; bytes.len()];
+        for (open, close) in cjk_mixed_pairs(&chars) {
+            // Adjacency is read past the space
+            // the line's respacing puts between
+            // adjacent groups before this pass
+            // runs ("(cancelled)(Sunday)" reaches
+            // here as "(cancelled) (Sunday)"):
+            // a company member is followed by,
+            // or preceded by, a group across at
+            // most whitespace, never across
+            // words.
+            let mut after = close + 1;
+            while chars
+                .get(after)
+                .is_some_and(|&(_, c)| c == ' ' || c == '\t')
+            {
+                after += 1;
+            }
+            let followed_by_opener = chars.get(after).is_some_and(|&(_, c)| {
+                matches!(
+                    c,
+                    '(' | '['
+                        | '{'
+                        | '\u{ff08}'
+                        | '\u{ff3b}'
+                        | '\u{ff5b}'
+                        | '\u{300a}'
+                        | '\u{3010}'
+                        | '\u{3014}'
+                        | '\u{300e}'
+                        | '\u{3008}'
+                        | '\u{00ab}'
+                )
+            });
+            let mut before = open;
+            while before > 0 && matches!(chars[before - 1].1, ' ' | '\t') {
+                before -= 1;
+            }
+            let preceded_by_closer = before > 0
+                && matches!(
+                    chars[before - 1].1,
+                    ')' | ']'
+                        | '}'
+                        | '\u{ff09}'
+                        | '\u{ff3d}'
+                        | '\u{ff5d}'
+                        | '\u{300b}'
+                        | '\u{3011}'
+                        | '\u{3015}'
+                        | '\u{300f}'
+                        | '\u{3009}'
+                        | '\u{00bb}'
+                );
+            let inner_is_weekday = {
+                let inner: String = chars[open + 1..close].iter().map(|&(_, c)| c).collect();
+                matches!(
+                    inner.trim().to_lowercase().as_str(),
+                    "monday"
+                        | "tuesday"
+                        | "wednesday"
+                        | "thursday"
+                        | "friday"
+                        | "saturday"
+                        | "sunday"
+                )
+            };
+            if !(followed_by_opener || (preceded_by_closer && inner_is_weekday)) {
+                continue;
+            }
+            let close_c = chars[close].1;
+            if matches!(close_c, ')' | ']' | '}') {
+                ascii_table[chars[close].0] = Some(chars[open].0);
+            } else if matches!(chars[open].1, '(' | '[' | '{') {
+                exotic_table[chars[close].0] = Some(chars[open].0);
+            }
+        }
+        (ascii_table, exotic_table)
+    };
     let mut stack: Vec<usize> = Vec::new();
     let mut closed_openers: Vec<usize> = Vec::new();
     let mut stray: Vec<usize> = Vec::new();
     for (i, &b) in bytes.iter().enumerate() {
+        if let Some(open_byte) = witnessed_exotic_closer_opener[i] {
+            if stack.last() == Some(&open_byte) {
+                closed_openers.push(stack.pop().expect("a matched opener stands"));
+            }
+            continue;
+        }
         if is_group_opener(b) {
             stack.push(i);
             continue;
@@ -7354,6 +7761,14 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
                 .is_some_and(|&open| group_closer(bytes[open]) == b)
             {
                 closed_openers.push(stack.pop().expect("a matched opener stands"));
+            } else if let Some(open_byte) = witnessed_closer_opener[i] {
+                if stack.last() == Some(&open_byte) {
+                    closed_openers.push(stack.pop().expect("a matched opener stands"));
+                }
+                // Otherwise the opener is exotic
+                // (never on this stack) or the
+                // stack has desynced around it;
+                // either way the closer stands.
             } else if stray_closer_is_spaced(text, i, &tail_garnish) {
                 // Round 36 (R36-F, F8 = review R36-8):
                 // the stray closer glued to a word's

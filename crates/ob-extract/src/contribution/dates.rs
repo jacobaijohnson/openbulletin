@@ -881,7 +881,28 @@ fn base_trailing_sequence_mismatch(
     // re-dress is local to it, and the quoted
     // consultation below then reads the garnish
     // with its groups standing as written.
-    let mut garnish = match fullwidth_groups_as_ascii(&garnish) {
+    let garnish = match fullwidth_groups_as_ascii(&garnish) {
+        Some(redressed) => redressed,
+        None => garnish,
+    };
+    // Round 45 (R45-F, F9 MINOR = red team
+    // RT45-C3): a company standing in the
+    // garnish in CJK/mixed dress pairs —
+    // "《cancelled》《Monday》", and the
+    // mixed dress "(cancelled)《Monday》" —
+    // is no bracket span to the walk below,
+    // so the company collapsed and the
+    // resolution served in silence where the
+    // ASCII twin refuses with the record.
+    // The garnish is re-dressed
+    // (`cjk_mixed_groups_as_ascii`,
+    // composition.rs) after its standing
+    // fullwidth re-dress — it is this walk's
+    // own string, so the re-dress is local
+    // to it, and the quoted consultations
+    // below then read the garnish with its
+    // groups standing as written.
+    let mut garnish = match cjk_mixed_groups_as_ascii(&garnish) {
         Some(redressed) => redressed,
         None => garnish,
     };

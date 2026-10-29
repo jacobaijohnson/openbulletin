@@ -40165,11 +40165,21 @@ fn r44e_scope_controls_unmoved() {
     // record, and the trailing-alone exotic group
     // still reads as the bare phrase with the
     // group's date standing outside it.
-    for (o, c) in [
-        ("\u{ab}", "\u{bb}"),
-        ("\u{300c}", "\u{300d}"),
-        ("\u{27ea}", "\u{27eb}"),
-    ] {
+    // Round 45 (R45-F, F9 = red team RT45-C3)
+    // RE-BASES the «» cells of this control, and
+    // only those cells: the round-45 synthesis
+    // names «» among the splitting dresses and
+    // carries adjudication 8 forward with F9
+    // scoped as its exception ("exotic dress
+    // pairs uniform at the arms the review
+    // probed — F9 scopes the exception"), so
+    // the «» company seats now refuse / govern
+    // WITH the record, as their paren twins do
+    // (the new assertions are stricter than the
+    // silent ones they replace, not weaker).
+    // 「」 and ⟪⟫ are not in F9's set and keep
+    // every arm below exactly as written.
+    for (o, c) in [("\u{300c}", "\u{300d}"), ("\u{27ea}", "\u{27eb}")] {
         let line = format!("Sunday after November 1, 2026 {o}cancelled{c}{o}Monday{c}");
         r40e_serves_silent(&line, nov(8));
         let line = format!("{o}cancelled{c}{o}Monday{c} November 1, 2026");
@@ -40198,6 +40208,34 @@ fn r44e_scope_controls_unmoved() {
             "{line}: the group's date stands as a second date"
         );
     }
+    // The «» cells, re-based by R45-F (see the
+    // head note): the company seats refuse /
+    // govern WITH the record, as their paren
+    // twins do. The alone arm is NOT re-based
+    // — F9 claims no trailing-alone seat, and
+    // the «» group still reads as the bare
+    // phrase with the group's date standing
+    // outside it.
+    let line = "Sunday after November 1, 2026 \u{ab}cancelled\u{bb}\u{ab}Monday\u{bb}";
+    r40e_governed_with_record(line, "Monday", nov(1));
+    let line = "\u{ab}cancelled\u{bb}\u{ab}Monday\u{bb} November 1, 2026";
+    r40e_governed_with_record(line, "Monday", nov(1));
+    let line = "next Sunday \u{ab}November 8, 2026\u{bb}";
+    let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+    let parsed = parse_contribution(&text, today()).expect("parses");
+    assert!(
+        parsed.for_date.is_some(),
+        "{line}: the bare phrase still serves"
+    );
+    assert_eq!(
+        parsed.for_sunday_parenthesized_date, None,
+        "{line}: no parenthesized memory"
+    );
+    assert_eq!(
+        parsed.for_sunday_second_dates,
+        vec![nov(8)],
+        "{line}: the group's date stands as a second date"
+    );
     // (2) The seats this batch does NOT claim,
     // witnessed standing on the base tree and
     // stated in the batch record's reach
@@ -41041,4 +41079,246 @@ fn r45e_word_prefix_neighbour_and_agreeing_whole_cloth_unmoved() {
         c.keep_through_weekday_mismatch, None,
         "{agree_whole}: no Keep record is minted"
     );
+}
+
+fn r45f_dress_pairs() -> [(&'static str, &'static str); 14] {
+    // Round 45 (R45-F, F9 = red team RT45-C3):
+    // the witnessed dress set — six matched
+    // pairs (the five CJK pairs plus «», which
+    // the synthesis names in F9 and which
+    // splits identically at every witnessed
+    // arm on the base tree) and eight mixed
+    // pairs (fullwidth/ASCII crosses and the
+    // two pure-ASCII crosses). No other pair
+    // is admitted by this batch.
+    [
+        ("\u{300a}", "\u{300b}"),
+        ("\u{3010}", "\u{3011}"),
+        ("\u{3014}", "\u{3015}"),
+        ("\u{300e}", "\u{300f}"),
+        ("\u{3008}", "\u{3009}"),
+        ("\u{00ab}", "\u{00bb}"),
+        ("\u{ff08}", ")"),
+        ("(", "\u{ff09}"),
+        ("\u{ff3b}", "]"),
+        ("[", "\u{ff3d}"),
+        ("\u{ff5b}", "}"),
+        ("{", "\u{ff5d}"),
+        ("(", "]"),
+        ("[", ")"),
+    ]
+}
+
+#[test]
+fn r45f_cjk_mixed_dress_base_trailing_company_refuses_with_the_record() {
+    // Round 45 (R45-F, F9 = red team RT45-C3):
+    // the base-trailing company in CJK/mixed
+    // dress refuses WITH
+    // WeekdayMismatch(Monday@2026-11-01), as
+    // its paren twin does — on the base tree
+    // it serves the resolution 2026-11-08 in
+    // silence, both routes. Witnessed arms:
+    // both members dressed, and the weekday
+    // member only behind a judged ASCII
+    // governor. Same-walk arms, following the
+    // R44-E fullwidth pin's shape: the inert
+    // companion form and the dressed-governor
+    // form are the same walk's company forms
+    // at the same seat, not new seats or new
+    // dresses.
+    for (o, c) in r45f_dress_pairs() {
+        for (line, twin_line) in [
+            (
+                format!("Sunday after November 1, 2026 {o}cancelled{c}{o}Monday{c}"),
+                "Sunday after November 1, 2026 (cancelled)(Monday)".to_string(),
+            ),
+            (
+                format!("Sunday after November 1, 2026 (cancelled){o}Monday{c}"),
+                "Sunday after November 1, 2026 (cancelled)(Monday)".to_string(),
+            ),
+            (
+                format!("Sunday after November 1, 2026 {o}notes{c}{o}Monday{c}"),
+                "Sunday after November 1, 2026 (notes)(Monday)".to_string(),
+            ),
+            (
+                format!("Sunday after November 1, 2026 {o}cancelled{c}(Monday)"),
+                "Sunday after November 1, 2026 (cancelled)(Monday)".to_string(),
+            ),
+        ] {
+            r40e_governed_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, &twin_line);
+            r34e_keep_twin(&line, &twin_line);
+        }
+    }
+}
+
+#[test]
+fn r45f_cjk_mixed_dress_leading_company_refuses_with_the_record() {
+    // Round 45 (R45-F, F9 = red team RT45-C3):
+    // the leading governed company in
+    // CJK/mixed dress refuses WITH the
+    // record, as its paren twin does — on
+    // the base tree the governor governs but
+    // the record is lost (no date, no
+    // record), both routes. The twelve
+    // non-ASCII dresses are the cured arms
+    // here: the two pure-ASCII mixed pairs
+    // already refuse with the record at
+    // leading on the base tree (the company
+    // walk's crossed-pair reading), and
+    // stand as controls in
+    // `r45f_cjk_mixed_dress_agreeing_seats_unmoved`.
+    for &(o, c) in r45f_dress_pairs().iter().take(12) {
+        let line = format!("{o}cancelled{c}{o}Monday{c} November 1, 2026");
+        let twin_line = "(cancelled)(Monday) November 1, 2026".to_string();
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        r34e_for_twin(&line, &twin_line);
+        r34e_keep_twin(&line, &twin_line);
+    }
+}
+
+#[test]
+fn r45f_cjk_mixed_dress_agreeing_seats_unmoved() {
+    // Round 45 (R45-F, F9 controls): the
+    // seats the red team found agreeing at
+    // trailing and mid-line, the agreeing
+    // companies at the cured seats, and the
+    // pure-ASCII mixed pairs at leading
+    // (already twin-equal on the base tree)
+    // stand unmoved on both trees.
+    for (o, c) in r45f_dress_pairs() {
+        // Trailing company, trailing lone
+        // governor, mid-line governor, and
+        // agreeing leading company: governed
+        // in silence.
+        for (line, twin_line) in [
+            (
+                format!("November 1, 2026 {o}cancelled{c}{o}Monday{c}"),
+                "November 1, 2026 (cancelled)(Monday)".to_string(),
+            ),
+            (
+                format!("November 8, 2026 {o}cancelled{c}"),
+                "November 8, 2026 (cancelled)".to_string(),
+            ),
+            (
+                format!("notes {o}cancelled{c} November 8, 2026"),
+                "notes (cancelled) November 8, 2026".to_string(),
+            ),
+            (
+                format!("{o}cancelled{c}{o}Sunday{c} November 1, 2026"),
+                "(cancelled)(Sunday) November 1, 2026".to_string(),
+            ),
+        ] {
+            r40e_governed_silent(&line);
+            r34e_for_twin(&line, &twin_line);
+            r34e_keep_twin(&line, &twin_line);
+        }
+        // Agreeing base-trailing company:
+        // the resolution serves, as its twin's.
+        let line = format!("Sunday after November 1, 2026 {o}cancelled{c}{o}Sunday{c}");
+        let twin_line = "Sunday after November 1, 2026 (cancelled)(Sunday)".to_string();
+        r40e_serves_silent(&line, nov(8));
+        r34e_for_twin(&line, &twin_line);
+        r34e_keep_twin(&line, &twin_line);
+    }
+    // Pure-ASCII mixed pairs at leading:
+    // already twin-equal on the base tree.
+    for (line, twin_line) in [
+        (
+            "(cancelled](Monday] November 1, 2026",
+            "(cancelled)(Monday) November 1, 2026",
+        ),
+        (
+            "[cancelled)[Monday) November 1, 2026",
+            "(cancelled)(Monday) November 1, 2026",
+        ),
+        (
+            "(cancelled)(Monday] November 1, 2026",
+            "(cancelled)(Monday) November 1, 2026",
+        ),
+        (
+            "(cancelled)[Monday) November 1, 2026",
+            "(cancelled)(Monday) November 1, 2026",
+        ),
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+        r34e_for_twin(line, twin_line);
+        r34e_keep_twin(line, twin_line);
+    }
+}
+
+#[test]
+fn r45f_soft_hyphen_trailing_alone_parenthesized_seat_agrees() {
+    // Round 45 (R45-F, F10 = red team RT45-C4),
+    // recorded as a GUARD, not a cure: the
+    // finding as stated — the For route
+    // losing the parenthesized reading
+    // entirely — does not reproduce. The red
+    // team's own log (contrib45.log index
+    // 272) records FOR paren=2026-11-08 for
+    // the soft-hyphen line, and on this tree
+    // every reading field agrees with the
+    // clean twin on both routes (see the
+    // batch record): the parenthesized date
+    // is recorded, the verdicts agree at
+    // every anchor, and the Keep route keeps
+    // through the date. The only difference
+    // anywhere is the as-written in-words
+    // memory carrying the mark, which is the
+    // standing memory behavior for every
+    // trailing mark ("~", "-", U+200B, "!"
+    // alike) and the review lane's benign
+    // zero-width-diff class — so this pin
+    // asserts every reading field and
+    // deliberately does NOT assert in-words
+    // equality. It passes on the base tree
+    // by design; it guards the seat against
+    // a future regression.
+    for line in [
+        "next Sunday (November 8, 2026)\u{ad}",
+        "the Sunday after next Sunday (November 8, 2026)\u{ad}",
+        "next Sunday (November 8)\u{ad}",
+    ] {
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.for_sunday_parenthesized_date,
+            Some(nov(8)),
+            "{line}: the parenthesized date is recorded on the For route"
+        );
+        assert_eq!(
+            c.for_sunday_parenthesized_dates,
+            vec![nov(8)],
+            "{line}: the parenthesized dates"
+        );
+        assert_eq!(c.for_date, None, "{line}: no date in the words alone");
+        assert_eq!(c.named_weekday_mismatch, None, "{line}: no record");
+        assert_eq!(
+            c.for_sunday_parenthesized_mismatch, None,
+            "{line}: no parenthesized record"
+        );
+        for anchor in [oct(18), oct(25), nov(1), nov(8)] {
+            let clean = line.replace('\u{ad}', "");
+            let clean_text = format!("For Sunday: {clean}\n\n## Announcement\n\nHi.\n");
+            let clean_c = parse_contribution(&clean_text, today()).expect("parses");
+            assert_eq!(
+                week_verdict(&c, Some(anchor)),
+                week_verdict(&clean_c, Some(anchor)),
+                "{line}: the verdict at anchor {anchor:?} is the clean twin's"
+            );
+        }
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let c = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            c.keep_through,
+            Some(nov(8)),
+            "{line}: the Keep route keeps through the date as clean"
+        );
+        assert_eq!(
+            c.keep_through_weekday_mismatch, None,
+            "{line}: no Keep record"
+        );
+    }
 }

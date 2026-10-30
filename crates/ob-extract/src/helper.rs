@@ -92,7 +92,12 @@ pub fn dump_pdf(helper: &Path, pdf: &Path) -> Result<ExtractionDump, String> {
     let bytes = run_helper(helper, &[&pdf.to_string_lossy()])?;
     let text =
         String::from_utf8(bytes).map_err(|e| format!("the PDF reader answered oddly: {e}"))?;
-    ExtractionDump::from_json(&text)
+    // R46-G: dump_pdf's own signature stays on String
+    // for this slice, so the typed from_json error
+    // crosses the boundary through the From impl
+    // (tail position: the conversion rides the tail,
+    // not a `?`).
+    ExtractionDump::from_json(&text).map_err(String::from)
 }
 
 /// Extract the dump AND the page pictures (schema v2's
@@ -111,7 +116,9 @@ pub fn dump_pdf_with_images(
     )?;
     let text =
         String::from_utf8(bytes).map_err(|e| format!("the PDF reader answered oddly: {e}"))?;
-    ExtractionDump::from_json(&text)
+    // R46-G: same boundary conversion as dump_pdf
+    // (tail position).
+    ExtractionDump::from_json(&text).map_err(String::from)
 }
 
 /// Render each page to out_dir/page-NN.png (about 200 dpi), the

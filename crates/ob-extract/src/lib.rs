@@ -81,6 +81,61 @@ impl From<OpenDoorError> for String {
     }
 }
 
+/// How reading a dump back from JSON can refuse
+/// (HF-12 second slice, round 46 R46-G, from_json
+/// half): the text is not a dump at all, the dump
+/// claims a format newer than this copy knows, or
+/// the dump claims a format no copy has ever known.
+/// The typed core of the from_json surface; its
+/// `Display` renders byte-for-byte the plain words
+/// from_json has always spoken, so every boundary
+/// that still speaks `String` hears the same
+/// sentences it heard before the slice.
+#[derive(Debug)]
+pub enum FromJsonError {
+    /// The text does not parse as a dump; the
+    /// parser's own error is carried whole.
+    Unreadable(serde_json::Error),
+    /// The dump's schema version is newer than
+    /// `DUMP_SCHEMA_VERSION`.
+    TooNew(u32),
+    /// The dump's schema version is below 1 (no
+    /// dump format has ever carried it).
+    Unsupported(u32),
+}
+
+impl std::fmt::Display for FromJsonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FromJsonError::Unreadable(e) => {
+                write!(
+                    f,
+                    "the reading helper answered in a way we cannot read: {e}"
+                )
+            }
+            FromJsonError::TooNew(v) => write!(
+                f,
+                "the reading helper answered in a newer format (version {v}) than this \
+                 copy of OpenBulletin understands (version {DUMP_SCHEMA_VERSION} at most)"
+            ),
+            FromJsonError::Unsupported(v) => write!(
+                f,
+                "the reading helper answered in a format this copy of OpenBulletin \
+                 does not understand (version {v}); it reads versions 1 and \
+                 {DUMP_SCHEMA_VERSION}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FromJsonError {}
+
+impl From<FromJsonError> for String {
+    fn from(err: FromJsonError) -> String {
+        err.to_string()
+    }
+}
+
 /// The metadata half of the door gate: refuse from the
 /// filesystem's stated length, before any read. A file
 /// whose metadata cannot be read passes here; the read
@@ -322,9 +377,8 @@ impl ExtractionDump {
         }
     }
 
-    pub fn from_json(s: &str) -> Result<Self, String> {
-        let mut dump: Self = serde_json::from_str(s)
-            .map_err(|e| format!("the reading helper answered in a way we cannot read: {e}"))?;
+    pub fn from_json(s: &str) -> Result<Self, FromJsonError> {
+        let mut dump: Self = serde_json::from_str(s).map_err(FromJsonError::Unreadable)?;
         // The version is checked, not just carried
         // (audit M10, 2026-10-16): a helper answering
         // in a format from the future must be refused
@@ -340,15 +394,8 @@ impl ExtractionDump {
                 dump.note_unlisted_page_spans();
                 Ok(dump)
             }
-            v if v > DUMP_SCHEMA_VERSION => Err(format!(
-                "the reading helper answered in a newer format (version {v}) than this \
-                 copy of OpenBulletin understands (version {DUMP_SCHEMA_VERSION} at most)"
-            )),
-            v => Err(format!(
-                "the reading helper answered in a format this copy of OpenBulletin \
-                 does not understand (version {v}); it reads versions 1 and \
-                 {DUMP_SCHEMA_VERSION}"
-            )),
+            v if v > DUMP_SCHEMA_VERSION => Err(FromJsonError::TooNew(v)),
+            v => Err(FromJsonError::Unsupported(v)),
         }
     }
 }
@@ -933,11 +980,92 @@ mod tests {
             "spans": []
         }"#;
         let err = ExtractionDump::from_json(json).expect_err("version 999 is not readable");
-        assert!(err.contains("newer format (version 999)"), "{err}");
+        // R46-G restatement (flagged): this pin asserted
+        // on from_json's error strings; from_json now
+        // returns the typed FromJsonError, so it asserts
+        // the same words through the Display rendering.
+        // No other part of the pin moved.
+        assert!(
+            err.to_string().contains("newer format (version 999)"),
+            "{err}"
+        );
         // Version 0 was never a dump format either.
         let json0 = json.replace("999", "0");
         let err = ExtractionDump::from_json(&json0).expect_err("version 0 is not readable");
-        assert!(err.contains("does not understand (version 0)"), "{err}");
+        assert!(
+            err.to_string().contains("does not understand (version 0)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn r46g_from_json_version_refusals_are_typed_and_render_byte_for_byte() {
+        // R46-G (HF-12 slice 2, from_json half): the
+        // version refusals are typed kinds, and their
+        // Display renders byte-for-byte the sentences
+        // the base tree's from_json produced (the
+        // literals below are taken verbatim from the
+        // base tree's format strings, with
+        // DUMP_SCHEMA_VERSION = 2 spelled out).
+        let json = r#"{
+            "schema_version": 999,
+            "source_kind": "pdf",
+            "source_name": "future.pdf",
+            "source_bytes": 10,
+            "extractor": "helper from the future",
+            "pages": [],
+            "spans": []
+        }"#;
+        let err = ExtractionDump::from_json(json).expect_err("version 999 is not readable");
+        assert!(matches!(err, FromJsonError::TooNew(999)), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "the reading helper answered in a newer format (version 999) than this \
+             copy of OpenBulletin understands (version 2 at most)"
+        );
+        let json0 = json.replace("999", "0");
+        let err = ExtractionDump::from_json(&json0).expect_err("version 0 is not readable");
+        assert!(matches!(err, FromJsonError::Unsupported(0)), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "the reading helper answered in a format this copy of OpenBulletin \
+             does not understand (version 0); it reads versions 1 and 2"
+        );
+    }
+
+    #[test]
+    fn r46g_from_json_unreadable_renders_the_pre_slice_words_byte_for_byte() {
+        // The serde-parse arm keeps its format string
+        // character for character; the input below
+        // fails serde with a fixed, deterministic
+        // message, so the whole sentence is pinned,
+        // not just its prefix.
+        let err = ExtractionDump::from_json("this is not json").expect_err("garbage is not a dump");
+        assert!(matches!(err, FromJsonError::Unreadable(_)), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "the reading helper answered in a way we cannot read: \
+             expected ident at line 1 column 2"
+        );
+    }
+
+    #[test]
+    fn r46g_from_from_json_error_for_string_renders_the_same_words() {
+        // (c, mirroring R44-I): the boundary conversion
+        // the standing String channels rely on renders
+        // the same words as the Display.
+        let words = String::from(FromJsonError::TooNew(999));
+        assert_eq!(
+            words,
+            "the reading helper answered in a newer format (version 999) than this \
+             copy of OpenBulletin understands (version 2 at most)"
+        );
+        let words = String::from(FromJsonError::Unsupported(0));
+        assert_eq!(
+            words,
+            "the reading helper answered in a format this copy of OpenBulletin \
+             does not understand (version 0); it reads versions 1 and 2"
+        );
     }
 }
 

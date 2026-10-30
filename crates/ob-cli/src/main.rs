@@ -658,7 +658,11 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
     // The typed parse checks the dump's schema version
     // (audit M10): a helper answering in a format from
     // the future is refused in words, not read as data.
-    let dump = ob_extract::ExtractionDump::from_json(&dump_text)?;
+    // R46-G: run_trace's own signature stays on
+    // String for this slice, so the typed from_json
+    // error crosses through the From impl (`?`
+    // position: the conversion rides the `?`).
+    let dump = ob_extract::ExtractionDump::from_json(&dump_text).map_err(String::from)?;
     if dump.pages.is_empty() {
         return Err("that PDF has no pages we can read".into());
     }

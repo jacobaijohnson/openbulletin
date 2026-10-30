@@ -41772,3 +41772,359 @@ fn r45f_soft_hyphen_trailing_alone_parenthesized_seat_agrees() {
         );
     }
 }
+
+#[test]
+fn r46d_governor_free_leading_exotic_dress_refuses_with_record() {
+    // Round 46 (R46-D, F5 MINOR = red team
+    // RT46-C4): the governor-free leading
+    // sequence in CJK/mixed dress loses the
+    // record in every R45-F pair, both
+    // orders, glued and spaced — the
+    // R45-F consultations cover only the
+    // base-trailing garnish walk and the
+    // leading governor-company judgment,
+    // and this sequence is neither. On the
+    // base tree these lines read no date
+    // and no record; their paren twins
+    // refuse WITH WeekdayMismatch(Monday
+    // @2026-11-01). Both routes, full-record
+    // twins.
+    for (o, c) in r45f_dress_pairs() {
+        for (line, twin) in [
+            (
+                format!("{o}Monday{c}{o}notes{c} November 1, 2026"),
+                "(Monday)(notes) November 1, 2026".to_string(),
+            ),
+            (
+                format!("{o}Monday{c} {o}notes{c} November 1, 2026"),
+                "(Monday) (notes) November 1, 2026".to_string(),
+            ),
+            (
+                format!("{o}notes{c}{o}Monday{c} November 1, 2026"),
+                "(notes)(Monday) November 1, 2026".to_string(),
+            ),
+            (
+                format!("{o}notes{c} {o}Monday{c} November 1, 2026"),
+                "(notes) (Monday) November 1, 2026".to_string(),
+            ),
+        ] {
+            r40g_refuses_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, &twin);
+            r34e_keep_twin(&line, &twin);
+        }
+    }
+}
+
+#[test]
+fn r46d_governor_free_leading_exotic_dress_agreeing_serves() {
+    // Round 46 (R46-D, F5 agreeing shape):
+    // the agreeing governor-free leading
+    // sequence in CJK/mixed dress loses a
+    // date its paren twin serves — safe
+    // direction, same consultation gap as
+    // the disagreeing arm above. Both
+    // orders, glued and spaced, both
+    // routes, full-record twins.
+    for (o, c) in r45f_dress_pairs() {
+        for (line, twin) in [
+            (
+                format!("{o}Sunday{c}{o}notes{c} November 1, 2026"),
+                "(Sunday)(notes) November 1, 2026".to_string(),
+            ),
+            (
+                format!("{o}Sunday{c} {o}notes{c} November 1, 2026"),
+                "(Sunday) (notes) November 1, 2026".to_string(),
+            ),
+            (
+                format!("{o}notes{c}{o}Sunday{c} November 1, 2026"),
+                "(notes)(Sunday) November 1, 2026".to_string(),
+            ),
+            (
+                format!("{o}notes{c} {o}Sunday{c} November 1, 2026"),
+                "(notes) (Sunday) November 1, 2026".to_string(),
+            ),
+        ] {
+            r40e_serves_silent(&line, nov(1));
+            r34e_for_twin(&line, &twin);
+            r34e_keep_twin(&line, &twin);
+        }
+    }
+}
+
+#[test]
+fn r46d_governor_free_leading_exotic_quote_mixes() {
+    // Round 46 (R46-D, F5 exotic+quote
+    // mixes): a dressed weekday member
+    // beside a quoted inert member, and
+    // the reverse, lose the record at
+    // leading, in both orders. The two
+    // witnessed orders are the first two
+    // arms; the notes-first orders are
+    // the same seat's other order. Both
+    // routes, full-record twins.
+    let o = "\u{300a}";
+    let c = "\u{300b}";
+    for (line, twin) in [
+        (
+            format!("{o}Monday{c} \"notes\" November 1, 2026"),
+            "(Monday) (notes) November 1, 2026".to_string(),
+        ),
+        (
+            format!("\"Monday\" {o}notes{c} November 1, 2026"),
+            "(Monday) (notes) November 1, 2026".to_string(),
+        ),
+        (
+            format!("{o}notes{c} \"Monday\" November 1, 2026"),
+            "(notes) (Monday) November 1, 2026".to_string(),
+        ),
+        (
+            format!("\"notes\" {o}Monday{c} November 1, 2026"),
+            "(notes) (Monday) November 1, 2026".to_string(),
+        ),
+    ] {
+        r40g_refuses_with_record(&line, "Monday", nov(1));
+        r34e_for_twin(&line, &twin);
+        r34e_keep_twin(&line, &twin);
+    }
+    // Agreeing arms: the date serves as
+    // its paren twin serves.
+    for (line, twin) in [
+        (
+            format!("{o}Sunday{c} \"notes\" November 1, 2026"),
+            "(Sunday) (notes) November 1, 2026".to_string(),
+        ),
+        (
+            format!("\"Sunday\" {o}notes{c} November 1, 2026"),
+            "(Sunday) (notes) November 1, 2026".to_string(),
+        ),
+    ] {
+        r40e_serves_silent(&line, nov(1));
+        r34e_for_twin(&line, &twin);
+        r34e_keep_twin(&line, &twin);
+    }
+}
+
+#[test]
+fn r46d_governor_free_trailing_exotic_dress() {
+    // Round 46 (R46-D, F5 trailing arm):
+    // the governor-free trailing sequence
+    // in CJK/mixed dress loses the record
+    // in every R45-F pair, glued and
+    // spaced. The disagreeing arms refuse
+    // with the record as their paren twins
+    // do; the agreeing arms serve as their
+    // paren twins serve. Both routes,
+    // full-record twins.
+    for (o, c) in r45f_dress_pairs() {
+        for (line, twin) in [
+            (
+                format!("November 1, 2026 {o}Monday{c}{o}notes{c}"),
+                "November 1, 2026 (Monday)(notes)".to_string(),
+            ),
+            (
+                format!("November 1, 2026 {o}Monday{c} {o}notes{c}"),
+                "November 1, 2026 (Monday) (notes)".to_string(),
+            ),
+            (
+                format!("November 1, 2026 {o}notes{c}{o}Monday{c}"),
+                "November 1, 2026 (notes)(Monday)".to_string(),
+            ),
+            (
+                format!("November 1, 2026 {o}notes{c} {o}Monday{c}"),
+                "November 1, 2026 (notes) (Monday)".to_string(),
+            ),
+        ] {
+            r40g_refuses_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, &twin);
+            r34e_keep_twin(&line, &twin);
+        }
+        for (line, twin) in [
+            (
+                format!("November 1, 2026 {o}Sunday{c}{o}notes{c}"),
+                "November 1, 2026 (Sunday)(notes)".to_string(),
+            ),
+            (
+                format!("November 1, 2026 {o}Sunday{c} {o}notes{c}"),
+                "November 1, 2026 (Sunday) (notes)".to_string(),
+            ),
+        ] {
+            r40e_serves_silent(&line, nov(1));
+            r34e_for_twin(&line, &twin);
+            r34e_keep_twin(&line, &twin);
+        }
+    }
+}
+
+#[test]
+fn r46d_governor_free_midline_exotic_dress_serves_as_twin() {
+    // Round 46 (R46-D, F5 mid-line arm):
+    // the governor-free mid-line sequence
+    // in CJK/mixed dress loses a date its
+    // paren twin serves (safe direction:
+    // the mid-line twin serves even for a
+    // disagreeing weekday, the standing
+    // (a)(i) reading). Glued and spaced,
+    // both routes, full-record twins.
+    for (o, c) in r45f_dress_pairs() {
+        for (line, twin) in [
+            (
+                format!("notes {o}Monday{c}{o}notes{c} November 1, 2026"),
+                "notes (Monday)(notes) November 1, 2026".to_string(),
+            ),
+            (
+                format!("notes {o}Monday{c} {o}notes{c} November 1, 2026"),
+                "notes (Monday) (notes) November 1, 2026".to_string(),
+            ),
+            (
+                format!("notes {o}Sunday{c}{o}notes{c} November 1, 2026"),
+                "notes (Sunday)(notes) November 1, 2026".to_string(),
+            ),
+        ] {
+            r40e_serves_silent(&line, nov(1));
+            r34e_for_twin(&line, &twin);
+            r34e_keep_twin(&line, &twin);
+        }
+    }
+}
+
+#[test]
+fn r46d_governor_free_base_trailing_exotic_dress_refuses_with_record() {
+    // Round 46 (R46-D, F5 base-trailing
+    // serving arm): the governor-free
+    // base-trailing sequence in mixed
+    // dress serves the resolution in
+    // silence for the mixed pairs where
+    // its paren twin refuses with the
+    // record. All 14 R45-F pairs, both
+    // orders, glued and spaced, both
+    // routes, full-record twins. The
+    // matched pairs and the two
+    // ASCII-opener/exotic-closer mixed
+    // pairs already refuse on the base
+    // tree and stand as controls inside
+    // this test.
+    for (o, c) in r45f_dress_pairs() {
+        for (line, twin) in [
+            (
+                format!("Sunday after November 1, 2026 {o}Monday{c}{o}notes{c}"),
+                "Sunday after November 1, 2026 (Monday)(notes)".to_string(),
+            ),
+            (
+                format!("Sunday after November 1, 2026 {o}Monday{c} {o}notes{c}"),
+                "Sunday after November 1, 2026 (Monday) (notes)".to_string(),
+            ),
+            (
+                format!("Sunday after November 1, 2026 {o}notes{c}{o}Monday{c}"),
+                "Sunday after November 1, 2026 (notes)(Monday)".to_string(),
+            ),
+            (
+                format!("Sunday after November 1, 2026 {o}notes{c} {o}Monday{c}"),
+                "Sunday after November 1, 2026 (notes) (Monday)".to_string(),
+            ),
+        ] {
+            r40e_governed_with_record(&line, "Monday", nov(1));
+            r34e_for_twin(&line, &twin);
+            r34e_keep_twin(&line, &twin);
+        }
+        for (line, twin) in [
+            (
+                format!("Sunday after November 1, 2026 {o}Sunday{c}{o}notes{c}"),
+                "Sunday after November 1, 2026 (Sunday)(notes)".to_string(),
+            ),
+            (
+                format!("Sunday after November 1, 2026 {o}Sunday{c} {o}notes{c}"),
+                "Sunday after November 1, 2026 (Sunday) (notes)".to_string(),
+            ),
+        ] {
+            r40e_serves_silent(&line, nov(8));
+            r34e_for_twin(&line, &twin);
+            r34e_keep_twin(&line, &twin);
+        }
+    }
+}
+
+#[test]
+fn r46d_leading_notes_first_pure_ascii_mixed_serving_arm() {
+    // Round 46 (R46-D, F5 leading serving
+    // arm): the notes-first pure-ASCII
+    // mixed pairs serve at leading where
+    // their paren twin refuses with the
+    // record. Glued and spaced, both
+    // routes, full-record twins.
+    for (line, twin) in [
+        (
+            "(notes](Monday] November 1, 2026",
+            "(notes)(Monday) November 1, 2026",
+        ),
+        (
+            "(notes] (Monday] November 1, 2026",
+            "(notes) (Monday) November 1, 2026",
+        ),
+        (
+            "[notes)[Monday) November 1, 2026",
+            "(notes)(Monday) November 1, 2026",
+        ),
+        (
+            "[notes) [Monday) November 1, 2026",
+            "(notes) (Monday) November 1, 2026",
+        ),
+    ] {
+        r40g_refuses_with_record(line, "Monday", nov(1));
+        r34e_for_twin(line, twin);
+        r34e_keep_twin(line, twin);
+    }
+}
+
+#[test]
+fn r46d_f8_quoted_member_with_cjk_dressed_company_at_base_trailing() {
+    // Round 46 (R46-D, F8 MINOR = review
+    // MINOR 3): a quoted member standing
+    // with a CJK-dressed company at
+    // base-trailing, in the refusing shape
+    // (disagreeing weekday) and the
+    // agreeing shape (the resolution
+    // serves). Both routes, full-record
+    // twins. This pin asserts the behavior
+    // under the corrected comment's claim
+    // — that the quoted consultations read
+    // the CJK-redressed garnish — not a
+    // changed reading: it passes on the
+    // base tree, and is coverage for the
+    // comment correction, not a bite pin.
+    for (line, twin) in [
+        (
+            "Sunday after November 1, 2026 \u{300a}cancelled\u{300b} \"Monday\"",
+            "Sunday after November 1, 2026 (cancelled)(Monday)",
+        ),
+        (
+            "Sunday after November 1, 2026 \"cancelled\" \u{300a}Monday\u{300b}",
+            "Sunday after November 1, 2026 (cancelled)(Monday)",
+        ),
+        (
+            "Sunday after November 1, 2026 \u{300a}notes\u{300b} \"Monday\"",
+            "Sunday after November 1, 2026 (notes)(Monday)",
+        ),
+        (
+            "Sunday after November 1, 2026 \"notes\" \u{300a}Monday\u{300b}",
+            "Sunday after November 1, 2026 (notes)(Monday)",
+        ),
+    ] {
+        r40e_governed_with_record(line, "Monday", nov(1));
+        r34e_for_twin(line, twin);
+        r34e_keep_twin(line, twin);
+    }
+    for (line, twin) in [
+        (
+            "Sunday after November 1, 2026 \u{300a}cancelled\u{300b} \"Sunday\"",
+            "Sunday after November 1, 2026 (cancelled)(Sunday)",
+        ),
+        (
+            "Sunday after November 1, 2026 \"cancelled\" \u{300a}Sunday\u{300b}",
+            "Sunday after November 1, 2026 (cancelled)(Sunday)",
+        ),
+    ] {
+        r40e_serves_silent(line, nov(8));
+        r34e_for_twin(line, twin);
+        r34e_keep_twin(line, twin);
+    }
+}

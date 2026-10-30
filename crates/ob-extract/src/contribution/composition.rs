@@ -4594,6 +4594,73 @@ pub(super) fn group_sequence_weekday_mismatch(
             }
         }
     }
+    // Round 46 (R46-D, F5 MINOR = red team
+    // RT46-C4): the CJK/mixed-dress retry —
+    // a governor-free leading sequence
+    // standing in CJK/mixed dress pairs
+    // ("《Monday》《notes》 November 1,
+    // 2026", "(notes](Monday] November 1,
+    // 2026") is no sequence to the walk
+    // above, so its weekday went unjudged
+    // where its ASCII twin refuses with the
+    // record. The sequence is read on the
+    // CJK re-dress
+    // (`cjk_mixed_groups_as_ascii`), and
+    // on the quoted re-dresses of that
+    // re-dress for a dressed member standing
+    // beside a quoted one ("《Monday》
+    // \"notes\""), and judged by the same
+    // weekday check, under the quoted
+    // retry's own two requirements: the
+    // re-dressed sequence is strictly
+    // longer than the standing one, and it
+    // holds no governor member — a governed
+    // company already composes through the
+    // company judgment above, and this
+    // retry never disturbs it. A sequence
+    // the standing walk already reads whole
+    // keeps its standing judgment.
+    if let Some(cjk) = cjk_mixed_groups_as_ascii(text) {
+        let standing_len = leading_group_sequence(text).map_or(0, |(inners, _)| inners.len());
+        let member = quoted_members_as_parens(&cjk, today, false);
+        let member_seq = member.as_deref().and_then(leading_group_sequence);
+        let member_len = member_seq.as_ref().map_or(0, |(inners, _)| inners.len());
+        let member_governor_free = member_seq.as_ref().map_or(true, |(inners, _)| {
+            !inners.iter().any(|inner| governor_group_at_head(inner))
+        });
+        let full = quoted_members_as_parens(&cjk, today, true);
+        let full_seq = full.as_deref().and_then(leading_group_sequence);
+        let full_len = full_seq.as_ref().map_or(0, |(inners, _)| inners.len());
+        let full_governor_free = full_seq.as_ref().map_or(true, |(inners, _)| {
+            !inners.iter().any(|inner| governor_group_at_head(inner))
+        });
+        let cjk_seq = leading_group_sequence(&cjk);
+        let cjk_len = cjk_seq.as_ref().map_or(0, |(inners, _)| inners.len());
+        let cjk_governor_free = cjk_seq.as_ref().map_or(true, |(inners, _)| {
+            !inners.iter().any(|inner| governor_group_at_head(inner))
+        });
+        let judged_seq = if full_len > standing_len && full_governor_free {
+            full_seq
+        } else if member_len > standing_len && member_governor_free {
+            member_seq
+        } else if cjk_len > standing_len && cjk_governor_free {
+            cjk_seq
+        } else {
+            None
+        };
+        if let Some((inners, rest)) = judged_seq {
+            let tokens: Vec<&str> = rest.split_whitespace().collect();
+            if let Some((date, _)) = parse_date_prefix(&tokens, today) {
+                for inner in &inners {
+                    if let Some((named, number)) = garnish_group_weekday(inner) {
+                        if date.weekday() != number {
+                            return Some(WeekdayMismatch { named, date });
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Round 45 (R45-E, F6 MINOR = review MINOR 1):
     // the quoted-member retry — no
     // leading-sequence reader consulted
@@ -4833,6 +4900,77 @@ fn trailing_sequence_weekday_mismatch(text: &str, today: SimpleDate) -> Option<W
             }
         }
         _ => judged,
+    };
+    // Round 46 (R46-D, F5 MINOR = red team
+    // RT46-C4): the CJK/mixed-dress reading —
+    // a governor-free trailing sequence
+    // standing in CJK/mixed dress pairs
+    // ("November 1, 2026 《Monday》《notes》")
+    // is no sequence to the standing walk,
+    // so its weekday went unjudged where its
+    // ASCII twin refuses with the record.
+    // The re-dress
+    // (`cjk_mixed_groups_as_ascii`), and
+    // the quoted re-dresses of that
+    // re-dress for a dressed member standing
+    // beside a quoted one, are judged where
+    // the standing text was chosen above
+    // and the re-dressed sequence is
+    // strictly longer and governor-free —
+    // the member reading's own two
+    // requirements at this seat, with the
+    // quoted arm's anchor gate carried over
+    // for the inert-including re-dress.
+    let cjk = cjk_mixed_groups_as_ascii(text);
+    let cjk_member = cjk
+        .as_deref()
+        .and_then(|c| quoted_members_as_parens(c, today, false));
+    let cjk_full = cjk
+        .as_deref()
+        .and_then(|c| quoted_members_as_parens(c, today, true));
+    let judged = if judged == text {
+        let cjk_seq = cjk.as_deref().and_then(trailing_group_sequence);
+        let cjk_len = cjk_seq.as_ref().map_or(0, |(inners, _)| inners.len());
+        let cjk_governor_free = cjk_seq.as_ref().map_or(true, |(inners, _)| {
+            !inners.iter().any(|inner| governor_group_at_head(inner))
+        });
+        let cjk_member_seq = cjk_member.as_deref().and_then(trailing_group_sequence);
+        let cjk_member_len = cjk_member_seq
+            .as_ref()
+            .map_or(0, |(inners, _)| inners.len());
+        let cjk_member_governor_free = cjk_member_seq.as_ref().map_or(true, |(inners, _)| {
+            !inners.iter().any(|inner| governor_group_at_head(inner))
+        });
+        let cjk_full_seq = cjk_full.as_deref().and_then(trailing_group_sequence);
+        let cjk_full_len = cjk_full_seq.as_ref().map_or(0, |(inners, _)| inners.len());
+        let cjk_full_governor_free = cjk_full_seq.as_ref().map_or(true, |(inners, _)| {
+            !inners.iter().any(|inner| governor_group_at_head(inner))
+        });
+        let cjk_anchored = cjk_full_seq.as_ref().is_some_and(|(inners, _)| {
+            let bracket_inners: Vec<&str> = cjk.as_deref().map_or(Vec::new(), |c| {
+                balanced_spans(c)
+                    .iter()
+                    .map(|&(s, e)| c[s + 1..e - 1].trim())
+                    .collect()
+            });
+            inners
+                .iter()
+                .any(|inner| bracket_inners.contains(&inner.trim()))
+        });
+        if cjk_full_len > standing_len
+            && cjk_full_governor_free
+            && (cjk_member_len > standing_len || cjk_anchored)
+        {
+            cjk_full.as_deref().unwrap_or(text)
+        } else if cjk_member_len > standing_len && cjk_member_governor_free {
+            cjk_member.as_deref().unwrap_or(text)
+        } else if cjk_len > standing_len && cjk_governor_free {
+            cjk.as_deref().unwrap_or(text)
+        } else {
+            judged
+        }
+    } else {
+        judged
     };
     let (inners, prefix) = trailing_group_sequence(judged)?;
     // Round 45 (R45-B, F3): the prefix sheds the
@@ -7692,8 +7830,9 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
     // a group (it is the company's first
     // member), or when the character before
     // its opener closes a group and its own
-    // inner text is a weekday word (it is
-    // the company's second member, behind a
+    // inner text is a single-word
+    // non-governor word (it is the
+    // company's second member, behind a
     // standing or witnessed first group) —
     // either adjacency across at most the
     // respacing's whitespace, never across
@@ -7714,6 +7853,11 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
     // not — an exotic opener never stands
     // on this ASCII stack — the closer is
     // simply left standing, never spaced.
+    // The second-member shape test below
+    // (round 46, R46-D, F5) admits a
+    // single-word non-governor inner beside
+    // the weekday word it subsumes; see
+    // there for the walls that stand.
     let (witnessed_closer_opener, witnessed_exotic_closer_opener): (
         Vec<Option<usize>>,
         Vec<Option<usize>>,
@@ -7773,20 +7917,42 @@ pub(super) fn stray_mark_spaced(text: &str) -> Option<String> {
                         | '\u{3009}'
                         | '\u{00bb}'
                 );
-            let inner_is_weekday = {
+            // Round 46 (R46-D, F5 MINOR = red
+            // team RT46-C4): the second-member
+            // test above names only a weekday
+            // inner, so a governor-free
+            // sequence whose second member is
+            // inert ("(Monday)(notes)" in
+            // witnessed dress) lost its member
+            // here — its ASCII closer spaced at
+            // the line's end, its ASCII opener
+            // spaced as unmatched — and the
+            // sequence collapsed at the
+            // trailing and base-trailing seats
+            // where its twin refuses with the
+            // record. The test widens to a
+            // single-word non-governor inner:
+            // a weekday word is one such word,
+            // so the old weekday shape is
+            // subsumed, and an inert companion
+            // ("notes", "choir") counts beside
+            // it. The walls stand: a lone
+            // group has no preceding closer and
+            // keeps its standing test below; a
+            // date group (digits, a month word,
+            // more than one word) and a
+            // governor-headed group are not
+            // single plain words and keep
+            // theirs.
+            let inner_is_sequence_member = {
                 let inner: String = chars[open + 1..close].iter().map(|&(_, c)| c).collect();
-                matches!(
-                    inner.trim().to_lowercase().as_str(),
-                    "monday"
-                        | "tuesday"
-                        | "wednesday"
-                        | "thursday"
-                        | "friday"
-                        | "saturday"
-                        | "sunday"
-                )
+                let trimmed = inner.trim();
+                !trimmed.is_empty()
+                    && trimmed.split_whitespace().count() == 1
+                    && trimmed.chars().all(|c| c.is_alphabetic())
+                    && !governor_group_at_head(trimmed)
             };
-            if !(followed_by_opener || (preceded_by_closer && inner_is_weekday)) {
+            if !(followed_by_opener || (preceded_by_closer && inner_is_sequence_member)) {
                 continue;
             }
             let close_c = chars[close].1;
@@ -11819,6 +11985,133 @@ pub(super) fn quoted_groups_redressed_where_judged(
 ///   NoSundayNamed is reserved for lines naming no
 ///   date.
 pub(super) fn date_line(
+    raw: &Option<String>,
+    today: SimpleDate,
+    anchor: SimpleDate,
+) -> DateLineReading {
+    // Round 46 (R46-D, F5 MINOR = red team
+    // RT46-C4): the CJK/mixed-dress serve
+    // fallback — a governor-free sequence
+    // standing in CJK/mixed dress whose
+    // ASCII twin serves a date ("《Sunday》
+    // 《notes》 November 1, 2026", "notes
+    // 《Monday》《notes》 November 1, 2026",
+    // "November 1, 2026 《Sunday》《notes》")
+    // reads nothing at all on the standing
+    // line, so the line is read on its
+    // CJK re-dress (after its standing
+    // fullwidth re-dress, as the other
+    // consultations chain them) and the
+    // re-dressed reading taken — but only
+    // where the standing reading is empty
+    // in full (no date, no record, no
+    // parenthesized record, no second
+    // dates) and the re-dressed reading
+    // serves a date with no weekday record,
+    // and only where a witnessed pair with
+    // an exotic side stands: pure-ASCII
+    // crossed pairs are malformed groups,
+    // not exotic dress, and keep their
+    // standing readings.
+    // The gates are what keep this a serve
+    // fallback and not a wholesale
+    // re-dress: a governed line's
+    // re-dressed reading serves no date, a
+    // lone weekday's re-dressed reading
+    // refuses with its record instead of
+    // serving, and a disagreeing sequence's
+    // re-dressed reading likewise carries
+    // its record — all three keep their
+    // standing readings, and the record
+    // arms stay the mismatch
+    // consultations' own. A standing
+    // reading that is anything but empty
+    // is never displaced.
+    let reading = date_line_standing(raw, today, anchor);
+    if reading.date.is_some()
+        || reading.weekday_mismatch.is_some()
+        || reading.parenthesized_mismatch.is_some()
+        || !reading.second_dates.is_empty()
+    {
+        return reading;
+    }
+    let Some(text) = raw.as_deref() else {
+        return reading;
+    };
+    let fullwidth = fullwidth_groups_as_ascii(text);
+    let base = fullwidth.as_deref().unwrap_or(text);
+    // The fallback fires only for exotic
+    // dress, or for the governor-free
+    // sequence shape in crossed dress: a
+    // witnessed pair with an exotic side
+    // standing in the text the CJK re-dress
+    // reads, or two adjacent witnessed
+    // pairs whose inners are single-word
+    // non-governor words with a weekday
+    // among them. A lone pure-ASCII
+    // crossed pair ("[our choir)",
+    // "[November 8, 2026, cancelled)") is
+    // neither — it is a malformed group
+    // whose unclosed/bare standing reading
+    // the r26c/r35f pins hold — and the
+    // CJK re-dress must not close it into
+    // a group here, whatever the sequence
+    // consultations do with crossed pairs
+    // at their own seats.
+    let base_chars: Vec<(usize, char)> = base.char_indices().collect();
+    let pairs = cjk_mixed_pairs(&base_chars);
+    let has_exotic_pair = pairs.iter().any(|&(open, close)| {
+        is_cjk_mixed_bracket(base_chars[open].1) || is_cjk_mixed_bracket(base_chars[close].1)
+    });
+    let has_sequence_shape = {
+        let mut sorted = pairs.clone();
+        sorted.sort_by_key(|&(open, _)| open);
+        sorted.windows(2).any(|window| {
+            let (open1, close1) = window[0];
+            let (open2, close2) = window[1];
+            let between_only_whitespace = base_chars[close1 + 1..open2]
+                .iter()
+                .all(|&(_, c)| c == ' ' || c == '\t');
+            if !between_only_whitespace {
+                return false;
+            }
+            let inner = |open: usize, close: usize| -> String {
+                base_chars[open + 1..close]
+                    .iter()
+                    .map(|&(_, c)| c)
+                    .collect()
+            };
+            let member = |open: usize, close: usize| -> bool {
+                let trimmed = inner(open, close);
+                let trimmed = trimmed.trim();
+                !trimmed.is_empty()
+                    && trimmed.split_whitespace().count() == 1
+                    && trimmed.chars().all(|c| c.is_alphabetic())
+                    && !governor_group_at_head(trimmed)
+            };
+            let weekday = |open: usize, close: usize| -> bool {
+                garnish_group_weekday(inner(open, close).trim()).is_some()
+            };
+            member(open1, close1)
+                && member(open2, close2)
+                && (weekday(open1, close1) || weekday(open2, close2))
+        })
+    };
+    if !has_exotic_pair && !has_sequence_shape {
+        return reading;
+    }
+    let Some(redressed) = cjk_mixed_groups_as_ascii(base) else {
+        return reading;
+    };
+    let redressed_raw = Some(redressed);
+    let redressed_reading = date_line_standing(&redressed_raw, today, anchor);
+    if redressed_reading.date.is_some() && redressed_reading.weekday_mismatch.is_none() {
+        return redressed_reading;
+    }
+    reading
+}
+
+fn date_line_standing(
     raw: &Option<String>,
     today: SimpleDate,
     anchor: SimpleDate,

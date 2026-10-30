@@ -879,8 +879,18 @@ fn base_trailing_sequence_mismatch(
     // (`fullwidth_groups_as_ascii`, composition.rs)
     // — it is this walk's own string, so the
     // re-dress is local to it, and the quoted
-    // consultation below then reads the garnish
-    // with its groups standing as written.
+    // consultations below then read the
+    // re-dressed garnish, not the garnish as
+    // written (round 46, R46-D, F8 MINOR =
+    // review MINOR 3: the standing comment
+    // claimed the consultations read the
+    // garnish as written, but they are
+    // computed from the re-dressed garnish
+    // just above, and `balanced_spans` is
+    // ASCII-byte-based, so a quoted span
+    // standing inside CJK/mixed dress is
+    // consulted through ASCII brackets the
+    // as-written garnish never formed).
     let garnish = match fullwidth_groups_as_ascii(&garnish) {
         Some(redressed) => redressed,
         None => garnish,
@@ -900,8 +910,18 @@ fn base_trailing_sequence_mismatch(
     // fullwidth re-dress — it is this walk's
     // own string, so the re-dress is local
     // to it, and the quoted consultations
-    // below then read the garnish with its
-    // groups standing as written.
+    // below then read the re-dressed
+    // garnish, not the garnish as written
+    // (round 46, R46-D, F8 MINOR = review
+    // MINOR 3: the standing comment claimed
+    // the consultations read the garnish as
+    // written, but they are computed from
+    // the re-dressed garnish just above,
+    // and `balanced_spans` is
+    // ASCII-byte-based, so a quoted span
+    // standing inside CJK/mixed dress is
+    // consulted through ASCII brackets the
+    // as-written garnish never formed).
     let mut garnish = match cjk_mixed_groups_as_ascii(&garnish) {
         Some(redressed) => redressed,
         None => garnish,

@@ -593,7 +593,7 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
             ])
             // Round 45 (R45-B, F3): the tail set
             // also sheds the invisible/format
-            // set — see `is_invisible_format_char`.
+            // set — see `is_boundary_separator_char`.
             .trim_end_matches(|c: char| {
                 [
                     '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
@@ -601,7 +601,7 @@ pub(super) fn sunday_after_base(tokens: &[&str], today: SimpleDate) -> Option<Su
                     '\u{200b}', '\u{feff}',
                 ]
                 .contains(&c)
-                    || is_invisible_format_char(c)
+                    || is_boundary_separator_char(c)
             })
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
@@ -1006,7 +1006,7 @@ fn base_trailing_sequence_mismatch(
                 '\u{200b}', '\u{feff}',
             ]
             .contains(&c)
-                || is_invisible_format_char(c)
+                || is_boundary_separator_char(c)
         });
         if peeled.len() != rest.len() {
             rest = peeled;
@@ -1035,7 +1035,7 @@ fn base_trailing_sequence_mismatch(
                                 | '\u{00ad}'
                                 | '\u{200b}'
                                 | '\u{feff}'
-                        ) || is_invisible_format_char(c)
+                        ) || is_boundary_separator_char(c)
                     }) =>
             {
                 rest = head;
@@ -1057,7 +1057,7 @@ fn base_trailing_sequence_mismatch(
         // also sheds the invisible/format set.
         rest.trim_start_matches(|c: char| {
             [' ', '\t', ',', ';', '.', ':', '\u{200b}', '\u{feff}'].contains(&c)
-                || is_invisible_format_char(c)
+                || is_boundary_separator_char(c)
         });
     let head_had_separator = rest[..rest.len() - head_trimmed.len()]
         .chars()
@@ -1202,7 +1202,7 @@ fn base_trailing_sequence_mismatch(
                     | '\u{ff07}'
                     | '\u{200b}'
                     | '\u{feff}'
-            ) || is_invisible_format_char(c)
+            ) || is_boundary_separator_char(c)
                 || c.is_whitespace()
         }) {
             continue;
@@ -1267,7 +1267,7 @@ fn base_trailing_sequence_mismatch(
                         | '\u{00ad}'
                         | '\u{200b}'
                         | '\u{feff}'
-                ) || is_invisible_format_char(c)
+                ) || is_boundary_separator_char(c)
                     || c.is_whitespace()
             })
         {
@@ -1586,7 +1586,7 @@ impl<'a> LineScan<'a> {
                         '\u{200b}', '\u{00ad}', '\u{feff}',
                     ]
                     .contains(&c)
-                        || is_invisible_format_char(c)
+                        || is_boundary_separator_char(c)
                 })
                 .len();
         loop {
@@ -1614,7 +1614,7 @@ impl<'a> LineScan<'a> {
                                     '\u{feff}',
                                 ]
                                 .contains(&c)
-                                    || is_invisible_format_char(c)
+                                    || is_boundary_separator_char(c)
                             })
                             .len();
                 }
@@ -2410,14 +2410,19 @@ pub(super) fn is_format_char(c: char) -> bool {
 
 /// `text` with every format character (category
 /// Cf) removed: the cleaning step M6 adds at every
-/// site tokens are cleaned.
+/// site tokens are cleaned. Round 46 (R46-C,
+/// F4): the cleaning also removes the adjacent
+/// boundary marks (`is_adjacent_boundary_mark`),
+/// because a variation selector or combining
+/// mark standing inside a governor word disarms
+/// it exactly as a Cf character inside the word
+/// did before M6 — the inside-word seat keys on
+/// the same boundary class as the separator
+/// seats, through `is_boundary_separator_char`.
 pub(super) fn strip_format_chars(text: &str) -> String {
-    if text
-        .chars()
-        .any(|c| is_format_char(c) || is_invisible_format_char(c))
-    {
+    if text.chars().any(is_boundary_separator_char) {
         text.chars()
-            .filter(|c| !is_format_char(*c) && !is_invisible_format_char(*c))
+            .filter(|c| !is_boundary_separator_char(*c))
             .collect()
     } else {
         text.to_string()
@@ -2453,21 +2458,57 @@ pub(super) fn is_invisible_format_char(c: char) -> bool {
     INVISIBLE_FORMAT_CHARS.contains(&c)
 }
 
-/// `text` with exactly the R45-B set removed
-/// (round 45, R45-B, F3): the remainder-seat
-/// cleaning — a date string a reader re-parses
-/// after a group or a date token has been taken
-/// out sheds the set, and nothing wider, so a
-/// remainder carrying one reads as its clean
-/// twin reads. This is deliberately narrower
-/// than `strip_format_chars` (the whole Cf
-/// class): the remainder seats are new seats
-/// for the pair itself, and the cure sheds the
-/// witnessed nineteen there, not the class.
-pub(super) fn strip_invisible_format_chars(text: &str) -> String {
-    if text.chars().any(is_invisible_format_char) {
+/// Whether `c` is one of the adjacent boundary
+/// marks of round 46 (R46-C, F4 = red team
+/// RT46-C3), stated once: the variation
+/// selectors U+FE00-U+FE0F (Mn; U+FE0F already
+/// stands in the R45-B 19), U+2065 (unassigned,
+/// splitting at the boundary seats as a mark
+/// does), and the combining marks U+0301 and
+/// U+0610 (Mn). None of them is Cf, and none
+/// but U+FE0F is in the R45-B 19 — which is why
+/// they split seats the Cf class does not.
+pub(super) fn is_adjacent_boundary_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{fe00}'..='\u{fe0f}' | '\u{2065}' | '\u{0301}' | '\u{0610}'
+    )
+}
+
+/// Whether `c` is a boundary/separator mark
+/// for round 46 (R46-C, F3 = red team RT46-C2
+/// plus F4 = RT46-C3): the whole Cf class
+/// (`is_format_char`), the R45-B 19
+/// (`is_invisible_format_char`, whose two
+/// non-Cf members U+034F and U+FE0F the class
+/// alone would miss), and the adjacent marks
+/// above. R45-B stated the invisible/format
+/// set once as 19 codepoints and shed it at
+/// the trims, but boundary/separator
+/// recognition — trailing group tails,
+/// date<->group boundaries, the leading
+/// group->date boundary, the base-trailing
+/// intergroup seat, trailing two-group seats,
+/// and the two-date choice — still keyed on
+/// that 19, so every other Cf codepoint (and
+/// every adjacent mark) split there. The
+/// R45-B cure's "nineteen, no more" was the
+/// witnessed set, not the class: boundary
+/// recognition keys on this predicate, and
+/// the 19-set constant above stays exactly
+/// as witnessed, as the control for it.
+pub(super) fn is_boundary_separator_char(c: char) -> bool {
+    is_format_char(c) || is_invisible_format_char(c) || is_adjacent_boundary_mark(c)
+}
+
+/// `text` with every boundary/separator mark
+/// above removed: the strip the boundary
+/// readers use where they used to shed only
+/// the R45-B 19.
+pub(super) fn strip_boundary_separator_chars(text: &str) -> String {
+    if text.chars().any(is_boundary_separator_char) {
         text.chars()
-            .filter(|c| !is_invisible_format_char(*c))
+            .filter(|c| !is_boundary_separator_char(*c))
             .collect()
     } else {
         text.to_string()

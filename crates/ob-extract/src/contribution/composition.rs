@@ -1647,7 +1647,7 @@ pub(super) fn clean(t: &str) -> &str {
             '\u{ff02}', '\u{ff07}',
         ]
         .contains(&c)
-            || is_invisible_format_char(c)
+            || is_boundary_separator_char(c)
     })
 }
 
@@ -2223,7 +2223,7 @@ fn suffix_set_run(s: &str) -> usize {
                     | '\u{00ad}'
                     | '\u{200b}'
                     | '\u{feff}'
-            ) || is_invisible_format_char(*c)
+            ) || is_boundary_separator_char(*c)
         })
         .map(char::len_utf8)
         .sum()
@@ -2248,15 +2248,18 @@ fn is_governor_doorstep_suffix_char(c: char) -> bool {
 /// Whether `c` is a gap character at the
 /// governor's doorstep: ordinary whitespace
 /// (which covers the space, tab, NBSP, and
-/// U+2003 spacing variants) or a member of the
-/// R45-B invisible/format set (which covers
-/// U+200B and U+FEFF). A gap character carries
+/// U+2003 spacing variants) or a boundary/
+/// separator mark (round 46, R46-C: the R45-B
+/// invisible/format set widened to the full
+/// boundary class, so U+200B and U+FEFF are
+/// covered with every other Cf codepoint and
+/// the adjacent marks). A gap character carries
 /// no semantics at this seat; it only stands
 /// between a group's closer and the doorstep
 /// suffix, or between the suffix and the
 /// governor group.
 fn is_doorstep_gap_char(c: char) -> bool {
-    c.is_whitespace() || is_invisible_format_char(c)
+    c.is_whitespace() || is_boundary_separator_char(c)
 }
 
 /// Round 45 (R45-C, F4 = red team RT45-C2): the
@@ -3375,7 +3378,7 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
                     '\u{2dc}', '\u{00ad}', '\u{200b}', '\u{feff}',
                 ]
                 .contains(&c)
-                    || is_invisible_format_char(c)
+                    || is_boundary_separator_char(c)
             })
             .len();
         if peeled != end {
@@ -3408,7 +3411,7 @@ fn trailing_run_peeled_end(text: &str, limit: usize) -> usize {
                         | '\u{00ad}'
                         | '\u{200b}'
                         | '\u{feff}'
-                ) || is_invisible_format_char(c)
+                ) || is_boundary_separator_char(c)
             })
         {
             end = ws;
@@ -3519,7 +3522,7 @@ fn trailing_run_in_core(core: &str) -> Option<(Vec<(usize, usize)>, usize)> {
                     | '\u{00ad}'
                     | '\u{200b}'
                     | '\u{feff}'
-            ) || is_invisible_format_char(c)
+            ) || is_boundary_separator_char(c)
                 || c.is_whitespace()
         }) {
             break;
@@ -3692,7 +3695,7 @@ fn midline_governor_before_plain_date(
                     | '\u{00ad}'
                     | '\u{200b}'
                     | '\u{feff}'
-            ) || is_invisible_format_char(c)
+            ) || is_boundary_separator_char(c)
                 || c.is_whitespace()
         }) {
             break;
@@ -3728,7 +3731,7 @@ fn midline_governor_before_plain_date(
             '\u{feff}',
         ]
         .contains(&c)
-            || is_invisible_format_char(c)
+            || is_boundary_separator_char(c)
     });
     if matches!(rest.chars().next(), Some('(' | '[' | '{')) {
         return false;
@@ -3986,7 +3989,7 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                 '\u{200b}', '\u{feff}',
             ]
             .contains(&c)
-                || is_invisible_format_char(c)
+                || is_boundary_separator_char(c)
                 || c.is_whitespace()
         });
         if !matches!(rest.chars().next(), Some('(' | '[' | '{')) {
@@ -4022,7 +4025,7 @@ fn leading_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
             '\u{feff}',
         ]
         .contains(&c)
-            || is_invisible_format_char(c)
+            || is_boundary_separator_char(c)
             || c.is_whitespace()
     });
     Some((inners, rest))
@@ -4136,7 +4139,7 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                     '\u{2dc}', '\u{00ad}', '\u{200b}', '\u{feff}',
                 ]
                 .contains(&c)
-                    || is_invisible_format_char(c)
+                    || is_boundary_separator_char(c)
             })
             .len();
         if peeled != end {
@@ -4174,7 +4177,7 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                         | '\u{00ad}'
                         | '\u{200b}'
                         | '\u{feff}'
-                ) || is_invisible_format_char(c)
+                ) || is_boundary_separator_char(c)
             })
         {
             end = ws;
@@ -4278,7 +4281,7 @@ fn trailing_group_sequence(text: &str) -> Option<(Vec<String>, &str)> {
                     | '\u{00ad}'
                     | '\u{200b}'
                     | '\u{feff}'
-            ) || is_invisible_format_char(c)
+            ) || is_boundary_separator_char(c)
                 || c.is_whitespace()
         }) {
             break;
@@ -4511,7 +4514,7 @@ fn leading_single_group_wearing_suffix(text: &str) -> Option<(String, &str)> {
     // ("(Monday)<Cf>~ November 1, 2026",
     // "(Monday)~<Cf> November 1, 2026") reads
     // as its clean twin reads.
-    let after = after.trim_start_matches(is_invisible_format_char);
+    let after = after.trim_start_matches(is_boundary_separator_char);
     if !matches!(
         after.chars().next(),
         Some(
@@ -4542,7 +4545,7 @@ fn leading_single_group_wearing_suffix(text: &str) -> Option<(String, &str)> {
             '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}',
         ]
         .contains(&c)
-            || is_invisible_format_char(c)
+            || is_boundary_separator_char(c)
     });
     Some((inner.to_string(), rest))
 }
@@ -4840,7 +4843,7 @@ fn trailing_sequence_weekday_mismatch(text: &str, today: SimpleDate) -> Option<W
     // clean twin reads, instead of failing the
     // date parse here and serving the
     // resolution in silence.
-    let prefix = strip_invisible_format_chars(prefix);
+    let prefix = strip_boundary_separator_chars(prefix);
     let stripped = strip_leading_group_run(&prefix);
     let date =
         parse_flexible_date(&prefix, today).or_else(|| parse_flexible_date(stripped, today))?;
@@ -5166,7 +5169,7 @@ pub(super) fn leading_governor_company_judgment(
         // sequence walk's; this arm is the
         // same seat's company side.
         rest = rest.trim_start_matches(|c: char| {
-            SEPARATORS.contains(&c) || is_invisible_format_char(c) || c.is_whitespace()
+            SEPARATORS.contains(&c) || is_boundary_separator_char(c) || c.is_whitespace()
         });
         let Some(first) = rest.chars().next() else {
             break;
@@ -5510,7 +5513,7 @@ pub(super) fn leading_governor_company_judgment(
     // sheds the invisible/format set, beside
     // the SEPARATORS themselves.
     rest =
-        rest.trim_start_matches(|c: char| SEPARATORS.contains(&c) || is_invisible_format_char(c));
+        rest.trim_start_matches(|c: char| SEPARATORS.contains(&c) || is_boundary_separator_char(c));
     let tokens: Vec<&str> = rest.split_whitespace().collect();
     let first_cleaned = group_token(tokens.first()?);
     if weekday_word(&first_cleaned).is_some() {
@@ -6446,7 +6449,7 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
                     '\u{ff1a}', '\u{ff1b}', '\u{2dc}', '\u{00ad}', '\u{200b}', '\u{feff}',
                 ]
                 .contains(&c)
-                    || is_invisible_format_char(c)
+                    || is_boundary_separator_char(c)
             })
             .len();
         if peeled != end {
@@ -6478,7 +6481,7 @@ fn spaced_trailing_weekday_garnish(text: &str) -> Option<String> {
                         | '\u{00ad}'
                         | '\u{200b}'
                         | '\u{feff}'
-                ) || is_invisible_format_char(c)
+                ) || is_boundary_separator_char(c)
             })
         {
             end = ws;
@@ -6715,7 +6718,7 @@ pub(super) fn date_line_inner(
             ])
             // Round 45 (R45-B, F3): the tail set
             // also sheds the invisible/format
-            // set — see `is_invisible_format_char`.
+            // set — see `is_boundary_separator_char`.
             .trim_end_matches(|c: char| {
                 [
                     '~', '*', '#', '-', '\u{2014}', '\u{2013}', '\u{2010}', '\u{2011}', '\u{2212}',
@@ -6723,7 +6726,7 @@ pub(super) fn date_line_inner(
                     '\u{200b}', '\u{feff}',
                 ]
                 .contains(&c)
-                    || is_invisible_format_char(c)
+                    || is_boundary_separator_char(c)
             })
             .trim_matches([
                 '(', ')', '[', ']', '{', '}', ',', '.', ';', ':', '!', '?', '"', '\'', '\u{201d}',
@@ -6766,7 +6769,7 @@ pub(super) fn date_line_inner(
             // failing here and serving the date
             // in silence with the record lost.
             if let Some(date) =
-                parse_flexible_date(&strip_invisible_format_chars(&rest.join(" ")), today)
+                parse_flexible_date(&strip_boundary_separator_chars(&rest.join(" ")), today)
             {
                 if date.weekday() == named_number {
                     return (Some(date), None);
@@ -6871,7 +6874,7 @@ pub(super) fn date_line_inner(
                 '\u{2018}', '\u{2019}',
             ]
             .contains(&c)
-                || is_invisible_format_char(c)
+                || is_boundary_separator_char(c)
         });
         // Round 29 (R29-A, F3 = red team RT29-T1):
         // the weekday word of a bare phrase unit is

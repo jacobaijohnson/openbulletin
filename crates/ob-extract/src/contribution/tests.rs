@@ -40965,6 +40965,290 @@ fn r46b_spaced_doorstep_controls_hold() {
     r40e_governed_silent("November 8, 2026 (notes) -(cancelled)");
 }
 
+/// The 27 genuine Cf codepoints outside the
+/// R45-B 19 that the round-46 red team tested
+/// (RT46-C2): U+00AD, U+0600, U+0601, U+0605,
+/// U+06DD, U+070F, U+0890, U+08E2, U+2061-U+2063,
+/// U+2067-U+2068, U+206A-U+206F, U+FFF9-U+FFFB,
+/// U+110BD, U+110CD, U+E0001, U+E0020, U+E007F.
+fn r46c_cf_outside_19_chars() -> [char; 27] {
+    [
+        '\u{00ad}',
+        '\u{0600}',
+        '\u{0601}',
+        '\u{0605}',
+        '\u{06dd}',
+        '\u{070f}',
+        '\u{0890}',
+        '\u{08e2}',
+        '\u{2061}',
+        '\u{2062}',
+        '\u{2063}',
+        '\u{2067}',
+        '\u{2068}',
+        '\u{206a}',
+        '\u{206b}',
+        '\u{206c}',
+        '\u{206d}',
+        '\u{206e}',
+        '\u{206f}',
+        '\u{fff9}',
+        '\u{fffa}',
+        '\u{fffb}',
+        '\u{110bd}',
+        '\u{110cd}',
+        '\u{e0001}',
+        '\u{e0020}',
+        '\u{e007f}',
+    ]
+}
+
+/// The adjacent marks of RT46-C3 (F4): U+2065
+/// (unassigned, splitting as a boundary mark),
+/// the variation selectors U+FE00, U+FE01,
+/// U+FE0E, and the combining marks U+0301 and
+/// U+0610 — none of them Cf, none of them in
+/// the R45-B 19.
+fn r46c_adjacent_marks() -> [char; 6] {
+    [
+        '\u{2065}', '\u{fe00}', '\u{fe01}', '\u{fe0e}', '\u{0301}', '\u{0610}',
+    ]
+}
+
+#[test]
+fn r46c_cf_outside_19_at_trailing_group_tail() {
+    // Round 46 (R46-C, F3 MAJOR = red team
+    // RT46-C2, trailing group tail): a Cf
+    // codepoint outside the R45-B 19 standing
+    // after a trailing group splits the tail
+    // on the base tree — the governed date
+    // serves live, the weekday record is lost.
+    // Every arm reads exactly as its clean
+    // twin, both routes.
+    for c in r46c_cf_outside_19_chars() {
+        let line = format!("November 8, 2026 (cancelled){c}");
+        r40e_governed_silent(&line);
+        let line = format!("November 8, 2026 (cancelled){c}~");
+        r40e_governed_silent(&line);
+        let line = format!("November 1, 2026 (Monday){c}");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r46c_cf_outside_19_at_date_group_boundaries() {
+    // Round 46 (R46-C, F3, date<->group
+    // boundary, glued and spaced, and the
+    // leading group->date boundary): the
+    // outside-19 Cf standing at the boundary
+    // splits it on the base tree — the date
+    // serves with the record lost. Every arm
+    // refuses with the record, both routes.
+    for c in r46c_cf_outside_19_chars() {
+        let line = format!("November 1, 2026{c} (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("November 1, 2026{c}(Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("(Monday){c} November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r46c_cf_outside_19_at_base_trailing_intergroup() {
+    // Round 46 (R46-C, F3, base-trailing
+    // intergroup seat): the outside-19 Cf
+    // standing between the base company's
+    // groups splits it on the base tree — the
+    // resolution serves silently where the
+    // clean company refuses with the record.
+    // Every arm refuses with the record, both
+    // routes.
+    for c in r46c_cf_outside_19_chars() {
+        let line = format!("Sunday after November 1, 2026 (cancelled){c}(Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("Sunday after November 1, 2026 (cancelled){c} (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r46c_cf_outside_19_at_trailing_two_group_seats() {
+    // Round 46 (R46-C, F3, trailing two-group
+    // seats): the outside-19 Cf standing
+    // before the first group, or between the
+    // two groups, splits the company on the
+    // base tree — the date serves with the
+    // record lost. Every arm refuses with the
+    // record, both routes.
+    for c in r46c_cf_outside_19_chars() {
+        let line = format!("November 1, 2026{c} (Monday) (notes)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("November 1, 2026 (Monday){c} (notes)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r46c_cf_outside_19_at_date_interiors() {
+    // Round 46 (R46-C, F3, date interiors at
+    // trailing seats): the outside-19 Cf
+    // standing inside the date splits it on
+    // the base tree — the date serves with
+    // the record lost. Every arm refuses
+    // with the record, both routes, as the
+    // R45-B interior arms do for the 19.
+    for c in r46c_cf_outside_19_chars() {
+        let line = format!("November{c} 1, 2026 (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("November 1{c}, 2026 (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r46c_cf_outside_19_must_not_flip_which_date_serves() {
+    // Round 46 (R46-C, F3, two-date seat):
+    // the outside-19 Cf after the first
+    // date's weekday group flips which date
+    // serves on the base tree — Nov 1 serves
+    // with Nov 8 demoted to second date, and
+    // U+00AD flips here too, unlike at the
+    // other seats where the R45-F soft-hyphen
+    // handling covers it. The clean line
+    // serves Nov 8 with Nov 1 second; the
+    // carrying line must read identically,
+    // both routes.
+    for c in r46c_cf_outside_19_chars() {
+        let line = format!("November 1, 2026 (Monday){c} November 8, 2026");
+        let text = format!("For Sunday: {line}\n\n## Announcement\n\nHi.\n");
+        let parsed = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(parsed.for_date, Some(nov(8)), "{line}: Nov 8 serves");
+        assert_eq!(
+            parsed.for_sunday_second_dates,
+            vec![nov(1)],
+            "{line}: Nov 1 stands as second date"
+        );
+        let text = format!(
+            "For Sunday: November 1, 2026\nKeep-through: {line}\n\n## Announcement\n\nHi.\n"
+        );
+        let parsed = parse_contribution(&text, today()).expect("parses");
+        assert_eq!(
+            parsed.keep_through,
+            Some(nov(8)),
+            "{line}: keep Nov 8 serves"
+        );
+        assert_eq!(
+            parsed.keep_through_second_dates,
+            vec![nov(1)],
+            "{line}: keep Nov 1 stands as second date"
+        );
+    }
+}
+
+#[test]
+fn r46c_cf_clean_seats_hold() {
+    // Round 46 (R46-C, F3 controls, witnessed
+    // Cf-clean on the base tree and pinned so
+    // the cure cannot move them): inside the
+    // governor word (token cleaning strips
+    // full Cf there), the leading intergroup
+    // seat, and the weekday-word remainder
+    // re-parse all read as their clean twins
+    // for the outside-19 Cf, both routes.
+    for c in r46c_cf_outside_19_chars() {
+        let line = format!("November 8, 2026 (cancel{c}led)");
+        r40e_governed_silent(&line);
+        let line = format!("(cancelled){c}(Monday) November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("Monday November{c} 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r46c_adjacent_marks_inside_governor_word() {
+    // Round 46 (R46-C, F4 MINOR = red team
+    // RT46-C3, inside the governor word): a
+    // variation-selector / combining mark
+    // inside "cancelled" disarms the governor
+    // on the base tree — the governed date
+    // serves live. Every arm governs silent,
+    // both routes.
+    for c in r46c_adjacent_marks() {
+        let line = format!("November 8, 2026 (cancel{c}led)");
+        r40e_governed_silent(&line);
+    }
+}
+
+#[test]
+fn r46c_adjacent_marks_at_leading_intergroup() {
+    // Round 46 (R46-C, F4, leading intergroup
+    // seat): the mark standing between the
+    // governor and weekday groups splits the
+    // company on the base tree for five of
+    // the six marks (U+0610 already refuses
+    // with the record there) — the governed
+    // company serves. Every arm refuses with
+    // the record, both routes.
+    for c in r46c_adjacent_marks() {
+        let line = format!("(cancelled){c}(Monday) November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
+#[test]
+fn r46c_adjacent_mark_0610_at_remainder_and_interiors() {
+    // Round 46 (R46-C, F4, U+0610 only): the
+    // Arabic combining mark breaks the
+    // weekday-word remainder re-parse and
+    // the date interiors — both read no date
+    // and no record on the base tree. After
+    // the cure both read as their clean twins
+    // (governed with the record), both routes.
+    let line = "Monday November\u{610} 1, 2026";
+    r40e_governed_with_record(line, "Monday", nov(1));
+    let line = "November\u{610} 1, 2026 (Monday)";
+    r40e_governed_with_record(line, "Monday", nov(1));
+    let line = "November 1\u{610}, 2026 (Monday)";
+    r40e_governed_with_record(line, "Monday", nov(1));
+}
+
+#[test]
+fn r46c_cf_class_completeness_samples() {
+    // Round 46 (R46-C, F3, class completeness
+    // beyond the red team's tested 27): the
+    // cure keys on the Cf class, not on an
+    // enumerated list, so further genuine Cf
+    // members outside both the 19 and the 27
+    // must read as their clean twins too —
+    // U+0602-U+0604 (the rest of the Arabic
+    // number-sign range), U+0891, a tag
+    // interior (U+E0021), an Egyptian
+    // hieroglyph format (U+13430), a musical
+    // format (U+1D173), and a shorthand
+    // format (U+1BCA0) — at the trailing tail
+    // and the date<->group boundary, both
+    // routes.
+    for c in [
+        '\u{0602}',
+        '\u{0603}',
+        '\u{0604}',
+        '\u{0891}',
+        '\u{e0021}',
+        '\u{13430}',
+        '\u{1d173}',
+        '\u{1bca0}',
+    ] {
+        let line = format!("November 8, 2026 (cancelled){c}");
+        r40e_governed_silent(&line);
+        let line = format!("November 1, 2026{c} (Monday)");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+        let line = format!("(Monday){c} November 1, 2026");
+        r40e_governed_with_record(&line, "Monday", nov(1));
+    }
+}
+
 #[test]
 fn r45e_quoted_members_complete_the_governor_free_leading_sequence() {
     // Round 45 (R45-E, F6 MINOR = review MINOR 1):

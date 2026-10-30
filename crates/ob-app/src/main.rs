@@ -3632,6 +3632,84 @@ fn try_create_instance_lock_from(
     link_staged_instance_lock_from(lock, &temp, own_pid, own_token)
 }
 
+/// Sweep orphan staging files beside the lock path
+/// (R46-E, F7): a claimant killed between stage and
+/// link (or between link and the temp unlink on the
+/// losing path) leaves its `openbulletin.lock.tmp-*`
+/// file behind, and no reader ever looks at temp
+/// paths again. The sweep runs at claim time, before
+/// the judge loop, and removes only a staging file
+/// whose name parses exactly as the staging step
+/// writes it — the lock file name, `.tmp-`, and three
+/// numeric fields — and whose two pid fields both
+/// name provably dead processes. That guard is what
+/// makes the sweep safe against a live concurrent
+/// claimant: a claimant between stage and link is
+/// alive, so its pid answers `Alive` (or `Unknown`,
+/// which is also kept), never `Dead`. A pid reused
+/// by a live process is likewise kept, and a new
+/// process reusing a dead pid cannot have staged
+/// into the still-present orphan name, because
+/// staging opens with `create_new` and fails while
+/// the orphan stands there — so the unlink after a
+/// `Dead` reading cannot remove a live stager's file.
+/// Anything unparseable, non-regular, or naming a
+/// live or unknown pid is left standing, and every
+/// sweep failure is ignored: the claim never fails
+/// because the sweep did, and at worst the litter
+/// survives until a later claim. The sweep never
+/// touches the lock path or the displaced path, and
+/// it changes nothing about the stage/link contract:
+/// a live claimant's staged file still lands complete
+/// or not at all. On a platform whose liveness
+/// primitive cannot answer `Dead` the sweep removes
+/// nothing, and the orphan stays accepted litter
+/// there.
+fn sweep_orphan_instance_lock_temps_from(lock: &std::path::Path) {
+    let Some(dir) = lock.parent() else {
+        return;
+    };
+    let Some(lock_name) = lock.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let prefix = format!("{lock_name}.tmp-");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let parts: Vec<&str> = rest.split('-').collect();
+        if parts.len() != 3 {
+            continue;
+        }
+        let Ok(own_pid) = parts[0].parse::<u32>() else {
+            continue;
+        };
+        let Ok(real_pid) = parts[1].parse::<u32>() else {
+            continue;
+        };
+        if parts[2].parse::<u64>().is_err() {
+            continue;
+        }
+        let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        if !peer_provably_gone(own_pid) || !peer_provably_gone(real_pid) {
+            continue;
+        }
+        let _ = std::fs::remove_file(entry.path());
+    }
+}
+
 /// The path a displaced lock file is set aside to: the
 /// lock path with `.displaced` appended, the set-aside
 /// shape the journal and settings recovery paths already
@@ -3981,6 +4059,13 @@ fn displace_instance_lock_from(
 /// This is the only production writer of the lock file,
 /// and no path deletes the lock.
 fn acquire_instance_lock_from(lock: &std::path::Path, own_pid: u32, own_token: &str) -> bool {
+    // Claim time is sweep time (R46-E, F7): orphan
+    // staging files left by killed claimants are
+    // removed before the judge loop, under the
+    // sweep's provably-dead guard, so no claim ever
+    // proceeds over another claimant's live staging
+    // file and no sweep failure can fail the claim.
+    sweep_orphan_instance_lock_temps_from(lock);
     for _pass in 0..4 {
         if peer_instance_alive_from(lock, own_pid, own_token) {
             return false;
@@ -9836,6 +9921,179 @@ mod settings_tests {
         assert!(
             lock_names_instance(&lock, l_pid, l_token),
             "the claimant holds"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r46e_orphan_staging_temp_from_killed_claimant_swept_at_next_claim() {
+        // R46-E pin for F7 (review MINOR 2): a claimant
+        // killed between stage and link leaves its
+        // staging file beside the lock path, and the
+        // next claim sweeps it. The orphan is planted
+        // by hand in exactly the staging step's name
+        // shape, with both pid fields naming one dead
+        // process — the production shape of a killed
+        // claimant, whose own pid and staging pid are
+        // the same process. The pin goes through the
+        // claim entry point only, so it compiles and
+        // bites on the base tree: there the claim
+        // succeeds but the orphan stands forever, and
+        // the final assertion fails.
+        let dir = std::env::temp_dir().join(format!("ob-app-r46e-orphan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let mut dead_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = dead_child.id();
+        dead_child.wait().expect("reap child");
+        assert!(
+            peer_provably_gone(dead_pid),
+            "the planted owner is provably gone before the claim"
+        );
+        let orphan_name = format!("openbulletin.lock.tmp-{dead_pid}-{dead_pid}-0");
+        let orphan = dir.join(&orphan_name);
+        std::fs::write(&orphan, format!("{dead_pid}\nkilled-claimant-token\n"))
+            .expect("plant the orphan staging file");
+        assert!(orphan.exists(), "the orphan stands before the claim");
+        assert!(
+            acquire_instance_lock_from(&lock, std::process::id(), "r46e-claimant-token"),
+            "the next claim takes the vacant lock"
+        );
+        assert!(
+            lock_names_instance(&lock, std::process::id(), "r46e-claimant-token"),
+            "the claimant holds"
+        );
+        assert!(
+            !orphan.exists(),
+            "the next claim swept the killed claimant's orphan staging file"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r46e_live_claimant_staging_temp_never_swept() {
+        // R46-E guard pin for F7: the sweep's safety
+        // half. A claimant staged through the
+        // production step — its staging process alive,
+        // so the name's real pid answers live — keeps
+        // its staging file through a sweep, and its
+        // link step still lands the win. A second
+        // hand-planted temp naming this live process
+        // in both pid fields is likewise kept: the
+        // sweep deletes only when both fields name
+        // provably dead processes.
+        let dir = std::env::temp_dir().join(format!("ob-app-r46e-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let w_pid = std::process::id() + 5000;
+        let w_token = "r46e-live-w-token";
+        let w_temp =
+            stage_instance_lock_temp_from(&lock, w_pid, w_token).expect("W stages its lock text");
+        let live_name = format!(
+            "openbulletin.lock.tmp-{}-{}-0",
+            std::process::id(),
+            std::process::id()
+        );
+        let live_planted = dir.join(&live_name);
+        std::fs::write(&live_planted, "live-planted\n").expect("plant the live temp");
+        sweep_orphan_instance_lock_temps_from(&lock);
+        assert!(
+            w_temp.exists(),
+            "the sweep never removes a live claimant's staging file"
+        );
+        assert_eq!(
+            read_instance_lock_from(&w_temp)
+                .expect("the staged file reads back")
+                .token
+                .as_deref(),
+            Some(w_token),
+            "the staged file still carries W's complete generation after the sweep"
+        );
+        assert!(
+            live_planted.exists(),
+            "the sweep never removes a temp naming a live process"
+        );
+        assert!(
+            matches!(
+                link_staged_instance_lock_from(&lock, &w_temp, w_pid, w_token),
+                LockCreate::Created
+            ),
+            "W's link step still lands the win after the sweep"
+        );
+        assert!(lock_names_instance(&lock, w_pid, w_token), "W holds");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r46e_sweep_keeps_unparseable_unknown_and_mixed_temps() {
+        // R46-E guard pin for F7: the sweep's
+        // conservative-parsing half. Names that do not
+        // parse exactly as the staging step writes
+        // them, a temp naming pid 0 (which answers
+        // `Unknown`, never `Dead`), a temp mixing one
+        // dead field with one live field, and a
+        // directory wearing a valid dead-pid temp name
+        // are all left standing — while a genuine
+        // dead-pid orphan in the same directory is
+        // swept, so the kept files are kept by the
+        // guard, not by a sweep that never ran.
+        let dir = std::env::temp_dir().join(format!("ob-app-r46e-keeps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let kept_names = [
+            "openbulletin.lock.tmp-abc",
+            "openbulletin.lock.tmp-12-34",
+            "openbulletin.lock.tmp-1-2-3-4",
+            "openbulletin.lock.tmp--1-2",
+            "openbulletin.lock.tmp-0-0-0",
+        ];
+        for name in kept_names {
+            std::fs::write(dir.join(name), "kept\n").expect("plant a kept temp");
+        }
+        let mut dead_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = dead_child.id();
+        dead_child.wait().expect("reap child");
+        assert!(
+            peer_provably_gone(dead_pid),
+            "the mixed temp's dead field is provably gone"
+        );
+        let mixed_name = format!("openbulletin.lock.tmp-{dead_pid}-{}-0", std::process::id());
+        std::fs::write(dir.join(&mixed_name), "kept\n").expect("plant the mixed temp");
+        let dir_name = format!("openbulletin.lock.tmp-{dead_pid}-{dead_pid}-9");
+        std::fs::create_dir(dir.join(&dir_name)).expect("plant the temp-named directory");
+        let swept_name = format!("openbulletin.lock.tmp-{dead_pid}-{dead_pid}-0");
+        let swept = dir.join(&swept_name);
+        std::fs::write(&swept, format!("{dead_pid}\nkilled-claimant-token\n"))
+            .expect("plant the genuine orphan");
+        sweep_orphan_instance_lock_temps_from(&lock);
+        for name in kept_names {
+            assert!(
+                dir.join(name).exists(),
+                "the sweep keeps the unparseable or unknown temp {name}"
+            );
+        }
+        assert!(
+            dir.join(&mixed_name).exists(),
+            "the sweep keeps a temp mixing a dead field with a live field"
+        );
+        assert!(
+            dir.join(&dir_name).exists(),
+            "the sweep never removes a directory, even under a temp name"
+        );
+        assert!(
+            !swept.exists(),
+            "the genuine dead-pid orphan in the same directory is swept"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

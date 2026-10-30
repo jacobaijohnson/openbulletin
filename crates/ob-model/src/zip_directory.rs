@@ -1028,7 +1028,7 @@ fn tail_gap_zip64_record(
     // places no such directory there, so its
     // declared directory stands as it always has.
     if let Some(frame_start) =
-        frame_closing_directory_start(bytes, extent_end, total, cd_size, record_at)
+        frame_closing_directory_start(bytes, extent_end, total, cd_size, record_at, archive_offset)
     {
         return Some(CentralDirectory {
             archive_offset,
@@ -1069,49 +1069,68 @@ fn tail_gap_zip64_record(
 /// above, but the frame still names a directory:
 /// the complete directory standing wholly after the
 /// declared directory's accounted end, walking the
-/// declared count for exactly the declared size,
-/// whose accounted end stands nearest the record.
-/// The bytes between its end and the record are the
-/// junk, and no other complete directory stands
-/// nearer. The junk arm below scans the frame's end
-/// backward for it: for each candidate end the
-/// directory starting one declared size earlier is
-/// the only start that can close at that end, so
-/// the first start that walks exactly, with its
-/// accounted end at or before the record, is the
-/// nearest such directory. A tail-gap host whose
-/// gap holds no complete directory finds nothing
-/// here, and its declared directory stands as it
-/// always has.
+/// declared count for exactly the declared size.
+/// The junk arm scanned the frame's end backward
+/// for it, returning the complete directory nearest
+/// the record. A tail-gap host whose gap holds no
+/// complete directory finds nothing here, and its
+/// declared directory stands as it always has.
+///
+/// Round 46, F6: the nearest tie-break is the ninth
+/// generation's hole — a complete directory standing
+/// in the junk after the real directory wins over
+/// the real one by standing nearer the record, in
+/// the wrongcd shape and in the zip64-real shape
+/// alike (in the latter the declared directory IS
+/// the real one, so no positional tie-break among
+/// later directories can save it: any later
+/// complete directory overrides it). The selection
+/// is earliest now, and gated on standing on its
+/// own locals: the frame's directory is the
+/// earliest complete directory wholly at or after
+/// the declared directory's accounted end, walking
+/// the declared count for exactly the declared
+/// size (a signature record at the walk's end
+/// counted in that size or not), with its accounted
+/// end at or before the record, whose every record
+/// names the local header its own local offset
+/// names (see `directory_agrees_with_locals`) —
+/// the demonstrated steering is name-level with a
+/// shared local header, so the fake, standing on
+/// the real entry's header under a false name,
+/// never overrides, and where no agreeing
+/// directory stands after the declared directory,
+/// the declared directory stands, which is exactly
+/// the zip64-real case. Earliest also aligns the
+/// frame with the discipline's standing rule (the
+/// earliest standing candidate is the directory,
+/// round 36, F6, and the first complete directory,
+/// round 43, F6); nearest was the outlier. The
+/// trade, stated plainly: an agreeing complete
+/// directory standing in the gap BEFORE the real
+/// directory — laid out whole on its own local
+/// header, the payload-level extension the red
+/// team reasoned but did not demonstrate — judges
+/// under earliest where nearest judged the real
+/// one, once junk after the real directory breaks
+/// the exact close; and a frame directory whose
+/// central records legitimately disagree with
+/// their local headers no longer overrides the
+/// declared directory at all, falling back to it.
+/// Both costs are pinned in the round-46 tests,
+/// the second only as the fallback's shape, not as
+/// a witnessed host.
 fn frame_closing_directory_start(
     bytes: &[u8],
     declared_extent_end: usize,
     total: u64,
     cd_size: usize,
     record_at: usize,
+    archive_offset: u64,
 ) -> Option<usize> {
-    let direct = record_at.checked_sub(cd_size)?;
-    let mut starts: Vec<usize> = vec![direct];
-    // The uncounted-signature arm: a signature
-    // record whose own span ends exactly at the
-    // record places the walk's start one signature
-    // length before the direct start. The record
-    // stands within a declared length (a u16) of
-    // the zip64 record, so only that window is
-    // scanned, position by position, for its header.
-    let scan_from = record_at.saturating_sub(6 + usize::from(u16::MAX));
-    let mut at = scan_from;
-    while at + 6 <= record_at {
-        if bytes[at..].starts_with(b"PK\x05\x05") && signature_record_spans_to(bytes, at, record_at)
-        {
-            if let Some(start) = at.checked_sub(cd_size) {
-                starts.push(start);
-            }
-        }
-        at += 1;
-    }
-    for start in starts {
-        if start < declared_extent_end {
+    let last_start = record_at.checked_sub(cd_size)?;
+    for start in declared_extent_end..=last_start {
+        if !bytes[start..].starts_with(b"PK\x01\x02") {
             continue;
         }
         let Some((walk_end, extent_end)) = directory_walk_and_signature_end(bytes, start, total)
@@ -1121,47 +1140,121 @@ fn frame_closing_directory_start(
         if walk_end - start != cd_size && extent_end - start != cd_size {
             continue;
         }
-        if extent_end == record_at {
+        if extent_end > record_at {
+            continue;
+        }
+        if directory_agrees_with_locals(bytes, start, total, archive_offset) {
             return Some(start);
         }
     }
-    // Round 45, F7: the junk arm. The exact arms
-    // above found nothing, so the frame's directory
-    // — if one stands — ends short of the record
-    // with junk between its end and the record. Scan
-    // the candidate end backward from the record: a
-    // directory closing at `end` starts exactly one
-    // declared size earlier, so only that start can
-    // answer for `end`, and the first start that
-    // walks the declared count for exactly the
-    // declared size (a signature record at the
-    // walk's end counted in that size or not), with
-    // its accounted end at or before the record, is
-    // the complete directory nearest the record. The
-    // lower bound keeps every candidate wholly at or
-    // after the declared directory's accounted end,
-    // the same guard the exact arms carry.
-    let mut end = record_at;
-    let lowest_end = declared_extent_end.checked_add(cd_size)?;
-    while end >= lowest_end {
-        let start = end - cd_size;
-        if bytes[start..].starts_with(b"PK\x01\x02") {
-            if let Some((walk_end, extent_end)) =
-                directory_walk_and_signature_end(bytes, start, total)
-            {
-                if (walk_end - start == cd_size || extent_end - start == cd_size)
-                    && extent_end <= record_at
-                {
-                    return Some(start);
-                }
-            }
-        }
-        if end == lowest_end {
-            break;
-        }
-        end -= 1;
-    }
     None
+}
+
+/// Whether every central record of the directory
+/// starting at `cd_start` names, byte for byte, the
+/// local header its own local offset names (the
+/// offset read through `archive_offset`, and
+/// through a record's zip64 extra field where the
+/// offset field itself is the sentinel). False
+/// where any record's header does not stand, its
+/// local header does not stand, or the names
+/// differ — the shape of a directory standing on
+/// another entry's local header under a false name
+/// (round 46, F6). This is a frame-candidate
+/// tie-break only: it judges nothing about a
+/// directory the derivations already derived, and
+/// a disagreeing directory still derives through
+/// every other arm.
+fn directory_agrees_with_locals(
+    bytes: &[u8],
+    cd_start: usize,
+    total: u64,
+    archive_offset: u64,
+) -> bool {
+    let Ok(archive) = usize::try_from(archive_offset) else {
+        return false;
+    };
+    let mut at = cd_start;
+    for _ in 0..total {
+        let Some(header_end) = at.checked_add(46) else {
+            return false;
+        };
+        if header_end > bytes.len() || !bytes[at..].starts_with(b"PK\x01\x02") {
+            return false;
+        }
+        let name_len = usize::from(u16_at(bytes, at + 28));
+        let extra_len = usize::from(u16_at(bytes, at + 30));
+        let comment_len = usize::from(u16_at(bytes, at + 32));
+        let Some(name_end) = header_end.checked_add(name_len) else {
+            return false;
+        };
+        if name_end > bytes.len() {
+            return false;
+        }
+        let Some(extra_end) = name_end.checked_add(extra_len) else {
+            return false;
+        };
+        if extra_end > bytes.len() {
+            return false;
+        }
+        let mut local_offset = u64::from(u32_at(bytes, at + 42));
+        if local_offset == u64::from(u32::MAX) {
+            let mut field_at = name_end;
+            let mut resolved = None;
+            while field_at < extra_end {
+                let Some(field_header_end) = field_at.checked_add(4) else {
+                    break;
+                };
+                if field_header_end > extra_end {
+                    break;
+                }
+                let tag = u16_at(bytes, field_at);
+                let size = usize::from(u16_at(bytes, field_at + 2));
+                let Some(data_end) = field_header_end.checked_add(size) else {
+                    break;
+                };
+                if data_end > extra_end {
+                    break;
+                }
+                if tag == 0x0001 && size >= 8 {
+                    resolved = Some(u64_at(bytes, field_at + 4));
+                    break;
+                }
+                field_at = data_end;
+            }
+            let Some(resolved) = resolved else {
+                return false;
+            };
+            local_offset = resolved;
+        }
+        let Ok(local) = usize::try_from(local_offset) else {
+            return false;
+        };
+        let Some(local) = local.checked_add(archive) else {
+            return false;
+        };
+        let Some(local_header_end) = local.checked_add(30) else {
+            return false;
+        };
+        if local_header_end > bytes.len() || !bytes[local..].starts_with(b"PK\x03\x04") {
+            return false;
+        }
+        let local_name_len = usize::from(u16_at(bytes, local + 26));
+        let Some(local_name_end) = local_header_end.checked_add(local_name_len) else {
+            return false;
+        };
+        if local_name_end > bytes.len() {
+            return false;
+        }
+        if bytes[header_end..name_end] != bytes[local_header_end..local_name_end] {
+            return false;
+        }
+        let Some(next) = extra_end.checked_add(comment_len) else {
+            return false;
+        };
+        at = next;
+    }
+    true
 }
 
 /// The byte span one central spot's local header
@@ -5919,6 +6012,198 @@ mod tests {
                 "{set} V5: the view's judged spots are the clean control's"
             );
         }
+    }
+
+    /// One single-entry zip64 craft in the round-46
+    /// red-team shape: one Stored local header for
+    /// `a.txt`, and central records of 51 bytes each
+    /// for the plant (`b.txt`), the real directory
+    /// (`a.txt`), and the fake (`c.txt`), the fake
+    /// reusing the real local header's offset, the
+    /// same sizes and checksum throughout. The layout
+    /// tokens are laid out in order after the local
+    /// header: "plant", "real", "fake", "junk10",
+    /// "junk27", "junk37", and "fakelocal" (a whole
+    /// local header for `c.txt`, for the agreeing
+    /// gap plant of the cost pin). The zip64 record
+    /// declares the plant where one stands, else the
+    /// real directory. Returns the bytes, the real
+    /// directory's start, the fake directory's start
+    /// where one stands, and the declared start.
+    fn r46f_zip64_archive(layout: &[&str]) -> (Vec<u8>, usize, Option<usize>, usize) {
+        let crc = 0x1234_5678u32;
+        let mut out = r43d_local(b"a.txt", b"hello", crc, 0, false);
+        let mut real_cd = 0usize;
+        let mut fake_cd = None;
+        let mut plant_cd = None;
+        let mut fake_local_at = 0usize;
+        for token in layout {
+            match *token {
+                "plant" => {
+                    plant_cd = Some(out.len());
+                    out.extend_from_slice(&r43d_central(b"b.txt", 5, crc, 0, 0));
+                }
+                "real" => {
+                    real_cd = out.len();
+                    out.extend_from_slice(&r43d_central(b"a.txt", 5, crc, 0, 0));
+                }
+                "fake" => {
+                    fake_cd = Some(out.len());
+                    out.extend_from_slice(&r43d_central(b"c.txt", 5, crc, 0, 0));
+                }
+                "fakelocal" => {
+                    fake_local_at = out.len();
+                    out.extend_from_slice(&r43d_local(
+                        b"c.txt",
+                        b"plant!",
+                        0x0bad_f00du32,
+                        0,
+                        false,
+                    ));
+                }
+                "junk10" => out.extend_from_slice(&[b'J'; 10]),
+                "junk27" => out.extend_from_slice(&[b'J'; 27]),
+                "junk37" => out.extend_from_slice(&[b'J'; 37]),
+                _ => unreachable!("unknown layout token {token}"),
+            }
+        }
+        // A fake standing on its own local header, for
+        // the cost pin, needs its central record to
+        // name that header: rebuild the fake central
+        // at its recorded start with the fake local's
+        // offset, where the layout carried one.
+        if let Some(fake) = fake_cd {
+            if fake_local_at != 0 {
+                let fixed = r43d_central(b"c.txt", 6, 0x0bad_f00du32, fake_local_at as u32, 0);
+                out[fake..fake + fixed.len()].copy_from_slice(&fixed);
+            }
+        }
+        let declared_cd = plant_cd.unwrap_or(real_cd);
+        let record_at = out.len() as u64;
+        out.extend_from_slice(&r44g_zip64_record(1, 51, declared_cd as u64));
+        out.extend_from_slice(&r44g_zip64_locator(record_at));
+        out.extend_from_slice(&r44g_saturated_eocd());
+        (out, real_cd, fake_cd, declared_cd)
+    }
+
+    /// The judged directory for one round-46 craft
+    /// must be the directory at `expected_cd` with
+    /// the judged spots naming `expected_name`, and
+    /// the prefix-free view must derive that same
+    /// directory with those same spots.
+    fn r46f_assert_judged(bytes: &[u8], expected_cd: usize, expected_name: &str, label: &str) {
+        let directory =
+            central_directory(bytes).unwrap_or_else(|| panic!("{label}: the craft derives"));
+        assert_eq!(directory.cd_start, expected_cd, "{label}: the judged start");
+        let spots = central_spots(bytes);
+        assert_eq!(spots.len(), 1, "{label}: one judged spot");
+        assert_eq!(spots[0].0, expected_name, "{label}: the judged name");
+        let view = prefix_free(bytes);
+        let view_directory =
+            central_directory(&view).unwrap_or_else(|| panic!("{label}: the view derives"));
+        assert_eq!(
+            view_directory.cd_start, directory.cd_start,
+            "{label}: the view derives the judged directory"
+        );
+        assert_eq!(
+            central_spots(&view),
+            spots,
+            "{label}: the view's judged spots are the judged spots"
+        );
+    }
+
+    #[test]
+    fn r46f_a_complete_directory_in_the_junk_after_the_real_directory_never_steers() {
+        // Round 46, F6 (red team RT46-C5): the ninth
+        // generation — a complete directory standing
+        // in the junk after the real directory steered
+        // the zip64 frame to itself, in the wrongcd
+        // shape (the record declaring a gap plant, the
+        // real directory after it) and in the
+        // zip64-real shape (the record declaring the
+        // real directory itself), because the R45-G
+        // junk arm returned the complete directory
+        // nearest the record. The frame's directory
+        // is the earliest complete directory after
+        // the declared directory's accounted end
+        // whose records stand on their own local
+        // headers now, and a directory standing on
+        // another entry's local header never
+        // overrides the declared directory — so the
+        // real directory is judged in every shape
+        // below, and the prefix-free view follows it.
+        // The witnessed shape is the junk-arm shape:
+        // junk before the fake and junk after it, so
+        // the exact arms fail and the junk arm fires.
+        // The at-record variant (the fake ending on
+        // the record) is pinned alongside it, since
+        // it steers through the same frame selection.
+        // The controls ride in the same pin: the
+        // generation-7 wrongcd craft, wrongcd plus
+        // plain junk, zip64-real, and zip64-real
+        // plus plain junk all judge the real
+        // directory as before.
+        let (bytes, real_cd, _, _) = r46f_zip64_archive(&["plant", "real"]);
+        r46f_assert_judged(&bytes, real_cd, "a.txt", "wrongcd control");
+        let (bytes, real_cd, _, _) = r46f_zip64_archive(&["plant", "real", "junk37"]);
+        r46f_assert_judged(&bytes, real_cd, "a.txt", "wrongcd junk37 control");
+        let (bytes, real_cd, _, _) =
+            r46f_zip64_archive(&["plant", "real", "junk10", "fake", "junk27"]);
+        r46f_assert_judged(&bytes, real_cd, "a.txt", "wrongcd junk fakecd");
+        let (bytes, real_cd, _, _) = r46f_zip64_archive(&["plant", "real", "junk10", "fake"]);
+        r46f_assert_judged(&bytes, real_cd, "a.txt", "wrongcd junk fakecd at record");
+        let (bytes, real_cd, _, _) = r46f_zip64_archive(&["real"]);
+        r46f_assert_judged(&bytes, real_cd, "a.txt", "zip64real control");
+        let (bytes, real_cd, _, _) = r46f_zip64_archive(&["real", "junk37"]);
+        r46f_assert_judged(&bytes, real_cd, "a.txt", "zip64real junk37 control");
+        let (bytes, real_cd, _, _) = r46f_zip64_archive(&["real", "junk10", "fake", "junk27"]);
+        r46f_assert_judged(&bytes, real_cd, "a.txt", "zip64real junk fakecd");
+        let (bytes, real_cd, _, _) = r46f_zip64_archive(&["real", "junk10", "fake"]);
+        r46f_assert_judged(&bytes, real_cd, "a.txt", "zip64real junk fakecd at record");
+        // The fake standing BEFORE the real directory
+        // is judged the same way: it reuses the real
+        // local header under a false name, so it
+        // never overrides, and the real directory is
+        // judged whether the fake stands glued to it
+        // or spaced from it by junk.
+        let (bytes, real_cd, _, _) = r46f_zip64_archive(&["plant", "fake", "real"]);
+        r46f_assert_judged(&bytes, real_cd, "a.txt", "wrongcd fakecd before real");
+        let (bytes, real_cd, _, _) = r46f_zip64_archive(&["plant", "fake", "junk10", "real"]);
+        r46f_assert_judged(
+            &bytes,
+            real_cd,
+            "a.txt",
+            "wrongcd fakecd before real spaced",
+        );
+    }
+
+    #[test]
+    fn r46f_earliest_trade_cost_an_agreeing_gap_directory_before_the_real_one_judges() {
+        // Round 46, F6, the adjudicated cost, pinned
+        // so it cannot drift silently: the earliest
+        // tie-break trades the gap side for the tail
+        // side. A complete directory standing in the
+        // gap before the real directory, laid out
+        // whole on its OWN local header (so its
+        // records agree with their locals, the
+        // payload-level extension the red team
+        // reasoned but did NOT demonstrate), with
+        // junk after the real directory breaking the
+        // exact close, is the earliest agreeing
+        // directory after the declared plant, and is
+        // judged — this is NOT a green shape, it is
+        // the recorded price of closing F6, and a
+        // future nearest restoration must break this
+        // pin and re-adjudicate rather than silently
+        // reintroducing the tail steering. The
+        // name-level fake of the witnessed shapes
+        // (a shared local header, a false name) does
+        // not pay this price: it disagrees with its
+        // local header and never overrides.
+        let (bytes, _, fake_cd, _) =
+            r46f_zip64_archive(&["plant", "fakelocal", "fake", "real", "junk37"]);
+        let fake_cd = fake_cd.expect("the cost craft carries a fake directory");
+        r46f_assert_judged(&bytes, fake_cd, "c.txt", "cost: agreeing gap fakecd");
     }
 
     #[test]

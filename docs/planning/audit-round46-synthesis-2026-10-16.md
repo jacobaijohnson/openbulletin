@@ -230,4 +230,194 @@ bound change.
 | R46-F | F6 MINOR | Zip64 junk-arm tie-break (adjudication 4). |
 | R46-G | HF-12 slice 2 (conditional) | Own batch letter, only if it does not displace the sequence. |
 
-## Close (to be appended by the coordinator at the close)
+## Close
+
+**Round 46 closed. Audit tally 1 BLOCKER / 2 MAJOR / 6 MINOR; the
+exit bar is NOT met** — the bar is a round auditing at zero BLOCKER
+and zero MAJOR, and this round's audit carried a BLOCKER. All nine
+findings are closed or dispositioned below; round 47's audit judges
+the bar. Final code tip `db4209b`, close record this commit, suite
+**1334 passed / 0 failed** on every leg that ran it.
+
+### Batches landed and verified
+
+| Batch | Findings | Commit | Hosted CI (all three OS legs) |
+|---|---|---|---|
+| R46-A | F1 BLOCKER | `eb619df` | 40957590729, success |
+| R46-B | F2 MAJOR | `1f664ef` | 40975117415, success (attempt 2; see flake notes) |
+| R46-C | F3 MAJOR + F4 MINOR | `92d469b` | 40991486313, success on attempt 3 (see the unsafe-direction event) |
+| R46-D | F5 MINOR + F8 MINOR | `e0f4abf` | 41009677080, success |
+| R46-E | F7 MINOR | `f3de1ff` | 41021156251, success on first attempt |
+| R46-F | F6 MINOR | `075de32` | 41034069993, success (attempt 2; see flake notes) |
+| R46-G | HF-12 slice 2, from_json half | `db4209b` | 41056961522, success on attempt 1 |
+
+F9 MINOR was dispositioned without a code batch (adjudication 2:
+the 27x bound stands; exceedance is dispositioned solo/quiet, never
+by widening). R46-G landed the from_json half of HF-12 slice 2
+(`FromJsonError`, Display rendering the standing plain words
+byte-for-byte, byte-identical Display pins biting on the base tree);
+the IDML half is carried (see carried items). Records:
+`round46-out/coord/r46a-record.md` through `r46g-record.md`.
+
+### The unsafe-direction r42e event — carried, NOT closed
+
+This event is carried verbatim and is not softened, not closed, and
+not adjudicated by anything in this round:
+
+- Verified firsthand from the per-attempt Actions log
+  (runs/40991486313/attempts/2/logs, Ubuntu):
+  `settings_tests::r42e_four_claimant_races_over_a_dead_lock_stand_single_winner`
+  FAILED, assertion "round 7: exactly one of four claimants holds
+  (results [false, false, true, true])" — **TWO holders, unsafe
+  direction**. It was the SOLE failure of that attempt's run (all
+  other suites green, including the R46-A pins, which passed on the
+  same attempt). The green attempt 3 does NOT close this.
+- R46-A closed the witnessed RT46-L1 rename-window (B pauses
+  mid-displacement, M displaces S, C passes judgments in the gap, M
+  creates and holds, B's rename moves M→displaced, C creates into
+  the vacancy). This attempt-2 event is a DISTINCT observation: it
+  needs a deterministic witness/fix or a written adjudication,
+  carried to round 47 as a named investigation target under the
+  standing constraint (it may NOT close as re-run-and-forget).
+  R46-A's acceptance stays scoped to RT46-L1 and does not adjudicate
+  the lock generally. R46-C's acceptance is likewise scoped to
+  F3/F4 only and does not adjudicate the lock.
+- **Decision deferred, flagged for the parent seat: immediate
+  diagnostic now vs the round-47 target.** This close does not make
+  that call; it surfaces it with the evidence. Companion evidence
+  for the investigation: the R46-E runner run 41021156201
+  (superseded tip `f3de1ff`) showed the same pin in the SAFE
+  direction (round 7, [false, false, false, false], zero holders);
+  the R46-B and R46-F attempt-1 macOS failures were safe-direction
+  r42e notes (see flake notes). The unsafe direction has now been
+  seen exactly once, on hosted CI, on a tip whose lock code R46-A
+  had already redesigned.
+
+### Hosted flake events this round (named verbatim, per the standing rule)
+
+- R46-A: ETXTBSY event, named in `r46a-record.md`.
+- R46-B: CI 40975117415 attempt-1 macOS failure on the r42e pin
+  (safe direction); failed-job re-run only, attempt 2 green.
+- R46-C: CI 40991486313 attempt-2 Ubuntu r42e failure, unsafe
+  direction (the event above); attempt 3 green. The green re-run is
+  recorded, not treated as a disposition.
+- R46-E: ETXTBSY event, named in `r46e-record.md`.
+- R46-F: CI 41034069993 attempt-1 macOS failure, verbatim r42e
+  safe-direction note; failed-job re-run only, attempt 2 green.
+- R46-D and R46-G: no test flake events (R46-G green on attempt 1).
+
+### Close verification — five legs, all firsthand
+
+The previous close attempt was INCOMPLETE, not failed: its
+`close-clean.log` shows CLEAN_EXIT=0 (2026-10-30 14:15 UTC) but its
+`close-suite.log` ends mid-run (last write 2026-10-30 14:40 UTC, no
+exit line), and the process was verified dead on 2026-10-31. The
+truncated suite log is NOT evidence of anything; no verdict was read
+from it. The prior attempt's logs are archived at
+`round46-out/coord/logs/prev-attempt-2026-10-30/`, and this close
+re-ran the full cold verification from scratch on the pushed tip
+`db4209b` (script `round46-out/coord/close-verify.sh`, logs
+`round46-out/coord/logs/close-*.log`):
+
+1. **Cold local run:** `cargo clean` (CLEAN_EXIT=0, 8.0 GiB
+   removed), then full workspace suite **1334 passed / 0 failed**
+   (EXIT=0; every `test result` line ok, no FAILED line), then
+   `cargo clippy --workspace --all-targets -- -D warnings` EXIT=0.
+   Cold wall time: 21:57–22:36 UTC.
+2. **Fuzz as claims, byte-identical:** bin sources at the recorded
+   md5s (`verdict27.rs` a9cac6c399d304bac853f2a64f683fca,
+   `comp27.rs` 4f85c605a841329dabed1d9a2aa84f88); verdict md5
+   `797758443d101f9339fdd778e14af430` (standing baseline, exact);
+   composition md5 `e8b2e73b117c7013d867419da8fb0ab7` (standing
+   baseline, exact); all four bins exit 0 with 0 stderr bytes
+   (0 panics); rights counters 5083 / 1024 / 5275,
+   safety_flips=0. The summary's 40,000 / 497,024 figures are the
+   bins' internal case counts, not stdout lines; the byte-identical
+   claim is the md5 match, and it holds.
+3. **Hosted CI on the final tip:** run 41056961522, conclusion
+   success, head `db4209b` — macOS, Windows, Ubuntu all green
+   (checked firsthand via `gh run view` and the Actions API).
+4. **Desktop runner build on the final tip:** run 41056961555,
+   conclusion success, head `db4209b` (checked firsthand).
+5. **Windows bundle on the final tip:** run 41070168938, conclusion
+   success, head `db4209b` — Gate (format, tests, clippy) green,
+   bundle green, artifact `openbulletin-windows` (checked firsthand).
+
+Booklet baseline exact on the close run: imposed 31,717 bytes,
+reader 34,977 bytes (`booklet sizes after O2: imposed 31717 bytes,
+reader 34977 bytes`, test exit 0). Cold-gate notes from the batch
+records stand: R46-F's cold suite was accepted on the R46-F
+precedent (two load-sensitive interleaved timing pins dispositioned
+solo/quiet, bounds untouched); R46-G's on the same precedent (cold
+suite stopped at the load-sensitive r45d pin, solo disposition
+green, bound untouched). This close's own cold suite ran full-green
+in one run, so no solo disposition was needed at the close.
+
+### Cache-policy disposition at the confirmed completion
+
+Disk at completion: 48% used / 79 GB free (Saturday 2026-10-31
+~15:37 PDT, daytime window, threshold 94%). **Disposition: CARRY.**
+No reading above the limit, no latch armed, no clean owed at this
+completion. (The close's own cold verification already cleaned and
+rebuilt; the target now stands rebuilt for the next round.)
+
+### Disk-ritual note
+
+`round46-out/` + `round45-out/` kept. `round44-out/` becomes
+sweep-eligible at this boundary — eligibility only. No deletion
+happens on the ritual's say-so alone; any sweep waits for Jacob's
+approved exact list.
+
+### Verification-leg reconciliation — recommendation
+
+The round-46 brief's open question, answered explicitly, not by
+silent reinterpretation: the desktop-compute brief's "do not build
+on the Muse VM" rule (Jacob, 2026-10-29: VM full suites stopped;
+evidence only via the envoy-runner wrapper or the GitHub dispatched
+run) vs this loop's VM local verification leg. The workspace
+AGENTS.md text of that rule is written for the Encore lane (it names
+Encore wave lanes, envoy-runner v4, Wave 2.495), so it does not by
+itself settle whether it binds this loop — but its rationale is
+venue-based, not project-based (2 cores; the VM cannot hold a full
+run), and it applies with equal force to this loop's suite, which
+repeatedly shows load-sensitive timing behavior on this VM.
+
+**Recommendation: from round 47, the legs of record at the close
+are hosted CI ×3, the desktop runner build, and the Windows bundle
+— the same three hosted legs this close already verifies — plus
+the fuzz-as-claims and booklet checks, which are small targeted
+checks (probe29v bins; a single test filter), not full suites. The
+VM full suite is demoted to a provisional pre-close smoke run:
+still run when cheap, never cited as a leg, never the basis for the
+word "verified."** The alternative — keeping the VM leg as a leg of
+record on the grounds that the brief was Encore-scoped — is not
+recommended: it keeps citing the exact class of number the rule was
+written to stop citing. This recommendation is for the parent seat
+to adopt or reject; this close still reports the VM leg as run,
+because it was run under the round-46 brief, and the hosted legs
+stand on their own regardless.
+
+### Carried to round 47
+
+- **(1) The unsafe-direction r42e event** (above): named
+  investigation target — deterministic witness/fix or written
+  adjudication; never re-run-and-forget. Plus the deferred
+  decision: immediate diagnostic now vs the round-47 target.
+- **(2) HF-12 slice 2, second half: IDML.** `dump_from_idml` stays
+  `Result<_, String>`; the IDML carry reason (including the
+  TOO_DEEP branch) is in `r46g-record.md`. The from_json half is
+  landed and is not reopened.
+- **(3) R46-B coordinator note, left visible for the round-47
+  audit to re-check (not an open finding):** trailing weekday-first
+  governs silent because its clean twin reads the same
+  (probe-verified, same as the R45-C glued pin).
+- **(4) F9 timing-pin disposition stands:** the 27x bound, solo/quiet
+  disposition on any future cold-run exceedance, never widening.
+- **(5) The verification-leg reconciliation decision** (above):
+  adopt or reject the demotion of the VM full suite to a smoke run.
+- **(6) Round-45 carried item (e)** (run 40396061207, red on a
+  superseded non-batch tip) was not re-litigated per the brief and
+  is not an open defect.
+
+Round 47 audits the tip `db4209b` (plus this close record, which
+touches only the synthesis file).

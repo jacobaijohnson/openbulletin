@@ -1870,7 +1870,12 @@ pub(crate) fn inbox_row_status(
 }
 
 /// The Announcements step's one-line fate summary for
-/// filed contributions (round 49, R49-C, MINOR 1, H2):
+/// contributions still in the inbox, i.e. unfiled (round 49,
+/// R49-C, MINOR 1, H2; round 50, R50-C, red MINOR-1: the
+/// old "Filed contributions" label misnamed this set —
+/// `refresh_inbox` scans these items with `filed = false`,
+/// while the filed set lives in the `filed/` folder — so
+/// the label now names the set actually summarized):
 /// the same plan judgment R48-B's inbox row status
 /// rests on (`planned_part_plan`, with the presence
 /// judgment `plan_part` adds), counted part by part
@@ -1883,7 +1888,7 @@ pub(crate) fn inbox_row_status(
 /// (`KeptWithPart`). Everything else with a target —
 /// including a loose sheet, which the inbox row
 /// likewise calls not yet in until it is filed —
-/// counts as not yet in. None when no filed
+/// counts as not yet in. None when no unfiled
 /// contribution has a worded part, so the step stays
 /// silent when there is nothing to summarize.
 pub(crate) fn announcements_contribution_status(
@@ -1931,7 +1936,10 @@ pub(crate) fn announcements_contribution_status(
             if unlanded == 1 { "part" } else { "parts" }
         ));
     }
-    Some(format!("Filed contributions: {}.", bits.join(", ")))
+    Some(format!(
+        "Contributions still in the inbox: {}.",
+        bits.join(", ")
+    ))
 }
 
 /// A short content fingerprint: the first eight letters

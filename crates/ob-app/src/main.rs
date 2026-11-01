@@ -2375,13 +2375,24 @@ impl eframe::App for App {
                     }
                     2 => {
                         ui.heading("Announcements");
-                        // The filed-contributions fate line
+                        // Rescan on arrival, exactly as the
+                        // Start step does (round 50, R50-C,
+                        // red MINOR-1, staleness facet):
+                        // filing a contribution sets
+                        // `inbox_dirty`, so without this the
+                        // fate line below would still count
+                        // a part that has already left the
+                        // inbox for the filed folder.
+                        if self.inbox_dirty {
+                            self.refresh_inbox();
+                        }
+                        // The unfiled-contributions fate line
                         // (round 49, R49-C, MINOR 1, H2):
                         // what landed, what did not, and
                         // what had nowhere to land, in one
                         // line, from the same plan the Start
                         // inbox rows rest on. Silent when
-                        // nothing filed has words to fate.
+                        // nothing unfiled has words to fate.
                         if let Some(line) =
                             announcements_contribution_status(&self.doc, &self.inbox_items)
                         {
@@ -14484,7 +14495,7 @@ mod settings_tests {
         assert_eq!(
             announcements_contribution_status(&doc, &items),
             Some(
-                "Filed contributions: 1 part already in the bulletin, \
+                "Contributions still in the inbox: 1 part already in the bulletin, \
                  1 part not yet in the bulletin."
                     .to_string()
             )
@@ -14502,7 +14513,7 @@ mod settings_tests {
         let items = vec![item(fresh_text), item(applied_text)];
         assert_eq!(
             announcements_contribution_status(&no_box, &items),
-            Some("Filed contributions: 2 parts with nowhere to land yet.".to_string())
+            Some("Contributions still in the inbox: 2 parts with nowhere to land yet.".to_string(),)
         );
         // An unparsed file is skipped, as the inbox row
         // leaves it blank.
@@ -14519,6 +14530,48 @@ mod settings_tests {
             announcements_contribution_status(&doc, std::slice::from_ref(&bad)),
             None
         );
+    }
+
+    #[test]
+    fn r50c_announcements_line_names_unfiled_set_and_drops_filed_part() {
+        // Round 50 (R50-C, red MINOR-1): the Announcements
+        // fate line names the set it actually summarizes —
+        // the unfiled inbox items — never "Filed"; and once
+        // a part is filed, the post-rescan list (which no
+        // longer holds it) renders without it. The rescan
+        // guard itself lives in the egui step rendering, so
+        // it is code-read, not unit-testable, exactly as
+        // R49-C noted for step rendering; what is pinned
+        // here is the render consequence on both sides of
+        // the rescan: with the part, under the corrected
+        // label; without it, silent.
+        fn item(text: &str) -> InboxItem {
+            InboxItem {
+                path: std::path::PathBuf::from("inbox/test.md"),
+                file_name: "test.md".to_string(),
+                modified_secs: 0,
+                fingerprint: "deadbeef".to_string(),
+                text: text.to_string(),
+                parsed: ob_extract::contribution::parse_contribution(text, r1_today()),
+                filed_for: None,
+            }
+        }
+        let fresh_text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let items = vec![item(fresh_text)];
+        let line = announcements_contribution_status(&r1_template(), &items)
+            .expect("a fresh unfiled part renders a line");
+        assert!(
+            line.starts_with("Contributions still in the inbox: "),
+            "{line}"
+        );
+        assert!(!line.contains("Filed contributions"), "{line}");
+        assert_eq!(
+            line,
+            "Contributions still in the inbox: 1 part not yet in the bulletin."
+        );
+        // Post-filing, post-rescan state: the filed part has
+        // left inbox_items, so the line is silent.
+        assert_eq!(announcements_contribution_status(&r1_template(), &[]), None);
     }
 
     #[test]

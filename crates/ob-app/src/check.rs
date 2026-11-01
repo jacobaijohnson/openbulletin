@@ -1105,8 +1105,12 @@ pub(crate) fn serving_line_conflict_sentence(
 /// The Check step's one status line (round 49, R49-C,
 /// MINOR 3, H4): the same `state_sentence` comparison
 /// the Start step renders, fed this session's print and
-/// checked fingerprints instead of a remembered file
-/// state. The step shows the line when the comparison
+/// checked fingerprints. Those fields carry the remembered
+/// file state across restarts: `seed_doc_state` seeds them
+/// from the remembered state at load, so a freshly reopened,
+/// previously checked file can show "Checked, and nothing
+/// has changed since." with no Check or print performed in
+/// this session. The step shows the line when the comparison
 /// has anything to say, and nothing when it has not
 /// (never checked, or only a stale print copy — the
 /// Print step carries that warning).

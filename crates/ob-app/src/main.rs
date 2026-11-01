@@ -14160,10 +14160,12 @@ mod settings_tests {
         // announcement riding into the new week qualifies
         // the sentence and is named; with nothing kept
         // the sentence is exactly the old one.
-        let mut kept = ob_layout::NextSundayReport::default();
-        kept.weeks_advanced = 1;
-        kept.kept_announcements = 1;
-        kept.kept_names = vec!["Food bank collection".to_string()];
+        let kept = ob_layout::NextSundayReport {
+            weeks_advanced: 1,
+            kept_announcements: 1,
+            kept_names: vec!["Food bank collection".to_string()],
+            ..Default::default()
+        };
         let note = crate::windows::next_sunday_note("October 25, 2026", &kept);
         assert!(
             note.starts_with(
@@ -14179,8 +14181,10 @@ mod settings_tests {
             "{note}"
         );
         assert!(note.ends_with(" Undo brings this week back."), "{note}");
-        let mut plain = ob_layout::NextSundayReport::default();
-        plain.weeks_advanced = 1;
+        let plain = ob_layout::NextSundayReport {
+            weeks_advanced: 1,
+            ..Default::default()
+        };
         let note = crate::windows::next_sunday_note("October 25, 2026", &plain);
         assert_eq!(
             note,

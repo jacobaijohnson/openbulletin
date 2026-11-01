@@ -1711,6 +1711,16 @@ impl eframe::App for App {
                         let mut open_idx: Option<usize> = None;
                         if self.inbox_items.is_empty() {
                             ui.label("Nothing new has arrived.");
+                        } else {
+                            // Round 48 (R48-R3): the bare
+                            // 8-hex code after each file
+                            // name, glossed once where the
+                            // list starts. The code is the
+                            // file's short fingerprint, so
+                            // the same code means the same
+                            // words and tells versions
+                            // apart in the grouped list.
+                            ui.label("The code in parentheses after each file name is a short fingerprint of that file: two versions with the same code hold the same words, so it tells versions apart.");
                         }
                         for g in &groups {
                             let from_label = if g.from.trim().is_empty() {
@@ -1732,11 +1742,27 @@ impl eframe::App for App {
                             }
                             for &i in &g.items {
                                 let item = &self.inbox_items[i];
+                                // Round 48 (R48-R2): the row says
+                                // in plain words whether this
+                                // file's parts are already in
+                                // the bulletin, were added
+                                // before but are gone now,
+                                // have nowhere to land yet,
+                                // or are not yet in it.
+                                // Grouped rows always parsed;
+                                // the Err arm is defensive.
+                                let status = match &item.parsed {
+                                    Ok(c) => inbox_row_status(&self.doc, c, &item.text),
+                                    Err(_) => String::new(),
+                                };
                                 ui.horizontal(|ui| {
                                     ui.label(format!(
                                         "{} ({})",
                                         item.file_name, item.fingerprint
                                     ));
+                                    if !status.is_empty() {
+                                        ui.label(status);
+                                    }
                                     if ui
                                         .add_enabled(
                                             !review_open,
@@ -1865,6 +1891,12 @@ impl eframe::App for App {
                         ui.separator();
                         ui.heading("Start a new bulletin");
                         ui.label("Pick a shape and the bulletin starts over with it. Picking takes two clicks, because it replaces the bulletin on screen (which stays undoable).");
+                        // Round 48 glossary micro-gap: one
+                        // line only. A shape is this
+                        // bulletin's preset layout; a
+                        // template is a bulletin learned
+                        // from old ones, offered whole.
+                        ui.label("A shape is a preset layout for a fresh bulletin; a template is a bulletin learned from your old ones, offered whole to start from.");
                         for p in Preset::all() {
                             let armed = self.shape_arm == Some(p);
                             let label = if armed {
@@ -2688,7 +2720,9 @@ impl eframe::App for App {
                                     self.settings.pdf_purpose = purpose.slug().to_string();
                                     if let Err(e) = save_settings(&self.settings) {
                                         self.status = format!(
-                                            "That choice could not be remembered: {e}"
+                                            "That choice could not be remembered: {e}. \
+                                             It still holds for this session but will not be kept \
+                                             when you close the app; pick it again to try saving it."
                                         );
                                     }
                                 }
@@ -2780,7 +2814,7 @@ impl eframe::App for App {
                                     self.settings.printers.insert(self.printer_name.clone(), setup);
                                     match save_settings(&self.settings) {
                                         Ok(()) => self.status = format!("Remembered for the {}. You will see the setting to use right here.", self.printer_name),
-                                        Err(e) => self.status = format!("Learned it, but could not save the note: {e}"),
+                                        Err(e) => self.status = format!("Learned it, but could not save the note: {e}. The answer still holds for this session but will not be kept when you close the app; answer again to try saving it."),
                                     }
                                 }
                             }
@@ -13939,6 +13973,70 @@ mod settings_tests {
             .count();
         assert_eq!(count, 1, "the words land again, once");
         assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::AlreadyIn);
+    }
+
+    #[test]
+    fn r48_inbox_row_status_pins_each_claim_state() {
+        // Round 48 (R48-R2/R48-R3): the Start inbox
+        // list's one phrase per row, pinned for every
+        // state the row can show.
+        // Not yet in: a fresh template, nothing applied.
+        let doc = r1_template();
+        let text = "From: Sue\n\n## Announcement\n\nChoir rehearsal moved to Thursday.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert_eq!(applied_claim(&doc, &c, text), AppliedClaim::NotApplied);
+        assert_eq!(inbox_row_status(&doc, &c, text), "Not yet in the bulletin.");
+        // Already in: applied, words standing.
+        let mut doc = r1_template();
+        let outcome = apply_contribution_recording(&mut doc, &c, text);
+        assert!(outcome.all_landed);
+        assert_eq!(inbox_row_status(&doc, &c, text), "Already in the bulletin.");
+        // Added before but gone: the record survives a
+        // hand delete of the words.
+        let wid = weekly_story_id(&doc).expect("weekly story");
+        doc.story_mut(&wid)
+            .expect("story")
+            .paragraphs
+            .retain(|p| !p.text().contains("Choir rehearsal"));
+        assert_eq!(
+            applied_claim(&doc, &c, text),
+            AppliedClaim::RecordedButWordsGone
+        );
+        assert_eq!(
+            inbox_row_status(&doc, &c, text),
+            "Added before, but the words are not in the bulletin now, so you can add them again."
+        );
+    }
+
+    #[test]
+    fn r48_inbox_row_status_names_nowhere_to_land() {
+        // Round 48 (R48-R2): a bulletin with no
+        // announcements box leaves an Announcement part
+        // with nowhere to land, and a mixed contribution
+        // says both facts in its one phrase.
+        let mut no_box = r1_template();
+        for panel in &mut no_box.panels {
+            for frame in &mut panel.frames {
+                if frame.role == ob_model::ContentRole::Weekly {
+                    frame.role = ob_model::ContentRole::Standing;
+                }
+            }
+        }
+        assert!(weekly_story_id(&no_box).is_none());
+        let text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        assert_eq!(applied_claim(&no_box, &c, text), AppliedClaim::NotApplied);
+        assert_eq!(
+            inbox_row_status(&no_box, &c, text),
+            "Nowhere to land yet: this bulletin has no box for these words."
+        );
+        let mixed = "From: Sue\n\n## For the service\n\nThe choir warms up at 9:10 this week.\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        let cm = ob_extract::contribution::parse_contribution(mixed, r1_today()).expect("parses");
+        assert_eq!(applied_claim(&no_box, &cm, mixed), AppliedClaim::NotApplied);
+        assert_eq!(
+            inbox_row_status(&no_box, &cm, mixed),
+            "Not yet in the bulletin; some words have nowhere to land yet, because this bulletin has no box for them."
+        );
     }
 
     #[test]

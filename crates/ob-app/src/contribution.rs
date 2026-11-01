@@ -1820,6 +1820,55 @@ pub(crate) fn applied_claim(
     }
 }
 
+/// The Start inbox list's one-line landing state for one
+/// inbox file (round 48, R48-R2/R48-R3): the review's
+/// claim in short form, plus the nowhere-to-land case
+/// the plan already names. One phrase per row, in plain
+/// words: already in, added before but gone, nowhere to
+/// land yet, or not yet in. A row whose words only
+/// partly have nowhere to land says both facts, so no
+/// part's fate hides behind the row's single phrase.
+/// Wordless parts carry no fate: the apply step counts
+/// them landed wherever they target, so only parts with
+/// words decide the nowhere-to-land phrases.
+pub(crate) fn inbox_row_status(
+    doc: &Document,
+    c: &ob_extract::contribution::Contribution,
+    text: &str,
+) -> String {
+    match applied_claim(doc, c, text) {
+        AppliedClaim::AlreadyIn => "Already in the bulletin.".to_string(),
+        AppliedClaim::RecordedButWordsGone => {
+            "Added before, but the words are not in the bulletin now, so you can add them again."
+                .to_string()
+        }
+        AppliedClaim::NotApplied => {
+            let worded: Vec<&ob_extract::contribution::Part> = c
+                .parts
+                .iter()
+                .filter(|part| !part.paragraphs.is_empty())
+                .collect();
+            let unlanded = worded
+                .iter()
+                .filter(|part| {
+                    matches!(
+                        planned_part_plan(doc, c, part).target,
+                        SlotTarget::KeptWithPart
+                    )
+                })
+                .count();
+            if unlanded > 0 && unlanded == worded.len() {
+                "Nowhere to land yet: this bulletin has no box for these words.".to_string()
+            } else if unlanded > 0 {
+                "Not yet in the bulletin; some words have nowhere to land yet, because this bulletin has no box for them."
+                    .to_string()
+            } else {
+                "Not yet in the bulletin.".to_string()
+            }
+        }
+    }
+}
+
 /// A short content fingerprint: the first eight letters
 /// of the content hash. Two versions of a part with the
 /// same fingerprint are the same words.

@@ -359,3 +359,95 @@ Fix direction: one line on the Check step rendering the same
   live check.
 - **R47-F:** stays deferred, not a batch. **H6:** not a finding,
   not a batch — a proposed real-user task for Jacob's decision.
+
+## Close (fix phase, coordinator-verified firsthand)
+
+- **Batches landed, in order, each commit + pushed + HEAD ==
+  origin/main verified before the next dispatched:**
+  - **R49-A `268fc4c`** — F11 CLOSED on evidence, not on a green
+    hosted leg alone. The adjudicated helper-only mutex failed its
+    own zero-BUSY bar in 2/2 validation batches (absorbed lines
+    quoted verbatim in `round49-out/coord/r49a-record.md`); the
+    bypassing source was identified as within-process `/bin/sh`
+    dead-owner spawns (23/23 sites routed through the same
+    mutex); then two consecutive 11-trio guard batches green
+    with ZERO BUSY events (22 trios, 66 tests, 132 peer spawns,
+    0 BUSY). The R48-A bounded retry is kept as backstop.
+    Disclosed boundary: production spawns (soffice,
+    `open_with_os`) are NOT mutex-covered; the kept retry is
+    their backstop. Re-open trigger, carried: any future
+    `ETXTBSY absorbed` line in hosted CI re-opens F11.
+  - **R49-B `01e29b6`** — MAJOR 1 CLOSED. One `saturating_clamp`
+    helper at all six Pages geometry sites, `sanitized()`
+    untouched as adjudicated, false doc comment on
+    `keyboard_resize_rect` corrected. Pins failed pre-fix by
+    exact clamp panics, pass post-fix (3/0); ob-app bin 246/0.
+  - **R49-C `fa4df16`** (final tip) — MAJOR 2, MINOR 1, MINOR 3
+    CLOSED. `NextSundayReport` gains `kept_names`; the note
+    builder is extracted to testable `next_sunday_note` (kept >
+    0 qualifies the sentence and names kept announcements;
+    kept == 0 leaves the sentence unchanged); the H2 line is
+    ADDED on Announcements (`announcements_contribution_status`,
+    not satisfied-by-inbox — the sources proved available);
+    the Check step renders `check_step_state_line`. Bin suite
+    249/0, layout suite 19/0. Disclosed: the first tip
+    `927482e` went red on cold clippy (exit 101,
+    `clippy::field_reassign_with_default`) and on hosted CI run
+    `41319100652` (failure on all three legs); fixed by the
+    test-only struct-update init in `fa4df16`, and all
+    verification was re-run from `fa4df16`. The superseded tip
+    is not cited as verification.
+- **Legs of record on the final tip `fa4df16`, all verified
+  firsthand by the coordinator (not from batch reports alone):**
+  - Hosted CI run `41320362634`, success, all three legs,
+    each attempt 1: Ubuntu `124889042275`, macOS
+    `124889042382`, Windows `124889042410`.
+  - Desktop Runner Build run `41320362614`, success, attempt 1
+    (job `124889042262`).
+  - Windows bundle run `41324286124` (dispatched at the close),
+    success: Gate `124900855328`, bundle `124904269797`.
+  - Fuzz-as-claims, coordinator close run (logs in
+    `round49-out/coord/close-logs/`): bin sources md5-unchanged
+    from the standing values; all four bins exit 0, all
+    stderrs 0 bytes; stdout md5s byte-identical — verdict
+    `797758443d101f9339fdd778e14af430`, composition
+    `e8b2e73b117c7013d867419da8fb0ab7`, rights
+    `327cef3c7954c6f7950ed405a289e44b` /
+    `8e7c11b4e241336f53f4e2030a705d66`; rights 5083 / 1024 /
+    5275, safety_flips=0. The 40,000 / 497,024 figures are the
+    bins' internal case counts, not stdout lines.
+  - Booklet exact, coordinator close run: imposed 31,717 bytes,
+    reader 34,977 bytes, no movement.
+  - VM suite as SMOKE (NOT A LEG), reported-not-cited, with
+    `.status` capture: R49-C smoke exit 0, scripted tally
+    1358/0. Disclosed: the first smoke attempt's exec session
+    vanished mid-compile (no `.status`, no verdict read); the
+    governing smoke is the fresh re-run.
+  - Hosted flakes on every batch tip: none. Nothing to name
+    verbatim. The `927482e` red above was a real clippy
+    failure, not a flake.
+- **Exit bar NOT met.** Round 49 audited 1 BLOCKER / 2 MAJOR /
+  3 MINOR; the bar is judged on the audit round, and fixes
+  landing do not retroactively zero it. All findings except
+  MINOR 2 are closed. Round 50's audit is the next bar
+  judgment; the Tier-2 final gate is NOT triggered.
+- **Carried to round 50:** MINOR 2's H1 refined-rule sentence
+  (still gated on the live check — hand-edit a page, go back a
+  step, start next Sunday, check on screen and in print — and
+  it cannot land before that check holds); R47-B keyboard walk
+  (resize, frame-menu opening, numeric place/size — code side
+  landed in round 47, rendered behavior unconfirmed); R47-F
+  monolith extraction (still deferred, correctly so); H6 (not
+  a finding — a proposed real-user task for Jacob's decision).
+- **Cache-policy disposition:** disk 50% / 75G free at the
+  close — CARRY (daytime threshold 94%, overnight 87%; no
+  latch fired, no clean owed).
+- **Disk-ritual note:** round49-out + round48-out kept;
+  round47-out becomes sweep-eligible at this boundary —
+  eligibility only, deletion waits for Jacob's approved list.
+- **Close record:** `7e39461` synthesis commit; batches
+  `268fc4c`, `01e29b6`, `fa4df16`; records
+  `round49-out/coord/r49a-record.md`, `r49b-record.md`,
+  `r49c-record.md`; close logs
+  `round49-out/coord/close-logs/`; bundle watch log
+  `round49-out/coord/bundle-watch.log`.

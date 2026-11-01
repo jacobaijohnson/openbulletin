@@ -382,13 +382,131 @@ interleaving produced it and that the fix closes that trace too.
   the standing HF-12 terms (own batch letter, full batch
   discipline, placed so the audit/fix sequence is not displaced).
 
-## Close section (to be appended by the fix-phase coordinator)
+## Close section (appended by the fix-phase coordinator, 2026-10-31)
 
-- [ ] R47-A…R47-E landed or dispositioned; R47-F deferred on the
+- [x] R47-A…R47-E landed or dispositioned; R47-F deferred on the
   record; HF-12 IDML half dispositioned.
-- [ ] Five legs re-verified on the fix tip (hosted CI ×3 OS,
-  desktop runner build, Windows bundle, fuzz-as-claims, booklet
-  baseline); VM suite cited as smoke only.
-- [ ] R46-C attempt-2 event disposition: closed only by the F1 fix
-  evidence above, never by a green re-run.
-- [ ] Cache-policy disposition + disk-ritual eligibility note.
+- [ ] Five legs re-verified on the fix tip — NOT met, stated
+  plainly below (Ubuntu CI leg red on the final tip; tip
+  unverified). Fuzz-as-claims, booklet baseline, desktop runner
+  build, and Windows bundle are green on the final tip; VM suite
+  cited as smoke only.
+- [x] R46-C attempt-2 event disposition: closed by the R47-A
+  settling evidence (production-path pin fails now / passes
+  fixed, concurrent r42e shape at zero two-holder events under
+  load, F5 trace closed), never by a green re-run.
+- [x] Cache-policy disposition + disk-ritual eligibility note
+  (below).
+
+### Batches landed
+
+- R47-A (F1 BLOCKER + F2 BLOCKER + F3 MAJOR + F4 MAJOR + F5 trace
+  requirement): CLOSED. Claim-sequence serialization (reentrant
+  in-process mutex + cross-process claim file, stage-then-link,
+  stale files stolen only when the owner reads provably gone),
+  link-based restores, mandatory docstring corrections. Commits
+  `ce469d5` + fixup `1c85940`, suite 1340/0. Settling evidence:
+  production-path regression pin fails now / passes fixed,
+  concurrent r42e shape 80/80 runs with zero two-holder events
+  and zero F5-shape events, F5 traced (a false claimant's
+  generation restored over the winner via the C3 window) and
+  closed by the same fix on all three legs. Record:
+  `round47-out/coord/r47a-record.md` (plus a coordinator
+  addendum correcting that record's stale flake-summary
+  paragraph; the Ubuntu attempt-1 ETXTBSY on `1c85940`,
+  retried once, attempt 2 green, is named verbatim in its main
+  section).
+- R47-B (F6 MAJOR, narrowed): LANDED PROVISIONAL. Alt+arrows
+  resize, Pages-window editor reusing the menu's exact numeric
+  fields and shared apply path, music move-only throughout.
+  Menu-key popup opening documented as not implementable in
+  egui 0.29; the synthesis's Pages-window alternative landed
+  instead. Select/move not re-raised. Commit `e387ad8`, suite
+  1343/0. Rendered behavior unconfirmed until a keyboard walk
+  (exact 4-item checklist in the record). Record:
+  `round47-out/coord/r47b-record.md`.
+- R47-C (F7 MINOR + F8 MINOR): CLOSED, wording only. Four Fix
+  buttons labeled with destinations; four settings-save errors
+  given a next step (session-persistence fact verified in
+  code). Commit `de6022c`, suite 1343/0. Record:
+  `round47-out/coord/r47c-record.md`.
+- R47-D (F9 MINOR + F10 MINOR): CLOSED. WMF name reduced to its
+  file-name component (empty refused, no silent substitution);
+  all six production pid-keyed temp sites nonce'd with
+  exclusive creation via one `fresh_scratch_dir` helper,
+  including verovio `Scratch` and the print-copy file beyond
+  the audit's examples; test-only sites explicitly
+  dispositioned. Commit `56b947a`, suite 1346/0. Record:
+  `round47-out/coord/r47d-record.md`.
+- R47-E (F11 MINOR): HARDENING LANDED, F11 NOT CLOSED.
+  Per-spawn nonce peer paths + `LivePeer` drop-reap guard,
+  test-only, pinned. Commit `92451ad`, suite 1348/0. The
+  ETXTBSY transient recurred AFTER the hardening in the
+  parallel shape (local trio 6/11 pass across btrfs and tmpfs;
+  serial 3/3, solo 5/5, pairs 12/12 pass), ruling out
+  same-path collision, filesystem, and test-specificity; the
+  failure is at execve of a freshly copied, uniquely pathed
+  file under cross-test parallelism, and it is not VM-local
+  (same signature on hosted Ubuntu). No lock assertion
+  failed anywhere in this batch; every failure is in test
+  setup before any claim runs. Record:
+  `round47-out/coord/r47e-record.md`.
+
+### Legs on the final code tip `92451ad` (verified firsthand by the coordinator)
+
+- Hosted CI run `41278644089`: FAILURE. Ubuntu failed on BOTH
+  attempt 1 (`r42e_four_claimant`, ETXTBSY at the spawn expect)
+  and attempt 2 (`r47a_audit_restore_links…`, same spawn
+  expect, same ETXTBSY) after the single bounded retry of the
+  failed job; macOS and Windows success on both attempts.
+  Desktop Runner Build run `41278644067`: success. Windows
+  bundle run `41280814193` (dispatched at the close):
+  success, gate + bundle jobs green (the gate's full suite
+  passing is one more green sample for the transient, not
+  proof of its death).
+- Fuzz-as-claims (coordinator close run, logs in
+  `round47-out/coord/close-logs/`): byte-identical — verdict
+  `797758443d101f9339fdd778e14af430`, composition
+  `e8b2e73b117c7013d867419da8fb0ab7`, rights 5083 / 1024 /
+  5275, safety_flips=0, D_TOTAL=497024, all four bins exit 0.
+  (Stdouts are 16 / 87 lines respectively; the 40,000 /
+  497,024 figures are internal case counts, not lines.)
+- Booklet baseline (coordinator close run): exact, 31,717
+  imposed / 34,977 reader, exit 0.
+- VM suite: R47-E's full local suite 1348/0 is reported as a
+  pre-close smoke run only, never cited as a leg.
+
+### Coordinator decision: no further blind retry (recorded, not re-litigated here)
+
+Two hosted attempts on two different tests plus a 6/11 local
+parallel rate make a third retry re-run-and-forget, and the
+discipline allows one bounded retry, not a loop. Tip `92451ad`
+stands UNVERIFIED. The hardening is accepted as a strict
+improvement; F11 is not closed on its strength, because the
+transient it was filed to harden against demonstrably survives
+it in the parallel shape.
+
+### Exit bar and carried items
+
+- The exit bar is NOT met: F11 is open, and F6's keyboard walk
+  is outstanding. The Tier-2 final gate is NOT triggered.
+- Carried to round 48, explicitly: (1) F11 follow-up
+  investigation — discrimination evidence is the R47-E
+  record (parallel-gated, path-independent, fs-independent,
+  not test-specific); the specified next check is a traced
+  trio run (`strace -f` on the execve/openat path at the
+  spawn site, or a probe debug print naming the failing
+  claimant index), and a bounded spawn retry inside the
+  test helper is a candidate for that follow-up to evaluate,
+  not something landed now. (2) R47-F monolith extraction
+  (deferred structural work). (3) HF-12 IDML half
+  (`story_paragraphs` branch redesign) — conditional item,
+  carried rather than landed on a red-leg tip.
+- Cache-policy disposition at this confirmed completion:
+  disk 47% / 80G free — under both the daytime 94% and
+  overnight 87% thresholds; no latch armed; CARRY. (The
+  per-batch clean + cold verification already executed at
+  each batch boundary.)
+- Disk-ritual note: `round47-out/` + `round46-out/` kept;
+  `round45-out/` becomes sweep-eligible at this boundary —
+  eligibility only, deletion waits for Jacob's approved list.

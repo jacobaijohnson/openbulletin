@@ -8210,8 +8210,45 @@ mod settings_tests {
     /// spawns ever share a path, whatever dir they are
     /// given; the renamed base keeps its F9 property,
     /// since the suffix adds no "openbulletin".
+    /// Process-wide serialization for live-peer setup (R49-A, F11
+    /// closure). Fork-inherited write-fd blocking execve: another
+    /// thread forking a spawn child while this thread's peer copy
+    /// is still in flight leaves a write holder on the victim
+    /// inode at exec time, and the kernel fails the execve with
+    /// ETXTBSY. Holding this mutex across BOTH the copy AND the
+    /// spawn means no peer fork can land during any peer copy.
+    /// Copy-lock alone and spawn-lock alone do not close F11.
+    #[cfg(unix)]
+    static SPAWN_LIVE_PEER_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Dead-owner stand-in spawn, under the same F11 guard as
+    /// peer setup. A /bin/sh fork landing during another
+    /// thread's peer copy is a fork-during-copy holder just
+    /// as a peer fork is, so test-code spawns in this module
+    /// must not fork outside the mutex either. The guard is
+    /// held only across the spawn call itself: a fork that
+    /// lands before a copy starts cannot hold that copy's
+    /// fd, and a copy cannot start while this spawn is in
+    /// flight. Production spawns (soffice conversion,
+    /// open_with_os) are NOT routed here; the ETXTBSY retry
+    /// in spawn_live_peer_named stays as their backstop.
+    #[cfg(unix)]
+    fn spawn_dead_sh_child() -> std::process::Child {
+        let _fork_guard = SPAWN_LIVE_PEER_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child")
+    }
+
     #[cfg(unix)]
     fn spawn_live_peer_named(dir: &std::path::Path, name: &str) -> LivePeer {
+        let _peer_guard = SPAWN_LIVE_PEER_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let peer_exe = dir.join(format!("{name}-{}", live_peer_nonce()));
         let peer_path = peer_exe.display().to_string();
         let sleep_source = ["/bin/sleep", "/usr/bin/sleep"]
@@ -8220,16 +8257,19 @@ mod settings_tests {
             .find(|candidate| candidate.exists())
             .expect("a system sleep binary to model the peer with");
         std::fs::copy(sleep_source, &peer_exe).expect("peer binary copy");
-        // R48-A mitigation for F11 (NOT a closure: F11 stays OPEN).
-        // The peer spawn can fail with ETXTBSY in a narrow, variable
-        // sub-ms to low-ms window under parallel-test load (round-48
-        // red team: immediate same-path retry resolves 4/7, one
-        // delayed attempt resolved at +1 ms, n=1). Retry ONLY on
-        // ETXTBSY (code 26), bounded at 5 attempts total with
-        // backoff between attempts, every absorbed transient logged
-        // so CI logs still show it. Any other spawn error fails on
-        // the first attempt, exactly as before; an exhausted retry
-        // panics with the original expect message shape.
+        // R49-A closure for F11, with the R48-A retry kept as
+        // backstop. The mutex above, together with the guarded
+        // dead-owner spawns, removes the fork-during-copy window
+        // for every test-code spawn in this module; the retry
+        // below stays because it covers any fork source not
+        // routed through this module (production spawns),
+        // and removing a working guard to prove a point would be
+        // worse engineering. Retry ONLY on ETXTBSY (code 26),
+        // bounded at 5 attempts total with backoff between
+        // attempts, every absorbed transient logged so CI logs
+        // still show it. Any other spawn error fails on the first
+        // attempt, exactly as before; an exhausted retry panics
+        // with the original expect message shape.
         let backoff_ms: [u64; 4] = [1, 5, 25, 100];
         let mut attempt = 1;
         let child = loop {
@@ -8408,11 +8448,7 @@ mod settings_tests {
         assert_eq!(info.token.as_deref(), Some(instance_token()));
         #[cfg(unix)]
         {
-            let mut child = std::process::Command::new("/bin/sh")
-                .arg("-c")
-                .arg("exit 0")
-                .spawn()
-                .expect("spawn child");
+            let mut child = spawn_dead_sh_child();
             let dead_pid = child.id();
             child.wait().expect("reap child");
             let dead_lock = format!("{dead_pid}\nforeign-token\n");
@@ -8458,11 +8494,7 @@ mod settings_tests {
         // CI-FIX pin: a child that has exited and been
         // reaped leaves a pid the kernel reports as ESRCH,
         // which is Dead, and provably gone.
-        let mut child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut child = spawn_dead_sh_child();
         let pid = child.id();
         child.wait().expect("reap child");
         assert_eq!(peer_liveness(pid), PeerLiveness::Dead, "reaped pid {pid}");
@@ -8485,11 +8517,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let own = std::process::id();
-        let mut child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut child = spawn_dead_sh_child();
         let dead_pid = child.id();
         child.wait().expect("reap child");
         std::fs::write(&lock, format!("{dead_pid}\nforeign-token\n")).expect("dead lock");
@@ -8769,11 +8797,7 @@ mod settings_tests {
         let dir = std::env::temp_dir().join(format!("ob-app-claim-stale-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
-        let mut child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut child = spawn_dead_sh_child();
         let dead_pid = child.id();
         child.wait().expect("reap child");
         let stale_lock = format!("{dead_pid}\nforeign-token\n");
@@ -8834,11 +8858,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
-        let mut child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut child = spawn_dead_sh_child();
         let dead_pid = child.id();
         child.wait().expect("reap child");
         let stale_token = "foreign-token";
@@ -9027,11 +9047,7 @@ mod settings_tests {
         let meta = dir.join("autosave.txt");
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         let stale_lock = format!("{dead_pid}\nforeign-token\n");
@@ -9222,11 +9238,7 @@ mod settings_tests {
         let displaced = displaced_instance_lock_path(&lock);
         // The stale generation B judged: a dead owner's
         // lock.
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         let stale_lock = format!("{dead_pid}\nstale-token\n");
@@ -9402,11 +9414,7 @@ mod settings_tests {
         let displaced = displaced_instance_lock_path(&lock);
         // The stale generation standing at the lock path:
         // a dead owner's lock.
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         let stale_lock = format!("{dead_pid}\nstale-token\n");
@@ -9646,11 +9654,7 @@ mod settings_tests {
         let displaced = displaced_instance_lock_path(&lock);
         // The judged generation at the lock path: a dead
         // owner's lock.
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         let stale_lock = format!("{dead_pid}\nstale-token\n");
@@ -9796,11 +9800,7 @@ mod settings_tests {
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
         // The standing generation: a dead owner's lock.
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         let stale_lock = format!("{dead_pid}\nstale-token\n");
@@ -9922,11 +9922,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         let stale_lock = format!("{dead_pid}\nstale-token\n");
@@ -10019,11 +10015,7 @@ mod settings_tests {
             std::fs::create_dir_all(&dir).expect("temp dir");
             let lock = dir.join("openbulletin.lock");
             let displaced = displaced_instance_lock_path(&lock);
-            let mut stale_child = std::process::Command::new("/bin/sh")
-                .arg("-c")
-                .arg("exit 0")
-                .spawn()
-                .expect("spawn child");
+            let mut stale_child = spawn_dead_sh_child();
             let dead_pid = stale_child.id();
             stale_child.wait().expect("reap child");
             let stale_lock = format!("{dead_pid}\nstale-token\n");
@@ -10115,11 +10107,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         std::fs::write(&lock, format!("{dead_pid}\nS-token\n")).expect("stale lock");
@@ -10252,11 +10240,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         std::fs::write(&lock, format!("{dead_pid}\nS-token\n")).expect("stale lock");
@@ -10368,11 +10352,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         std::fs::write(&lock, format!("{dead_pid}\nS-token\n")).expect("stale lock");
@@ -10513,11 +10493,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         let stale_lock = format!("{dead_pid}\nstale-token\n");
@@ -10742,11 +10718,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         let stale_lock = format!("{dead_pid}\nstale-token\n");
@@ -10876,11 +10848,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         std::fs::write(&lock, format!("{dead_pid}\njudged-token\n")).expect("stale lock");
@@ -10930,11 +10898,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let displaced = displaced_instance_lock_path(&lock);
-        let mut stale_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut stale_child = spawn_dead_sh_child();
         let dead_pid = stale_child.id();
         stale_child.wait().expect("reap child");
         std::fs::write(&lock, format!("{dead_pid}\njudged-token\n")).expect("stale lock");
@@ -11065,11 +11029,7 @@ mod settings_tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
         let claim = instance_claim_serialization_path(&lock);
-        let mut dead_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut dead_child = spawn_dead_sh_child();
         let dead_pid = dead_child.id();
         dead_child.wait().expect("reap child");
         assert!(
@@ -11123,11 +11083,7 @@ mod settings_tests {
         let dir = std::env::temp_dir().join(format!("ob-app-r46e-orphan-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let lock = dir.join("openbulletin.lock");
-        let mut dead_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut dead_child = spawn_dead_sh_child();
         let dead_pid = dead_child.id();
         dead_child.wait().expect("reap child");
         assert!(
@@ -11236,11 +11192,7 @@ mod settings_tests {
         for name in kept_names {
             std::fs::write(dir.join(name), "kept\n").expect("plant a kept temp");
         }
-        let mut dead_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut dead_child = spawn_dead_sh_child();
         let dead_pid = dead_child.id();
         dead_child.wait().expect("reap child");
         assert!(
@@ -11569,11 +11521,7 @@ mod settings_tests {
         std::fs::create_dir_all(&gone_dir).expect("temp dir");
         let gone_lock = gone_dir.join("openbulletin.lock");
         let gone_displaced = displaced_instance_lock_path(&gone_lock);
-        let mut dead_child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("exit 0")
-            .spawn()
-            .expect("spawn child");
+        let mut dead_child = spawn_dead_sh_child();
         let dead_pid = dead_child.id();
         dead_child.wait().expect("reap child");
         let gone_lock_text = format!("{dead_pid}\ngone-token\n");

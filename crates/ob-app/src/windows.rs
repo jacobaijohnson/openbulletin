@@ -4154,8 +4154,8 @@ impl App {
             if let (Some(l), Some(t)) = (left, top) {
                 self.push_undo_now();
                 let fr = &mut self.doc.panels[idx].frames[fi];
-                fr.rect.x = ob_model::inch(l).clamp(0, panel_size.w - fr.rect.w);
-                fr.rect.y = ob_model::inch(t).clamp(0, panel_size.h - fr.rect.h);
+                fr.rect.x = saturating_clamp(ob_model::inch(l), 0, panel_size.w - fr.rect.w);
+                fr.rect.y = saturating_clamp(ob_model::inch(t), 0, panel_size.h - fr.rect.h);
                 self.status = "Box moved.".into();
                 true
             } else {
@@ -4174,10 +4174,10 @@ impl App {
                     parsed.iter().map(|o| ob_model::inch(o.unwrap())).collect();
                 self.push_undo_now();
                 let fr = &mut self.doc.panels[idx].frames[fi];
-                fr.rect.w = v[2].clamp(18_000, panel_size.w);
-                fr.rect.h = v[3].clamp(18_000, panel_size.h);
-                fr.rect.x = v[0].clamp(0, panel_size.w - fr.rect.w);
-                fr.rect.y = v[1].clamp(0, panel_size.h - fr.rect.h);
+                fr.rect.w = saturating_clamp(v[2], 18_000, panel_size.w);
+                fr.rect.h = saturating_clamp(v[3], 18_000, panel_size.h);
+                fr.rect.x = saturating_clamp(v[0], 0, panel_size.w - fr.rect.w);
+                fr.rect.y = saturating_clamp(v[1], 0, panel_size.h - fr.rect.h);
                 self.status = "Box moved and sized.".into();
                 true
             } else {
@@ -5263,8 +5263,8 @@ impl App {
                 if self.drag_resize {
                     let nw = ob_model::snap_to(pm.0, &xt, threshold) - f.rect.x;
                     let nh = ob_model::snap_to(pm.1, &yt, threshold) - f.rect.y;
-                    f.rect.w = nw.clamp(18_000, panel.size.w - f.rect.x);
-                    f.rect.h = nh.clamp(18_000, panel.size.h - f.rect.y);
+                    f.rect.w = saturating_clamp(nw, 18_000, panel.size.w - f.rect.x);
+                    f.rect.h = saturating_clamp(nh, 18_000, panel.size.h - f.rect.y);
                 } else {
                     let mut nx = pm.0 - self.grab_dx;
                     let mut ny = pm.1 - self.grab_dy;
@@ -5282,8 +5282,8 @@ impl App {
                             break;
                         }
                     }
-                    f.rect.x = nx.clamp(0, panel.size.w - f.rect.w);
-                    f.rect.y = ny.clamp(0, panel.size.h - f.rect.h);
+                    f.rect.x = saturating_clamp(nx, 0, panel.size.w - f.rect.w);
+                    f.rect.y = saturating_clamp(ny, 0, panel.size.h - f.rect.h);
                 }
             }
         }
@@ -5382,8 +5382,8 @@ impl App {
                 if dx != 0 || dy != 0 {
                     self.begin_gesture();
                     let f = &mut self.doc.panels[idx].frames[fi];
-                    f.rect.x = (f.rect.x + dx).clamp(0, panel.size.w - f.rect.w);
-                    f.rect.y = (f.rect.y + dy).clamp(0, panel.size.h - f.rect.h);
+                    f.rect.x = saturating_clamp(f.rect.x + dx, 0, panel.size.w - f.rect.w);
+                    f.rect.y = saturating_clamp(f.rect.y + dy, 0, panel.size.h - f.rect.h);
                 }
             }
         }

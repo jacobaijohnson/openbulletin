@@ -5037,10 +5037,13 @@ fn choose_menu_target(
 /// corner, keeping its place. A music box is never resized
 /// (M1): its size is the legibility contract, so it comes
 /// back unchanged. The width and height floors match the
-/// corner-drag floor (18_000 mpt, a quarter inch); the
-/// caller's frame always leaves at least that much room to
-/// the panel edge, as every place and move path guarantees,
-/// so the upper clamp never falls below the floor.
+/// corner-drag floor (18_000 mpt, a quarter inch). The file
+/// boundary does NOT guarantee that much room to the panel
+/// edge: the loader clamps each coordinate independently and
+/// enforces no relational invariant, so a loaded frame can sit
+/// within 18_000 mpt of the edge or run wider than its panel
+/// (R49-B). The clamps below therefore saturate through
+/// `saturating_clamp` instead of panicking on min > max.
 fn keyboard_resize_rect(
     rect: ob_model::Rect,
     panel_w: ob_model::Mpt,
@@ -5053,9 +5056,29 @@ fn keyboard_resize_rect(
         return rect;
     }
     let mut out = rect;
-    out.w = (rect.w + dw).clamp(18_000, panel_w - rect.x);
-    out.h = (rect.h + dh).clamp(18_000, panel_h - rect.y);
+    out.w = saturating_clamp(rect.w + dw, 18_000, panel_w - rect.x);
+    out.h = saturating_clamp(rect.h + dh, 18_000, panel_h - rect.y);
     out
+}
+
+/// Saturating geometry clamp (R49-B): a loaded document can
+/// carry a frame wider than its panel, or a left edge within
+/// 18_000 mpt of the panel's right edge, because the file
+/// boundary clamps each coordinate independently and enforces
+/// no relational invariant. A computed maximum can therefore
+/// fall below the minimum, and plain `Ord::clamp` panics when
+/// min > max. This helper floors the maximum at the minimum,
+/// so out-of-invariant geometry saturates at the minimum
+/// instead of crashing the app; when the invariant holds, the
+/// maximum is unchanged and behavior is exactly the plain
+/// clamp's. Used at every Pages geometry site that clamps
+/// against a computed panel-relative maximum.
+pub(crate) fn saturating_clamp(
+    value: ob_model::Mpt,
+    min: ob_model::Mpt,
+    computed_max: ob_model::Mpt,
+) -> ob_model::Mpt {
+    value.clamp(min, computed_max.max(min))
 }
 
 /// A dashed rectangle (an empty or lost picture box's
@@ -7628,6 +7651,123 @@ mod settings_tests {
         assert_eq!(edged.w, 72_000);
         let music = keyboard_resize_rect(rect, panel_w, panel_h, 720, 720, true);
         assert_eq!(music, rect);
+    }
+
+    #[test]
+    fn r49b_keyboard_resize_survives_out_of_invariant_rects() {
+        // Pin for MAJOR 1: the file boundary (sanitized) clamps each
+        // coordinate independently, so a loaded document can carry a
+        // frame wider than its panel, or a left edge within 18_000
+        // mpt of the panel's right edge. Both used to panic inside
+        // Ord::clamp (min > max); both must now saturate, not crash.
+        let mut app = App::default();
+        app.add_text_box(0);
+        let fi = app.selected_frame.expect("new box is selected");
+        app.doc.panels[0].size = ob_model::Size::new(200_000, 200_000);
+        app.doc.panels[0].frames[fi].rect = ob_model::Rect::new(190_000, 72_000, 300_000, 36_000);
+        app.doc = app.doc.clone().sanitized();
+        let panel = app.doc.panels[0].size;
+        let rect = app.doc.panels[0].frames[fi].rect;
+        // The sanitizer leaves the out-of-invariant rect untouched:
+        // it is the geometry paths' job to survive it.
+        assert_eq!(rect, ob_model::Rect::new(190_000, 72_000, 300_000, 36_000));
+        let resized = keyboard_resize_rect(rect, panel.w, panel.h, 720, 0, false);
+        assert_eq!(resized.x, 190_000);
+        assert_eq!(resized.w, 18_000);
+        assert_eq!(resized.h, 36_000);
+    }
+
+    #[test]
+    fn r49b_frame_place_size_survives_tiny_panel_oversize_and_near_edge() {
+        // Pin for MAJOR 1, place/size dialog: a panel narrower than
+        // the 18_000 mpt floor used to panic on the width clamp
+        // itself. The oversize and near-right-edge cases that follow
+        // in this test assert the dialog's sane result on
+        // sanitized out-of-invariant documents (an oversize width
+        // is capped at the panel; a near-edge frame moves cleanly).
+        let mut app = App::default();
+        app.add_text_box(0);
+        let fi = app.selected_frame.expect("new box is selected");
+        app.doc.panels[0].size = ob_model::Size::new(10_000, 10_000);
+        app.doc.panels[0].frames[fi].rect = ob_model::Rect::new(0, 0, 5_000, 5_000);
+        app.doc = app.doc.clone().sanitized();
+        app.frame_input = [
+            "1".to_string(),
+            "1".to_string(),
+            "3".to_string(),
+            "1.5".to_string(),
+        ];
+        assert!(app.apply_frame_place_size(0, fi));
+        let after = app.doc.panels[0].frames[fi].rect;
+        assert_eq!(after.x, 0);
+        assert_eq!(after.w, 18_000);
+        assert_eq!(app.status, "Box moved and sized.");
+        // Oversize frame, dialog sizing it wider than its panel.
+        let mut app = App::default();
+        app.add_text_box(0);
+        let fi = app.selected_frame.expect("new box is selected");
+        app.doc.panels[0].size = ob_model::Size::new(200_000, 200_000);
+        app.doc.panels[0].frames[fi].rect = ob_model::Rect::new(0, 72_000, 300_000, 36_000);
+        app.doc = app.doc.clone().sanitized();
+        app.frame_input = [
+            "1".to_string(),
+            "1".to_string(),
+            "3".to_string(),
+            "1".to_string(),
+        ];
+        assert!(app.apply_frame_place_size(0, fi));
+        let after = app.doc.panels[0].frames[fi].rect;
+        assert_eq!(after.x, 0);
+        assert_eq!(after.w, 200_000);
+        assert_eq!(app.status, "Box moved and sized.");
+        // Near-right-edge frame (left edge within 18_000 mpt of
+        // the panel's right edge before the dialog runs).
+        let mut app = App::default();
+        app.add_text_box(0);
+        let fi = app.selected_frame.expect("new box is selected");
+        app.doc.panels[0].size = ob_model::Size::new(200_000, 200_000);
+        app.doc.panels[0].frames[fi].rect = ob_model::Rect::new(190_000, 72_000, 36_000, 36_000);
+        app.doc = app.doc.clone().sanitized();
+        app.frame_input = [
+            "1".to_string(),
+            "1".to_string(),
+            "0.5".to_string(),
+            "0.5".to_string(),
+        ];
+        assert!(app.apply_frame_place_size(0, fi));
+        let after = app.doc.panels[0].frames[fi].rect;
+        assert_eq!(after.x, 72_000);
+        assert_eq!(after.w, 36_000);
+    }
+
+    #[test]
+    fn r49b_frame_place_size_survives_music_oversize() {
+        // Pin for MAJOR 1, music-box move: moving an oversize music
+        // box used to panic on the position clamp (its width is
+        // never resized, so the maximum fell below 0). A music box
+        // is moved, never resized.
+        let mut app = App::default();
+        app.add_text_box(0);
+        let fi = app.selected_frame.expect("new box is selected");
+        app.doc.panels[0].frames[fi].music = Some(ob_model::MusicFrame {
+            system: 0,
+            staff_mm: 5.0,
+            source: String::new(),
+        });
+        app.doc.panels[0].size = ob_model::Size::new(200_000, 200_000);
+        app.doc.panels[0].frames[fi].rect = ob_model::Rect::new(0, 72_000, 300_000, 36_000);
+        app.doc = app.doc.clone().sanitized();
+        app.frame_input = [
+            "1".to_string(),
+            "1".to_string(),
+            "9".to_string(),
+            "9".to_string(),
+        ];
+        assert!(app.apply_frame_place_size(0, fi));
+        let after = app.doc.panels[0].frames[fi].rect;
+        assert_eq!(after.x, 0);
+        assert_eq!(after.w, 300_000);
+        assert_eq!(app.status, "Box moved.");
     }
 
     #[test]

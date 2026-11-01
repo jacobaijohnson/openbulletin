@@ -7986,6 +7986,58 @@ mod settings_tests {
     }
 
     #[test]
+    fn r50b_paste_box_oversize_frame_lands_at_panel_origin() {
+        let mut app = App::default();
+        app.doc.panels[0].size = ob_model::Size::new(200_000, 200_000);
+        app.add_text_box(0);
+        let base = app.doc.panels[0].frames.last().expect("frame").clone();
+        // (source rect, expected pasted origin). The story is
+        // dropped so this pins geometry only, not story copy.
+        let cases = [
+            // Audit example, both axes: 300,000 frame on a
+            // 200,000 panel pasted from the origin. Old code
+            // landed at (-100,000, -100,000).
+            (ob_model::Rect::new(0, 0, 300_000, 300_000), 0, 0),
+            // Boundary: frame exactly the panel size.
+            (ob_model::Rect::new(0, 0, 200_000, 200_000), 0, 0),
+            // Oversize in width only: x anchors at the origin
+            // while y still drops down and right as intended.
+            (ob_model::Rect::new(0, 0, 300_000, 100_000), 0, 18_000),
+            // Oversize in height only, mirrored.
+            (ob_model::Rect::new(0, 0, 100_000, 300_000), 18_000, 0),
+            // Oversize from a nonzero origin: the origin does
+            // not leak through either.
+            (ob_model::Rect::new(50_000, 50_000, 300_000, 300_000), 0, 0),
+            // Negative source origin, oversize: floored to the
+            // origin rather than off-panel.
+            (
+                ob_model::Rect::new(-50_000, -50_000, 300_000, 300_000),
+                0,
+                0,
+            ),
+            // Normal case, intent preserved: a little down and
+            // right of the original.
+            (ob_model::Rect::new(0, 0, 100_000, 100_000), 18_000, 18_000),
+            // Normal case near the edge: still capped at the
+            // largest in-panel origin.
+            (
+                ob_model::Rect::new(150_000, 150_000, 100_000, 100_000),
+                100_000,
+                100_000,
+            ),
+        ];
+        for (rect, want_x, want_y) in cases {
+            let mut f = base.clone();
+            f.rect = rect;
+            f.story_id = None;
+            app.paste_box(0, f, None);
+            let pasted = app.doc.panels[0].frames.last().expect("frame");
+            assert_eq!(pasted.rect.x, want_x, "x for source {rect:?}");
+            assert_eq!(pasted.rect.y, want_y, "y for source {rect:?}");
+        }
+    }
+
+    #[test]
     fn sunday_math_lands_on_sundays() {
         use chrono::Datelike;
         // 2026-10-15 is a Thursday; its Sunday is 2026-10-18.

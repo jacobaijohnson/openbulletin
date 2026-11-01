@@ -1495,8 +1495,17 @@ impl App {
             frame.story_id.clone().unwrap_or_else(|| "shape".into())
         );
         let panel = &mut self.doc.panels[idx];
-        frame.rect.x = (frame.rect.x + 18_000).min(panel.size.w - frame.rect.w);
-        frame.rect.y = (frame.rect.y + 18_000).min(panel.size.h - frame.rect.h);
+        // The paste cap is floored at 0: for a frame wider (or
+        // taller) than its panel the raw cap goes negative and
+        // the old `.min` landed the copy off the panel's edge
+        // (round-50 MINOR 2). An oversize paste now anchors at
+        // the panel origin, where its top-left stays visible
+        // and draggable, and the trailing `.max(0)` keeps a
+        // negative source origin from landing off-panel either.
+        let max_x = (panel.size.w - frame.rect.w).max(0);
+        let max_y = (panel.size.h - frame.rect.h).max(0);
+        frame.rect.x = (frame.rect.x + 18_000).min(max_x).max(0);
+        frame.rect.y = (frame.rect.y + 18_000).min(max_y).max(0);
         frame.name = format!("{} copy", frame.name);
         panel.frames.push(frame);
         self.selected_frame = Some(panel.frames.len() - 1);

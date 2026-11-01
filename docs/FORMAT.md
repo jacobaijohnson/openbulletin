@@ -10,17 +10,17 @@ A v1 file is a zip containing:
   are referenced by id, never copied into paragraphs.
 - `assets/<sha256>`: the bytes of everything the document
   carries (tracing pictures, pictures rescued from old files,
-  later music and clips), one entry per asset, named by the
-  SHA-256 of its bytes. The same bytes are stored once, however
-  many panels use them.
+  music, clips, and carried fonts), one entry per asset, named
+  by the SHA-256 of its bytes. The same bytes are stored once,
+  however many panels use them.
 
 The asset table in `document.json` records, per asset: its
 fingerprint, its kind (picture / tracing picture / music /
-other), its media type, and a rights record (source, license,
-title, creator, the copyright line, who noted it and when), so
-credit lines can be composed from the file itself. The bytes
-never appear inside `document.json`; they live only in the
-`assets/` entries.
+font / other), its media type, and a rights record (source,
+license, title, creator, the copyright line, who noted it and
+when), so credit lines can be composed from the file itself.
+The bytes never appear inside `document.json`; they live only
+in the `assets/` entries.
 
 A panel's tracing picture names its asset by fingerprint in
 v1 documents. Older field names from the first weeks
@@ -266,6 +266,48 @@ stands at that moment, so `substituted_by` may go stale
 on purpose (the real font arrived, and the document now
 uses it with no edit). Files written before the field
 existed load with an empty list; `format_version` stays 1.
+
+A document may carry fonts (round 51, G-03): a `font` asset
+is the bytes of a Font Library face the document was laid
+out with, so a machine without that font still shapes with
+the carried bytes. Writer path: on save, after the font pin
+runs, every distinct fingerprint a style pins is looked up
+in the Font Library, and the face's bytes join the asset
+store with a `font` row exactly when the face's own
+embedding bits allow travel (installable and editable
+travel; preview-and-print, restricted, and unknown do not —
+`ob_fonts::EmbeddingRights::may_package`, read from the
+library file itself, never from a claim in the document).
+Bundled faces are not carried: every machine already shapes
+with them. Reader path: on load, every `font` row whose
+bytes ride in the file is re-checked against the bytes'
+own bits and registered with the document's shaper, in
+memory, for that document only. Carried fonts are never
+copied into the receiver's Font Library: an editable face
+is the receiver's to use, not to keep. A row without bytes,
+bytes that do not parse as a font, and bytes whose bits
+forbid travel are skipped at load, so a hand-built file
+cannot smuggle a restricted face into the shaper. This is
+not the old byte-agnostic ride: before this change font
+bytes could mechanically sit in the store as `other`
+entries, but nothing wrote them as fonts and nothing read
+them as fonts; now the kind and the load path are the
+mechanism. Boundaries, stated plainly: loose sheets
+(`.obdi`) do not carry fonts — a sheet packages only its
+referenced pictures and music, so a sheet's styles still
+resolve against the receiver's library. Print PDFs embed
+from the bundled faces plus the library only, so a face
+that exists on the receiver solely as a carried font falls
+back to a core font in print until a later batch wires
+carried bytes into the PDF writer; screen shaping is the
+shipped behavior. Autosave and journal copies re-carry on
+the next user save. No format-version change rides with
+this: `format_version` stays 1, because the container and
+the reader rules did not change — but a file carrying fonts
+does not open in an older build: its reader meets the
+unknown `font` kind and refuses the file rather than
+shaping with a stand-in silently. That is the same shape
+as every earlier kind addition.
 
 A document may carry `inserts` (roles build R-3): the
 loose sheets that ride inside the bulletin without being

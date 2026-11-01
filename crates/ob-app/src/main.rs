@@ -11585,6 +11585,215 @@ mod settings_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn r51c_carried_font_round_trip_shapes_on_a_fontless_machine() {
+        // Round 51 (G-03): save on a machine with the font,
+        // load on a machine without it, and prove the shaping
+        // uses the carried bytes. The carried face is a
+        // renamed Liberation (family "CarriedFont Fam", a
+        // same-length name-table replacement, so no library
+        // on the receiver can hold it under that name) with
+        // its unitsPerEm halved, so every advance doubles:
+        // the receiver's library is empty, so the only way
+        // its shaping matches the direct shaping of those
+        // bytes is the carried bytes themselves. A
+        // restricted face goes through the same round trip
+        // and must arrive carrying nothing.
+        fn table_offset(bytes: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
+            if bytes.len() < 12 {
+                return None;
+            }
+            let num_tables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+            for i in 0..num_tables {
+                let rec = 12 + i * 16;
+                if rec + 16 > bytes.len() {
+                    return None;
+                }
+                if &bytes[rec..rec + 4] == tag {
+                    let off = u32::from_be_bytes([
+                        bytes[rec + 8],
+                        bytes[rec + 9],
+                        bytes[rec + 10],
+                        bytes[rec + 11],
+                    ]) as usize;
+                    let len = u32::from_be_bytes([
+                        bytes[rec + 12],
+                        bytes[rec + 13],
+                        bytes[rec + 14],
+                        bytes[rec + 15],
+                    ]) as usize;
+                    return Some((off, len));
+                }
+            }
+            None
+        }
+        fn rename_family(bytes: &[u8]) -> Vec<u8> {
+            // "Liberation Sans" (15 chars) becomes
+            // "CarriedFont Fam" (15 chars): same length, so
+            // the name records are patched in place, with
+            // no table rebuilt. Windows records are
+            // UTF-16BE, Mac records are single-byte.
+            let from = "Liberation Sans";
+            let to = "CarriedFont Fam";
+            assert_eq!(from.len(), to.len());
+            let mut out = bytes.to_vec();
+            let (name_off, _) = table_offset(&out, b"name").expect("name table");
+            let count = u16::from_be_bytes([out[name_off + 2], out[name_off + 3]]) as usize;
+            let string_off = u16::from_be_bytes([out[name_off + 4], out[name_off + 5]]) as usize;
+            let strings = name_off + string_off;
+            let mut renamed = 0;
+            for i in 0..count {
+                let rec = name_off + 6 + i * 12;
+                let platform = u16::from_be_bytes([out[rec], out[rec + 1]]);
+                let name_id = u16::from_be_bytes([out[rec + 6], out[rec + 7]]);
+                let length = u16::from_be_bytes([out[rec + 8], out[rec + 9]]) as usize;
+                let offset = u16::from_be_bytes([out[rec + 10], out[rec + 11]]) as usize;
+                if name_id != 1 && name_id != 16 {
+                    continue;
+                }
+                let at = strings + offset;
+                if platform == 3 || platform == 0 {
+                    if length != from.len() * 2 {
+                        continue;
+                    }
+                    for (j, unit) in to.encode_utf16().enumerate() {
+                        out[at + j * 2] = (unit >> 8) as u8;
+                        out[at + j * 2 + 1] = (unit & 0xff) as u8;
+                    }
+                    renamed += 1;
+                } else if platform == 1 {
+                    if length != from.len() {
+                        continue;
+                    }
+                    out[at..at + to.len()].copy_from_slice(to.as_bytes());
+                    renamed += 1;
+                }
+            }
+            assert!(renamed > 0, "some family name record was renamed");
+            out
+        }
+        fn halve_units_per_em(bytes: &[u8]) -> Vec<u8> {
+            // head.unitsPerEm sits 18 bytes into the head
+            // table; 2048 becomes 1024, so every advance
+            // doubles at the same point size.
+            let mut out = bytes.to_vec();
+            let (head_off, _) = table_offset(&out, b"head").expect("head table");
+            let units = u16::from_be_bytes([out[head_off + 18], out[head_off + 19]]);
+            assert_eq!(units, 2048, "Liberation unitsPerEm");
+            out[head_off + 18] = 0x04;
+            out[head_off + 19] = 0x00;
+            out
+        }
+        fn with_fstype(bytes: &[u8], value: u16) -> Vec<u8> {
+            let mut out = bytes.to_vec();
+            let (os2_off, _) = table_offset(&out, b"OS/2").expect("OS/2 table");
+            // fsType is the uint16 at OS/2 + 8.
+            out[os2_off + 8] = (value >> 8) as u8;
+            out[os2_off + 9] = (value & 0xff) as u8;
+            out
+        }
+        let dir = std::env::temp_dir().join(format!("ob-app-r51c-carried-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lib_dir = dir.join("sender-library");
+        let lib = ob_fonts::FontLibrary::open(lib_dir.clone()).expect("sender library");
+        let base = ob_text::shaping::bundled_font_files()
+            .into_iter()
+            .find(|(name, _)| *name == "LiberationSans-Regular.ttf")
+            .expect("bundled regular")
+            .1
+            .to_vec();
+        let carried_bytes = halve_units_per_em(&rename_family(&base));
+        let info = lib
+            .add_bytes(&carried_bytes, "CarriedFontFam.ttf")
+            .expect("the renamed face joins the sender library");
+        assert_eq!(info.family, "CarriedFont Fam");
+        assert!(info.rights.may_package());
+        let mut doc = doc_with_sheet();
+        doc.styles[0].font_family = "CarriedFont Fam".into();
+        doc.styles[0].font_sha256 = Some(info.sha256.clone());
+        let carried = ob_fonts::carry_document_fonts(&mut doc, &lib);
+        assert_eq!(carried, vec![info.sha256.clone()]);
+        let file = dir.join("carried.obd");
+        ob_format::save(&doc, &file).expect("the file saves");
+        let loaded = ob_format::load(&file).expect("the file loads");
+        let row = loaded
+            .assets
+            .iter()
+            .find(|a| a.sha256 == info.sha256)
+            .expect("a Font row rides in the loaded file");
+        assert_eq!(row.kind, ob_model::AssetKind::Font);
+        assert_eq!(
+            loaded.asset_bytes.get(&info.sha256).map(|b| b.as_slice()),
+            Some(carried_bytes.as_slice()),
+            "the loaded bytes are the carried bytes"
+        );
+        // The receiver: every machine's bundled shaper, and
+        // an EMPTY library — no library bytes can answer.
+        let spec = ob_text::shaping::FontSpec::new("CarriedFont Fam");
+        let mut receiver = ob_text::shaping::bundled_shaper();
+        assert_ne!(
+            receiver.resolved_family("CarriedFont Fam"),
+            "CarriedFont Fam",
+            "before the carried bytes arrive, the family is a stand-in"
+        );
+        let before = receiver.measure("Hello", &spec, 12_000);
+        assert!(before > 0, "the stand-in shapes the word");
+        for bytes in ob_fonts::carried_font_bytes(&loaded) {
+            receiver.register_font(bytes);
+        }
+        assert_eq!(
+            receiver.resolved_family("CarriedFont Fam"),
+            "CarriedFont Fam",
+            "after the carried bytes arrive, the family is itself"
+        );
+        let after = receiver.measure("Hello", &spec, 12_000);
+        // The same bytes, registered directly: the receiver
+        // must shape exactly like this, and nothing like
+        // the stand-in it started with.
+        let mut direct = ob_text::shaping::bundled_shaper();
+        direct.register_font(carried_bytes.clone());
+        let direct_width = direct.measure("Hello", &spec, 12_000);
+        assert_eq!(
+            after, direct_width,
+            "the receiver shapes with the carried bytes"
+        );
+        assert!(
+            after > before,
+            "the carried face's doubled metrics show: {after} vs stand-in {before}"
+        );
+        // The restricted half: the same round trip carries
+        // nothing at all — no row, no bytes, no load.
+        let restricted_bytes = with_fstype(&base, 0x0002);
+        let restricted = lib
+            .add_bytes(&restricted_bytes, "Restricted.ttf")
+            .expect("the restricted face joins the sender library");
+        assert!(!restricted.rights.may_package());
+        let mut doc2 = doc_with_sheet();
+        doc2.styles[0].font_family = "Liberation Sans".into();
+        doc2.styles[0].font_sha256 = Some(restricted.sha256.clone());
+        assert!(
+            ob_fonts::carry_document_fonts(&mut doc2, &lib).is_empty(),
+            "a restricted face is never carried"
+        );
+        let file2 = dir.join("restricted.obd");
+        ob_format::save(&doc2, &file2).expect("the file saves");
+        let loaded2 = ob_format::load(&file2).expect("the file loads");
+        assert!(
+            !loaded2.assets.iter().any(|a| a.sha256 == restricted.sha256),
+            "a restricted face leaves no Font row"
+        );
+        assert!(
+            !loaded2.asset_bytes.contains_key(&restricted.sha256),
+            "a restricted face leaves no bytes"
+        );
+        assert!(
+            ob_fonts::carried_font_bytes(&loaded2).is_empty(),
+            "a restricted face loads no font"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn r50a_displaced_path_clear_check_refuses_a_live_generation() {

@@ -179,11 +179,19 @@ picked from one and the same candidate set (round 4, R4-9): the
 bundled faces plus the library faces whose embedding bits let
 them travel, one winner per face. A style whose picked face does
 not exist keeps no fingerprint rather than a stale one from an
-earlier save. When an .obd travels,
-fonts may ride inside the package only when their license or
-embedding bits allow it (OFL and Apache: yes; installable/editable:
-yes; preview-and-print: the font stays out and the receiver is told
-which font to get; restricted: never carried, with a plain warning).
+earlier save. When an .obd travels (round 51, G-03, shipped),
+fonts ride inside the package as `font` assets exactly when
+their license or embedding bits allow it (OFL and Apache: yes;
+installable/editable: yes; preview-and-print: the font stays
+out; restricted: never carried, with a plain warning): on save
+the pinned library faces travel as font bytes in the zip, and
+on load the receiver registers those bytes with the
+document's shaper, in memory, for that document only — never
+installed into the receiver's library. A face that stays out
+leaves the style's real family name in place, so the receiver
+shapes the stand-in until the font itself arrives, with no
+edit. See docs/FORMAT.md for the writer and reader paths
+and their boundaries.
 Print PDFs follow the same rule: every export embeds the library
 faces it shaped with, as CID-keyed TrueType (Type0/CIDFontType2,
 Identity encoding, a ToUnicode map of the characters actually

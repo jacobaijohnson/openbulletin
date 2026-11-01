@@ -22,6 +22,15 @@ pub enum AssetKind {
     /// A music file carried with the bulletin (MusicXML and
     /// friends; the music build gives it frames).
     Music,
+    /// A font file carried with the bulletin (round 51,
+    /// G-03): the bytes of a Font Library face the document
+    /// was laid out with, so a machine without that font
+    /// still shapes with the carried bytes. Only faces
+    /// whose embedding bits allow travel are ever carried
+    /// (see ob_fonts::EmbeddingRights::may_package); a Font
+    /// row is a shaping source for this document, never an
+    /// install into the receiver's library.
+    Font,
     Other,
 }
 
@@ -3576,5 +3585,30 @@ mod tests {
         assert!(json.contains("child_web_permission"), "{json}");
         let back: RightsRecord = serde_json::from_str(&json).expect("read back");
         assert_eq!(back.child_web_permission, Some(true));
+    }
+
+    #[test]
+    fn font_kind_round_trips_and_unknown_kinds_refuse() {
+        // Round 51 (G-03): the Font kind parses, and an
+        // unknown kind is an error, not a silent Other —
+        // so a build older than the Font kind refuses a
+        // font-carrying file outright (docs/FORMAT.md),
+        // rather than shaping with a stand-in silently.
+        let json = serde_json::to_string(&Asset {
+            sha256: "abc".into(),
+            kind: AssetKind::Font,
+            media_type: "font/ttf".into(),
+            rights: Default::default(),
+        })
+        .expect("json");
+        assert!(json.contains("\"font\""), "{json}");
+        let back: Asset = serde_json::from_str(&json).expect("read back");
+        assert_eq!(back.kind, AssetKind::Font);
+        let unknown = json.replace("\"font\"", "\"no_such_kind\"");
+        let refused: Result<Asset, _> = serde_json::from_str(&unknown);
+        assert!(
+            refused.is_err(),
+            "an unknown asset kind must refuse: {unknown}"
+        );
     }
 }

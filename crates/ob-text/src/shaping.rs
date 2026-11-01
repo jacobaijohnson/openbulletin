@@ -98,7 +98,9 @@ pub struct FrameFit {
 /// The bundled starter fonts as (file name, bytes): the eight
 /// Liberation faces. The app seeds the Font Library with these on
 /// first run so the library folder is the one source of fonts on
-/// every machine shape (docs/FONTS.md).
+/// every machine shape (docs/FONTS.md); since round 51 (G-03)
+/// a document may also carry library fonts of its own, which
+/// the app registers for that document's shaper only.
 pub fn bundled_font_files() -> Vec<(&'static str, &'static [u8])> {
     vec![
         (

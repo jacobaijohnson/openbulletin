@@ -256,9 +256,31 @@ impl App {
         h.finish()
     }
 
-    /// The one shaper, rebuilt only when the library changes.
+    /// The one shaper, rebuilt when the library changes or
+    /// when this document's carried fonts change: a document
+    /// that carries a font shapes with it, and a document
+    /// that does not must never inherit the last one's
+    /// carried faces from the cache.
     pub(crate) fn shaper(&mut self) -> &mut ob_text::shaping::Shaper {
-        let fp = Self::library_fingerprint();
+        let fp = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            Self::library_fingerprint().hash(&mut h);
+            let mut carried: Vec<&str> = Vec::new();
+            for asset in &self.doc.assets {
+                if asset.kind == ob_model::AssetKind::Font
+                    && self.doc.asset_bytes.contains_key(&asset.sha256)
+                    && !carried.contains(&asset.sha256.as_str())
+                {
+                    carried.push(asset.sha256.as_str());
+                }
+            }
+            carried.sort();
+            for sha in carried {
+                sha.hash(&mut h);
+            }
+            h.finish()
+        };
         let stale = self
             .shaper_cache
             .as_ref()
@@ -272,6 +294,14 @@ impl App {
                         shaper.register_font(bytes);
                     }
                 }
+            }
+            // Carried fonts ride with the document, never
+            // with the library: they register for this
+            // document's shaper only, and are never copied
+            // into the library folder (an editable face is
+            // the receiver's to use, not to keep).
+            for bytes in ob_fonts::carried_font_bytes(&self.doc) {
+                shaper.register_font(bytes);
             }
             self.shaper_cache = Some((fp, shaper));
         }
@@ -1185,6 +1215,18 @@ impl App {
         if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
             let bundled = ob_text::shaping::bundled_font_infos();
             ob_fonts::pin_document_fonts(&mut self.doc, &lib, &bundled);
+        }
+    }
+
+    /// Carry the document's pinned library fonts inside the
+    /// document (round 51, G-03), right after the pin: a save
+    /// then writes them into the .obd, so the bulletin still
+    /// shapes on a machine without those fonts. Faces whose
+    /// bits forbid travel are never carried; see
+    /// ob_fonts::carry_document_fonts.
+    pub(crate) fn carry_fonts(&mut self) {
+        if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
+            ob_fonts::carry_document_fonts(&mut self.doc, &lib);
         }
     }
 
@@ -8480,6 +8522,7 @@ impl App {
         self.commit_if_editing();
         self.save_announcements();
         self.pin_fonts();
+        self.carry_fonts();
         // A "replace it anyway" answer arms exactly one
         // save attempt, whichever file it lands on.
         let replace_ok = self.replace_ok.take();

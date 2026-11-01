@@ -187,8 +187,13 @@ user running it by hand.
 Bundled: Liberation family, SIL Open Font License, license text in
 the tree beside the fonts. Catalog installs are limited to OFL /
 Apache / UFL families, with the license text saved into the user's
-library. Fonts may be embedded in PDFs and (later) .obd packages
-only when their license or embedding bits allow; the app says so in
+library. Fonts may be embedded in PDFs and carried in .obd packages
+(round 51, G-03, shipped: a `font` asset, written on save for
+pinned library faces whose embedding bits allow travel —
+installable and editable — and registered in memory for the
+document on load, never installed into the receiver's library;
+preview-and-print and restricted faces are never carried) only
+when their license or embedding bits allow; the app says so in
 plain words and asks for care with fonts from outside the free
 catalog. Imported documents yield font NAMES only; embedded subset
 fonts from PDFs or Publisher files are never extracted or reused.

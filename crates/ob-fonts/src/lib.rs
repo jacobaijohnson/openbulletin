@@ -1037,6 +1037,117 @@ pub fn pin_document_fonts(doc: &mut ob_model::Document, lib: &FontLibrary, bundl
     }
 }
 
+/// Carry the document's pinned library fonts inside the
+/// document itself (round 51, G-03): for every distinct font
+/// fingerprint a style pins, when that fingerprint names a
+/// face in the Font Library whose embedding bits allow
+/// travel, the face's bytes join `doc.asset_bytes` under
+/// their hash with a Font asset row, so `ob_format::save`
+/// writes them into the .obd zip and a machine without the
+/// font can still shape with them.
+///
+/// The gate is the face's own permission bits
+/// (`EmbeddingRights::may_package`: installable and editable
+/// travel; preview-and-print, restricted, and unknown do
+/// not), read from the library file itself at carry time —
+/// never from a claim in the document. Bundled faces are not
+/// carried: every machine already shapes with them
+/// (ob_text::bundled_shaper), so carrying them would only
+/// bloat the file. A pin naming no library face (a bundled
+/// face, or a stale pin) is skipped, never invented.
+///
+/// Carrying only adds: rows and bytes already in the
+/// document are never removed here, matching save's standing
+/// rule that bytes without a row are kept, not silently
+/// dropped. Returns the carried fingerprints, sorted, for
+/// the caller and the tests.
+pub fn carry_document_fonts(doc: &mut ob_model::Document, lib: &FontLibrary) -> Vec<String> {
+    let mut pins: Vec<String> = Vec::new();
+    for style in &doc.styles {
+        if let Some(sha) = &style.font_sha256 {
+            if !pins.iter().any(|p| p == sha) {
+                pins.push(sha.clone());
+            }
+        }
+    }
+    let library = lib.scan();
+    let mut carried: Vec<String> = Vec::new();
+    for sha in pins {
+        let Some(info) = library.iter().find(|f| f.sha256 == sha) else {
+            continue;
+        };
+        if !info.rights.may_package() {
+            continue;
+        }
+        let Ok(bytes) = lib.read(info) else {
+            continue;
+        };
+        if !doc.assets.iter().any(|a| a.sha256 == sha) {
+            let media_type = font_media_type(&info.file_name).to_string();
+            let source = format!("Font Library: {}", info.file_name);
+            doc.assets.push(ob_model::Asset {
+                sha256: sha.clone(),
+                kind: ob_model::AssetKind::Font,
+                media_type,
+                rights: ob_model::RightsRecord {
+                    source,
+                    ..Default::default()
+                },
+            });
+        }
+        doc.asset_bytes.insert(sha.clone(), bytes);
+        carried.push(sha);
+    }
+    carried.sort();
+    carried
+}
+
+fn font_media_type(file_name: &str) -> &'static str {
+    let lower = file_name.to_ascii_lowercase();
+    if lower.ends_with(".ttf") {
+        "font/ttf"
+    } else if lower.ends_with(".otf") {
+        "font/otf"
+    } else if lower.ends_with(".ttc") {
+        "font/collection"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// The document's carried fonts as shaper-ready bytes
+/// (round 51, G-03): every Font asset row whose bytes ride
+/// in the document, re-checked at load time against the
+/// bytes' own permission bits. A row without bytes, bytes
+/// that do not parse as a font, and bytes whose bits forbid
+/// travel (preview-and-print, restricted, unknown) are
+/// skipped, so a hand-built file cannot smuggle a
+/// restricted face into the shaper through a Font row the
+/// writer would never have written. The caller registers
+/// what comes back with the shaper for this document only:
+/// carried fonts are never copied into the Font Library,
+/// because an editable face is the receiver's to use, not
+/// to keep.
+pub fn carried_font_bytes(doc: &ob_model::Document) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    for asset in &doc.assets {
+        if asset.kind != ob_model::AssetKind::Font {
+            continue;
+        }
+        let Some(bytes) = doc.asset_bytes.get(&asset.sha256) else {
+            continue;
+        };
+        let Ok(info) = inspect(bytes, "carried") else {
+            continue;
+        };
+        if !info.rights.may_package() {
+            continue;
+        }
+        out.push(bytes.clone());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1201,6 +1312,174 @@ mod tests {
             "the refusal speaks plainly: {}",
             info.rights.plain_words()
         );
+    }
+
+    /// The test font's bytes with its OS/2 fsType replaced:
+    /// the same face under a different permission, so the
+    /// carry gate can be tested without a second font file.
+    fn with_fstype(bytes: &[u8], value: u16) -> Vec<u8> {
+        let mut bytes = bytes.to_vec();
+        let num_tables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+        let mut patched = false;
+        for i in 0..num_tables {
+            let rec = 12 + i * 16;
+            if &bytes[rec..rec + 4] == b"OS/2" {
+                let off = u32::from_be_bytes([
+                    bytes[rec + 8],
+                    bytes[rec + 9],
+                    bytes[rec + 10],
+                    bytes[rec + 11],
+                ]) as usize;
+                // fsType is the uint16 at OS/2 + 8.
+                bytes[off + 8] = (value >> 8) as u8;
+                bytes[off + 9] = (value & 0xff) as u8;
+                patched = true;
+            }
+        }
+        assert!(patched, "the test font has an OS/2 table");
+        bytes
+    }
+
+    fn style_with_pin(family: &str, sha: &str) -> ob_model::ParagraphStyle {
+        ob_model::ParagraphStyle {
+            id: "body".into(),
+            name: "Body".into(),
+            font_size: 12_000,
+            bold: false,
+            italic: false,
+            align: ob_model::Align::Left,
+            space_after: 0,
+            color: ob_model::Rgb::BLACK,
+            font_family: family.into(),
+            font_sha256: Some(sha.into()),
+        }
+    }
+
+    fn doc_with_styles(styles: Vec<ob_model::ParagraphStyle>) -> ob_model::Document {
+        ob_model::Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "T".into(),
+            profile: ob_model::ChurchProfile::default(),
+            fields: Default::default(),
+            styles,
+            stories: vec![],
+            panels: vec![],
+            sheet: ob_model::SheetSpec {
+                preset: String::new(),
+                size: ob_model::Size::new(0, 0),
+            },
+            no_announcements: false,
+            assets: vec![],
+            asset_bytes: Default::default(),
+            occasion_time: None,
+            wanted_fonts: vec![],
+            participants: Default::default(),
+            inserts: vec![],
+            applied_contributions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn carried_fonts_gate_on_rights() {
+        // Round 51 (G-03): installable travels, preview-and-print
+        // and restricted stay out, whatever the document pins.
+        // All three faces are usable on this machine (the
+        // library holds them); only the bits decide travel.
+        let dir = temp_dir("carry-gate");
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = FontLibrary::open(dir.clone()).expect("open");
+        let base = bundled("LiberationSans-Regular.ttf");
+        let installable = lib
+            .add_bytes(&base, "Installable.ttf")
+            .expect("add installable");
+        let preview = lib
+            .add_bytes(&with_fstype(&base, 0x0004), "Preview.ttf")
+            .expect("add preview-and-print");
+        let restricted = lib
+            .add_bytes(&with_fstype(&base, 0x0002), "Restricted.ttf")
+            .expect("add restricted");
+        assert!(installable.rights.may_package());
+        assert!(!preview.rights.may_package());
+        assert!(!restricted.rights.may_package());
+        let mut doc = doc_with_styles(vec![
+            style_with_pin("Liberation Sans", &installable.sha256),
+            style_with_pin("Liberation Sans", &preview.sha256),
+            style_with_pin("Liberation Sans", &restricted.sha256),
+        ]);
+        let carried = carry_document_fonts(&mut doc, &lib);
+        assert_eq!(carried, vec![installable.sha256.clone()]);
+        // The carried face rides with a Font row and its bytes.
+        let row = doc
+            .assets
+            .iter()
+            .find(|a| a.sha256 == installable.sha256)
+            .expect("a Font row for the carried face");
+        assert_eq!(row.kind, ob_model::AssetKind::Font);
+        assert_eq!(row.media_type, "font/ttf");
+        assert_eq!(
+            doc.asset_bytes
+                .get(&installable.sha256)
+                .map(|b| b.as_slice()),
+            Some(base.as_slice())
+        );
+        // The forbidden faces ride nowhere: no row, no bytes.
+        for sha in [&preview.sha256, &restricted.sha256] {
+            assert!(
+                !doc.assets.iter().any(|a| &a.sha256 == sha),
+                "a forbidden face must leave no row"
+            );
+            assert!(
+                !doc.asset_bytes.contains_key(sha),
+                "a forbidden face must leave no bytes"
+            );
+        }
+        // Carrying again changes nothing: the row and the
+        // bytes are already there, and the answer is the same.
+        let again = carry_document_fonts(&mut doc, &lib);
+        assert_eq!(again, vec![installable.sha256.clone()]);
+        assert_eq!(doc.assets.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn carried_bytes_load_only_packageable_fonts() {
+        // Round 51 (G-03): the load path re-checks the bytes'
+        // own bits, so a hand-built file cannot smuggle a
+        // restricted face into the shaper through a Font row
+        // the writer would never have written. Bytes under
+        // any other kind are not fonts either, whatever
+        // their content.
+        let base = bundled("LiberationSans-Regular.ttf");
+        let base_sha = ob_model::sha256_hex(&base);
+        let restricted = with_fstype(&base, 0x0002);
+        let restricted_sha = ob_model::sha256_hex(&restricted);
+        let garbage_sha = ob_model::sha256_hex(b"not a font at all");
+        let mut doc = doc_with_styles(vec![]);
+        let font_row = |sha: &str| ob_model::Asset {
+            sha256: sha.to_string(),
+            kind: ob_model::AssetKind::Font,
+            media_type: "font/ttf".into(),
+            rights: Default::default(),
+        };
+        doc.assets.push(font_row(&base_sha));
+        doc.assets.push(font_row(&restricted_sha));
+        doc.assets.push(font_row(&garbage_sha));
+        doc.assets.push(ob_model::Asset {
+            sha256: base_sha.clone(),
+            kind: ob_model::AssetKind::Other,
+            media_type: "application/octet-stream".into(),
+            rights: Default::default(),
+        });
+        doc.asset_bytes.insert(base_sha.clone(), base.clone());
+        doc.asset_bytes.insert(restricted_sha, restricted);
+        doc.asset_bytes
+            .insert(garbage_sha, b"not a font at all".to_vec());
+        let loaded = carried_font_bytes(&doc);
+        assert_eq!(loaded, vec![base]);
+        // A Font row with no bytes loads nothing, not a panic.
+        let mut missing = doc_with_styles(vec![]);
+        missing.assets.push(font_row(&base_sha));
+        assert!(carried_font_bytes(&missing).is_empty());
     }
 
     #[test]

@@ -3883,11 +3883,58 @@ fn instance_claim_serialization_owner_text() -> String {
 /// a complete staged owner file onto the claim path.
 /// Exactly one linker wins; a loser reads the standing
 /// file, removes it only when its owner is provably
-/// gone, and otherwise waits a millisecond and retries.
+/// gone and the file still names exactly that judged
+/// owner (R50-A, content-checked removal below,
+/// mirroring the guard's `Drop`), and otherwise waits
+/// a millisecond and retries.
 /// Answers `None` when the staging itself fails (the
 /// lock directory missing or unwritable, so no claim
 /// could proceed anyway) or when the bounded wait runs
 /// out with a live or unknown holder standing.
+/// Outcome of a content-checked stale-claim removal
+/// (R50-A): the steal path removes a standing claim
+/// file only when a fresh re-read still names exactly
+/// the owner the caller just judged provably gone.
+/// Full-text comparison, the same semantics as the
+/// guard's `Drop`: the owner text carries the pid on
+/// the first line and a per-acquisition nonce on the
+/// second, so a same-pid file from a different
+/// acquisition (or a recycled pid) does not match.
+enum StaleClaimFileRemoval {
+    /// The file still named the judged owner and was removed.
+    Removed,
+    /// The file changed hands since the judgment: left standing.
+    ChangedHands,
+    /// The file vanished between judgment and re-read: nothing to remove.
+    Vanished,
+}
+
+/// Remove the claim file only if it still names
+/// `judged_text` exactly. This closes the walked
+/// MINOR-2 window (judgment work plus arbitrary
+/// preemption between the gone check and the
+/// removal): the check now sits immediately before
+/// the removal, so C's whole claim sequence no longer
+/// fits any window containing judgment work.
+/// Residual, stated plainly: preemption between this
+/// re-read and the unlink can still remove a
+/// successor's file. That adjacent-syscall window is
+/// the same residual the guard's `Drop` already
+/// accepts, and is NOT claimed closed here.
+fn remove_stale_instance_claim_file_if_unchanged(
+    claim: &std::path::Path,
+    judged_text: &str,
+) -> StaleClaimFileRemoval {
+    match std::fs::read_to_string(claim) {
+        Ok(text) if text.as_str() == judged_text => {
+            let _ = std::fs::remove_file(claim);
+            StaleClaimFileRemoval::Removed
+        }
+        Ok(_) => StaleClaimFileRemoval::ChangedHands,
+        Err(_) => StaleClaimFileRemoval::Vanished,
+    }
+}
+
 fn acquire_instance_claim_serialization_file(
     lock: &std::path::Path,
 ) -> Option<(std::path::PathBuf, String)> {
@@ -3931,7 +3978,24 @@ fn acquire_instance_claim_serialization_file(
                             .and_then(|line| line.trim().parse::<u32>().ok());
                         match owner_pid {
                             Some(pid) if peer_provably_gone(pid) => {
-                                let _ = std::fs::remove_file(&claim);
+                                // R50-A: content-checked
+                                // removal (MINOR-2). The
+                                // file is removed only
+                                // if it still names
+                                // exactly the dead owner
+                                // just judged; a file
+                                // that changed hands is
+                                // left standing and the
+                                // loop sleeps and retries
+                                // like the live-owner arm,
+                                // and a vanished file
+                                // retries at once.
+                                match remove_stale_instance_claim_file_if_unchanged(&claim, &text) {
+                                    StaleClaimFileRemoval::ChangedHands => {
+                                        std::thread::sleep(std::time::Duration::from_millis(1));
+                                    }
+                                    _ => {}
+                                }
                             }
                             _ => {
                                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -4090,7 +4154,11 @@ impl Drop for InstanceClaimGuard {
 /// under the claim guard (R47-A, F3): no rival claim
 /// can land a live generation at the displaced path
 /// between the judgment and the removal, so nothing
-/// live is deleted unjudged.
+/// live is deleted unjudged. The removal itself is
+/// re-checked immediately before it (R50-A): a live
+/// generation landing after the judgment, possible
+/// only under a broken guard, stands the step down
+/// instead of being deleted.
 ///
 /// The R47-A test-only pause seam (below) sits inside
 /// this step, between its guard re-read and its
@@ -4169,6 +4237,25 @@ fn r47a_seam_release() {
     R47A_SEAM_CONDVAR.notify_all();
 }
 
+/// Whether the file standing at the displaced path may
+/// still be cleared to make room for a rename (R50-A,
+/// the red team's same-shape note on MINOR-2): true
+/// exactly when no live peer generation stands there
+/// on a fresh read. Under an intact claim guard no
+/// rival claim can land between the step's displaced
+/// judgment and this re-check, so this fires only
+/// under a broken guard — the same narrowing the
+/// steal path gets — and the same adjacent-syscall
+/// residual remains between this re-read and the
+/// removal.
+fn displaced_path_safe_to_clear(
+    displaced: &std::path::Path,
+    own_pid: u32,
+    own_token: &str,
+) -> bool {
+    !peer_instance_alive_from(displaced, own_pid, own_token)
+}
+
 fn rename_instance_lock_to_displaced_from(
     lock: &std::path::Path,
     own_pid: u32,
@@ -4214,6 +4301,14 @@ fn rename_instance_lock_to_displaced_from(
     // Only a previous displaced copy is ever removed, and
     // only so the rename has somewhere to land on
     // platforms whose rename will not replace a file.
+    // R50-A: re-check immediately before the removal —
+    // a live generation that landed at the displaced
+    // path after the step's displaced judgment stands
+    // the step down instead of being deleted to make
+    // room (same-shape fix as the claim-steal check).
+    if !displaced_path_safe_to_clear(&displaced, own_pid, own_token) {
+        return None;
+    }
     let _ = std::fs::remove_file(&displaced);
     if std::fs::rename(lock, &displaced).is_ok() {
         Some(displaced)
@@ -11227,6 +11322,121 @@ mod settings_tests {
         assert!(
             litter.is_empty(),
             "no claim-guard litter stands after the claim (found {litter:?})"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn r50a_stale_claim_removal_removes_only_the_judged_owner_text() {
+        // R50-A pin for MINOR-2: the content-checked
+        // steal removal removes a file naming exactly
+        // the judged owner text, leaves a file that
+        // changed hands standing byte for byte, and
+        // reports a vanished file without removing
+        // anything. Full-text comparison (pid line +
+        // nonce line), the guard's `Drop` semantics: a
+        // same-pid file from a different acquisition
+        // does not match.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r50a-claim-removal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let claim = dir.join("openbulletin.lock.claim");
+        let judged = "424242\n424242-7\n";
+        std::fs::write(&claim, judged).expect("plant the judged claim file");
+        assert!(
+            matches!(
+                remove_stale_instance_claim_file_if_unchanged(&claim, judged),
+                StaleClaimFileRemoval::Removed
+            ),
+            "the judged owner's file is removed"
+        );
+        assert!(!claim.exists(), "the judged file is gone after removal");
+        // Changed hands: a successor's file, same pid,
+        // different nonce — must survive.
+        let successor = "424242\n424242-8\n";
+        std::fs::write(&claim, successor).expect("plant the successor claim file");
+        assert!(
+            matches!(
+                remove_stale_instance_claim_file_if_unchanged(&claim, judged),
+                StaleClaimFileRemoval::ChangedHands
+            ),
+            "a changed-hands file is not removed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&claim).expect("read the successor file"),
+            successor,
+            "the successor's file stands byte for byte"
+        );
+        // Wholly different owner: also survives.
+        let other = "999999\n999999-0\n";
+        std::fs::write(&claim, other).expect("plant the other owner's claim file");
+        assert!(
+            matches!(
+                remove_stale_instance_claim_file_if_unchanged(&claim, judged),
+                StaleClaimFileRemoval::ChangedHands
+            ),
+            "a different owner's file is not removed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&claim).expect("read the other owner's file"),
+            other,
+            "the other owner's file stands byte for byte"
+        );
+        std::fs::remove_file(&claim).expect("clear the claim file");
+        assert!(
+            matches!(
+                remove_stale_instance_claim_file_if_unchanged(&claim, judged),
+                StaleClaimFileRemoval::Vanished
+            ),
+            "a vanished file reports Vanished"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r50a_displaced_path_clear_check_refuses_a_live_generation() {
+        // R50-A pin for the displaced-path same-shape
+        // fix: a live peer's generation at the displaced
+        // path is not safe to clear; a dead owner's, a
+        // corrupt file's, and an absent file's are.
+        let dir = std::env::temp_dir().join(format!(
+            "ob-app-r50a-displaced-clear-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let a_pid = std::process::id();
+        let a_token = "r50a-displaced-claimant-token";
+        let mut peer = spawn_live_peer_named(&dir, "openbulletin-peer-r50a");
+        let p_pid = peer.id();
+        let p_token = "r50a-displaced-live-peer-token";
+        std::fs::write(&displaced, format!("{p_pid}\n{p_token}\n"))
+            .expect("plant the live peer's displaced generation");
+        assert!(
+            !displaced_path_safe_to_clear(&displaced, a_pid, a_token),
+            "a live generation at the displaced path is never cleared"
+        );
+        let _ = peer.kill();
+        let _ = peer.wait();
+        assert!(
+            peer_provably_gone(p_pid),
+            "the peer is provably gone before the dead-owner arm"
+        );
+        assert!(
+            displaced_path_safe_to_clear(&displaced, a_pid, a_token),
+            "a provably gone owner's generation is safe to clear"
+        );
+        std::fs::write(&displaced, "not-a-lock-file\n").expect("plant a corrupt displaced file");
+        assert!(
+            displaced_path_safe_to_clear(&displaced, a_pid, a_token),
+            "a corrupt displaced file names no live peer and is safe to clear"
+        );
+        std::fs::remove_file(&displaced).expect("clear the displaced file");
+        assert!(
+            displaced_path_safe_to_clear(&displaced, a_pid, a_token),
+            "an absent displaced file is safe to clear"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

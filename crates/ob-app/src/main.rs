@@ -8179,16 +8179,44 @@ mod settings_tests {
     #[cfg(unix)]
     fn spawn_live_peer_named(dir: &std::path::Path, name: &str) -> LivePeer {
         let peer_exe = dir.join(format!("{name}-{}", live_peer_nonce()));
+        let peer_path = peer_exe.display().to_string();
         let sleep_source = ["/bin/sleep", "/usr/bin/sleep"]
             .into_iter()
             .map(std::path::Path::new)
             .find(|candidate| candidate.exists())
             .expect("a system sleep binary to model the peer with");
         std::fs::copy(sleep_source, &peer_exe).expect("peer binary copy");
-        let child = std::process::Command::new(&peer_exe)
-            .arg("30")
-            .spawn()
-            .expect("spawn live peer");
+        // R48-A mitigation for F11 (NOT a closure: F11 stays OPEN).
+        // The peer spawn can fail with ETXTBSY in a narrow, variable
+        // sub-ms to low-ms window under parallel-test load (round-48
+        // red team: immediate same-path retry resolves 4/7, one
+        // delayed attempt resolved at +1 ms, n=1). Retry ONLY on
+        // ETXTBSY (code 26), bounded at 5 attempts total with
+        // backoff between attempts, every absorbed transient logged
+        // so CI logs still show it. Any other spawn error fails on
+        // the first attempt, exactly as before; an exhausted retry
+        // panics with the original expect message shape.
+        let backoff_ms: [u64; 4] = [1, 5, 25, 100];
+        let mut attempt = 1;
+        let child = loop {
+            match std::process::Command::new(&peer_exe).arg("30").spawn() {
+                Ok(child) => break child,
+                Err(err) => {
+                    let busy = err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        || err.raw_os_error() == Some(26);
+                    if !busy || attempt >= 5 {
+                        panic!("spawn live peer: {err:?}");
+                    }
+                    let delay_ms = backoff_ms[attempt - 1];
+                    eprintln!(
+                        "spawn live peer: ETXTBSY absorbed (attempt {attempt}/5) \
+                         for {peer_path}: {err:?}; retrying after {delay_ms} ms"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    attempt += 1;
+                }
+            }
+        };
         LivePeer {
             child,
             exe_path: peer_exe,

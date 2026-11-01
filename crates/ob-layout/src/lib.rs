@@ -320,6 +320,12 @@ pub struct NextSundayReport {
     /// Weekly stories whose keep-through date still covers the
     /// new Sunday, so their words carried over.
     pub kept_announcements: usize,
+    /// The first words of each announcement that kept, in the
+    /// order they were kept, so the app can name what it
+    /// kept and not only count it (J10), mirroring
+    /// `ended_names`. One name per kept announcement, so
+    /// this list's length always equals `kept_announcements`.
+    pub kept_names: Vec<String>,
     /// How many weeks the date moved: 1 in the normal week, more
     /// when a stale file had to snap forward to the coming
     /// Sunday (see [`next_sunday_report_as_of`]).
@@ -619,7 +625,11 @@ pub fn next_sunday_report_as_of(
             match keep {
                 Some(until) if until >= next => {
                     // Still running: the words carry over.
+                    // Name it the way ended ones are named
+                    // (J10), so the app can say what kept
+                    // instead of only counting it.
                     report.kept_announcements += 1;
+                    report.kept_names.push(announcement_first_line(story));
                 }
                 Some(_) => {
                     // The date has passed: the announcement
@@ -1075,6 +1085,7 @@ mod tests {
         // words, not only counted.
         assert_eq!(report.ended_names, vec!["Food bank collection".to_string()]);
         assert_eq!(report.kept_announcements, 0);
+        assert!(report.kept_names.is_empty());
         assert!(body_text(&n).trim().is_empty());
         assert_eq!(n.stories[2].keep_through, None);
 
@@ -1083,6 +1094,9 @@ mod tests {
         let (n, report) = next_sunday_report(&d).unwrap();
         assert_eq!(report.ended_announcements, 0);
         assert_eq!(report.kept_announcements, 1);
+        // Round 49 (R49-C): the kept announcement is named,
+        // not only counted, mirroring ended_names (J10).
+        assert_eq!(report.kept_names, vec!["Food bank collection".to_string()]);
         assert!(body_text(&n).contains("Food bank collection"));
         assert_eq!(n.stories[2].keep_through.as_deref(), Some("2026-10-25"));
 
@@ -1090,6 +1104,7 @@ mod tests {
         d.stories[2].keep_through = Some("2026-11-08".into());
         let (n, report) = next_sunday_report(&d).unwrap();
         assert_eq!(report.kept_announcements, 1);
+        assert_eq!(report.kept_names, vec!["Food bank collection".to_string()]);
         assert!(body_text(&n).contains("Food bank collection"));
 
         // No keep-through: cleared as always, and not counted

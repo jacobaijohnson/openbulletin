@@ -2375,6 +2375,18 @@ impl eframe::App for App {
                     }
                     2 => {
                         ui.heading("Announcements");
+                        // The filed-contributions fate line
+                        // (round 49, R49-C, MINOR 1, H2):
+                        // what landed, what did not, and
+                        // what had nowhere to land, in one
+                        // line, from the same plan the Start
+                        // inbox rows rest on. Silent when
+                        // nothing filed has words to fate.
+                        if let Some(line) =
+                            announcements_contribution_status(&self.doc, &self.inbox_items)
+                        {
+                            ui.label(line);
+                        }
                         if ui.button("See the announcements on the page").clicked() {
                             self.show_pages = true;
                         }
@@ -2424,6 +2436,21 @@ impl eframe::App for App {
                         // its OK lines can be read as a proof
                         // pass (J11): spell check is v0.5.
                         ui.small("This step checks that the bulletin will print right. It does not check spelling.");
+                        // The check-side staleness line
+                        // (round 49, R49-C, MINOR 3, H4):
+                        // the same comparison Start renders,
+                        // so this step itself says whether
+                        // anything changed since the last
+                        // Check. Silent when the comparison
+                        // has nothing to say.
+                        let check_current = snapshot(&self.doc);
+                        if let Some(line) = check_step_state_line(
+                            self.print_fingerprint.as_deref(),
+                            self.checked_fingerprint.as_deref(),
+                            &check_current,
+                        ) {
+                            ui.label(line);
+                        }
                         // Problems read as problems: "Check:"
                         // lines in the problem red, "OK:" lines
                         // plain, and a note that knows its box
@@ -14125,6 +14152,132 @@ mod settings_tests {
             inbox_row_status(&no_box, &cm, mixed),
             "Not yet in the bulletin; some words have nowhere to land yet, because this bulletin has no box for them."
         );
+    }
+
+    #[test]
+    fn r49c_next_sunday_note_qualifies_and_names_kept_announcements() {
+        // Round 49 (R49-C, MAJOR 2): a keep-through
+        // announcement riding into the new week qualifies
+        // the sentence and is named; with nothing kept
+        // the sentence is exactly the old one.
+        let mut kept = ob_layout::NextSundayReport::default();
+        kept.weeks_advanced = 1;
+        kept.kept_announcements = 1;
+        kept.kept_names = vec!["Food bank collection".to_string()];
+        let note = crate::windows::next_sunday_note("October 25, 2026", &kept);
+        assert!(
+            note.starts_with(
+                "Started the October 25, 2026 bulletin. Weekly announcements were cleared, \
+                 except announcements still within their keep-through date, which carried over; \
+                 standing items carried over. Save it under its own name."
+            ),
+            "{note}"
+        );
+        assert!(note.contains(" Kept: Food bank collection."), "{note}");
+        assert!(
+            !note.contains("Weekly announcements were cleared; standing"),
+            "{note}"
+        );
+        assert!(note.ends_with(" Undo brings this week back."), "{note}");
+        let mut plain = ob_layout::NextSundayReport::default();
+        plain.weeks_advanced = 1;
+        let note = crate::windows::next_sunday_note("October 25, 2026", &plain);
+        assert_eq!(
+            note,
+            "Started the October 25, 2026 bulletin. Weekly announcements were cleared; \
+             standing items carried over. Save it under its own name. Undo brings this week back."
+        );
+    }
+
+    #[test]
+    fn r49c_announcements_step_line_counts_applied_unapplied_unlanded_parts() {
+        // Round 49 (R49-C, MINOR 1, H2): the
+        // Announcements step's line counts worded parts
+        // by fate, from the same plan the Start inbox
+        // rows rest on.
+        fn item(text: &str) -> InboxItem {
+            InboxItem {
+                path: std::path::PathBuf::from("inbox/test.md"),
+                file_name: "test.md".to_string(),
+                modified_secs: 0,
+                fingerprint: "deadbeef".to_string(),
+                text: text.to_string(),
+                parsed: ob_extract::contribution::parse_contribution(text, r1_today()),
+                filed_for: None,
+            }
+        }
+        let applied_text = "From: Sue\n\n## Announcement\n\nChoir rehearsal moved to Thursday.\n";
+        let fresh_text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        // Nothing filed: silent.
+        assert_eq!(announcements_contribution_status(&r1_template(), &[]), None);
+        // Applied + unapplied in one line.
+        let mut doc = r1_template();
+        let ac =
+            ob_extract::contribution::parse_contribution(applied_text, r1_today()).expect("parses");
+        assert!(apply_contribution_recording(&mut doc, &ac, applied_text).all_landed);
+        let items = vec![item(applied_text), item(fresh_text)];
+        assert_eq!(
+            announcements_contribution_status(&doc, &items),
+            Some(
+                "Filed contributions: 1 part already in the bulletin, \
+                 1 part not yet in the bulletin."
+                    .to_string()
+            )
+        );
+        // No announcements box: the same words have
+        // nowhere to land.
+        let mut no_box = r1_template();
+        for panel in &mut no_box.panels {
+            for frame in &mut panel.frames {
+                if frame.role == ob_model::ContentRole::Weekly {
+                    frame.role = ob_model::ContentRole::Standing;
+                }
+            }
+        }
+        let items = vec![item(fresh_text), item(applied_text)];
+        assert_eq!(
+            announcements_contribution_status(&no_box, &items),
+            Some("Filed contributions: 2 parts with nowhere to land yet.".to_string())
+        );
+        // An unparsed file is skipped, as the inbox row
+        // leaves it blank.
+        let bad = InboxItem {
+            path: std::path::PathBuf::from("inbox/broken.md"),
+            file_name: "broken.md".to_string(),
+            modified_secs: 0,
+            fingerprint: "badc0ffee".to_string(),
+            text: "not a contribution".to_string(),
+            parsed: Err("could not be read".to_string()),
+            filed_for: None,
+        };
+        assert_eq!(
+            announcements_contribution_status(&doc, std::slice::from_ref(&bad)),
+            None
+        );
+    }
+
+    #[test]
+    fn r49c_check_step_state_line_renders_the_start_comparison() {
+        // Round 49 (R49-C, MINOR 3, H4): the Check
+        // step's line is state_sentence fed the
+        // session's fingerprints — every branch pinned
+        // here. The step rendering itself (egui) is
+        // code-read, not unit-testable.
+        let current = "snapshot-now";
+        assert_eq!(
+            check_step_state_line(Some("snapshot-now"), Some("older"), current),
+            Some("Print copy is current.".to_string())
+        );
+        assert_eq!(
+            check_step_state_line(None, Some("snapshot-now"), current),
+            Some("Checked, and nothing has changed since.".to_string())
+        );
+        assert_eq!(
+            check_step_state_line(None, Some("older"), current),
+            Some("Not checked since the last change.".to_string())
+        );
+        assert_eq!(check_step_state_line(None, None, current), None);
+        assert_eq!(check_step_state_line(Some("older"), None, current), None);
     }
 
     #[test]

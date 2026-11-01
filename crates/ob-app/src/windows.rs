@@ -631,69 +631,15 @@ impl App {
                 self.checked_fingerprint = None;
                 self.step = 1;
                 self.remember_step();
-                let mut msg = format!(
-                    "Started the {} bulletin. Weekly announcements were cleared; standing items carried over. Save it under its own name.",
-                    self.doc.fields.get("occasion_date_long").cloned().unwrap_or_default()
+                let msg = next_sunday_note(
+                    &self
+                        .doc
+                        .fields
+                        .get("occasion_date_long")
+                        .cloned()
+                        .unwrap_or_default(),
+                    &report,
                 );
-                // A one-time occasion says its own news
-                // (R2-11): the copy is the coming regular
-                // Sunday's, under the regular name. Its
-                // sentence replaces the stale-file jump
-                // line, which would only repeat it.
-                if let Some(note) = &report.occasion_note {
-                    msg.push_str(&format!(" {note}"));
-                } else if report.weeks_advanced > 1 {
-                    msg.push_str(&format!(
-                        " The old date had passed, so this jumps ahead {} weeks to the coming Sunday.",
-                        report.weeks_advanced
-                    ));
-                }
-                if report.ended_announcements == 1 {
-                    msg.push_str(" 1 announcement ended and was cleared.");
-                } else if report.ended_announcements > 1 {
-                    msg.push_str(&format!(
-                        " {} announcements ended and were cleared.",
-                        report.ended_announcements
-                    ));
-                }
-                // Name what ended, not only the count (J10):
-                // automation shows its hand.
-                if !report.ended_names.is_empty() {
-                    msg.push_str(&format!(" Ended: {}.", report.ended_names.join(", ")));
-                }
-                // The participant fields cleared for the new
-                // week get named the same way (J10's shape):
-                // who served is last week's news, said out
-                // loud rather than silently dropped.
-                if !report.cleared_participants.is_empty() {
-                    msg.push_str(&format!(
-                        " Cleared for the new week: {}.",
-                        report.cleared_participants.join(", ")
-                    ));
-                }
-                // The hymn lines that were cleared get
-                // named the same way (R-2a): their numbers
-                // belonged to last week, and the office
-                // hears which lines to fill in again.
-                if !report.cleared_hymns.is_empty() {
-                    msg.push_str(&format!(
-                        " Hymn numbers cleared for: {}.",
-                        report.cleared_hymns.join(", ")
-                    ));
-                }
-                // The loose sheets that ended get named
-                // the same way (R-3): a sheet taken out
-                // silently is a sheet nobody misses until
-                // print morning.
-                if !report.ended_inserts.is_empty() {
-                    msg.push_str(&format!(
-                        " Loose sheets ended: {}.",
-                        report.ended_inserts.join(", ")
-                    ));
-                }
-                // An accidental click lands here too; say
-                // the way back out loud (UI audit round 2).
-                msg.push_str(" Undo brings this week back.");
                 self.note(msg);
             }
             Err(e) => self.fail(format!(
@@ -701,6 +647,96 @@ impl App {
             )),
         }
     }
+}
+
+/// The Next Sunday note, as one pure function of the new
+/// Sunday's long date and the layout report (round 49,
+/// R49-C): the sentence is built here, not inline in
+/// `next_sunday`, so tests can pin both shapes. When
+/// keep-through announcements ride, the sentence says
+/// so instead of claiming every weekly announcement was
+/// cleared, and the kept ones are named the way ended
+/// ones are named (J10) — a kept announcement read as
+/// cleared gets re-added and printed twice. With
+/// nothing kept, the sentence is exactly the old one.
+pub(crate) fn next_sunday_note(date_long: &str, report: &ob_layout::NextSundayReport) -> String {
+    let mut msg = if report.kept_announcements > 0 {
+        format!(
+            "Started the {} bulletin. Weekly announcements were cleared, except announcements still within their keep-through date, which carried over; standing items carried over. Save it under its own name.",
+            date_long
+        )
+    } else {
+        format!(
+            "Started the {} bulletin. Weekly announcements were cleared; standing items carried over. Save it under its own name.",
+            date_long
+        )
+    };
+    // A one-time occasion says its own news
+    // (R2-11): the copy is the coming regular
+    // Sunday's, under the regular name. Its
+    // sentence replaces the stale-file jump
+    // line, which would only repeat it.
+    if let Some(note) = &report.occasion_note {
+        msg.push_str(&format!(" {note}"));
+    } else if report.weeks_advanced > 1 {
+        msg.push_str(&format!(
+            " The old date had passed, so this jumps ahead {} weeks to the coming Sunday.",
+            report.weeks_advanced
+        ));
+    }
+    if report.ended_announcements == 1 {
+        msg.push_str(" 1 announcement ended and was cleared.");
+    } else if report.ended_announcements > 1 {
+        msg.push_str(&format!(
+            " {} announcements ended and were cleared.",
+            report.ended_announcements
+        ));
+    }
+    // Name what ended, not only the count (J10):
+    // automation shows its hand.
+    if !report.ended_names.is_empty() {
+        msg.push_str(&format!(" Ended: {}.", report.ended_names.join(", ")));
+    }
+    // Name what kept, the same way (J10): a kept
+    // announcement the note never names reads as
+    // cleared, and the office re-adds it.
+    if !report.kept_names.is_empty() {
+        msg.push_str(&format!(" Kept: {}.", report.kept_names.join(", ")));
+    }
+    // The participant fields cleared for the new
+    // week get named the same way (J10's shape):
+    // who served is last week's news, said out
+    // loud rather than silently dropped.
+    if !report.cleared_participants.is_empty() {
+        msg.push_str(&format!(
+            " Cleared for the new week: {}.",
+            report.cleared_participants.join(", ")
+        ));
+    }
+    // The hymn lines that were cleared get
+    // named the same way (R-2a): their numbers
+    // belonged to last week, and the office
+    // hears which lines to fill in again.
+    if !report.cleared_hymns.is_empty() {
+        msg.push_str(&format!(
+            " Hymn numbers cleared for: {}.",
+            report.cleared_hymns.join(", ")
+        ));
+    }
+    // The loose sheets that ended get named
+    // the same way (R-3): a sheet taken out
+    // silently is a sheet nobody misses until
+    // print morning.
+    if !report.ended_inserts.is_empty() {
+        msg.push_str(&format!(
+            " Loose sheets ended: {}.",
+            report.ended_inserts.join(", ")
+        ));
+    }
+    // An accidental click lands here too; say
+    // the way back out loud (UI audit round 2).
+    msg.push_str(" Undo brings this week back.");
+    msg
 }
 
 impl App {

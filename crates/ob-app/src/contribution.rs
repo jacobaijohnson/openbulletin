@@ -1869,6 +1869,71 @@ pub(crate) fn inbox_row_status(
     }
 }
 
+/// The Announcements step's one-line fate summary for
+/// filed contributions (round 49, R49-C, MINOR 1, H2):
+/// the same plan judgment R48-B's inbox row status
+/// rests on (`planned_part_plan`, with the presence
+/// judgment `plan_part` adds), counted part by part
+/// instead of row by row. Worded parts only — a part
+/// with no words carries no fate, as the inbox row
+/// says — and unparsed files are skipped, as the inbox
+/// row leaves them blank. Applied: the plan finds the
+/// part's words already in its target (`AlreadyThere`).
+/// Unlanded: the plan has no box for the words
+/// (`KeptWithPart`). Everything else with a target —
+/// including a loose sheet, which the inbox row
+/// likewise calls not yet in until it is filed —
+/// counts as not yet in. None when no filed
+/// contribution has a worded part, so the step stays
+/// silent when there is nothing to summarize.
+pub(crate) fn announcements_contribution_status(
+    doc: &Document,
+    items: &[InboxItem],
+) -> Option<String> {
+    let mut applied = 0;
+    let mut unapplied = 0;
+    let mut unlanded = 0;
+    for item in items {
+        let Ok(c) = &item.parsed else { continue };
+        for part in &c.parts {
+            if part_has_no_words(part) {
+                continue;
+            }
+            match plan_part(doc, c, part).target {
+                SlotTarget::AlreadyThere => applied += 1,
+                SlotTarget::KeptWithPart => unlanded += 1,
+                _ => unapplied += 1,
+            }
+        }
+    }
+    if applied == 0 && unapplied == 0 && unlanded == 0 {
+        return None;
+    }
+    let mut bits: Vec<String> = Vec::new();
+    if applied > 0 {
+        bits.push(format!(
+            "{} {} already in the bulletin",
+            applied,
+            if applied == 1 { "part" } else { "parts" }
+        ));
+    }
+    if unapplied > 0 {
+        bits.push(format!(
+            "{} {} not yet in the bulletin",
+            unapplied,
+            if unapplied == 1 { "part" } else { "parts" }
+        ));
+    }
+    if unlanded > 0 {
+        bits.push(format!(
+            "{} {} with nowhere to land yet",
+            unlanded,
+            if unlanded == 1 { "part" } else { "parts" }
+        ));
+    }
+    Some(format!("Filed contributions: {}.", bits.join(", ")))
+}
+
 /// A short content fingerprint: the first eight letters
 /// of the content hash. Two versions of a part with the
 /// same fingerprint are the same words.

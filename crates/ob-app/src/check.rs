@@ -1102,6 +1102,26 @@ pub(crate) fn serving_line_conflict_sentence(
     }
 }
 
+/// The Check step's one status line (round 49, R49-C,
+/// MINOR 3, H4): the same `state_sentence` comparison
+/// the Start step renders, fed this session's print and
+/// checked fingerprints instead of a remembered file
+/// state. The step shows the line when the comparison
+/// has anything to say, and nothing when it has not
+/// (never checked, or only a stale print copy — the
+/// Print step carries that warning).
+pub(crate) fn check_step_state_line(
+    print_fingerprint: Option<&str>,
+    checked_fingerprint: Option<&str>,
+    current: &str,
+) -> Option<String> {
+    let state = DocState {
+        print_fingerprint: print_fingerprint.map(str::to_string),
+        checked_fingerprint: checked_fingerprint.map(str::to_string),
+    };
+    state_sentence(Some(&state), current)
+}
+
 /// The Start step's words for a remembered file state (J6):
 /// the strongest true statement about the print copy and the
 /// last clean check, compared against the document as it

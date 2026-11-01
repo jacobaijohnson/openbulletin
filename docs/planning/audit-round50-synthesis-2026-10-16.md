@@ -215,3 +215,86 @@ phase; they do not hold the bar. **Next step: the Tier-2 Opus + GPT
 final gate, as chartered — NOT started by this document. That
 decision is the parent's.** Nothing in this synthesis authorizes it,
 and no fix-phase batch may be presented as a substitute for it.
+
+## Close (fix phase)
+
+- **Final tip: `8ac8470`. Suite 1362/0** (1358 audit baseline + 2 R50-A
+  pins + 1 R50-B pin + 1 R50-C pin; bin suite 253). All four minors
+  FIXED, none merely dispositioned:
+  - **R50-A** (`1dab37f`, record `round50-out/coord/r50a-record.md`):
+    red MINOR-2 claim-steal content check — the steal removal now
+    re-reads and removes only if the file still names exactly the
+    judged dead owner (full text, pid + nonce, matching `Drop`);
+    the displaced-path variant fixed in the same shape. Walked
+    interleaving closed in the defined sense; adjacent-syscall
+    residual between re-read and unlink stated plainly, shared
+    with `Drop`, absolute elimination NOT claimed. Guard layers
+    untouched.
+  - **R50-B** (`6524d89`, record `round50-out/coord/r50b-record.md`):
+    review MINOR 2 paste offset — cap and origin floored at 0 on
+    both axes; oversize frames land at the panel origin; normal
+    pastes unchanged and pinned.
+  - **R50-C** (`8ac8470`, record `round50-out/coord/r50c-record.md`):
+    review MINOR 1 Check doc comment provenance corrected
+    (comment only, behavior verified unchanged) + red MINOR-1 fate
+    line both facets (label "Contributions still in the inbox:"
+    for the unfiled set actually scanned; rescan-on-arrival guard
+    at the Announcements step mirroring Start).
+- **H2/fate-line reconciliation (coordinator-verified from the
+  `8ac8470` diff):** the H2 tag sits on the fate-line function
+  itself (`announcements_contribution_status`, round 49 R49-C
+  MINOR 1, H2). The synthesis's "distinct from the H2 line"
+  wording is reconciled as substance-vs-label: the H2-verified
+  substance (per-part classification, applied/unapplied/unlanded
+  bit wording) is byte-identical in the diff; what changed is
+  exactly the mislabel prefix MINOR-1 named, plus the rescan
+  guard. The H2 line was not broken by this batch; its label was
+  the defect, and the label is corrected.
+- **Verification follow-up (trio guard batches): RUN, GREEN.**
+  Record `round50-out/coord/trio-followup-record.md`. Pre-run
+  scan showed 0 cargo/rustc processes; nothing labeled,
+  signaled, or killed. Binary built from the R50-C tip tree.
+  Batches guard1 (11) + guard2 (11) + guard22 (22) = **44 trios,
+  132 test runs, all green** (every log 3 passed / 0 failed,
+  all statuses 0). **F11 re-open trigger DID NOT FIRE**: zero
+  ETXTBSY in every trio log, zero `ETXTBSY absorbed` lines,
+  zero FAILED/panicked. The round-50 coverage gap is closed.
+- **F11 stays closed.** Absorbed-transient lines absent in every
+  hosted log across R50-A/B/C and in all trio logs. No hosted
+  flake events on any round-50 batch tip. Disclosed, not hidden:
+  (a) superseded R50-A tip `62e74fa` went red at Clippy
+  (`clippy::single_match`), fixed by `1dab37f` and fully
+  re-verified; (b) R50-C's first VM smoke attempt died without
+  a status file and was re-run from scratch with no verdict
+  read from it.
+- **Legs of record, all verified firsthand on the final tip
+  `8ac8470`:** hosted CI `41340485636` (Ubuntu, macOS, Windows
+  all success, attempt 1); Desktop Runner Build `41340485633`
+  (success); Windows bundle `41345068538` (Gate success +
+  bundle success, dispatched once at the close per the
+  dispatch-only workflow); fuzz-as-claims byte-identical
+  (verdict `797758443d101f9339fdd778e14af430`, composition
+  `e8b2e73b117c7013d867419da8fb0ab7`, rights 5083 / 1024 /
+  5275, safety_flips=0; 40,000 / 497,024 are the bins' internal
+  case counts, not stdout lines); booklet exact 31,717 /
+  34,977. VM smoke 1362/0 reported-not-cited, with `.status`
+  capture — never a leg.
+- **Cache-policy disposition at this confirmed completion:**
+  disk 50% / 75G free (same as the round-49 close). Daytime
+  threshold 94%, overnight 87%; no reading above either limit,
+  no latch fired: **CARRY** (no clean at this boundary).
+- **Disk-ritual note:** round50-out + round49-out kept;
+  round48-out becomes sweep-eligible at this boundary —
+  eligibility only; deletion waits for Jacob's approved list.
+- **Tier-2 final gate: AUTHORIZED by Jacob (2026-11-01 ~10:33
+  PST, "Do it"), QUEUED to run AFTER this close against the
+  close tip `8ac8470`. It was NOT started by this fix phase:
+  no Tier-2 panel dispatched, no external audit, no external
+  spend from this lane. Whatever the gate finds re-enters the
+  convergence loop.**
+- **Carried (unchanged, not blockers, not claimable until they
+  happen):** R47-B keyboard walk; H1 live check (hand-edit a
+  page, go back a step, start next Sunday, check the edit on
+  screen and in print); R47-F monolith extraction deferred;
+  H6 is not a finding. MINOR 2's H1 refined-rule sentence
+  stays gated on the live check and did not land.

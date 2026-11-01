@@ -3990,11 +3990,10 @@ fn acquire_instance_claim_serialization_file(
                                 // like the live-owner arm,
                                 // and a vanished file
                                 // retries at once.
-                                match remove_stale_instance_claim_file_if_unchanged(&claim, &text) {
-                                    StaleClaimFileRemoval::ChangedHands => {
-                                        std::thread::sleep(std::time::Duration::from_millis(1));
-                                    }
-                                    _ => {}
+                                if let StaleClaimFileRemoval::ChangedHands =
+                                    remove_stale_instance_claim_file_if_unchanged(&claim, &text)
+                                {
+                                    std::thread::sleep(std::time::Duration::from_millis(1));
                                 }
                             }
                             _ => {

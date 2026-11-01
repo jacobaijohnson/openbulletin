@@ -3626,6 +3626,14 @@ fn try_create_instance_lock_from(
     own_pid: u32,
     own_token: &str,
 ) -> LockCreate {
+    // R47-A: the create runs under the claim guard, so
+    // no rival displacement can move this create's
+    // landing aside between its link and its re-read.
+    // Without the guard the create fails, the safe
+    // direction, instead of racing.
+    let Some(_claim_guard) = acquire_instance_claim_guard(lock) else {
+        return LockCreate::Failed;
+    };
     let Some(temp) = stage_instance_lock_temp_from(lock, own_pid, own_token) else {
         return LockCreate::Failed;
     };
@@ -3720,6 +3728,252 @@ fn displaced_instance_lock_path(lock: &std::path::Path) -> std::path::PathBuf {
     std::path::PathBuf::from(displaced_name)
 }
 
+/// The claim-serialization guard (R47-A, F1/F2/F3/F5):
+/// one claimant's whole claim sequence — judge, create,
+/// displace, rename, audit, restore — runs while holding
+/// this guard, so no rival claim can land between any
+/// two of its steps. The bad rename itself becomes
+/// unreachable: a stale claimant paused anywhere in its
+/// sequence resumes to find the standing generation
+/// unchanged by any rival, because rivals block on the
+/// guard instead of interleaving; a live winner can
+/// therefore never be the file a stale rename moves,
+/// and no restore can land over a fresh create while
+/// its creator's claim is still running.
+///
+/// Two layers, always in this order. First, a
+/// process-wide mutex serializes threads of this
+/// process (the r42e pin's claimants are threads sharing
+/// one process, so this layer alone settles the pin).
+/// Second, a claim file beside the lock path, created
+/// by the same stage-complete-then-link step the lock
+/// create itself uses (R45-A), serializes processes:
+/// exactly one process's link lands, and the file names
+/// its owner, so a later process can tell a live holder
+/// from a stale one. A holder killed mid-claim leaves
+/// its claim file behind, but its owner pid then reads
+/// provably gone and the next claimant removes the
+/// stale file and links its own; a holder whose pid
+/// reads alive or unknown is waited on, never stolen
+/// from, because stealing from a live holder would
+/// reopen the interleaving. The wait is bounded (ten
+/// thousand one-millisecond retries): past it the
+/// claim stands down and answers false, the safe
+/// direction, rather than hanging startup on a wedged
+/// holder. A claim file whose owner pid was recycled
+/// to a live process is the one known wedge, and it
+/// fails safe the same way: claims answer false until
+/// that pid goes away, never two holders.
+///
+/// The guard is reentrant within one thread: claim
+/// functions call each other (the claim loop calls the
+/// displaced judge, displacement calls the rename step,
+/// the rename step calls the judge again), and each
+/// nested call takes the guard again as a no-op
+/// counting entry, releasing only at the outermost
+/// return. A different thread, or a different process,
+/// blocks on the mutex or the claim file instead. The
+/// guard's fields drop in declaration order, so the
+/// claim file is removed before the mutex is released.
+/// Direct step calls outside the claim loop (the pins
+/// drive steps by name) each take the guard as an
+/// outermost call, so their step contracts are unchanged
+/// and no direct call can interleave inside another
+/// claimant's serialized section either.
+fn instance_claim_serialization_path(lock: &std::path::Path) -> std::path::PathBuf {
+    let mut name = lock.as_os_str().to_owned();
+    name.push(".claim");
+    std::path::PathBuf::from(name)
+}
+
+/// The staging path for one claim-guard acquisition:
+/// the lock path with a `.claim-tmp` suffix in the same
+/// directory, so the link below lands on the same
+/// filesystem. The suffix carries this process's pid and
+/// a process-wide counter, so two acquisitions staging
+/// at once never share a path. It deliberately does not
+/// match the orphan-temp sweep's prefix, so the sweep
+/// never touches a claim-guard staging file.
+fn instance_claim_serialization_temp_path(lock: &std::path::Path) -> std::path::PathBuf {
+    static CLAIM_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = CLAIM_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    let mut name = lock.as_os_str().to_owned();
+    name.push(format!(".claim-tmp-{pid}-{count}"));
+    std::path::PathBuf::from(name)
+}
+
+/// The text a claim file carries: its owner's real
+/// process id on the first line and a per-acquisition
+/// nonce on the second, so the guard's release removes
+/// only a file this acquisition created.
+fn instance_claim_serialization_owner_text() -> String {
+    static CLAIM_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = CLAIM_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    format!("{pid}\n{pid}-{nonce}\n")
+}
+
+/// Take the cross-process half of the claim guard: link
+/// a complete staged owner file onto the claim path.
+/// Exactly one linker wins; a loser reads the standing
+/// file, removes it only when its owner is provably
+/// gone, and otherwise waits a millisecond and retries.
+/// Answers `None` when the staging itself fails (the
+/// lock directory missing or unwritable, so no claim
+/// could proceed anyway) or when the bounded wait runs
+/// out with a live or unknown holder standing.
+fn acquire_instance_claim_serialization_file(
+    lock: &std::path::Path,
+) -> Option<(std::path::PathBuf, String)> {
+    let claim = instance_claim_serialization_path(lock);
+    let owner = instance_claim_serialization_owner_text();
+    for _attempt in 0..10_000 {
+        let temp = instance_claim_serialization_temp_path(lock);
+        {
+            use std::io::Write as _;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            let mut file = match options.open(&temp) {
+                Ok(file) => file,
+                Err(_) => return None,
+            };
+            if file.write_all(owner.as_bytes()).is_err() || file.sync_all().is_err() {
+                drop(file);
+                let _ = std::fs::remove_file(&temp);
+                return None;
+            }
+        }
+        match std::fs::hard_link(&temp, &claim) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&temp);
+                if std::fs::read_to_string(&claim).ok().as_deref() == Some(owner.as_str()) {
+                    return Some((claim, owner));
+                }
+                // The file changed hands between link and
+                // re-read (a stale-stealer can only remove
+                // a dead owner's file, so this is
+                // near-impossible): retry rather than
+                // claim a file this acquisition did not win.
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = std::fs::remove_file(&temp);
+                match std::fs::read_to_string(&claim) {
+                    Ok(text) => {
+                        let mut lines = text.lines();
+                        let owner_pid = lines
+                            .next()
+                            .and_then(|line| line.trim().parse::<u32>().ok());
+                        match owner_pid {
+                            Some(pid) if peer_provably_gone(pid) => {
+                                let _ = std::fs::remove_file(&claim);
+                            }
+                            _ => {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Vanished between link and read:
+                        // retry at once.
+                    }
+                }
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&temp);
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// One holding of the claim guard. The mutex guard is
+/// released explicitly in `Drop`, after the claim file
+/// has been removed, so no ordering rides on field
+/// drop order.
+struct InstanceClaimGuard {
+    claim_path: Option<std::path::PathBuf>,
+    owner_text: Option<String>,
+    mutex_guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+thread_local! {
+    static INSTANCE_CLAIM_GUARD_DEPTH: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+static INSTANCE_CLAIM_GUARD_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the claim guard for one claim sequence: the
+/// process-wide mutex first, then the claim file.
+/// Nested calls in the same thread re-enter without
+/// touching either layer. Answers `None` only when the
+/// claim file cannot be taken (see
+/// `acquire_instance_claim_serialization_file`); the
+/// caller stands its claim down, the safe direction.
+fn acquire_instance_claim_guard(lock: &std::path::Path) -> Option<InstanceClaimGuard> {
+    let nested = INSTANCE_CLAIM_GUARD_DEPTH.with(|depth| {
+        let current = depth.get();
+        if current > 0 {
+            depth.set(current + 1);
+            true
+        } else {
+            false
+        }
+    });
+    if nested {
+        return Some(InstanceClaimGuard {
+            claim_path: None,
+            owner_text: None,
+            mutex_guard: None,
+        });
+    }
+    let mutex_guard = INSTANCE_CLAIM_GUARD_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match acquire_instance_claim_serialization_file(lock) {
+        Some((claim_path, owner_text)) => {
+            INSTANCE_CLAIM_GUARD_DEPTH.with(|depth| depth.set(1));
+            Some(InstanceClaimGuard {
+                claim_path: Some(claim_path),
+                owner_text: Some(owner_text),
+                mutex_guard: Some(mutex_guard),
+            })
+        }
+        None => None,
+    }
+}
+
+impl Drop for InstanceClaimGuard {
+    fn drop(&mut self) {
+        let outermost = INSTANCE_CLAIM_GUARD_DEPTH.with(|depth| {
+            let current = depth.get();
+            if current > 1 {
+                depth.set(current - 1);
+                false
+            } else if current == 1 {
+                depth.set(0);
+                true
+            } else {
+                false
+            }
+        });
+        if outermost {
+            if let (Some(path), Some(text)) = (&self.claim_path, &self.owner_text) {
+                if std::fs::read_to_string(path).ok().as_deref() == Some(text.as_str()) {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            // Released explicitly, after the claim file
+            // is gone, so no same-process thread can
+            // take the mutex and find the old file still
+            // standing.
+            drop(self.mutex_guard.take());
+        }
+    }
+}
+
 /// One step of a conditional displacement: move the file
 /// standing at the lock path aside in one rename, and
 /// name where it landed. This step verifies what it
@@ -3740,9 +3994,14 @@ fn displaced_instance_lock_path(lock: &std::path::Path) -> std::path::PathBuf {
 /// whoever judged what earlier. The caller still judges
 /// the move through `audit_displaced_instance_lock_from`
 /// before proceeding, and a move the audit refuses is
-/// restored there: the audit guards the one window this
-/// step cannot close, the re-read→rename syscall gap,
-/// which holds no production step boundary. Only a
+/// restored there. The audit is repair after the fact,
+/// not a guard (R47-A, F4): it cannot un-return a `true`
+/// already given, so it never closes a check-then-act
+/// window, and no close record may cite it as doing
+/// so. What closes the re-read→rename gap is the claim
+/// guard (R47-A, F1): the whole claim sequence holds
+/// it, so no rival claim can land between this step's
+/// guard re-read and its rename. Only a
 /// regular file is ever moved: anything else standing
 /// at the lock path (a directory obstructing it, say)
 /// is not a lock a claim may move.
@@ -3760,11 +4019,98 @@ fn displaced_instance_lock_path(lock: &std::path::Path) -> std::path::PathBuf {
 /// (answers `None`, both files untouched) when a live
 /// generation stands there; the caller re-enters the
 /// judge loop, which answers for that generation.
+/// The judgment sits immediately before the removal
+/// below, with only the displaced path's pure
+/// computation between them, and the whole step runs
+/// under the claim guard (R47-A, F3): no rival claim
+/// can land a live generation at the displaced path
+/// between the judgment and the removal, so nothing
+/// live is deleted unjudged.
+///
+/// The R47-A test-only pause seam (below) sits inside
+/// this step, between its guard re-read and its
+/// displaced judgment: the one place a test can pause
+/// a claimant mid-step and drive a rival's full claim
+/// through the production entry point.
+#[cfg(test)]
+struct R47aSeamState {
+    armed: bool,
+    released: bool,
+}
+
+#[cfg(test)]
+static R47A_SEAM_STATE: std::sync::Mutex<R47aSeamState> = std::sync::Mutex::new(R47aSeamState {
+    armed: false,
+    released: false,
+});
+
+#[cfg(test)]
+static R47A_SEAM_REACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+static R47A_SEAM_CONDVAR: std::sync::Condvar = std::sync::Condvar::new();
+
+/// The R47-A pause seam: test-only, one-shot, compiled
+/// out of every non-test build. When armed, the first
+/// rename step to reach it consumes the arm, reports
+/// arrival, and waits until the test releases it; later
+/// rename steps pass straight through, so a rival claim
+/// driven while the first claimant is paused is never
+/// itself paused by the seam. A test arms the seam,
+/// waits for arrival, drives the rival, asserts on the
+/// paused state, and releases; a drop guard in the test
+/// releases on any early failure too, so a failed
+/// assertion never strands the paused thread.
+#[cfg(test)]
+fn r47a_rename_seam_pause() {
+    let mut state = R47A_SEAM_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !state.armed {
+        return;
+    }
+    state.armed = false;
+    R47A_SEAM_REACHED.store(true, std::sync::atomic::Ordering::SeqCst);
+    while !state.released {
+        state = R47A_SEAM_CONDVAR
+            .wait(state)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
+}
+
+/// Arm the R47-A seam for one paused rename step.
+#[cfg(test)]
+fn r47a_seam_arm() {
+    let mut state = R47A_SEAM_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.armed = true;
+    state.released = false;
+    R47A_SEAM_REACHED.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Release a claimant paused at the R47-A seam.
+#[cfg(test)]
+fn r47a_seam_release() {
+    let mut state = R47A_SEAM_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.released = true;
+    R47A_SEAM_CONDVAR.notify_all();
+}
+
 fn rename_instance_lock_to_displaced_from(
     lock: &std::path::Path,
     own_pid: u32,
     own_token: &str,
 ) -> Option<std::path::PathBuf> {
+    // R47-A: the whole step runs under the claim guard,
+    // so no rival claim can land between the guard
+    // re-read below and the rename. Without the guard
+    // the step stands down (a bounded wait, or an
+    // unwritable lock directory, already answered that
+    // this claim cannot proceed safely).
+    let _claim_guard = acquire_instance_claim_guard(lock)?;
     match std::fs::metadata(lock) {
         Ok(metadata) if metadata.is_file() => {}
         _ => return None,
@@ -3784,6 +4130,11 @@ fn rename_instance_lock_to_displaced_from(
             return None;
         }
     }
+    // R47-A seam: a test-only pause inside the step, at
+    // the guard-to-rename gap itself. Compiled out of
+    // non-test builds; a no-op unless a test armed it.
+    #[cfg(test)]
+    r47a_rename_seam_pause();
     match judge_displaced_instance_lock_at_claim_from(lock, own_pid, own_token) {
         DisplacedLockJudgment::NoLiveGeneration => {}
         DisplacedLockJudgment::RestoredLiveGeneration => return None,
@@ -3812,8 +4163,13 @@ fn rename_instance_lock_to_displaced_from(
 /// lock this claimant never judged: restore it to the
 /// lock path and answer false, so the claim stands down
 /// instead of proceeding to create over it. The restore
-/// renames the file back only while the lock path stands
-/// vacant; when a newer lock already stands there, the
+/// links the file back (R47-A, F2): the link lands only
+/// while the lock path stands vacant, so a fresh create
+/// that landed after any earlier vacancy reading makes
+/// the link fail instead of being overwritten — the old
+/// check-then-rename restore silently overwrote such a
+/// create after its creator had already answered `true`.
+/// When a newer lock already stands there, the
 /// displaced file is left standing at the displaced path
 /// rather than overwriting that lock or deleting a live
 /// one, and the answer is still false.
@@ -3836,11 +4192,19 @@ fn audit_displaced_instance_lock_from(
     displaced: &std::path::Path,
     judged: Option<&InstanceLock>,
 ) -> bool {
+    // R47-A: the whole audit runs under the claim guard,
+    // so no rival claim can create into the vacancy
+    // while this restore is decided — and the restore
+    // itself is a link, not a rename, so even a create
+    // landing outside the guard could not be overwritten.
+    let Some(_claim_guard) = acquire_instance_claim_guard(lock) else {
+        return false;
+    };
     if read_instance_lock_from(displaced).as_ref() == judged {
         return true;
     }
-    if std::fs::metadata(lock).is_err() {
-        let _ = std::fs::rename(displaced, lock);
+    if std::fs::hard_link(displaced, lock).is_ok() {
+        let _ = std::fs::remove_file(displaced);
     }
     false
 }
@@ -3857,7 +4221,8 @@ enum DisplacedLockJudgment {
     NoLiveGeneration,
     /// A live generation stood at the displaced path
     /// while the lock path stood vacant, and it was
-    /// restored to the lock path in one rename. The
+    /// restored to the lock path by a link that lands
+    /// only on a vacant lock path. The
     /// claim re-judges what stands at the lock path on
     /// the next pass instead of proceeding in this one.
     RestoredLiveGeneration,
@@ -3898,6 +4263,19 @@ fn judge_displaced_instance_lock_at_claim_from(
     own_pid: u32,
     own_token: &str,
 ) -> DisplacedLockJudgment {
+    // R47-A: the whole judgment runs under the claim
+    // guard, so no rival claim can change the lock
+    // path's vacancy while a restore is decided — and
+    // each restore below is a link, not a rename, so a
+    // fresh create landing after the vacancy reading
+    // makes the link fail instead of being overwritten
+    // (the old judge restores overwrote such a create
+    // across a displaced read and a `kill` syscall).
+    // Without the guard the judgment stands the claim
+    // down, the safe direction.
+    let Some(_claim_guard) = acquire_instance_claim_guard(lock) else {
+        return DisplacedLockJudgment::LiveGenerationBesideOccupiedLock;
+    };
     let displaced = displaced_instance_lock_path(lock);
     let lock_path_vacant = std::fs::metadata(lock).is_err();
     if lock_path_vacant && lock_names_instance(&displaced, own_pid, own_token) {
@@ -3905,15 +4283,21 @@ fn judge_displaced_instance_lock_at_claim_from(
         // and nothing has taken the lock path since:
         // put it back, and let the next pass answer by
         // the re-read of the lock path.
-        let _ = std::fs::rename(&displaced, lock);
-        return DisplacedLockJudgment::RestoredLiveGeneration;
+        if std::fs::hard_link(&displaced, lock).is_ok() {
+            let _ = std::fs::remove_file(&displaced);
+            return DisplacedLockJudgment::RestoredLiveGeneration;
+        }
+        return DisplacedLockJudgment::LiveGenerationBesideOccupiedLock;
     }
     if !peer_instance_alive_from(&displaced, own_pid, own_token) {
         return DisplacedLockJudgment::NoLiveGeneration;
     }
     if lock_path_vacant {
-        let _ = std::fs::rename(&displaced, lock);
-        return DisplacedLockJudgment::RestoredLiveGeneration;
+        if std::fs::hard_link(&displaced, lock).is_ok() {
+            let _ = std::fs::remove_file(&displaced);
+            return DisplacedLockJudgment::RestoredLiveGeneration;
+        }
+        return DisplacedLockJudgment::LiveGenerationBesideOccupiedLock;
     }
     DisplacedLockJudgment::LiveGenerationBesideOccupiedLock
 }
@@ -3934,10 +4318,14 @@ fn judge_displaced_instance_lock_at_claim_from(
 /// `judged`; if it changed, nothing is moved and the
 /// caller re-judges what stands there instead of
 /// proceeding. The rename itself is then audited by
-/// `audit_displaced_instance_lock_from`, which closes
-/// the window between that re-read and the rename: a
+/// `audit_displaced_instance_lock_from`, which is repair
+/// after the fact, not a closure (R47-A, F4): a
 /// displacement that nonetheless landed on an unjudged
-/// generation restores it and answers false.
+/// generation restores it and answers false, but the
+/// audit cannot un-return a `true` already given. The
+/// window between that re-read and the rename is closed
+/// by the claim guard (R47-A, F1), held across the whole
+/// claim sequence, not by the audit.
 ///
 /// The rename step removes whatever file stands at the
 /// displaced path to make room for its landing, so the
@@ -3965,6 +4353,12 @@ fn displace_instance_lock_from(
     own_token: &str,
     judged: Option<&InstanceLock>,
 ) -> bool {
+    // R47-A: the whole displacement runs under the claim
+    // guard, so no rival claim can land between the
+    // generation check below and the rename step.
+    let Some(_claim_guard) = acquire_instance_claim_guard(lock) else {
+        return false;
+    };
     // Only a regular file is ever displaced: anything else
     // standing at the lock path (a directory obstructing
     // it, say) is not a lock this claim may move, and the
@@ -4059,6 +4453,14 @@ fn displace_instance_lock_from(
 /// This is the only production writer of the lock file,
 /// and no path deletes the lock.
 fn acquire_instance_lock_from(lock: &std::path::Path, own_pid: u32, own_token: &str) -> bool {
+    // R47-A: the whole claim loop runs under the claim
+    // guard, held across every pass, so no rival claim
+    // can interleave between any two steps of this
+    // claim. Without the guard the claim stands down
+    // and answers false, the safe direction.
+    let Some(_claim_guard) = acquire_instance_claim_guard(lock) else {
+        return false;
+    };
     // Claim time is sweep time (R46-E, F7): orphan
     // staging files left by killed claimants are
     // removed before the judge loop, under the
@@ -8169,7 +8571,7 @@ mod settings_tests {
         // standing generation — asserted here — so
         // this audit state is constructed by the file
         // move itself, the syscall-gap residue the
-        // audit guards, and the audit below is driven
+        // audit would repair, and the audit below is driven
         // on that state.
         assert_eq!(
             rename_instance_lock_to_displaced_from(&lock, b_pid, b_token),
@@ -8360,7 +8762,7 @@ mod settings_tests {
         // standing generation — asserted here — so
         // this audit state is constructed by the file
         // move itself, the syscall-gap residue the
-        // audit guards, and the audit below is driven
+        // audit would repair, and the audit below is driven
         // on that state.
         assert_eq!(
             rename_instance_lock_to_displaced_from(&lock, b_pid, b_token),
@@ -8472,7 +8874,7 @@ mod settings_tests {
         // standing generation — asserted here — so
         // this audit state is constructed by the file
         // move itself, the syscall-gap residue the
-        // audit guards, and the audit below is driven
+        // audit would repair, and the audit below is driven
         // on that state.
         assert_eq!(
             rename_instance_lock_to_displaced_from(&lock, b_pid, b_token),
@@ -8715,7 +9117,7 @@ mod settings_tests {
         // standing generation — asserted here — so
         // this audit state is constructed by the file
         // move itself, the syscall-gap residue the
-        // audit guards, and the audit below is driven
+        // audit would repair, and the audit below is driven
         // on that state.
         assert_eq!(
             rename_instance_lock_to_displaced_from(&lock, c_pid, c_token),
@@ -9921,6 +10323,401 @@ mod settings_tests {
         assert!(
             lock_names_instance(&lock, l_pid, l_token),
             "the claimant holds"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r47a_serialized_rename_step_blocks_an_interleaved_claim() {
+        // R47-A regression pin for F1 (the rename-step
+        // guard-to-rename gap), driven through the
+        // production claim path on both sides. B claims
+        // in full and pauses inside its rename step, at
+        // the test-only seam between the guard re-read
+        // and the displaced judgment; M then claims in
+        // full through `acquire_instance_lock_from`.
+        // On the current tree B's pause is inside an
+        // unserialized step, so M's claim lands while B
+        // is paused and the paused-state assertion below
+        // fails: the lock names live M, not dead S. On
+        // the fixed tree B's whole claim holds the claim
+        // guard, so M's claim blocks until B finishes
+        // and the same assertion passes; B then holds
+        // and M stands down. The two timeouts below are
+        // test synchronization bounds only (blocked vs
+        // completed), never assertions about product
+        // timing: on the fixed tree M is blocked on the
+        // guard however loaded the runner is, and on the
+        // current tree M's unblocked claim finishes in
+        // milliseconds against a five-second bound.
+        // This pin is NOT a raw-ops mirror: both sides
+        // go through the production claim functions, so
+        // it passes on a serialization-fixed tree
+        // instead of biting on every tree.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r47a-serialized-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut stale_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = stale_child.id();
+        stale_child.wait().expect("reap child");
+        let stale_lock = format!("{dead_pid}\nstale-token\n");
+        std::fs::write(&lock, &stale_lock).expect("stale lock");
+        let stale_bytes = std::fs::read(&lock).expect("read stale lock");
+        // B claims through a real live peer, not a fake
+        // pid: on the fixed tree B wins and its lock must
+        // read live to M, or M would legitimately take
+        // over a lock naming a dead pid and both would
+        // answer true for a different reason entirely.
+        let mut peer_b = spawn_live_peer_named(&dir, "openbulletin-peer-r47a-b");
+        let b_pid = peer_b.id();
+        let b_token = "claimant-b-token";
+        let mut peer_m = spawn_live_peer_named(&dir, "openbulletin-peer-r47a-m");
+        let m_pid = peer_m.id();
+        let m_token = "winner-m-token";
+        struct R47aSeamReleaseOnDrop;
+        impl Drop for R47aSeamReleaseOnDrop {
+            fn drop(&mut self) {
+                r47a_seam_release();
+            }
+        }
+        let _seam_drop_guard = R47aSeamReleaseOnDrop;
+        r47a_seam_arm();
+        let b_lock = lock.clone();
+        let b_handle =
+            std::thread::spawn(move || acquire_instance_lock_from(&b_lock, b_pid, b_token));
+        let mut reached = false;
+        for _ in 0..10_000 {
+            if R47A_SEAM_REACHED.load(std::sync::atomic::Ordering::SeqCst) {
+                reached = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            reached,
+            "B's claim reaches the pause seam inside its rename step"
+        );
+        let (m_sender, m_receiver) = std::sync::mpsc::channel::<bool>();
+        let m_lock = lock.clone();
+        let m_handle = std::thread::spawn(move || {
+            let result = acquire_instance_lock_from(&m_lock, m_pid, m_token);
+            let _ = m_sender.send(result);
+        });
+        let mut m_result: Option<bool> = None;
+        let m_finished = match m_receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(result) => {
+                m_result = Some(result);
+                true
+            }
+            Err(_) => false,
+        };
+        // The paused-state assertion: the serialization
+        // claim itself. On the current tree M finished
+        // above and the lock names M here, so this fails;
+        // on the fixed tree M is still blocked and the
+        // lock still names dead S, so this passes.
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock while B is paused"),
+            stale_bytes,
+            "while B is paused inside its serialized rename step, no interleaved claim may land: the lock still names dead S"
+        );
+        r47a_seam_release();
+        let b_result = b_handle.join().expect("B's claimant thread");
+        if !m_finished {
+            m_result = Some(
+                m_receiver
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("M's claim completes after the seam releases"),
+            );
+        }
+        m_handle.join().expect("M's claimant thread");
+        let m_result = m_result.expect("M's claim answered");
+        let results = [b_result, m_result];
+        let wins = results.iter().filter(|&&result| result).count();
+        assert_eq!(
+            wins, 1,
+            "exactly one of the two claimants holds (results {results:?})"
+        );
+        let winner = results
+            .iter()
+            .position(|&result| result)
+            .expect("the winning claimant");
+        let winner_pid = if winner == 0 { b_pid } else { m_pid };
+        let winner_token = if winner == 0 { b_token } else { m_token };
+        let info = read_instance_lock_from(&lock).expect("the lock names the winner");
+        assert_eq!(
+            info.pid,
+            Some(winner_pid),
+            "the lock names the winning claimant's pid"
+        );
+        assert_eq!(
+            info.token.as_deref(),
+            Some(winner_token),
+            "the lock names the winning claimant's token"
+        );
+        if let Some(displaced_info) = read_instance_lock_from(&displaced) {
+            assert_ne!(
+                displaced_info.token.as_deref(),
+                Some(winner_token),
+                "the winner's generation never stands displaced"
+            );
+        }
+        let _ = peer_b.kill();
+        let _ = peer_b.wait();
+        let _ = peer_m.kill();
+        let _ = peer_m.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r47a_audit_restore_links_and_never_overwrites_an_occupied_lock() {
+        // R47-A contract pin for F2 (audit restore):
+        // with a fresh create standing at the lock path,
+        // the audit's restore leaves that create byte for
+        // byte and the displaced file standing. This
+        // pins the link's observable contract (a link
+        // onto an occupied path fails instead of
+        // overwriting); the interleaving that used to
+        // reach the overwrite is closed by the claim
+        // guard, pinned by the serialized-rename pin
+        // above, not by this direct call.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r47a-audit-occupied-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut stale_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = stale_child.id();
+        stale_child.wait().expect("reap child");
+        std::fs::write(&lock, format!("{dead_pid}\njudged-token\n")).expect("stale lock");
+        let judged = read_instance_lock_from(&lock).expect("the judged generation");
+        let mut peer_c = spawn_live_peer_named(&dir, "openbulletin-peer-r47a-c");
+        let c_pid = peer_c.id();
+        let c_token = "claimant-c-token";
+        let c_lock = format!("{c_pid}\n{c_token}\n");
+        std::fs::write(&lock, &c_lock).expect("the fresh create stands");
+        let c_bytes = std::fs::read(&lock).expect("read the fresh create");
+        let mut peer_a = spawn_live_peer_named(&dir, "openbulletin-peer-r47a-a");
+        let a_pid = peer_a.id();
+        let a_token = "live-a-token";
+        let a_lock = format!("{a_pid}\n{a_token}\n");
+        std::fs::write(&displaced, &a_lock).expect("the displaced generation stands");
+        let a_bytes = std::fs::read(&displaced).expect("read the displaced generation");
+        assert!(
+            !audit_displaced_instance_lock_from(&lock, &displaced, Some(&judged)),
+            "the audit refuses a displacement that landed on an unjudged generation"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after the audit"),
+            c_bytes,
+            "the audit never overwrites the occupying fresh create"
+        );
+        assert_eq!(
+            std::fs::read(&displaced).expect("read displaced after the audit"),
+            a_bytes,
+            "the displaced generation is left standing beside the occupied lock"
+        );
+        let _ = peer_c.kill();
+        let _ = peer_c.wait();
+        let _ = peer_a.kill();
+        let _ = peer_a.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r47a_audit_restore_links_a_displaced_generation_onto_a_vacant_lock() {
+        // R47-A contract pin for F2 (audit restore,
+        // vacant variant): the link lands, the displaced
+        // file moves to the lock path, and the audit
+        // still answers false.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r47a-audit-vacant-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut stale_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = stale_child.id();
+        stale_child.wait().expect("reap child");
+        std::fs::write(&lock, format!("{dead_pid}\njudged-token\n")).expect("stale lock");
+        let judged = read_instance_lock_from(&lock).expect("the judged generation");
+        std::fs::remove_file(&lock).expect("the lock stands vacant");
+        let mut peer_a = spawn_live_peer_named(&dir, "openbulletin-peer-r47a-av");
+        let a_pid = peer_a.id();
+        let a_token = "live-a-token";
+        let a_lock = format!("{a_pid}\n{a_token}\n");
+        std::fs::write(&displaced, &a_lock).expect("the displaced generation stands");
+        assert!(
+            !audit_displaced_instance_lock_from(&lock, &displaced, Some(&judged)),
+            "the audit refuses a displacement that landed on an unjudged generation"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&lock).expect("read lock after the audit"),
+            a_lock,
+            "the displaced generation is restored to the vacant lock path"
+        );
+        assert!(
+            !displaced.exists(),
+            "nothing stands displaced after the restore"
+        );
+        let _ = peer_a.kill();
+        let _ = peer_a.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r47a_judge_restore_links_and_never_overwrites_an_occupied_lock() {
+        // R47-A contract pin for F2 (judge restore):
+        // with a fresh create standing at the lock path,
+        // the judge stands the claim down and leaves
+        // both files byte for byte.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r47a-judge-occupied-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut peer_c = spawn_live_peer_named(&dir, "openbulletin-peer-r47a-jc");
+        let c_pid = peer_c.id();
+        let c_token = "claimant-c-token";
+        let c_lock = format!("{c_pid}\n{c_token}\n");
+        std::fs::write(&lock, &c_lock).expect("the fresh create stands");
+        let c_bytes = std::fs::read(&lock).expect("read the fresh create");
+        let mut peer_a = spawn_live_peer_named(&dir, "openbulletin-peer-r47a-ja");
+        let a_pid = peer_a.id();
+        let a_token = "live-a-token";
+        let a_lock = format!("{a_pid}\n{a_token}\n");
+        std::fs::write(&displaced, &a_lock).expect("the displaced generation stands");
+        let a_bytes = std::fs::read(&displaced).expect("read the displaced generation");
+        let x_pid = std::process::id() + 6000;
+        let x_token = "claimant-x-token";
+        assert!(
+            matches!(
+                judge_displaced_instance_lock_at_claim_from(&lock, x_pid, x_token),
+                DisplacedLockJudgment::LiveGenerationBesideOccupiedLock
+            ),
+            "a live generation beside an occupied lock stands the claim down"
+        );
+        assert_eq!(
+            std::fs::read(&lock).expect("read lock after the judgment"),
+            c_bytes,
+            "the judgment never overwrites the occupying fresh create"
+        );
+        assert_eq!(
+            std::fs::read(&displaced).expect("read displaced after the judgment"),
+            a_bytes,
+            "the displaced generation is left standing beside the occupied lock"
+        );
+        let _ = peer_c.kill();
+        let _ = peer_c.wait();
+        let _ = peer_a.kill();
+        let _ = peer_a.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r47a_judge_restore_links_a_live_generation_onto_a_vacant_lock() {
+        // R47-A contract pin for F2 (judge restore,
+        // vacant variant): the link lands and the
+        // judgment reports the restore.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r47a-judge-vacant-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let displaced = displaced_instance_lock_path(&lock);
+        let mut peer_a = spawn_live_peer_named(&dir, "openbulletin-peer-r47a-jav");
+        let a_pid = peer_a.id();
+        let a_token = "live-a-token";
+        let a_lock = format!("{a_pid}\n{a_token}\n");
+        std::fs::write(&displaced, &a_lock).expect("the displaced generation stands");
+        let x_pid = std::process::id() + 6000;
+        let x_token = "claimant-x-token";
+        assert!(
+            matches!(
+                judge_displaced_instance_lock_at_claim_from(&lock, x_pid, x_token),
+                DisplacedLockJudgment::RestoredLiveGeneration
+            ),
+            "a live generation beside a vacant lock is restored"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&lock).expect("read lock after the judgment"),
+            a_lock,
+            "the displaced generation is restored to the vacant lock path"
+        );
+        assert!(
+            !displaced.exists(),
+            "nothing stands displaced after the restore"
+        );
+        let _ = peer_a.kill();
+        let _ = peer_a.wait();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r47a_claim_guard_stale_file_is_stolen_and_leaves_no_litter() {
+        // R47-A pin for the claim guard's stale rule: a
+        // claim file left by a killed holder (its owner
+        // pid provably gone) does not wedge later
+        // claims, and a completed claim leaves no claim
+        // file or staging litter behind.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r47a-claim-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let claim = instance_claim_serialization_path(&lock);
+        let mut dead_child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn child");
+        let dead_pid = dead_child.id();
+        dead_child.wait().expect("reap child");
+        assert!(
+            peer_provably_gone(dead_pid),
+            "the planted owner is provably gone before the claim"
+        );
+        std::fs::write(&claim, format!("{dead_pid}\nplanted-nonce\n"))
+            .expect("plant the stale claim file");
+        assert!(
+            claim.exists(),
+            "the stale claim file stands before the claim"
+        );
+        assert!(
+            acquire_instance_lock_from(&lock, std::process::id(), "r47a-claimant-token"),
+            "the claim takes the vacant lock past the stale claim file"
+        );
+        assert!(
+            lock_names_instance(&lock, std::process::id(), "r47a-claimant-token"),
+            "the claimant holds"
+        );
+        assert!(!claim.exists(), "no claim file stands after the claim");
+        let litter: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read the claim directory")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".claim"))
+            .collect();
+        assert!(
+            litter.is_empty(),
+            "no claim-guard litter stands after the claim (found {litter:?})"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

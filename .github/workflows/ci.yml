@@ -35,3 +35,20 @@ jobs:
         # helper that stops compiling is caught on main, not at
         # bundle time (audit Batch 3, red-team M11).
         run: cargo build --release -p openbulletin -p openbulletin-cli -p ob-pdfium-helper -p ob-verovio-helper
+      - name: Staged Verovio end-to-end check (Windows)
+        # Round 51 (R51-C): the same staging shape the bundle
+        # workflow ships, proved on this hosted Windows leg at
+        # every push — the staged helper beside a staged
+        # verovio-python/ folder, MusicXML in, engraved SVG
+        # out, staff at or above the 5.0 mm floor — instead of
+        # waiting for the dispatch-only bundle run at the round
+        # close. The bundle workflow's own staging, assertion,
+        # and check steps still run at that close run.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force stage-check | Out-Null
+          Copy-Item target/release/ob-verovio-helper.exe stage-check/
+          ./scripts/stage-verovio-windows.ps1 -BundleDir stage-check
+          ./scripts/check-verovio-bundle.ps1 -BundleDir stage-check -HelperExe stage-check/ob-verovio-helper.exe -MusicXml scripts/verovio-e2e-sample.musicxml

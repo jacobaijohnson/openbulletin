@@ -117,14 +117,23 @@ and the helper speaks to the app over versioned JSON. Checked
 for Windows (its command-line book says binaries exist only
 through Homebrew on macOS); the official Windows distribution
 is the Python wheel on PyPI (wheels for Windows, macOS, and
-Linux), which needs a Python runtime to run. Consequence,
-recorded rather than papered over: the Windows bundle ships
-our helper but no engraver, so on a stock Windows machine a
-music file opens with its notes standing undrawn and the app
-says so in plain words. When an engraver is staged in a later
-bundle it will be the unmodified official artifact with its
-LGPL-3.0 license text and a note offering its source, the
-same treatment PDFium gets today. Our own new dependencies
+Linux), which needs a Python runtime to run. Staged since round 51 (R51-C): the Windows bundle ships the
+engraver beside the exe as `verovio-python/` — the unmodified
+official Verovio 6.4.0 wheel from PyPI plus the official Python
+3.14.10 embeddable runtime to run it, both fetched by pinned
+SHA-256 in `.github/workflows/windows-bundle.yml` (via
+`scripts/stage-verovio-windows.ps1`), with the wheel's own
+LGPL-3.0 text staged as `Verovio-LGPL-3.0.txt` and a source
+offer as `Verovio-SOURCE.txt`, the same treatment PDFium gets
+today. A stock-Windows end-to-end check (MusicXML in, engraved
+SVG out, staff at or above the 5.0 mm floor) runs against the
+staged bundle in that workflow, and the same staging shape is
+proved on the CI Windows leg at every push. If the engraver
+folder is ever missing on a machine, the old plain-words
+behavior stands: the file still opens with its notes undrawn
+and the app says so. No fallback renderer and no on-demand
+download exist: the engraver arrives with the bundle or not
+at all. Our own new dependencies
 for this build are quick-xml 0.36 and zip 2 (both already in
 the tree; see the .obd note above), so no new license family
 entered: `cargo metadata` recount is owed at the next

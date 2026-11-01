@@ -5,10 +5,13 @@ name: Windows bundle
 # in a single zip. No installer, no steps: unzip, double-click.
 # ob-verovio-helper.exe rides along too: it is our own binary,
 # the door to the music engraver. The engraver itself (Verovio)
-# is NOT in the bundle yet: it publishes no standalone Windows
-# binary (its Windows form is a Python wheel), so music files
-# open with their notes standing undrawn and the app says so
-# plainly; see docs/LEGAL.md.
+# rides along as well, since round 51 (R51-C): it publishes no
+# standalone Windows binary (its Windows form is a Python
+# wheel), so the bundle stages the official wheel plus a Python
+# runtime as verovio-python/ beside the exe, the exact folder
+# the helper already probes; see docs/LEGAL.md. If that folder
+# is ever deleted, music files still open with their notes
+# standing undrawn and the app says so plainly.
 #
 # Audit Batch 3 hardening (docs/planning/
 # audit-wave3-synthesis-2026-10-16.md, red-team M11): the gate
@@ -73,6 +76,16 @@ jobs:
           }
           tar -xzf pdfium.tgz
           Get-ChildItem -Recurse | Select-Object FullName
+      - name: Fetch the Verovio engraver (pinned wheel + Python runtime)
+        shell: pwsh
+        run: |
+          # Stages verovio-python/ (embeddable Python + the
+          # official wheel, both SHA-256-checked), the wheel's
+          # own LGPL-3.0 text, and the source offer, into
+          # bundle/; fails loudly on any hash or license
+          # mismatch. The same script proves the same shape
+          # on the CI Windows leg (see ci.yml).
+          ./scripts/stage-verovio-windows.ps1 -BundleDir bundle
       - name: Stage the bundle
         shell: pwsh
         run: |
@@ -106,11 +119,17 @@ jobs:
           shortcut: if you make a shortcut to openbulletin.exe,
           you can point its icon at that file.
 
-          Music files (MusicXML) open through the same door, but
+          Music files (MusicXML) open through the same door, and
           their notes are drawn by a music engraver program
-          (Verovio) that is not in this download yet. Until it
-          is, a music file still opens: its title, words, and
-          credit arrive, and the app tells you plainly that the
+          (Verovio) in the verovio-python folder beside
+          openbulletin.exe: the official Verovio wheel plus a
+          Python runtime to run it, unmodified, with its
+          LGPL-3.0 license text (Verovio-LGPL-3.0.txt) and a
+          note offering its source (Verovio-SOURCE.txt).
+          Keep the verovio-python folder beside
+          openbulletin.exe. If it is ever missing, a music
+          file still opens: its title, words, and credit
+          arrive, and the app tells you plainly that the
           notes cannot be drawn on this computer yet.
 
           Your bulletins stay on this computer; the app does not
@@ -132,7 +151,10 @@ jobs:
             'PDFium-LICENSE.txt',
             'README.txt',
             'icon.png',
-            'openbulletin.ico'
+            'openbulletin.ico',
+            'verovio-python/python.exe',
+            'Verovio-LGPL-3.0.txt',
+            'Verovio-SOURCE.txt'
           )
           foreach ($name in $required) {
             $file = Get-Item "bundle/$name"
@@ -140,7 +162,30 @@ jobs:
               throw "bundle/$name is empty; the bundle must not ship like this."
             }
           }
+          # The wheel itself, unpacked where the staged
+          # runtime looks for it, and the runtime's import
+          # path naming it: a folder without either would
+          # pass the file list above and still engrave
+          # nothing.
+          $wheelMain = Get-Item 'bundle/verovio-python/Lib/site-packages/verovio/verovio.py'
+          if ($wheelMain.Length -eq 0) {
+            throw 'The staged Verovio wheel is empty; the bundle must not ship like this.'
+          }
+          $pth = Get-Item 'bundle/verovio-python/python*._pth'
+          if ((Get-Content $pth.FullName -Raw) -notmatch 'Lib/site-packages') {
+            throw 'The staged Python import path does not name site-packages; the wheel would not import.'
+          }
           Get-ChildItem bundle | Select-Object Name, Length
+      - name: End-to-end music check (staged bundle)
+        shell: pwsh
+        run: |
+          # MusicXML in, engraved SVG out, staff at or above
+          # the 5.0 mm floor, through the staged folder with
+          # PATH scrubbed and no overrides: the stock-Windows
+          # proof for this bundle. Runs after the zip is made
+          # but before anything uploads, so a failing check
+          # ships nothing.
+          ./scripts/check-verovio-bundle.ps1 -BundleDir bundle -HelperExe bundle/ob-verovio-helper.exe -MusicXml scripts/verovio-e2e-sample.musicxml
       - name: Upload the bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

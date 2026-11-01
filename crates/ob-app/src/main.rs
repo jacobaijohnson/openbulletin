@@ -8084,17 +8084,86 @@ mod settings_tests {
         );
     }
 
+    /// A per-spawn nonce for peer exe paths (R47-E,
+    /// F11): the pid plus a nanosecond reading plus a
+    /// per-process counter. A pid alone does not name
+    /// one spawn — parallel tests share one test-binary
+    /// pid, and pids are recycled across runs — and two
+    /// spawns in one process can share a nanosecond
+    /// reading, so the counter is what makes the triple
+    /// strictly unique per process. The shape mirrors
+    /// the R47-D production token (pid + nanos); the
+    /// counter is the test-harness addition, because one
+    /// test process spawns many peers.
+    #[cfg(unix)]
+    fn live_peer_nonce() -> String {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{}-{nanos}-{count}", std::process::id())
+    }
+
+    /// A spawned live peer that is killed and reaped
+    /// when it goes out of scope, including on a test
+    /// panic: a plain `Child` dropped mid-test leaves
+    /// its `sleep 30` running as an orphan (R47-E, F11
+    /// hardening). It derefs to the child, so existing
+    /// `.id()`, `.kill()`, and `.wait()` calls read
+    /// unchanged; an explicit kill + wait first is
+    /// harmless, since both ignore the already-reaped
+    /// error when the guard drops.
+    #[cfg(unix)]
+    struct LivePeer {
+        child: std::process::Child,
+        exe_path: std::path::PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl LivePeer {
+        fn exe_path(&self) -> &std::path::Path {
+            &self.exe_path
+        }
+    }
+
+    #[cfg(unix)]
+    impl std::ops::Deref for LivePeer {
+        type Target = std::process::Child;
+
+        fn deref(&self) -> &Self::Target {
+            &self.child
+        }
+    }
+
+    #[cfg(unix)]
+    impl std::ops::DerefMut for LivePeer {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.child
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for LivePeer {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
     /// A live peer process for the lock pins: a copy of
     /// the system sleep binary under a name that reads as
     /// this app, so the peer is modeled the way a real
     /// OpenBulletin process stands (alive, and not
-    /// provably gone). The caller kills and reaps it.
+    /// provably gone). The caller kills and reaps it,
+    /// and the guard reaps it anyway on drop.
     /// Modeled this way since
     /// R31-B: a pid-0 lock is a corrupt lock under F6, not
     /// a live peer — a healthy instance always writes its
     /// real pid, so a live peer is modeled with one.
     #[cfg(unix)]
-    fn spawn_live_peer(dir: &std::path::Path) -> std::process::Child {
+    fn spawn_live_peer(dir: &std::path::Path) -> LivePeer {
         spawn_live_peer_named(dir, "openbulletin-peer")
     }
 
@@ -8102,20 +8171,94 @@ mod settings_tests {
     /// the R32-E F9 pins spawn one whose name does not
     /// contain "openbulletin" at all (a renamed copy),
     /// which must be protected exactly as the app-named
-    /// one is.
+    /// one is. The exe path carries a per-spawn nonce
+    /// after the base name (R47-E, F11), so no two
+    /// spawns ever share a path, whatever dir they are
+    /// given; the renamed base keeps its F9 property,
+    /// since the suffix adds no "openbulletin".
     #[cfg(unix)]
-    fn spawn_live_peer_named(dir: &std::path::Path, name: &str) -> std::process::Child {
-        let peer_exe = dir.join(name);
+    fn spawn_live_peer_named(dir: &std::path::Path, name: &str) -> LivePeer {
+        let peer_exe = dir.join(format!("{name}-{}", live_peer_nonce()));
         let sleep_source = ["/bin/sleep", "/usr/bin/sleep"]
             .into_iter()
             .map(std::path::Path::new)
             .find(|candidate| candidate.exists())
             .expect("a system sleep binary to model the peer with");
         std::fs::copy(sleep_source, &peer_exe).expect("peer binary copy");
-        std::process::Command::new(&peer_exe)
+        let child = std::process::Command::new(&peer_exe)
             .arg("30")
             .spawn()
-            .expect("spawn live peer")
+            .expect("spawn live peer");
+        LivePeer {
+            child,
+            exe_path: peer_exe,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r47e_peer_spawn_paths_are_unique_across_spawns() {
+        // R47-E pin for F11: every spawn's exe path is
+        // distinct, even for the same base name in the
+        // same dir — the property the bare-name copy
+        // lacked. A renamed base keeps its R32-E F9
+        // property too: no "openbulletin" substring.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r47e-peer-nonce-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let mut paths = Vec::new();
+        let mut peers = Vec::new();
+        for _ in 0..8 {
+            let peer = spawn_live_peer_named(&dir, "bulletin");
+            assert!(peer.exe_path().exists(), "each spawn's exe copy exists");
+            let file_name = peer
+                .exe_path()
+                .file_name()
+                .expect("peer exe has a file name")
+                .to_str()
+                .expect("peer exe file name is UTF-8")
+                .to_string();
+            assert!(
+                file_name.starts_with("bulletin-"),
+                "the nonce follows the base name: {file_name}"
+            );
+            assert!(
+                !file_name.contains("openbulletin"),
+                "a renamed base stays renamed after noncing: {file_name}"
+            );
+            paths.push(peer.exe_path().to_path_buf());
+            peers.push(peer);
+        }
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths.len(), 8, "all eight spawn paths are distinct");
+        for peer in &mut peers {
+            let _ = peer.kill();
+            let _ = peer.wait();
+        }
+        drop(peers);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r47e_dropped_peer_is_reaped_without_explicit_kill() {
+        // R47-E pin for F11: a peer dropped without any
+        // explicit kill or wait — the panic path, where
+        // a plain `Child` would leave its `sleep 30`
+        // running — is gone by the time the scope ends.
+        let dir =
+            std::env::temp_dir().join(format!("ob-app-r47e-peer-drop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let peer_pid = {
+            let peer = spawn_live_peer(&dir);
+            peer.id()
+        };
+        assert!(
+            peer_provably_gone(peer_pid),
+            "a dropped peer is reaped, not orphaned"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(unix)]
@@ -9791,7 +9934,7 @@ mod settings_tests {
         // two winners in 3 of 30 rounds in one run (the
         // two-read judgment of F1, composed).
         let round_count = 30;
-        let mut claimants: Vec<std::process::Child> = (0..4)
+        let mut claimants: Vec<LivePeer> = (0..4)
             .map(|i| {
                 let dir = std::env::temp_dir()
                     .join(format!("ob-app-r42e-race-peer-{}-{i}", std::process::id()));

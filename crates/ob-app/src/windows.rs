@@ -8526,7 +8526,9 @@ impl App {
         self.key_capture = None;
         if let Err(e) = save_settings(&self.settings) {
             self.fail(format!(
-                "Your key was set, but the settings could not be saved. ({e})"
+                "Your key was set, but the settings could not be saved. ({e}) \
+                 Your new key works for this session but will not be kept \
+                 when you close the app; set it again to try saving it."
             ));
         }
     }
@@ -8563,7 +8565,11 @@ impl App {
                             self.settings.keymap.clear();
                             self.key_capture = None;
                             if let Err(e) = save_settings(&self.settings) {
-                                self.fail(format!("Settings could not be saved. ({e})"));
+                                self.fail(format!(
+                                    "Settings could not be saved. ({e}) \
+                                     Your change stays for now but will not be kept \
+                                     when you close the app; try it again."
+                                ));
                             }
                         }
                     }
@@ -8600,7 +8606,11 @@ impl App {
                     self.settings.keymap.clear();
                     self.key_capture = None;
                     if let Err(e) = save_settings(&self.settings) {
-                        self.fail(format!("Settings could not be saved. ({e})"));
+                        self.fail(format!(
+                            "Settings could not be saved. ({e}) \
+                             Your change stays for now but will not be kept \
+                             when you close the app; try it again."
+                        ));
                     }
                 }
             });
@@ -8614,7 +8624,11 @@ impl App {
         self.theme = Theme::for_settings(&self.settings);
         ctx.set_style(app_style(&self.settings));
         if let Err(e) = save_settings(&self.settings) {
-            self.fail(format!("Settings could not be saved. ({e})"));
+            self.fail(format!(
+                "Settings could not be saved. ({e}) \
+                 Your change stays for now but will not be kept \
+                 when you close the app; try it again."
+            ));
         }
         ctx.request_repaint();
     }

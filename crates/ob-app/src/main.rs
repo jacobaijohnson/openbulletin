@@ -2408,7 +2408,7 @@ impl eframe::App for App {
                                 ui.label(&n.text);
                             }
                             if let Some(step) = n.step {
-                                if ui.button("Fix this").clicked() {
+                                if ui.button(format!("Fix this in step {}", step + 1)).clicked() {
                                     self.goto_step(step);
                                 }
                             }
@@ -2428,14 +2428,14 @@ impl eframe::App for App {
                                 }
                             }
                             if let Some((pi, fi)) = n.target {
-                                if ui.button("Fix this").clicked() {
+                                if ui.button("Fix this in the Pages window").clicked() {
                                     self.open_pages_at(pi, fi);
                                 }
                             }
-                            if n.fonts && ui.button("Fix this").clicked() {
+                            if n.fonts && ui.button("Fix this in the Fonts window").clicked() {
                                 self.show_fonts = true;
                             }
-                            if n.inserts && ui.button("Fix this").clicked() {
+                            if n.inserts && ui.button("Fix this in the Loose sheets window").clicked() {
                                 self.show_inserts = true;
                             }
                         }

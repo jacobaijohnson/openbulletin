@@ -6043,6 +6043,12 @@ mod settings_tests {
             title: "Harvest supper".into(),
             credit_text: "Photo by Jane Doe".into(),
             children_present: Some(true),
+            // Round 51 (G-01): a credit line no longer
+            // unlocks a children picture on the web page.
+            // The bulletin records the distinct child-web
+            // permission, so the composed record rides and
+            // this test still proves the fill + credits.
+            child_web_permission: Some(true),
             ..Default::default()
         };
         let in_sheet = ob_model::RightsRecord {

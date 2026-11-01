@@ -3880,14 +3880,24 @@ fn instance_claim_serialization_temp_path(lock: &std::path::Path) -> std::path::
 }
 
 /// The text a claim file carries: its owner's real
-/// process id on the first line and a per-acquisition
-/// nonce on the second, so the guard's release removes
-/// only a file this acquisition created.
+/// process id on the first line and, on the second,
+/// this launch's instance token plus a per-acquisition
+/// nonce, so the guard's release removes only a file
+/// this acquisition created. The token is the part the
+/// nonce alone could not supply (R51-RED-1): a nonce
+/// restarts at 0 in every fresh process, so a recycled
+/// pid on its first acquisition reproduced an earlier
+/// process's text byte for byte, and the content check
+/// then matched a successor's live file. A file from a
+/// different launch always differs in the token,
+/// whatever the pid and nonce; a file from a different
+/// acquisition in the same launch differs in the nonce.
 fn instance_claim_serialization_owner_text() -> String {
     static CLAIM_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = CLAIM_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let pid = std::process::id();
-    format!("{pid}\n{pid}-{nonce}\n")
+    let token = instance_token();
+    format!("{pid}\n{token}-{nonce}\n")
 }
 
 /// Take the cross-process half of the claim guard: link
@@ -3908,9 +3918,12 @@ fn instance_claim_serialization_owner_text() -> String {
 /// the owner the caller just judged provably gone.
 /// Full-text comparison, the same semantics as the
 /// guard's `Drop`: the owner text carries the pid on
-/// the first line and a per-acquisition nonce on the
-/// second, so a same-pid file from a different
-/// acquisition (or a recycled pid) does not match.
+/// the first line and this launch's instance token plus
+/// a per-acquisition nonce on the second (R51-RED-1),
+/// so a file from a different launch does not match
+/// even when the pid is recycled and the nonce aligns,
+/// and a file from a different acquisition in the same
+/// launch does not match either.
 enum StaleClaimFileRemoval {
     /// The file still named the judged owner and was removed.
     Removed,
@@ -11402,9 +11415,11 @@ mod settings_tests {
         // changed hands standing byte for byte, and
         // reports a vanished file without removing
         // anything. Full-text comparison (pid line +
-        // nonce line), the guard's `Drop` semantics: a
-        // same-pid file from a different acquisition
-        // does not match.
+        // token-nonce line, R51-RED-1), the guard's
+        // `Drop` semantics: a file from a different
+        // launch or a different acquisition does not
+        // match, even when the pid is recycled and the
+        // nonce aligns.
         let dir =
             std::env::temp_dir().join(format!("ob-app-r50a-claim-removal-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
@@ -11458,6 +11473,115 @@ mod settings_tests {
             ),
             "a vanished file reports Vanished"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn r51b_recycled_pid_successor_survives_a_stale_steal() {
+        // R51-RED-1 pin, through the production path: the
+        // walked content-collision steal can no longer
+        // end in two claim sequences. A (a crashed
+        // predecessor) left bytes its successor C would
+        // reproduce exactly under the old pid-plus-nonce
+        // text; B judged A's file, D stole it through
+        // the production helper, C acquired through the
+        // production guard, and B's resumed helper call
+        // must spare C's live file. The nonce alignment
+        // is arranged, not assumed: the next nonce is
+        // read off one production owner text, because
+        // this test process's counter is already
+        // advanced past 0, but the collision class is
+        // the walked one (same pid, same nonce, no
+        // launch token). Pre-fix this test fails at the
+        // live-file inequality below: C's production
+        // text equals A's judged bytes, so the helper
+        // would remove it. Post-fix C's text carries
+        // this launch's instance token and differs, and
+        // the token-carry asserts at the end pin that
+        // format directly.
+        let pid = std::process::id();
+        let pid_string = pid.to_string();
+        let token_prefix = format!("{}-", instance_token());
+        let dir = std::env::temp_dir().join(format!("ob-app-r51b-claim-token-{pid}"));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let lock = dir.join("openbulletin.lock");
+        let claim = instance_claim_serialization_path(&lock);
+        let owner = instance_claim_serialization_owner_text();
+        let mut owner_lines = owner.lines();
+        assert_eq!(
+            owner_lines.next(),
+            Some(pid_string.as_str()),
+            "the claim file's first line is the owner's pid"
+        );
+        let second = owner_lines
+            .next()
+            .expect("the claim text has a second line");
+        let next_nonce = second
+            .rsplit('-')
+            .next()
+            .and_then(|n| n.parse::<u64>().ok())
+            .expect("the claim text's second line ends in a nonce")
+            + 1;
+        let a_text = format!("{pid}\n{pid}-{next_nonce}\n");
+        std::fs::write(&claim, &a_text).expect("plant A's claim file");
+        assert!(
+            matches!(
+                remove_stale_instance_claim_file_if_unchanged(&claim, &a_text),
+                StaleClaimFileRemoval::Removed
+            ),
+            "D's production steal removes A's judged file"
+        );
+        assert!(!claim.exists(), "the claim path is vacant after D's steal");
+        let guard = acquire_instance_claim_guard(&lock).expect("C acquires the vacant claim");
+        let c_text = std::fs::read_to_string(&claim).expect("read C's live claim file");
+        assert_ne!(
+            c_text, a_text,
+            "C's live file differs from A's judged bytes"
+        );
+        assert!(
+            matches!(
+                remove_stale_instance_claim_file_if_unchanged(&claim, &a_text),
+                StaleClaimFileRemoval::ChangedHands
+            ),
+            "B's resumed steal spares C's live file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&claim).expect("read C's live claim file again"),
+            c_text,
+            "C's live file stands byte for byte after B's resumed steal"
+        );
+        // Drop-path corollary (same root cause): a stale
+        // holder's `Drop`, carrying an earlier launch's
+        // bytes, must spare C's live file. A single test
+        // process cannot produce a second launch's guard
+        // through acquire, so the stale guard object is
+        // built with A's bytes while the `Drop` itself
+        // is production code. Pre-fix A's bytes equal
+        // C's live bytes and the drop removes them.
+        let stale = InstanceClaimGuard {
+            claim_path: Some(claim.clone()),
+            owner_text: Some(a_text),
+            mutex_guard: None,
+        };
+        drop(stale);
+        assert_eq!(
+            std::fs::read_to_string(&claim).expect("read C's live claim file after the stale drop"),
+            c_text,
+            "a stale holder's Drop spares C's live file"
+        );
+        assert!(
+            second.starts_with(token_prefix.as_str()),
+            "the claim text's second line carries this launch's instance token (found {second})"
+        );
+        assert!(
+            c_text
+                .lines()
+                .nth(1)
+                .is_some_and(|line| line.starts_with(token_prefix.as_str())),
+            "C's live file carries this launch's instance token"
+        );
+        drop(guard);
+        std::fs::remove_file(&claim).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 

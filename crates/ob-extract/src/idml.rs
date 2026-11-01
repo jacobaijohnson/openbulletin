@@ -55,13 +55,50 @@ impl Node {
 /// also bounds every per-range rescan by depth x nodes.
 const MAX_XML_DEPTH: usize = 256;
 
-/// The words marking the depth refusal, so story reading
-/// can pass it up whole instead of treating the file as
-/// damaged and quietly empty (audit Batch 1): a refused
-/// story must refuse the import, never vanish from it.
-const TOO_DEEP: &str = "nested too deeply to read safely";
+/// How reading one IDML part's XML can refuse (HF-12
+/// second half, round 48 R48-C, IDML half): the part is
+/// nested too deeply to read safely, or the part's XML
+/// is damaged, carrying the parser's own error whole.
+/// The typed core of the parse_xml surface; its
+/// `Display` renders byte-for-byte the plain words
+/// parse_xml has always spoken, so every boundary
+/// that still speaks `String` hears the same
+/// sentences it heard before the slice. Story reading
+/// branches on the variant, never on a substring of
+/// the rendered words: a refused story must refuse
+/// the import, never vanish from it (audit Batch 1).
+#[derive(Debug)]
+pub(crate) enum IdmlXmlError {
+    /// The XML nests past MAX_XML_DEPTH.
+    TooDeep,
+    /// The XML does not parse; the parser's own
+    /// error is carried whole.
+    Damaged(quick_xml::Error),
+}
 
-fn parse_xml(text: &str) -> Result<Node, String> {
+impl std::fmt::Display for IdmlXmlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IdmlXmlError::TooDeep => write!(
+                f,
+                "that IDML file's XML is nested too deeply to read safely"
+            ),
+            IdmlXmlError::Damaged(e) => {
+                write!(f, "that IDML file's XML is damaged: {e}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IdmlXmlError {}
+
+impl From<IdmlXmlError> for String {
+    fn from(err: IdmlXmlError) -> String {
+        err.to_string()
+    }
+}
+
+fn parse_xml(text: &str) -> Result<Node, IdmlXmlError> {
     let mut reader = Reader::from_str(text);
     reader.config_mut().trim_text(false);
     let mut stack: Vec<Node> = vec![Node::default()];
@@ -70,7 +107,7 @@ fn parse_xml(text: &str) -> Result<Node, String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 if stack.len() > MAX_XML_DEPTH {
-                    return Err(format!("that IDML file's XML is {TOO_DEEP}"));
+                    return Err(IdmlXmlError::TooDeep);
                 }
                 let mut node = Node {
                     tag: String::from_utf8_lossy(e.name().as_ref()).into_owned(),
@@ -112,7 +149,7 @@ fn parse_xml(text: &str) -> Result<Node, String> {
                 }
             }
             Ok(Event::Eof) => break,
-            Err(e) => return Err(format!("that IDML file's XML is damaged: {e}")),
+            Err(e) => return Err(IdmlXmlError::Damaged(e)),
             _ => {}
         }
         buf.clear();
@@ -248,7 +285,7 @@ fn finish_paragraph(
     });
 }
 
-fn story_paragraphs(story_xml: &str) -> Result<Vec<ParaText>, String> {
+fn story_paragraphs(story_xml: &str) -> Result<Vec<ParaText>, IdmlXmlError> {
     let mut out = Vec::new();
     let root = match parse_xml(story_xml) {
         Ok(root) => root,
@@ -257,8 +294,11 @@ fn story_paragraphs(story_xml: &str) -> Result<Vec<ParaText>, String> {
         // words would hand the office an empty draft and
         // call it a rescue. Any other damage keeps the
         // long-standing behavior: that story reads empty.
-        Err(e) if e.contains(TOO_DEEP) => return Err(e),
-        Err(_) => return Ok(out),
+        // The branch is on the typed variant (round 48
+        // R48-C), never on a substring of the rendered
+        // words, so no wording change can ever flip it.
+        Err(IdmlXmlError::TooDeep) => return Err(IdmlXmlError::TooDeep),
+        Err(IdmlXmlError::Damaged(_)) => return Ok(out),
     };
     let mut ranges = Vec::new();
     root.find_all("ParagraphStyleRange", &mut ranges);
@@ -3043,6 +3083,73 @@ mod tests {
         story.push_str("</ParagraphStyleRange></Story>");
         let err = dump_from_idml(&idml_with_story(&story), "deep.idml").expect_err("refused");
         assert!(err.contains("nested too deeply"), "{err}");
+    }
+
+    #[test]
+    fn r48c_story_paragraphs_takes_too_deep_on_the_typed_variant() {
+        // Round 48 R48-C: the retired branch matched a
+        // substring of the rendered words; this pin
+        // matches the variant. A story nested past the
+        // cap refuses on IdmlXmlError::TooDeep, and the
+        // words it renders at the dump boundary are
+        // byte-for-byte the sentence the old branch
+        // passed up whole.
+        let mut story = String::from(
+            r#"<?xml version="1.0"?><Story><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Body">"#,
+        );
+        for _ in 0..2_000 {
+            story.push_str("<CharacterStyleRange>");
+        }
+        story.push_str("<Content>deep words</Content>");
+        for _ in 0..2_000 {
+            story.push_str("</CharacterStyleRange>");
+        }
+        story.push_str("</ParagraphStyleRange></Story>");
+        let err = match story_paragraphs(&story) {
+            Ok(_) => panic!("a too-deep story refuses"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, IdmlXmlError::TooDeep),
+            "the branch is the variant, not the words: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "that IDML file's XML is nested too deeply to read safely"
+        );
+        let dump_err = dump_from_idml(&idml_with_story(&story), "deep.idml").expect_err("refused");
+        assert_eq!(
+            dump_err, "that IDML file's XML is nested too deeply to read safely",
+            "the dump boundary hears the same sentence, byte for byte"
+        );
+    }
+
+    #[test]
+    fn r48c_story_paragraphs_damaged_story_reads_empty_not_refused() {
+        // Round 48 R48-C, the non-TOO_DEEP path: damage
+        // that is not depth keeps the long-standing
+        // behavior — the story reads empty and the
+        // import loads, instead of refusing. The
+        // mismatched close tag is the parser's own
+        // Damaged variant, rendered in the old damaged
+        // words.
+        let story = r#"<?xml version="1.0"?><Story><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Body"><CharacterStyleRange FontStyle="Regular"><Content>words</CharacterStyleRange></ParagraphStyleRange></Story>"#;
+        let err = parse_xml(story).expect_err("mismatched tags do not parse");
+        let rendered = err.to_string();
+        assert!(
+            matches!(err, IdmlXmlError::Damaged(_)),
+            "damage is its own variant: {err:?}"
+        );
+        assert!(
+            rendered.starts_with("that IDML file's XML is damaged: "),
+            "{rendered}"
+        );
+        let paras = story_paragraphs(story).expect("a damaged story reads, empty");
+        assert!(paras.is_empty(), "no words from a damaged story");
+        let dump = dump_from_idml(&idml_with_story(story), "damaged.idml")
+            .expect("a damaged story does not refuse the import");
+        assert!(dump.spans.is_empty(), "no spans from the damaged story");
+        assert_eq!(dump.pages.len(), 1, "the page itself still lands");
     }
 
     /// The round-41 crafts (red team RT41-A +

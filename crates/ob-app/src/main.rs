@@ -2527,8 +2527,12 @@ impl eframe::App for App {
                                 &mut self.export_image_cache,
                             );
                             let path = std::env::temp_dir().join(format!(
-                                "openbulletin-print-copy-{}.pdf",
-                                std::process::id()
+                                "openbulletin-print-copy-{}-{}.pdf",
+                                std::process::id(),
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_nanos())
+                                    .unwrap_or(0)
                             ));
                             match write_file_atomically(&path, &bytes).map_err(|e| e.to_string()).and_then(|_| open_with_os(&path)) {
                                 Ok(()) => {
@@ -5182,6 +5186,54 @@ fn collection_result_sentence(name: &str, report: &ob_clips::AddReport) -> Strin
     out
 }
 
+/// The file-name component of a caller-supplied name, for
+/// joining into a scratch folder (round 47, F9): the last
+/// segment after a `/` or `\`, so a name carrying a path
+/// separator cannot escape the folder it is joined into.
+/// Empty results — an empty name, a trailing separator,
+/// `.` or `..` — are refused, not silently replaced: the
+/// caller must say plainly that the piece was left out,
+/// never convert a differently-named file in its place.
+fn scratch_file_name(name: &str) -> Option<String> {
+    let tail = name.rsplit(['/', '\\']).next().unwrap_or("");
+    if tail.is_empty() || tail == "." || tail == ".." {
+        None
+    } else {
+        Some(tail.to_string())
+    }
+}
+
+/// A fresh scratch folder under the system temp dir
+/// (round 47, F10): process id plus a timestamp nonce plus
+/// a per-process counter, so the path is not predictable
+/// from the process id alone, and created EXCLUSIVELY —
+/// `create_dir`, never `create_dir_all` — so a
+/// pre-planted directory or symlink at the path is
+/// refused (already-exists, retried with a fresh nonce)
+/// rather than written through. `None` after a bounded
+/// number of tries means the caller says plainly that
+/// the work could not start.
+pub(crate) fn fresh_scratch_dir(prefix: &str) -> Option<std::path::PathBuf> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    for _ in 0..32 {
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "openbulletin-{prefix}-{}-{}-{unique}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Some(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 /// The WMF/EMF converter for the clip library (G2): when a
 /// user-installed LibreOffice is on this computer (found
 /// the same way the .pub bridge finds it), each old Windows
@@ -5192,21 +5244,19 @@ fn collection_result_sentence(name: &str, report: &ob_clips::AddReport) -> Strin
 fn wmf_converter() -> Option<Box<ob_clips::MetafileConverter>> {
     let soffice = ob_extract::pub_bridge::find_soffice()?;
     Some(Box::new(move |name: &str, bytes: &[u8]| {
-        let dir = std::env::temp_dir().join(format!(
-            "openbulletin-wmf-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir).ok()?;
-        let input = dir.join(name);
+        // F9: the name is reduced to its file-name
+        // component before the join, and an empty
+        // result refuses the conversion outright
+        // (the piece is then counted as left out,
+        // never converted under another name).
+        let safe = scratch_file_name(name)?;
+        let dir = fresh_scratch_dir("wmf")?;
+        let input = dir.join(&safe);
         std::fs::write(&input, bytes).ok()?;
-        let stem = name
+        let stem = safe
             .rsplit_once('.')
             .map(|(s, _)| s.to_string())
-            .unwrap_or_else(|| name.to_string());
+            .unwrap_or_else(|| safe.clone());
         let output = dir.join(format!("{stem}.png"));
         // The 30 s bound the PROCESS, not only the wait
         // (round 2, R2-3): past it the converter is killed
@@ -16609,5 +16659,52 @@ Prelude is at 9:25 this week.
         doc.profile.serving_lines = vec!["Candle lighters".to_string()];
         doc.set_participant_value("Candle lighters", "Rae");
         assert_eq!(participant_values(&doc), vec!["Rae".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod r47d_tests {
+    use super::*;
+
+    #[test]
+    fn scratch_file_name_reduces_to_the_last_segment_and_refuses_escapes() {
+        // Ordinary names pass through untouched.
+        assert_eq!(scratch_file_name("hymn.wmf"), Some("hymn.wmf".to_string()));
+        assert_eq!(scratch_file_name("pic.emf"), Some("pic.emf".to_string()));
+        // A separator anywhere reduces to the last segment.
+        assert_eq!(scratch_file_name("a/b/c.wmf"), Some("c.wmf".to_string()));
+        assert_eq!(
+            scratch_file_name("..\\..\\evil.wmf"),
+            Some("evil.wmf".to_string())
+        );
+        assert_eq!(
+            scratch_file_name("/abs/path.wmf"),
+            Some("path.wmf".to_string())
+        );
+        // Empty results are refused, never substituted.
+        assert_eq!(scratch_file_name(""), None);
+        assert_eq!(scratch_file_name("a/b/"), None);
+        assert_eq!(scratch_file_name("."), None);
+        assert_eq!(scratch_file_name(".."), None);
+        assert_eq!(scratch_file_name("a/.."), None);
+    }
+
+    #[test]
+    fn fresh_scratch_dirs_are_distinct_existing_real_directories() {
+        let first = fresh_scratch_dir("r47d-test").expect("first fresh dir");
+        let second = fresh_scratch_dir("r47d-test").expect("second fresh dir");
+        assert_ne!(first, second, "two fresh dirs never share a path");
+        for dir in [&first, &second] {
+            assert!(dir.is_dir(), "{dir:?} exists as a directory");
+            // Created by us, not followed: a planted
+            // symlink at the path would fail create_dir
+            // instead of landing here.
+            let kind = std::fs::symlink_metadata(dir)
+                .expect("metadata")
+                .file_type();
+            assert!(!kind.is_symlink(), "{dir:?} is a real directory");
+        }
+        let _ = std::fs::remove_dir_all(&first);
+        let _ = std::fs::remove_dir_all(&second);
     }
 }

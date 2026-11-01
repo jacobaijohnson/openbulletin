@@ -6394,9 +6394,14 @@ impl App {
                 // helper starts.
                 ob_extract::check_open_door_size(&pdf)?;
                 let helper = ob_extract::helper::resolve_helper(None);
-                let workdir = std::env::temp_dir()
-                    .join(format!("openbulletin-import-{}", std::process::id()));
-                let _ = std::fs::remove_dir_all(&workdir);
+                // F10: a fresh nonce dir, created
+                // exclusively — never the old predictable
+                // pid-only path, and no remove of a
+                // previous import's folder (that folder
+                // may still be another draft's asset base).
+                let workdir = fresh_scratch_dir("import").ok_or_else(|| {
+                    "The import could not make a scratch folder. Try the import again.".to_string()
+                })?;
                 // Schema v2: the pictures inside the PDF ride
                 // along into the draft's asset store.
                 let pictures_dir = workdir.join("pictures");
@@ -6554,9 +6559,9 @@ impl App {
                          a PDF; then open that PDF here with \"Open an old bulletin...\"."
                         .into());
                 };
-                let workdir = std::env::temp_dir()
-                    .join(format!("openbulletin-import-{}", std::process::id()));
-                let _ = std::fs::remove_dir_all(&workdir);
+                let workdir = fresh_scratch_dir("import").ok_or_else(|| {
+                    "The import could not make a scratch folder. Try the import again.".to_string()
+                })?;
                 let pdf = ob_extract::pub_bridge::convert_pub_to_pdf(&soffice, &path, &workdir)?;
                 let helper = ob_extract::helper::resolve_helper(None);
                 let pictures_dir = workdir.join("pictures");
@@ -7774,9 +7779,12 @@ impl App {
             let result = (|| -> Result<AnalyzerReview, String> {
                 use ob_extract::learn::LearnKind;
                 let helper = ob_extract::helper::resolve_helper(None);
-                let workdir = std::env::temp_dir()
-                    .join(format!("openbulletin-template-{}", std::process::id()));
-                let _ = std::fs::remove_dir_all(&workdir);
+                // F10: a fresh nonce dir, created
+                // exclusively — never the old predictable
+                // pid-only path.
+                let workdir = fresh_scratch_dir("template").ok_or_else(|| {
+                    "The template study could not make a scratch folder. Try it again.".to_string()
+                })?;
                 let soffice = ob_extract::pub_bridge::find_soffice();
                 // Each read bulletin: its dump, plus the PDF it
                 // can be pictured from, when it has one.

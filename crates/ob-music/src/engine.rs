@@ -307,9 +307,34 @@ struct Scratch {
 
 impl Scratch {
     fn new() -> Result<Scratch, String> {
-        let dir = std::env::temp_dir().join(format!("openbulletin-verovio-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make a scratch folder ({e})"))?;
-        Ok(Scratch { dir })
+        // Round 47, F10: the old pid-only path was
+        // predictable and created with create_dir_all,
+        // so a pre-planted directory or symlink at it
+        // would be written through. The new path adds
+        // a timestamp nonce plus a per-process counter
+        // and is created EXCLUSIVELY; an already-exists
+        // answer is retried with a fresh nonce rather
+        // than followed. The names written into it
+        // ("score.musicxml", "driver.py") are fixed
+        // internal constants, never caller-supplied.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        for _ in 0..32 {
+            let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "openbulletin-verovio-{}-{}-{unique}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return Ok(Scratch { dir }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(format!("cannot make a scratch folder ({e})")),
+            }
+        }
+        Err("cannot make a scratch folder (too many tries)".to_string())
     }
     fn write(&self, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
         let path = self.dir.join(name);
@@ -612,5 +637,28 @@ mod tests {
         });
         assert_eq!(resp.protocol, PROTOCOL);
         assert!(resp.ok || resp.kind.as_deref() == Some("unavailable"));
+    }
+}
+
+#[cfg(test)]
+mod r47d_tests {
+    use super::*;
+
+    #[test]
+    fn scratch_folders_are_distinct_and_removed_on_drop() {
+        let first = Scratch::new().expect("first scratch");
+        let second = Scratch::new().expect("second scratch");
+        assert_ne!(
+            first.dir, second.dir,
+            "two scratch folders never share a path"
+        );
+        assert!(first.dir.is_dir());
+        assert!(second.dir.is_dir());
+        let first_path = first.dir.clone();
+        let second_path = second.dir.clone();
+        drop(first);
+        drop(second);
+        assert!(!first_path.exists(), "drop removes the first folder");
+        assert!(!second_path.exists(), "drop removes the second folder");
     }
 }

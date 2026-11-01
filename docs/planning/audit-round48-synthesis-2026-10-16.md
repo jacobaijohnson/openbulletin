@@ -319,6 +319,64 @@ No process was signalled, killed, or assumed dead on appearance.
   check the edit on screen and in print). Neither is a blocker on code
   merits; neither is claimable until the walk/check happens.
 
-## Round 48 close (to be appended by the fix-phase coordinator)
+## Round 48 close (fix-phase coordinator)
 
-[Pending fix phase.]
+- Final code tip `0a1d76e`, suite **1352 passed / 0 failed**
+  (1348 baseline + 2 R48-B tests + 2 R48-C tests). Batches, each
+  verified firsthand from disk and the gh API before the next was
+  dispatched: R48-A `8d6172b` (F11 probe + bounded retry mitigation),
+  R48-B `0526d38` (wording: R1+R2+R3+glossary line), R48-C `0a1d76e`
+  (HF-12 IDML half, landed whole). Batch records at
+  `~/workspace/openbulletin-audit-wave3/round48-out/coord/r48{a,b,c}-record.md`
+  (that directory is not inside any git repository, so the records
+  are delivered alongside the commits, not committed — same as
+  rounds 47–48 lane records).
+- **Legs on the final tip, verified firsthand by the coordinator:**
+  hosted CI run `41298381406`, ALL THREE OS legs green, attempt 1
+  each (Ubuntu job `124823974843`, macOS `124823974993`, Windows
+  `124823975011`); Desktop Runner Build `41298381408`, success;
+  Windows bundle `41303485462` (dispatched at the close), gate +
+  bundle jobs green. No hosted flake event on the final tip.
+- Fuzz-as-claims (coordinator close run, logs in
+  `round48-out/coord/close-logs/`): bin sources md5-unchanged from
+  the standing values; all four bins exit 0, stderrs 0 bytes;
+  byte-identical — verdict `797758443d101f9339fdd778e14af430`
+  (16 stdout lines), composition `e8b2e73b117c7013d867419da8fb0ab7`
+  (87 lines), rights `327cef3c7954c6f7950ed405a289e44b` and
+  `8e7c11b4e241336f53f4e2030a705d66`; counters exact
+  (total_lines=40000, D_TOTAL=497024, rights 5083 / 1024 / 5275,
+  safety_flips=0). The 40,000 / 497,024 figures are the bins'
+  INTERNAL CASE COUNTS, not stdout lines.
+- Booklet baseline (coordinator close run): exact, 31,717 imposed /
+  34,977 reader, exit 0.
+- VM suite: R48-C's pre-close smoke run `suite2.log`, 1352/0 over 30
+  bins, reported as a smoke run only, never cited as a leg.
+  Disclosure carried from the R48-C record: the smoke re-run was
+  launched via nohup without a `.status` capture, so cargo's numeric
+  exit code for suite2 was not recorded; completion is evidenced by
+  the log reaching the final doc-tests bin, zero failure lines, and
+  the 1352/0 tally matching hosted Ubuntu exactly. The close stands
+  on the hosted legs, so this does not affect the verdict.
+- **F11 STAYS OPEN — and so the exit bar is NOT met.**
+  The Ubuntu leg went green on the R48-A tip (`8d6172b`) and stayed
+  green through R48-C, but green on a retry landing is not a closure:
+  the retry is mitigation, validated by 11/11 trios green WITH 6
+  quoted absorbed-transient lines, and the probe verdict (ETXTBSY
+  disappears under full copy+spawn serialization, 11/11) moves the
+  hunt to the copy path itself. The mechanism is still unnamed, so
+  F11 remains the round's open BLOCKER and the Tier-2 final gate is
+  NOT triggered.
+- Cache-policy disposition at this confirmed completion: disk 50% /
+  76 GB free — far under both thresholds — so CARRY, no clean
+  triggered. (Round-47 close: 47% / 80 GB.)
+- Disk-ritual note: round48-out + round47-out kept; round46-out
+  becomes sweep-eligible at this boundary — eligibility only,
+  deletion waits for Jacob's approved list.
+- **Carried to round 49:** F11 (copy-path hunt: copy_file_range /
+  reflink behavior under concurrency, or its successor check);
+  R48-R4 (clamp-panic class, pending a crafted-file pin); R47-F
+  monolith extraction (deferred; corrected framing: production
+  main.rs ~5.4k lines, windows.rs the bigger production file);
+  R47-B keyboard walk and H1 live check (both need a GUI run or a
+  human; neither a blocker on code merits, neither claimable until
+  it happens).

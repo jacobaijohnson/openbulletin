@@ -4131,6 +4131,63 @@ impl App {
         self.show_inserts = open;
     }
 
+    /// Apply the four exact-place-and-size fields in
+    /// `frame_input` to one box (R47-B, F6 narrowed): the
+    /// one code path behind both the right-click frame
+    /// menu's Set button and the Pages window's keyboard
+    /// place/size editor, so the two cannot drift apart.
+    /// A music box takes place only, never size (M1).
+    /// Returns true when the fields all read as
+    /// measurements; on false nothing changed and the
+    /// status says so in plain words. Callers in a menu
+    /// close it only on true.
+    pub(crate) fn apply_frame_place_size(&mut self, idx: usize, fi: usize) -> bool {
+        let panel_size = self.doc.panels[idx].size;
+        let is_music = self.doc.panels[idx]
+            .frames
+            .get(fi)
+            .map(|f| f.music.is_some())
+            .unwrap_or(false);
+        if is_music {
+            let left = ob_model::parse_inches(&self.frame_input[0]);
+            let top = ob_model::parse_inches(&self.frame_input[1]);
+            if let (Some(l), Some(t)) = (left, top) {
+                self.push_undo_now();
+                let fr = &mut self.doc.panels[idx].frames[fi];
+                fr.rect.x = ob_model::inch(l).clamp(0, panel_size.w - fr.rect.w);
+                fr.rect.y = ob_model::inch(t).clamp(0, panel_size.h - fr.rect.h);
+                self.status = "Box moved.".into();
+                true
+            } else {
+                self.status =
+                    "One of those is not a measurement I can read. Try 1.25 or 1 1/4.".into();
+                false
+            }
+        } else {
+            let parsed: Vec<Option<f64>> = self
+                .frame_input
+                .iter()
+                .map(|t| ob_model::parse_inches(t))
+                .collect();
+            if parsed.iter().all(|v| v.is_some()) {
+                let v: Vec<ob_model::Mpt> =
+                    parsed.iter().map(|o| ob_model::inch(o.unwrap())).collect();
+                self.push_undo_now();
+                let fr = &mut self.doc.panels[idx].frames[fi];
+                fr.rect.w = v[2].clamp(18_000, panel_size.w);
+                fr.rect.h = v[3].clamp(18_000, panel_size.h);
+                fr.rect.x = v[0].clamp(0, panel_size.w - fr.rect.w);
+                fr.rect.y = v[1].clamp(0, panel_size.h - fr.rect.h);
+                self.status = "Box moved and sized.".into();
+                true
+            } else {
+                self.status =
+                    "One of those is not a measurement I can read. Try 1.25 or 1 1/4.".into();
+                false
+            }
+        }
+    }
+
     pub(crate) fn pages_window(&mut self, ctx: &egui::Context) {
         if !self.show_pages {
             return;
@@ -4233,11 +4290,11 @@ impl App {
                         }
                     }
                 });
-                ui.label("Click a box to select it, then drag to move it. Drag the corner square to size it.");
+                ui.label("Click a box to select it, then drag to move it. Drag the corner square, or hold Alt and use the arrow keys, to size it.");
                 ui.label("Double-click a box to type in it. Arrow keys nudge a selected box.");
                 ui.label("A filled picture box that is already selected: drag inside it to move the picture within its box; double-click to center the picture again.");
-                ui.label("Right-click anything for its exact place in inches. The blue guides never print.");
-                ui.small("Keys: Tab moves to the next box, Enter types in it, arrows move a box (Shift for bigger steps), Ctrl+C and Ctrl+V copy a box, Ctrl+Z undoes.");
+                ui.label("Right-click anything, or use the exact place and size for the selected box below, for its exact place in inches. The blue guides never print.");
+                ui.small("Keys: Tab moves to the next box, Enter types in it, arrows move a box (Shift for bigger steps), Alt+arrows size a box, Ctrl+C and Ctrl+V copy a box, Ctrl+Z undoes.");
                 // Threading (T1): the selected text box can
                 // continue into another box, and a box in a
                 // thread can start its own text. The info line
@@ -4306,6 +4363,63 @@ impl App {
                              readable, so the box can be moved but not resized.",
                             f.name
                         ));
+                    }
+                }
+                // Keyboard place and size (R47-B, F6
+                // narrowed): the selected box's exact
+                // numbers, without a right-click. These are
+                // the same fields the frame menu offers,
+                // kept in the same `frame_input` store and
+                // synced from the box the same way, so a
+                // keyboard-only user can Tab to them, type
+                // the inches, and press Set. A music box
+                // offers place only, never size (M1).
+                if let Some(fi) = self.selected_frame {
+                    if let Some(f) = self.doc.panels[idx].frames.get(fi).cloned() {
+                        if self.frame_menu_for != Some((fi, f.rect)) {
+                            self.frame_menu_for = Some((fi, f.rect));
+                            self.frame_input = [
+                                format!("{:.3}", ob_model::mpt_to_inches(f.rect.x)),
+                                format!("{:.3}", ob_model::mpt_to_inches(f.rect.y)),
+                                format!("{:.3}", ob_model::mpt_to_inches(f.rect.w)),
+                                format!("{:.3}", ob_model::mpt_to_inches(f.rect.h)),
+                            ];
+                        }
+                        let is_music = f.music.is_some();
+                        ui.label(egui::RichText::new(format!(
+                            "Selected box: {}",
+                            f.name
+                        )).strong());
+                        if is_music {
+                            ui.label("Exact place, in inches:");
+                            for (i, label) in ["Left", "Top"].iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("{label}:"));
+                                    ui.text_edit_singleline(&mut self.frame_input[i]);
+                                });
+                            }
+                            ui.label(
+                                "This is music. Its size keeps the notes readable; \
+                                 it can be moved, not resized.",
+                            );
+                            if ui.button("Set the place").clicked() {
+                                self.apply_frame_place_size(idx, fi);
+                            }
+                        } else {
+                            ui.label("Exact place and size, in inches:");
+                            for (i, label) in ["Left", "Top", "Width", "Height"]
+                                .iter()
+                                .enumerate()
+                            {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("{label}:"));
+                                    ui.text_edit_singleline(&mut self.frame_input[i]);
+                                });
+                            }
+                            if ui.button("Set place and size").clicked() {
+                                self.apply_frame_place_size(idx, fi);
+                            }
+                        }
                     }
                 }
                 if self.discarded_edit.is_some()
@@ -5198,7 +5312,8 @@ impl App {
         }
         // Canvas keys when no text box is being typed in: Tab
         // cycles boxes, Enter types in the selected box, Ctrl+C
-        // and Ctrl+V copy and paste a box, arrows nudge.
+        // and Ctrl+V copy and paste a box, arrows nudge,
+        // Alt+arrows resize.
         let canvas_keys_active = ctx.memory(|m| m.focused()).is_none() && self.editing.is_none();
         if canvas_keys_active {
             let n_frames = self.doc.panels[idx].frames.len();
@@ -5241,8 +5356,10 @@ impl App {
             }
         }
         // Arrow keys nudge the selected frame (Shift: bigger steps),
-        // when no text box is being typed in.
-        if ctx.memory(|m| m.focused()).is_none() {
+        // when no text box is being typed in. Alt held means
+        // resize, not move (see below), so the move does not
+        // fire alongside it.
+        if ctx.memory(|m| m.focused()).is_none() && !ui.input(|i| i.modifiers.alt) {
             if let Some(fi) = self.selected_frame {
                 let step: ob_model::Mpt = if ui.input(|i| i.modifiers.shift) {
                     7_200
@@ -5267,6 +5384,57 @@ impl App {
                     let f = &mut self.doc.panels[idx].frames[fi];
                     f.rect.x = (f.rect.x + dx).clamp(0, panel.size.w - f.rect.w);
                     f.rect.y = (f.rect.y + dy).clamp(0, panel.size.h - f.rect.h);
+                }
+            }
+        }
+        // Alt+arrow keys resize the selected frame (Shift:
+        // bigger steps), when no text box is being typed
+        // in. Alt, not Ctrl: Ctrl+Left and Ctrl+Right are
+        // the previous/next step keys in the keymap, so a
+        // Ctrl resize would both resize and change step.
+        // Like Tab and the plain arrows, this is a canvas
+        // key, not a KEY_ACTIONS entry: it is not
+        // remappable in the Keys window, and it lives
+        // beside the move it mirrors. A music box is never
+        // resized (M1); the status says so in plain words.
+        if ctx.memory(|m| m.focused()).is_none() && ui.input(|i| i.modifiers.alt) {
+            if let Some(fi) = self.selected_frame {
+                let step: ob_model::Mpt = if ui.input(|i| i.modifiers.shift) {
+                    7_200
+                } else {
+                    720
+                };
+                let (mut dw, mut dh): (ob_model::Mpt, ob_model::Mpt) = (0, 0);
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+                    dw = -step;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+                    dw = step;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                    dh = -step;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                    dh = step;
+                }
+                if dw != 0 || dh != 0 {
+                    let is_music = self.doc.panels[idx].frames[fi].music.is_some();
+                    if is_music {
+                        self.status = "This is music: its size keeps the notes \
+                            readable, so the box can be moved but not resized."
+                            .into();
+                    } else {
+                        self.begin_gesture();
+                        let f = &mut self.doc.panels[idx].frames[fi];
+                        f.rect = crate::keyboard_resize_rect(
+                            f.rect,
+                            panel.size.w,
+                            panel.size.h,
+                            dw,
+                            dh,
+                            false,
+                        );
+                    }
                 }
             }
         }
@@ -5690,57 +5858,24 @@ impl App {
                             "This is music. Its size keeps the notes readable; \
                              it can be moved, not resized.",
                         );
-                        if ui.button("Set the place").clicked() {
-                            let left = ob_model::parse_inches(&self.frame_input[0]);
-                            let top = ob_model::parse_inches(&self.frame_input[1]);
-                            if let (Some(l), Some(t)) = (left, top) {
-                                self.push_undo_now();
-                                let fr = &mut self.doc.panels[idx].frames[fi];
-                                fr.rect.x = ob_model::inch(l)
-                                    .clamp(0, panel.size.w - fr.rect.w);
-                                fr.rect.y = ob_model::inch(t)
-                                    .clamp(0, panel.size.h - fr.rect.h);
-                                self.status = "Box moved.".into();
-                                ui.close_menu();
-                            } else {
-                                self.status =
-                                    "One of those is not a measurement I can read. Try 1.25 or 1 1/4."
-                                        .into();
-                            }
+                        if ui.button("Set the place").clicked()
+                            && self.apply_frame_place_size(idx, fi)
+                        {
+                            ui.close_menu();
                         }
                     } else {
-                    ui.label("Exact place and size, in inches:");
-                    for (i, label) in ["Left", "Top", "Width", "Height"].iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("{label}:"));
-                            ui.text_edit_singleline(&mut self.frame_input[i]);
-                        });
-                    }
-                    if ui.button("Set place and size").clicked() {
-                        let parsed: Vec<Option<f64>> = self
-                            .frame_input
-                            .iter()
-                            .map(|t| ob_model::parse_inches(t))
-                            .collect();
-                        if parsed.iter().all(|v| v.is_some()) {
-                            let v: Vec<ob_model::Mpt> = parsed
-                                .iter()
-                                .map(|o| ob_model::inch(o.unwrap()))
-                                .collect();
-                            self.push_undo_now();
-                            let fr = &mut self.doc.panels[idx].frames[fi];
-                            fr.rect.w = v[2].clamp(18_000, panel.size.w);
-                            fr.rect.h = v[3].clamp(18_000, panel.size.h);
-                            fr.rect.x = v[0].clamp(0, panel.size.w - fr.rect.w);
-                            fr.rect.y = v[1].clamp(0, panel.size.h - fr.rect.h);
-                            self.status = "Box moved and sized.".into();
-                            ui.close_menu();
-                        } else {
-                            self.status =
-                                "One of those is not a measurement I can read. Try 1.25 or 1 1/4."
-                                    .into();
+                        ui.label("Exact place and size, in inches:");
+                        for (i, label) in ["Left", "Top", "Width", "Height"].iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{label}:"));
+                                ui.text_edit_singleline(&mut self.frame_input[i]);
+                            });
                         }
-                    }
+                        if ui.button("Set place and size").clicked()
+                            && self.apply_frame_place_size(idx, fi)
+                        {
+                            ui.close_menu();
+                        }
                     }
                     if f.kind == ob_model::FrameKind::Picture && f.music.is_none() {
                         ui.separator();
@@ -5811,15 +5946,9 @@ impl App {
                                     .find(|a| a.sha256 == p.asset)
                                     .and_then(|a| a.rights.children_present);
                                 ui.label(match noted {
-                                    Some(true) => {
-                                        "Children in this picture: yes, noted."
-                                    }
-                                    Some(false) => {
-                                        "Children in this picture: no, noted."
-                                    }
-                                    None => {
-                                        "Children in this picture: not noted yet."
-                                    }
+                                    Some(true) => "Children in this picture: yes, noted.",
+                                    Some(false) => "Children in this picture: no, noted.",
+                                    None => "Children in this picture: not noted yet.",
                                 });
                                 if ui.button("This picture has children in it").clicked() {
                                     self.set_picture_children(idx, fi, true);

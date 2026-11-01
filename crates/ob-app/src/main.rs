@@ -4994,6 +4994,32 @@ fn choose_menu_target(
     }
 }
 
+/// One keyboard resize step (R47-B, F6 narrowed): Alt+arrows
+/// grow or shrink the selected box from its bottom-right
+/// corner, keeping its place. A music box is never resized
+/// (M1): its size is the legibility contract, so it comes
+/// back unchanged. The width and height floors match the
+/// corner-drag floor (18_000 mpt, a quarter inch); the
+/// caller's frame always leaves at least that much room to
+/// the panel edge, as every place and move path guarantees,
+/// so the upper clamp never falls below the floor.
+fn keyboard_resize_rect(
+    rect: ob_model::Rect,
+    panel_w: ob_model::Mpt,
+    panel_h: ob_model::Mpt,
+    dw: ob_model::Mpt,
+    dh: ob_model::Mpt,
+    is_music: bool,
+) -> ob_model::Rect {
+    if is_music {
+        return rect;
+    }
+    let mut out = rect;
+    out.w = (rect.w + dw).clamp(18_000, panel_w - rect.x);
+    out.h = (rect.h + dh).clamp(18_000, panel_h - rect.y);
+    out
+}
+
 /// A dashed rectangle (an empty or lost picture box's
 /// outline): egui has no dashed stroke, so it is drawn as
 /// segments along each edge.
@@ -7484,6 +7510,102 @@ mod settings_tests {
             MenuTarget::Guide(1)
         );
         assert_eq!(choose_menu_target(None, None, None), MenuTarget::Page);
+    }
+
+    #[test]
+    fn keyboard_resize_rect_grows_shrinks_floors_and_keeps_music() {
+        let rect = ob_model::Rect::new(72_000, 72_000, 144_000, 72_000);
+        let panel_w = 612_000;
+        let panel_h = 792_000;
+        let grown = keyboard_resize_rect(rect, panel_w, panel_h, 720, 0, false);
+        assert_eq!(grown.w, 144_720);
+        assert_eq!(grown.h, 72_000);
+        assert_eq!(grown.x, 72_000);
+        let shrunk = keyboard_resize_rect(rect, panel_w, panel_h, 0, -720, false);
+        assert_eq!(shrunk.h, 71_280);
+        let floored = keyboard_resize_rect(
+            ob_model::Rect::new(72_000, 72_000, 18_000, 18_000),
+            panel_w,
+            panel_h,
+            -720,
+            -720,
+            false,
+        );
+        assert_eq!(floored.w, 18_000);
+        assert_eq!(floored.h, 18_000);
+        let edged = keyboard_resize_rect(
+            ob_model::Rect::new(540_000, 72_000, 36_000, 36_000),
+            panel_w,
+            panel_h,
+            72_000,
+            0,
+            false,
+        );
+        assert_eq!(edged.w, 72_000);
+        let music = keyboard_resize_rect(rect, panel_w, panel_h, 720, 720, true);
+        assert_eq!(music, rect);
+    }
+
+    #[test]
+    fn r47b_frame_place_size_applies_undoes_and_refuses_bad_input() {
+        let mut app = App::default();
+        app.add_text_box(0);
+        let fi = app.selected_frame.expect("new box is selected");
+        let before = app.doc.panels[0].frames[fi].rect;
+        app.frame_input = [
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "1.5".to_string(),
+        ];
+        assert!(app.apply_frame_place_size(0, fi));
+        let after = app.doc.panels[0].frames[fi].rect;
+        assert_eq!(after.x, 72_000);
+        assert_eq!(after.y, 144_000);
+        assert_eq!(after.w, 216_000);
+        assert_eq!(after.h, 108_000);
+        assert_eq!(app.status, "Box moved and sized.");
+        app.undo();
+        assert_eq!(app.doc.panels[0].frames[fi].rect, before);
+        app.frame_input = [
+            "1".to_string(),
+            "2".to_string(),
+            "banana".to_string(),
+            "1.5".to_string(),
+        ];
+        assert!(!app.apply_frame_place_size(0, fi));
+        assert_eq!(app.doc.panels[0].frames[fi].rect, before);
+        assert!(
+            app.status.contains("not a measurement"),
+            "bad input says so in plain words: {}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn r47b_frame_place_size_moves_music_without_resizing_it() {
+        let mut app = App::default();
+        app.add_text_box(0);
+        let fi = app.selected_frame.expect("new box is selected");
+        app.doc.panels[0].frames[fi].music = Some(ob_model::MusicFrame {
+            system: 0,
+            staff_mm: 5.0,
+            source: String::new(),
+        });
+        let before = app.doc.panels[0].frames[fi].rect;
+        app.frame_input = [
+            "1".to_string(),
+            "2".to_string(),
+            "9".to_string(),
+            "9".to_string(),
+        ];
+        assert!(app.apply_frame_place_size(0, fi));
+        let after = app.doc.panels[0].frames[fi].rect;
+        assert_eq!(after.x, 72_000);
+        assert_eq!(after.y, 144_000);
+        assert_eq!(after.w, before.w);
+        assert_eq!(after.h, before.h);
+        assert_eq!(app.status, "Box moved.");
     }
 
     #[test]

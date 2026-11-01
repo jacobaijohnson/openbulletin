@@ -4079,7 +4079,10 @@ fn r47a_rename_seam_pause() {
 }
 
 /// Arm the R47-A seam for one paused rename step.
-#[cfg(test)]
+/// Unix-only like the pin that arms it: on other
+/// platforms the pin does not compile, so an ungated
+/// helper would be dead code under `-D warnings`.
+#[cfg(all(test, unix))]
 fn r47a_seam_arm() {
     let mut state = R47A_SEAM_STATE
         .lock()
@@ -4090,7 +4093,9 @@ fn r47a_seam_arm() {
 }
 
 /// Release a claimant paused at the R47-A seam.
-#[cfg(test)]
+/// Unix-only, like the pin that releases it (see
+/// `r47a_seam_arm`).
+#[cfg(all(test, unix))]
 fn r47a_seam_release() {
     let mut state = R47A_SEAM_STATE
         .lock()

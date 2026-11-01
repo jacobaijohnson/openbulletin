@@ -66,6 +66,10 @@ pub fn rights_from_music(info: &MusicInfo, source_name: &str) -> RightsRecord {
         asserted_by: String::new(),
         asserted_at: String::new(),
         children_present: None,
+        // Music is engraved sheet music, never a
+        // photograph of anybody: no child-web
+        // permission question attaches to it.
+        child_web_permission: None,
     }
 }
 

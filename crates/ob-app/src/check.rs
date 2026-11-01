@@ -233,8 +233,10 @@ pub(crate) fn wanted_font_notes(doc: &Document, available: &[String]) -> Vec<Che
 /// (round 3, R3-4): its picture is engraved sheet
 /// music, not a photograph of anybody, and its menu
 /// has no children answer to give, so the question
-/// would be unanswerable noise. Pure over (document,
-/// frame).
+/// would be unanswerable noise. Once the office answers
+/// yes, Check asks the distinct permission question
+/// instead (see `picture_child_web_permission_unnoted`).
+/// Pure over (document, frame).
 pub(crate) fn picture_children_unnoted(doc: &Document, frame: &ob_model::Frame) -> bool {
     if frame.music.is_some() {
         return false;
@@ -250,6 +252,64 @@ pub(crate) fn picture_children_unnoted(doc: &Document, frame: &ob_model::Frame) 
         .find(|a| a.sha256 == placement.asset)
         .and_then(|a| a.rights.children_present)
         .is_none()
+}
+
+/// Does this placed picture still need its child-web
+/// permission note (R-2b, round 51, G-01)? True when
+/// the box holds a picture that is in the bulletin,
+/// the office has noted children in it, and nobody has
+/// said yet whether children may go on the web page:
+/// Check asks, because the web page's rule can only
+/// take the care the note describes. A picture with no
+/// children note is another finding's business (see
+/// `picture_children_unnoted`); a picture whose
+/// permission is recorded, given or not, is not asked
+/// again. Pure over (document, frame).
+pub(crate) fn picture_child_web_permission_unnoted(
+    doc: &Document,
+    frame: &ob_model::Frame,
+) -> bool {
+    if frame.music.is_some() {
+        return false;
+    }
+    let Some(placement) = &frame.picture else {
+        return false;
+    };
+    if doc.asset_data(&placement.asset).is_none() {
+        return false;
+    }
+    doc.assets
+        .iter()
+        .find(|a| a.sha256 == placement.asset)
+        .is_some_and(|a| {
+            a.rights.children_present == Some(true) && a.rights.child_web_permission.is_none()
+        })
+}
+
+/// Is this placed picture's web publication refused
+/// outright (R-2b, round 51, G-01)? True when the box
+/// holds a picture that is in the bulletin, the office
+/// has noted children in it, and permission to publish
+/// children on the web page is recorded as not given:
+/// the web page will leave it out, and Check says so,
+/// so the office is not left wondering where the
+/// picture went. Pure over (document, frame).
+pub(crate) fn picture_child_web_permission_denied(doc: &Document, frame: &ob_model::Frame) -> bool {
+    if frame.music.is_some() {
+        return false;
+    }
+    let Some(placement) = &frame.picture else {
+        return false;
+    };
+    if doc.asset_data(&placement.asset).is_none() {
+        return false;
+    }
+    doc.assets
+        .iter()
+        .find(|a| a.sha256 == placement.asset)
+        .is_some_and(|a| {
+            a.rights.children_present == Some(true) && a.rights.child_web_permission == Some(false)
+        })
 }
 
 /// Check's children's-names reminder (R-2b): when the

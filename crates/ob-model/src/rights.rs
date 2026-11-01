@@ -1,7 +1,8 @@
 //! Asset rights and license judgment: where a picture
 //! or music file came from, what credit it is owed, and
 //! how the records for the same bytes merge without
-//! manufacturing a permission no one asserted. The
+//! manufacturing a child-web permission, a credit line,
+//! or a license no one asserted. The
 //! document model types these records ride on stay in
 //! the crate root; this module is the engine that
 //! judges and folds them.
@@ -84,12 +85,30 @@ pub struct RightsRecord {
     /// office knows (roles build R-2b)? None means nobody
     /// has said yet, and Check asks. Some(true) puts the
     /// picture under the web page's stricter rule: it
-    /// rides the web page only when a permission is
-    /// noted on this record. Print never drops a picture
-    /// over this. Like the whole record, it is the
-    /// office's own note, not a proof.
+    /// rides the web page only when a child-web
+    /// permission is recorded on this record (see
+    /// `child_web_permission`). Print never drops a
+    /// picture over this. Like the whole record, it is
+    /// the office's own note, not a proof.
     #[serde(default)]
     pub children_present: Option<bool>,
+    /// Permission to publish children in this picture
+    /// on the web page (round 51, G-01): the office's
+    /// own distinct decision, separate from the license
+    /// and the credit line. None means nobody has said
+    /// yet, and Check asks. Some(true) is the only thing
+    /// that lets a picture noted as having children ride
+    /// the web page; a credit line, the church's own
+    /// work, public domain, and CC0 do NOT count.
+    /// Some(false) means permission is not given, and
+    /// the web page leaves the picture out. Absent in
+    /// older files (read as None, and left out when
+    /// saved again): those pictures are held back until
+    /// the office answers. Print never drops a picture
+    /// over this. Like the whole record, it is the
+    /// office's own note, not a proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_web_permission: Option<bool>,
 }
 
 /// One asset in the document's store. Its bytes live in
@@ -106,20 +125,32 @@ pub struct Asset {
     pub rights: RightsRecord,
 }
 
-/// Is a permission noted on this record, for the web
-/// page's children rule? This is the same test the HTML
-/// export applies before a picture with children noted
-/// in it may ride the web page
-/// (crates/ob-extract/src/html_export.rs,
-/// `permission_noted`, whose copy points back here):
-/// a credit line counts, and so does a license that
-/// needs no one's permission (the church's own work,
-/// public domain, CC0). The two copies are one rule
-/// and must stay one rule: the export holds pictures
-/// back by it, and the merge below enforces its
-/// no-manufactured-permission property by it (round 5,
-/// F2; round 6, R6-1).
-fn rights_permission_noted(rights: &RightsRecord) -> bool {
+/// Is a child-web permission recorded on this record
+/// (round 51, G-01)? This is the web page's children
+/// rule, and the only rule the web door reads: a picture
+/// noted as having children rides the web page exactly
+/// when this is true. A credit line and a license that
+/// needs no one's permission do NOT count here; they are
+/// attribution notes, judged by
+/// `rights_attribution_noted` for the merge fence, and
+/// never a substitute for this decision.
+pub fn child_web_permission_granted(rights: &RightsRecord) -> bool {
+    rights.child_web_permission == Some(true)
+}
+
+/// Is an attribution note on this record, for the
+/// merge fence (round 5, F2; round 6, R6-1)? A credit
+/// line counts, and so does a license that needs no
+/// one's permission (the church's own work, public
+/// domain, CC0). This is NOT the web page's children
+/// rule: since round 51 (G-01) the web door reads only
+/// `child_web_permission_granted`. This test survives
+/// for the fence below, which still refuses to let a
+/// credit line or a license ride into a composed record
+/// from a record that does not itself bear the children
+/// note, unless a children-bearing record already noted
+/// an attribution note on its own fields.
+fn rights_attribution_noted(rights: &RightsRecord) -> bool {
     !rights.credit_text.trim().is_empty()
         || matches!(
             rights.license,
@@ -138,17 +169,17 @@ fn rights_permission_noted(rights: &RightsRecord) -> bool {
 /// because the web page's hold-back is only as strong
 /// as the strongest note.
 ///
-/// No merge manufactures a permission, in any order
-/// (round 5, F2, as a directional fence; round 6,
+/// No merge manufactures an attribution note, in any
+/// order (round 5, F2, as a directional fence; round 6,
 /// R6-1, as a property of the composed record). After
 /// the fills, if the composed record notes children
-/// and notes a permission, that permission must be
-/// vouched for: a permission-satisfying field (the
+/// and notes an attribution note, that note must be
+/// vouched for: an attribution-noting field (the
 /// credit line; a license that itself counts as a
-/// noted permission, the church's own work, public
+/// noted attribution, the church's own work, public
 /// domain, CC0) stands only when the record it came
 /// from itself notes children, or a children-bearing
-/// record already noted a permission on its own
+/// record already noted an attribution note on its own
 /// fields before this merge. Otherwise the field
 /// reverts to the children-bearing record's value for
 /// that field. The fill-only merge knows which side
@@ -160,6 +191,15 @@ fn rights_permission_noted(rights: &RightsRecord) -> bool {
 /// to its own end is the final judgment below —
 /// round 8, R8-9, at
 /// `fold_duplicate_asset_records`.)
+///
+/// The child-web permission is NOT governed by this
+/// fence: it composes on its own rule, in
+/// `merge_rights_records_inner` below (round 51,
+/// G-01) — a bearer-only answer, denial winning among
+/// bearers — and the web door reads nothing else.
+/// A credit line or a license that this fence lets
+/// stand is an attribution note, never a permission
+/// to publish children.
 ///
 /// A license and its credit travel together (round 6,
 /// RT6-2): when a merge takes the incoming record's
@@ -182,8 +222,8 @@ fn rights_permission_noted(rights: &RightsRecord) -> bool {
 /// license together with a children note, or
 /// together with the credit that stands in the
 /// composed record, or a children-bearing record in
-/// the composition noted a permission under the
-/// fence's bearer rule. This holds for every license
+/// the composition noted an attribution note under
+/// the fence's bearer rule. This holds for every license
 /// class, a reprint license included, and whichever
 /// path composed the record: the license filled,
 /// already stood, or would stand as a fallback. An
@@ -198,14 +238,19 @@ fn rights_permission_noted(rights: &RightsRecord) -> bool {
 /// Unknown where nothing vouches a license. A
 /// children-bearing record whose own credit line
 /// stands keeps its license. One part of the
-/// judgment is a safety axis (round 11, R11-1):
-/// when the composed record notes children and its
-/// credit line is empty, a vouched license that
-/// itself counts as a noted permission stands in
+/// judgment is a license-choice axis (round 11,
+/// R11-1): when the composed record notes children and
+/// its credit line is empty, a vouched license that
+/// itself counts as a noted attribution stands in
 /// preference to a non-noting license, however well
-/// vouched, so whether a permission stands beside
-/// the children note is decided over the
-/// composition the same way on both routes.
+/// vouched, so which attribution-noting license stands
+/// is decided over the composition the same way on
+/// both routes. Under the old rule this axis also
+/// decided whether a permission stood beside the
+/// children note, because the old web door read the
+/// attribution note; since round 51 (G-01) the door
+/// reads only the child-web permission, so this axis
+/// no longer reaches it.
 ///
 /// The assertion fields (asserted_by, asserted_at)
 /// fill only when a substantive rights fill from the
@@ -244,7 +289,7 @@ fn merge_rights_records_inner(
             existing.to_string()
         }
     }
-    // Provenance for the two permission-satisfying
+    // Provenance for the two attribution-noting
     // fields: which side supplied the composed value.
     let credit_from_incoming =
         existing.credit_text.trim().is_empty() && !incoming.credit_text.trim().is_empty();
@@ -270,23 +315,24 @@ fn merge_rights_records_inner(
     };
     if children_present == Some(true) {
         // The record (or records) bearing the children
-        // note, and whether any of them already noted a
-        // permission on its own fields before this merge.
+        // note, and whether any of them already noted an
+        // attribution note on its own fields before this
+        // merge.
         let bearer = if existing.children_present == Some(true) {
             existing
         } else {
             incoming
         };
-        let bearer_noted_permission = [existing, incoming]
+        let bearer_noted_attribution = [existing, incoming]
             .iter()
-            .any(|r| r.children_present == Some(true) && rights_permission_noted(r));
+            .any(|r| r.children_present == Some(true) && rights_attribution_noted(r));
         if !out.credit_text.trim().is_empty() {
             let credit_source = if credit_from_incoming {
                 incoming
             } else {
                 existing
             };
-            if credit_source.children_present != Some(true) && !bearer_noted_permission {
+            if credit_source.children_present != Some(true) && !bearer_noted_attribution {
                 let reverted_credit = bearer.credit_text.clone();
                 out.credit_text = reverted_credit;
             }
@@ -300,11 +346,57 @@ fn merge_rights_records_inner(
             } else {
                 existing
             };
-            if license_source.children_present != Some(true) && !bearer_noted_permission {
+            if license_source.children_present != Some(true) && !bearer_noted_attribution {
                 let reverted_license = bearer.license.clone();
                 out.license = reverted_license;
             }
         }
+    }
+    // The child-web permission composes on its own
+    // rule (round 51, G-01), separate from the
+    // attribution fence above: the hold-back direction
+    // wins, in any order, on both branches. When the
+    // composed record notes children, only a
+    // children-bearing record's own answer counts: a
+    // denial from any bearer stands over a grant, a
+    // grant stands when no bearer denies it, and a
+    // permission carried only by a record that does
+    // not itself bear the children note never stands
+    // alone — the composed answer is the bearer's,
+    // which is unanswered when no bearer has
+    // answered. When the composed record does not
+    // note children, neither side is a bearer, and
+    // the pair's answers compose the same way, denial
+    // winning — so the carried answer is order-free
+    // too, even though the door cannot read it yet.
+    // A later merge that adds the children note reads
+    // the bearers only and ignores the carried answer
+    // entirely, so no carried denial or grant can veto
+    // or grant through a bearer. The assertion rule
+    // below does not move on this field: a permission
+    // fill carries no asserted_by or asserted_at, so
+    // the fold's re-judgment, which reads credit and
+    // license standing only, stays exact.
+    if children_present == Some(true) {
+        let bearer_answers: Vec<Option<bool>> = [existing, incoming]
+            .iter()
+            .filter(|r| r.children_present == Some(true))
+            .map(|r| r.child_web_permission)
+            .collect();
+        if bearer_answers.contains(&Some(false)) {
+            out.child_web_permission = Some(false);
+        } else if bearer_answers.contains(&Some(true)) {
+            out.child_web_permission = Some(true);
+        } else {
+            out.child_web_permission = None;
+        }
+    } else {
+        out.child_web_permission =
+            match (existing.child_web_permission, incoming.child_web_permission) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                _ => None,
+            };
     }
     // A license and its credit travel together: the
     // incoming license does not stand over an empty
@@ -360,9 +452,10 @@ fn merge_rights_records_inner(
 /// together with a children note, or together with
 /// the credit that stands in the composed record,
 /// or when a children-bearing record in the
-/// composition noted a permission on its own fields
-/// (the fence's bearer rule: its credit line, or a
-/// license that itself counts as a noted permission).
+/// composition noted an attribution note on its own
+/// fields (the fence's bearer rule: its credit line,
+/// or a license that itself counts as a noted
+/// attribution).
 /// An attribution license (CC BY, CC BY-SA) is never
 /// vouched on an empty credit line: its credit is
 /// the license's own requirement, so with no credit
@@ -392,7 +485,7 @@ fn license_vouched(
     }
     sources
         .iter()
-        .any(|r| r.children_present == Some(true) && rights_permission_noted(r))
+        .any(|r| r.children_present == Some(true) && rights_attribution_noted(r))
 }
 
 /// The fixed precedence among fallback licenses
@@ -541,11 +634,11 @@ fn credit_paired_from_candidates(
     }
 }
 
-/// The best vouched permission-noting license in
+/// The best vouched attribution-noting license in
 /// a composition (round 11, R11-1): a license that
-/// itself counts as a noted permission (the church's
+/// itself counts as a noted attribution (the church's
 /// own work, public domain, CC0 — the licenses in
-/// `rights_permission_noted`), vouched under the
+/// `rights_attribution_noted`), vouched under the
 /// same judgment as a standing license (`license_vouched`
 /// with the empty credit line of the branch that
 /// calls this). Selection mirrors `fallback_license`:
@@ -553,7 +646,7 @@ fn credit_paired_from_candidates(
 /// record first, then the fixed precedence at
 /// `fallback_rank`, never the order the records
 /// arrived in.
-fn permission_fallback_license(sources: &[&RightsRecord]) -> Option<LicenseKind> {
+fn attribution_fallback_license(sources: &[&RightsRecord]) -> Option<LicenseKind> {
     let mut best: Option<(u8, u8, LicenseKind)> = None;
     for source in sources {
         let candidate = &source.license;
@@ -597,7 +690,7 @@ fn permission_fallback_license(sources: &[&RightsRecord]) -> Option<LicenseKind>
 /// composed record (no children note, a credit line
 /// standing, or no license) is left exactly as it
 /// stands: the publish fence above has already
-/// judged the permission-satisfying fields on their
+/// judged the attribution-noting fields on their
 /// own provenance, and a standing credit vouches
 /// through the bearer rule by construction.
 ///
@@ -618,30 +711,34 @@ fn permission_fallback_license(sources: &[&RightsRecord]) -> Option<LicenseKind>
 /// credit-paired license stands.
 ///
 /// One more step runs inside the empty-credit
-/// branch (round 11, R11-1): the permission axis is
-/// a safety axis, route-invariant like the children
-/// note itself. When children stand and the credit
-/// line is empty, whether a permission stands
-/// beside the note is decided over the sources this
-/// judgment sees, by one rule on both routes: a
-/// vouched permission-noting license in the
-/// composition (see `permission_fallback_license`)
-/// stands in preference to any non-noting license,
-/// however well vouched the non-noting license is.
-/// The routes used to disagree here in both
-/// directions — the fold judged the whole
-/// composition at its end, a chain of single merges
-/// judged pair by pair, and a permission-noting
-/// claim (a CC0 carried by a children-bearing
-/// record) won on one route and lost to a vouched
-/// reprint license on the other, so the same
-/// children's picture rode the web page or was held
-/// back by the accident of how its records arrived.
+/// branch (round 11, R11-1): the attribution axis,
+/// route-invariant like the children note itself.
+/// When children stand and the credit line is empty,
+/// which attribution-noting license stands is decided
+/// over the sources this judgment sees, by one rule
+/// on both routes: a vouched attribution-noting
+/// license in the composition (see
+/// `attribution_fallback_license`) stands in
+/// preference to any non-noting license, however well
+/// vouched the non-noting license is. The routes used
+/// to disagree here in both directions — the fold
+/// judged the whole composition at its end, a chain
+/// of single merges judged pair by pair, and an
+/// attribution-noting claim (a CC0 carried by a
+/// children-bearing record) won on one route and lost
+/// to a vouched reprint license on the other, so the
+/// same children's picture stood under a different
+/// license by the accident of how its records
+/// arrived. (Under the old web door that license
+/// difference also rode or held the picture; since
+/// round 51, G-01, the door reads only the child-web
+/// permission, so this axis is a license-choice axis,
+/// not a door-safety axis.)
 /// This step does NOT give a single merge the
 /// fold's full end-state judgment: it runs on the
 /// sources each route's own judgment already sees,
 /// and because it runs at every pairwise judgment,
-/// a permission-noting claim that stands in any
+/// an attribution-noting claim that stands in any
 /// prefix of a single-merge chain is carried into
 /// the chain's later judgments by the composed
 /// record itself.
@@ -686,11 +783,11 @@ fn judged_composed_license_inner(
     if !credit_text.trim().is_empty() {
         return license.clone();
     }
-    // The permission axis (round 11, R11-1), stated
-    // above: a standing permission-noting license
+    // The attribution axis (round 11, R11-1), stated
+    // above: a standing attribution-noting license
     // that is itself vouched stands (standing-wins
     // among noting claims); otherwise a vouched
-    // permission-noting license anywhere in the
+    // attribution-noting license anywhere in the
     // composition stands in preference to a
     // non-noting one.
     let license_noted = matches!(
@@ -700,8 +797,8 @@ fn judged_composed_license_inner(
     if license_noted && license_vouched(license, credit_text, sources) {
         return license.clone();
     }
-    if let Some(permission) = permission_fallback_license(sources) {
-        return permission;
+    if let Some(attribution) = attribution_fallback_license(sources) {
+        return attribution;
     }
     if *license == LicenseKind::Unknown {
         return license.clone();
@@ -749,8 +846,8 @@ fn rejudge_folded_assertion(folded: &mut RightsRecord, sources: &[RightsRecord])
 /// R11-5), under the fence's own rule read with the
 /// fold's arrival timing: the credit's own record
 /// notes the children, or a children-bearing record
-/// standing at or before it in fold order noted a
-/// permission on its own fields. The first such
+/// standing at or before it in fold order noted an
+/// attribution note on its own fields. The first such
 /// credit in fold order is the one — the fill order
 /// the merges themselves follow. A credit vouched
 /// only by a bearer that arrives AFTER it is not
@@ -762,15 +859,15 @@ fn rejudge_folded_assertion(folded: &mut RightsRecord, sources: &[RightsRecord])
 /// bearer stands before it — the R11-5 shape — is
 /// the one the fold used to lose.
 fn vouched_fold_credit(sources: &[RightsRecord]) -> Option<String> {
-    let mut bearer_noted_permission = false;
+    let mut bearer_noted_attribution = false;
     for source in sources {
         if !source.credit_text.trim().is_empty()
-            && (source.children_present == Some(true) || bearer_noted_permission)
+            && (source.children_present == Some(true) || bearer_noted_attribution)
         {
             return Some(source.credit_text.clone());
         }
-        if source.children_present == Some(true) && rights_permission_noted(source) {
-            bearer_noted_permission = true;
+        if source.children_present == Some(true) && rights_attribution_noted(source) {
+            bearer_noted_attribution = true;
         }
     }
     None
@@ -783,17 +880,17 @@ fn vouched_fold_credit(sources: &[RightsRecord]) -> Option<String> {
 /// carrying that credit that pass the same arrival
 /// test the restored credit itself passed (their
 /// own record notes the children, or a
-/// children-bearing permission-noting record stands
+/// children-bearing attribution-noting record stands
 /// at or before them). A carrier the bearer had not
 /// yet vouched when it arrived contributes no
 /// pairing: a chain of single merges dropped that
 /// carrier's license at its arrival, before the
 /// credit was restored, and cannot reach it again.
 fn restored_credit_pairings(sources: &[RightsRecord], credit: &str) -> Vec<LicenseKind> {
-    let mut bearer_noted_permission = false;
+    let mut bearer_noted_attribution = false;
     let mut pairings: Vec<LicenseKind> = Vec::new();
     for source in sources {
-        let prefix_vouched = source.children_present == Some(true) || bearer_noted_permission;
+        let prefix_vouched = source.children_present == Some(true) || bearer_noted_attribution;
         if prefix_vouched
             && source.credit_text == credit
             && matches!(
@@ -804,8 +901,8 @@ fn restored_credit_pairings(sources: &[RightsRecord], credit: &str) -> Vec<Licen
         {
             pairings.push(source.license.clone());
         }
-        if source.children_present == Some(true) && rights_permission_noted(source) {
-            bearer_noted_permission = true;
+        if source.children_present == Some(true) && rights_attribution_noted(source) {
+            bearer_noted_attribution = true;
         }
     }
     pairings
@@ -821,12 +918,12 @@ fn restored_credit_pairings(sources: &[RightsRecord], credit: &str) -> Vec<Licen
 /// Before that judgment, one fold-only repair
 /// (round 11, R11-5): a fold defers the license
 /// judgment to its end, so during the fold a
-/// children-bearing record's permission-noting
+/// children-bearing record's attribution-noting
 /// license may never stand in the composed record —
 /// the attribution license it will eventually fall
 /// to a fallback for is still standing in its
 /// place — and the per-merge fence, seeing no
-/// permission noted on the pair before it, reverts
+/// attribution noted on the pair before it, reverts
 /// a late-arriving credit line that the composition
 /// as a whole vouches for. The fold then ended with
 /// the credit silently gone and the fallback
@@ -834,7 +931,7 @@ fn restored_credit_pairings(sources: &[RightsRecord], credit: &str) -> Vec<Licen
 /// its place, while a chain of single merges —
 /// whose first pairwise judgment had already
 /// dropped the attribution license to the
-/// permission-noting fallback — let the same credit
+/// attribution-noting fallback — let the same credit
 /// stand and paired its license beside it. So: when
 /// the folded record notes children and its credit
 /// line came out empty, a credit vouched under the
@@ -853,7 +950,7 @@ fn judge_folded_composed_record(
     folded: &mut RightsRecord,
     sources: &[RightsRecord],
     paired_candidates: &[LicenseKind],
-    permission_claim: Option<&LicenseKind>,
+    attribution_claim: Option<&LicenseKind>,
 ) {
     let mut candidates: Vec<LicenseKind> = paired_candidates.to_vec();
     if folded.children_present == Some(true) && folded.credit_text.trim().is_empty() {
@@ -868,13 +965,13 @@ fn judge_folded_composed_record(
             candidates = restored_credit_pairings(sources, &folded.credit_text);
         }
     }
-    // The permission claim the fold's own merges
-    // stood while the credit line was still empty
-    // (round 34, F6; tracked by
+    // The attribution-license claim the fold's own
+    // merges stood while the credit line was still
+    // empty (round 34, F6; tracked by
     // `fold_duplicate_asset_records`): a chain of
     // single merges judges each pair as it arrives,
-    // so its R11-1 permission-axis step fires at the
-    // merge where a permission-free license first
+    // so its R11-1 attribution-axis step fires at the
+    // merge where a non-noting license first
     // meets the children note with no credit standing
     // yet, and that license stands in the chain's
     // composed record from then on. The fold defers
@@ -888,7 +985,7 @@ fn judge_folded_composed_record(
     // with the standing credit, exactly as a later
     // single merge could, and on an empty credit line
     // the claim is itself the standing-wins answer.
-    if let Some(claim) = permission_claim {
+    if let Some(claim) = attribution_claim {
         if folded.license != *claim {
             folded.license = claim.clone();
         }
@@ -960,29 +1057,29 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
     // credit pair-locally — the same blindness the
     // R11-5 restoration repairs — because a chain of
     // single merges, whose composed record already
-    // carries the bearer's permission, lets the
+    // carries the bearer's attribution note, lets the
     // credit stand at that merge and sees the
     // pairing. These are filtered to the credit that
     // finally stands, at the fold's end.
     let mut folded_vouched_pairs: Vec<Vec<(LicenseKind, String)>> =
         Vec::with_capacity(assets.len());
-    // Whether a children-bearing permission-noting
+    // Whether a children-bearing attribution-noting
     // record stands among the sources folded so far,
     // per folded record: the prefix the arrival test
     // reads.
     let mut folded_bearer_seen: Vec<bool> = Vec::with_capacity(assets.len());
-    // The permission claim each fold's merges stood
-    // while the credit line was still empty (round
-    // 34, F6): the first merge whose composed record
-    // notes children with an empty credit line, and
-    // whose standing license is not an attribution
+    // The attribution-license claim each fold's merges
+    // stood while the credit line was still empty
+    // (round 34, F6): the first merge whose composed
+    // record notes children with an empty credit line,
+    // and whose standing license is not an attribution
     // license a children-bearing source supplied,
-    // judges the permission axis exactly as a single
+    // judges the attribution axis exactly as a single
     // merge of that pair would — a standing
-    // permission-free license that is vouched stands,
-    // else the best vouched permission-free license
+    // non-noting license that is vouched stands,
+    // else the best vouched non-noting license
     // among the sources folded so far stands (see
-    // `permission_fallback_license`) — and that
+    // `attribution_fallback_license`) — and that
     // license is remembered. A chain of single merges
     // carries the claim in its composed record from
     // that merge on; the fold, whose judgment is
@@ -1018,7 +1115,7 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
                         folded_vouched_pairs[pos].push(pair);
                     }
                 }
-                if incoming.children_present == Some(true) && rights_permission_noted(&incoming) {
+                if incoming.children_present == Some(true) && rights_attribution_noted(&incoming) {
                     folded_bearer_seen[pos] = true;
                 }
                 let merged = merge_rights_records_inner(&before, &incoming, true);
@@ -1033,9 +1130,9 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
                 // is the standing answer (round 9, R9-4:
                 // the fallback winner is chosen by tier
                 // and rank over all the sources, not by
-                // which permission claim a pairwise
-                // judgment would have stood first), and
-                // no claim is taken.
+                // which attribution-license claim a
+                // pairwise judgment would have stood
+                // first), and no claim is taken.
                 let attribution_children_carried = matches!(
                     merged.license,
                     LicenseKind::CcBy(_) | LicenseKind::CcBySa(_)
@@ -1056,7 +1153,7 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
                         if standing_noted && license_vouched(&merged.license, "", &prefix_refs) {
                             Some(merged.license.clone())
                         } else {
-                            permission_fallback_license(&prefix_refs)
+                            attribution_fallback_license(&prefix_refs)
                         };
                 }
                 if merged.credit_text.trim().is_empty() || merged.credit_text != before.credit_text
@@ -1090,7 +1187,7 @@ pub fn fold_duplicate_asset_records(assets: &mut Vec<Asset>) {
             }
             None => {
                 let bearer = asset.rights.children_present == Some(true)
-                    && rights_permission_noted(&asset.rights);
+                    && rights_attribution_noted(&asset.rights);
                 folded_sources.push(vec![asset.rights.clone()]);
                 folded_paired.push(Vec::new());
                 folded_vouched_pairs.push(Vec::new());
@@ -1228,12 +1325,15 @@ mod tests {
     }
 
     #[test]
-    fn r5_merge_never_manufactures_a_web_permission() {
+    fn r5_merge_never_manufactures_a_web_attribution_note() {
         // Round 5 (F2): the bulletin record notes
-        // children in the picture and no permission;
-        // the sheet record holds a credit line. The
-        // merge must not complete the pair into a
-        // noted permission.
+        // children in the picture and no attribution
+        // note; the sheet record holds a credit line.
+        // The merge must not complete the pair into a
+        // noted attribution. (Since round 51, G-01,
+        // an attribution note is not a child-web
+        // permission in any case; this pin guards the
+        // fence itself.)
         let bulletin = RightsRecord {
             children_present: Some(true),
             ..Default::default()
@@ -1247,7 +1347,7 @@ mod tests {
         assert_eq!(merged.credit_text, "");
         assert_eq!(merged.license, LicenseKind::Unknown);
         // A license that itself counts as a noted
-        // permission is fenced the same way.
+        // attribution is fenced the same way.
         let sheet_cc0 = RightsRecord {
             license: LicenseKind::Cc0,
             ..Default::default()
@@ -1256,7 +1356,7 @@ mod tests {
             merge_rights_records(&bulletin, &sheet_cc0).license,
             LicenseKind::Unknown
         );
-        // Fills that say nothing about permission
+        // Fills that say nothing about attribution
         // still land in a fenced record.
         // FLAGGED, round 7 (R7-1): this pin used to
         // assert the CC BY license standing here. The
@@ -1283,8 +1383,8 @@ mod tests {
         let plain = RightsRecord::default();
         let merged = merge_rights_records(&plain, &sheet);
         assert_eq!(merged.credit_text, "Photo by Lee");
-        // And a record whose permission is already
-        // noted is not fenced at all.
+        // And a record whose attribution note is
+        // already noted is not fenced at all.
         let noted = RightsRecord {
             children_present: Some(true),
             credit_text: "Photo by Lee, used with parent permission.".into(),
@@ -1331,13 +1431,13 @@ mod tests {
     }
 
     #[test]
-    fn r6_merge_never_manufactures_a_permission_in_either_order() {
+    fn r6_merge_never_manufactures_an_attribution_note_in_either_order() {
         // Round 6 (R6-1 / RT6-1): the round-5 fence faced
         // one way. A credit-bearing record standing first
-        // and a children-noted record second composed a
-        // permission no single record ever claimed. The
-        // property is on the composed record now, so both
-        // orders end the same way.
+        // and a children-noted record second composed an
+        // attribution note no single record ever claimed.
+        // The property is on the composed record now, so
+        // both orders end the same way.
         let credit = RightsRecord {
             credit_text: "Photo by Lee".into(),
             ..Default::default()
@@ -1352,10 +1452,10 @@ mod tests {
         ] {
             assert_eq!(merged.children_present, Some(true));
             assert_eq!(merged.credit_text, "");
-            assert!(!rights_permission_noted(&merged));
+            assert!(!rights_attribution_noted(&merged));
         }
-        // A permission license standing first is fenced
-        // the same way, in either order.
+        // An attribution-noting license standing first
+        // is fenced the same way, in either order.
         let cc0 = RightsRecord {
             license: LicenseKind::Cc0,
             ..Default::default()
@@ -1372,7 +1472,7 @@ mod tests {
         ] {
             assert_eq!(merged.children_present, Some(true));
             assert_eq!(merged.license, LicenseKind::Unknown);
-            assert!(!rights_permission_noted(&merged));
+            assert!(!rights_attribution_noted(&merged));
         }
         // A credit arriving on a record that itself notes
         // children may stand: that record carried both.
@@ -1386,9 +1486,10 @@ mod tests {
             merged.credit_text,
             "Photo by Lee, used with parent permission."
         );
-        assert!(rights_permission_noted(&merged));
-        // A children record that noted its own permission
-        // keeps it and accepts other fills.
+        assert!(rights_attribution_noted(&merged));
+        // A children record that noted its own
+        // attribution note keeps it and accepts other
+        // fills.
         let fuller = RightsRecord {
             title: "Harvest supper".into(),
             license: LicenseKind::Cc0,
@@ -1415,11 +1516,12 @@ mod tests {
     }
 
     #[test]
-    fn r6_three_record_fold_never_composes_a_permission() {
+    fn r6_three_record_fold_never_composes_an_attribution_note() {
         // Round 6 (R6-1): a fold of three records (a
         // credit record, a children record, a neutral
-        // record) in mixed orders never composes a
-        // permission, and the neutral fills still land.
+        // record) in mixed orders never composes an
+        // attribution note, and the neutral fills still
+        // land.
         let hash = sha256_hex(b"R6FOLD");
         let credit = RightsRecord {
             credit_text: "Photo by Lee".into(),
@@ -1451,7 +1553,7 @@ mod tests {
             let rights = &assets[0].rights;
             assert_eq!(rights.children_present, Some(true));
             assert_eq!(rights.title, "Harvest supper");
-            assert!(!rights_permission_noted(rights), "{rights:?}");
+            assert!(!rights_attribution_noted(rights), "{rights:?}");
         }
     }
 
@@ -1504,11 +1606,11 @@ mod tests {
     }
 
     #[test]
-    fn r6_add_asset_never_manufactures_a_permission() {
+    fn r6_add_asset_never_manufactures_an_attribution_note() {
         // Round 6 (R6-1): add_asset composes through the
         // same merge. Bytes first held with a credit line
         // and later given a children note (and the other
-        // order) never end up noting a permission.
+        // order) never end up noting an attribution note.
         for first_credit in [true, false] {
             let mut doc = bare_doc();
             let credit = RightsRecord {
@@ -1529,7 +1631,7 @@ mod tests {
             assert_eq!(doc.assets.len(), 1);
             let rights = &doc.assets[0].rights;
             assert_eq!(rights.children_present, Some(true));
-            assert!(!rights_permission_noted(rights), "{rights:?}");
+            assert!(!rights_attribution_noted(rights), "{rights:?}");
         }
     }
 
@@ -1585,7 +1687,7 @@ mod tests {
         // untouched by the rule: a children-bearing
         // record's CC0 stands with an empty credit
         // line after an unrelated merge. (A CC0 record
-        // is itself a noted permission, so a credit
+        // is itself a noted attribution, so a credit
         // arriving beside it stands under the round-6
         // bearer rule and cannot show this.)
         let cc0_bearer = RightsRecord {
@@ -1673,7 +1775,7 @@ mod tests {
         // children and a CC BY license with no credit;
         // the incoming record carries LicensedReprint
         // only — no children note, no credit, no
-        // permission of any kind. The composed rule
+        // attribution note of any kind. The composed rule
         // drops the CC BY, and the fallback used to
         // install the LicensedReprint unconditionally,
         // displacing the standing license with a claim
@@ -2257,7 +2359,7 @@ mod tests {
         // `check_seq` now asserts the safety axes on
         // EVERY sequence, not only where the routes
         // fully agree: the children note and
-        // `rights_permission_noted` (the web page's
+        // `rights_attribution_noted` (the web page's
         // hold-back bit) must agree between the
         // routes with zero tolerance, at every
         // length the pin runs, over the full pool
@@ -2373,15 +2475,27 @@ mod tests {
         let check_seq = |seq: &[RightsRecord], agree: bool| {
             let folded = fold_route(seq);
             let (merged, before_last) = single_route(seq);
-            // The safety axes (round 11, R11-1), on
-            // every sequence regardless of `agree`:
-            // the children note and whether a
-            // permission stands beside it are
-            // route-invariant, zero tolerance.
+            // The route-invariant answers (round 11,
+            // R11-1), on every sequence regardless of
+            // `agree`: the children note, the
+            // attribution note beside it (the fence's
+            // property), and the child-web permission
+            // (the web door's answer, round 51, G-01)
+            // agree between the routes, zero
+            // tolerance. (This pool carries no
+            // child-web permission values, so the
+            // door axis passes trivially here; the
+            // round-51 permission test below exercises
+            // it over a permission-varied pool.)
             assert_eq!(
-                (folded.children_present, rights_permission_noted(&folded)),
-                (merged.children_present, rights_permission_noted(&merged)),
-                "safety axes disagree on {seq:?}: fold {folded:?} vs single {merged:?}"
+                (folded.children_present, rights_attribution_noted(&folded)),
+                (merged.children_present, rights_attribution_noted(&merged)),
+                "attribution axes disagree on {seq:?}: fold {folded:?} vs single {merged:?}"
+            );
+            assert_eq!(
+                (folded.children_present, folded.child_web_permission),
+                (merged.children_present, merged.child_web_permission),
+                "child-web permission axes disagree on {seq:?}: fold {folded:?} vs single {merged:?}"
             );
             if agree {
                 assert_eq!(
@@ -2414,7 +2528,7 @@ mod tests {
                 }
                 let bearer = sources
                     .iter()
-                    .any(|r| r.children_present == Some(true) && rights_permission_noted(r));
+                    .any(|r| r.children_present == Some(true) && rights_attribution_noted(r));
                 if !folded.credit_text.trim().is_empty() {
                     let credit_from_kids = sources.iter().any(|r| {
                         r.credit_text == folded.credit_text && r.children_present == Some(true)
@@ -2521,18 +2635,23 @@ mod tests {
     }
 
     #[test]
-    fn r11_permission_axis_and_credit_witnesses_agree_on_both_routes() {
+    fn r11_attribution_axis_and_credit_witnesses_agree_on_both_routes() {
         // Round 11 (R11-A, review R11-1 and red team
         // RT11-7): the two named witnesses, pinned on
         // both routes with their exact outcomes.
         //
         // R11-1 witness 1: [LicensedReprint, {children},
-        // {children, Cc0}] folded to not-noted (the
-        // picture held back) and single-merged to
-        // noted (it rode the web page). The shared
-        // judgment's permission step now stands the
-        // vouched permission-noting license (Cc0) on
-        // both routes.
+        // {children, Cc0}] folded to not-noted and
+        // single-merged to noted, under the old
+        // reading where the attribution note was the
+        // web door's answer (so the picture held back
+        // on one route and rode on the other). The
+        // shared judgment's attribution step now
+        // stands the vouched attribution-noting
+        // license (Cc0) on both routes. Since round
+        // 51 (G-01) the web door reads only the
+        // child-web permission, so this axis no
+        // longer rides or holds any picture.
         //
         // R11-1 witness 2: [{children, CcBy},
         // {children, LicensedReprint}, {children,
@@ -2594,7 +2713,7 @@ mod tests {
             kids_cc0,
             "single witness 1"
         );
-        assert!(rights_permission_noted(&fold_route(&witness1)));
+        assert!(rights_attribution_noted(&fold_route(&witness1)));
         let witness2 = vec![
             arch(Some(true), ccby(), ""),
             arch(Some(true), LicenseKind::LicensedReprint, ""),
@@ -2606,7 +2725,7 @@ mod tests {
             kids_cc0,
             "single witness 2"
         );
-        assert!(rights_permission_noted(&single_route(&witness2)));
+        assert!(rights_attribution_noted(&single_route(&witness2)));
         let credit_witness = vec![
             arch(Some(true), ccby(), ""),
             arch(Some(true), LicenseKind::Cc0, ""),
@@ -2718,7 +2837,7 @@ mod tests {
         );
         // A pairing whose credit a later merge
         // reverts (the children note arrives with no
-        // permission noted) no longer counts on
+        // attribution noted) no longer counts on
         // either route: the pairing that re-supplies
         // the credit stands alone.
         let reverted_pairing = vec![
@@ -2737,7 +2856,7 @@ mod tests {
             bysa_x,
             "single reverted pairing"
         );
-        // The bearer shape: a permission-noting
+        // The bearer shape: an attribution-noting
         // children record stands before both
         // pairings, so each pairing's credit stands
         // at its arrival on both routes and the
@@ -2761,7 +2880,7 @@ mod tests {
         // The dropped-pairing shape: the first
         // pairing's credit is reverted at its
         // arrival (the children note arrives with no
-        // permission noted beside it), so a chain of
+        // attribution noted beside it), so a chain of
         // single merges drops that pairing there and
         // the second pairing — carried by a
         // children-bearing record — stands alone;
@@ -3080,31 +3199,34 @@ mod tests {
     }
 
     #[test]
-    fn r34d_fold_and_chain_choose_the_same_license_for_the_permission_free_family() {
+    fn r34d_fold_and_chain_choose_the_same_license_for_the_non_noting_family() {
         // Round 34, F6 (red team rights34.log): the
         // seven FOLD-VS-CHAIN-DIFF triples that carry a
-        // permission-free license (CC0, church-owned).
+        // non-noting license (CC0, church-owned — a
+        // license that itself counts as a noted
+        // attribution).
         // In each, a credit-less attribution license
-        // meets a children-bearing permission-free
+        // meets a children-bearing non-noting
         // record before any credit arrives: a chain of
         // single merges judges that pair while the
         // credit line is still empty, and the R11-1
-        // permission axis stands the permission-free
+        // attribution axis stands the non-noting
         // license; the fold defers its judgment to the
         // end, by which time a credit may stand, and
         // kept the attribution license instead. The
-        // fold now remembers the permission claim its
-        // own merges stood while the credit line was
-        // empty (see `fold_duplicate_asset_records`),
-        // and the claim stands at the fold's end
-        // unless the credit-pairing step answers it,
-        // exactly as a later single merge could.
+        // fold now remembers the attribution-license
+        // claim its own merges stood while the credit
+        // line was empty (see
+        // `fold_duplicate_asset_records`), and the
+        // claim stands at the fold's end unless the
+        // credit-pairing step answers it, exactly as
+        // a later single merge could.
         //
         // Out of family, deliberately: the two
         // remaining rights34.log triples
         // (children_only + ccby_nocredit +
         // credit_children, both orders) carry NO
-        // permission-free license; they are the
+        // non-noting license; they are the
         // round-8 deferral residual, pinned as
         // fold != chain by
         // `r8_fold_judges_the_composed_rule_once_at_the_end`,
@@ -3177,7 +3299,7 @@ mod tests {
         };
         // (sequence, the license both routes must end
         // with — the chain's standing answer, which is
-        // the permission-free license in every case)
+        // the non-noting license in every case)
         let witnesses: Vec<(Vec<RightsRecord>, LicenseKind)> = vec![
             (
                 vec![ccby_nocredit(), cc0_children(), credit_only()],
@@ -3217,9 +3339,242 @@ mod tests {
             assert_eq!(folded.credit_text, chained.credit_text);
             assert_eq!(folded.title, chained.title);
             assert_eq!(
-                rights_permission_noted(&folded),
-                rights_permission_noted(&chained)
+                rights_attribution_noted(&folded),
+                rights_attribution_noted(&chained)
             );
         }
+    }
+
+    #[test]
+    fn r51_child_web_permission_composes_bearer_only_and_order_free() {
+        // Round 51 (G-01): the distinct child-web
+        // permission composes on its own rule, and the
+        // web door's answer (children noted, permission
+        // granted) is the same on both routes and in
+        // every order. A credit line and a license that
+        // needs no one's permission never stand in for
+        // it, on either route.
+        fn rec(children: Option<bool>, permission: Option<bool>) -> RightsRecord {
+            RightsRecord {
+                children_present: children,
+                child_web_permission: permission,
+                ..Default::default()
+            }
+        }
+        fn door(r: &RightsRecord) -> bool {
+            r.children_present == Some(true) && child_web_permission_granted(r)
+        }
+        let bearer = |permission: Option<bool>| rec(Some(true), permission);
+        let plain = |permission: Option<bool>| rec(None, permission);
+        // A bearer's own grant stands, in either order
+        // against an unanswered bearer.
+        for (a, b) in [
+            (bearer(Some(true)), bearer(None)),
+            (bearer(None), bearer(Some(true))),
+        ] {
+            assert_eq!(
+                merge_rights_records(&a, &b).child_web_permission,
+                Some(true),
+                "{a:?} + {b:?}"
+            );
+        }
+        // A bearer's denial wins over a grant, in
+        // either order: the hold-back direction wins.
+        for (a, b) in [
+            (bearer(Some(false)), bearer(Some(true))),
+            (bearer(Some(true)), bearer(Some(false))),
+        ] {
+            assert_eq!(
+                merge_rights_records(&a, &b).child_web_permission,
+                Some(false),
+                "{a:?} + {b:?}"
+            );
+            assert!(!door(&merge_rights_records(&a, &b)));
+        }
+        // A permission carried only by a record that
+        // does not itself bear the children note never
+        // stands alone, in either order: the composed
+        // answer is unanswered, and the door holds.
+        for (a, b) in [
+            (bearer(None), plain(Some(true))),
+            (plain(Some(true)), bearer(None)),
+            (bearer(None), plain(Some(false))),
+            (plain(Some(false)), bearer(None)),
+        ] {
+            let merged = merge_rights_records(&a, &b);
+            assert_eq!(merged.child_web_permission, None, "{a:?} + {b:?}");
+            assert_eq!(merged.children_present, Some(true));
+            assert!(!door(&merged));
+        }
+        // A non-bearer's answer does not veto a
+        // bearer's grant, in either order.
+        for (a, b) in [
+            (bearer(Some(true)), plain(Some(false))),
+            (plain(Some(false)), bearer(Some(true))),
+        ] {
+            assert_eq!(
+                merge_rights_records(&a, &b).child_web_permission,
+                Some(true),
+                "{a:?} + {b:?}"
+            );
+        }
+        // Route and permutation agreement over a
+        // permission-varied pool: pairs and triples,
+        // every permutation, chain vs fold, on the
+        // door answer and on the permission itself.
+        // The pool varies children and permission
+        // independently, plus the two attribution
+        // shapes that used to ride the old door.
+        let pool: Vec<RightsRecord> = vec![
+            rec(Some(true), None),
+            rec(Some(true), Some(true)),
+            rec(Some(true), Some(false)),
+            rec(None, Some(true)),
+            rec(None, Some(false)),
+            rec(None, None),
+            rec(Some(false), Some(true)),
+            RightsRecord {
+                children_present: Some(true),
+                license: LicenseKind::ChurchOwned,
+                ..Default::default()
+            },
+            RightsRecord {
+                children_present: Some(true),
+                credit_text: "Photo by Jane".into(),
+                ..Default::default()
+            },
+        ];
+        let fold_route = |seq: &[RightsRecord]| -> RightsRecord {
+            let hash = sha256_hex(b"R51PERM");
+            let mut assets: Vec<Asset> = seq
+                .iter()
+                .cloned()
+                .map(|rights| Asset {
+                    sha256: hash.clone(),
+                    kind: AssetKind::Picture,
+                    media_type: "image/png".into(),
+                    rights,
+                })
+                .collect();
+            fold_duplicate_asset_records(&mut assets);
+            assert_eq!(assets.len(), 1);
+            assets[0].rights.clone()
+        };
+        let chain_route = |seq: &[RightsRecord]| -> RightsRecord {
+            let mut acc = seq[0].clone();
+            for next in &seq[1..] {
+                acc = merge_rights_records(&acc, next);
+            }
+            acc
+        };
+        fn perms(v: &[RightsRecord]) -> Vec<Vec<RightsRecord>> {
+            if v.len() <= 1 {
+                return vec![v.to_vec()];
+            }
+            let mut out = Vec::new();
+            for i in 0..v.len() {
+                let mut rest = v.to_vec();
+                let first = rest.remove(i);
+                for mut p in perms(&rest) {
+                    let mut q = vec![first.clone()];
+                    q.append(&mut p);
+                    out.push(q);
+                }
+            }
+            out
+        }
+        for a in &pool {
+            for b in &pool {
+                let seq = vec![a.clone(), b.clone()];
+                let folded = fold_route(&seq);
+                let chained = chain_route(&seq);
+                assert_eq!(
+                    folded.child_web_permission, chained.child_web_permission,
+                    "pair route disagree {seq:?}"
+                );
+                assert_eq!(door(&folded), door(&chained), "pair door disagree {seq:?}");
+                for perm in perms(&seq) {
+                    let p = chain_route(&perm);
+                    assert_eq!(
+                        p.child_web_permission, chained.child_web_permission,
+                        "pair perm disagree {seq:?} vs {perm:?}"
+                    );
+                    assert_eq!(door(&p), door(&chained), "pair door perm disagree");
+                }
+            }
+        }
+        for a in &pool {
+            for b in &pool {
+                for c in &pool {
+                    let seq = vec![a.clone(), b.clone(), c.clone()];
+                    let folded = fold_route(&seq);
+                    let chained = chain_route(&seq);
+                    assert_eq!(
+                        folded.child_web_permission, chained.child_web_permission,
+                        "triple route disagree {seq:?}"
+                    );
+                    assert_eq!(
+                        door(&folded),
+                        door(&chained),
+                        "triple door disagree {seq:?}"
+                    );
+                    for perm in perms(&seq) {
+                        let p = chain_route(&perm);
+                        assert_eq!(
+                            p.child_web_permission, chained.child_web_permission,
+                            "triple perm disagree {seq:?} vs {perm:?}"
+                        );
+                        assert_eq!(door(&p), door(&chained), "triple door perm disagree");
+                    }
+                    // The fold route agrees with the
+                    // chain across permutations too.
+                    for perm in perms(&seq) {
+                        let p = fold_route(&perm);
+                        assert_eq!(
+                            p.child_web_permission, chained.child_web_permission,
+                            "triple fold perm disagree {seq:?} vs {perm:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // The two harness cases, as compositions: a
+        // children-bearing ChurchOwned record and a
+        // children-bearing "Photo by Jane" credit
+        // record, each without a distinct permission,
+        // never ride — while the same records with
+        // the permission recorded do.
+        let church = RightsRecord {
+            children_present: Some(true),
+            license: LicenseKind::ChurchOwned,
+            ..Default::default()
+        };
+        let credited = RightsRecord {
+            children_present: Some(true),
+            credit_text: "Photo by Jane".into(),
+            ..Default::default()
+        };
+        assert!(!door(&church));
+        assert!(!door(&credited));
+        assert!(!child_web_permission_granted(&church));
+        assert!(!child_web_permission_granted(&credited));
+        let granted = RightsRecord {
+            children_present: Some(true),
+            child_web_permission: Some(true),
+            ..Default::default()
+        };
+        assert!(door(&granted));
+        // Serialization: an unanswered permission
+        // leaves no field in the file (older files
+        // stay byte-identical); a recorded answer
+        // round-trips.
+        let json = serde_json::to_string(&rec(Some(true), None)).expect("json");
+        assert!(!json.contains("child_web_permission"), "{json}");
+        let back: RightsRecord = serde_json::from_str(&json).expect("read back");
+        assert_eq!(back.child_web_permission, None);
+        let json = serde_json::to_string(&granted).expect("json");
+        assert!(json.contains("child_web_permission"), "{json}");
+        let back: RightsRecord = serde_json::from_str(&json).expect("read back");
+        assert_eq!(back.child_web_permission, Some(true));
     }
 }

@@ -283,16 +283,27 @@ so no two views can disagree.
   and no printed copy ever carries the tag. Splitting
   the paragraph keeps the mark on both halves, exactly
   as spoken only does.
-- **Children in a picture** (R-2b, 2026-10-16). A
-  placed picture's right-click menu ends with the
-  office's own note: "This picture has children in
-  it" or "No children in this picture", and the menu
-  says which answer stands ("not noted yet" until
-  someone answers). Check asks about every placed
-  picture with no answer yet, aimed at its box. On
-  the web page a picture noted as having children
-  rides only when a permission is noted on its rights
-  record; print keeps every picture regardless.
+- **Children in a picture** (R-2b, 2026-10-16;
+  permission rule round 51, G-01). A placed picture's
+  right-click menu ends with the office's own note:
+  "This picture has children in it" or "No children
+  in this picture", and the menu says which answer
+  stands ("not noted yet" until someone answers).
+  Check asks about every placed picture with no
+  answer yet, aimed at its box. Once the answer is
+  yes, the menu asks a second question, separate
+  from the license and the credit line: whether
+  children in the picture may go on the web page —
+  and Check asks that too while it stands unanswered.
+  On the web page a picture noted as having children
+  rides only when that permission is recorded; a
+  credit line, the church's own work, public domain,
+  and CC0 do not count. Print keeps every picture
+  regardless. When permission is recorded as not
+  given, Check says the web page will leave the
+  picture out, and the save message counts it; when
+  children pictures ride under a recorded permission,
+  the save message names them too.
   Pasting text that carries markdown
   marks (**bold**, *italic*) lands the marks as faces;
   plain paste is unchanged. If a session ever falls back to

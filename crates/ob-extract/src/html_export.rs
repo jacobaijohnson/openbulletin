@@ -52,10 +52,17 @@ pub struct HtmlExportReport {
     /// spoken only, never twice.
     pub web_hidden_left_out: usize,
     /// Placed pictures left out because they have
-    /// children in them and no permission is noted on
-    /// their rights record (R-2b). The page carries a
-    /// note where each belongs; print keeps them all.
+    /// children in them and no child-web permission is
+    /// recorded on their rights record (R-2b). The page
+    /// carries a note where each belongs; print keeps
+    /// them all.
     pub children_left_out: usize,
+    /// Placed pictures with children in them that rode
+    /// the web page under a recorded child-web
+    /// permission (R-2b, round 51, G-01). The save
+    /// message names them, so a page carrying children
+    /// never passes in silence.
+    pub children_published: usize,
 }
 
 /// The sentence the web-page doors add when pictures of
@@ -71,6 +78,21 @@ pub fn children_left_out_sentence(count: usize) -> String {
     }
 }
 
+/// The sentence the web-page doors add when pictures of
+/// children rode the page under a recorded permission,
+/// in plain words. Empty when none rode: a page with no
+/// children pictures says nothing about children.
+pub fn children_published_sentence(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => " 1 picture of children is on the web page; permission to publish children is noted for it."
+            .to_string(),
+        n => format!(
+            " {n} pictures of children are on the web page; permission to publish children is noted for them."
+        ),
+    }
+}
+
 /// The reading-edition sentence, the page's first line
 /// under its header, in the bulletin's own words.
 const READING_NOTE: &str = "This is the reading edition of the bulletin: all the words in order, made to be read and searched on a screen. The printed bulletin folds its pages for paper, so the order here follows the reading, not the folding.";
@@ -80,9 +102,10 @@ const READING_NOTE: &str = "This is the reading edition of the bulletin: all the
 const MISSING_NOTE: &str = "A picture belongs here; it is missing from the bulletin file.";
 
 /// The note a picture box leaves when its picture has
-/// children in it and no permission is noted (R-2b): the
-/// picture is in the printed bulletin, in the room; the
-/// web page is the world, and waits for the note.
+/// children in it and no child-web permission is
+/// recorded (R-2b): the picture is in the printed
+/// bulletin, in the room; the web page is the world,
+/// and waits for the note.
 const CHILDREN_NOTE: &str =
     "A picture with children in it belongs here; it is in the printed bulletin.";
 
@@ -726,25 +749,15 @@ fn inline_svg(bytes: &[u8], name: &str) -> Option<String> {
 /// and never upscaled.
 const WEB_PPI: f64 = 150.0;
 
-/// Is a permission noted on this rights record, for the
-/// web page's children rule (R-2b)? A credit line counts:
-/// a church that wrote the credit down did the noting.
-/// So does a license that needs no one's permission:
-/// the church's own work, public domain, CC0. This is
-/// the office's own note, read at face value, not a
-/// proof that a permission exists. The same test lives
-/// in ob-model (`rights_permission_noted`), where the
-/// rights merge enforces its no-manufactured-permission
-/// property by it (round 5, F2; round 6, R6-1);
-/// the two copies are one rule and must stay one rule.
-fn permission_noted(rights: &ob_model::RightsRecord) -> bool {
-    !rights.credit_text.trim().is_empty()
-        || matches!(
-            rights.license,
-            LicenseKind::ChurchOwned | LicenseKind::PublicDomain | LicenseKind::Cc0
-        )
-}
-
+/// The web door's children rule lives on ob-model's one
+/// rule (`child_web_permission_granted`) — there is no
+/// second copy of this test in this crate. A credit line
+/// and a license that needs no one's permission (the
+/// church's own work, public domain, CC0) do NOT count
+/// as permission here: they are attribution notes, and
+/// the old rule that read them as permission is gone
+/// (round 51, G-01). The office's note is read at face
+/// value, not as a proof that a permission exists.
 /// One picture box as a figure: the picture embedded, or
 /// the missing note in its place (counted either way).
 /// Returns the asset that was actually carried, so the
@@ -767,19 +780,27 @@ fn figure_html(
     let Some(bytes) = doc.asset_data(&placement.asset) else {
         return missing(report, out);
     };
-    // The children rule (R-2b): a picture the office has
-    // noted children in rides the web page only when a
-    // permission is noted on its record. Nobody having
-    // said yet (None) does not trigger the rule: Check
-    // is what asks the question. Print never drops a
-    // picture over this.
+    // The children rule (R-2b, round 51, G-01): a
+    // picture the office has noted children in rides
+    // the web page only when a child-web permission is
+    // recorded on its record. A credit line or a license
+    // that needs no one's permission does not count.
+    // Nobody having said yet (None) does not trigger
+    // the rule: Check is what asks the question. Print
+    // never drops a picture over this.
     if let Some(asset) = asset {
-        if asset.rights.children_present == Some(true) && !permission_noted(&asset.rights) {
+        if asset.rights.children_present == Some(true)
+            && !ob_model::child_web_permission_granted(&asset.rights)
+        {
             report.children_left_out += 1;
             out.push_str(&format!("<p class=\"missing\">{CHILDREN_NOTE}</p>\n"));
             return None;
         }
     }
+    // A children picture reaching here passed the door
+    // above, so it counts as published when the page
+    // actually carries it below.
+    let is_children_picture = asset.is_some_and(|a| a.rights.children_present == Some(true));
     let name = picture_name(doc, frame, asset);
     match ob_image::sniff(bytes) {
         ob_image::PictureFormat::Svg => {
@@ -792,6 +813,9 @@ fn figure_html(
             match inline_svg(bytes, &spoken) {
                 Some(svg) => {
                     report.pictures += 1;
+                    if is_children_picture {
+                        report.children_published += 1;
+                    }
                     out.push_str("<figure>");
                     out.push_str(&svg);
                     out.push_str("</figure>\n");
@@ -833,6 +857,9 @@ fn figure_html(
                 }
             };
             report.pictures += 1;
+            if is_children_picture {
+                report.children_published += 1;
+            }
             out.push_str(&format!(
                 "<figure><img src=\"data:{mime};base64,{}\" alt=\"{}\" width=\"{}\" height=\"{}\"></figure>\n",
                 base64::engine::general_purpose::STANDARD.encode(&data),
@@ -1183,9 +1210,11 @@ mod tests {
     }
 
     #[test]
-    fn pictures_of_children_ride_the_web_page_only_with_a_permission_noted() {
-        // R-2b: the web rule bites only on Some(true)
-        // without a noted permission.
+    fn pictures_of_children_ride_the_web_page_only_with_a_child_web_permission() {
+        // R-2b, round 51 (G-01): the web rule bites on
+        // Some(true) without a distinct child-web
+        // permission. A credit line and a license that
+        // needs no one's permission do NOT count.
         let set_photo_rights = |doc: &mut Document, f: &dyn Fn(&mut RightsRecord)| {
             let asset = doc
                 .assets
@@ -1201,14 +1230,16 @@ mod tests {
         let html = String::from_utf8(bytes).expect("utf8");
         assert!(html.contains("alt=\"Church picnic\""));
         assert_eq!(report.children_left_out, 0);
+        assert_eq!(report.children_published, 0);
 
-        // Children in it, no permission noted: the page
-        // leaves the note and counts it; the picture
-        // itself stays out.
+        // Children in it, no permission recorded: the
+        // page leaves the note and counts it; the
+        // picture itself stays out.
         let mut doc = sample_doc();
         set_photo_rights(&mut doc, &|r| {
             r.children_present = Some(true);
             r.license = LicenseKind::Unknown;
+            r.credit_text = String::new();
         });
         let (bytes, report) = export_html(&doc).expect("export");
         let html = String::from_utf8(bytes).expect("utf8");
@@ -1220,6 +1251,7 @@ mod tests {
             "A picture with children in it belongs here; it is in the printed bulletin."
         ));
         assert_eq!(report.children_left_out, 1);
+        assert_eq!(report.children_published, 0);
         assert_eq!(report.missing_pictures, 1, "only the gone box is missing");
         // The working document keeps the picture and the
         // note; print never drops it (see ob-pdf).
@@ -1231,18 +1263,75 @@ mod tests {
             Some(Some(true))
         );
 
-        // Children in it, permission noted as a credit
-        // line: the picture rides.
+        // Harness case (a), round 51 G-01: children in
+        // it, the church's own work, empty credit, no
+        // distinct permission — HELD. The old rule rode
+        // this picture on the license alone.
+        let mut doc = sample_doc();
+        set_photo_rights(&mut doc, &|r| {
+            r.children_present = Some(true);
+            r.license = LicenseKind::ChurchOwned;
+            r.credit_text = String::new();
+        });
+        let (bytes, report) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            !html.contains("alt=\"Church picnic\""),
+            "a church-owned picture of children rode without a child-web permission"
+        );
+        assert_eq!(report.children_left_out, 1);
+        assert_eq!(report.children_published, 0);
+
+        // Harness case (b), round 51 G-01: children in
+        // it, only a credit line, no distinct
+        // permission — HELD. A photographer credit is
+        // not parental permission.
         let mut doc = sample_doc();
         set_photo_rights(&mut doc, &|r| {
             r.children_present = Some(true);
             r.license = LicenseKind::Unknown;
-            r.credit_text = "Photo by Lee, used with parent permission.".into();
+            r.credit_text = "Photo by Jane".into();
+        });
+        let (bytes, report) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            !html.contains("alt=\"Church picnic\""),
+            "a credited picture of children rode without a child-web permission"
+        );
+        assert_eq!(report.children_left_out, 1);
+        assert_eq!(report.children_published, 0);
+
+        // Positive case: children in it, the distinct
+        // permission recorded — the picture rides, and
+        // the report counts it as published.
+        let mut doc = sample_doc();
+        set_photo_rights(&mut doc, &|r| {
+            r.children_present = Some(true);
+            r.license = LicenseKind::Unknown;
+            r.credit_text = String::new();
+            r.child_web_permission = Some(true);
         });
         let (bytes, report) = export_html(&doc).expect("export");
         let html = String::from_utf8(bytes).expect("utf8");
         assert!(html.contains("alt=\"Church picnic\""));
         assert_eq!(report.children_left_out, 0);
+        assert_eq!(report.children_published, 1);
+
+        // Positive case with the old shapes beside it:
+        // the permission, not the license or the
+        // credit, is what lets it ride.
+        let mut doc = sample_doc();
+        set_photo_rights(&mut doc, &|r| {
+            r.children_present = Some(true);
+            r.license = LicenseKind::ChurchOwned;
+            r.credit_text = "Photo by Jane".into();
+            r.child_web_permission = Some(true);
+        });
+        let (bytes, report) = export_html(&doc).expect("export");
+        let html = String::from_utf8(bytes).expect("utf8");
+        assert!(html.contains("alt=\"Church picnic\""));
+        assert_eq!(report.children_left_out, 0);
+        assert_eq!(report.children_published, 1);
 
         // No children in it: the picture rides whatever
         // the record otherwise says.
@@ -1255,8 +1344,9 @@ mod tests {
         let html = String::from_utf8(bytes).expect("utf8");
         assert!(html.contains("alt=\"Church picnic\""));
         assert_eq!(report.children_left_out, 0);
+        assert_eq!(report.children_published, 0);
 
-        // The door sentence, in its three shapes.
+        // The door sentences, in their shapes.
         assert_eq!(children_left_out_sentence(0), "");
         assert_eq!(
             children_left_out_sentence(1),
@@ -1266,17 +1356,28 @@ mod tests {
             children_left_out_sentence(2),
             " 2 pictures of children were left out of the web page; no parent permission is noted for them."
         );
+        assert_eq!(children_published_sentence(0), "");
+        assert_eq!(
+            children_published_sentence(1),
+            " 1 picture of children is on the web page; permission to publish children is noted for it."
+        );
+        assert_eq!(
+            children_published_sentence(2),
+            " 2 pictures of children are on the web page; permission to publish children is noted for them."
+        );
     }
 
     #[test]
     fn a_credit_line_merged_from_another_record_does_not_unlock_a_picture_of_children() {
         // Round 5 (F2): the bulletin's record for the
         // picnic photo notes children in it and no
-        // permission; a sheet's record for the same
-        // bytes holds a credit line. Merging the pair
-        // must not complete them into a noted
-        // permission: the credit line stays unfilled,
-        // and this page holds the picture back.
+        // attribution note; a sheet's record for the
+        // same bytes holds a credit line. Merging the
+        // pair must not complete them into a noted
+        // attribution: the credit line stays unfilled.
+        // And since round 51 (G-01) the page holds the
+        // picture back for the further reason that no
+        // distinct child-web permission is recorded.
         let bulletin = RightsRecord {
             title: "Church picnic".into(),
             children_present: Some(true),
@@ -1309,13 +1410,17 @@ mod tests {
     }
 
     #[test]
-    fn a_permission_composed_in_either_order_does_not_unlock_a_picture_of_children() {
+    fn an_attribution_note_composed_in_either_order_does_not_unlock_a_picture_of_children() {
         // Round 6 (R6-1 / RT6-1): the same pair composed
         // in the other order — the credit line (or a CC0
         // license) standing first, the children note
         // arriving second — published the picture through
-        // this export. Both orders, for both permission
-        // shapes, now hold the picture back.
+        // this export under the old rule. Both orders,
+        // for both attribution shapes, now hold the
+        // picture back: the fence keeps the attribution
+        // note from composing, and since round 51
+        // (G-01) no distinct child-web permission is
+        // recorded on any of these merges either.
         let credit = RightsRecord {
             title: "Church picnic".into(),
             credit_text: "Photo by Lee".into(),
@@ -1338,7 +1443,7 @@ mod tests {
         ];
         for merged in merged_records {
             assert_eq!(merged.children_present, Some(true));
-            assert!(!permission_noted(&merged), "{merged:?}");
+            assert_eq!(merged.child_web_permission, None, "{merged:?}");
             let mut doc = sample_doc();
             let asset = doc
                 .assets
@@ -1350,7 +1455,7 @@ mod tests {
             let html = String::from_utf8(bytes).expect("utf8");
             assert!(
                 !html.contains("alt=\"Church picnic\""),
-                "a permission composed across two records unlocked a picture of children"
+                "an attribution note composed across two records unlocked a picture of children"
             );
             assert_eq!(report.children_left_out, 1);
         }

@@ -20,7 +20,8 @@ pub mod zip_directory;
 pub use draft::{Badge, DraftOutcome, ImportItem};
 
 pub use rights::{
-    fold_duplicate_asset_records, merge_rights_records, Asset, AssetKind, LicenseKind, RightsRecord,
+    child_web_permission_granted, fold_duplicate_asset_records, merge_rights_records, Asset,
+    AssetKind, LicenseKind, RightsRecord,
 };
 pub use serving::{
     builtin_serving_name, builtin_serving_slug, canonical_serving_slug, default_serving_lines,

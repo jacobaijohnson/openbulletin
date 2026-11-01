@@ -73,14 +73,22 @@ could not carry the marks, so the words stay out.
 An asset's rights record may carry `children_present`
 (R-2b): `true`, `false`, or absent (nobody has said
 yet). Check asks about each placed picture with no
-answer. On the web page, a picture noted as having
-children in it rides only when a permission is noted
-on the record (a credit line written down, or a
-license needing no one's permission: the church's own
-work, public domain, CC0); otherwise the page leaves
-a note where it belongs, and the door counts it.
-Print never drops a picture over this. The record is
-the office's own note, not a proof.
+answer. An asset's rights record may also carry
+`child_web_permission` (round 51, G-01): `true`,
+`false`, or absent (nobody has said yet). Check asks
+about it for each placed picture noted as having
+children in it with no permission answer yet. On the
+web page, a picture noted as having children in it
+rides only when a child-web permission is recorded
+on the record; a credit line written down, and a
+license needing no one's permission (the church's own
+work, public domain, CC0), do NOT count — the old
+rule that read them as permission is gone. Otherwise
+the page leaves a note where it belongs, and the door
+counts it; pictures that ride under a recorded
+permission are counted too, and the save message
+names them. Print never drops a picture over this.
+The record is the office's own note, not a proof.
 
 The serving lines live in two places (R-2b). The
 church profile carries `serving_lines`: the display
@@ -340,7 +348,12 @@ field by field (round 4, R4-5): the sheet's record fills
 only what the bulletin's leaves empty, a value already
 noted is never overwritten, and `children_present`
 merges as OR, so a "children are in this picture" from
-either side stands. The attach says how many records it
+either side stands. The child-web permission merges
+with the hold-back direction winning (round 51,
+G-01): a denial from any children-bearing record
+stands over a grant, and a permission carried only by
+a record that does not itself bear the children note
+never stands alone. The attach says how many records it
 actually filled in, and says nothing when the merge
 changed nothing.
 
@@ -352,15 +365,20 @@ rule, the children note included. No reader ever sees
 the shadow copy, and a copy saved onward carries the
 one folded record. One property rides with the merge,
 in any order (round 5, F2; round 6, R6-1): no merge
-manufactures a permission. If the composed record
-notes children in the picture and notes a permission
-(a credit line, or a license that itself counts as
-one), that permission must be vouched for: the field
-that satisfies it stands only when the record it came
-from itself notes the children, or a children-bearing
-record already noted a permission on its own fields
-before the merge. Otherwise the field reverts to the
-children-bearing record's value for it. A license and
+manufactures an attribution note or a child-web
+permission. If the composed record notes children in
+the picture and notes an attribution note (a credit
+line, or a license that itself counts as one), that
+note must be vouched for: the field that satisfies it
+stands only when the record it came from itself notes
+the children, or a children-bearing record already
+noted an attribution note on its own fields before the
+merge. Otherwise the field reverts to the
+children-bearing record's value for it. The child-web
+permission composes on its own rule, stated with the
+order-independence rule below: a bearer-only answer,
+denial winning among bearers, so the web door's answer
+does not depend on arrival order or route. A license and
 its credit also travel together (round 6, RT6-2;
 round 7, R7-1): when a merge takes a record's license
 but that same record's credit line does not stand in
@@ -428,30 +446,71 @@ records in one composition each carry a vouched
 claim to be the record's license, the claim that
 stands is the one already standing when they meet
 (round 9, R9-1) — with two stated exceptions, the
-credit-pairing rule above and the permission rule
+credit-pairing rule above and the attribution rule
 below. The license and the credit line follow the
 stated rules (standing-wins, the fallback
 precedence, and credit-pairing); they are not
-promised order-free. Two answers are. The
+promised order-free. Three answers are. The
 children's-photos answer — the children note
-itself, and whether a permission stands beside
-it — does not depend on the order the records
-arrived in or the route they arrived by, in
-every composition the censuses behind round 11
-(R11-1) and round 12 ran: the fold route and a
-chain of single merges agreed on both across
-those pools and lengths. That agreement is
-measured, not proved (corrected round 12,
-R12-9c). The permission
-half of that answer is decided over the whole
-composition by one rule on both routes: when the
-composed record notes children and its credit
-line is empty, a vouched license that itself
-counts as a noted permission (the church's own
-work, public domain, CC0) stands in preference
-to a license that does not, however well vouched
-the other license is. Every claim a composition
-can produce is vouched.
+itself, the child-web permission beside it, and
+hence whether the picture rides the web page —
+does not depend on the order the records arrived in
+or the route they arrived by, in every composition
+the censuses behind round 11 (R11-1) and round 12
+ran, and in every composition the round-51
+re-measurement ran: the fold route and a chain of
+single merges agreed on all three across those pools
+and lengths. That agreement is measured, not proved
+(corrected round 12, R12-9c).
+The child-web permission half of that answer is
+decided over the whole composition by one rule on
+both routes (round 51, G-01): only a
+children-bearing record's own answer counts, a
+denial from any bearer stands over a grant, and a
+permission carried only by a record that does not
+itself bear the children note never stands alone.
+Under the old rule the permission half was decided
+differently: when the composed record noted children
+and its credit line was empty, a vouched license
+that itself counted as a noted permission (the
+church's own work, public domain, CC0) stood in
+preference to a license that did not, however well
+vouched the other license was. That rule still
+decides which attribution-noting license stands;
+it no longer decides whether the picture rides.
+The measured invariant, stated with its
+denominators (round 51, G-11; the M8 PERM harness,
+probe29v `rights27`, re-run on the round-51 tip):
+over PERM `seqs=3000` (random sequences of length
+3 to 5, all permutations, fold route), the safety
+pair (children note, attribution note) flipped in 10
+sequences (`flip_any_safety=10`), the children note
+never flipped (`flip_children=0`), and the
+attribution note among children-bearing records
+never flipped
+(`flip_noted_among_children_bearing=0`). The
+flipping axis is identified: all 10 flips are
+attribution-note flips in compositions where no
+record bears the children note — license and credit
+identity varying with order, which the old web door
+never read for such compositions either, because
+the door holds only pictures noted as having
+children. The door's own answer under the old rule
+(children noted and no attribution note) flipped in
+0 of the 3000 sequences, and under the new rule
+(children noted and no child-web permission) it
+flips in 0 sequences over the round-51 grids
+(pairs and triples over a permission-varied pool,
+every permutation, chain vs fold). The companion
+census (`rights27s`) agrees: its 19 round-26
+flipping sequences still flip the full triple
+(license identity) in 19 of 19, with children
+varying in 0 and the attribution note among
+children-bearing records varying in 0; its random
+3000 flip the triple in 2161, with children varying
+in 0, the attribution note among children-bearing
+records varying in 0, and credit varying in 1555.
+Every claim a composition can produce is vouched.
 
 ### Loading rules
 

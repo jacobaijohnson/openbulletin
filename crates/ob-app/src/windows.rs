@@ -408,6 +408,34 @@ impl App {
                             Some(fi),
                         ));
                     }
+                    // The permission note (R-2b, round
+                    // 51, G-01): once the office has said
+                    // children are in the picture, Check
+                    // asks the distinct permission
+                    // question, aimed at the box; and
+                    // when permission is recorded as not
+                    // given, Check says the web page
+                    // will leave the picture out.
+                    if picture_child_web_permission_unnoted(&self.doc, frame) {
+                        notes.push(CheckNote::aimed(
+                            format!(
+                                "Check: this picture has children in it, and there is no note yet on permission to publish children on the web page. Right-click the picture on \"{}\" and say.",
+                                panel.name
+                            ),
+                            pi,
+                            Some(fi),
+                        ));
+                    }
+                    if picture_child_web_permission_denied(&self.doc, frame) {
+                        notes.push(CheckNote::aimed(
+                            format!(
+                                "Check: this picture has children in it, and permission to publish children on the web page is not given, so the web page will leave it out. Right-click the picture on \"{}\" to change that if permission is now given.",
+                                panel.name
+                            ),
+                            pi,
+                            Some(fi),
+                        ));
+                    }
                     let probe = probes
                         .entry(placement.asset.clone())
                         .or_insert_with(|| ob_image::probe(bytes).ok());
@@ -5980,9 +6008,12 @@ impl App {
                                 // (R-2b): the office's own
                                 // note, shown as it stands.
                                 // Check asks while it is
-                                // missing; the web page
-                                // takes extra care when the
-                                // answer is yes.
+                                // missing; once the answer
+                                // is yes, Check asks the
+                                // distinct web-permission
+                                // question below, and the
+                                // web page takes extra
+                                // care.
                                 ui.separator();
                                 let noted = self
                                     .doc
@@ -6002,6 +6033,45 @@ impl App {
                                 if ui.button("No children in this picture").clicked() {
                                     self.set_picture_children(idx, fi, false);
                                     ui.close_menu();
+                                }
+                                // The child-web permission
+                                // (R-2b, round 51, G-01):
+                                // only asked where children
+                                // are noted in the picture.
+                                // A credit line or a license
+                                // never stands in for it.
+                                if noted == Some(true) {
+                                    let permission = self
+                                        .doc
+                                        .assets
+                                        .iter()
+                                        .find(|a| a.sha256 == p.asset)
+                                        .and_then(|a| a.rights.child_web_permission);
+                                    ui.label(match permission {
+                                        Some(true) => {
+                                            "Permission to publish children on the web: yes, noted."
+                                        }
+                                        Some(false) => {
+                                            "Permission to publish children on the web: no, noted."
+                                        }
+                                        None => {
+                                            "Permission to publish children on the web: not noted yet."
+                                        }
+                                    });
+                                    if ui
+                                        .button("Permission is given to publish children on the web")
+                                        .clicked()
+                                    {
+                                        self.set_picture_child_web_permission(idx, fi, true);
+                                        ui.close_menu();
+                                    }
+                                    if ui
+                                        .button("Permission is not given to publish children on the web")
+                                        .clicked()
+                                    {
+                                        self.set_picture_child_web_permission(idx, fi, false);
+                                        ui.close_menu();
+                                    }
                                 }
                             }
                         }
@@ -6289,6 +6359,50 @@ impl App {
             "Noted: this picture has children in it.".into()
         } else {
             "Noted: no children in this picture.".into()
+        });
+    }
+
+    /// Note, on a placed picture's rights record, whether
+    /// children in it may go on the web page (R-2b,
+    /// round 51, G-01): the distinct permission decision,
+    /// separate from the license and the credit line.
+    /// A placement whose record is missing gets one, so
+    /// the note always has somewhere to live. One undo
+    /// step.
+    pub(crate) fn set_picture_child_web_permission(
+        &mut self,
+        idx: usize,
+        fi: usize,
+        granted: bool,
+    ) {
+        let Some(asset_hash) = self.doc.panels[idx]
+            .frames
+            .get(fi)
+            .and_then(|f| f.picture.as_ref())
+            .map(|p| p.asset.clone())
+        else {
+            return;
+        };
+        self.push_undo_now();
+        if let Some(asset) = self.doc.assets.iter_mut().find(|a| a.sha256 == asset_hash) {
+            asset.rights.child_web_permission = Some(granted);
+        } else if let Some(bytes) = self.doc.asset_data(&asset_hash).map(|b| b.to_vec()) {
+            let media = match ob_image::sniff(&bytes) {
+                ob_image::PictureFormat::Jpeg => "image/jpeg",
+                ob_image::PictureFormat::Svg => "image/svg+xml",
+                _ => "image/png",
+            };
+            let rights = ob_model::RightsRecord {
+                child_web_permission: Some(granted),
+                ..Default::default()
+            };
+            self.doc
+                .add_asset(&bytes, ob_model::AssetKind::Picture, media, rights);
+        }
+        self.note(if granted {
+            "Noted: permission is given to publish children on the web.".into()
+        } else {
+            "Noted: permission is not given to publish children on the web.".into()
         });
     }
 
@@ -8306,6 +8420,9 @@ impl App {
                                 ));
                                 msg.push_str(&ob_extract::html_export::children_left_out_sentence(
                                     report.children_left_out,
+                                ));
+                                msg.push_str(&ob_extract::html_export::children_published_sentence(
+                                    report.children_published,
                                 ));
                                 self.export_note = Some(msg.clone());
                                 self.note(msg);

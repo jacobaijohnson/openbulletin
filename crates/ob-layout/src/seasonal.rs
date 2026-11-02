@@ -147,13 +147,67 @@ impl SeasonalService {
 /// is the service label ([`SeasonalService::label`]). The
 /// field travels with the document — it is part of the
 /// saved form, so a re-opened seasonal bulletin still
-/// refuses Next Sunday — and it is cleared when the office
-/// renames the service on This Sunday, which is the office
-/// explicitly asserting the bulletin is now a Sunday
-/// bulletin. Next Sunday checks this marker before the
+/// refuses Next Sunday. Next Sunday checks this marker before the
 /// name test, so Easter Sunday (which contains "Sunday")
-/// refuses exactly like the other five.
+/// refuses exactly like the other five. How a rename
+/// treats the marker is [`marker_after_rename`]'s rule
+/// (round 55, R54-RED-1), not an unconditional clear.
 pub const SEASONAL_SERVICE_FIELD: &str = "seasonal_service";
+
+/// The seasonal marker after a rename on This Sunday
+/// (round 55, R54-RED-1). Round 53 cleared the marker on
+/// every rename, on the theory that renaming asserts a
+/// Sunday bulletin; that theory is false for
+/// occasion-to-occasion renames — a Christmas bulletin
+/// renamed to Christmas Eve kept the Christmas order and
+/// lost its protection, so Next Sunday mangled it in the
+/// exact round-53 shape — and it never covered the
+/// reverse direction, a Sunday bulletin renamed to an
+/// occasion name gaining no marker at all. The rule now:
+/// - rename exactly to Sunday: the marker clears. This is
+///   the designed way back to a Sunday bulletin;
+/// - rename a marked bulletin to anything else: the marker
+///   stays, re-filed under the new name, so the refusal
+///   names the occasion as it now stands and the
+///   seasonal order still refuses Next Sunday;
+/// - rename an unmarked bulletin to a seasonal label or
+///   any other one-time occasion name: the marker files
+///   under the new name, so the bulletin refuses Next
+///   Sunday until it is renamed back to Sunday. This is
+///   deliberately fail-safe: a Sunday bulletin renamed to
+///   an occasion name refuses even before the office has
+///   edited its order to match, rather than advancing a
+///   possibly-seasonal order as if it were a Sunday one;
+/// - rename an unmarked bulletin to a Sunday-rhythm name
+///   (a name carrying the word Sunday, or an empty name):
+///   no marker files, and Next Sunday advances as before.
+///
+/// An empty new name on a marked bulletin keeps the old
+/// marker rather than filing an empty one (Next Sunday
+/// ignores an empty marker).
+pub fn marker_after_rename(existing: Option<&str>, new_name: &str) -> Option<String> {
+    let name = new_name.trim();
+    if name.eq_ignore_ascii_case(crate::DEFAULT_SERVICE_NAME) {
+        return None;
+    }
+    if name.is_empty() {
+        return existing
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string());
+    }
+    let marked = existing.map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if marked {
+        return Some(name.to_string());
+    }
+    let seasonal_label = SeasonalService::all()
+        .iter()
+        .any(|s| s.label().eq_ignore_ascii_case(name));
+    if seasonal_label || crate::is_one_time_occasion(name) {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
 
 /// Build a ready-to-edit bulletin document for a seasonal
 /// or event service: the preset's panels, cover, notes,
@@ -372,6 +426,71 @@ mod tests {
         assert_eq!(back.fields["occasion_name"], "Christmas Day");
         let order = order_text(&back);
         assert!(order.contains("Silent Night"), "{order}");
+    }
+
+    #[test]
+    fn rename_marker_rule_covers_both_directions() {
+        // Round 55, R54-RED-1: the marker_after_rename
+        // matrix, pinned at the rule itself so every
+        // rename path through it is covered, not just the
+        // app seam's three shapes.
+        // Exactly Sunday clears, even from a marked doc.
+        assert_eq!(marker_after_rename(Some("Christmas Day"), "Sunday"), None);
+        assert_eq!(marker_after_rename(Some("Christmas Day"), " sunday "), None);
+        assert_eq!(marker_after_rename(None, "Sunday"), None);
+        // A marked doc renamed to another occasion keeps
+        // the mark, re-filed under the new name — the S3
+        // shape (Christmas Eve is not a shipped label, so
+        // the one-time-name arm, not the label arm, files
+        // it for an unmarked doc; the sticky arm covers
+        // the marked doc either way).
+        assert_eq!(
+            marker_after_rename(Some("Christmas Day"), "Christmas Eve"),
+            Some("Christmas Eve".to_string())
+        );
+        // A marked doc renamed to a Sunday-rhythm name
+        // still keeps the mark: its order is still the
+        // seasonal order, and only a rename exactly to
+        // Sunday is the way back.
+        assert_eq!(
+            marker_after_rename(Some("Christmas Day"), "Twentieth Sunday after Pentecost"),
+            Some("Twentieth Sunday after Pentecost".to_string())
+        );
+        // A marked doc renamed to a seasonal label keeps
+        // the mark under the new label (Easter Sunday
+        // contains "Sunday" but is a shipped label, so it
+        // must not clear through the Sunday-word path).
+        assert_eq!(
+            marker_after_rename(Some("Christmas Day"), "Easter Sunday"),
+            Some("Easter Sunday".to_string())
+        );
+        // An unmarked doc renamed to an occasion name
+        // gains the mark: the reverse direction.
+        assert_eq!(
+            marker_after_rename(None, "Christmas Eve"),
+            Some("Christmas Eve".to_string())
+        );
+        assert_eq!(
+            marker_after_rename(None, "Easter Sunday"),
+            Some("Easter Sunday".to_string())
+        );
+        assert_eq!(
+            marker_after_rename(None, "Ash Wednesday"),
+            Some("Ash Wednesday".to_string())
+        );
+        // An unmarked doc renamed to a Sunday-rhythm name
+        // gains nothing and advances as before.
+        assert_eq!(
+            marker_after_rename(None, "Twentieth Sunday after Pentecost"),
+            None
+        );
+        // An empty rename keeps an existing mark rather
+        // than filing an empty one Next Sunday ignores.
+        assert_eq!(
+            marker_after_rename(Some("Christmas Day"), "   "),
+            Some("Christmas Day".to_string())
+        );
+        assert_eq!(marker_after_rename(None, "   "), None);
     }
 
     #[test]

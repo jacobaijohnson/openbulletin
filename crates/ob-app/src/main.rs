@@ -2430,10 +2430,12 @@ impl eframe::App for App {
                         if resp_sn.lost_focus()
                             && self.doc.fields.get("occasion_name").map(|v| v.as_str()) != Some(sn.as_str())
                         {
-                                // Renaming clears the seasonal
-                                // mark (round 53, R53-RED-2):
-                                // the office is asserting this
-                                // is now a Sunday bulletin.
+                                // Renaming follows the round
+                                // 55 marker rule (R54-RED-1):
+                                // only a rename exactly to
+                                // Sunday clears the seasonal
+                                // mark; any other rename keeps
+                                // or files it.
                                 self.apply_service_name(sn);
                         }
                         ui.label("Service time");
@@ -15616,11 +15618,12 @@ mod settings_tests {
 
     #[test]
     fn r53a_rename_on_this_sunday_clears_seasonal_marker() {
-        // Round 53, R53-RED-2: renaming on This Sunday is
-        // the office asserting the bulletin is now a
-        // Sunday bulletin, so the seasonal mark goes with
-        // the old name — while the order stays as it
-        // stands, for the office to change.
+        // Round 53, R53-RED-2, as narrowed by round 55
+        // (R54-RED-1): renaming exactly to Sunday is the
+        // office asserting the bulletin is now a Sunday
+        // bulletin, so the seasonal mark goes with the old
+        // name — while the order stays as it stands, for
+        // the office to change.
         let mut app = clean_app_with_template();
         app.doc = ob_layout::seasonal::build_seasonal_template(
             ob_layout::seasonal::SeasonalService::Christmas,
@@ -15709,6 +15712,155 @@ mod settings_tests {
                 .iter()
                 .any(|p| p.text().contains("Christ the Lord Is Risen Today")),
             "the Easter hymn survives"
+        );
+    }
+
+    #[test]
+    fn r55a_rename_to_another_occasion_keeps_marker_and_refuses_next_sunday() {
+        // Round 55, R54-RED-1, probe S3 pinned at the app
+        // seam: a Christmas bulletin renamed to Christmas
+        // Eve keeps its seasonal mark (re-filed under the
+        // new name) and its Christmas order, and Next
+        // Sunday refuses it whole with guidance — it no
+        // longer becomes a "Sunday" bulletin over the
+        // Christmas order with a rename note that leads
+        // nowhere.
+        let mut app = clean_app_with_template();
+        app.doc = ob_layout::seasonal::build_seasonal_template(
+            ob_layout::seasonal::SeasonalService::Christmas,
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date"),
+        );
+        app.apply_service_name("Christmas Eve".to_string());
+        assert_eq!(app.doc.fields["occasion_name"], "Christmas Eve");
+        assert_eq!(
+            app.doc.fields[ob_layout::seasonal::SEASONAL_SERVICE_FIELD],
+            "Christmas Eve",
+            "the rename re-files the mark under the new name"
+        );
+        app.path = Some(std::path::PathBuf::from("christmas-eve.obd"));
+        app.next_sunday();
+        assert_eq!(app.doc.fields["occasion_date"], "2026-12-20");
+        assert_eq!(app.doc.fields["occasion_name"], "Christmas Eve");
+        assert_eq!(
+            app.doc.fields[ob_layout::seasonal::SEASONAL_SERVICE_FIELD],
+            "Christmas Eve"
+        );
+        assert!(app.path.is_some(), "the refusal keeps the file path");
+        assert!(!app.status_error, "the refusal is guidance, not a failure");
+        assert!(
+            app.status.contains("Christmas Eve"),
+            "the refusal names the occasion as it now stands: {}",
+            app.status
+        );
+        assert!(
+            app.status.contains("the order stays as it stands"),
+            "the refusal is honest that renaming does not fix the order: {}",
+            app.status
+        );
+        let order = app
+            .doc
+            .stories
+            .iter()
+            .find(|story| {
+                story
+                    .paragraphs
+                    .first()
+                    .map(|p| p.text() == "Order of Service")
+                    .unwrap_or(false)
+            })
+            .expect("the order story");
+        assert!(
+            order
+                .paragraphs
+                .iter()
+                .any(|p| p.text().contains("Silent Night")),
+            "the Christmas order survives the refused Next Sunday"
+        );
+    }
+
+    #[test]
+    fn r55a_rename_to_sunday_still_clears_marker_and_advances() {
+        // Round 55, R54-RED-1, probe S4 pinned at the app
+        // seam: the designed way back still works. A
+        // Christmas bulletin renamed exactly to Sunday
+        // loses its mark, and Next Sunday then advances
+        // it normally instead of refusing.
+        let mut app = clean_app_with_template();
+        app.doc = ob_layout::seasonal::build_seasonal_template(
+            ob_layout::seasonal::SeasonalService::Christmas,
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date"),
+        );
+        app.apply_service_name("Sunday".to_string());
+        assert_eq!(app.doc.fields["occasion_name"], "Sunday");
+        assert!(
+            !app.doc
+                .fields
+                .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+            "the rename exactly to Sunday clears the mark"
+        );
+        app.next_sunday();
+        assert_eq!(app.doc.fields["occasion_name"], "Sunday");
+        assert!(
+            !app.doc
+                .fields
+                .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+            "the advance files no mark"
+        );
+        assert!(
+            !app.status.contains("leaves it exactly as it is"),
+            "the advance is not a refusal: {}",
+            app.status
+        );
+        let advanced =
+            chrono::NaiveDate::parse_from_str(&app.doc.fields["occasion_date"], "%Y-%m-%d")
+                .expect("the advanced date parses");
+        let original = chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date");
+        assert!(
+            advanced > original,
+            "the date advanced from the original week: {}",
+            app.doc.fields["occasion_date"]
+        );
+        assert_eq!(
+            chrono::Datelike::weekday(&advanced),
+            chrono::Weekday::Sun,
+            "the advance lands on a Sunday"
+        );
+    }
+
+    #[test]
+    fn r55a_sunday_renamed_to_an_occasion_gains_marker_and_refuses() {
+        // Round 55, R54-RED-1, reverse direction pinned at
+        // the app seam: a plain Sunday bulletin renamed to
+        // an occasion name gains the marker at rename
+        // time, so Next Sunday refuses it — whether or not
+        // the office has yet edited its order to match.
+        // Renaming back to Sunday is the way back.
+        let mut app = clean_app_with_template();
+        assert!(
+            !app.doc
+                .fields
+                .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+            "the Sunday bulletin starts unmarked"
+        );
+        app.apply_service_name("Christmas Day".to_string());
+        assert_eq!(app.doc.fields["occasion_name"], "Christmas Day");
+        assert_eq!(
+            app.doc.fields[ob_layout::seasonal::SEASONAL_SERVICE_FIELD],
+            "Christmas Day",
+            "the rename files the mark under the new name"
+        );
+        app.next_sunday();
+        assert_eq!(app.doc.fields["occasion_date"], "2026-10-18");
+        assert_eq!(app.doc.fields["occasion_name"], "Christmas Day");
+        assert!(!app.status_error, "the refusal is guidance, not a failure");
+        assert!(
+            app.status.contains("Christmas Day"),
+            "the refusal names the occasion: {}",
+            app.status
         );
     }
 

@@ -529,8 +529,9 @@ pub fn next_sunday_report_as_of(
              the name, the order, the hymns, and the date are untouched. A seasonal \
              order does not repeat a week later. To start the next week, start a fresh \
              Sunday bulletin from the Start step; or, if this bulletin is now a Sunday \
-             bulletin, rename it on This Sunday first — renaming clears the seasonal \
-             mark, and the order stays as it stands for you to change."
+             bulletin, rename it on This Sunday to Sunday first — only renaming to \
+             Sunday clears the seasonal mark, and the order stays as it stands for you \
+             to change."
         );
         let report = NextSundayReport {
             seasonal_refusal: Some(refusal),
@@ -578,7 +579,8 @@ pub fn next_sunday_report_as_of(
         );
         Some(format!(
             "This was a one-time service ({old_name}). The copy is set for \
-             Sunday, {}; if it is a different service, rename it on This Sunday.",
+             Sunday, {}; if it is a different service, rename it on This Sunday \
+             and set the order to match — renaming changes the name only, not the order.",
             long_date(next)
         ))
     } else {
@@ -1367,7 +1369,8 @@ mod tests {
             note,
             "This was a one-time service (Wedding). The copy is set for \
              Sunday, October 18, 2026; if it is a different service, rename \
-             it on This Sunday."
+             it on This Sunday and set the order to match — renaming changes \
+             the name only, not the order."
         );
         // The weekly machinery still ran on the copy.
         assert!(n.stories[2]

@@ -146,17 +146,38 @@ impl App {
     }
 
     /// Rename the service on This Sunday (round 53,
-    /// R53-RED-2): a rename is the office explicitly
-    /// asserting the bulletin is now a Sunday bulletin, so
-    /// the seasonal mark goes with the old name. The order
-    /// stays as it stands, for the office to change; the
-    /// change is undoable like any other edit.
+    /// R53-RED-2; marker rule round 55, R54-RED-1): the
+    /// marker follows
+    /// [`ob_layout::seasonal::marker_after_rename`] — it
+    /// clears only on a rename exactly to Sunday, stays
+    /// (re-filed under the new name) on any other rename
+    /// of a marked bulletin, and files fresh when an
+    /// unmarked bulletin is renamed to an occasion name.
+    /// The order stays as it stands, for the office to
+    /// change; the change is undoable like any other edit.
     pub(crate) fn apply_service_name(&mut self, name: String) {
         let before = snapshot(&self.doc);
+        let marker = ob_layout::seasonal::marker_after_rename(
+            self.doc
+                .fields
+                .get(ob_layout::seasonal::SEASONAL_SERVICE_FIELD)
+                .map(String::as_str),
+            &name,
+        );
         self.doc.fields.insert("occasion_name".to_string(), name);
-        self.doc
-            .fields
-            .remove(ob_layout::seasonal::SEASONAL_SERVICE_FIELD);
+        match marker {
+            Some(value) => {
+                self.doc.fields.insert(
+                    ob_layout::seasonal::SEASONAL_SERVICE_FIELD.to_string(),
+                    value,
+                );
+            }
+            None => {
+                self.doc
+                    .fields
+                    .remove(ob_layout::seasonal::SEASONAL_SERVICE_FIELD);
+            }
+        }
         if before != snapshot(&self.doc) {
             self.record_undo(before);
         }

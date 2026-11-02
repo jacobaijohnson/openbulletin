@@ -105,8 +105,7 @@ mod print_tests {
         // like the credit, so the export carries it, and
         // the frame breaks nothing in the print path.
         let mut info = parse_musicxml(TINY_SCORE).expect("parse");
-        info.rights =
-            Some("© 2019 Jane Doe. Reprinted under CCLI license #123456".to_string());
+        info.rights = Some("© 2019 Jane Doe. Reprinted under CCLI license #123456".to_string());
         let doc = build_music_draft(
             &info,
             TINY_SCORE.as_bytes(),
@@ -116,9 +115,7 @@ mod print_tests {
             None,
         )
         .doc;
-        let permission = doc
-            .story("music-permission")
-            .expect("the permission story");
+        let permission = doc.story("music-permission").expect("the permission story");
         assert!(permission
             .paragraphs
             .iter()

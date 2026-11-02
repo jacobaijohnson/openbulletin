@@ -374,14 +374,20 @@ mod tests {
             licensor_ref_from_rights("© 2020 John Smith, One License #a-42"),
             "A-42"
         );
-        assert_eq!(licensor_ref_from_rights("Public domain in the file's own words"), "");
+        assert_eq!(
+            licensor_ref_from_rights("Public domain in the file's own words"),
+            ""
+        );
         assert_eq!(licensor_ref_from_rights("Reprinted under CCLI license"), "");
         assert_eq!(licensor_ref_from_rights(""), "");
     }
 
     #[test]
     fn licensors_named_by_name_never_guessed() {
-        assert_eq!(licensor_from_rights("Reprinted under CCLI license #1"), "CCLI");
+        assert_eq!(
+            licensor_from_rights("Reprinted under CCLI license #1"),
+            "CCLI"
+        );
         assert_eq!(
             licensor_from_rights("Used with permission under ONE LICENSE #A-1"),
             "ONE LICENSE"
@@ -403,7 +409,10 @@ mod tests {
             copyright_from_rights("Copyright 2020 John Smith. All rights reserved."),
             Some("© 2020 John Smith".to_string())
         );
-        assert_eq!(copyright_from_rights("Reprinted under CCLI license #123456"), None);
+        assert_eq!(
+            copyright_from_rights("Reprinted under CCLI license #123456"),
+            None
+        );
         assert_eq!(copyright_from_rights("© 1800 Too Old"), None);
     }
 
@@ -418,7 +427,10 @@ mod tests {
         assert!(line.contains("Words: Jane Doe"), "{line}");
         assert!(line.contains("Music: John Smith"), "{line}");
         assert!(line.contains("© 2019 Jane Doe"), "{line}");
-        assert!(line.contains("Reprinted under CCLI license #123456"), "{line}");
+        assert!(
+            line.contains("Reprinted under CCLI license #123456"),
+            "{line}"
+        );
     }
 
     #[test]
@@ -486,20 +498,33 @@ mod tests {
             children_present: None,
             child_web_permission: None,
         };
-        doc.add_asset(b"fake music bytes", AssetKind::Music, "application/xml", licensed);
+        doc.add_asset(
+            b"fake music bytes",
+            AssetKind::Music,
+            "application/xml",
+            licensed,
+        );
         let unlicensed = RightsRecord {
             license: LicenseKind::PublicDomain,
             title: "Free Song".to_string(),
             ..RightsRecord::default()
         };
-        doc.add_asset(b"other bytes", AssetKind::Music, "application/xml", unlicensed);
+        doc.add_asset(
+            b"other bytes",
+            AssetKind::Music,
+            "application/xml",
+            unlicensed,
+        );
         // A licensed hymn with no number recorded.
         doc.stories.push(Story {
             id: "order".to_string(),
             keep_through: None,
             paragraphs: vec![
                 Paragraph::plain("body", "Sermon:\tPastor"),
-                Paragraph::plain("order-line", "Hymn of Praise\tELW 432 · O Come, All Ye Faithful"),
+                Paragraph::plain(
+                    "order-line",
+                    "Hymn of Praise\tELW 432 · O Come, All Ye Faithful",
+                ),
             ],
         });
         let mut memory = HymnMemory::default();

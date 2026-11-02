@@ -59,7 +59,8 @@ pub fn music_frame_width_mm() -> f64 {
 /// file: the file is the source, and its rights line,
 /// when it parses to a known kind, is the license.
 pub fn rights_from_music(info: &MusicInfo, source_name: &str) -> RightsRecord {
-    let licensor_ref = crate::license::licensor_ref_from_rights(info.rights.as_deref().unwrap_or(""));
+    let licensor_ref =
+        crate::license::licensor_ref_from_rights(info.rights.as_deref().unwrap_or(""));
     RightsRecord {
         source: source_name.to_string(),
         source_url: None,
@@ -624,8 +625,10 @@ mod tests {
                 .any(|f| f.story_id.as_deref() == Some("music-permission")),
             "the permission story is framed, so it prints"
         );
-        assert!(out.items.iter().any(|i| i.label == "Permission line"
-            && i.badge == Badge::Matched));
+        assert!(out
+            .items
+            .iter()
+            .any(|i| i.label == "Permission line" && i.badge == Badge::Matched));
     }
 
     #[test]
@@ -634,8 +637,10 @@ mod tests {
         // warning instead, and the draft still forms.
         let out = draft_for_rights("Reprinted under CCLI license");
         assert!(out.doc.story("music-permission").is_none());
-        assert!(out.items.iter().any(|i| i.label == "Permission line"
-            && i.badge == Badge::CheckThis));
+        assert!(out
+            .items
+            .iter()
+            .any(|i| i.label == "Permission line" && i.badge == Badge::CheckThis));
         assert!(out.doc.story("music-heading").is_some());
         assert!(out.doc.story("music-credit").is_some());
     }

@@ -13,8 +13,8 @@
 //! bulletins.
 
 use crate::{
-    compose_permission_line, service_story_id, ContentRole, Document, Frame, FrameKind, LicenseKind,
-    Panel, Paragraph, Rect, SimpleDate, Size,
+    compose_permission_line, service_story_id, ContentRole, Document, Frame, FrameKind,
+    LicenseKind, Panel, Paragraph, Rect, SimpleDate, Size,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -915,10 +915,7 @@ mod tests {
         license: HymnLicense,
     ) -> HymnMemory {
         let mut mem = HymnMemory::default();
-        mem.learn(
-            &entry(hymnal, Some(number), Some(title)),
-            d(2026, 10, 18),
-        );
+        mem.learn(&entry(hymnal, Some(number), Some(title)), d(2026, 10, 18));
         assert!(mem.note_license(hymnal, number, license));
         mem
     }
@@ -1005,7 +1002,11 @@ mod tests {
             &entry(None, Some("77"), Some("Numberless Song")),
             d(2026, 10, 18),
         );
-        assert!(mem.note_license(None, "77", licensed_pair("ONE LICENSE", "", "© 2020 John Smith")));
+        assert!(mem.note_license(
+            None,
+            "77",
+            licensed_pair("ONE LICENSE", "", "© 2020 John Smith")
+        ));
         let mut doc = order_doc(vec![
             "Hymn of Praise\tELW 432 · O Come, All Ye Faithful",
             "Hymn of Response\t77 · Numberless Song",
@@ -1014,12 +1015,19 @@ mod tests {
         let out = append_hymn_permission_panel(&mut doc, &mem);
         assert!(out.added, "the panel appends");
         assert_eq!(out.lines.len(), 1, "the twice-sung hymn prints once");
-        assert!(out.lines[0].contains("CCLI license #123456"), "{}", out.lines[0]);
+        assert!(
+            out.lines[0].contains("CCLI license #123456"),
+            "{}",
+            out.lines[0]
+        );
         assert_eq!(out.warnings.len(), 1, "the numberless hymn warns");
         assert!(out.warnings[0].contains("77"), "{}", out.warnings[0]);
         // The panel is printable words: a story and a frame on it.
         let story = doc.story(HYMN_PERMISSIONS_STORY).expect("the story");
-        assert!(story.paragraphs.iter().any(|p| p.text().contains("CCLI license #123456")));
+        assert!(story
+            .paragraphs
+            .iter()
+            .any(|p| p.text().contains("CCLI license #123456")));
         assert_eq!(doc.panels.len(), 2);
         assert_eq!(
             doc.panels[1].frames[0].story_id.as_deref(),

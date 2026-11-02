@@ -57,10 +57,16 @@ one-click Accept.
 - A suggestion is a draft until a human accepts or edits it. Nothing is
   auto-applied to a real bulletin.
 - Seasonal variants (Christmas, Easter): a separate seasonal clustering
-  and set-aside is not built. The analyzer grows one family of look-alike
-  bulletins and builds the template from that family; bulletins outside
-  it are left out, and the review says only how many of the studied
-  bulletins look like one family. It does not identify seasonal or
-  special services, and it does not say a set-aside sentence such as
-  "2 of these look like special services; we set them aside".
+  and set-aside is still not built. The analyzer grows one family of
+  look-alike bulletins and builds the template from that family;
+  bulletins outside it are left out, and the review says only how many
+  of the studied bulletins look like one family. It does not identify
+  seasonal or special services, and it does not say a set-aside sentence
+  such as "2 of these look like special services; we set them aside".
+  What IS built, separately from the analyzer (round 51, G-08a): a
+  shipped seasonal/event template set (`ob_layout::seasonal`) — Wedding,
+  Baptism, Christmas Day, Easter Sunday, Day of Pentecost, Funeral —
+  each a ready-to-edit template with the occasion's own order of
+  service. The analyzer does not learn them from a corpus; they ship
+  with the app.
 - Works on the user's own files, on their machine. No cloud, no telemetry.

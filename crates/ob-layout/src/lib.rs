@@ -8,6 +8,8 @@ use chrono::{Datelike, Duration, NaiveDate};
 use ob_model::*;
 use std::collections::BTreeMap;
 
+pub mod seasonal;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preset {
     LetterBifold,

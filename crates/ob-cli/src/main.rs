@@ -406,6 +406,29 @@ fn run(cli: Cli) -> Result<(), String> {
         Cmd::NextSunday { input, out } => {
             let doc = ob_format::load(&input)?;
             let (next, report) = ob_layout::next_sunday_report(&doc)?;
+            if let Some(refusal) = &report.seasonal_refusal {
+                // Round 55, batch C, R54-RED-2: a seasonal
+                // bulletin has no next week, so there is
+                // nothing to write and no "wrote" line to
+                // print. The old code saved the input
+                // untouched and announced it as the new
+                // Sunday. Instead the refusal + guidance
+                // print on stdout, no output file is
+                // written, and the command fails (exit 1,
+                // the CLI's standing refusal exit, as for
+                // a bad date or a copy over its own
+                // input): a script must not take a
+                // duplicate of the same week for next
+                // week. The short error on stderr is the
+                // script-facing signal; the stdout text
+                // is the office-facing guidance.
+                println!("{refusal}");
+                return Err(
+                    "next-sunday refused: the bulletin is a seasonal bulletin, so no new \
+                     week was written"
+                        .to_string(),
+                );
+            }
             ob_format::save(&next, &out)?;
             println!(
                 "wrote {} for {} ({})",

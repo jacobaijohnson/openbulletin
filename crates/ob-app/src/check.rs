@@ -355,8 +355,13 @@ pub(crate) fn license_usage_findings(
         .iter()
         .filter_map(|u| u.line.clone())
         .collect();
+    // Round 55, batch C, R54-RED-3: an orphan panel
+    // shape is a finding even when the report is empty
+    // and no story stands (frame-only), so it must not
+    // fall through the early return below.
+    let orphan = ob_model::hymns::permission_panel_orphan(doc);
     let mut out = Vec::new();
-    if report.is_empty() && panel_lines.is_none() {
+    if report.is_empty() && panel_lines.is_none() && !orphan {
         return out;
     }
     if !report.is_empty() {
@@ -384,7 +389,14 @@ pub(crate) fn license_usage_findings(
             }
         }
     }
-    if let Some(panel) = panel_lines {
+    if orphan {
+        out.push(CheckNote::plain(
+            "Check: the permission panel on the page is incomplete — its story or its frame \
+             is missing, so no permission lines print. Remove it on the Check step, then \
+             update again if the lines still belong."
+                .to_string(),
+        ));
+    } else if let Some(panel) = panel_lines {
         if panel != computed_lines {
             out.push(CheckNote::plain(
                 "Check: the permission panel on the page does not match the current hymns — \
@@ -1495,6 +1507,52 @@ mod tests {
                 .contains("permission panel on the page does not match the current hymns"),
             "{}",
             notes[0].text
+        );
+    }
+
+    #[test]
+    fn r55c_license_usage_notes_an_orphan_permission_panel() {
+        // Round 55, batch C, R54-RED-3: Check names an
+        // orphan panel shape instead of staying silent
+        // for it, in both shapes — frame-only with an
+        // empty memory (no report, no story, the old
+        // early return) and story-only with matching
+        // hymns (a report, but no frame, so the old
+        // staleness comparison drew no note). The note
+        // is what the Check step's Remove button sits
+        // beside.
+        let mut frame_only =
+            doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        let memory = memory_with_number("123456");
+        assert!(ob_model::hymns::append_hymn_permission_panel(&mut frame_only, &memory).added);
+        frame_only
+            .stories
+            .retain(|s| s.id != ob_model::hymns::HYMN_PERMISSIONS_STORY);
+        assert!(ob_model::hymns::permission_panel_orphan(&frame_only));
+        let notes = license_usage_findings(&frame_only, &HymnMemory::default());
+        assert!(
+            notes.iter().any(|n| n
+                .text
+                .contains("permission panel on the page is incomplete")),
+            "{notes:?}"
+        );
+        let mut story_only =
+            doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        assert!(ob_model::hymns::append_hymn_permission_panel(&mut story_only, &memory).added);
+        story_only.panels.retain(|p| p.id != "panel-permissions");
+        assert!(ob_model::hymns::permission_panel_orphan(&story_only));
+        let notes = license_usage_findings(&story_only, &memory);
+        assert!(
+            notes.iter().any(|n| n
+                .text
+                .contains("permission panel on the page is incomplete")),
+            "{notes:?}"
+        );
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.text.contains("does not match the current hymns")),
+            "an orphan draws the orphan note, not the stale note: {notes:?}"
         );
     }
 

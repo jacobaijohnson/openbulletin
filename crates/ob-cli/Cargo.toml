@@ -27,3 +27,10 @@ workspace = true
 
 [dev-dependencies]
 ob-text = { path = "../ob-text" }
+# Round 55, batch C, R54-RED-2: the CLI tests build
+# documents through the same library doors the binary
+# uses, so a seasonal refusal can be exercised end to
+# end instead of only at the library level.
+ob-layout = { path = "../ob-layout" }
+ob-format = { path = "../ob-format" }
+ob-model = { path = "../ob-model" }

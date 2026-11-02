@@ -193,6 +193,119 @@ fn fonts_add_skips_the_bad_and_lands_the_good() {
 }
 
 #[test]
+fn r55c_next_sunday_refuses_a_seasonal_bulletin() {
+    // Round 55, batch C, R54-RED-2: next-sunday on a
+    // seasonal .obd used to exit 0 printing "wrote …
+    // for 2026-12-20" (the input's own date) for an
+    // output struct-equal to the input, with no refusal
+    // printed. Now the refusal + guidance print, no
+    // output file is written, the input is untouched,
+    // and the command fails (exit 1, the CLI's standing
+    // refusal exit), so no script takes the duplicate
+    // for next week.
+    let dir = std::env::temp_dir().join(format!("ob-cli-r55c-seasonal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let bin = env!("CARGO_BIN_EXE_openbulletin-cli");
+    let doc = ob_layout::seasonal::build_seasonal_template(
+        ob_layout::seasonal::SeasonalService::Christmas,
+        ob_layout::Preset::LetterBifold,
+        ob_model::ChurchProfile {
+            name: "Grace Church".to_string(),
+            ..Default::default()
+        },
+        chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date"),
+    );
+    let input = dir.join("christmas.obd");
+    ob_format::save(&doc, &input).expect("save the seasonal bulletin");
+    let before = std::fs::read(&input).expect("read the input");
+    let out = dir.join("christmas-next.obd");
+    let run = std::process::Command::new(bin)
+        .args([
+            "next-sunday",
+            input.to_str().expect("path"),
+            "--out",
+            out.to_str().expect("path"),
+        ])
+        .current_dir(&dir)
+        .output()
+        .expect("run cli");
+    assert_eq!(run.status.code(), Some(1), "a refusal fails: {run:?}");
+    let said = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert!(
+        said.contains("Christmas Day") && said.contains("leaves it exactly as it is"),
+        "the refusal names the occasion and says nothing changed: {said}"
+    );
+    assert!(
+        said.contains("start a fresh Sunday bulletin"),
+        "the guidance names the way forward: {said}"
+    );
+    assert!(
+        !said.contains("wrote "),
+        "no success message may claim a new Sunday was written: {said}"
+    );
+    assert!(!out.exists(), "a refused advance writes no output file");
+    assert_eq!(
+        std::fs::read(&input).expect("input still there"),
+        before,
+        "the input is untouched"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn r55c_next_sunday_advances_an_ordinary_bulletin() {
+    // Round 55, batch C, R54-RED-2, the no-regression
+    // side: the normal (non-seasonal) CLI Next Sunday
+    // path is unchanged — exit 0, a "wrote" line for
+    // the advanced date, and an output dated one week
+    // on from the input.
+    let dir = std::env::temp_dir().join(format!("ob-cli-r55c-normal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let bin = env!("CARGO_BIN_EXE_openbulletin-cli");
+    let doc = ob_layout::build_template(
+        ob_layout::Preset::LetterBifold,
+        ob_model::ChurchProfile {
+            name: "Grace Church".to_string(),
+            ..Default::default()
+        },
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 18).expect("date"),
+        "Sunday",
+    );
+    let input = dir.join("week.obd");
+    ob_format::save(&doc, &input).expect("save the bulletin");
+    let out = dir.join("week-next.obd");
+    let run = std::process::Command::new(bin)
+        .args([
+            "next-sunday",
+            input.to_str().expect("path"),
+            "--out",
+            out.to_str().expect("path"),
+        ])
+        .current_dir(&dir)
+        .output()
+        .expect("run cli");
+    assert!(
+        run.status.success(),
+        "an ordinary advance succeeds: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let said = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert!(
+        said.contains("wrote ") && said.contains("2026-10-25"),
+        "the success line names the advanced date: {said}"
+    );
+    let next = ob_format::load(&out).expect("load the output");
+    assert_eq!(
+        next.fields.get("occasion_date").map(String::as_str),
+        Some("2026-10-25"),
+        "the output is one week on"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn new_with_a_bad_date_speaks_plainly() {
     // Round 2, R2-6: a date the CLI cannot read is refused
     // in our words, never in the date library's dialect.

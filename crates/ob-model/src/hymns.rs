@@ -510,12 +510,36 @@ fn permission_panel_present(doc: &Document) -> bool {
     if doc.story(HYMN_PERMISSIONS_STORY).is_some() {
         return true;
     }
+    permission_panel_frame_present(doc)
+}
+
+/// Whether a panel frame points at the Permissions
+/// story: the frame is what puts the story's words on
+/// a page, so a story without one prints nowhere.
+fn permission_panel_frame_present(doc: &Document) -> bool {
     doc.panels.iter().any(|p| {
         p.id == "panel-permissions"
             || p.frames
                 .iter()
                 .any(|f| f.story_id.as_deref() == Some(HYMN_PERMISSIONS_STORY))
     })
+}
+
+/// Whether the Permissions panel actually prints: its
+/// story AND a frame pointing at that story (round 55,
+/// batch C, R54-RED-3). Either half alone is an orphan
+/// shape, not a panel on the page.
+pub fn permission_panel_printable(doc: &Document) -> bool {
+    doc.story(HYMN_PERMISSIONS_STORY).is_some() && permission_panel_frame_present(doc)
+}
+
+/// Whether the document carries an orphan Permissions
+/// panel shape: its story without a frame, or its
+/// frame without its story (round 55, batch C,
+/// R54-RED-3). The Check step offers Remove for exactly
+/// these shapes.
+pub fn permission_panel_orphan(doc: &Document) -> bool {
+    permission_panel_present(doc) && !permission_panel_printable(doc)
 }
 
 /// What updating the hymn permission panel did
@@ -532,10 +556,29 @@ pub enum HymnPermissionUpdate {
         lines: Vec<String>,
         warnings: Vec<String>,
     },
-    /// A panel stood and its lines already equal the
-    /// freshly computed lines: nothing changed.
+    /// A printable panel stood and its lines already
+    /// equal the freshly computed lines: nothing
+    /// changed. Printability is part of the claim
+    /// (round 55, batch C, R54-RED-3): an orphan shape
+    /// never reports this, even when its story lines
+    /// happen to equal the computed lines or when both
+    /// sides are empty.
     AlreadyCurrent {
         lines: Vec<String>,
+        warnings: Vec<String>,
+    },
+    /// An orphan panel shape stood (round 55, batch C,
+    /// R54-RED-3): its story without a frame, or its
+    /// frame without its story, so no permission line
+    /// prints. Nothing changed, and nothing is deleted
+    /// quietly: the office removes the orphan
+    /// explicitly (see `remove_hymn_permission_panel`),
+    /// then updates again to append a whole panel if
+    /// the lines still belong. `panel_lines` is the
+    /// story's lines, or empty for a frame-only shape
+    /// with no story to read.
+    Orphan {
+        panel_lines: Vec<String>,
         warnings: Vec<String>,
     },
     /// A panel stood, its lines differed, and the fresh
@@ -598,9 +641,30 @@ pub fn update_hymn_permission_panel(
             warnings: out.warnings,
         };
     }
+    let printable = permission_panel_printable(doc);
     let panel_lines = permission_panel_lines(doc).unwrap_or_default();
-    if panel_lines == lines {
+    if printable && panel_lines == lines {
         return HymnPermissionUpdate::AlreadyCurrent { lines, warnings };
+    }
+    if !printable {
+        // An orphan shape is never current and never
+        // "refreshed" into matching: rewriting a
+        // story-only panel's paragraphs still leaves
+        // nothing on the page, and a frame-only panel
+        // with no fresh lines has nothing to print
+        // either. The one exception is the frame-only
+        // repair that already held: fresh lines exist,
+        // so the refresh below recreates the story
+        // under the standing frame and the panel
+        // prints again. Every other orphan shape
+        // reports Orphan and changes nothing.
+        let frame_only_repair = doc.story(HYMN_PERMISSIONS_STORY).is_none() && !lines.is_empty();
+        if !frame_only_repair {
+            return HymnPermissionUpdate::Orphan {
+                panel_lines,
+                warnings,
+            };
+        }
     }
     if lines.is_empty() {
         return HymnPermissionUpdate::RefusedStale {
@@ -630,10 +694,11 @@ pub fn update_hymn_permission_panel(
 /// Remove a document's Permissions panel outright
 /// (round 53, batch B, R53-RED-3): the office's
 /// explicit act behind the "Remove permission panel"
-/// button, offered beside a refused-stale warning. The
-/// caller snapshots for undo before calling. Answers
-/// true when a panel story or panel was actually
-/// removed.
+/// button, offered beside a refused-stale warning or
+/// an orphan panel note (round 55, batch C, R54-RED-3).
+/// The caller snapshots for undo before calling.
+/// Answers true when a panel story or panel was
+/// actually removed.
 pub fn remove_hymn_permission_panel(doc: &mut Document) -> bool {
     let mut removed = false;
     if let Some(pos) = doc
@@ -1337,6 +1402,171 @@ mod tests {
         assert_eq!(moved.panels.len(), 1);
         assert!(permission_panel_lines(&moved).is_none());
         assert!(!remove_hymn_permission_panel(&mut moved));
+    }
+
+    #[test]
+    fn r55c_orphan_story_only_is_not_already_current_and_removes_cleanly() {
+        // Round 55, batch C, R54-RED-3, shape A
+        // (round-54 probe H2): the panel frame is lost
+        // but its story stands, so no permission line
+        // prints — even though the story lines still
+        // equal the computed lines. The update must
+        // not report AlreadyCurrent, must change
+        // nothing, and the explicit removal must drop
+        // the orphan story, after which an update
+        // appends a whole panel again.
+        let mut mem = memory_with(
+            Some("ELW"),
+            "432",
+            "Amazing Grace",
+            licensed_pair("CCLI", "123456", "© 2019 Jane Doe"),
+        );
+        mem.learn(
+            &entry(Some("ELW"), Some("365"), Some("Holy Holy")),
+            d(2026, 10, 18),
+        );
+        assert!(mem.note_license(
+            Some("ELW"),
+            "365",
+            licensed_pair("ONE LICENSE", "A-777", "© 2020 John Smith")
+        ));
+        let mut doc = order_doc(vec![
+            "Hymn of Praise\tELW 432 · Amazing Grace",
+            "Hymn of Response\tELW 365 · Holy Holy",
+        ]);
+        assert!(append_hymn_permission_panel(&mut doc, &mem).added);
+        assert_eq!(doc.panels.len(), 2);
+        // Healthy first: the whole panel reports
+        // already current, unchanged.
+        let healthy = update_hymn_permission_panel(&mut doc, &mem);
+        assert!(
+            matches!(healthy, HymnPermissionUpdate::AlreadyCurrent { .. }),
+            "{healthy:?}"
+        );
+        // Lose the frame, keep the story.
+        doc.panels.retain(|p| p.id != "panel-permissions");
+        assert_eq!(doc.panels.len(), 1);
+        assert!(permission_panel_present(&doc));
+        assert!(!permission_panel_printable(&doc));
+        assert!(permission_panel_orphan(&doc));
+        let story_lines = permission_panel_lines(&doc).expect("the story stands");
+        assert_eq!(story_lines.len(), 2, "{story_lines:?}");
+        let update = update_hymn_permission_panel(&mut doc, &mem);
+        match update {
+            HymnPermissionUpdate::Orphan { panel_lines, .. } => {
+                assert_eq!(panel_lines.len(), 2, "{panel_lines:?}");
+            }
+            other => panic!("a story-only panel is not current, got {other:?}"),
+        }
+        assert_eq!(doc.panels.len(), 1, "the orphan update changes nothing");
+        assert_eq!(
+            permission_panel_lines(&doc).expect("the story stands"),
+            story_lines,
+            "the orphan update changes nothing"
+        );
+        // With an empty memory the shape is still an
+        // orphan, not a refused stale panel and never
+        // already current with zero lines.
+        let empty = HymnMemory::default();
+        let update = update_hymn_permission_panel(&mut doc, &empty);
+        assert!(
+            matches!(update, HymnPermissionUpdate::Orphan { .. }),
+            "{update:?}"
+        );
+        assert!(remove_hymn_permission_panel(&mut doc));
+        assert!(!permission_panel_present(&doc));
+        assert!(!permission_panel_orphan(&doc));
+        assert!(permission_panel_lines(&doc).is_none());
+        let again = update_hymn_permission_panel(&mut doc, &mem);
+        assert!(
+            matches!(again, HymnPermissionUpdate::Appended { .. }),
+            "removal plus update restores a whole panel: {again:?}"
+        );
+        assert!(permission_panel_printable(&doc));
+    }
+
+    #[test]
+    fn r55c_orphan_frame_only_with_empty_memory_is_not_already_current() {
+        // Round 55, batch C, R54-RED-3, shape B
+        // (round-54 probe H3): the story is lost but
+        // its frame stands, and on this machine the
+        // hymns yield nothing. The old comparison read
+        // no story as [] and [] == [] as current; the
+        // update must report Orphan instead, the dead
+        // frame must stand until the office removes it,
+        // and removal must drop it.
+        let mem = memory_with(
+            Some("ELW"),
+            "432",
+            "Amazing Grace",
+            licensed_pair("CCLI", "123456", "© 2019 Jane Doe"),
+        );
+        let mut doc = order_doc(vec!["Hymn of Praise\tELW 432 · Amazing Grace"]);
+        assert!(append_hymn_permission_panel(&mut doc, &mem).added);
+        assert_eq!(doc.panels.len(), 2);
+        doc.stories.retain(|s| s.id != HYMN_PERMISSIONS_STORY);
+        assert!(permission_panel_present(&doc));
+        assert!(!permission_panel_printable(&doc));
+        assert!(permission_panel_orphan(&doc));
+        assert!(permission_panel_lines(&doc).is_none());
+        let empty = HymnMemory::default();
+        let update = update_hymn_permission_panel(&mut doc, &empty);
+        match update {
+            HymnPermissionUpdate::Orphan { panel_lines, .. } => {
+                assert!(panel_lines.is_empty(), "{panel_lines:?}");
+            }
+            other => panic!("a frame-only panel is not current, got {other:?}"),
+        }
+        assert_eq!(doc.panels.len(), 2, "the orphan frame stands");
+        assert!(remove_hymn_permission_panel(&mut doc));
+        assert_eq!(doc.panels.len(), 1);
+        assert!(!permission_panel_present(&doc));
+        assert!(!permission_panel_orphan(&doc));
+        assert!(!remove_hymn_permission_panel(&mut doc));
+    }
+
+    #[test]
+    fn r55c_orphan_frame_only_with_lines_still_refreshes_into_a_panel() {
+        // Round 55, batch C, R54-RED-3, the repair
+        // direction that already held: a frame-only
+        // shape with fresh lines recreates its story
+        // under the standing frame, so the panel prints
+        // again — and the next update reports the
+        // healthy panel already current.
+        let mem = memory_with(
+            Some("ELW"),
+            "432",
+            "Amazing Grace",
+            licensed_pair("CCLI", "123456", "© 2019 Jane Doe"),
+        );
+        let mut doc = order_doc(vec!["Hymn of Praise\tELW 432 · Amazing Grace"]);
+        assert!(append_hymn_permission_panel(&mut doc, &mem).added);
+        doc.stories.retain(|s| s.id != HYMN_PERMISSIONS_STORY);
+        assert!(permission_panel_orphan(&doc));
+        let update = update_hymn_permission_panel(&mut doc, &mem);
+        match update {
+            HymnPermissionUpdate::Refreshed {
+                old_lines,
+                new_lines,
+                ..
+            } => {
+                assert!(old_lines.is_empty(), "{old_lines:?}");
+                assert_eq!(new_lines.len(), 1, "{new_lines:?}");
+            }
+            other => panic!("expected the frame-only repair, got {other:?}"),
+        }
+        assert!(permission_panel_printable(&doc));
+        assert_eq!(
+            permission_panel_lines(&doc)
+                .expect("the story is back")
+                .len(),
+            1
+        );
+        let again = update_hymn_permission_panel(&mut doc, &mem);
+        assert!(
+            matches!(again, HymnPermissionUpdate::AlreadyCurrent { .. }),
+            "{again:?}"
+        );
     }
 
     #[test]

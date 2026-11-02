@@ -113,6 +113,14 @@ impl App {
                 ),
                 warnings,
             ),
+            Update::Orphan { warnings, .. } => (
+                "Permission panel is incomplete: its story or its frame is missing, so no \
+                 permission lines print. Nothing changed. Use “Remove permission panel” to \
+                 take it off the page, then update again to add a whole panel if the lines \
+                 still belong."
+                    .to_string(),
+                warnings,
+            ),
             Update::NoLines { warnings } => (
                 "No permission panel added: no licensed hymn in this bulletin carries a \
                  license number."
@@ -130,7 +138,8 @@ impl App {
     /// snapshot for undo first, then drop the panel
     /// story and panel. Only the Check step's "Remove
     /// permission panel" button calls it, beside a
-    /// refused-stale warning.
+    /// refused-stale warning or an orphan panel note
+    /// (round 55, batch C, R54-RED-3).
     pub(crate) fn remove_permission_panel(&mut self) {
         let before = snapshot(&self.doc);
         let panels_before = self.doc.panels.len();
@@ -2973,7 +2982,27 @@ impl eframe::App for App {
                                     .iter()
                                     .filter_map(|u| u.line.clone())
                                     .collect();
-                            if let Some(panel) = panel_lines {
+                            // Round 55, batch C, R54-RED-3:
+                            // an orphan shape (story without
+                            // a frame, or frame without a
+                            // story) prints no permission
+                            // lines, so it gets the Remove
+                            // button first, before either
+                            // branch below can swallow it:
+                            // the story-only shape lands in
+                            // the Some branch and the
+                            // frame-only shape in the None
+                            // branch, and neither offered
+                            // Remove before.
+                            if ob_model::hymns::permission_panel_orphan(&self.doc) {
+                                ui.label(
+                                    "The permission panel on the page is incomplete: its story \
+                                     or its frame is missing, so no permission lines print.",
+                                );
+                                if ui.button("Remove permission panel").clicked() {
+                                    self.remove_permission_panel();
+                                }
+                            } else if let Some(panel) = panel_lines {
                                 if panel != computed && computed.is_empty() {
                                     ui.label(
                                         "The panel on the page lists lines the current hymns \
@@ -16234,6 +16263,133 @@ mod settings_tests {
         assert!(hymns::permission_panel_lines(&app.doc).is_none());
         app.undo();
         assert!(hymns::permission_panel_lines(&app.doc).is_some());
+    }
+
+    #[test]
+    fn r55c_orphan_panel_status_names_removal_and_remove_drops_it() {
+        // Round 55, batch C, R54-RED-3, at the app
+        // seam: both orphan shapes report the
+        // incomplete status (never "already current")
+        // through the Check step's Update button, the
+        // document does not change under the update,
+        // and the Check step's Remove button drops the
+        // orphan — with Undo bringing the frame-only
+        // shape back, as for an ordinary removal. The
+        // button itself renders under the orphan
+        // predicate this status path shares (see the
+        // Check step's panel block); egui rendering is
+        // not clicked in a unit test, so the predicate
+        // plus this seam are the pin.
+        use ob_model::hymns;
+        let mut app = clean_app_with_template();
+        let date = ob_model::SimpleDate {
+            year: 2026,
+            month: 10,
+            day: 18,
+        };
+        app.hymn_memory.learn(
+            &hymns::HymnEntry {
+                hymnal: Some("ELW".to_string()),
+                number: Some("432".to_string()),
+                title: Some("Amazing Grace".to_string()),
+            },
+            date,
+        );
+        assert!(app.hymn_memory.note_license(
+            Some("ELW"),
+            "432",
+            hymns::HymnLicense {
+                kind: ob_model::LicenseKind::LicensedReprint,
+                licensor: "CCLI".to_string(),
+                number: "123456".to_string(),
+                copyright_line: "© 2019 Jane Doe".to_string(),
+            },
+        ));
+        let sid = ob_model::service_story_id(&app.doc).expect("a service story");
+        let story = app.doc.story_mut(&sid).expect("the service story");
+        story.paragraphs.push(ob_model::Paragraph::plain(
+            "order-line",
+            "Hymn of Praise\tELW 432 · Amazing Grace",
+        ));
+        let panels_before = app.doc.panels.len();
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel added"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert_eq!(app.doc.panels.len(), panels_before + 1);
+        // Story-only: lose the frame, keep the story.
+        app.doc.panels.retain(|p| p.id != "panel-permissions");
+        assert!(hymns::permission_panel_orphan(&app.doc));
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status.contains("incomplete")
+                && app
+                    .permission_panel_status
+                    .contains("Remove permission panel"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert!(
+            !app.permission_panel_status.contains("already current"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert_eq!(app.doc.panels.len(), panels_before);
+        assert!(hymns::permission_panel_lines(&app.doc).is_some());
+        app.remove_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel removed"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert!(hymns::permission_panel_lines(&app.doc).is_none());
+        assert!(!hymns::permission_panel_orphan(&app.doc));
+        // Append again, then lose the story instead:
+        // frame-only, with the hymn memory absent.
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel added"),
+            "{}",
+            app.permission_panel_status
+        );
+        app.doc
+            .stories
+            .retain(|s| s.id != hymns::HYMN_PERMISSIONS_STORY);
+        assert!(hymns::permission_panel_orphan(&app.doc));
+        app.hymn_memory = hymns::HymnMemory::default();
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status.contains("incomplete")
+                && app
+                    .permission_panel_status
+                    .contains("Remove permission panel"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert!(
+            !app.permission_panel_status.contains("already current"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert_eq!(app.doc.panels.len(), panels_before + 1);
+        app.remove_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel removed"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert_eq!(app.doc.panels.len(), panels_before);
+        app.undo();
+        assert!(
+            hymns::permission_panel_orphan(&app.doc),
+            "Undo brings the removed orphan frame back"
+        );
     }
 
     #[test]

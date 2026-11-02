@@ -269,7 +269,9 @@ the PDF path registers every library font with the shaper and shapes
 each style in its named family. The catalog works from the command
 line (`fonts search`, `fonts get`): Fontsource for search and
 license facts, downloads from the google/fonts repository itself,
-four core faces per family, license text saved beside them. Its
+the core faces per family (four static faces, or the upright and
+italic variable files for the variable families below), license
+text saved beside them. Its
 transport tries a direct connection first and the proxy from the
 standard environment variables second, and trusts the operating
 system's certificate store (proxied church networks included).
@@ -288,9 +290,21 @@ Gelasio, Lora, Playfair Display) installs in one tap from the panel
 or the CLI; the panel adds fonts by multi-file pick, by zip pack,
 and by copying in from a list of the computer's own fonts, with a
 plain-words caution when a font did not come from the free catalog
-and its license is not clearly shareable. One known limit: three
-pack families are variable fonts and currently shape at their
-default weight only; the static families carry all four faces.
+and its license is not clearly shareable. Three pack families are
+variable fonts, named here so the limit is checkable: Gelasio,
+Lora, and Playfair Display (Carlito and Caladea are static and
+carry all four faces). The measured truth about them, corrected
+from an earlier note that said they shaped at their default weight
+only: bold ALWAYS shaped distinctly on screen (the shaper's
+fontique layer synthesizes `wght` 700 for a bold request and the
+shaping chain applies it), but print lagged behind — the PDF
+writer embedded the variable file as-is, so a viewer drew the
+default regular instance under bold positions. Since the R51-D
+fix the writer instantiates each variable plain face at `wght`
+700 for its bold keys before embedding, so bold in these
+families now prints bold, and screen and print agree. The
+Georgia → Gelasio metric-twin promise above therefore holds for
+bold runs too. The Fonts panel says the same in plain words.
 Remaining: the side-by-side comparison preview in the import
 review (that belongs to the analyzer's review screen).
 

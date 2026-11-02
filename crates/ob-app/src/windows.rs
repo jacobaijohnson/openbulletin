@@ -9161,7 +9161,10 @@ impl App {
                     "One tap adds the free stand-ins for the fonts church \
                      computers already have: Carlito (for Calibri), Caladea \
                      (Cambria), Gelasio (Georgia), plus Lora for readings \
-                     and Playfair Display for titles and holidays.",
+                     and Playfair Display for titles and holidays. Gelasio, \
+                     Lora, and Playfair Display are variable fonts: one file \
+                     spans regular to bold, and bold in those families \
+                     prints bold, just as it looks on screen.",
                 );
                 if ui
                     .add_enabled(

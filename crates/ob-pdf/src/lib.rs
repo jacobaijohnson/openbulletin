@@ -34,6 +34,8 @@ use ob_impose::SheetSide;
 use ob_model::{Document, Panel, Rect};
 use std::fmt::Write as _;
 
+mod instantiate;
+
 fn pt(v: ob_model::Mpt) -> f32 {
     v as f32 / 1000.0
 }
@@ -246,6 +248,41 @@ fn face_sources(
                 },
             );
         }
+    }
+    // Variable-face bold (R51-D, G-04): a family holding only a
+    // variable plain face has no bold key above, so a bold run
+    // would draw with the regular face while the shaper laid
+    // it out bold. Synthesize the missing bold keys from the
+    // plain faces, instantiating each at wght 700, so what
+    // prints is bold in both outline and advance. An exact
+    // static bold face always wins over a synthesized one;
+    // a face the instancer refuses (CFF, a collection, no
+    // wght axis) keeps the old plain-face fallback, never an
+    // export error. The same map feeds the Check oracle, so
+    // Check approves what print actually draws.
+    let mut synthesized: Vec<(FaceKey, FaceSource)> = Vec::new();
+    let plain_faces: Vec<(String, bool)> = sources.keys().map(|k| (k.0.clone(), k.2)).collect();
+    for (family, italic) in plain_faces {
+        let bold_key: FaceKey = (family.clone(), true, italic);
+        if sources.contains_key(&bold_key) {
+            continue;
+        }
+        let plain_key: FaceKey = (family.clone(), false, italic);
+        let Some(plain) = sources.get(&plain_key) else {
+            continue;
+        };
+        if let Some(bytes) = instantiate::instantiate_bold(&plain.bytes) {
+            synthesized.push((
+                bold_key,
+                FaceSource {
+                    bytes,
+                    no_subsetting: plain.no_subsetting,
+                },
+            ));
+        }
+    }
+    for (key, source) in synthesized {
+        sources.insert(key, source);
     }
     sources
 }
@@ -3980,5 +4017,323 @@ mod tests {
         tied.insert(("Acme Sans".into(), true, false), src);
         let families = source_families(&tied);
         assert_eq!(families, vec!["Acme Sans".to_string()]);
+    }
+
+    /// The Gelasio library snapshot the variable-bold
+    /// tests share: the upright and italic variable files,
+    /// inspected exactly as the library scan would read
+    /// them (family from the name table, rights from the
+    /// fsType bits, identity from the bytes' hash).
+    fn gelasio_library() -> Vec<(ob_fonts::FontInfo, Vec<u8>)> {
+        let upright = include_bytes!("../tests/fixtures/Gelasio[wght].ttf").to_vec();
+        let italic = include_bytes!("../tests/fixtures/Gelasio-Italic[wght].ttf").to_vec();
+        vec![
+            (
+                ob_fonts::inspect(&upright, "Gelasio[wght].ttf").expect("upright inspects"),
+                upright,
+            ),
+            (
+                ob_fonts::inspect(&italic, "Gelasio-Italic[wght].ttf").expect("italic inspects"),
+                italic,
+            ),
+        ]
+    }
+
+    /// R51-D, G-04, face-source half: a variable-only
+    /// family gains synthesized bold keys, and the draw
+    /// path resolves a bold run to the synthesized face
+    /// instead of falling back to plain. An exact static
+    /// bold face still wins when one exists (the
+    /// Liberation bold key below is untouched).
+    #[test]
+    fn face_sources_synthesizes_bold_keys_for_variable_families() {
+        let library = gelasio_library();
+        let sources = face_sources(&library);
+        let plain = sources
+            .get(&("Gelasio".to_string(), false, false))
+            .expect("plain Gelasio present");
+        let bold = sources
+            .get(&("Gelasio".to_string(), true, false))
+            .expect("synthesized bold Gelasio present");
+        let bold_italic = sources
+            .get(&("Gelasio".to_string(), true, true))
+            .expect("synthesized bold-italic Gelasio present");
+        assert_ne!(bold.bytes, plain.bytes, "bold is not the plain bytes");
+        assert_ne!(
+            bold_italic.bytes, plain.bytes,
+            "bold-italic is not the plain bytes"
+        );
+        for (label, face_bytes) in [("bold", &bold.bytes), ("bold-italic", &bold_italic.bytes)] {
+            let face = ttf_parser::Face::parse(face_bytes, 0).expect("instance parses");
+            assert!(!face.is_variable(), "{label} instance is static");
+            assert!(face.is_bold(), "{label} instance reads as bold");
+        }
+        let liberation_bold = sources
+            .get(&("Liberation Sans".to_string(), true, false))
+            .expect("bundled static bold present");
+        assert_eq!(
+            liberation_bold.bytes,
+            ob_text::shaping::bundled_font_files()
+                .iter()
+                .find(|(name, _)| *name == "LiberationSans-Bold.ttf")
+                .expect("bundled bold exists")
+                .1
+                .to_vec(),
+            "an exact static bold face is never synthesized over"
+        );
+        // The draw path resolves a WANTED bold key to
+        // the synthesized face: prepare only embeds
+        // faces the document asks for, so the doc here
+        // carries a bold Gelasio run.
+        let mut doc = sample_doc();
+        for style in &mut doc.styles {
+            if style.id == "body" {
+                style.font_family = "Gelasio".to_string();
+            }
+        }
+        let sid = doc.stories[0].id.clone();
+        doc.story_mut(&sid).expect("story").paragraphs = vec![ob_model::Paragraph::from_runs(
+            "body",
+            vec![ob_model::Run {
+                text: "Hamburg".into(),
+                bold: Some(true),
+                italic: None,
+            }],
+        )];
+        let fonts = FontBook::prepare(&doc, face_sources(&library));
+        match fonts.resource_for_face("Gelasio", true, false) {
+            DrawFont::Embedded(key) => assert_eq!(
+                key,
+                ("Gelasio".to_string(), true, false),
+                "a bold run draws with the bold face"
+            ),
+            DrawFont::Core(name) => panic!("bold run fell back to core {name}"),
+        }
+    }
+
+    /// R51-D, G-04, end-to-end pin (the L-2 empirical
+    /// test): Bold shapes distinctly for a variable
+    /// family, the PDF draws bold for that family, and
+    /// the positioning advances agree with the drawn
+    /// widths. One paragraph carries "Hamburg" regular
+    /// and "Hamburg" bold; the export runs through the
+    /// production path with the Gelasio library above.
+    #[test]
+    fn variable_bold_shapes_distinctly_prints_bold_and_agrees() {
+        let library = gelasio_library();
+        let gelasio_bytes = library[0].1.clone();
+        // Shaping half: parley over the variable file,
+        // regular against bold, at 12 pt.
+        let mut shaper = ob_text::shaping::Shaper::new();
+        shaper.register_font(gelasio_bytes);
+        let size = 12_000;
+        let regular_width =
+            shaper.measure("Hamburg", &ob_text::shaping::FontSpec::new("Gelasio"), size);
+        let bold_width = shaper.measure(
+            "Hamburg",
+            &ob_text::shaping::FontSpec::new("Gelasio").bold(),
+            size,
+        );
+        assert_eq!(
+            shaper.resolved_family("Gelasio"),
+            "Gelasio",
+            "the run shapes in Gelasio itself, not a stand-in"
+        );
+        assert!(
+            bold_width > regular_width,
+            "bold shapes wider than regular on screen: {bold_width} vs {regular_width}"
+        );
+        // Print half: the production export with the
+        // Gelasio library, one regular and one bold run.
+        let mut doc = sample_doc();
+        for style in &mut doc.styles {
+            if style.id == "body" {
+                style.font_family = "Gelasio".to_string();
+            }
+        }
+        let sid = doc.stories[0].id.clone();
+        doc.story_mut(&sid).expect("story").paragraphs = vec![ob_model::Paragraph::from_runs(
+            "body",
+            vec![
+                ob_model::Run::plain("Hamburg"),
+                ob_model::Run {
+                    text: "Hamburg".into(),
+                    bold: Some(true),
+                    italic: None,
+                },
+            ],
+        )];
+        let sides = ob_impose::impose_single(&doc);
+        let (pdf, _) = build_pdf_full(
+            &doc,
+            &sides,
+            ExportPurpose::ForPrinting,
+            &library,
+            None,
+            &mut ImageCache::new(),
+        );
+        let parsed = lopdf::Document::load_mem(&pdf).expect("lopdf parses the export");
+        // Both Gelasio faces in the file, keyed by their
+        // PostScript names, with per-character (CID, width)
+        // pairs and their embedded programs.
+        let mut faces = Vec::new();
+        for (_, page_id) in parsed.get_pages() {
+            let Ok((Some(resources), _)) = parsed.get_page_resources(page_id) else {
+                continue;
+            };
+            let Ok(font_dict) = resources.get(b"Font").and_then(|o| o.as_dict()) else {
+                continue;
+            };
+            for (_, obj) in font_dict.iter() {
+                let Some(font_obj) = obj
+                    .as_reference()
+                    .ok()
+                    .and_then(|id| parsed.get_object(id).ok())
+                else {
+                    continue;
+                };
+                let Ok(dict) = font_obj.as_dict() else {
+                    continue;
+                };
+                let base = dict
+                    .get(b"BaseFont")
+                    .and_then(|o| o.as_name())
+                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                    .unwrap_or_default();
+                if !base.starts_with("Gelasio") {
+                    continue;
+                }
+                let to_unicode = to_unicode_map(&parsed, dict);
+                let by_char: std::collections::HashMap<char, u16> = to_unicode
+                    .iter()
+                    .filter_map(|(cid, s)| s.chars().next().map(|c| (c, *cid)))
+                    .collect();
+                let descendants = dict
+                    .get(b"DescendantFonts")
+                    .and_then(|o| o.as_array())
+                    .expect("Type0 names its descendant");
+                let cidfont = descendants[0]
+                    .as_reference()
+                    .and_then(|id| parsed.get_object(id))
+                    .expect("descendant object")
+                    .as_dict()
+                    .expect("descendant dictionary")
+                    .clone();
+                let w = cidfont
+                    .get(b"W")
+                    .and_then(|o| o.as_array())
+                    .expect("CIDFont carries /W");
+                let mut by_cid: std::collections::HashMap<u16, i64> =
+                    std::collections::HashMap::new();
+                let mut i = 0;
+                while i + 1 < w.len() {
+                    if let (Ok(cid), Ok(arr)) = (w[i].as_i64(), w[i + 1].as_array()) {
+                        for (j, width) in arr.iter().enumerate() {
+                            if let Ok(width) = width.as_i64() {
+                                by_cid.insert((cid as u16) + (j as u16), width);
+                            }
+                        }
+                    }
+                    i += 2;
+                }
+                let mut by_char_width: std::collections::HashMap<char, (u16, i64)> =
+                    std::collections::HashMap::new();
+                for (c, cid) in &by_char {
+                    if let Some(width) = by_cid.get(cid) {
+                        by_char_width.insert(*c, (*cid, *width));
+                    }
+                }
+                let descriptor = cidfont
+                    .get(b"FontDescriptor")
+                    .and_then(|o| o.as_reference())
+                    .and_then(|id| parsed.get_object(id))
+                    .and_then(|o| o.as_dict())
+                    .expect("CIDFont names its descriptor");
+                let program = descriptor
+                    .get(b"FontFile2")
+                    .and_then(|o| o.as_reference())
+                    .and_then(|id| parsed.get_object(id))
+                    .and_then(|o| o.as_stream())
+                    .and_then(|s| s.decompressed_content())
+                    .expect("embedded program decompresses");
+                faces.push((base, by_char_width, program));
+            }
+        }
+        let regular_face = faces
+            .iter()
+            .find(|(base, _, _)| base.as_str() == "Gelasio-Regular")
+            .expect("regular Gelasio face embedded");
+        let bold_face = faces
+            .iter()
+            .find(|(base, _, _)| base.as_str() == "Gelasio-Regular-Bold")
+            .expect("bold Gelasio face embedded");
+        // The drawn widths differ: bold H and bold a are
+        // wider than their regular twins.
+        for c in ['H', 'a'] {
+            let regular_w = regular_face.1.get(&c).expect("regular width present").1;
+            let bold_w = bold_face.1.get(&c).expect("bold width present").1;
+            assert!(
+                bold_w > regular_w,
+                "bold {c} draws wider than regular {c}: {bold_w} vs {regular_w}"
+            );
+        }
+        // Each embedded program is the face its /W
+        // claims: static, and advancing exactly the
+        // widths the file carries for its glyphs
+        // (checked through the CID identity the writer
+        // guarantees: a glyph's CID is its glyph id in
+        // the embedded program). Weight identity is NOT
+        // read off the program: the subsetter excludes
+        // the OS/2 table from subsets by design, so a
+        // subset never reads as bold through metadata;
+        // the face-source test above pins the bold bit
+        // on the pre-subset instance, and here the bold
+        // program proves itself through its outlines
+        // and advances instead.
+        let upem = ttf_parser::Face::parse(&library[0].1, 0)
+            .expect("fixture parses")
+            .units_per_em() as i64;
+        let mut program_boxes: Vec<ttf_parser::Rect> = Vec::new();
+        for (label, face_entry) in [("regular", regular_face), ("bold", bold_face)] {
+            let program_face =
+                ttf_parser::Face::parse(&face_entry.2, 0).expect("embedded program parses");
+            assert!(!program_face.is_variable(), "{label} program is static");
+            let (cid, width) = face_entry.1.get(&'H').expect("H width present");
+            let program_advance = program_face
+                .glyph_hor_advance(ttf_parser::GlyphId(*cid))
+                .expect("H advance in the program");
+            assert_eq!(
+                program_advance as i64 * 1000 / upem,
+                *width,
+                "{label} program advances H exactly as its /W claims"
+            );
+            program_boxes.push(
+                program_face
+                    .glyph_bounding_box(ttf_parser::GlyphId(*cid))
+                    .expect("{label} H has an outline"),
+            );
+        }
+        assert!(
+            program_boxes[1].width() > program_boxes[0].width(),
+            "the bold program's H outline is wider than the regular program's"
+        );
+        // Agreement: the shaper's advances for "Hamburg"
+        // against the faces' /W sums at the same size,
+        // within the rounding the two variation
+        // implementations can disagree by (four font
+        // units a glyph, scaled to points).
+        let bold_sum: i64 = "Hamburg".chars().map(|c| bold_face.1[&c].1).sum();
+        let regular_sum: i64 = "Hamburg".chars().map(|c| regular_face.1[&c].1).sum();
+        let pdf_bold = bold_sum * 12;
+        let pdf_regular = regular_sum * 12;
+        let tolerance = 4 * 7 * size / upem + 1;
+        assert!(
+            (bold_width - pdf_bold).abs() <= tolerance,
+            "bold screen advance {bold_width} agrees with bold print advance {pdf_bold} within {tolerance}"
+        );
+        assert!(
+            (regular_width - pdf_regular).abs() <= tolerance,
+            "regular screen advance {regular_width} agrees with regular print advance {pdf_regular} within {tolerance}"
+        );
     }
 }

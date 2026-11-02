@@ -147,6 +147,57 @@ pub fn child_web_permission_granted(rights: &RightsRecord) -> bool {
     rights.child_web_permission == Some(true)
 }
 
+/// The distinct per-song permission line (round 51,
+/// G-08d): the line printed under a song reprinted under
+/// a church license, carrying the church's license number
+/// on every printed copy. It is DISTINCT from the credit
+/// line: the credit says what the song is and who wrote
+/// it; this line says under what permission it is printed.
+/// Returns None when no license number is recorded: the
+/// caller warns and prints no numberless line, and the
+/// bulletin still prints — a missing number never blocks.
+/// Parts already ending in a period are normalized, so
+/// "Words: Jane. Music: John." composes cleanly.
+pub fn compose_permission_line(
+    title: &str,
+    authors: &str,
+    copyright: &str,
+    licensor: &str,
+    number: &str,
+) -> Option<String> {
+    let number = number.trim();
+    if number.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let push_part = |parts: &mut Vec<String>, part: &str| {
+        let cleaned = part.trim().trim_end_matches(['.', ' ', ',']).trim();
+        if !cleaned.is_empty() {
+            parts.push(cleaned.to_string());
+        }
+    };
+    let licensor_lower = licensor.trim().to_ascii_lowercase();
+    if licensor_lower.contains("one license") || licensor_lower.contains("onelicense") {
+        push_part(&mut parts, copyright);
+        let permission = format!("Used with permission under ONE LICENSE #{number}");
+        parts.push(permission);
+    } else if licensor_lower.contains("ccli") {
+        push_part(&mut parts, title);
+        push_part(&mut parts, authors);
+        push_part(&mut parts, copyright);
+        let permission = format!("Reprinted under CCLI license #{number}");
+        parts.push(permission);
+    } else {
+        push_part(&mut parts, title);
+        push_part(&mut parts, copyright);
+        let permission = format!("Reprinted under church license #{number}");
+        parts.push(permission);
+    }
+    let line = parts.join(". ");
+    let line = format!("{line}.");
+    Some(line)
+}
+
 /// Is an attribution note on this record, for the
 /// merge fence (round 5, F2; round 6, R6-1)? A credit
 /// line counts, and so does a license that needs no

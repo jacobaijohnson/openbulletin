@@ -632,6 +632,11 @@ impl App {
         // against each other and against the church's own
         // remembered pairs.
         notes.extend(hymn_findings(&self.doc, &self.hymn_memory));
+        // The license usage list (round 51, G-08d): every
+        // licensed song in this bulletin, surfaced for the
+        // office to report from, with a warning per song
+        // whose license number is not recorded.
+        notes.extend(license_usage_findings(&self.doc, &self.hymn_memory));
         // The loose sheets (R-3): a sheet with no words,
         // and a dated sheet whose date has passed, named
         // before either prints wrong.

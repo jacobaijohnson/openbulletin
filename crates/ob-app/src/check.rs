@@ -328,6 +328,43 @@ pub(crate) fn children_names_note(profile: &ob_model::ChurchProfile) -> Option<C
     }
 }
 
+/// Check's license-usage pass (round 51, G-08d): the
+/// CCLI / ONE LICENSE usage list for this bulletin,
+/// surfaced as one summary note naming every licensed
+/// song and its number, plus a warning per licensed song
+/// with no license number recorded. Notes only: a missing
+/// number never blocks printing (the print path never
+/// consults Check notes), and the summary names the gap
+/// instead of hiding it, so the report is never silently
+/// short. No licensed songs means no notes at all.
+pub(crate) fn license_usage_findings(
+    doc: &Document,
+    memory: &ob_model::hymns::HymnMemory,
+) -> Vec<CheckNote> {
+    let report = ob_music::license::usage_report(doc, memory);
+    if report.is_empty() {
+        return Vec::new();
+    }
+    let listed: Vec<String> = report
+        .iter()
+        .map(ob_music::license::format_usage_entry)
+        .collect();
+    let summary = format!("License usage to report: {}.", listed.join("; "));
+    let mut out = vec![CheckNote::plain(summary)];
+    for entry in &report {
+        if entry.missing_number {
+            let warning = format!(
+                "Check: {} is reprinted under a {} license but no license number is recorded, \
+                 so no permission line with the number prints. The bulletin still prints; \
+                 record the number and the line appears.",
+                entry.title, entry.licensor
+            );
+            out.push(CheckNote::plain(warning));
+        }
+    }
+    out
+}
+
 /// Check's hymn pass (R-2a): each hymn line in the order
 /// of service, held up against itself and against the
 /// church's hymn memory. A number with no title and a
@@ -1277,4 +1314,116 @@ pub(crate) fn is_starter_sample(has_file: bool, church_name: &str) -> bool {
 /// same snapshot text the undo history keeps.
 pub(crate) fn print_copy_stale(fingerprint: Option<&str>, current: &str) -> bool {
     fingerprint.map(|fp| fp != current).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ob_model::hymns::{HymnEntry, HymnLicense, HymnMemory};
+    use ob_model::{
+        default_styles, ChurchProfile, LicenseKind, Paragraph, SheetSpec, SimpleDate, Size, Story,
+    };
+    use std::collections::BTreeMap;
+
+    fn doc_with_hymn_line(line: &str) -> Document {
+        Document {
+            format_version: ob_model::FORMAT_VERSION,
+            title: "t".to_string(),
+            profile: ChurchProfile::default(),
+            fields: BTreeMap::new(),
+            styles: default_styles(),
+            stories: vec![Story {
+                id: "order".to_string(),
+                keep_through: None,
+                paragraphs: vec![
+                    Paragraph::plain("body", "Sermon:\tPastor"),
+                    Paragraph::plain("order-line", line),
+                ],
+            }],
+            panels: Vec::new(),
+            sheet: SheetSpec {
+                preset: "letter-portrait".to_string(),
+                size: Size::new(0, 0),
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: BTreeMap::new(),
+            occasion_time: None,
+            wanted_fonts: Vec::new(),
+            participants: BTreeMap::new(),
+            inserts: Vec::new(),
+            applied_contributions: Vec::new(),
+        }
+    }
+
+    fn memory_with_number(number: &str) -> HymnMemory {
+        let mut memory = HymnMemory::default();
+        memory.learn(
+            &HymnEntry {
+                hymnal: Some("ELW".to_string()),
+                number: Some("432".to_string()),
+                title: Some("O Come, All Ye Faithful".to_string()),
+            },
+            SimpleDate {
+                year: 2026,
+                month: 10,
+                day: 18,
+            },
+        );
+        assert!(memory.note_license(
+            Some("ELW"),
+            "432",
+            HymnLicense {
+                kind: LicenseKind::LicensedReprint,
+                licensor: "CCLI".to_string(),
+                number: number.to_string(),
+                copyright_line: "© 2019 Jane Doe".to_string(),
+            },
+        ));
+        memory
+    }
+
+    #[test]
+    fn license_usage_surfaces_the_report_and_the_gap() {
+        // Round 51, G-08d: one summary note listing the
+        // licensed song with its number, plus one warning
+        // for the song with no number — notes, not blocks.
+        let doc = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        let memory = memory_with_number("");
+        let notes = license_usage_findings(&doc, &memory);
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes[0].text.contains("License usage to report"),
+            "{}",
+            notes[0].text
+        );
+        assert!(notes[0].text.contains("ELW 432"), "{}", notes[0].text);
+        assert!(
+            notes[0].text.contains("license number not recorded"),
+            "{}",
+            notes[0].text
+        );
+        assert!(
+            notes[1].text.contains("no license number is recorded"),
+            "{}",
+            notes[1].text
+        );
+        assert!(notes[1].text.contains("still prints"), "{}", notes[1].text);
+    }
+
+    #[test]
+    fn license_usage_with_a_number_warns_about_nothing() {
+        let doc = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        let memory = memory_with_number("123456");
+        let notes = license_usage_findings(&doc, &memory);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].text.contains("CCLI #123456"), "{}", notes[0].text);
+    }
+
+    #[test]
+    fn no_licensed_songs_means_no_license_notes() {
+        let doc = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        let notes = license_usage_findings(&doc, &HymnMemory::default());
+        assert!(notes.is_empty(), "{notes:?}");
+    }
 }

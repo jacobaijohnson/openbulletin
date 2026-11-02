@@ -22,9 +22,13 @@
 //! - [`engine`]: the helper side: finding and driving
 //!   Verovio (out-of-process, LGPL-3.0; see docs/LEGAL.md).
 //! - [`draft`]: the draft bulletin a music import leaves.
+//! - [`license`]: per-song permission lines carrying the
+//!   license number, and the license usage report (round
+//!   51, G-08d).
 
 pub mod draft;
 pub mod engine;
+pub mod license;
 pub mod parse;
 pub mod render;
 pub mod svg;
@@ -92,6 +96,38 @@ mod print_tests {
         assert_eq!(
             report.missing_pictures, 1,
             "the empty music box is a counted placeholder, never silent"
+        );
+    }
+
+    #[test]
+    fn licensed_song_permission_line_exports_with_the_draft() {
+        // Round 51, G-08d: the permission story is framed
+        // like the credit, so the export carries it, and
+        // the frame breaks nothing in the print path.
+        let mut info = parse_musicxml(TINY_SCORE).expect("parse");
+        info.rights =
+            Some("© 2019 Jane Doe. Reprinted under CCLI license #123456".to_string());
+        let doc = build_music_draft(
+            &info,
+            TINY_SCORE.as_bytes(),
+            "tiny.musicxml",
+            "application/vnd.recordare.musicxml+xml",
+            ChurchProfile::default(),
+            None,
+        )
+        .doc;
+        let permission = doc
+            .story("music-permission")
+            .expect("the permission story");
+        assert!(permission
+            .paragraphs
+            .iter()
+            .any(|p| p.text().contains("CCLI license #123456")));
+        let (_pdf, report) =
+            ob_pdf::export_reader_pdf_report(&doc, ob_pdf::ExportPurpose::ForPrinting);
+        assert_eq!(
+            report.missing_pictures, 1,
+            "only the undrawn music box is a placeholder"
         );
     }
 }

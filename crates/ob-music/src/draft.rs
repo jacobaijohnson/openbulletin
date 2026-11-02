@@ -4,6 +4,11 @@
 //! text ourselves), one picture box per engraved line of
 //! music flowing across the booklet's panels, and the
 //! file's rights line as the credit under the music.
+//! For a song reprinted under a church license with its
+//! number stated, the distinct permission line carrying
+//! that number prints under the credit (round 51, G-08d);
+//! a licensed song with no number stated warns instead
+//! and still prints.
 //!
 //! Music boxes are laid out at the panel's full text
 //! width and the height the engraving's own proportions
@@ -54,6 +59,7 @@ pub fn music_frame_width_mm() -> f64 {
 /// file: the file is the source, and its rights line,
 /// when it parses to a known kind, is the license.
 pub fn rights_from_music(info: &MusicInfo, source_name: &str) -> RightsRecord {
+    let licensor_ref = crate::license::licensor_ref_from_rights(info.rights.as_deref().unwrap_or(""));
     RightsRecord {
         source: source_name.to_string(),
         source_url: None,
@@ -62,7 +68,7 @@ pub fn rights_from_music(info: &MusicInfo, source_name: &str) -> RightsRecord {
         creator: info.composer().unwrap_or_default().to_string(),
         copyright_line: info.rights.clone().unwrap_or_default(),
         credit_text: info.credit_line().unwrap_or_default(),
-        licensor_ref: String::new(),
+        licensor_ref,
         asserted_by: String::new(),
         asserted_at: String::new(),
         children_present: None,
@@ -424,6 +430,50 @@ pub fn build_music_draft(
         ));
     }
 
+    // The distinct per-song permission line (round 51,
+    // G-08d): under the credit, as words, so it prints on
+    // every printed copy through the normal print path.
+    // The credit block above leaves the cursor unadvanced
+    // (nothing followed it); the permission line is the
+    // first thing that does, so it steps past the credit
+    // first. A licensed song with no number stated gets
+    // no numberless line: it warns, and still prints.
+    let permission = crate::license::permission_line_for_music(info);
+    if let Some(line) = permission {
+        cursor += CREDIT_H + GAP;
+        if cursor + CREDIT_H > PANEL_H - MARGIN && cursor > MARGIN {
+            panels.push(panel(panels.len()));
+            here = panels.len() - 1;
+            cursor = MARGIN;
+        }
+        doc.stories
+            .push(story("music-permission", vec![("caption", line)]));
+        panels[here].frames.push(text_frame(
+            "music-permission",
+            "Permission line",
+            "music-permission",
+            Rect::new(MARGIN, cursor, music_frame_width_mpt(), CREDIT_H),
+        ));
+        items.push(item(
+            here,
+            "Permission line",
+            "The permission line printed under the music carries the church's license number, \
+             distinct from the credit line above it."
+                .to_string(),
+            Badge::Matched,
+        ));
+    } else if license_from_rights(info.rights.as_deref()) == LicenseKind::LicensedReprint {
+        items.push(item(
+            here,
+            "Permission line",
+            "This song is reprinted under a church license but the file states no license \
+             number, so no permission line with the number prints. Add the number to the \
+             file's rights line and bring the file in again; the bulletin still prints."
+                .to_string(),
+            Badge::CheckThis,
+        ));
+    }
+
     doc.panels = panels;
     items.push(item(
         0,
@@ -526,6 +576,68 @@ mod tests {
         assert!(out.items.iter().any(|i| i.label
             == "Every note in the file is in the printed music"
             && i.badge == Badge::Matched));
+    }
+
+    fn draft_for_rights(rights: &str) -> DraftOutcome {
+        let mut info = parse_musicxml(TINY_SCORE).expect("tiny score parses");
+        info.rights = Some(rights.to_string());
+        build_music_draft(
+            &info,
+            TINY_SCORE.as_bytes(),
+            "tiny.musicxml",
+            "application/vnd.recordare.musicxml+xml",
+            ChurchProfile::default(),
+            None,
+        )
+    }
+
+    #[test]
+    fn licensed_song_prints_a_permission_line_with_its_number() {
+        // Round 51, G-08d: the number is filled on the
+        // asset record and printed as its own line under
+        // the credit, distinct from it.
+        let out = draft_for_rights("© 2019 Jane Doe. Reprinted under CCLI license #123456");
+        let music = out
+            .doc
+            .assets
+            .iter()
+            .find(|a| a.kind == AssetKind::Music)
+            .expect("the music asset");
+        assert_eq!(music.rights.licensor_ref, "123456");
+        let permission = out
+            .doc
+            .story("music-permission")
+            .expect("the permission story");
+        assert!(
+            permission
+                .paragraphs
+                .iter()
+                .any(|p| p.text().contains("CCLI license #123456")),
+            "{:?}",
+            permission.paragraphs
+        );
+        assert!(
+            out.doc
+                .panels
+                .iter()
+                .flat_map(|p| p.frames.iter())
+                .any(|f| f.story_id.as_deref() == Some("music-permission")),
+            "the permission story is framed, so it prints"
+        );
+        assert!(out.items.iter().any(|i| i.label == "Permission line"
+            && i.badge == Badge::Matched));
+    }
+
+    #[test]
+    fn licensed_song_without_a_number_warns_but_still_builds() {
+        // Round 51, G-08d: no numberless line, a CheckThis
+        // warning instead, and the draft still forms.
+        let out = draft_for_rights("Reprinted under CCLI license");
+        assert!(out.doc.story("music-permission").is_none());
+        assert!(out.items.iter().any(|i| i.label == "Permission line"
+            && i.badge == Badge::CheckThis));
+        assert!(out.doc.story("music-heading").is_some());
+        assert!(out.doc.story("music-credit").is_some());
     }
 
     #[test]

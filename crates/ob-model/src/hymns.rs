@@ -12,7 +12,10 @@
 //! starts empty and learns only from this church's
 //! bulletins.
 
-use crate::{Document, SimpleDate};
+use crate::{
+    compose_permission_line, service_story_id, ContentRole, Document, Frame, FrameKind, LicenseKind,
+    Panel, Paragraph, Rect, SimpleDate, Size,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -183,6 +186,39 @@ pub fn hymn_key(hymnal: Option<&str>, number: &str) -> String {
 pub struct HymnPair {
     pub title: String,
     pub last_seen: SimpleDate,
+    /// The license the office recorded for this hymn, when
+    /// one is recorded (round 51, G-08d). Absent in older
+    /// memory files (read as unlicensed); learning a new
+    /// title never clears a recorded license.
+    #[serde(default)]
+    pub license: HymnLicense,
+}
+
+/// A hymn's license record, as the office recorded it
+/// (round 51, G-08d): the licensor and number the
+/// permission line prints, and the copyright line it
+/// prints beside them. The record is the office's own
+/// note, not a proof — the same standing as every other
+/// rights record in the app.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HymnLicense {
+    /// The license kind; only `LicensedReprint` yields a
+    /// permission line. Defaults to Unknown.
+    #[serde(default)]
+    pub kind: LicenseKind,
+    /// "CCLI" or "ONE LICENSE" (read case-insensitively);
+    /// empty when the office has not named a licensor.
+    #[serde(default)]
+    pub licensor: String,
+    /// The church's license number ("123456", "A-123456");
+    /// empty when unrecorded, which is the warn case,
+    /// never a block.
+    #[serde(default)]
+    pub number: String,
+    /// The copyright line as it should print
+    /// ("© 2019 Jane Doe"); empty when unrecorded.
+    #[serde(default)]
+    pub copyright_line: String,
 }
 
 /// The church's own hymn memory: number and title pairs
@@ -247,11 +283,20 @@ impl HymnMemory {
             Some(old) if old.last_seen > date => false,
             Some(old) if old.last_seen == date && old.title == title => false,
             _ => {
+                // A re-learned title never clears a
+                // recorded license: the office's license
+                // note survives the week's retyping
+                // (round 51, G-08d).
+                let carried = match self.pairs.get(&key) {
+                    Some(old) => old.license.clone(),
+                    None => HymnLicense::default(),
+                };
                 self.pairs.insert(
                     key,
                     HymnPair {
                         title: title.to_string(),
                         last_seen: date,
+                        license: carried,
                     },
                 );
                 true
@@ -281,6 +326,235 @@ impl HymnMemory {
             }
         }
         changed
+    }
+
+    /// Record a license for a hymn the church has
+    /// confirmed (round 51, G-08d): the pair must already
+    /// exist — a license note never invents a hymn the
+    /// church has not printed. Answers false when no pair
+    /// stands for this hymnal and number, and records
+    /// nothing in that case.
+    pub fn note_license(
+        &mut self,
+        hymnal: Option<&str>,
+        number: &str,
+        license: HymnLicense,
+    ) -> bool {
+        let key = hymn_key(hymnal, number);
+        match self.pairs.get_mut(&key) {
+            Some(pair) => {
+                pair.license = license;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// One licensed hymn use in a document, for the
+/// permission-line path and the usage report alike
+/// (round 51, G-08d).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HymnLicenseUse {
+    /// The service-line label ("Hymn of Praise").
+    pub label: String,
+    /// The hymn as the bulletin shows it ("ELW 432").
+    pub shown: String,
+    /// The title as printed this week, else as remembered.
+    pub title: String,
+    /// The recorded license, as the office noted it.
+    pub license: HymnLicense,
+    /// The permission line to print, when a license
+    /// number is recorded; None is the warn case.
+    pub line: Option<String>,
+    /// Licensed, but no license number recorded: warn,
+    /// never block, and print no numberless line.
+    pub missing_number: bool,
+}
+
+/// The permission line for one hymn (round 51, G-08d):
+/// the week's printed title when the line carries one,
+/// else the remembered title; the office's recorded
+/// copyright line and license number. None when the
+/// pair is not a licensed reprint, or when no number
+/// is recorded.
+pub fn permission_line_for_hymn(entry: &HymnEntry, pair: &HymnPair) -> Option<String> {
+    if pair.license.kind != LicenseKind::LicensedReprint {
+        return None;
+    }
+    let title = entry
+        .title
+        .clone()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| pair.title.clone());
+    compose_permission_line(
+        &title,
+        "",
+        &pair.license.copyright_line,
+        &pair.license.licensor,
+        &pair.license.number,
+    )
+}
+
+/// Every licensed hymn use in a document's order of
+/// service (round 51, G-08d): the same service story
+/// Check reads, each hymn line held up against the
+/// church's hymn memory. A song sung twice in one
+/// service is one use: the permission line prints once,
+/// and the usage report lists it once. Hymns with no
+/// remembered pair, and pairs that are not licensed
+/// reprints, are not uses and stay quiet.
+pub fn hymn_license_uses(doc: &Document, memory: &HymnMemory) -> Vec<HymnLicenseUse> {
+    let Some(sid) = service_story_id(doc) else {
+        return Vec::new();
+    };
+    let Some(story) = doc.story(&sid) else {
+        return Vec::new();
+    };
+    let mut out: Vec<HymnLicenseUse> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for para in &story.paragraphs {
+        let text = para.text();
+        if !text.contains('\t') {
+            continue;
+        }
+        let label = text.split('\t').next().unwrap_or("").trim().to_string();
+        if !is_hymn_label(&label) {
+            continue;
+        }
+        let value = text.rsplit('\t').next().unwrap_or("").trim();
+        let entry = parse_hymn_value(value);
+        let Some(number) = entry.number.clone() else {
+            continue;
+        };
+        let key = hymn_key(entry.hymnal.as_deref(), &number);
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        let Some(pair) = memory.lookup(entry.hymnal.as_deref(), &number) else {
+            continue;
+        };
+        if pair.license.kind != LicenseKind::LicensedReprint {
+            continue;
+        }
+        let line = permission_line_for_hymn(&entry, pair);
+        let missing_number = line.is_none();
+        let shown = compose_hymn_value(&entry);
+        let title = entry
+            .title
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| pair.title.clone());
+        out.push(HymnLicenseUse {
+            label,
+            shown,
+            title,
+            license: pair.license.clone(),
+            line,
+            missing_number,
+        });
+    }
+    out
+}
+
+/// What appending the hymn permission lines did
+/// (round 51, G-08d).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HymnPermissionOutcome {
+    /// The lines now on the Permissions panel (empty
+    /// when no licensed hymn carried a number).
+    pub lines: Vec<String>,
+    /// Licensed hymns with no license number recorded:
+    /// warned, never blocked, and given no line.
+    pub warnings: Vec<String>,
+    /// True when this call appended the panel.
+    pub added: bool,
+}
+
+/// The story id the hymn permission panel carries, so a
+/// second call finds it and appends nothing twice.
+pub const HYMN_PERMISSIONS_STORY: &str = "hymn-permissions";
+
+/// Append the hymn permission lines to a document as
+/// printable words (round 51, G-08d): one Permissions
+/// panel at the end, carrying one story and frame with
+/// the lines, so they print through the normal print
+/// path exactly as the music draft's credit line does.
+/// Explicit, never automatic: no save or print path
+/// calls this on its own, so a bulletin never gains a
+/// page behind the office's back; the office runs it
+/// when the permission lines belong on the page.
+/// Idempotent: a document already carrying the story
+/// gains no second panel. A document with no licensed
+/// hymn carrying a number gains no panel at all, and
+/// the licensed-without-number warnings still come back.
+pub fn append_hymn_permission_panel(
+    doc: &mut Document,
+    memory: &HymnMemory,
+) -> HymnPermissionOutcome {
+    let uses = hymn_license_uses(doc, memory);
+    let lines: Vec<String> = uses.iter().filter_map(|u| u.line.clone()).collect();
+    let warnings: Vec<String> = uses
+        .iter()
+        .filter(|u| u.missing_number)
+        .map(|u| {
+            format!(
+                "Hymn {} ({}) is reprinted under a church license but no license number is \
+                 recorded, so no permission line with the number prints.",
+                u.shown, u.label
+            )
+        })
+        .collect();
+    if doc.story(HYMN_PERMISSIONS_STORY).is_some() || lines.is_empty() {
+        return HymnPermissionOutcome {
+            lines,
+            warnings,
+            added: false,
+        };
+    }
+    let size = doc
+        .panels
+        .last()
+        .map(|p| p.size)
+        .unwrap_or_else(|| Size::new(crate::inch(5.5), crate::inch(8.5)));
+    let mut paragraphs = vec![Paragraph::plain("subheading", "License permissions")];
+    for line in &lines {
+        paragraphs.push(Paragraph::plain("body", line));
+    }
+    let margin = crate::inch(0.45);
+    let frame = Frame {
+        id: "frame-hymn-permissions".to_string(),
+        name: "License permissions".to_string(),
+        kind: FrameKind::Text,
+        rect: Rect::new(
+            margin,
+            crate::inch(0.4),
+            size.w - 2 * margin,
+            size.h - crate::inch(0.8),
+        ),
+        story_id: Some(HYMN_PERMISSIONS_STORY.to_string()),
+        role: ContentRole::Standing,
+        picture: None,
+        music: None,
+    };
+    doc.stories.push(crate::Story {
+        id: HYMN_PERMISSIONS_STORY.to_string(),
+        paragraphs,
+        keep_through: None,
+    });
+    doc.panels.push(Panel {
+        id: "panel-permissions".to_string(),
+        name: "Permissions".to_string(),
+        size,
+        frames: vec![frame],
+        background_image: None,
+        guides: Vec::new(),
+    });
+    HymnPermissionOutcome {
+        lines,
+        warnings,
+        added: true,
     }
 }
 
@@ -573,5 +847,202 @@ mod tests {
         let back: HymnMemory = serde_json::from_str(&text).expect("parses");
         assert_eq!(back, mem);
         assert_eq!(hymn_key(None, "88"), "|88");
+    }
+
+    fn licensed_pair(licensor: &str, number: &str, copyright: &str) -> HymnLicense {
+        HymnLicense {
+            kind: LicenseKind::LicensedReprint,
+            licensor: licensor.to_string(),
+            number: number.to_string(),
+            copyright_line: copyright.to_string(),
+        }
+    }
+
+    fn order_doc(lines: Vec<&str>) -> Document {
+        use crate::{ChurchProfile, Paragraph, SheetSpec, Size, Story, FORMAT_VERSION};
+        use std::collections::BTreeMap;
+        let mut paragraphs = vec![Paragraph::plain("body", "Sermon:\tPastor")];
+        for line in lines {
+            paragraphs.push(Paragraph::plain("order-line", line));
+        }
+        Document {
+            format_version: FORMAT_VERSION,
+            title: "t".to_string(),
+            profile: ChurchProfile::default(),
+            fields: BTreeMap::new(),
+            styles: Vec::new(),
+            stories: vec![Story {
+                id: "order".to_string(),
+                keep_through: None,
+                paragraphs,
+            }],
+            panels: vec![Panel {
+                id: "panel-0".to_string(),
+                name: "Order".to_string(),
+                size: Size::new(396_000, 612_000),
+                frames: vec![Frame {
+                    id: "frame-0".to_string(),
+                    name: "Order".to_string(),
+                    kind: FrameKind::Text,
+                    rect: Rect::new(0, 0, 396_000, 612_000),
+                    story_id: Some("order".to_string()),
+                    role: ContentRole::Standing,
+                    picture: None,
+                    music: None,
+                }],
+                background_image: None,
+                guides: Vec::new(),
+            }],
+            sheet: SheetSpec {
+                preset: "letter-portrait".to_string(),
+                size: Size::new(0, 0),
+            },
+            no_announcements: false,
+            assets: Vec::new(),
+            asset_bytes: BTreeMap::new(),
+            occasion_time: None,
+            wanted_fonts: Vec::new(),
+            participants: BTreeMap::new(),
+            inserts: Vec::new(),
+            applied_contributions: Vec::new(),
+        }
+    }
+
+    fn memory_with(
+        hymnal: Option<&str>,
+        number: &str,
+        title: &str,
+        license: HymnLicense,
+    ) -> HymnMemory {
+        let mut mem = HymnMemory::default();
+        mem.learn(
+            &entry(hymnal, Some(number), Some(title)),
+            d(2026, 10, 18),
+        );
+        assert!(mem.note_license(hymnal, number, license));
+        mem
+    }
+
+    #[test]
+    fn hymn_permission_lines_carry_the_license_number() {
+        let mem = memory_with(
+            Some("ELW"),
+            "432",
+            "O Come, All Ye Faithful",
+            licensed_pair("CCLI", "123456", "© 2019 Jane Doe"),
+        );
+        let doc = order_doc(vec!["Hymn of Praise\tELW 432 · O Come, All Ye Faithful"]);
+        let uses = hymn_license_uses(&doc, &mem);
+        assert_eq!(uses.len(), 1);
+        let line = uses[0].line.as_ref().expect("a line prints");
+        assert!(line.contains("CCLI license #123456"), "{line}");
+        assert!(line.contains("O Come, All Ye Faithful"), "{line}");
+        assert!(line.contains("© 2019 Jane Doe"), "{line}");
+        assert!(!uses[0].missing_number);
+    }
+
+    #[test]
+    fn one_license_hymn_line_uses_the_one_license_words() {
+        let mem = memory_with(
+            None,
+            "88",
+            "A Title With No Book",
+            licensed_pair("ONE LICENSE", "A-987654", "© 2020 John Smith"),
+        );
+        let doc = order_doc(vec!["Hymn of Response\t88 · A Title With No Book"]);
+        let uses = hymn_license_uses(&doc, &mem);
+        assert_eq!(uses.len(), 1);
+        let line = uses[0].line.as_ref().expect("a line prints");
+        assert!(line.contains("ONE LICENSE #A-987654"), "{line}");
+        assert!(line.contains("© 2020 John Smith"), "{line}");
+    }
+
+    #[test]
+    fn a_licensed_hymn_without_a_number_warns_and_gets_no_line() {
+        let mem = memory_with(
+            Some("ELW"),
+            "432",
+            "O Come, All Ye Faithful",
+            licensed_pair("CCLI", "", "© 2019 Jane Doe"),
+        );
+        let doc = order_doc(vec!["Hymn of Praise\tELW 432 · O Come, All Ye Faithful"]);
+        let uses = hymn_license_uses(&doc, &mem);
+        assert_eq!(uses.len(), 1);
+        assert!(uses[0].line.is_none());
+        assert!(uses[0].missing_number);
+    }
+
+    #[test]
+    fn license_notes_do_not_invent_hymns_and_survive_relearning() {
+        let mut mem = HymnMemory::default();
+        let license = licensed_pair("CCLI", "123456", "© 2019 Jane Doe");
+        assert!(!mem.note_license(Some("ELW"), "432", license.clone()));
+        assert!(mem.pairs.is_empty(), "no pair was invented");
+        mem.learn(
+            &entry(Some("ELW"), Some("432"), Some("O Come, All Ye Faithful")),
+            d(2026, 10, 18),
+        );
+        assert!(mem.note_license(Some("ELW"), "432", license));
+        // A corrected title re-learned later keeps the license.
+        mem.learn(
+            &entry(Some("ELW"), Some("432"), Some("O Come, All Ye Faithful!")),
+            d(2026, 10, 25),
+        );
+        let pair = mem.lookup(Some("ELW"), "432").expect("remembered");
+        assert_eq!(pair.license.number, "123456");
+        assert_eq!(pair.title, "O Come, All Ye Faithful!");
+    }
+
+    #[test]
+    fn permission_panel_appends_once_and_warns_without_blocking() {
+        let mut mem = memory_with(
+            Some("ELW"),
+            "432",
+            "O Come, All Ye Faithful",
+            licensed_pair("CCLI", "123456", "© 2019 Jane Doe"),
+        );
+        mem.learn(
+            &entry(None, Some("77"), Some("Numberless Song")),
+            d(2026, 10, 18),
+        );
+        assert!(mem.note_license(None, "77", licensed_pair("ONE LICENSE", "", "© 2020 John Smith")));
+        let mut doc = order_doc(vec![
+            "Hymn of Praise\tELW 432 · O Come, All Ye Faithful",
+            "Hymn of Response\t77 · Numberless Song",
+            "Hymn of Praise\tELW 432 · O Come, All Ye Faithful",
+        ]);
+        let out = append_hymn_permission_panel(&mut doc, &mem);
+        assert!(out.added, "the panel appends");
+        assert_eq!(out.lines.len(), 1, "the twice-sung hymn prints once");
+        assert!(out.lines[0].contains("CCLI license #123456"), "{}", out.lines[0]);
+        assert_eq!(out.warnings.len(), 1, "the numberless hymn warns");
+        assert!(out.warnings[0].contains("77"), "{}", out.warnings[0]);
+        // The panel is printable words: a story and a frame on it.
+        let story = doc.story(HYMN_PERMISSIONS_STORY).expect("the story");
+        assert!(story.paragraphs.iter().any(|p| p.text().contains("CCLI license #123456")));
+        assert_eq!(doc.panels.len(), 2);
+        assert_eq!(
+            doc.panels[1].frames[0].story_id.as_deref(),
+            Some(HYMN_PERMISSIONS_STORY)
+        );
+        // A second call appends nothing twice.
+        let again = append_hymn_permission_panel(&mut doc, &mem);
+        assert!(!again.added);
+        assert_eq!(doc.panels.len(), 2);
+    }
+
+    #[test]
+    fn permission_panel_stays_absent_when_nothing_carries_a_number() {
+        let mem = memory_with(
+            Some("ELW"),
+            "432",
+            "O Come, All Ye Faithful",
+            licensed_pair("CCLI", "", "© 2019 Jane Doe"),
+        );
+        let mut doc = order_doc(vec!["Hymn of Praise\tELW 432 · O Come, All Ye Faithful"]);
+        let out = append_hymn_permission_panel(&mut doc, &mem);
+        assert!(!out.added, "no number, no panel");
+        assert_eq!(out.warnings.len(), 1);
+        assert_eq!(doc.panels.len(), 1);
     }
 }

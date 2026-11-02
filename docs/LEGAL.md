@@ -112,7 +112,10 @@ Music engraving (2026-10-16, M1): hymn notation is engraved
 by Verovio (LGPL-3.0), run unmodified and out-of-process by
 our own helper binary (ob-verovio-helper), the same posture
 as PDFium: nothing of Verovio is linked, copied, or modified,
-and the helper speaks to the app over versioned JSON. Checked
+and the helper speaks to the app over versioned JSON. That
+posture is crash isolation, not filesystem confinement: the
+helper runs with the user's own privileges, with no sandbox
+on any OS (docs/EXTRACT.md, round 51, G-06). Checked
 2026-10-16: Verovio publishes no pre-built standalone binary
 for Windows (its command-line book says binaries exist only
 through Homebrew on macOS); the official Windows distribution

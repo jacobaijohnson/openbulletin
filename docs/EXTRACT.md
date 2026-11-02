@@ -33,6 +33,78 @@ file came by way of LibreOffice, so small layout differences
 are normal. Without LibreOffice installed, the app says so in
 plain words and explains the Save-As-PDF route instead.
 
+## Helper confinement: what separation does and does not do (round 51, G-06)
+
+The helpers below run out of process. That buys crash
+isolation (a bad file kills the helper, not the app), a
+deadline, and an output cap. It does NOT buy filesystem
+confinement on any OS: no helper runs sandboxed, and every
+helper inherits the app's full user privileges and
+environment. The shared runner (`ob-runner::run_with_timeout`)
+sets exactly piped stdin/stdout/stderr, a Unix process group
+(so a timeout kill stops the whole family), a 120-second
+deadline, and a 512 MB combined output cap. It sets no
+`env_clear`, no chroot, no namespace, no uid/gid drop, and
+no Windows job object. The per-OS picture is the same
+picture three times: Windows adds no job object or
+AppContainer; macOS adds no sandbox profile; Linux adds
+no namespace, seccomp filter, or chroot — the Unix
+process group is a kill family, not a boundary. What a
+helper may legitimately touch is narrow; what it COULD
+touch if its parser were escaped is everything the user
+can touch. That distinction is the whole of this section,
+and the old wording that invited a stronger reading
+("a bad PDF can hurt it, never the app",
+`crates/ob-extract/src/helper.rs`) is corrected to say
+crash isolation only.
+
+- PDFium helper (`ob-pdfium-helper`, via
+  `ob_extract::helper`): takes the PDF path and an images
+  directory as argv; reads the file (a 512 MB pre-read
+  size gate) and writes page PNGs into the caller-supplied
+  directory; 120-second deadline via the shared runner.
+  No restriction on what else it could read or write if
+  exploited, on Windows, macOS, or Linux alike.
+- Verovio helper (`ob-verovio-helper`, via
+  `ob_music::render`): stdin JSON request, stdout JSON
+  response, same shared-runner deadline and output cap.
+  The engraver behind it (a Verovio CLI or the Python
+  driver) writes into a scratch folder it creates
+  exclusively and removes on drop. Same user privileges
+  on every OS.
+- LibreOffice `.pub` bridge (`ob_extract::pub_bridge`):
+  its own wait loop with a 120-second deadline (not the
+  shared runner); runs `soffice --headless --convert-to
+  pdf --outdir <dir>` with its profile at
+  `<out_dir>/lo-profile` and the PDF into the same work
+  folder. No sandbox, on any OS.
+- WMF converter (`ob-app`'s `wmf_converter`, via
+  `ob_clips::run_converter_with_deadline`): `soffice
+  --headless --norestore --convert-to png` into a fresh
+  scratch folder, removed afterwards, with a 30-second
+  deadline. The input filename is reduced to its file-name
+  component before the join, so a crafted name cannot
+  steer the write elsewhere. That is input hygiene plus
+  cleanup, not confinement, on any OS.
+- `open_with_os` (`ob-app`): execs the OS default handler
+  (`cmd /c start` on Windows, `open` on macOS, `xdg-open`
+  on Linux) on a path. No restriction at all beyond the
+  OS's own: the opened program runs as the user, with
+  the user's reach.
+
+No new sandbox control rides with this correction, for
+reasons the batch record states (round 51, G-06):
+separation here never added a privilege — no helper runs
+elevated, setuid, or in another account — so an escaped
+helper reaches no further than the app itself already
+does, and a cross-platform sandbox that still lets each
+helper read the user-chosen input and write its output
+folder is a project of its own, not a line in this fix.
+What the office should take from this section is the
+import discipline, not a boundary: import files from
+sources the office trusts, the way it already treats
+any file it opens.
+
 ## The native Publisher reader (shipped 2026-10-15)
 
 Our own reader, an independent implementation from documented

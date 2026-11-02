@@ -1,6 +1,11 @@
 //! Running the PDFium helper: the one door through which foreign
 //! PDFs are read (docs/EXTRACT.md). The helper is a separate
-//! process on purpose; a bad PDF can hurt it, never the app.
+//! process on purpose: a bad PDF can crash the helper without
+//! crashing the app. That is crash isolation, not confinement:
+//! the helper runs with the app's own user privileges and no
+//! filesystem sandbox, so code running in the helper reaches
+//! whatever the user can reach (docs/EXTRACT.md states the
+//! per-helper restrictions, round 51, G-06).
 
 use crate::ExtractionDump;
 use std::path::{Path, PathBuf};

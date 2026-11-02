@@ -503,11 +503,20 @@ pub fn permission_panel_lines(doc: &Document) -> Option<Vec<String>> {
 }
 
 /// Whether a document carries a Permissions panel at
-/// all: its story, or a panel frame pointing at that
+/// all: its story, a panel frame pointing at that
 /// story (a hand-edited panel may have lost its story
-/// while keeping its frame).
+/// while keeping its frame), or a bare panel object
+/// carrying the Permissions id with no frame
+/// displaying the story. The bare-id shape stays
+/// present so the office can remove it explicitly
+/// rather than have an update append a second panel
+/// beside a dead one; it is never printable (see
+/// below), so it reports as an orphan.
 fn permission_panel_present(doc: &Document) -> bool {
     if doc.story(HYMN_PERMISSIONS_STORY).is_some() {
+        return true;
+    }
+    if doc.panels.iter().any(|p| p.id == "panel-permissions") {
         return true;
     }
     permission_panel_frame_present(doc)
@@ -516,12 +525,16 @@ fn permission_panel_present(doc: &Document) -> bool {
 /// Whether a panel frame points at the Permissions
 /// story: the frame is what puts the story's words on
 /// a page, so a story without one prints nowhere.
+/// Round 56, batch A, R56-RED-1: the panel id alone
+/// does NOT count — a panel object with its frames
+/// cleared, or with its frame retargeted away from
+/// the story, displays nothing, and the old id branch
+/// reported such shapes already current.
 fn permission_panel_frame_present(doc: &Document) -> bool {
     doc.panels.iter().any(|p| {
-        p.id == "panel-permissions"
-            || p.frames
-                .iter()
-                .any(|f| f.story_id.as_deref() == Some(HYMN_PERMISSIONS_STORY))
+        p.frames
+            .iter()
+            .any(|f| f.story_id.as_deref() == Some(HYMN_PERMISSIONS_STORY))
     })
 }
 
@@ -534,10 +547,13 @@ pub fn permission_panel_printable(doc: &Document) -> bool {
 }
 
 /// Whether the document carries an orphan Permissions
-/// panel shape: its story without a frame, or its
-/// frame without its story (round 55, batch C,
-/// R54-RED-3). The Check step offers Remove for exactly
-/// these shapes.
+/// panel shape: its story without a frame displaying
+/// it (round 56, batch A, R56-RED-1: frames cleared
+/// or retargeted away from the story count here, not
+/// just a panel object lost outright), or its frame
+/// without its story (round 55, batch C, R54-RED-3).
+/// The Check step offers Remove for exactly these
+/// shapes.
 pub fn permission_panel_orphan(doc: &Document) -> bool {
     permission_panel_present(doc) && !permission_panel_printable(doc)
 }
@@ -1567,6 +1583,164 @@ mod tests {
             matches!(again, HymnPermissionUpdate::AlreadyCurrent { .. }),
             "{again:?}"
         );
+    }
+
+    #[test]
+    fn r56a_orphan_frameless_panel_with_matching_memory_is_not_already_current() {
+        // Round 56, batch A, R56-RED-1, probe V1: a
+        // panel-permissions panel with all its frames
+        // cleared — the panel object and the story
+        // stand, but no frame displays the story, so
+        // no permission line prints. With memory
+        // matching the story lines, the old panel-id
+        // branch reported AlreadyCurrent; the update
+        // must report Orphan instead, change nothing,
+        // and the explicit removal must drop the
+        // orphan, after which an update appends a
+        // whole panel again.
+        let mut mem = memory_with(
+            Some("ELW"),
+            "432",
+            "Amazing Grace",
+            licensed_pair("CCLI", "123456", "© 2019 Jane Doe"),
+        );
+        mem.learn(
+            &entry(Some("ELW"), Some("365"), Some("Holy Holy")),
+            d(2026, 10, 18),
+        );
+        assert!(mem.note_license(
+            Some("ELW"),
+            "365",
+            licensed_pair("ONE LICENSE", "A-777", "© 2020 John Smith")
+        ));
+        let mut doc = order_doc(vec![
+            "Hymn of Praise\tELW 432 · Amazing Grace",
+            "Hymn of Response\tELW 365 · Holy Holy",
+        ]);
+        assert!(append_hymn_permission_panel(&mut doc, &mem).added);
+        assert_eq!(doc.panels.len(), 2);
+        let healthy = update_hymn_permission_panel(&mut doc, &mem);
+        assert!(
+            matches!(healthy, HymnPermissionUpdate::AlreadyCurrent { .. }),
+            "{healthy:?}"
+        );
+        // Clear every frame from the Permissions
+        // panel, keeping the panel object and story.
+        let panel = doc
+            .panels
+            .iter_mut()
+            .find(|p| p.id == "panel-permissions")
+            .expect("the appended panel stands");
+        panel.frames.clear();
+        assert_eq!(doc.panels.len(), 2, "the panel object stands");
+        assert!(permission_panel_present(&doc));
+        assert!(!permission_panel_printable(&doc));
+        assert!(permission_panel_orphan(&doc));
+        let story_lines = permission_panel_lines(&doc).expect("the story stands");
+        assert_eq!(story_lines.len(), 2, "{story_lines:?}");
+        let update = update_hymn_permission_panel(&mut doc, &mem);
+        match update {
+            HymnPermissionUpdate::Orphan { panel_lines, .. } => {
+                assert_eq!(panel_lines.len(), 2, "{panel_lines:?}");
+            }
+            other => panic!("a frameless panel is not current, got {other:?}"),
+        }
+        assert_eq!(doc.panels.len(), 2, "the orphan update changes nothing");
+        assert_eq!(
+            permission_panel_lines(&doc).expect("the story stands"),
+            story_lines,
+            "the orphan update changes nothing"
+        );
+        assert!(remove_hymn_permission_panel(&mut doc));
+        assert!(!permission_panel_present(&doc));
+        assert!(!permission_panel_orphan(&doc));
+        assert!(permission_panel_lines(&doc).is_none());
+        let again = update_hymn_permission_panel(&mut doc, &mem);
+        assert!(
+            matches!(again, HymnPermissionUpdate::Appended { .. }),
+            "removal plus update restores a whole panel: {again:?}"
+        );
+        assert!(permission_panel_printable(&doc));
+    }
+
+    #[test]
+    fn r56a_orphan_retargeted_frame_with_matching_memory_is_not_already_current() {
+        // Round 56, batch A, R56-RED-1, probe V2: a
+        // panel-permissions panel whose frame was
+        // retargeted away from the Permissions story
+        // — the panel object, frame, and story stand,
+        // but no frame displays the story, so no
+        // permission line prints. With memory matching
+        // the story lines, the old panel-id branch
+        // reported AlreadyCurrent; the update must
+        // report Orphan instead, change nothing, and
+        // the explicit removal must drop the orphan,
+        // after which an update appends a whole panel
+        // again.
+        let mut mem = memory_with(
+            Some("ELW"),
+            "432",
+            "Amazing Grace",
+            licensed_pair("CCLI", "123456", "© 2019 Jane Doe"),
+        );
+        mem.learn(
+            &entry(Some("ELW"), Some("365"), Some("Holy Holy")),
+            d(2026, 10, 18),
+        );
+        assert!(mem.note_license(
+            Some("ELW"),
+            "365",
+            licensed_pair("ONE LICENSE", "A-777", "© 2020 John Smith")
+        ));
+        let mut doc = order_doc(vec![
+            "Hymn of Praise\tELW 432 · Amazing Grace",
+            "Hymn of Response\tELW 365 · Holy Holy",
+        ]);
+        assert!(append_hymn_permission_panel(&mut doc, &mem).added);
+        assert_eq!(doc.panels.len(), 2);
+        let healthy = update_hymn_permission_panel(&mut doc, &mem);
+        assert!(
+            matches!(healthy, HymnPermissionUpdate::AlreadyCurrent { .. }),
+            "{healthy:?}"
+        );
+        // Retarget the Permissions frame away from
+        // the story, keeping panel, frame, and story.
+        let panel = doc
+            .panels
+            .iter_mut()
+            .find(|p| p.id == "panel-permissions")
+            .expect("the appended panel stands");
+        assert_eq!(panel.frames.len(), 1);
+        panel.frames[0].story_id = None;
+        assert_eq!(doc.panels.len(), 2, "the panel object stands");
+        assert!(permission_panel_present(&doc));
+        assert!(!permission_panel_printable(&doc));
+        assert!(permission_panel_orphan(&doc));
+        let story_lines = permission_panel_lines(&doc).expect("the story stands");
+        assert_eq!(story_lines.len(), 2, "{story_lines:?}");
+        let update = update_hymn_permission_panel(&mut doc, &mem);
+        match update {
+            HymnPermissionUpdate::Orphan { panel_lines, .. } => {
+                assert_eq!(panel_lines.len(), 2, "{panel_lines:?}");
+            }
+            other => panic!("a retargeted panel is not current, got {other:?}"),
+        }
+        assert_eq!(doc.panels.len(), 2, "the orphan update changes nothing");
+        assert_eq!(
+            permission_panel_lines(&doc).expect("the story stands"),
+            story_lines,
+            "the orphan update changes nothing"
+        );
+        assert!(remove_hymn_permission_panel(&mut doc));
+        assert!(!permission_panel_present(&doc));
+        assert!(!permission_panel_orphan(&doc));
+        assert!(permission_panel_lines(&doc).is_none());
+        let again = update_hymn_permission_panel(&mut doc, &mem);
+        assert!(
+            matches!(again, HymnPermissionUpdate::Appended { .. }),
+            "removal plus update restores a whole panel: {again:?}"
+        );
+        assert!(permission_panel_printable(&doc));
     }
 
     #[test]

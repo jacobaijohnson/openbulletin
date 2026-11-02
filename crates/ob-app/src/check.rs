@@ -1557,6 +1557,67 @@ mod tests {
     }
 
     #[test]
+    fn r56a_license_usage_notes_a_frameless_or_retargeted_permission_panel() {
+        // Round 56, batch A, R56-RED-1: Check names
+        // the two probe shapes — V1, a
+        // panel-permissions panel with all frames
+        // cleared, and V2, its frame retargeted away
+        // from the Permissions story — with the
+        // orphan note, even when the hymn memory
+        // matches the story lines (the case the old
+        // panel-id branch called already current and
+        // drew no note for). The note is what the
+        // Check step's Remove button sits beside.
+        let memory = memory_with_number("123456");
+        let mut frameless = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        assert!(ob_model::hymns::append_hymn_permission_panel(&mut frameless, &memory).added);
+        let panel = frameless
+            .panels
+            .iter_mut()
+            .find(|p| p.id == "panel-permissions")
+            .expect("the appended panel stands");
+        panel.frames.clear();
+        assert!(ob_model::hymns::permission_panel_orphan(&frameless));
+        let notes = license_usage_findings(&frameless, &memory);
+        assert!(
+            notes.iter().any(|n| n
+                .text
+                .contains("permission panel on the page is incomplete")),
+            "{notes:?}"
+        );
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.text.contains("does not match the current hymns")),
+            "an orphan draws the orphan note, not the stale note: {notes:?}"
+        );
+        let mut retargeted =
+            doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        assert!(ob_model::hymns::append_hymn_permission_panel(&mut retargeted, &memory).added);
+        let panel = retargeted
+            .panels
+            .iter_mut()
+            .find(|p| p.id == "panel-permissions")
+            .expect("the appended panel stands");
+        assert_eq!(panel.frames.len(), 1);
+        panel.frames[0].story_id = None;
+        assert!(ob_model::hymns::permission_panel_orphan(&retargeted));
+        let notes = license_usage_findings(&retargeted, &memory);
+        assert!(
+            notes.iter().any(|n| n
+                .text
+                .contains("permission panel on the page is incomplete")),
+            "{notes:?}"
+        );
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.text.contains("does not match the current hymns")),
+            "an orphan draws the orphan note, not the stale note: {notes:?}"
+        );
+    }
+
+    #[test]
     fn missing_number_note_points_at_the_license_fields() {
         // Round 53, batch B: the fixed note names the
         // real UI field, and its fix button jumps to the

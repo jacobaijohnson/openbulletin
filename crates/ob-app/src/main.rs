@@ -2993,7 +2993,17 @@ impl eframe::App for App {
                             // the Some branch and the
                             // frame-only shape in the None
                             // branch, and neither offered
-                            // Remove before.
+                            // Remove before. Round 56,
+                            // batch A, R56-RED-1: the same
+                            // branch covers a panel whose
+                            // frames were cleared or
+                            // retargeted away from the
+                            // story — those shapes are
+                            // orphans now, so they get
+                            // Remove here too, even when
+                            // the memory matches and the
+                            // Some branch below would
+                            // otherwise stay silent.
                             if ob_model::hymns::permission_panel_orphan(&self.doc) {
                                 ui.label(
                                     "The permission panel on the page is incomplete: its story \
@@ -16390,6 +16400,152 @@ mod settings_tests {
             hymns::permission_panel_orphan(&app.doc),
             "Undo brings the removed orphan frame back"
         );
+    }
+
+    #[test]
+    fn r56a_orphan_frameless_and_retargeted_panels_name_removal_and_remove_drops_them() {
+        // Round 56, batch A, R56-RED-1, at the app
+        // seam: the two probe shapes — V1, a
+        // panel-permissions panel with all frames
+        // cleared, and V2, its frame retargeted away
+        // from the Permissions story — report the
+        // incomplete status (never "already current")
+        // through the Check step's Update button even
+        // when the hymn memory matches, the document
+        // does not change under the update, and the
+        // Check step's Remove button drops the
+        // orphan, after which Update appends a whole
+        // panel again. The button itself renders
+        // under the orphan predicate this status path
+        // shares (see the Check step's panel block);
+        // egui rendering is not clicked in a unit
+        // test, so the predicate plus this seam are
+        // the pin, as in the round-55 test above.
+        use ob_model::hymns;
+        let mut app = clean_app_with_template();
+        let date = ob_model::SimpleDate {
+            year: 2026,
+            month: 10,
+            day: 18,
+        };
+        app.hymn_memory.learn(
+            &hymns::HymnEntry {
+                hymnal: Some("ELW".to_string()),
+                number: Some("432".to_string()),
+                title: Some("Amazing Grace".to_string()),
+            },
+            date,
+        );
+        assert!(app.hymn_memory.note_license(
+            Some("ELW"),
+            "432",
+            hymns::HymnLicense {
+                kind: ob_model::LicenseKind::LicensedReprint,
+                licensor: "CCLI".to_string(),
+                number: "123456".to_string(),
+                copyright_line: "© 2019 Jane Doe".to_string(),
+            },
+        ));
+        let sid = ob_model::service_story_id(&app.doc).expect("a service story");
+        let story = app.doc.story_mut(&sid).expect("the service story");
+        story.paragraphs.push(ob_model::Paragraph::plain(
+            "order-line",
+            "Hymn of Praise\tELW 432 · Amazing Grace",
+        ));
+        let panels_before = app.doc.panels.len();
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel added"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert_eq!(app.doc.panels.len(), panels_before + 1);
+        // V1: clear every frame, keeping the panel
+        // object and the story, with memory matching.
+        let panel = app
+            .doc
+            .panels
+            .iter_mut()
+            .find(|p| p.id == "panel-permissions")
+            .expect("the appended panel stands");
+        panel.frames.clear();
+        assert!(hymns::permission_panel_orphan(&app.doc));
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status.contains("incomplete")
+                && app
+                    .permission_panel_status
+                    .contains("Remove permission panel"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert!(
+            !app.permission_panel_status.contains("already current"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert_eq!(app.doc.panels.len(), panels_before + 1);
+        assert!(hymns::permission_panel_lines(&app.doc).is_some());
+        app.remove_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel removed"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert!(hymns::permission_panel_lines(&app.doc).is_none());
+        assert!(!hymns::permission_panel_orphan(&app.doc));
+        // Append again, then V2: retarget the frame
+        // away from the Permissions story, with
+        // memory still matching.
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel added"),
+            "{}",
+            app.permission_panel_status
+        );
+        let panel = app
+            .doc
+            .panels
+            .iter_mut()
+            .find(|p| p.id == "panel-permissions")
+            .expect("the appended panel stands");
+        assert_eq!(panel.frames.len(), 1);
+        panel.frames[0].story_id = None;
+        assert!(hymns::permission_panel_orphan(&app.doc));
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status.contains("incomplete")
+                && app
+                    .permission_panel_status
+                    .contains("Remove permission panel"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert!(
+            !app.permission_panel_status.contains("already current"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert_eq!(app.doc.panels.len(), panels_before + 1);
+        app.remove_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel removed"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert_eq!(app.doc.panels.len(), panels_before);
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel added"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert!(hymns::permission_panel_printable(&app.doc));
     }
 
     #[test]

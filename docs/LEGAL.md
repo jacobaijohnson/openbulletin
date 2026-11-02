@@ -103,7 +103,21 @@ walks the DOM directly and needs no selector API, so no
 copyleft family enters the tree for it. `cargo metadata`
 recount for this build: 603 packages (was 589), no new
 license family; the only LGPL mention is still the r-efi
-OR choice recorded above. The importer makes no network
+OR choice recorded above. Recount at round 51 (R51-F,
+2026-11-01, `cargo metadata --locked --offline
+--format-version 1`, exit 0): 604 packages. The
+one-unit delta over 603 is `ob-runner` 0.1.0, the
+first-party workspace crate created in H-I ("the
+runner gets its own home", formerly
+`ob-extract/src/runner.rs`): its manifest license is
+the workspace license, MIT OR Apache-2.0, it has no
+registry source (a path dependency, not a new
+third-party package), and no new license family
+enters with it. The delta was identified by diffing
+the `Cargo.lock` package lists at the 603 recount
+commit (`20439c2`, 603 entries) against this tip
+(604 entries): exactly one name added, `ob-runner`,
+none removed. The importer makes no network
 calls: pictures are carried only when their bytes are
 inside the page itself (data: URIs), and web-addressed
 pictures are counted, never fetched.
@@ -139,8 +153,11 @@ download exist: the engraver arrives with the bundle or not
 at all. Our own new dependencies
 for this build are quick-xml 0.36 and zip 2 (both already in
 the tree; see the .obd note above), so no new license family
-entered: `cargo metadata` recount is owed at the next
-material dependency change. MusicXML itself is a W3C
+entered. The `cargo metadata` recount owed at the next
+material dependency change is done at round 51 (R51-F):
+604 packages, delta `ob-runner` 0.1.0 (first-party,
+MIT OR Apache-2.0), no new license family — see the
+HTML-import recount note above. MusicXML itself is a W3C
 Community Final Specification (Music Notation Community
 Group), free to implement. The one music file used in
 development testing (a Bach chorale edition under

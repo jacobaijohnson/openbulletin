@@ -59,6 +59,56 @@ that hole defeated the check itself via identical
 bytes; this residual races the check's adjacent
 syscalls. Do not conflate them.
 
+## C-2 — R51-RED-1 record clarification (NOT a re-open)
+
+Record hygiene only (round 53, RC-MINOR-4): the
+round-51 red-team report's endpoint, quoted
+faithfully from `round51-out/redteam/report.md`,
+so the record never again reads as two lock
+holders:
+
+- §1.3: the residual's endpoint, and §1.4's
+  endpoint, is "two concurrent claim *sequences*
+  with one lock holder".
+- §1.4 step 6: after the walked interleaving,
+  "B and C now both hold a guard object" — guard
+  holders, not lock holders.
+- §1.4 severity note, stated exactly: "two
+  concurrent claim-guard holders, ONE lock holder".
+
+The two holders in §1.4 step 6 are guard holders;
+the lock holder is one throughout, bounded by the
+link-atomic create, the rename re-read, and the
+audit restore (§1.3). This resolves the tension
+the round-53 review noted; it is NOT a re-open
+of R51-RED-1 (repaired by R51-B) and it touches
+nothing in F11.
+
+## C-3 — R51-B clock-step/VM-snapshot residual (OPEN, theoretical)
+
+The R51-B repair carries the instance token
+(pid-nanos) in claim owner text, and that token
+is clock-dependent (round 53, R53-NEW-2). What
+remains, stated plainly and NOT claimed closed,
+is the theoretical collision neither demonstrated
+nor closed:
+
+- A backward clock step onto the exact prior
+  nanosecond, combined with pid reuse, could
+  reproduce an earlier launch's token.
+- VM-snapshot cloning onto a shared filesystem
+  could duplicate a live token the same way; the
+  latter defeats the pre-existing lock
+  generations identically, so it is not a new
+  weakness of the claim token alone.
+
+Neither path has been demonstrated; the residual
+sits alongside the R50-A adjacent-syscall
+windows above (C-1) as the same class of
+stated-not-closed window. Re-open trigger: a
+demonstrated collision outcome through either
+path is a NEW finding, not a re-open of R51-B.
+
 ## F11 tripwire — CLOSED, watched (owner + cadence)
 
 F11 (fork-inherited write-fd blocking execve) is

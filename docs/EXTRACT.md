@@ -131,9 +131,23 @@ audit tree):
 3. The product's import discipline matches its class
    (Scribus and LibreOffice run parsers as the user
    too): import files from sources the office trusts.
-4. A control added for show (e.g. a chroot that still
-   bind-mounts the input and output) would not change
-   the reach assessment above.
+4. A narrowed control is still a project, not a line:
+   a chroot that bind-mounts only the chosen input and
+   output would narrow an escaped helper's reach to
+   those paths — the round-53 correction to this reason
+   is that the earlier wording ("would not change the
+   reach assessment") overstated the case, since
+   restricting access to chosen paths does narrow reach
+   versus everything the user can touch — but the
+   broker must still permit everything the helpers
+   legitimately need (fonts, temp, profiles, and the
+   Python runtime Verovio needs), which is reason 2's
+   project with its own regression surface, and with
+   no evidenced vulnerability and no added privilege
+   that project is not justified by this finding. A
+   loosely brokered control added for show would be
+   theater; a tightly brokered one is the project
+   above, not a line in this fix.
 
 Reopen condition: if a parser exploit is evidenced, if
 helpers ever run elevated or in another account, or if

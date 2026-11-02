@@ -7661,6 +7661,143 @@ mod settings_tests {
     }
 
     #[test]
+    fn checks_name_carried_fonts_differently_from_absent_fonts() {
+        // Round 53 (R53-RED-4): a family whose bytes ride
+        // in the document shapes correctly on screen, so
+        // its Check note must say the carried bytes exist
+        // but are PDF-invisible — not that the font is
+        // absent. A genuinely absent family keeps the old
+        // wording. The carried face is a renamed
+        // Liberation (family "CarriedFont Fam", a
+        // same-length name-table replacement, so no
+        // library can hold it under that name).
+        fn table_offset(bytes: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
+            if bytes.len() < 12 {
+                return None;
+            }
+            let num_tables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+            for i in 0..num_tables {
+                let rec = 12 + i * 16;
+                if rec + 16 > bytes.len() {
+                    return None;
+                }
+                if &bytes[rec..rec + 4] == tag {
+                    let off = u32::from_be_bytes([
+                        bytes[rec + 8],
+                        bytes[rec + 9],
+                        bytes[rec + 10],
+                        bytes[rec + 11],
+                    ]) as usize;
+                    let len = u32::from_be_bytes([
+                        bytes[rec + 12],
+                        bytes[rec + 13],
+                        bytes[rec + 14],
+                        bytes[rec + 15],
+                    ]) as usize;
+                    return Some((off, len));
+                }
+            }
+            None
+        }
+        fn rename_family(bytes: &[u8]) -> Vec<u8> {
+            let from = "Liberation Sans";
+            let to = "CarriedFont Fam";
+            assert_eq!(from.len(), to.len());
+            let mut out = bytes.to_vec();
+            let (name_off, _) = table_offset(&out, b"name").expect("name table");
+            let count = u16::from_be_bytes([out[name_off + 2], out[name_off + 3]]) as usize;
+            let string_off = u16::from_be_bytes([out[name_off + 4], out[name_off + 5]]) as usize;
+            let strings = name_off + string_off;
+            let mut renamed = 0;
+            for i in 0..count {
+                let rec = name_off + 6 + i * 12;
+                let platform = u16::from_be_bytes([out[rec], out[rec + 1]]);
+                let name_id = u16::from_be_bytes([out[rec + 6], out[rec + 7]]);
+                let length = u16::from_be_bytes([out[rec + 8], out[rec + 9]]) as usize;
+                let offset = u16::from_be_bytes([out[rec + 10], out[rec + 11]]) as usize;
+                if name_id != 1 && name_id != 16 {
+                    continue;
+                }
+                let at = strings + offset;
+                if platform == 3 || platform == 0 {
+                    if length != from.len() * 2 {
+                        continue;
+                    }
+                    for (j, unit) in to.encode_utf16().enumerate() {
+                        out[at + j * 2] = (unit >> 8) as u8;
+                        out[at + j * 2 + 1] = (unit & 0xff) as u8;
+                    }
+                    renamed += 1;
+                } else if platform == 1 {
+                    if length != from.len() {
+                        continue;
+                    }
+                    out[at..at + to.len()].copy_from_slice(to.as_bytes());
+                    renamed += 1;
+                }
+            }
+            assert!(renamed > 0, "some family name record was renamed");
+            out
+        }
+        let base = ob_text::shaping::bundled_font_files()
+            .into_iter()
+            .find(|(name, _)| *name == "LiberationSans-Regular.ttf")
+            .expect("bundled regular")
+            .1
+            .to_vec();
+        let carried_bytes = rename_family(&base);
+        let mut app = App::default();
+        app.doc.styles[0].font_family = "CarriedFont Fam".into();
+        app.doc.assets.push(ob_model::Asset {
+            sha256: "test-carried-sha".into(),
+            kind: ob_model::AssetKind::Font,
+            media_type: "font/ttf".into(),
+            rights: ob_model::RightsRecord::default(),
+        });
+        app.doc
+            .asset_bytes
+            .insert("test-carried-sha".into(), carried_bytes);
+        app.run_checks();
+        let carried_note = app
+            .notes
+            .iter()
+            .find(|n| n.text.contains("CarriedFont Fam"))
+            .expect("carried family is named");
+        assert!(
+            carried_note.text.contains("travels with the bulletin")
+                && carried_note.text.contains("invisible to the print copy")
+                && carried_note.text.contains("stand-in font"),
+            "carried wording names the carried bytes as PDF-invisible: {}",
+            carried_note.text
+        );
+        assert!(
+            !carried_note.text.contains("which is not in"),
+            "carried note never claims the font is absent: {}",
+            carried_note.text
+        );
+        // The genuinely absent branch keeps the old words.
+        let mut app2 = App::default();
+        app2.doc.styles[0].font_family = "NoSuchFont Display".into();
+        app2.run_checks();
+        let absent_note = app2
+            .notes
+            .iter()
+            .find(|n| n.text.contains("NoSuchFont Display"))
+            .expect("absent family is named");
+        assert!(
+            absent_note.text.contains("which is not in")
+                && absent_note.text.contains("your Font Library"),
+            "absent wording stands: {}",
+            absent_note.text
+        );
+        assert!(
+            !absent_note.text.contains("travels with the bulletin"),
+            "absent note never claims carried bytes: {}",
+            absent_note.text
+        );
+    }
+
+    #[test]
     fn last_bulletin_door_needs_a_remembered_file_that_is_still_there() {
         // Nothing remembered: no door.
         assert!(last_bulletin_door(None, true).is_none());

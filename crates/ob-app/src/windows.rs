@@ -570,6 +570,12 @@ impl App {
         }
         // Missing fonts: a style naming a family that is neither
         // bundled nor in the Font Library prints in a stand-in.
+        // Carried fonts are the exception with a difference
+        // (round 53, R53-RED-4): the family IS in the
+        // document, shaping correctly on screen, but its
+        // bytes are invisible to the print copy, so the
+        // warning below says that instead of implying the
+        // font is absent.
         {
             let mut have: std::collections::HashSet<String> = Default::default();
             for (name, bytes) in ob_text::shaping::bundled_font_files() {
@@ -580,6 +586,12 @@ impl App {
             if let Ok(lib) = ob_fonts::FontLibrary::open(ob_fonts::default_library_dir()) {
                 for info in lib.scan() {
                     have.insert(info.family.to_lowercase());
+                }
+            }
+            let mut carried: std::collections::HashSet<String> = Default::default();
+            for bytes in ob_fonts::carried_font_bytes(&self.doc) {
+                if let Ok(info) = ob_fonts::inspect(&bytes, "carried") {
+                    carried.insert(info.family.to_lowercase());
                 }
             }
             let mut missing: Vec<String> = Vec::new();
@@ -593,11 +605,21 @@ impl App {
                 }
             }
             for fam in missing {
-                let text = format!(
-                    "Check: this bulletin uses the font \"{fam}\", which is not in \
-                     your Font Library, so it will print in a stand-in font. Add \
-                     it in the Fonts panel, or pick another font for those styles."
-                );
+                let text = if carried.contains(&fam.to_lowercase()) {
+                    format!(
+                        "Check: this bulletin uses the font \"{fam}\", which travels \
+                         with the bulletin, so the screen copy is correct, but the \
+                         carried bytes are invisible to the print copy, so it will \
+                         print in a stand-in font. Add it in the Fonts panel, or \
+                         pick another font for those styles."
+                    )
+                } else {
+                    format!(
+                        "Check: this bulletin uses the font \"{fam}\", which is not in \
+                         your Font Library, so it will print in a stand-in font. Add \
+                         it in the Fonts panel, or pick another font for those styles."
+                    )
+                };
                 // Point at the first box whose words use the
                 // missing font, when one can be named.
                 let target = self

@@ -4336,4 +4336,138 @@ mod tests {
             "regular screen advance {regular_width} agrees with regular print advance {pdf_regular} within {tolerance}"
         );
     }
+
+    /// Round 53 (RC-MINOR-5), static-family half: the
+    /// R51-D end-to-end pin names Gelasio only, and no
+    /// Carlito/Caladea bytes exist in this tree to pin
+    /// against, so the static path is pinned here with
+    /// the bundled static faces instead. A Liberation
+    /// Sans document with one regular and one bold run
+    /// prints two distinct faces through the production
+    /// path, and the bold face's H outline is wider than
+    /// the regular face's (Liberation advances are
+    /// metric-compatible, so widths alone cannot tell
+    /// regular from bold — the outlines can).
+    /// Carlito/Caladea bold rests on this shared
+    /// static-face path, not on a family pin.
+    #[test]
+    fn static_bold_prints_bold_for_a_static_family() {
+        let mut doc = sample_doc();
+        for style in &mut doc.styles {
+            if style.id == "body" {
+                style.font_family = "Liberation Sans".to_string();
+            }
+        }
+        let sid = doc.stories[0].id.clone();
+        doc.story_mut(&sid).expect("story").paragraphs = vec![ob_model::Paragraph::from_runs(
+            "body",
+            vec![
+                ob_model::Run::plain("Hamburg"),
+                ob_model::Run {
+                    text: "Hamburg".into(),
+                    bold: Some(true),
+                    italic: None,
+                },
+            ],
+        )];
+        let sides = ob_impose::impose_single(&doc);
+        let (pdf, _) = build_pdf_full(
+            &doc,
+            &sides,
+            ExportPurpose::ForPrinting,
+            &[],
+            None,
+            &mut ImageCache::new(),
+        );
+        let parsed = lopdf::Document::load_mem(&pdf).expect("lopdf parses the export");
+        let mut faces: Vec<(String, std::collections::HashMap<char, u16>, Vec<u8>)> = Vec::new();
+        for (_, page_id) in parsed.get_pages() {
+            let Ok((Some(resources), _)) = parsed.get_page_resources(page_id) else {
+                continue;
+            };
+            let Ok(font_dict) = resources.get(b"Font").and_then(|o| o.as_dict()) else {
+                continue;
+            };
+            for (_, obj) in font_dict.iter() {
+                let Some(font_obj) = obj
+                    .as_reference()
+                    .ok()
+                    .and_then(|id| parsed.get_object(id).ok())
+                else {
+                    continue;
+                };
+                let Ok(dict) = font_obj.as_dict() else {
+                    continue;
+                };
+                let base = dict
+                    .get(b"BaseFont")
+                    .and_then(|o| o.as_name())
+                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                    .unwrap_or_default();
+                if !base.starts_with("LiberationSans") {
+                    continue;
+                }
+                let to_unicode = to_unicode_map(&parsed, dict);
+                let by_char: std::collections::HashMap<char, u16> = to_unicode
+                    .iter()
+                    .filter_map(|(cid, s)| s.chars().next().map(|c| (c, *cid)))
+                    .collect();
+                let descendants = dict
+                    .get(b"DescendantFonts")
+                    .and_then(|o| o.as_array())
+                    .expect("Type0 names its descendant");
+                let cidfont = descendants[0]
+                    .as_reference()
+                    .and_then(|id| parsed.get_object(id))
+                    .expect("descendant object")
+                    .as_dict()
+                    .expect("descendant dictionary")
+                    .clone();
+                let descriptor = cidfont
+                    .get(b"FontDescriptor")
+                    .and_then(|o| o.as_reference())
+                    .and_then(|id| parsed.get_object(id))
+                    .and_then(|o| o.as_dict())
+                    .expect("CIDFont names its descriptor");
+                let program = descriptor
+                    .get(b"FontFile2")
+                    .and_then(|o| o.as_reference())
+                    .and_then(|id| parsed.get_object(id))
+                    .and_then(|o| o.as_stream())
+                    .and_then(|s| s.decompressed_content())
+                    .expect("embedded program decompresses");
+                faces.push((base, by_char, program));
+            }
+        }
+        let bases: Vec<&str> = faces.iter().map(|(b, _, _)| b.as_str()).collect();
+        let regular_face = faces
+            .iter()
+            .find(|(base, _, _)| base.as_str() == "LiberationSans")
+            .unwrap_or_else(|| panic!("regular LiberationSans face embedded: {bases:?}"));
+        let bold_face = faces
+            .iter()
+            .find(|(base, _, _)| base.as_str() == "LiberationSans-Bold")
+            .unwrap_or_else(|| panic!("bold LiberationSans-Bold face embedded: {bases:?}"));
+        assert_ne!(
+            regular_face.2, bold_face.2,
+            "regular and bold embed distinct programs"
+        );
+        // The bold H outline is wider than the regular
+        // H outline: the faces prove themselves through
+        // their outlines, since their advances agree.
+        let mut outline_widths = Vec::new();
+        for (label, face_entry) in [("regular", regular_face), ("bold", bold_face)] {
+            let program_face =
+                ttf_parser::Face::parse(&face_entry.2, 0).expect("embedded program parses");
+            let cid = face_entry.1.get(&'H').expect("H cid present");
+            let bbox = program_face
+                .glyph_bounding_box(ttf_parser::GlyphId(*cid))
+                .unwrap_or_else(|| panic!("{label} H has an outline"));
+            outline_widths.push(bbox.width());
+        }
+        assert!(
+            outline_widths[1] > outline_widths[0],
+            "the bold program's H outline is wider than the regular program's"
+        );
+    }
 }

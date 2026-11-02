@@ -142,7 +142,12 @@ SHA-256 in `.github/workflows/windows-bundle.yml` (via
 `scripts/stage-verovio-windows.ps1`), with the wheel's own
 LGPL-3.0 text staged as `Verovio-LGPL-3.0.txt` and a source
 offer as `Verovio-SOURCE.txt`, the same treatment PDFium gets
-today. A stock-Windows end-to-end check (MusicXML in, engraved
+today. The staged Python runtime itself is a separate license
+family, recorded here (round 53, R53-NEW-1): the embeddable
+Python 3.14.10 runtime staged beside the wheel is covered by
+the PSF License v2 (Python Software Foundation License,
+version 2) — that license covers the Python runtime, not
+Verovio, which stays LGPL-3.0 as above. A stock-Windows end-to-end check (MusicXML in, engraved
 SVG out, staff at or above the 5.0 mm floor) runs against the
 staged bundle in that workflow, and the same staging shape is
 proved on the CI Windows leg at every push. If the engraver

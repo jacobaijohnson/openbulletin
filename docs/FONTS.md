@@ -187,7 +187,15 @@ out; restricted: never carried, with a plain warning): on save
 the pinned library faces travel as font bytes in the zip, and
 on load the receiver registers those bytes with the
 document's shaper, in memory, for that document only — never
-installed into the receiver's library. A face that stays out
+installed into the receiver's library. Carried fonts are
+screen-only (round 53, R53-RED-4): the print copy cannot
+use carried bytes yet — the PDF writer resolves bundled
+plus library faces only — so a bulletin whose styles name
+only a carried family prints in a stand-in font, and Check
+says exactly that (the carried bytes exist but are
+PDF-invisible) instead of implying the font is absent.
+Wiring carried bytes into the PDF writer is a future batch;
+docs/FORMAT.md already discloses the print fallback. A face that stays out
 leaves the style's real family name in place, so the receiver
 shapes the stand-in until the font itself arrives, with no
 edit. See docs/FORMAT.md for the writer and reader paths
@@ -305,6 +313,38 @@ fix the writer instantiates each variable plain face at `wght`
 families now prints bold, and screen and print agree. The
 Georgia → Gelasio metric-twin promise above therefore holds for
 bold runs too. The Fonts panel says the same in plain words.
+That agreement is scoped to what the writer actually
+instantiates (round 51, R51-D, G-04;
+`crates/ob-pdf/src/instantiate.rs`): TrueType (glyf/gvar)
+variable faces only. A CFF/CFF2 face (sfnt tag `OTTO`) or a
+collection (`ttcf`) is NOT instantiated in PDF — the bold key
+keeps the plain-face fallback, so a bold run in such a family
+still prints in its regular face — and the instancer's global
+metrics (`hhea`, `OS/2` typo metrics) stay at the default
+instance's values: only outlines, advances, and the weight
+identity move to 700, and only the PostScript name gains the
+`-Bold` suffix. The three pack variable families (Gelasio,
+Lora, Playfair Display) are TrueType-glyf, so they
+instantiate; a CFF or collection face added later would not,
+until the instancer learns it. Static families need no
+instancer at all: their bold faces are real faces, and an
+exact static bold face always wins over a synthesized one.
+Scope note (round 53, RC-MINOR-5): the R51-D end-to-end pin
+names Gelasio only, and no Carlito/Caladea bytes exist in
+this tree to pin against, so no family-specific
+Carlito/Caladea pin is added here — vendoring new font
+binaries is beyond a record-fix batch. The static path is
+pinned instead by the bundled Liberation assertions in
+`crates/ob-pdf/src/lib.rs`: an exact static bold face is
+never synthesized over (face-source test), and the static
+end-to-end pin in the same file prints Liberation Sans
+regular and bold as two distinct faces with bold wider.
+The refinement's new pins are therefore confined to the
+variable families; Carlito/Caladea bold rests on the shared
+static-face path, and the gate's "all five" spec is
+answered on the record: three variable families pinned
+directly, two static families pinned through the shared
+static path.
 Remaining: the side-by-side comparison preview in the import
 review (that belongs to the analyzer's review screen).
 

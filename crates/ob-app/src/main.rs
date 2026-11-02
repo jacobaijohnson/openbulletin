@@ -15865,6 +15865,242 @@ mod settings_tests {
     }
 
     #[test]
+    fn r55b_shape_rebuild_on_seasonal_drops_name_and_marker() {
+        // Round 55, R54-RED-4, probe S5 pinned at the
+        // app seam: a shape rebuild on a Christmas
+        // bulletin no longer carries "Christmas Day"
+        // over a fresh Sunday template with the marker
+        // dropped. The fresh template's "Sunday" stands,
+        // no marker files, the week stays, and the order
+        // is the Sunday order — so the rebuilt bulletin
+        // is a genuine Sunday bulletin, and Next Sunday
+        // advances it instead of refusing or mangling it.
+        let mut app = clean_app_with_template();
+        app.doc = ob_layout::seasonal::build_seasonal_template(
+            ob_layout::seasonal::SeasonalService::Christmas,
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date"),
+        );
+        app.preset = ob_layout::Preset::LetterBifold;
+        app.rebuild();
+        assert_eq!(app.doc.fields["occasion_name"], "Sunday");
+        assert!(
+            !app.doc
+                .fields
+                .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+            "the rebuild files no marker"
+        );
+        assert_eq!(
+            app.doc.fields["occasion_date"], "2026-12-20",
+            "the week stays on a shape rebuild"
+        );
+        let order = app
+            .doc
+            .stories
+            .iter()
+            .find(|story| {
+                story
+                    .paragraphs
+                    .first()
+                    .map(|p| p.text() == "Order of Service")
+                    .unwrap_or(false)
+            })
+            .expect("the order story");
+        let text = order
+            .paragraphs
+            .iter()
+            .map(|p| p.text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Hymn of Praise"), "{text}");
+        assert!(!text.contains("Silent Night"), "{text}");
+        app.next_sunday();
+        assert_eq!(app.doc.fields["occasion_name"], "Sunday");
+        assert!(
+            !app.doc
+                .fields
+                .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+            "the advance files no marker"
+        );
+        assert!(
+            !app.status.contains("leaves it exactly as it is"),
+            "the advance is not a refusal: {}",
+            app.status
+        );
+        let advanced =
+            chrono::NaiveDate::parse_from_str(&app.doc.fields["occasion_date"], "%Y-%m-%d")
+                .expect("the advanced date parses");
+        let original = chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date");
+        assert!(
+            advanced > original,
+            "the date advanced from the original week: {}",
+            app.doc.fields["occasion_date"]
+        );
+        assert_eq!(
+            chrono::Datelike::weekday(&advanced),
+            chrono::Weekday::Sun,
+            "the advance lands on a Sunday"
+        );
+    }
+
+    #[test]
+    fn r55b_shape_rebuild_drops_unmarked_seasonal_names() {
+        // Round 55, R54-RED-4, the third gap found while
+        // auditing the carry paths: an unmarked bulletin
+        // whose name is a shipped seasonal label or a
+        // one-time occasion name must not carry that name
+        // over a Sunday template either — there is no
+        // marker to lose, but the printed split is the
+        // same (a seasonal name over the Sunday order).
+        // The fresh template's "Sunday" stands instead.
+        for name in ["Easter Sunday", "Ash Wednesday", "Christmas Eve"] {
+            let mut app = clean_app_with_template();
+            app.doc
+                .fields
+                .insert("occasion_name".to_string(), name.to_string());
+            assert!(
+                !app.doc
+                    .fields
+                    .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+                "the {name} bulletin starts unmarked"
+            );
+            app.preset = ob_layout::Preset::LetterBifold;
+            app.rebuild();
+            assert_eq!(
+                app.doc.fields["occasion_name"], "Sunday",
+                "the {name} name does not survive a shape rebuild"
+            );
+            assert!(
+                !app.doc
+                    .fields
+                    .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+                "the rebuild files no marker for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn r55b_shape_rebuild_keeps_sunday_rhythm_name() {
+        // Round 55, R54-RED-4, the no-regression side:
+        // the exemption is not a blanket drop. A
+        // Sunday-rhythm name on an unmarked bulletin
+        // needs no marker and still carries over a shape
+        // rebuild, with the week staying.
+        let mut app = clean_app_with_template();
+        app.doc.fields.insert(
+            "occasion_name".to_string(),
+            "Twentieth Sunday after Pentecost".to_string(),
+        );
+        app.preset = ob_layout::Preset::LetterBifold;
+        app.rebuild();
+        assert_eq!(
+            app.doc.fields["occasion_name"],
+            "Twentieth Sunday after Pentecost"
+        );
+        assert!(
+            !app.doc
+                .fields
+                .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+            "the rebuild files no marker"
+        );
+        assert_eq!(
+            app.doc.fields["occasion_date"], "2026-10-18",
+            "the week stays on a shape rebuild"
+        );
+    }
+
+    #[test]
+    fn r55b_rename_to_occasion_then_shape_rebuild_becomes_sunday() {
+        // Round 55, R54-RED-4 consistency, combination
+        // one: rename followed by shape rebuild. A
+        // Christmas bulletin renamed to Christmas Eve
+        // (round 55 batch A: the marker re-files under
+        // the new name) and then rebuilt as a new shape
+        // is a genuine Sunday bulletin: the renamed
+        // occasion name does not survive the rebuild,
+        // the marker goes with it, and Next Sunday
+        // advances instead of refusing.
+        let mut app = clean_app_with_template();
+        app.doc = ob_layout::seasonal::build_seasonal_template(
+            ob_layout::seasonal::SeasonalService::Christmas,
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date"),
+        );
+        app.apply_service_name("Christmas Eve".to_string());
+        assert_eq!(
+            app.doc.fields[ob_layout::seasonal::SEASONAL_SERVICE_FIELD],
+            "Christmas Eve"
+        );
+        app.preset = ob_layout::Preset::LetterBifold;
+        app.rebuild();
+        assert_eq!(app.doc.fields["occasion_name"], "Sunday");
+        assert!(
+            !app.doc
+                .fields
+                .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+            "the rebuild drops the marker with the name"
+        );
+        app.next_sunday();
+        assert_eq!(app.doc.fields["occasion_name"], "Sunday");
+        assert!(
+            !app.status.contains("leaves it exactly as it is"),
+            "the advance is not a refusal: {}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn r55b_shape_rebuild_then_rename_to_occasion_gains_marker_and_refuses() {
+        // Round 55, R54-RED-4 consistency, combination
+        // two: shape rebuild followed by rename. The
+        // rebuilt Sunday bulletin renamed to an occasion
+        // name gains the marker at rename time (round 55
+        // batch A), so Next Sunday refuses it whole —
+        // the rebuilt document still refuses where the
+        // marker rule requires it.
+        let mut app = clean_app_with_template();
+        app.doc = ob_layout::seasonal::build_seasonal_template(
+            ob_layout::seasonal::SeasonalService::Christmas,
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date"),
+        );
+        app.preset = ob_layout::Preset::LetterBifold;
+        app.rebuild();
+        assert_eq!(app.doc.fields["occasion_name"], "Sunday");
+        assert!(
+            !app.doc
+                .fields
+                .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+            "the rebuild leaves the bulletin unmarked"
+        );
+        app.apply_service_name("Christmas Day".to_string());
+        assert_eq!(app.doc.fields["occasion_name"], "Christmas Day");
+        assert_eq!(
+            app.doc.fields[ob_layout::seasonal::SEASONAL_SERVICE_FIELD],
+            "Christmas Day",
+            "the rename files the mark under the new name"
+        );
+        app.path = Some(std::path::PathBuf::from("christmas.obd"));
+        app.next_sunday();
+        assert_eq!(app.doc.fields["occasion_date"], "2026-12-20");
+        assert_eq!(app.doc.fields["occasion_name"], "Christmas Day");
+        assert_eq!(
+            app.doc.fields[ob_layout::seasonal::SEASONAL_SERVICE_FIELD],
+            "Christmas Day"
+        );
+        assert!(app.path.is_some(), "the refusal keeps the file path");
+        assert!(!app.status_error, "the refusal is guidance, not a failure");
+        assert!(
+            app.status.contains("Christmas Day"),
+            "the refusal names the occasion: {}",
+            app.status
+        );
+    }
+
+    #[test]
     fn r53b_permission_panel_action_refreshes_refuses_and_undo_restores() {
         // Round 53, batch B, R53-RED-3 at the app seam:
         // the Check step's action appends, refreshes a

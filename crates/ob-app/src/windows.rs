@@ -95,24 +95,49 @@ impl App {
             None => build_template(self.preset, profile, today, "Sunday"),
         };
         // Changing only the shape must not reset the week: the
-        // date, its long form, the occasion name, and the reading
-        // carry across (closing audit). A seasonal pick keeps
-        // the week too — the date decision is explicit
-        // (round 53): the week stays, and the office sets the
-        // event date on This Sunday — but never the old
-        // occasion name: carrying "Sunday" over a Christmas
-        // template prints "Sunday" over a Christmas order
-        // (R53-RED-1). The seasonal builder files the
-        // occasion name and the seasonal mark; neither is
-        // in the carry list, so both survive.
-        let carry: &[&str] = match seasonal {
-            Some(_) => &["occasion_date", "occasion_date_long", "reading"],
-            None => &[
+        // date, its long form, and the reading carry across
+        // (closing audit). The occasion name carries only
+        // when it can travel without a marker (round 55,
+        // R54-RED-4): a seasonal-marked bulletin, a shipped
+        // seasonal label, or any other one-time occasion
+        // name never carries over a fresh Sunday template,
+        // because the fresh template files no marker —
+        // carrying the name alone prints a seasonal name
+        // over the Sunday order with the marker dropped
+        // (round 54, probe S5). The fresh template's
+        // "Sunday" stands instead, so name and marker
+        // never split on this path: a Sunday-rhythm name
+        // carries, a seasonal name does not. A seasonal
+        // pick keeps the week too — the date decision is
+        // explicit (round 53): the week stays, and the
+        // office sets the event date on This Sunday — but
+        // never the old occasion name: carrying "Sunday"
+        // over a Christmas template prints "Sunday" over
+        // a Christmas order (R53-RED-1). The seasonal
+        // builder files the occasion name and the seasonal
+        // mark; neither is in the carry list, so both
+        // survive.
+        let carries_occasion_name = match seasonal {
+            Some(_) => false,
+            None => ob_layout::seasonal::shape_rebuild_carries_occasion_name(
+                keep_fields
+                    .get(ob_layout::seasonal::SEASONAL_SERVICE_FIELD)
+                    .map(String::as_str),
+                keep_fields
+                    .get("occasion_name")
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            ),
+        };
+        let carry: &[&str] = match (seasonal, carries_occasion_name) {
+            (Some(_), _) => &["occasion_date", "occasion_date_long", "reading"],
+            (None, true) => &[
                 "occasion_date",
                 "occasion_date_long",
                 "occasion_name",
                 "reading",
             ],
+            (None, false) => &["occasion_date", "occasion_date_long", "reading"],
         };
         for key in carry {
             if let Some(v) = keep_fields.get(*key) {

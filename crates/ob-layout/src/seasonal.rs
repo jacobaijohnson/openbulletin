@@ -209,6 +209,43 @@ pub fn marker_after_rename(existing: Option<&str>, new_name: &str) -> Option<Str
     }
 }
 
+/// Whether a shape rebuild may carry the old occasion
+/// name over a fresh Sunday template (round 55,
+/// R54-RED-4). Round 53 exempted the occasion name on
+/// the seasonal-pick path, but the shape path still
+/// carried it: a Christmas bulletin rebuilt as a new
+/// shape printed "Christmas Day" over the Sunday order
+/// with the marker dropped, because the fresh template
+/// files no marker. Name and marker must travel
+/// together, so on a shape rebuild the name carries
+/// only when it needs no marker at all: an unmarked
+/// bulletin whose name is a Sunday-rhythm name. A
+/// marked bulletin never carries its name (its order
+/// is being replaced, so the fresh "Sunday" stands and
+/// no marker files); neither does an unmarked bulletin
+/// whose name is a shipped seasonal label or any other
+/// one-time occasion name, since that name over the
+/// Sunday order is the same split with no marker to
+/// lose. An empty old name never carries either, so it
+/// cannot blank the fresh template's "Sunday".
+pub fn shape_rebuild_carries_occasion_name(existing: Option<&str>, old_name: &str) -> bool {
+    let marked = existing.map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if marked {
+        return false;
+    }
+    let name = old_name.trim();
+    if name.is_empty() {
+        return false;
+    }
+    if SeasonalService::all()
+        .iter()
+        .any(|s| s.label().eq_ignore_ascii_case(name))
+    {
+        return false;
+    }
+    !crate::is_one_time_occasion(name)
+}
+
 /// Build a ready-to-edit bulletin document for a seasonal
 /// or event service: the preset's panels, cover, notes,
 /// and back cover exactly as [`crate::build_template`]
@@ -491,6 +528,57 @@ mod tests {
             Some("Christmas Day".to_string())
         );
         assert_eq!(marker_after_rename(None, "   "), None);
+    }
+
+    #[test]
+    fn shape_rebuild_occasion_name_rule() {
+        // Round 55, R54-RED-4: the shape-rebuild rule
+        // at the rule itself, so every shape path
+        // through it is covered, not just the app
+        // seam's Christmas shape.
+        // A marked bulletin never carries its name,
+        // whatever the name now stands as: the order
+        // is being replaced, so the fresh "Sunday"
+        // stands and no marker files.
+        assert!(!shape_rebuild_carries_occasion_name(
+            Some("Christmas Day"),
+            "Christmas Day"
+        ));
+        assert!(!shape_rebuild_carries_occasion_name(
+            Some("Christmas Eve"),
+            "Twentieth Sunday after Pentecost"
+        ));
+        assert!(!shape_rebuild_carries_occasion_name(
+            Some("Christmas Day"),
+            "Sunday"
+        ));
+        // An unmarked bulletin whose name is a shipped
+        // seasonal label or a one-time occasion name
+        // does not carry it either: that name over the
+        // Sunday order is the same split, with no
+        // marker to lose. Easter Sunday counts even
+        // though it contains "Sunday", because it is a
+        // shipped label.
+        assert!(!shape_rebuild_carries_occasion_name(None, "Christmas Day"));
+        assert!(!shape_rebuild_carries_occasion_name(None, "Easter Sunday"));
+        assert!(!shape_rebuild_carries_occasion_name(None, "Ash Wednesday"));
+        assert!(!shape_rebuild_carries_occasion_name(None, "Christmas Eve"));
+        // An empty old name never carries, so it
+        // cannot blank the fresh template's "Sunday".
+        assert!(!shape_rebuild_carries_occasion_name(None, "   "));
+        // A Sunday-rhythm name on an unmarked bulletin
+        // carries: it needs no marker, and the Sunday
+        // order it lands on is its own kind. An empty
+        // marker value counts as unmarked.
+        assert!(shape_rebuild_carries_occasion_name(None, "Sunday"));
+        assert!(shape_rebuild_carries_occasion_name(
+            None,
+            "Twentieth Sunday after Pentecost"
+        ));
+        assert!(shape_rebuild_carries_occasion_name(
+            Some(""),
+            "Twentieth Sunday after Pentecost"
+        ));
     }
 
     #[test]

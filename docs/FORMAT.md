@@ -14,6 +14,23 @@ A v1 file is a zip containing:
   by the SHA-256 of its bytes. The same bytes are stored once,
   however many panels use them.
 
+Binding post-release rule (round 51, G-05): after the first
+release, any schema addition affecting content, rights, or
+privacy marks MUST increment `format_version` — or preserve
+unknown fields on load and save, so an older build never
+silently drops them. The fields this rule names, each of
+which an older v1 build today drops on save: `spoken_only`
+and `web_hidden` on paragraphs; `children_present` and
+`child_web_permission` on asset rights records; `inserts`
+(loose sheets) and `applied_contributions` on documents.
+The "stays 1" notes elsewhere in this section describe
+pre-release history, when no released build existed to
+protect; after the first release they are not permission
+to hold the version. No code change rides with this rule
+today: it binds the next such schema change, which must
+land either as the version bump or as the preservation
+mechanism, with its own tests, before it ships.
+
 The asset table in `document.json` records, per asset: its
 fingerprint, its kind (picture / tracing picture / music /
 font / other), its media type, and a rights record (source,
@@ -558,6 +575,21 @@ Every claim a composition can produce is vouched.
 
 - Readers reject newer-than-known versions with a clear
   message and accept all older ones.
+- Binding post-release rule (round 51, G-05): after the first
+  release, a schema addition affecting content, rights, or
+  privacy marks — `spoken_only`, `web_hidden`,
+  `children_present`, `child_web_permission`, `inserts`,
+  `applied_contributions` — MUST arrive as a version
+  increment, or with unknown-field preservation on load and
+  save. A save stamps the build's own version and writes
+  only the fields it knows, so without a bump or
+  preservation an older build re-saving a newer file
+  silently drops the marks; the version check above must
+  therefore refuse the newer file in plain words, or the
+  reader must carry the unknown fields through untouched.
+  Never load-then-drop silently. This rule binds from the
+  first release on; the "stays 1" notes in the v1 section
+  above are pre-release history, not permission.
 - A v1 asset whose bytes do not hash to the name it travels
   under is refused in plain words (the file may be damaged);
   it is never silently used.

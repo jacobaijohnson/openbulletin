@@ -6006,8 +6006,10 @@ mod settings_tests {
         // undo stacks (the only clears left are
         // `record_undo`'s redo clear and
         // `adopt_document`'s new-document clear).
-        let mut app = App::default();
-        app.doc = doc_with_sheet();
+        let mut app = App {
+            doc: doc_with_sheet(),
+            ..Default::default()
+        };
         // Host edit, recorded before the mutation.
         app.push_undo_now();
         app.doc.stories[0].paragraphs[0].set_text("Host words v2");
@@ -6032,7 +6034,9 @@ mod settings_tests {
         assert!(app.insert_edit.is_none(), "back on the bulletin");
         assert_eq!(app.undo_stack.len(), 1, "host step restored");
         assert_eq!(
-            app.undo_parked.get(&Some("sheet-1".to_string())).map(|s| s.0.len()),
+            app.undo_parked
+                .get(&Some("sheet-1".to_string()))
+                .map(|s| s.0.len()),
             Some(1),
             "the sheet step parks under its id"
         );
@@ -15110,9 +15114,7 @@ mod settings_tests {
         let unfiled = item(fresh_text, None);
         assert_eq!(
             announcements_contribution_status(&r1_template(), std::slice::from_ref(&unfiled)),
-            Some(
-                "Contributions still in the inbox: 1 part not yet in the bulletin.".to_string()
-            )
+            Some("Contributions still in the inbox: 1 part not yet in the bulletin.".to_string())
         );
         // After filing for this bulletin, with nowhere
         // to land: the inbox line is silent (the part
@@ -15176,11 +15178,7 @@ mod settings_tests {
         // No Sunday named on the bulletin: silent
         // rather than guessing which filings are its.
         assert_eq!(
-            announcements_filed_contribution_status(
-                &no_box,
-                std::slice::from_ref(&filed),
-                None
-            ),
+            announcements_filed_contribution_status(&no_box, std::slice::from_ref(&filed), None),
             None
         );
         // An unparsed filed file is skipped.

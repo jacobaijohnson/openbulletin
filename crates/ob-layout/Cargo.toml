@@ -12,6 +12,7 @@ chrono.workspace = true
 
 [dev-dependencies]
 ob-impose = { path = "../ob-impose" }
+ob-format = { path = "../ob-format" }
 
 [lints]
 workspace = true

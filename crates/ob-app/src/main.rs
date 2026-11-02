@@ -314,6 +314,7 @@ impl App {
         self.discarded_edit = None;
         // A start-fresh arm belongs to the old bulletin.
         self.shape_arm = None;
+        self.seasonal_arm = None;
         if clear_history {
             self.undo_stack.clear();
             self.redo_stack.clear();
@@ -390,6 +391,13 @@ struct App {
     /// takes the app's usual two clicks, like every other
     /// destructive path (UI audit round 2).
     shape_arm: Option<Preset>,
+    /// The seasonal service whose start-fresh click is
+    /// armed: a seasonal service is not a Preset, so it
+    /// cannot reuse `shape_arm` (round 53, R53-RED-1), and
+    /// a first-click rebuild would reintroduce the
+    /// silent-discard hazard `rebuild` cites. Same
+    /// two-click rule, its own arm state.
+    seasonal_arm: Option<ob_layout::seasonal::SeasonalService>,
     church_name: String,
     profile_address: String,
     profile_giving_url: String,
@@ -821,6 +829,7 @@ impl Default for App {
             doc,
             preset,
             shape_arm: None,
+            seasonal_arm: None,
             church_name: String::new(),
             profile_address: String::new(),
             profile_giving_url: String::new(),
@@ -1927,9 +1936,37 @@ impl eframe::App for App {
                                     self.preset = p;
                                     self.rebuild();
                                 } else {
+                                    // One armed pick at a time.
+                                    self.seasonal_arm = None;
                                     self.shape_arm = Some(p);
                                     self.note(
                                         "Click again to start fresh with this shape. \
+                                         What you have open stays undoable."
+                                            .into(),
+                                    );
+                                }
+                            }
+                        }
+                        ui.separator();
+                        ui.heading("Start a seasonal service bulletin");
+                        ui.label("Pick a service and the bulletin starts over with that service's own order of service. Picking takes two clicks, because it replaces the bulletin on screen (which stays undoable). The week stays as it is: set the event date on This Sunday.");
+                        for service in ob_layout::seasonal::SeasonalService::all() {
+                            let armed = self.seasonal_arm == Some(service);
+                            let label = if armed {
+                                "Click again to start fresh with this service".to_string()
+                            } else {
+                                service.label().to_string()
+                            };
+                            if ui.button(label).clicked() {
+                                if armed {
+                                    self.seasonal_arm = None;
+                                    self.rebuild_seasonal(service);
+                                } else {
+                                    // One armed pick at a time.
+                                    self.shape_arm = None;
+                                    self.seasonal_arm = Some(service);
+                                    self.note(
+                                        "Click again to start fresh with this service. \
                                          What you have open stays undoable."
                                             .into(),
                                     );
@@ -2194,9 +2231,11 @@ impl eframe::App for App {
                         if resp_sn.lost_focus()
                             && self.doc.fields.get("occasion_name").map(|v| v.as_str()) != Some(sn.as_str())
                         {
-                                let before = snapshot(&self.doc);
-                                self.doc.fields.insert("occasion_name".to_string(), sn);
-                                self.record_undo(before);
+                                // Renaming clears the seasonal
+                                // mark (round 53, R53-RED-2):
+                                // the office is asserting this
+                                // is now a Sunday bulletin.
+                                self.apply_service_name(sn);
                         }
                         ui.label("Service time");
                         let mut st = self.doc.occasion_time.clone().unwrap_or_default();
@@ -14974,6 +15013,176 @@ mod settings_tests {
             note,
             "Started the October 25, 2026 bulletin. Weekly announcements were cleared; \
              standing items carried over. Save it under its own name. Undo brings this week back."
+        );
+    }
+
+    #[test]
+    fn r53a_seasonal_pick_keeps_occasion_name_not_sunday() {
+        // Round 53, R53-RED-1, probe P1b replayed through
+        // the real carry path: a Sunday bulletin rebuilt
+        // as each seasonal service keeps the week (date
+        // decision: the week stays, the office sets the
+        // event date on This Sunday) and takes the
+        // occasion name — never "Sunday" over a seasonal
+        // order — and the status names the occasion.
+        for service in ob_layout::seasonal::SeasonalService::all() {
+            let mut app = clean_app_with_template();
+            app.church_name = "Grace Church".to_string();
+            app.rebuild_seasonal(service);
+            assert_eq!(
+                app.doc.fields["occasion_name"],
+                service.label(),
+                "the {label} pick keeps its occasion name",
+                label = service.label()
+            );
+            assert_eq!(
+                app.doc.fields[ob_layout::seasonal::SEASONAL_SERVICE_FIELD],
+                service.label(),
+                "the {label} pick files its marker",
+                label = service.label()
+            );
+            assert_eq!(
+                app.doc.fields["occasion_date"], "2026-10-18",
+                "the week stays on a seasonal pick"
+            );
+            assert!(
+                app.doc.title.contains(service.label()),
+                "title names the occasion: {}",
+                app.doc.title
+            );
+            assert!(
+                app.status.contains(service.label()),
+                "the status names the occasion, not the shape: {}",
+                app.status
+            );
+            assert!(
+                app.status.contains("set the event date on This Sunday"),
+                "the status states the date rule: {}",
+                app.status
+            );
+        }
+        // Christmas in full: the order is the Christmas
+        // order, not the Sunday order under a new name.
+        let mut app = clean_app_with_template();
+        app.church_name = "Grace Church".to_string();
+        app.rebuild_seasonal(ob_layout::seasonal::SeasonalService::Christmas);
+        let order = app
+            .doc
+            .stories
+            .iter()
+            .find(|story| {
+                story
+                    .paragraphs
+                    .first()
+                    .map(|p| p.text() == "Order of Service")
+                    .unwrap_or(false)
+            })
+            .expect("the order story");
+        let text = order
+            .paragraphs
+            .iter()
+            .map(|p| p.text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Silent Night"), "{text}");
+        assert!(!text.contains("Hymn of Praise"), "{text}");
+    }
+
+    #[test]
+    fn r53a_rename_on_this_sunday_clears_seasonal_marker() {
+        // Round 53, R53-RED-2: renaming on This Sunday is
+        // the office asserting the bulletin is now a
+        // Sunday bulletin, so the seasonal mark goes with
+        // the old name — while the order stays as it
+        // stands, for the office to change.
+        let mut app = clean_app_with_template();
+        app.doc = ob_layout::seasonal::build_seasonal_template(
+            ob_layout::seasonal::SeasonalService::Christmas,
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date"),
+        );
+        app.apply_service_name("Sunday".to_string());
+        assert_eq!(app.doc.fields["occasion_name"], "Sunday");
+        assert!(
+            !app.doc
+                .fields
+                .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+            "the rename clears the seasonal mark"
+        );
+        let order = app
+            .doc
+            .stories
+            .iter()
+            .find(|story| {
+                story
+                    .paragraphs
+                    .first()
+                    .map(|p| p.text() == "Order of Service")
+                    .unwrap_or(false)
+            })
+            .expect("the order story");
+        assert!(
+            order
+                .paragraphs
+                .iter()
+                .any(|p| p.text().contains("Silent Night")),
+            "the order stays theirs to change"
+        );
+    }
+
+    #[test]
+    fn r53a_next_sunday_refuses_seasonal_in_app() {
+        // Round 53, R53-RED-2 at the app seam: Next Sunday
+        // on a marked Easter bulletin refuses with
+        // guidance, adopts nothing, keeps the file path
+        // (opening runs Next Sunday too), and leaves the
+        // hymn, the name, and the date untouched.
+        let mut app = clean_app_with_template();
+        app.doc = ob_layout::seasonal::build_seasonal_template(
+            ob_layout::seasonal::SeasonalService::Easter,
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date"),
+        );
+        app.path = Some(std::path::PathBuf::from("easter.obd"));
+        app.next_sunday();
+        assert_eq!(app.doc.fields["occasion_date"], "2026-12-20");
+        assert_eq!(app.doc.fields["occasion_name"], "Easter Sunday");
+        assert_eq!(
+            app.doc.fields[ob_layout::seasonal::SEASONAL_SERVICE_FIELD],
+            "Easter Sunday"
+        );
+        assert!(app.path.is_some(), "the refusal keeps the file path");
+        assert!(!app.status_error, "the refusal is guidance, not a failure");
+        assert!(
+            app.status.contains("Easter Sunday"),
+            "the status names the occasion: {}",
+            app.status
+        );
+        assert!(
+            app.status.contains("rename it on This Sunday"),
+            "the status points at the rename path: {}",
+            app.status
+        );
+        let order = app
+            .doc
+            .stories
+            .iter()
+            .find(|story| {
+                story
+                    .paragraphs
+                    .first()
+                    .map(|p| p.text() == "Order of Service")
+                    .unwrap_or(false)
+            })
+            .expect("the order story");
+        assert!(
+            order
+                .paragraphs
+                .iter()
+                .any(|p| p.text().contains("Christ the Lord Is Risen Today")),
+            "the Easter hymn survives"
         );
     }
 

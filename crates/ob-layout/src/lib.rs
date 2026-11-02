@@ -353,6 +353,17 @@ pub struct NextSundayReport {
     /// forward (round 2, R2-11). None for a regular week,
     /// whose advance changes nothing but the date.
     pub occasion_note: Option<String>,
+    /// Set when the document carries a seasonal service
+    /// marker ([`seasonal::SEASONAL_SERVICE_FIELD`], round
+    /// 53, R53-RED-2): Next Sunday refused outright, and
+    /// this is the guidance sentence naming the occasion
+    /// and the two real paths (a fresh Sunday bulletin, or
+    /// a rename on This Sunday first). The returned
+    /// document is the input untouched: no name reset, no
+    /// hymn clearing, no date advance. The app shows this
+    /// sentence instead of adopting a new week. None for
+    /// every non-seasonal document.
+    pub seasonal_refusal: Option<String>,
     /// The loose sheets Next Sunday took out (roles build
     /// R-3): this-week-only sheets, and dated sheets whose
     /// keep-through date had passed by the new Sunday, by
@@ -377,12 +388,15 @@ pub const DEFAULT_SERVICE_NAME: &str = "Sunday";
 /// like "Twentieth Sunday after Pentecost" or "Easter
 /// Sunday". Any other name that names a service at all
 /// (Wedding, Funeral, Ash Wednesday, Christmas Eve) is an
-/// occasion that happens once. The document carries no
-/// other marker: a regular service held on a weekday and
-/// named without the word Sunday cannot be told apart from
-/// a one-time occasion, which is why the guard announces
-/// itself in the report and names the way back (rename it
-/// on This Sunday) instead of acting silently.
+/// occasion that happens once. A seasonal service's own
+/// bulletin carries its own marker instead
+/// ([`seasonal::SEASONAL_SERVICE_FIELD`], checked before
+/// this predicate by [`next_sunday_report_as_of`]), so a
+/// regular service held on a weekday and named without the
+/// word Sunday still cannot be told apart from a one-time
+/// occasion, which is why the guard announces itself in
+/// the report and names the way back (rename it on This
+/// Sunday) instead of acting silently.
 fn is_one_time_occasion(name: &str) -> bool {
     let name = name.trim();
     if name.is_empty() || name.eq_ignore_ascii_case(DEFAULT_SERVICE_NAME) {
@@ -471,6 +485,14 @@ pub fn next_sunday_report(doc: &Document) -> Result<(Document, NextSundayReport)
 /// Sunday strictly after today (the coming Sunday, since the
 /// file's date is a Sunday). The report's `weeks_advanced`
 /// says how far it moved, so the caller can say it out loud.
+/// A seasonal service's own bulletin refuses instead
+/// (round 53, R53-RED-2): when the document carries the
+/// [`seasonal::SEASONAL_SERVICE_FIELD`] marker, the
+/// returned document is the input untouched and the
+/// report carries `seasonal_refusal` guidance. A seasonal
+/// order does not repeat a week later, and renaming the
+/// name alone never fixed the order, so neither half of
+/// the old behavior ships for marked documents.
 pub fn next_sunday_report_as_of(
     doc: &Document,
     today: NaiveDate,
@@ -487,6 +509,35 @@ pub fn next_sunday_report_as_of(
         .get("occasion_name")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
+    // A seasonal service's own bulletin refuses Next
+    // Sunday outright (round 53, R53-RED-2), checked
+    // before the name test below: the marker, not the
+    // name, decides, so Easter Sunday refuses exactly
+    // like the other five instead of recurring minus its
+    // signature hymn, and the five never become "Sunday"
+    // bulletins keeping a Wedding or Christmas order.
+    // The refusal returns the document untouched; the
+    // caller shows the guidance instead of adopting.
+    if let Some(label) = doc
+        .fields
+        .get(seasonal::SEASONAL_SERVICE_FIELD)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        let refusal = format!(
+            "This is a {label} bulletin, so Next Sunday leaves it exactly as it is: \
+             the name, the order, the hymns, and the date are untouched. A seasonal \
+             order does not repeat a week later. To start the next week, start a fresh \
+             Sunday bulletin from the Start step; or, if this bulletin is now a Sunday \
+             bulletin, rename it on This Sunday first — renaming clears the seasonal \
+             mark, and the order stays as it stands for you to change."
+        );
+        let report = NextSundayReport {
+            seasonal_refusal: Some(refusal),
+            ..NextSundayReport::default()
+        };
+        return Ok((doc.clone(), report));
+    }
     let one_time = is_one_time_occasion(&old_name);
     let (next, weeks_advanced) = if one_time {
         let base = date.max(today);
@@ -1324,6 +1375,89 @@ mod tests {
             .iter()
             .filter(|p| p.style == "body")
             .all(|p| p.text().is_empty()));
+    }
+
+    #[test]
+    fn next_sunday_refuses_seasonal_documents_whole() {
+        // Round 53, R53-RED-2, probe P1 replayed over all
+        // six services: a seasonal bulletin run through
+        // Next Sunday comes back untouched — name kept,
+        // order byte-identical, hymn values kept, date
+        // unadvanced — with a refusal naming the occasion
+        // and the two real paths. Easter is the sharp edge:
+        // its name contains "Sunday", so the old predicate
+        // recurred it minus "Christ the Lord Is Risen
+        // Today"; the marker refuses it like the rest.
+        for service in seasonal::SeasonalService::all() {
+            let d = seasonal::build_seasonal_template(
+                service,
+                Preset::LetterBifold,
+                profile(),
+                NaiveDate::from_ymd_opt(2026, 12, 20).unwrap(),
+            );
+            let (n, report) =
+                next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 12, 27).unwrap())
+                    .unwrap();
+            assert_eq!(
+                n,
+                d,
+                "the {label} bulletin is untouched",
+                label = service.label()
+            );
+            assert_eq!(n.fields["occasion_date"], "2026-12-20", "date unadvanced");
+            assert!(report.cleared_hymns.is_empty(), "no hymn cleared");
+            assert_eq!(report.weeks_advanced, 0, "no advance claimed");
+            let refusal = report.seasonal_refusal.expect("the refusal speaks");
+            assert!(
+                refusal.contains(service.label()),
+                "the refusal names the occasion: {refusal}"
+            );
+            assert!(
+                refusal.contains("Start step"),
+                "the refusal points at a fresh Sunday bulletin: {refusal}"
+            );
+            assert!(
+                refusal.contains("rename it on This Sunday"),
+                "the refusal points at the rename path: {refusal}"
+            );
+            assert!(
+                refusal.contains("the order stays as it stands"),
+                "the refusal is honest that renaming does not fix the order: {refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn next_sunday_keeps_the_easter_hymn_on_a_seasonal_document() {
+        // The probe's Easter half, pinned by name: the
+        // signature hymn value survives Next Sunday on a
+        // marked Easter bulletin.
+        let d = seasonal::build_seasonal_template(
+            seasonal::SeasonalService::Easter,
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 12, 20).unwrap(),
+        );
+        let (n, _) =
+            next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 12, 27).unwrap()).unwrap();
+        let order = n
+            .stories
+            .iter()
+            .find(|story| {
+                story
+                    .paragraphs
+                    .first()
+                    .map(|p| p.text() == "Order of Service")
+                    .unwrap_or(false)
+            })
+            .expect("the order story");
+        assert!(
+            order
+                .paragraphs
+                .iter()
+                .any(|p| p.text().contains("Christ the Lord Is Risen Today")),
+            "the Easter hymn survives Next Sunday"
+        );
     }
 
     #[test]

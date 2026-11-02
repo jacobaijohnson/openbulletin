@@ -10,8 +10,10 @@
 //! own order. They are first-class templates — a caller
 //! gets a ready-to-edit [`ob_model::Document`], not a
 //! name — and each one is pinned by a generation test
-//! below. Wiring them into the Start step's picker is a
-//! separate UI step; the set itself ships here.
+//! below. The Start step's picker offers them (round 53),
+//! and each template files a [`SEASONAL_SERVICE_FIELD`]
+//! marker the Next Sunday command honors by refusing,
+//! with guidance, rather than mangling the occasion.
 
 use crate::{build_template, Preset};
 use chrono::NaiveDate;
@@ -140,12 +142,26 @@ impl SeasonalService {
     }
 }
 
+/// The document field that marks a bulletin as a seasonal
+/// service's own bulletin (round 53, R53-RED-2): the value
+/// is the service label ([`SeasonalService::label`]). The
+/// field travels with the document — it is part of the
+/// saved form, so a re-opened seasonal bulletin still
+/// refuses Next Sunday — and it is cleared when the office
+/// renames the service on This Sunday, which is the office
+/// explicitly asserting the bulletin is now a Sunday
+/// bulletin. Next Sunday checks this marker before the
+/// name test, so Easter Sunday (which contains "Sunday")
+/// refuses exactly like the other five.
+pub const SEASONAL_SERVICE_FIELD: &str = "seasonal_service";
+
 /// Build a ready-to-edit bulletin document for a seasonal
 /// or event service: the preset's panels, cover, notes,
 /// and back cover exactly as [`crate::build_template`]
 /// builds them, with the order-of-service story replaced
-/// by the occasion's order and the document titled for
-/// the occasion.
+/// by the occasion's order, the document titled for
+/// the occasion, and the [`SEASONAL_SERVICE_FIELD`] marker
+/// filed under the occasion label.
 pub fn build_seasonal_template(
     service: SeasonalService,
     preset: Preset,
@@ -183,6 +199,8 @@ pub fn build_seasonal_template(
     let church_name = doc.profile.name.clone();
     let title = format!("{church_name} {label}");
     doc.title = title;
+    doc.fields
+        .insert(SEASONAL_SERVICE_FIELD.to_string(), label.to_string());
     doc
 }
 
@@ -287,6 +305,73 @@ mod tests {
             back.paragraphs.iter().any(|p| p.text() == "{Church.times}"),
             "the back cover still prints service times"
         );
+    }
+
+    #[test]
+    fn seasonal_templates_generate_on_every_preset() {
+        // Round 53 trifold pin (R53-RED-2 coverage note):
+        // only LetterBifold and HalfLetterBooklet were
+        // pinned before, and the order-story fallback would
+        // silently leave the Sunday order standing under a
+        // seasonal name if build_template ever stopped
+        // carrying an order story. Every preset now pins
+        // every service's own order, name, and marker.
+        for preset in Preset::all() {
+            for service in SeasonalService::all() {
+                let doc = build_seasonal_template(service, preset, profile(), date());
+                assert_eq!(
+                    doc.fields["occasion_name"],
+                    service.label(),
+                    "occasion filed under its own name on {:?}",
+                    preset
+                );
+                assert_eq!(
+                    doc.fields[SEASONAL_SERVICE_FIELD],
+                    service.label(),
+                    "seasonal marker filed on {:?}",
+                    preset
+                );
+                assert!(
+                    doc.title.contains(service.label()),
+                    "title names the occasion on {:?}: {}",
+                    preset,
+                    doc.title
+                );
+                let order = order_text(&doc);
+                assert!(
+                    order.contains(signature(service)),
+                    "the {label} order carries its signature line on {preset:?}:\n{order}",
+                    label = service.label()
+                );
+                assert!(
+                    !order.contains("Hymn of Praise"),
+                    "the Sunday order did not survive under a seasonal name on {preset:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seasonal_marker_survives_save_and_load() {
+        // The marker must survive the real saved form
+        // (ob-format's .obd), not just the in-memory
+        // document: a re-opened Christmas bulletin still
+        // refuses Next Sunday.
+        let dir = std::env::temp_dir().join(format!("ob-seasonal-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("christmas.obd");
+        let doc = build_seasonal_template(
+            SeasonalService::Christmas,
+            Preset::LetterBifold,
+            profile(),
+            date(),
+        );
+        ob_format::save(&doc, &path).expect("save");
+        let back = ob_format::load(&path).expect("load");
+        assert_eq!(back.fields[SEASONAL_SERVICE_FIELD], "Christmas Day");
+        assert_eq!(back.fields["occasion_name"], "Christmas Day");
+        let order = order_text(&back);
+        assert!(order.contains("Silent Night"), "{order}");
     }
 
     #[test]

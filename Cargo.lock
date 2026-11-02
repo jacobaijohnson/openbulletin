@@ -2929,6 +2929,7 @@ name = "ob-layout"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "ob-format",
  "ob-impose",
  "ob-model",
 ]

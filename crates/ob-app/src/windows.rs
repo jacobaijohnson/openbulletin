@@ -48,6 +48,21 @@ impl App {
     }
 
     pub(crate) fn rebuild(&mut self) {
+        self.rebuild_for(None);
+    }
+
+    /// Start fresh with a seasonal service's own template
+    /// (round 53): the same two-click, undoable replacement
+    /// as a shape pick, routed through the same rebuild so
+    /// the week, the journal, and the undo record behave
+    /// the same — except the occasion name, which the
+    /// seasonal builder files and the carry loop must not
+    /// overwrite (R53-RED-1).
+    pub(crate) fn rebuild_seasonal(&mut self, service: ob_layout::seasonal::SeasonalService) {
+        self.rebuild_for(Some(service));
+    }
+
+    fn rebuild_for(&mut self, seasonal: Option<ob_layout::seasonal::SeasonalService>) {
         // A shape change replaces the whole document. It used to
         // be a silent discard with the autosave journal retired:
         // one stray click and the week's work was gone (blocker
@@ -60,34 +75,47 @@ impl App {
         self.save_announcements();
         let before = snapshot(&self.doc);
         let keep_fields = self.doc.fields.clone();
-        let doc = build_template(
-            self.preset,
-            ChurchProfile {
-                name: self.church_name.clone(),
-                address: self.profile_address.clone(),
-                service_times: self.profile_service_times.clone(),
-                website: self.profile_website.clone(),
-                giving_url: self.doc.profile.giving_url.clone(),
-                pastor: self.profile_pastor.clone(),
-                expected_parts: self.doc.profile.expected_parts.clone(),
-                children_names: self.doc.profile.children_names,
-                serving_lines: self.doc.profile.serving_lines.clone(),
-                serving_aliases: self.doc.profile.serving_aliases.clone(),
-            },
-            chrono::Local::now().date_naive(),
-            "Sunday",
-        );
-        let mut doc = doc;
+        let profile = ChurchProfile {
+            name: self.church_name.clone(),
+            address: self.profile_address.clone(),
+            service_times: self.profile_service_times.clone(),
+            website: self.profile_website.clone(),
+            giving_url: self.doc.profile.giving_url.clone(),
+            pastor: self.profile_pastor.clone(),
+            expected_parts: self.doc.profile.expected_parts.clone(),
+            children_names: self.doc.profile.children_names,
+            serving_lines: self.doc.profile.serving_lines.clone(),
+            serving_aliases: self.doc.profile.serving_aliases.clone(),
+        };
+        let today = chrono::Local::now().date_naive();
+        let mut doc = match seasonal {
+            Some(service) => {
+                ob_layout::seasonal::build_seasonal_template(service, self.preset, profile, today)
+            }
+            None => build_template(self.preset, profile, today, "Sunday"),
+        };
         // Changing only the shape must not reset the week: the
         // date, its long form, the occasion name, and the reading
-        // carry across (closing audit).
-        for key in [
-            "occasion_date",
-            "occasion_date_long",
-            "occasion_name",
-            "reading",
-        ] {
-            if let Some(v) = keep_fields.get(key) {
+        // carry across (closing audit). A seasonal pick keeps
+        // the week too — the date decision is explicit
+        // (round 53): the week stays, and the office sets the
+        // event date on This Sunday — but never the old
+        // occasion name: carrying "Sunday" over a Christmas
+        // template prints "Sunday" over a Christmas order
+        // (R53-RED-1). The seasonal builder files the
+        // occasion name and the seasonal mark; neither is
+        // in the carry list, so both survive.
+        let carry: &[&str] = match seasonal {
+            Some(_) => &["occasion_date", "occasion_date_long", "reading"],
+            None => &[
+                "occasion_date",
+                "occasion_date_long",
+                "occasion_name",
+                "reading",
+            ],
+        };
+        for key in carry {
+            if let Some(v) = keep_fields.get(*key) {
                 doc.fields.insert(key.to_string(), v.clone());
             }
         }
@@ -100,10 +128,38 @@ impl App {
         if before != snapshot(&self.doc) {
             self.record_undo(before);
         }
-        self.status = format!(
-            "Template loaded: {}. Undo brings the old bulletin back.",
-            self.preset.label()
-        );
+        // The status names what was picked: the occasion
+        // for a seasonal pick, not the shape (R53-RED-1).
+        // A seasonal pick also says the date rule out loud:
+        // the week stayed, and the event date is set on
+        // This Sunday.
+        self.status = match seasonal {
+            Some(service) => format!(
+                "Template loaded: {}. The week stayed as it was; set the event date on This Sunday. Undo brings the old bulletin back.",
+                service.label()
+            ),
+            None => format!(
+                "Template loaded: {}. Undo brings the old bulletin back.",
+                self.preset.label()
+            ),
+        };
+    }
+
+    /// Rename the service on This Sunday (round 53,
+    /// R53-RED-2): a rename is the office explicitly
+    /// asserting the bulletin is now a Sunday bulletin, so
+    /// the seasonal mark goes with the old name. The order
+    /// stays as it stands, for the office to change; the
+    /// change is undoable like any other edit.
+    pub(crate) fn apply_service_name(&mut self, name: String) {
+        let before = snapshot(&self.doc);
+        self.doc.fields.insert("occasion_name".to_string(), name);
+        self.doc
+            .fields
+            .remove(ob_layout::seasonal::SEASONAL_SERVICE_FIELD);
+        if before != snapshot(&self.doc) {
+            self.record_undo(before);
+        }
     }
 
     pub(crate) fn save_announcements(&mut self) {
@@ -680,6 +736,16 @@ impl App {
         let before = snapshot(&self.doc);
         match ob_layout::next_sunday_report_as_of(&self.doc, chrono::Local::now().date_naive()) {
             Ok((next, report)) => {
+                // A seasonal bulletin refuses Next Sunday
+                // (round 53, R53-RED-2): nothing is adopted,
+                // the path and print fingerprints stand, and
+                // the guidance is the status. Returning here
+                // also keeps an opened seasonal file on its
+                // own path, since opening runs Next Sunday.
+                if let Some(refusal) = &report.seasonal_refusal {
+                    self.note(refusal.clone());
+                    return;
+                }
                 self.adopt_document(next, false);
                 if before != snapshot(&self.doc) {
                     self.record_undo(before);

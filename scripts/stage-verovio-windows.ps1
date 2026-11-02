@@ -86,7 +86,7 @@ if ($pthLines -notcontains 'Lib/site-packages') {
 }
 
 # 4. The license text, from the wheel itself, beside the exe.
-$licenseInWheel = Join-Path $sitePackages "verovio-$VerovioVersion.dist-info/licenses/COPYING.LESSER"
+$licenseInWheel = Join-Path $sitePackages "verovio-${VerovioVersion}.dist-info/licenses/COPYING.LESSER"
 if (-not (Test-Path $licenseInWheel)) {
     throw "The Verovio wheel no longer carries dist-info/licenses/COPYING.LESSER; the bundle must not ship without its LGPL-3.0 text."
 }
@@ -109,7 +109,7 @@ It is the unmodified official wheel from PyPI:
   https://pypi.org/project/verovio/$VerovioVersion/
 
 The complete corresponding source is available from Verovio's
-own repository, release tag v$VerovioVersion:
+own repository, release tag v${VerovioVersion}:
 
   https://github.com/rism-digital/verovio
 

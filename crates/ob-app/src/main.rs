@@ -6070,6 +6070,46 @@ mod settings_tests {
     }
 
     #[test]
+    fn r51f_production_spawn_inventory_guard() {
+        // Round 51 (R51-F, G-14): the production spawn
+        // inventory, pinned as per-file counts of spawn
+        // expressions in the six files that hold them.
+        // The needle is built from parts, so this
+        // test's own source never adds to the count it
+        // asserts, and no comment in this file may
+        // spell the needle out whole. A new spawn in
+        // any inventoried file breaks its file's count
+        // until the inventory above is updated; a
+        // spawn in a brand-new file is outside this
+        // guard's sight, and the record says so.
+        // Totals: 15 expressions = 12 production
+        // across 10 logical sites + 3 test-code
+        // expressions (the engine sleep-deadline test
+        // and the two ob-app test-module spawns).
+        // The ETXTBSY retry backstop is untouched, and
+        // this is explicitly NOT a re-open of F11.
+        let needle = ["Command", "::new"].concat();
+        let count = |text: &str| text.matches(needle.as_str()).count();
+        let helper = include_str!("../../ob-extract/src/helper.rs");
+        let cli = include_str!("../../ob-cli/src/main.rs");
+        let bridge = include_str!("../../ob-extract/src/pub_bridge.rs");
+        let engine = include_str!("../../ob-music/src/engine.rs");
+        let render = include_str!("../../ob-music/src/render.rs");
+        let app = include_str!("main.rs");
+        assert_eq!(count(helper), 1, "ob-extract helper: one spawn");
+        assert_eq!(count(cli), 1, "ob-cli door: one spawn");
+        assert_eq!(count(bridge), 1, "pub bridge: one spawn");
+        assert_eq!(count(engine), 5, "engine: four production, one test");
+        assert_eq!(count(render), 1, "render: one spawn");
+        assert_eq!(count(app), 6, "ob-app: four production, two test");
+        assert_eq!(
+            count(helper) + count(cli) + count(bridge) + count(engine) + count(render) + count(app),
+            15,
+            "total spawn expressions across the inventoried files"
+        );
+    }
+
+    #[test]
     fn r4_rights_merge_fills_fields_and_never_overwrites() {
         // Round 4 (R4-5), replacing the round-3 test of
         // the winner-take-all predicate: the merge is
@@ -8687,9 +8727,23 @@ mod settings_tests {
     /// held only across the spawn call itself: a fork that
     /// lands before a copy starts cannot hold that copy's
     /// fd, and a copy cannot start while this spawn is in
-    /// flight. Production spawns (soffice conversion,
-    /// open_with_os) are NOT routed here; the ETXTBSY retry
-    /// in spawn_live_peer_named stays as their backstop.
+    /// flight. Production spawns are NOT routed here;
+    /// the ETXTBSY retry in spawn_live_peer_named stays
+    /// as their backstop. Production inventory
+    /// (round 51, R51-F, G-14 — correcting
+    /// r49a-record's "one production spawn"): 12
+    /// spawn expressions across 10 logical
+    /// production sites (PDFium helper binary from
+    /// ob-extract and from the ob-cli door; soffice
+    /// for .pub; soffice for WMF/EMF; the three
+    /// open_with_os branches; Verovio CLI probe,
+    /// Python probe, CLI render, Python render; the
+    /// ob-verovio-helper candidate). Pinned by
+    /// `r51f_production_spawn_inventory_guard` below,
+    /// so a future spawn cannot silently join the
+    /// unguarded set. This is explicitly NOT a
+    /// re-open of F11: no new ETXTBSY evidence exists,
+    /// and the tripwire below stands as recorded.
     #[cfg(unix)]
     fn spawn_dead_sh_child() -> std::process::Child {
         let _fork_guard = SPAWN_LIVE_PEER_MUTEX

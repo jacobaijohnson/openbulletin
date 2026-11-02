@@ -1942,6 +1942,74 @@ pub(crate) fn announcements_contribution_status(
     ))
 }
 
+/// The Announcements step's second fate line, for
+/// filed contributions (round 51, R51-F, G-13):
+/// filing does NOT dismiss unapplied parts — H2's
+/// literal ask never scoped filed items, no record
+/// says filing dismisses them, and Accept files even
+/// when parts do not land ("the words stay with the
+/// part when it is filed"), so a filed contribution
+/// can hold owed parts by design. This line surfaces
+/// exactly those, under a distinct clause, so the
+/// office is reminded after filing: unapplied and
+/// unlanded parts of contributions filed FOR THIS
+/// bulletin's Sunday (`filed_for` equals the
+/// bulletin's Sunday). Filed parts already in the
+/// bulletin are silent (nothing is owed); filed parts
+/// for other Sundays belong to those bulletins, not
+/// this one; filings that name no Sunday cannot be
+/// attributed to this bulletin, so they are silent
+/// too; and when the bulletin names no Sunday, the
+/// line is silent rather than guessing. Worded parts
+/// only, unparsed files skipped, as in the inbox line.
+pub(crate) fn announcements_filed_contribution_status(
+    doc: &Document,
+    filed_items: &[InboxItem],
+    bulletin_sunday: Option<ob_model::SimpleDate>,
+) -> Option<String> {
+    let sunday = bulletin_sunday?;
+    let mut unapplied = 0;
+    let mut unlanded = 0;
+    for item in filed_items {
+        if item.filed_for != Some(sunday) {
+            continue;
+        }
+        let Ok(c) = &item.parsed else { continue };
+        for part in &c.parts {
+            if part_has_no_words(part) {
+                continue;
+            }
+            match plan_part(doc, c, part).target {
+                SlotTarget::AlreadyThere => {}
+                SlotTarget::KeptWithPart => unlanded += 1,
+                _ => unapplied += 1,
+            }
+        }
+    }
+    if unapplied == 0 && unlanded == 0 {
+        return None;
+    }
+    let mut bits: Vec<String> = Vec::new();
+    if unapplied > 0 {
+        bits.push(format!(
+            "{} {} not yet in the bulletin",
+            unapplied,
+            if unapplied == 1 { "part" } else { "parts" }
+        ));
+    }
+    if unlanded > 0 {
+        bits.push(format!(
+            "{} {} with nowhere to land yet",
+            unlanded,
+            if unlanded == 1 { "part" } else { "parts" }
+        ));
+    }
+    Some(format!(
+        "Filed contributions with parts still owed: {}.",
+        bits.join(", ")
+    ))
+}
+
 /// A short content fingerprint: the first eight letters
 /// of the content hash. Two versions of a part with the
 /// same fingerprint are the same words.

@@ -2413,6 +2413,24 @@ impl eframe::App for App {
                         {
                             ui.label(line);
                         }
+                        // The filed-contributions fate
+                        // line (round 51, R51-F, G-13):
+                        // filing does not dismiss
+                        // unapplied parts, so parts
+                        // filed for this bulletin that
+                        // still have not landed surface
+                        // here under their own clause.
+                        // Silent when nothing filed for
+                        // this bulletin is owed.
+                        if let Some(line) = announcements_filed_contribution_status(
+                            &self.doc,
+                            &self.inbox_filed,
+                            self.doc.fields.get("occasion_date").and_then(|iso| {
+                                ob_model::parse_flexible_date(iso, today_simple())
+                            }),
+                        ) {
+                            ui.label(line);
+                        }
                         if ui.button("See the announcements on the page").clicked() {
                             self.show_pages = true;
                         }
@@ -15008,6 +15026,127 @@ mod settings_tests {
         // Post-filing, post-rescan state: the filed part has
         // left inbox_items, so the line is silent.
         assert_eq!(announcements_contribution_status(&r1_template(), &[]), None);
+    }
+
+    #[test]
+    fn r51f_filed_unapplied_part_surfaces_under_distinct_clause() {
+        // Round 51 (R51-F, G-13): filing does not
+        // dismiss unapplied parts. The journey, at
+        // the render-function level (the egui step
+        // rendering itself is code-read, exactly as
+        // R50-C noted for step rendering): a part
+        // starts unfiled and renders under the inbox
+        // line; once filed for this bulletin with its
+        // part still unlanded, the inbox line goes
+        // silent and the filed line carries it under
+        // its own clause.
+        fn item(text: &str, filed_for: Option<ob_model::SimpleDate>) -> InboxItem {
+            InboxItem {
+                path: std::path::PathBuf::from("filed/test.md"),
+                file_name: "test.md".to_string(),
+                modified_secs: 0,
+                fingerprint: "deadbeef".to_string(),
+                text: text.to_string(),
+                parsed: ob_extract::contribution::parse_contribution(text, r1_today()),
+                filed_for,
+            }
+        }
+        let fresh_text = "From: Sue\n\n## Announcement\n\nThe bake sale is Friday.\n";
+        // Before filing: the inbox line carries it.
+        let unfiled = item(fresh_text, None);
+        assert_eq!(
+            announcements_contribution_status(&r1_template(), std::slice::from_ref(&unfiled)),
+            Some(
+                "Contributions still in the inbox: 1 part not yet in the bulletin.".to_string()
+            )
+        );
+        // After filing for this bulletin, with nowhere
+        // to land: the inbox line is silent (the part
+        // left the inbox) and the filed line carries
+        // it under its own clause.
+        let mut no_box = r1_template();
+        for panel in &mut no_box.panels {
+            for frame in &mut panel.frames {
+                if frame.role == ob_model::ContentRole::Weekly {
+                    frame.role = ob_model::ContentRole::Standing;
+                }
+            }
+        }
+        let filed = item(fresh_text, Some(r1_today()));
+        assert_eq!(
+            announcements_contribution_status(&no_box, &[]),
+            None,
+            "post-filing, post-rescan inbox line is silent"
+        );
+        assert_eq!(
+            announcements_filed_contribution_status(
+                &no_box,
+                std::slice::from_ref(&filed),
+                Some(r1_today())
+            ),
+            Some(
+                "Filed contributions with parts still owed: 1 part with nowhere to land yet."
+                    .to_string()
+            )
+        );
+        // Filed for another Sunday: not this
+        // bulletin's reminder.
+        let other_sunday = ob_model::SimpleDate {
+            year: 2026,
+            month: 10,
+            day: 11,
+        };
+        let filed_elsewhere = item(fresh_text, Some(other_sunday));
+        assert_eq!(
+            announcements_filed_contribution_status(
+                &no_box,
+                std::slice::from_ref(&filed_elsewhere),
+                Some(r1_today())
+            ),
+            None
+        );
+        // Filed for this bulletin, but its words are
+        // in the bulletin: nothing is owed.
+        let mut doc = r1_template();
+        let ac =
+            ob_extract::contribution::parse_contribution(fresh_text, r1_today()).expect("parses");
+        assert!(apply_contribution_recording(&mut doc, &ac, fresh_text).all_landed);
+        assert_eq!(
+            announcements_filed_contribution_status(
+                &doc,
+                std::slice::from_ref(&filed),
+                Some(r1_today())
+            ),
+            None
+        );
+        // No Sunday named on the bulletin: silent
+        // rather than guessing which filings are its.
+        assert_eq!(
+            announcements_filed_contribution_status(
+                &no_box,
+                std::slice::from_ref(&filed),
+                None
+            ),
+            None
+        );
+        // An unparsed filed file is skipped.
+        let bad = InboxItem {
+            path: std::path::PathBuf::from("filed/broken.md"),
+            file_name: "broken.md".to_string(),
+            modified_secs: 0,
+            fingerprint: "badc0ffee".to_string(),
+            text: "not a contribution".to_string(),
+            parsed: Err("could not be read".to_string()),
+            filed_for: Some(r1_today()),
+        };
+        assert_eq!(
+            announcements_filed_contribution_status(
+                &no_box,
+                std::slice::from_ref(&bad),
+                Some(r1_today())
+            ),
+            None
+        );
     }
 
     #[test]

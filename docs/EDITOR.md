@@ -113,10 +113,15 @@ the office worker's hands already know (docs/PRINCIPLES.md, 9).
   so in plain words: "You are editing the loose sheet
   'Prayer list'. It prints on its own sheet." Its
   "Back to the bulletin" button swaps back.
-- Undo history does not cross the swap in either
-  direction: a snapshot spans one document shape, so
-  entering and leaving a sheet's edit both start a fresh
-  history. Anything whole-document (Save, a step change,
+- Undo history is per target across the swap: a
+  snapshot spans one document shape, so the host
+  bulletin's history parks while a sheet is on the
+  canvas and the sheet's own history parks when it
+  goes back — entering or leaving never wipes either
+  one. Save and a step change (including Check) put
+  the sheet back first, which parks its history, so
+  it is still there when the sheet is opened again.
+  Anything whole-document (Save, a step change,
   Next Sunday, the Check step, closing the Pages window)
   puts the sheet back first, and the autosave journal
   only ever writes the bulletin whole, so no file on

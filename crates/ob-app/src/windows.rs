@@ -3606,12 +3606,23 @@ impl App {
         self.commit_if_editing();
         if swap_insert_parts(&mut self.doc, id) {
             self.insert_edit = Some(id.to_string());
-            // Undo history does not cross the swap: a
-            // snapshot spans one document shape, and an
-            // undo restored mid-swap would put the other
-            // shape's panels under this one's name.
-            self.undo_stack.clear();
-            self.redo_stack.clear();
+            // Per-target undo stacks (round 51, R51-F,
+            // G-12): a snapshot spans one document
+            // shape, so histories do not cross the swap
+            // — they park. The host bulletin's stacks
+            // park under None; this sheet's parked
+            // stacks (if any) come back onto the canvas.
+            let host = (
+                std::mem::take(&mut self.undo_stack),
+                std::mem::take(&mut self.redo_stack),
+            );
+            self.undo_parked.insert(None, host);
+            let sheet = self
+                .undo_parked
+                .remove(&Some(id.to_string()))
+                .unwrap_or_default();
+            self.undo_stack = sheet.0;
+            self.redo_stack = sheet.1;
             self.reset_interaction_state();
             // The preview and edit-layout caches key on
             // the frame snapshot, which is canonical now
@@ -3636,17 +3647,29 @@ impl App {
     }
 
     /// Take the loose sheet off the canvas (R-3): the
-    /// swap runs back, history clears (same reason as
-    /// going in), and the buffers that mirror the
-    /// bulletin re-read the restored document.
+    /// swap runs back, the sheet's history parks under
+    /// its id and the host bulletin's history comes
+    /// back (round 51, R51-F, G-12 — same
+    /// one-shape-per-snapshot reason as going in, but
+    /// parking instead of wiping, so Save and step
+    /// changes, which both funnel through here, no
+    /// longer destroy the sheet's stack), and the
+    /// buffers that mirror the bulletin re-read the
+    /// restored document.
     pub(crate) fn leave_insert_editing(&mut self) {
         let Some(id) = self.insert_edit.take() else {
             return;
         };
         self.commit_if_editing();
         swap_insert_parts(&mut self.doc, &id);
-        self.undo_stack.clear();
-        self.redo_stack.clear();
+        let sheet = (
+            std::mem::take(&mut self.undo_stack),
+            std::mem::take(&mut self.redo_stack),
+        );
+        self.undo_parked.insert(Some(id), sheet);
+        let host = self.undo_parked.remove(&None).unwrap_or_default();
+        self.undo_stack = host.0;
+        self.redo_stack = host.1;
         self.reset_interaction_state();
         // Same cache drop as going in (round 3, R3-7):
         // the canonical key does not change at the swap.
@@ -3862,6 +3885,10 @@ impl App {
         };
         self.push_undo_now();
         self.doc.inserts.retain(|i| i.id != id);
+        // A deleted sheet's parked history goes with
+        // it (round 51, R51-F, G-12): its snapshots
+        // name a shape that no longer exists.
+        self.undo_parked.remove(&Some(id.to_string()));
         if self.insert_sel.as_deref() == Some(id) {
             self.insert_sel = None;
             self.insert_sel_loaded = None;

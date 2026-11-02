@@ -317,6 +317,7 @@ impl App {
         if clear_history {
             self.undo_stack.clear();
             self.redo_stack.clear();
+            self.undo_parked.clear();
         }
         self.reset_interaction_state();
         self.doc = doc;
@@ -557,6 +558,19 @@ struct App {
     system_shown: bool,
     undo_stack: Vec<String>,
     redo_stack: Vec<String>,
+    /// Parked undo/redo stacks, one per editing target
+    /// (round 51, R51-F, G-12): the host bulletin under
+    /// `None`, each loose sheet under its insert id.
+    /// `undo_stack` / `redo_stack` always hold the
+    /// target on the canvas; entering or leaving a
+    /// sheet parks the outgoing target's stacks here
+    /// and restores the incoming target's, so a sheet's
+    /// history survives Save and step changes (both
+    /// funnel through `leave_insert_editing`) instead
+    /// of being wiped. A snapshot spans one document
+    /// shape, so a parked stack is only ever restored
+    /// onto its own shape.
+    undo_parked: std::collections::HashMap<Option<String>, (Vec<String>, Vec<String>)>,
     gesture_start: Option<String>,
     gesture_touch: Option<std::time::Instant>,
     lines_cache: Option<LinesCache>,
@@ -891,6 +905,7 @@ impl Default for App {
             system_shown: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            undo_parked: std::collections::HashMap::new(),
             gesture_start: None,
             gesture_touch: None,
             lines_cache: None,
@@ -5951,6 +5966,88 @@ mod settings_tests {
         assert_ne!(
             app.frame_snapshot, app.saved_snapshot,
             "and it stays unsaved work back in the bulletin"
+        );
+    }
+
+    #[test]
+    fn r51f_loose_sheet_undo_stacks_survive_swaps() {
+        // Round 51 (R51-F, G-12): per-target undo
+        // stacks. The host bulletin's stack survives
+        // viewing a sheet, and the sheet's stack
+        // survives leaving it — the same funnel Save
+        // (`save_flow` calls `leave_insert_editing`
+        // first) and a step change to Check
+        // (`goto_step` calls it first on any step
+        // change) both use, so neither destroys the
+        // sheet's stack anymore. Neither `save_flow`
+        // nor `goto_step` is called here directly:
+        // both write the user's settings file as a
+        // side effect, which a unit test must not do;
+        // what is pinned is the funnel they share, and
+        // no other line in either path touches the
+        // undo stacks (the only clears left are
+        // `record_undo`'s redo clear and
+        // `adopt_document`'s new-document clear).
+        let mut app = App::default();
+        app.doc = doc_with_sheet();
+        // Host edit, recorded before the mutation.
+        app.push_undo_now();
+        app.doc.stories[0].paragraphs[0].set_text("Host words v2");
+        assert_eq!(app.undo_stack.len(), 1, "host step recorded");
+        // Viewing the sheet parks the host stack and
+        // starts the sheet's own, empty stack.
+        app.edit_insert_on_pages("sheet-1");
+        assert!(app.insert_edit.is_some(), "the sheet is on the canvas");
+        assert!(app.undo_stack.is_empty(), "the sheet starts fresh");
+        assert_eq!(
+            app.undo_parked.get(&None).map(|s| s.0.len()),
+            Some(1),
+            "the host step parks under None"
+        );
+        // Sheet edit, recorded before the mutation.
+        app.push_undo_now();
+        app.doc.stories[0].paragraphs[0].set_text("Sheet words v2");
+        assert_eq!(app.undo_stack.len(), 1, "sheet step recorded");
+        // Leaving (the Save/Check funnel) parks the
+        // sheet's stack and restores the host's.
+        app.leave_insert_editing();
+        assert!(app.insert_edit.is_none(), "back on the bulletin");
+        assert_eq!(app.undo_stack.len(), 1, "host step restored");
+        assert_eq!(
+            app.undo_parked.get(&Some("sheet-1".to_string())).map(|s| s.0.len()),
+            Some(1),
+            "the sheet step parks under its id"
+        );
+        // The host's undo still undoes the host edit.
+        app.undo();
+        assert_eq!(
+            app.doc.stories[0].paragraphs[0].text(),
+            "The bulletin's own words",
+            "host undo restores host words"
+        );
+        app.redo();
+        assert_eq!(
+            app.doc.stories[0].paragraphs[0].text(),
+            "Host words v2",
+            "host redo restores host edit"
+        );
+        // Re-entering restores the sheet's stack, and
+        // the sheet's undo still undoes the sheet edit.
+        app.edit_insert_on_pages("sheet-1");
+        assert_eq!(app.undo_stack.len(), 1, "sheet step restored");
+        app.undo();
+        assert_eq!(
+            app.doc.stories[0].paragraphs[0].text(),
+            "",
+            "sheet undo restores sheet words"
+        );
+        // A deleted sheet's parked history goes with
+        // it: leaving parks it, removing drops it.
+        app.leave_insert_editing();
+        app.remove_insert("sheet-1");
+        assert!(
+            !app.undo_parked.contains_key(&Some("sheet-1".to_string())),
+            "no parked stack for a deleted sheet"
         );
     }
 

@@ -48,6 +48,108 @@ const CANVAS_ACCENT: egui::Color32 = egui::Color32::from_rgb(0, 120, 195);
 
 /// A stable snapshot string for one document state.
 impl App {
+    /// Run the explicit permission-panel action (round
+    /// 53, batch B, R53-RED-3): snapshot for undo first,
+    /// then append, refresh, report already current, or
+    /// refuse a stale panel — and say exactly which, so
+    /// the status never shows the freshly computed lines
+    /// as "now on the page" unless this call put them
+    /// there. Never called automatically: only the Check
+    /// step's "Update permission panel" button calls it.
+    pub(crate) fn update_permission_panel(&mut self) {
+        let before = snapshot(&self.doc);
+        let panels_before = self.doc.panels.len();
+        let preset = self.doc.sheet.preset.clone();
+        let update =
+            ob_model::hymns::update_hymn_permission_panel(&mut self.doc, &self.hymn_memory);
+        if before != snapshot(&self.doc) {
+            self.record_undo(before);
+        }
+        use ob_model::hymns::HymnPermissionUpdate as Update;
+        let (status, warnings) = match update {
+            Update::Appended { lines, warnings } => (
+                format!(
+                    "Permission panel added: {} line{}. {}",
+                    lines.len(),
+                    if lines.len() == 1 { "" } else { "s" },
+                    permission_panel_page_words(&preset, panels_before, panels_before + 1)
+                ),
+                warnings,
+            ),
+            Update::AlreadyCurrent { lines, warnings } => (
+                format!(
+                    "Permission panel is already current: {} line{}. Nothing changed.",
+                    lines.len(),
+                    if lines.len() == 1 { "" } else { "s" }
+                ),
+                warnings,
+            ),
+            Update::Refreshed {
+                old_lines,
+                new_lines,
+                warnings,
+            } => (
+                format!(
+                    "Permission panel refreshed: {} line{} → {} line{}. The page now matches \
+                     the current hymns.",
+                    old_lines.len(),
+                    if old_lines.len() == 1 { "" } else { "s" },
+                    new_lines.len(),
+                    if new_lines.len() == 1 { "" } else { "s" }
+                ),
+                warnings,
+            ),
+            Update::RefusedStale {
+                panel_lines,
+                warnings,
+            } => (
+                format!(
+                    "Permission panel not changed: it lists {} line{} but the current hymns on \
+                     this machine yield none — hymns were removed, or the hymn memory is \
+                     absent on this machine. Use “Remove permission panel” to take it off the \
+                     page, or restore the hymns or hymn memory and update again.",
+                    panel_lines.len(),
+                    if panel_lines.len() == 1 { "" } else { "s" }
+                ),
+                warnings,
+            ),
+            Update::NoLines { warnings } => (
+                "No permission panel added: no licensed hymn in this bulletin carries a \
+                 license number."
+                    .to_string(),
+                warnings,
+            ),
+        };
+        self.permission_panel_status = status;
+        self.permission_panel_warnings = warnings;
+        self.run_checks();
+    }
+
+    /// Remove the Permissions panel on the office's
+    /// explicit say-so (round 53, batch B, R53-RED-3):
+    /// snapshot for undo first, then drop the panel
+    /// story and panel. Only the Check step's "Remove
+    /// permission panel" button calls it, beside a
+    /// refused-stale warning.
+    pub(crate) fn remove_permission_panel(&mut self) {
+        let before = snapshot(&self.doc);
+        let panels_before = self.doc.panels.len();
+        let preset = self.doc.sheet.preset.clone();
+        if ob_model::hymns::remove_hymn_permission_panel(&mut self.doc) {
+            if before != snapshot(&self.doc) {
+                self.record_undo(before);
+            }
+            self.permission_panel_status = format!(
+                "Permission panel removed. {}",
+                permission_panel_page_words(&preset, panels_before, panels_before - 1)
+            );
+        } else {
+            self.permission_panel_status = "No permission panel to remove.".to_string();
+        }
+        self.permission_panel_warnings = Vec::new();
+        self.run_checks();
+    }
+
     /// Start watching for a change worth one Undo step (a drag, a
     /// typing session, a burst of nudges).
     fn begin_gesture(&mut self) {
@@ -178,6 +280,11 @@ impl App {
             .iter()
             .map(|l| hymn_field_values(&l.value))
             .collect();
+        // License scratch fields refill from memory on
+        // the next render (their key starts empty), so a
+        // swapped document never shows another hymn's
+        // license draft.
+        self.hymn_license_inputs = Vec::new();
         self.sermon_input = sermon_title(&self.doc);
         self.participant_inputs = participant_values(&self.doc);
         self.participant_line_names = self.doc.profile.serving_lines.clone();
@@ -429,6 +536,23 @@ struct App {
     /// kept in a file beside the settings. Check holds
     /// this week's hymn lines up against it.
     hymn_memory: ob_model::hymns::HymnMemory,
+    /// The This Sunday step's license scratch fields
+    /// (round 53, batch B), parallel to `service_lines`:
+    /// one draft per hymn row, filled from the hymn
+    /// memory when the row's hymnal/number changes, and
+    /// written back only by its Save button, through
+    /// `note_license` into the hymn memory file.
+    hymn_license_inputs: Vec<HymnLicenseInput>,
+    /// The last license-save outcome, shown under the
+    /// hymn rows on the This Sunday step.
+    hymn_license_status: String,
+    /// The last permission-panel action outcome, shown
+    /// in the Check step's permission-panel section.
+    permission_panel_status: String,
+    /// The last permission-panel action's warnings
+    /// (licensed-without-number hymns), shown under its
+    /// status in the Check step.
+    permission_panel_warnings: Vec<String>,
     /// The This Sunday step's serving-line fields, parallel
     /// to `participant_line_names`: one row per line the
     /// church's profile shows, synced from the document's
@@ -842,6 +966,10 @@ impl Default for App {
             service_inputs,
             hymn_inputs,
             hymn_memory,
+            hymn_license_inputs: Vec::new(),
+            hymn_license_status: String::new(),
+            permission_panel_status: String::new(),
+            permission_panel_warnings: Vec::new(),
             sermon_input,
             participant_inputs,
             participant_line_names,
@@ -1136,6 +1264,77 @@ fn set_service_line(doc: &mut Document, para_index: usize, new_value: &str) {
     if let Some(tab) = text.find('\t') {
         let prefix = text[..=tab].to_string();
         para.set_text(&format!("{prefix}{new_value}"));
+    }
+}
+
+/// One hymn row's license draft (round 53, batch B):
+/// the fields the office types for a hymn's license,
+/// held as scratch until its Save button writes them
+/// through `note_license`. `key` is the hymn-memory key
+/// these fields were filled from; when the row's hymnal
+/// or number changes, the key changes and the fields
+/// refill from the memory, so a draft never rides to a
+/// different hymn.
+#[derive(Debug, Clone, Default)]
+struct HymnLicenseInput {
+    key: String,
+    licensed: bool,
+    licensor: String,
+    number: String,
+    copyright: String,
+}
+
+/// The This Sunday step's permission-panel page-count
+/// words (round 53, batch B, R53-RED-3): "adds a page"
+/// only where true, checked against ob-impose's own
+/// rules — `padded_document` pads a saddle booklet to a
+/// multiple of 4, and bifold/trifold extras print as
+/// their own single sheets after the folded ones
+/// (`extra_singles`). `before` and `after` are panel
+/// counts, not page counts.
+fn permission_panel_page_words(preset: &str, before: usize, after: usize) -> String {
+    let pad4 = |n: usize| if n == 0 { 0 } else { n.div_ceil(4) * 4 };
+    match preset {
+        "saddle-booklet" => {
+            let padded_before = pad4(before);
+            let padded_after = pad4(after);
+            if padded_after > padded_before {
+                format!(
+                    "On this saddle booklet, the print copy goes from {padded_before} to \
+                     {padded_after} pages: the new page plus blank pages rounding the booklet \
+                     to a multiple of 4."
+                )
+            } else if padded_after < padded_before {
+                format!(
+                    "On this saddle booklet, the print copy goes from {padded_before} to \
+                     {padded_after} pages."
+                )
+            } else {
+                format!(
+                    "On this saddle booklet, the print copy stays at {padded_after} pages: \
+                     blank pages already round it to a multiple of 4."
+                )
+            }
+        }
+        "letter-bifold" | "legal-bifold" | "tabloid-bifold" | "letter-trifold" => {
+            if after > before {
+                "The extra panel prints as its own single sheet after the folded sheets."
+                    .to_string()
+            } else if after < before {
+                "Removing the panel removes its single sheet after the folded sheets.".to_string()
+            } else {
+                "This changes no sheet count.".to_string()
+            }
+        }
+        _ => {
+            if after > before {
+                "This adds one page.".to_string()
+            } else if after < before {
+                "This removes one page.".to_string()
+            } else {
+                "This changes no page count.".to_string()
+            }
+        }
     }
 }
 
@@ -2352,6 +2551,140 @@ impl eframe::App for App {
                                                 hymn_field_values(&composed);
                                         }
                                     }
+                                    // The license fields for this hymn
+                                    // (round 53, batch B): the office
+                                    // records the license type and
+                                    // number here, beside the hymn
+                                    // itself, instead of hunting for
+                                    // a field that did not exist.
+                                    // Scratch until Save: nothing
+                                    // reaches the hymn memory file
+                                    // until the button is clicked,
+                                    // and then only through
+                                    // `note_license` — a license
+                                    // never invents a hymn the
+                                    // church has not printed.
+                                    if self.hymn_license_inputs.len() != lines.len() {
+                                        self.hymn_license_inputs = vec![
+                                            HymnLicenseInput::default();
+                                            lines.len()
+                                        ];
+                                    }
+                                    let hymnal = {
+                                        let t = self.hymn_inputs[row][0].trim();
+                                        if t.is_empty() {
+                                            None
+                                        } else {
+                                            Some(t.to_string())
+                                        }
+                                    };
+                                    let number =
+                                        self.hymn_inputs[row][1].trim().to_string();
+                                    let key = ob_model::hymns::hymn_key(
+                                        hymnal.as_deref(),
+                                        &number,
+                                    );
+                                    if self.hymn_license_inputs[row].key != key {
+                                        let draft = {
+                                            let mut draft = HymnLicenseInput {
+                                                key: key.clone(),
+                                                ..Default::default()
+                                            };
+                                            if let Some(pair) = self
+                                                .hymn_memory
+                                                .lookup(hymnal.as_deref(), &number)
+                                            {
+                                                draft.licensed = pair.license.kind
+                                                    == ob_model::LicenseKind::LicensedReprint;
+                                                draft.licensor =
+                                                    pair.license.licensor.clone();
+                                                draft.number = pair.license.number.clone();
+                                                draft.copyright =
+                                                    pair.license.copyright_line.clone();
+                                            }
+                                            draft
+                                        };
+                                        self.hymn_license_inputs[row] = draft;
+                                    }
+                                    let mut save_license = false;
+                                    ui.horizontal(|ui| {
+                                        ui.label("License");
+                                        ui.checkbox(
+                                            &mut self.hymn_license_inputs[row].licensed,
+                                            "Licensed reprint",
+                                        );
+                                        ui.label("Licensor");
+                                        ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.hymn_license_inputs[row].licensor,
+                                            )
+                                            .desired_width(84.0)
+                                            .hint_text("CCLI"),
+                                        );
+                                        ui.label("Number");
+                                        ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.hymn_license_inputs[row].number,
+                                            )
+                                            .desired_width(84.0),
+                                        );
+                                        ui.label("Copyright");
+                                        ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.hymn_license_inputs[row].copyright,
+                                            )
+                                            .desired_width(180.0),
+                                        );
+                                        if ui.button("Save license").clicked() {
+                                            save_license = true;
+                                        }
+                                    });
+                                    if save_license {
+                                        let shown = match &hymnal {
+                                            Some(h) => format!("{h} {number}"),
+                                            None => number.clone(),
+                                        };
+                                        if number.is_empty() {
+                                            self.hymn_license_status = "Add the hymn number \
+                                                 first: a license is recorded against a \
+                                                 hymn number."
+                                                .to_string();
+                                        } else {
+                                            let draft =
+                                                self.hymn_license_inputs[row].clone();
+                                            let license = if draft.licensed {
+                                                ob_model::hymns::HymnLicense {
+                                                    kind: ob_model::LicenseKind::LicensedReprint,
+                                                    licensor: draft.licensor.trim().to_string(),
+                                                    number: draft.number.trim().to_string(),
+                                                    copyright_line: draft
+                                                        .copyright
+                                                        .trim()
+                                                        .to_string(),
+                                                }
+                                            } else {
+                                                ob_model::hymns::HymnLicense::default()
+                                            };
+                                            if self.hymn_memory.note_license(
+                                                hymnal.as_deref(),
+                                                &number,
+                                                license,
+                                            ) {
+                                                self.persist_hymn_memory();
+                                                self.run_checks();
+                                                self.hymn_license_status = format!(
+                                                    "License saved for {shown}."
+                                                );
+                                            } else {
+                                                self.hymn_license_status = format!(
+                                                    "License not saved for {shown}: this hymn \
+                                                     is not in the remembered hymns yet. Save \
+                                                     the bulletin once so it is remembered, \
+                                                     then record the license here."
+                                                );
+                                            }
+                                        }
+                                    }
                                     continue;
                                 }
                                 let resp =
@@ -2369,6 +2702,10 @@ impl eframe::App for App {
                                     self.service_inputs[row] = value;
                                 }
                             }
+                            if !self.hymn_license_status.is_empty() {
+                                ui.label(&self.hymn_license_status);
+                            }
+                            ui.small("A license is saved in the hymn memory file beside the app settings, not in the bulletin file: it travels with the church's remembered hymns, and the permission panel prints from it.");
                             if has_sermon {
                                 ui.label("Sermon title");
                                 let resp_sermon = ui.add(
@@ -2599,6 +2936,58 @@ impl eframe::App for App {
                                 }
                             } else if ui.button("Fix it in the Pages window").clicked() {
                                 self.show_pages = true;
+                            }
+                        }
+                        // The permission panel (round 53,
+                        // batch B, R53-RED-3): one explicit
+                        // button, never automatic — no
+                        // save or print path runs it, so
+                        // a bulletin never gains a page
+                        // behind the office's back. The
+                        // status says exactly what this
+                        // click did: appended, refreshed,
+                        // already current, or refused
+                        // stale with its reason. A refused
+                        // panel is never deleted quietly:
+                        // the Remove button beside it is
+                        // the office's explicit act.
+                        ui.separator();
+                        ui.label(egui::RichText::new("Permission panel").strong());
+                        ui.label("The permission lines for licensed hymns print on their own page at the end of the bulletin.");
+                        if ui.button("Update permission panel").clicked() {
+                            self.update_permission_panel();
+                        }
+                        if !self.permission_panel_status.is_empty() {
+                            ui.label(&self.permission_panel_status);
+                            for warning in self.permission_panel_warnings.clone() {
+                                ui.label(&warning);
+                            }
+                        }
+                        {
+                            let panel_lines =
+                                ob_model::hymns::permission_panel_lines(&self.doc);
+                            let computed: Vec<String> =
+                                ob_model::hymns::hymn_license_uses(&self.doc, &self.hymn_memory)
+                                    .iter()
+                                    .filter_map(|u| u.line.clone())
+                                    .collect();
+                            if let Some(panel) = panel_lines {
+                                if panel != computed && computed.is_empty() {
+                                    ui.label(
+                                        "The panel on the page lists lines the current hymns \
+                                         on this machine do not yield.",
+                                    );
+                                    if ui.button("Remove permission panel").clicked() {
+                                        self.remove_permission_panel();
+                                    }
+                                }
+                            } else {
+                                let before = self.doc.panels.len();
+                                ui.small(permission_panel_page_words(
+                                    &self.doc.sheet.preset,
+                                    before,
+                                    before + 1,
+                                ));
                             }
                         }
                         if ui.button("Check again").clicked() {
@@ -15183,6 +15572,176 @@ mod settings_tests {
                 .iter()
                 .any(|p| p.text().contains("Christ the Lord Is Risen Today")),
             "the Easter hymn survives"
+        );
+    }
+
+    #[test]
+    fn r53b_permission_panel_action_refreshes_refuses_and_undo_restores() {
+        // Round 53, batch B, R53-RED-3 at the app seam:
+        // the Check step's action appends, refreshes a
+        // renumbered hymn, refuses a panel whose hymns
+        // yield nothing on this machine, removes only on
+        // the explicit button — and every mutation
+        // unwinds through Undo, because the action
+        // snapshots before it touches the document.
+        use ob_model::hymns;
+        let mut app = clean_app_with_template();
+        let date = ob_model::SimpleDate {
+            year: 2026,
+            month: 10,
+            day: 18,
+        };
+        app.hymn_memory.learn(
+            &hymns::HymnEntry {
+                hymnal: Some("ELW".to_string()),
+                number: Some("432".to_string()),
+                title: Some("Amazing Grace".to_string()),
+            },
+            date,
+        );
+        assert!(app.hymn_memory.note_license(
+            Some("ELW"),
+            "432",
+            hymns::HymnLicense {
+                kind: ob_model::LicenseKind::LicensedReprint,
+                licensor: "CCLI".to_string(),
+                number: "123456".to_string(),
+                copyright_line: "© 2019 Jane Doe".to_string(),
+            },
+        ));
+        let sid = ob_model::service_story_id(&app.doc).expect("a service story");
+        let story = app.doc.story_mut(&sid).expect("the service story");
+        story.paragraphs.push(ob_model::Paragraph::plain(
+            "order-line",
+            "Hymn of Praise\tELW 432 · Amazing Grace",
+        ));
+        let panels_before = app.doc.panels.len();
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel added"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert_eq!(app.doc.panels.len(), panels_before + 1);
+        let page = hymns::permission_panel_lines(&app.doc).expect("the panel stands");
+        assert!(page[0].contains("CCLI license #123456"), "{}", page[0]);
+        // Undo takes the append back.
+        app.undo();
+        assert_eq!(app.doc.panels.len(), panels_before);
+        assert!(hymns::permission_panel_lines(&app.doc).is_none());
+        // Append again, then renumber: the refresh
+        // replaces the page line, and Undo restores it.
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status.contains("added"),
+            "{}",
+            app.permission_panel_status
+        );
+        app.hymn_memory.learn(
+            &hymns::HymnEntry {
+                hymnal: Some("ELW".to_string()),
+                number: Some("365".to_string()),
+                title: Some("Holy Holy".to_string()),
+            },
+            date,
+        );
+        assert!(app.hymn_memory.note_license(
+            Some("ELW"),
+            "365",
+            hymns::HymnLicense {
+                kind: ob_model::LicenseKind::LicensedReprint,
+                licensor: "ONE LICENSE".to_string(),
+                number: "A-999".to_string(),
+                copyright_line: "© 2020 John Smith".to_string(),
+            },
+        ));
+        let story = app.doc.story_mut(&sid).expect("the service story");
+        let pos = story
+            .paragraphs
+            .iter()
+            .position(|p| p.text().contains("ELW 432"))
+            .expect("the praise hymn paragraph");
+        story.paragraphs[pos] =
+            ob_model::Paragraph::plain("order-line", "Hymn of Response\tELW 365 · Holy Holy");
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("refreshed: 1 line → 1 line"),
+            "{}",
+            app.permission_panel_status
+        );
+        let page = hymns::permission_panel_lines(&app.doc).expect("the panel stands");
+        assert!(page[0].contains("ONE LICENSE #A-999"), "{}", page[0]);
+        app.undo();
+        let page = hymns::permission_panel_lines(&app.doc).expect("the panel stands");
+        assert!(page[0].contains("CCLI license #123456"), "{}", page[0]);
+        // The hymn memory absent on this machine: the
+        // update refuses, the panel stands, the explicit
+        // removal drops it, and Undo brings it back.
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("refreshed: 1 line → 1 line"),
+            "{}",
+            app.permission_panel_status
+        );
+        app.hymn_memory = hymns::HymnMemory::default();
+        app.update_permission_panel();
+        assert!(
+            app.permission_panel_status.contains("not changed"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert!(
+            app.permission_panel_status.contains("lists 1 line"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert!(hymns::permission_panel_lines(&app.doc).is_some());
+        app.remove_permission_panel();
+        assert!(
+            app.permission_panel_status
+                .contains("Permission panel removed"),
+            "{}",
+            app.permission_panel_status
+        );
+        assert!(hymns::permission_panel_lines(&app.doc).is_none());
+        app.undo();
+        assert!(hymns::permission_panel_lines(&app.doc).is_some());
+    }
+
+    #[test]
+    fn r53b_permission_panel_page_words_say_only_what_impose_does() {
+        // Round 53, batch B, R53-RED-3 booklet copy,
+        // checked against ob-impose's padded_document
+        // (multiple of 4) and extra_singles rules: a
+        // 17th saddle panel pads the print copy to 20,
+        // a folded extra is its own single sheet, and a
+        // plain preset gains exactly one page.
+        assert!(
+            permission_panel_page_words("saddle-booklet", 16, 17).contains("16 to 20 pages"),
+            "{}",
+            permission_panel_page_words("saddle-booklet", 16, 17)
+        );
+        assert!(
+            permission_panel_page_words("saddle-booklet", 17, 18).contains("stays at 20 pages"),
+            "{}",
+            permission_panel_page_words("saddle-booklet", 17, 18)
+        );
+        assert!(
+            permission_panel_page_words("letter-bifold", 4, 5)
+                .contains("own single sheet after the folded sheets"),
+            "{}",
+            permission_panel_page_words("letter-bifold", 4, 5)
+        );
+        assert_eq!(
+            permission_panel_page_words("letter-portrait", 4, 5),
+            "This adds one page."
+        );
+        assert_eq!(
+            permission_panel_page_words("letter-portrait", 5, 4),
+            "This removes one page."
         );
     }
 

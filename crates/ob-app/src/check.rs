@@ -336,30 +336,61 @@ pub(crate) fn children_names_note(profile: &ob_model::ChurchProfile) -> Option<C
 /// number never blocks printing (the print path never
 /// consults Check notes), and the summary names the gap
 /// instead of hiding it, so the report is never silently
-/// short. No licensed songs means no notes at all.
+/// short. No licensed songs means no notes at all — unless
+/// a Permissions panel stands, in which case Check also
+/// says whether the panel on the page still matches the
+/// current hymns (round 53, batch B, R53-RED-3): the
+/// panel is a snapshot, the report is a computation, and
+/// only this comparison catches the two apart, including
+/// the cross-machine case where the hymn memory is
+/// absent here and the report is empty while the panel
+/// still prints lines.
 pub(crate) fn license_usage_findings(
     doc: &Document,
     memory: &ob_model::hymns::HymnMemory,
 ) -> Vec<CheckNote> {
     let report = ob_music::license::usage_report(doc, memory);
-    if report.is_empty() {
-        return Vec::new();
-    }
-    let listed: Vec<String> = report
+    let panel_lines = ob_model::hymns::permission_panel_lines(doc);
+    let computed_lines: Vec<String> = ob_model::hymns::hymn_license_uses(doc, memory)
         .iter()
-        .map(ob_music::license::format_usage_entry)
+        .filter_map(|u| u.line.clone())
         .collect();
-    let summary = format!("License usage to report: {}.", listed.join("; "));
-    let mut out = vec![CheckNote::plain(summary)];
-    for entry in &report {
-        if entry.missing_number {
-            let warning = format!(
-                "Check: {} is reprinted under a {} license but no license number is recorded, \
-                 so no permission line with the number prints. The bulletin still prints; \
-                 record the number and the line appears.",
-                entry.title, entry.licensor
-            );
-            out.push(CheckNote::plain(warning));
+    let mut out = Vec::new();
+    if report.is_empty() && panel_lines.is_none() {
+        return out;
+    }
+    if !report.is_empty() {
+        let listed: Vec<String> = report
+            .iter()
+            .map(ob_music::license::format_usage_entry)
+            .collect();
+        let summary = format!("License usage to report: {}.", listed.join("; "));
+        out.push(CheckNote::plain(summary));
+        for entry in &report {
+            if entry.missing_number {
+                // The fix lives in the license fields under
+                // the hymn on the This Sunday step (round
+                // 53, batch B): the old "record the number
+                // and the line appears" pointed at a UI
+                // field that did not exist.
+                let warning = format!(
+                    "Check: {} is reprinted under a {} license but no license number is recorded, \
+                     so no permission line with the number prints. The bulletin still prints; \
+                     record the number in the license fields under that hymn on the This Sunday \
+                     step and the line appears.",
+                    entry.title, entry.licensor
+                );
+                out.push(CheckNote::to_step(warning, 1));
+            }
+        }
+    }
+    if let Some(panel) = panel_lines {
+        if panel != computed_lines {
+            out.push(CheckNote::plain(
+                "Check: the permission panel on the page does not match the current hymns — \
+                 update or remove it before printing."
+                    .to_string(),
+            ));
         }
     }
     out
@@ -1418,6 +1449,71 @@ mod tests {
         let notes = license_usage_findings(&doc, &memory);
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(notes[0].text.contains("CCLI #123456"), "{}", notes[0].text);
+    }
+
+    #[test]
+    fn license_usage_warns_when_the_permission_panel_goes_stale() {
+        // Round 53, batch B, R53-RED-3: a panel appended
+        // under one license number, then the number
+        // renumbered, draws the staleness note alongside
+        // the fresh summary; a panel that still matches
+        // draws none.
+        let mut doc = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        let memory = memory_with_number("123456");
+        assert!(ob_model::hymns::append_hymn_permission_panel(&mut doc, &memory).added);
+        let renumbered = memory_with_number("A-999");
+        let notes = license_usage_findings(&doc, &renumbered);
+        assert!(
+            notes.iter().any(|n| n
+                .text
+                .contains("permission panel on the page does not match the current hymns")),
+            "{notes:?}"
+        );
+        let current = license_usage_findings(&doc, &memory);
+        assert!(
+            !current.iter().any(|n| n.text.contains("does not match")),
+            "{current:?}"
+        );
+        assert_eq!(current.len(), 1, "{current:?}");
+    }
+
+    #[test]
+    fn license_usage_warns_when_the_panel_outlives_the_memory() {
+        // Round 53, batch B, R53-RED-3, cross-machine
+        // shape: the panel prints lines, but on this
+        // machine the hymn memory is absent, so the
+        // report is empty — Check still names the stale
+        // panel instead of staying silent.
+        let mut doc = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        let memory = memory_with_number("123456");
+        assert!(ob_model::hymns::append_hymn_permission_panel(&mut doc, &memory).added);
+        let notes = license_usage_findings(&doc, &HymnMemory::default());
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0]
+                .text
+                .contains("permission panel on the page does not match the current hymns"),
+            "{}",
+            notes[0].text
+        );
+    }
+
+    #[test]
+    fn missing_number_note_points_at_the_license_fields() {
+        // Round 53, batch B: the fixed note names the
+        // real UI field, and its fix button jumps to the
+        // This Sunday step where the fields live.
+        let doc = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
+        let notes = license_usage_findings(&doc, &memory_with_number(""));
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes[1]
+                .text
+                .contains("license fields under that hymn on the This Sunday step"),
+            "{}",
+            notes[1].text
+        );
+        assert_eq!(notes[1].step, Some(1), "{notes:?}");
     }
 
     #[test]

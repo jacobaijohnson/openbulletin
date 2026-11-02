@@ -476,6 +476,184 @@ pub struct HymnPermissionOutcome {
 /// second call finds it and appends nothing twice.
 pub const HYMN_PERMISSIONS_STORY: &str = "hymn-permissions";
 
+/// The permission lines currently printed on a
+/// document's Permissions panel, if it has one: the
+/// story's paragraphs after its "License permissions"
+/// heading. None when no panel story stands. The panel
+/// is a snapshot of the hymns at append time, so these
+/// lines are what the page prints — never a substitute
+/// for the freshly computed lines.
+pub fn permission_panel_lines(doc: &Document) -> Option<Vec<String>> {
+    let story = doc.story(HYMN_PERMISSIONS_STORY)?;
+    let mut paragraphs = story.paragraphs.iter();
+    let first = paragraphs.next();
+    let has_heading = first
+        .map(|p| p.text() == "License permissions")
+        .unwrap_or(false);
+    let body: Vec<String> = if has_heading {
+        paragraphs.map(|p| p.text().to_string()).collect()
+    } else {
+        story
+            .paragraphs
+            .iter()
+            .map(|p| p.text().to_string())
+            .collect()
+    };
+    Some(body)
+}
+
+/// Whether a document carries a Permissions panel at
+/// all: its story, or a panel frame pointing at that
+/// story (a hand-edited panel may have lost its story
+/// while keeping its frame).
+fn permission_panel_present(doc: &Document) -> bool {
+    if doc.story(HYMN_PERMISSIONS_STORY).is_some() {
+        return true;
+    }
+    doc.panels.iter().any(|p| {
+        p.id == "panel-permissions"
+            || p.frames
+                .iter()
+                .any(|f| f.story_id.as_deref() == Some(HYMN_PERMISSIONS_STORY))
+    })
+}
+
+/// What updating the hymn permission panel did
+/// (round 53, batch B, R53-RED-3): the panel action
+/// never reports the freshly computed lines as "now on
+/// the page" unless this very call put them there.
+/// `warnings` rides every variant, as in the append
+/// outcome: licensed-without-number hymns warn, never
+/// block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HymnPermissionUpdate {
+    /// No panel stood, and one was appended.
+    Appended {
+        lines: Vec<String>,
+        warnings: Vec<String>,
+    },
+    /// A panel stood and its lines already equal the
+    /// freshly computed lines: nothing changed.
+    AlreadyCurrent {
+        lines: Vec<String>,
+        warnings: Vec<String>,
+    },
+    /// A panel stood, its lines differed, and the fresh
+    /// lines are non-empty: the panel paragraphs were
+    /// rewritten to the fresh lines.
+    Refreshed {
+        old_lines: Vec<String>,
+        new_lines: Vec<String>,
+        warnings: Vec<String>,
+    },
+    /// A panel stood, its lines differed, and the fresh
+    /// lines are empty: nothing changed, and the panel
+    /// was NOT silently deleted. The office removes it
+    /// explicitly (see `remove_hymn_permission_panel`)
+    /// — the hymns may have been removed, or the hymn
+    /// memory may be absent on this machine, and either
+    /// way the printed lines are the office's to keep
+    /// or drop, not the action's to drop quietly.
+    RefusedStale {
+        panel_lines: Vec<String>,
+        warnings: Vec<String>,
+    },
+    /// No panel stood and no fresh line exists: nothing
+    /// changed, and no empty panel was appended.
+    NoLines { warnings: Vec<String> },
+}
+
+/// Update a document's hymn permission panel
+/// (round 53, batch B, R53-RED-3): the explicit panel
+/// action behind the "Update permission panel" button.
+/// Never automatic: no save or print path calls this.
+/// The caller snapshots for undo before calling — this
+/// mutates in place, as the append does, and undo only
+/// works off the caller's snapshot.
+pub fn update_hymn_permission_panel(
+    doc: &mut Document,
+    memory: &HymnMemory,
+) -> HymnPermissionUpdate {
+    let uses = hymn_license_uses(doc, memory);
+    let lines: Vec<String> = uses.iter().filter_map(|u| u.line.clone()).collect();
+    let warnings: Vec<String> = uses
+        .iter()
+        .filter(|u| u.missing_number)
+        .map(|u| {
+            format!(
+                "Hymn {} ({}) is reprinted under a church license but no license number is \
+                 recorded, so no permission line with the number prints.",
+                u.shown, u.label
+            )
+        })
+        .collect();
+    if !permission_panel_present(doc) {
+        if lines.is_empty() {
+            return HymnPermissionUpdate::NoLines { warnings };
+        }
+        let out = append_hymn_permission_panel(doc, memory);
+        debug_assert!(out.added);
+        return HymnPermissionUpdate::Appended {
+            lines: out.lines,
+            warnings: out.warnings,
+        };
+    }
+    let panel_lines = permission_panel_lines(doc).unwrap_or_default();
+    if panel_lines == lines {
+        return HymnPermissionUpdate::AlreadyCurrent { lines, warnings };
+    }
+    if lines.is_empty() {
+        return HymnPermissionUpdate::RefusedStale {
+            panel_lines,
+            warnings,
+        };
+    }
+    let mut paragraphs = vec![Paragraph::plain("subheading", "License permissions")];
+    for line in &lines {
+        paragraphs.push(Paragraph::plain("body", line));
+    }
+    match doc.story_mut(HYMN_PERMISSIONS_STORY) {
+        Some(story) => story.paragraphs = paragraphs,
+        None => doc.stories.push(crate::Story {
+            id: HYMN_PERMISSIONS_STORY.to_string(),
+            paragraphs,
+            keep_through: None,
+        }),
+    }
+    HymnPermissionUpdate::Refreshed {
+        old_lines: panel_lines,
+        new_lines: lines,
+        warnings,
+    }
+}
+
+/// Remove a document's Permissions panel outright
+/// (round 53, batch B, R53-RED-3): the office's
+/// explicit act behind the "Remove permission panel"
+/// button, offered beside a refused-stale warning. The
+/// caller snapshots for undo before calling. Answers
+/// true when a panel story or panel was actually
+/// removed.
+pub fn remove_hymn_permission_panel(doc: &mut Document) -> bool {
+    let mut removed = false;
+    if let Some(pos) = doc
+        .stories
+        .iter()
+        .position(|s| s.id == HYMN_PERMISSIONS_STORY)
+    {
+        doc.stories.remove(pos);
+        removed = true;
+    }
+    let before = doc.panels.len();
+    doc.panels.retain(|p| {
+        !(p.id == "panel-permissions"
+            || p.frames
+                .iter()
+                .any(|f| f.story_id.as_deref() == Some(HYMN_PERMISSIONS_STORY)))
+    });
+    removed || doc.panels.len() != before
+}
+
 /// Append the hymn permission lines to a document as
 /// printable words (round 51, G-08d): one Permissions
 /// panel at the end, carrying one story and frame with
@@ -1037,6 +1215,128 @@ mod tests {
         let again = append_hymn_permission_panel(&mut doc, &mem);
         assert!(!again.added);
         assert_eq!(doc.panels.len(), 2);
+    }
+
+    #[test]
+    fn permission_panel_update_replays_the_p2_stale_panel() {
+        // Round 53, R53-RED-3, probe P2 replayed through
+        // the update action: first append prints CCLI
+        // #123456 and ONE LICENSE #A-777; after the hymn
+        // edits (one hymn removed, the other renumbered
+        // to #A-999) the refresh replaces the page lines
+        // with #A-999, and the report and page agree.
+        let mut mem = memory_with(
+            Some("ELW"),
+            "432",
+            "Amazing Grace",
+            licensed_pair("CCLI", "123456", "© 2019 Jane Doe"),
+        );
+        mem.learn(
+            &entry(Some("ELW"), Some("365"), Some("Holy Holy")),
+            d(2026, 10, 18),
+        );
+        assert!(mem.note_license(
+            Some("ELW"),
+            "365",
+            licensed_pair("ONE LICENSE", "A-777", "© 2020 John Smith")
+        ));
+        let mut doc = order_doc(vec![
+            "Hymn of Praise\tELW 432 · Amazing Grace",
+            "Hymn of Response\tELW 365 · Holy Holy",
+        ]);
+        let out = append_hymn_permission_panel(&mut doc, &mem);
+        assert!(out.added);
+        assert_eq!(doc.panels.len(), 2);
+        // The office edits the service: the praise hymn
+        // goes, the response hymn is renumbered.
+        assert!(mem.note_license(
+            Some("ELW"),
+            "365",
+            licensed_pair("ONE LICENSE", "A-999", "© 2020 John Smith")
+        ));
+        let mut edited = order_doc(vec!["Hymn of Response\tELW 365 · Holy Holy"]);
+        edited.stories.push(
+            doc.story(HYMN_PERMISSIONS_STORY)
+                .expect("the appended story")
+                .clone(),
+        );
+        edited.panels.push(doc.panels[1].clone());
+        let update = update_hymn_permission_panel(&mut edited, &mem);
+        match update {
+            HymnPermissionUpdate::Refreshed {
+                old_lines,
+                new_lines,
+                ..
+            } => {
+                assert_eq!(old_lines.len(), 2, "{old_lines:?}");
+                assert_eq!(new_lines.len(), 1, "{new_lines:?}");
+                assert!(
+                    new_lines[0].contains("ONE LICENSE #A-999"),
+                    "{}",
+                    new_lines[0]
+                );
+            }
+            other => panic!("expected a refresh, got {other:?}"),
+        }
+        let page = permission_panel_lines(&edited).expect("the panel stands");
+        assert_eq!(page.len(), 1, "{page:?}");
+        assert!(page[0].contains("ONE LICENSE #A-999"), "{}", page[0]);
+        assert!(
+            !page
+                .iter()
+                .any(|l| l.contains("123456") || l.contains("A-777")),
+            "no stale line survives the refresh: {page:?}"
+        );
+        // A second update now reports already current and
+        // changes nothing.
+        let again = update_hymn_permission_panel(&mut edited, &mem);
+        assert!(
+            matches!(again, HymnPermissionUpdate::AlreadyCurrent { .. }),
+            "{again:?}"
+        );
+        assert_eq!(edited.panels.len(), 2);
+    }
+
+    #[test]
+    fn permission_panel_update_refuses_a_stale_panel_instead_of_deleting_it() {
+        // Round 53, R53-RED-3, cross-machine shape: the
+        // panel prints lines, but on this machine the
+        // current hymns yield none (memory absent). The
+        // update refuses, the panel stands untouched, and
+        // only the explicit removal drops it.
+        let mem = memory_with(
+            Some("ELW"),
+            "432",
+            "Amazing Grace",
+            licensed_pair("CCLI", "123456", "© 2019 Jane Doe"),
+        );
+        let mut doc = order_doc(vec!["Hymn of Praise\tELW 432 · Amazing Grace"]);
+        assert!(append_hymn_permission_panel(&mut doc, &mem).added);
+        let mut moved = order_doc(vec!["Hymn of Praise\tELW 432 · Amazing Grace"]);
+        moved.stories.push(
+            doc.story(HYMN_PERMISSIONS_STORY)
+                .expect("the appended story")
+                .clone(),
+        );
+        moved.panels.push(doc.panels[1].clone());
+        let empty = HymnMemory::default();
+        let update = update_hymn_permission_panel(&mut moved, &empty);
+        match update {
+            HymnPermissionUpdate::RefusedStale { panel_lines, .. } => {
+                assert_eq!(panel_lines.len(), 1, "{panel_lines:?}");
+                assert!(panel_lines[0].contains("123456"), "{}", panel_lines[0]);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(moved.panels.len(), 2, "the refused panel stands");
+        assert!(
+            permission_panel_lines(&moved).expect("the panel stands")[0].contains("123456"),
+            "the refused panel is unchanged"
+        );
+        assert!(remove_hymn_permission_panel(&mut moved));
+        assert_eq!(moved.panels.len(), 1);
+        assert!(permission_panel_lines(&moved).is_none());
+        assert!(!remove_hymn_permission_panel(&mut moved));
     }
 
     #[test]

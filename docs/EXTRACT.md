@@ -105,6 +105,43 @@ import discipline, not a boundary: import files from
 sources the office trusts, the way it already treats
 any file it opens.
 
+Why no new control was added, in full (round 51, G-06;
+the condensed rationale above is preserved, and this
+states the batch record's four reasons and reopen
+triggers in the repo so they do not live only in the
+audit tree):
+
+1. No evidenced vulnerability: no known exploit, no
+   incident, no bypass of a control that exists. The
+   finding is a wording/assurance gap, as the round-51
+   synthesis states.
+2. No privilege is added by the helpers: they run as
+   the user, exactly as the app does. A sandbox would
+   narrow the helper's reach, not the app's, and the
+   helper's legitimate work — read the user-chosen
+   input, write the output folder — is exactly what a
+   cross-platform sandbox broker would have to permit
+   (Windows job objects/AppContainer, macOS sandbox
+   profiles, Linux namespaces/seccomp, each with its
+   own broker for fonts, temp, profiles, and the Python
+   runtime Verovio needs). That is a project with its
+   own regression surface (over-brokered = broken
+   imports; under-brokered = theater), not a line in
+   this fix.
+3. The product's import discipline matches its class
+   (Scribus and LibreOffice run parsers as the user
+   too): import files from sources the office trusts.
+4. A control added for show (e.g. a chroot that still
+   bind-mounts the input and output) would not change
+   the reach assessment above.
+
+Reopen condition: if a parser exploit is evidenced, if
+helpers ever run elevated or in another account, or if
+the product ever imports untrusted-by-default input
+(e.g. auto-import from a watched folder), the control
+question reopens — the threat model, not the wording,
+will have changed.
+
 ## The native Publisher reader (shipped 2026-10-15)
 
 Our own reader, an independent implementation from documented

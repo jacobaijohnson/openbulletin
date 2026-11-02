@@ -15755,6 +15755,71 @@ mod settings_tests {
     }
 
     #[test]
+    fn r56b_next_sunday_refuses_legacy_unmarked_easter_in_app() {
+        // Round 56, R56-RED-2 at the app seam: Next
+        // Sunday on a legacy unmarked Easter bulletin
+        // refuses with guidance, adopts nothing, keeps
+        // the file path, and leaves the hymn, the name,
+        // and the date untouched — the marked refusal's
+        // app behavior, reached without a marker. No
+        // new app code was needed: the app already
+        // shows `seasonal_refusal` as guidance instead
+        // of adopting, so the library refusal routes
+        // through it unchanged.
+        let mut app = clean_app_with_template();
+        let mut doc = ob_layout::seasonal::build_seasonal_template(
+            ob_layout::seasonal::SeasonalService::Easter,
+            ob_layout::Preset::LetterBifold,
+            ob_model::ChurchProfile::default(),
+            chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date"),
+        );
+        doc.fields
+            .remove(ob_layout::seasonal::SEASONAL_SERVICE_FIELD);
+        app.doc = doc;
+        app.path = Some(std::path::PathBuf::from("easter.obd"));
+        app.next_sunday();
+        assert_eq!(app.doc.fields["occasion_date"], "2026-12-20");
+        assert_eq!(app.doc.fields["occasion_name"], "Easter Sunday");
+        assert!(
+            !app.doc
+                .fields
+                .contains_key(ob_layout::seasonal::SEASONAL_SERVICE_FIELD),
+            "the refusal files no marker on its way out"
+        );
+        assert!(app.path.is_some(), "the refusal keeps the file path");
+        assert!(!app.status_error, "the refusal is guidance, not a failure");
+        assert!(
+            app.status.contains("Easter Sunday"),
+            "the status names the occasion: {}",
+            app.status
+        );
+        assert!(
+            app.status.contains("rename it on This Sunday"),
+            "the status points at the rename path: {}",
+            app.status
+        );
+        let order = app
+            .doc
+            .stories
+            .iter()
+            .find(|story| {
+                story
+                    .paragraphs
+                    .first()
+                    .map(|p| p.text() == "Order of Service")
+                    .unwrap_or(false)
+            })
+            .expect("the order story");
+        assert!(
+            order
+                .paragraphs
+                .iter()
+                .any(|p| p.text().contains("Christ the Lord Is Risen Today")),
+            "the Easter hymn survives"
+        );
+    }
+
+    #[test]
     fn r55a_rename_to_another_occasion_keeps_marker_and_refuses_next_sunday() {
         // Round 55, R54-RED-1, probe S3 pinned at the app
         // seam: a Christmas bulletin renamed to Christmas

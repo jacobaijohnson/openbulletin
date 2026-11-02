@@ -539,6 +539,55 @@ pub fn next_sunday_report_as_of(
         };
         return Ok((doc.clone(), report));
     }
+    // A legacy unmarked bulletin titled for a shipped
+    // seasonal service refuses Next Sunday too (round
+    // 56, R56-RED-2), on the same untouched-document
+    // contract as the marked refusal above. Reaching
+    // here means no marker is filed, so this is the
+    // pre-round-53 / hand-edited shape only. The
+    // predicate is deliberately narrow: it fires only
+    // for a shipped label the Sunday-word test would
+    // otherwise treat as a regular Sunday — in the
+    // current set, "Easter Sunday" alone, which kept
+    // its seasonal title over a cleared order dated
+    // 2027-01-03 in the round-56 probe. The other five
+    // shipped labels are one-time names, so they
+    // already advance to "Sunday" with the one-time
+    // note below (the Wedding one-time test pins
+    // that); widening this refusal to them would break
+    // that standing behavior, not fix a title kept.
+    // Refusal, not a title reset, is the branch: Next
+    // Sunday does not replace the order, so resetting
+    // the title to "Sunday" would hide the split — a
+    // Sunday bulletin carrying the Easter order — while
+    // refusal leaves the document untouched, names the
+    // occasion, and points at the rename-to-Sunday way
+    // back, exactly as the marked refusal does. It is
+    // also consistent with the rename rule: a bulletin
+    // renamed TO "Easter Sunday" gains a marker and
+    // refuses, so the same title must not advance
+    // merely because it arrived unmarked.
+    let legacy_label = seasonal::SeasonalService::all()
+        .iter()
+        .find(|s| s.label().eq_ignore_ascii_case(&old_name))
+        .map(|s| s.label());
+    if let Some(label) = legacy_label.filter(|_| !is_one_time_occasion(&old_name)) {
+        let refusal = format!(
+            "This bulletin is titled {label}, a seasonal service, so Next Sunday leaves it \
+             exactly as it is: the name, the order, the hymns, and the date are untouched. \
+             A seasonal order does not repeat a week later. This bulletin carries no \
+             seasonal mark — it predates the marker, or was hand-edited — so nothing \
+             marks it as seasonal except its title. To start the next week, start a \
+             fresh Sunday bulletin from the Start step; or, if this bulletin is now a \
+             Sunday bulletin, rename it on This Sunday to Sunday first, and the order \
+             stays as it stands for you to change."
+        );
+        let report = NextSundayReport {
+            seasonal_refusal: Some(refusal),
+            ..NextSundayReport::default()
+        };
+        return Ok((doc.clone(), report));
+    }
     let one_time = is_one_time_occasion(&old_name);
     let (next, weeks_advanced) = if one_time {
         let base = date.max(today);
@@ -1461,6 +1510,131 @@ mod tests {
                 .any(|p| p.text().contains("Christ the Lord Is Risen Today")),
             "the Easter hymn survives Next Sunday"
         );
+    }
+
+    #[test]
+    fn r56b_next_sunday_refuses_legacy_unmarked_easter_sunday_whole() {
+        // Round 56, R56-RED-2, probe R-LEGACY pinned at
+        // the rule itself: a legacy unmarked "Easter
+        // Sunday" bulletin — the Easter template with
+        // its marker stripped, the exact shape the
+        // current product cannot create — used to
+        // advance to 2027-01-03 keeping the seasonal
+        // title over a cleared order. Now it refuses
+        // whole, on the marked refusal's contract:
+        // document struct-equal to the input, date
+        // unadvanced, no advance claimed, no hymn
+        // cleared, the Easter order intact, and guidance
+        // naming the occasion and both real paths
+        // (fresh Sunday bulletin, rename to Sunday).
+        // Renaming heals it, so the refusal need not
+        // rewrite the bulletin to fix it.
+        let mut d = seasonal::build_seasonal_template(
+            seasonal::SeasonalService::Easter,
+            Preset::LetterBifold,
+            profile(),
+            NaiveDate::from_ymd_opt(2026, 12, 20).unwrap(),
+        );
+        d.fields.remove(seasonal::SEASONAL_SERVICE_FIELD);
+        assert!(
+            !d.fields.contains_key(seasonal::SEASONAL_SERVICE_FIELD),
+            "the legacy shape is unmarked"
+        );
+        let (n, report) =
+            next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 12, 27).unwrap()).unwrap();
+        assert_eq!(n, d, "the legacy Easter bulletin is untouched");
+        assert_eq!(n.fields["occasion_date"], "2026-12-20", "date unadvanced");
+        assert_eq!(
+            n.fields["occasion_name"], "Easter Sunday",
+            "the title is not silently kept over a new week, nor reset"
+        );
+        assert!(report.cleared_hymns.is_empty(), "no hymn cleared");
+        assert_eq!(report.weeks_advanced, 0, "no advance claimed");
+        assert!(report.occasion_note.is_none(), "no one-time note");
+        let refusal = report.seasonal_refusal.expect("the refusal speaks");
+        assert!(
+            refusal.contains("Easter Sunday"),
+            "the refusal names the occasion: {refusal}"
+        );
+        assert!(
+            refusal.contains("leaves it exactly as it is"),
+            "the refusal says nothing changed: {refusal}"
+        );
+        assert!(
+            refusal.contains("start a fresh Sunday bulletin"),
+            "the refusal points at a fresh Sunday bulletin: {refusal}"
+        );
+        assert!(
+            refusal.contains("rename it on This Sunday"),
+            "the refusal points at the rename path: {refusal}"
+        );
+        let order = n
+            .stories
+            .iter()
+            .find(|story| {
+                story
+                    .paragraphs
+                    .first()
+                    .map(|p| p.text() == "Order of Service")
+                    .unwrap_or(false)
+            })
+            .expect("the order story");
+        assert!(
+            order
+                .paragraphs
+                .iter()
+                .any(|p| p.text().contains("Christ the Lord Is Risen Today")),
+            "the Easter hymn survives Next Sunday"
+        );
+    }
+
+    #[test]
+    fn r56b_next_sunday_legacy_unmarked_other_shipped_labels_still_advance_as_one_time() {
+        // Round 56, R56-RED-2, the narrow-scope side:
+        // the refusal above fires only for a shipped
+        // label the Sunday-word test would treat as a
+        // regular Sunday. The other five shipped labels
+        // are one-time names, so an unmarked bulletin
+        // under one of them still advances to the
+        // regular Sunday with the one-time note, exactly
+        // as before — the refusal does not widen to
+        // every shipped label, and the Wedding one-time
+        // behavior stands.
+        for service in seasonal::SeasonalService::all() {
+            if service == seasonal::SeasonalService::Easter {
+                continue;
+            }
+            let d = build_template(
+                Preset::LetterBifold,
+                profile(),
+                NaiveDate::from_ymd_opt(2026, 12, 20).unwrap(),
+                service.label(),
+            );
+            assert!(
+                !d.fields.contains_key(seasonal::SEASONAL_SERVICE_FIELD),
+                "a plain template is unmarked for {}",
+                service.label()
+            );
+            let (n, report) =
+                next_sunday_report_as_of(&d, NaiveDate::from_ymd_opt(2026, 12, 27).unwrap())
+                    .unwrap();
+            assert_eq!(
+                n.fields["occasion_name"],
+                DEFAULT_SERVICE_NAME,
+                "the {} title resets to Sunday",
+                service.label()
+            );
+            assert!(
+                report.seasonal_refusal.is_none(),
+                "no refusal for {}",
+                service.label()
+            );
+            assert!(
+                report.occasion_note.is_some(),
+                "the one-time note speaks for {}",
+                service.label()
+            );
+        }
     }
 
     #[test]

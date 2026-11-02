@@ -254,6 +254,71 @@ fn r55c_next_sunday_refuses_a_seasonal_bulletin() {
 }
 
 #[test]
+fn r56b_next_sunday_refuses_a_legacy_unmarked_easter_bulletin() {
+    // Round 56, R56-RED-2: next-sunday on a legacy
+    // unmarked Easter .obd (marker stripped from the
+    // Easter template, the exact shape the current
+    // product cannot create) used to exit 0 writing a
+    // January bulletin titled "Easter Sunday". Now the
+    // refusal + guidance print, no output file is
+    // written, the input is untouched, and the command
+    // fails (exit 1, the CLI's standing refusal exit),
+    // through the same `seasonal_refusal` path the
+    // marked refusal takes — no CLI code changed.
+    let dir =
+        std::env::temp_dir().join(format!("ob-cli-r56b-legacy-easter-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let bin = env!("CARGO_BIN_EXE_openbulletin-cli");
+    let mut doc = ob_layout::seasonal::build_seasonal_template(
+        ob_layout::seasonal::SeasonalService::Easter,
+        ob_layout::Preset::LetterBifold,
+        ob_model::ChurchProfile {
+            name: "Grace Church".to_string(),
+            ..Default::default()
+        },
+        chrono::NaiveDate::from_ymd_opt(2026, 12, 20).expect("date"),
+    );
+    doc.fields
+        .remove(ob_layout::seasonal::SEASONAL_SERVICE_FIELD);
+    let input = dir.join("easter.obd");
+    ob_format::save(&doc, &input).expect("save the legacy bulletin");
+    let before = std::fs::read(&input).expect("read the input");
+    let out = dir.join("easter-next.obd");
+    let run = std::process::Command::new(bin)
+        .args([
+            "next-sunday",
+            input.to_str().expect("path"),
+            "--out",
+            out.to_str().expect("path"),
+        ])
+        .current_dir(&dir)
+        .output()
+        .expect("run cli");
+    assert_eq!(run.status.code(), Some(1), "a refusal fails: {run:?}");
+    let said = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert!(
+        said.contains("Easter Sunday") && said.contains("leaves it exactly as it is"),
+        "the refusal names the occasion and says nothing changed: {said}"
+    );
+    assert!(
+        said.contains("start a fresh Sunday bulletin"),
+        "the guidance names the way forward: {said}"
+    );
+    assert!(
+        !said.contains("wrote "),
+        "no success message may claim a new Sunday was written: {said}"
+    );
+    assert!(!out.exists(), "a refused advance writes no output file");
+    assert_eq!(
+        std::fs::read(&input).expect("input still there"),
+        before,
+        "the input is untouched"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn r55c_next_sunday_advances_an_ordinary_bulletin() {
     // Round 55, batch C, R54-RED-2, the no-regression
     // side: the normal (non-seasonal) CLI Next Sunday

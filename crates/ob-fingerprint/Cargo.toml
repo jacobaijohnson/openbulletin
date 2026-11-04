@@ -8,6 +8,8 @@ description = "OpenBulletin content fingerprints: the library index that tells s
 
 [dependencies]
 ob-image = { path = "../ob-image" }
+ob-music = { path = "../ob-music" }
+sha2 = "0.10"
 
 [lints]
 workspace = true

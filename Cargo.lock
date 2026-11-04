@@ -2884,6 +2884,8 @@ name = "ob-fingerprint"
 version = "0.1.0"
 dependencies = [
  "ob-image",
+ "ob-music",
+ "sha2",
 ]
 
 [[package]]

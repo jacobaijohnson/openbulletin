@@ -22,12 +22,13 @@
 //! nothing is recomputed except on an `fp_version` change, and
 //! nothing here touches the network.
 //!
-//! This module owns the image half. Music lives in `music`
-//! (canonicaliser in ob-music, matching here); text lives in
-//! `text`. The tiers, the band table, the index file, and the
-//! stored "Not duplicates" dismissals live in `matching`.
+//! This module owns the image half. Music lives in
+//! `music` (canonicaliser in ob-music, matching here);
+//! the text engine, tiers, index, and dismissals land
+//! in the next batch.
 
 pub mod image;
+pub mod music;
 
 /// The image fingerprint version. It bundles every choice in
 /// [`image::fingerprint_image`]: Rec.601 integer grayscale,
@@ -38,3 +39,9 @@ pub mod image;
 /// changes, because fingerprints from different parameters
 /// are incomparable.
 pub const IMAGE_FP_VERSION: &str = "img-fp-v1";
+
+/// The music fingerprint version. It bundles the
+/// canonicaliser rules in ob-music (`canonical`), the
+/// serialisations in [`music`], and the incipit rules.
+/// Same rule: change any of them, change this string.
+pub const MUSIC_FP_VERSION: &str = "music-fp-v1";

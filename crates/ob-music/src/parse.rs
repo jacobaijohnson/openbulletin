@@ -176,7 +176,7 @@ const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
 /// nested millions deep would pile without bound. Real
 /// MusicXML nests perhaps thirty levels; this is
 /// generous headroom.
-const MAX_XML_DEPTH: usize = 256;
+pub(crate) const MAX_XML_DEPTH: usize = 256;
 
 /// Read one zip entry's text under the cap, through
 /// ob-model's one capped read (health audit E-9). This

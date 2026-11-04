@@ -26,6 +26,7 @@
 //!   license number, and the license usage report (round
 //!   51, G-08d).
 
+pub mod canonical;
 pub mod draft;
 pub mod engine;
 pub mod license;
@@ -33,6 +34,7 @@ pub mod parse;
 pub mod render;
 pub mod svg;
 
+pub use canonical::{parse_canonical, CanonicalScore, NoteEvent, PartStream};
 pub use draft::{build_music_draft, count_item, music_frame_width_mm, music_frame_width_mpt};
 pub use parse::{load_music, parse_musicxml, sniff_music, MusicCounts, MusicInfo};
 pub use render::{

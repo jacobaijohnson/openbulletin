@@ -1,0 +1,13 @@
+[package]
+name = "ob-fingerprint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenBulletin content fingerprints: the library index that tells same file, same content, and probably-the-same apart, in plain words."
+
+[dependencies]
+ob-image = { path = "../ob-image" }
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 //! OpenBulletin CLI: the headless engine operations (new, export,
 //! export-idml, export-sla, export-md, export-html, next-sunday,
-//! info, fonts, trace). The import doors live in the app.
+//! info, fonts, trace, fingerprint, duplicates). The import doors live in the app.
 //! If it cannot be done here, the GUI is hiding engine problems.
 
 use clap::{Parser, Subcommand};
@@ -117,6 +117,23 @@ enum Cmd {
     Fonts {
         #[command(subcommand)]
         action: FontsCmd,
+    },
+    /// Fingerprint one file: what kind it is, its version
+    /// stamp, and the hashes the duplicates report uses.
+    Fingerprint { file: PathBuf },
+    /// The duplicates report for a fingerprint index:
+    /// add files, then print every proposal, every short
+    /// pair that needs its words compared by hand, and
+    /// every stale entry waiting on a recompute.
+    Duplicates {
+        /// The index file (conventional home:
+        /// <base>/OpenBulletin/fingerprints.json).
+        #[arg(long)]
+        index: PathBuf,
+        /// Files to add to the index first. Files
+        /// already in it are skipped, never duplicated.
+        #[arg(long)]
+        add: Vec<PathBuf>,
     },
 }
 
@@ -609,7 +626,229 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             Ok(())
         }
+        Cmd::Fingerprint { file } => {
+            let bytes = ob_extract::read_open_door_file(&file)?;
+            let summary = fingerprint_summary(&bytes, &file)?;
+            println!("{summary}");
+            Ok(())
+        }
+        Cmd::Duplicates { index, add } => {
+            let mut idx = ob_fingerprint::matching::FingerprintIndex::load(&index)?;
+            for file in &add {
+                let bytes = ob_extract::read_open_door_file(file)?;
+                if index_add_file(&mut idx, &bytes, file)? {
+                    println!("added {}", file.display());
+                } else {
+                    println!("already in the index: {}", file.display());
+                }
+            }
+            if !add.is_empty() {
+                idx.save(&index)?;
+            }
+            println!("{}", duplicates_report(&idx));
+            Ok(())
+        }
     }
+}
+
+/// One file's fingerprint, routed the way the library
+/// index routes it: pictures by magic bytes, music by
+/// extension, anything else as readable text. A file
+/// that is none of those fails loudly, never as a
+/// silent wrong kind.
+enum NewEntry {
+    Image(ob_fingerprint::matching::ImageEntry),
+    Music(ob_fingerprint::matching::MusicEntry),
+    Text(ob_fingerprint::matching::TextEntry),
+}
+
+fn fingerprint_entry(bytes: &[u8], path: &Path) -> Result<NewEntry, String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unnamed".to_string());
+    let sha = ob_fingerprint::sha256_hex(bytes);
+    if ob_image::sniff(bytes).decodable() {
+        let decoded = ob_image::decode(bytes).map_err(|e| e.to_string())?;
+        let fp = ob_fingerprint::image::fingerprint_image(&decoded);
+        return Ok(NewEntry::Image(
+            ob_fingerprint::matching::ImageEntry::from_engine(&sha, &name, &fp),
+        ));
+    }
+    let is_music = path.extension().map(|e| {
+        e.eq_ignore_ascii_case("musicxml")
+            || e.eq_ignore_ascii_case("xml")
+            || e.eq_ignore_ascii_case("mxl")
+    });
+    if is_music.unwrap_or(false) {
+        let fp = ob_fingerprint::music::fingerprint_music(bytes)?;
+        return Ok(NewEntry::Music(
+            ob_fingerprint::matching::MusicEntry::from_engine(&sha, &name, &fp),
+        ));
+    }
+    let text = String::from_utf8(bytes.to_vec())
+        .map_err(|_| "that file is not a picture, a music file, or readable text".to_string())?;
+    let fp = ob_fingerprint::text::fingerprint_text(&text);
+    Ok(NewEntry::Text(
+        ob_fingerprint::matching::TextEntry::from_engine(&sha, &name, &fp),
+    ))
+}
+
+/// The `fingerprint` command's one-line summary.
+fn fingerprint_summary(bytes: &[u8], path: &Path) -> Result<String, String> {
+    match fingerprint_entry(bytes, path)? {
+        NewEntry::Image(e) => {
+            let low = if e.low_information {
+                " (simple drawing on a plain background)"
+            } else {
+                ""
+            };
+            Ok(format!(
+                "picture | {} | picture hash {:016x} | gradient hash {:016x}{low}",
+                e.fp_version, e.phash, e.dhash
+            ))
+        }
+        NewEntry::Music(e) => Ok(format!(
+            "music | {} | notes {} | pitches {} | melody {} | Plaine & Easie: {}",
+            e.fp_version,
+            &e.canon_hash[..8],
+            &e.midi_hash[..8],
+            &e.melody_hash[..8],
+            e.pae
+        )),
+        NewEntry::Text(e) => Ok(format!(
+            "text | {} | words {} | word-groups {}",
+            e.fp_version,
+            e.token_count,
+            e.shingles.len()
+        )),
+    }
+}
+
+/// Add one file to the index. Returns false when the
+/// file's bytes are already in it (any kind): the same
+/// file is never entered twice.
+fn index_add_file(
+    index: &mut ob_fingerprint::matching::FingerprintIndex,
+    bytes: &[u8],
+    path: &Path,
+) -> Result<bool, String> {
+    let sha = ob_fingerprint::sha256_hex(bytes);
+    let known = index.images.iter().any(|e| e.sha256 == sha)
+        || index.music.iter().any(|e| e.sha256 == sha)
+        || index.texts.iter().any(|e| e.sha256 == sha);
+    if known {
+        return Ok(false);
+    }
+    match fingerprint_entry(bytes, path)? {
+        NewEntry::Image(e) => index.images.push(e),
+        NewEntry::Music(e) => index.music.push(e),
+        NewEntry::Text(e) => index.texts.push(e),
+    }
+    Ok(true)
+}
+
+/// The `duplicates` report. A full audit, all pairs,
+/// by design: the report's job is to miss nothing.
+/// The interactive query path is different — it scores
+/// only the music candidate gate's buckets, never
+/// all-pairs, because a query must answer now. Pairs
+/// the index has already dismissed never appear.
+fn duplicates_report(index: &ob_fingerprint::matching::FingerprintIndex) -> String {
+    use ob_fingerprint::matching::{match_image, match_music, match_text};
+    use ob_fingerprint::text::TextDecision;
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!(
+        "{} pictures, {} tunes, {} announcements in the index; {} pairs marked not duplicates",
+        index.images.len(),
+        index.music.len(),
+        index.texts.len(),
+        index.dismissals.len()
+    ));
+    let mut proposals = 0usize;
+    for i in 0..index.images.len() {
+        for j in (i + 1)..index.images.len() {
+            let a = &index.images[i];
+            let b = &index.images[j];
+            if index.is_dismissed(&a.sha256, &b.sha256) {
+                continue;
+            }
+            let (Some(fa), Some(fb)) = (a.to_engine(), b.to_engine()) else {
+                continue;
+            };
+            if let Some(m) = match_image(&fa, &fb, &a.sha256, &b.sha256) {
+                proposals += 1;
+                lines.push(format!(
+                    "{} <-> {}: {} — {}",
+                    a.name, b.name, m.title, m.reason
+                ));
+            }
+        }
+    }
+    for i in 0..index.music.len() {
+        for j in (i + 1)..index.music.len() {
+            let a = &index.music[i];
+            let b = &index.music[j];
+            if index.is_dismissed(&a.sha256, &b.sha256) {
+                continue;
+            }
+            let (Some(fa), Some(fb)) = (a.to_engine(), b.to_engine()) else {
+                continue;
+            };
+            if let Some(m) = match_music(&fa, &fb) {
+                proposals += 1;
+                lines.push(format!(
+                    "{} <-> {}: {} — {}",
+                    a.name, b.name, m.title, m.reason
+                ));
+            }
+        }
+    }
+    let (freq, total) = index.doc_freq();
+    let df = Some((&freq, total));
+    let mut short_pairs = 0usize;
+    for i in 0..index.texts.len() {
+        for j in (i + 1)..index.texts.len() {
+            let a = &index.texts[i];
+            let b = &index.texts[j];
+            if index.is_dismissed(&a.sha256, &b.sha256) {
+                continue;
+            }
+            let (Some(fa), Some(fb)) = (a.to_engine(), b.to_engine()) else {
+                continue;
+            };
+            match ob_fingerprint::text::text_band(&fa, &fb, df) {
+                TextDecision::NeedsShortTexts => {
+                    short_pairs += 1;
+                    lines.push(format!(
+                        "{} <-> {}: both are short announcements — open both and compare the words",
+                        a.name, b.name
+                    ));
+                }
+                TextDecision::NoMatch => {}
+                _ => {
+                    if let Some(m) = match_text(&fa, &fb, df) {
+                        proposals += 1;
+                        lines.push(format!(
+                            "{} <-> {}: {} — {}",
+                            a.name, b.name, m.title, m.reason
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let stale = index.stale_entries();
+    if !stale.is_empty() {
+        lines.push("waiting on a recompute from the original:".to_string());
+        for (kind, _sha, name) in stale {
+            lines.push(format!("  {kind}: {name}"));
+        }
+    }
+    if proposals == 0 && short_pairs == 0 && index.stale_entries().is_empty() {
+        lines.push("no duplicates found".to_string());
+    }
+    lines.join("\n")
 }
 
 /// The trace rescue: render the old PDF's pages to pictures with
@@ -797,4 +1036,65 @@ fn run_trace(input: &Path, out: &Path, helper: Option<&Path>) -> Result<(), Stri
 /// beside this executable, then PATH.
 fn resolve_helper(explicit: Option<&Path>) -> Result<PathBuf, String> {
     Ok(ob_extract::helper::resolve_helper(explicit))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_routes_text_by_content() {
+        let entry = fingerprint_entry(b"lord hear our prayer", Path::new("notes.txt"))
+            .expect("text routes");
+        assert!(matches!(entry, NewEntry::Text(_)));
+        let summary =
+            fingerprint_summary(b"lord hear our prayer", Path::new("notes.txt")).expect("summary");
+        assert!(summary.starts_with("text | text-fp-v1 | words 4"));
+    }
+
+    #[test]
+    fn fingerprint_routes_music_and_fails_loud_on_garbage() {
+        let score = "<score-partwise><part-list><score-part id=\"P1\">\
+            <part-name>Piano</part-name></score-part></part-list><part id=\"P1\">\
+            <measure><attributes><divisions>1</divisions></attributes>\
+            <note><pitch><step>C</step><octave>4</octave></pitch>\
+            <duration>1</duration><voice>1</voice><type>quarter</type></note>\
+            </measure></part></score-partwise>";
+        let entry =
+            fingerprint_entry(score.as_bytes(), Path::new("tune.musicxml")).expect("music routes");
+        assert!(matches!(entry, NewEntry::Music(_)));
+        let bad = fingerprint_entry(b"not xml at all", Path::new("bad.musicxml"));
+        assert!(bad.is_err());
+        let unknown = fingerprint_entry(&[0xff, 0xfe, 0x00], Path::new("blob.bin"));
+        assert!(unknown.is_err());
+    }
+
+    #[test]
+    fn duplicates_report_proposes_and_honours_dismissals() {
+        use ob_fingerprint::matching::{FingerprintIndex, ImageEntry};
+        use ob_fingerprint::{image::ImageFingerprint, IMAGE_FP_VERSION};
+        let mut index = FingerprintIndex::default();
+        let fp = ImageFingerprint {
+            fp_version: IMAGE_FP_VERSION,
+            phash: 0,
+            dhash: 0,
+            hist: [0u32; 64],
+            width: 0,
+            height: 0,
+            low_information: false,
+        };
+        index
+            .images
+            .push(ImageEntry::from_engine("sha1", "cross.png", &fp));
+        index
+            .images
+            .push(ImageEntry::from_engine("sha2", "cross-copy.png", &fp));
+        let report = duplicates_report(&index);
+        assert!(report.contains("cross.png <-> cross-copy.png"));
+        assert!(report.contains("Probably the same"));
+        index.dismiss("sha1", "sha2");
+        let report = duplicates_report(&index);
+        assert!(!report.contains("cross-copy.png"));
+        assert!(report.contains("1 pairs marked not duplicates"));
+    }
 }

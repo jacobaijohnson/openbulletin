@@ -18,6 +18,8 @@ ob-pdf = { path = "../ob-pdf" }
 ob-impose = { path = "../ob-impose" }
 ob-fonts = { path = "../ob-fonts" }
 ob-extract = { path = "../ob-extract" }
+ob-fingerprint = { path = "../ob-fingerprint" }
+ob-image = { path = "../ob-image" }
 chrono.workspace = true
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }

@@ -32,6 +32,21 @@ pub mod matching;
 pub mod music;
 pub mod text;
 
+/// SHA-256 hex of bytes: the Layer-0 "Same file"
+/// identity, shared by the library index, the CLI, and
+/// the app's import seam so all three agree on it.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let sum = h.finalize();
+    let mut out = String::with_capacity(64);
+    for b in sum {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
 /// The image fingerprint version. It bundles every choice in
 /// [`image::fingerprint_image`]: Rec.601 integer grayscale,
 /// alpha composited over white, box-average downscale,

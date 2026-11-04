@@ -9,7 +9,10 @@ description = "OpenBulletin content fingerprints: the library index that tells s
 [dependencies]
 ob-image = { path = "../ob-image" }
 ob-music = { path = "../ob-music" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = "0.10"
+unicode-normalization = "0.1"
 
 [lints]
 workspace = true

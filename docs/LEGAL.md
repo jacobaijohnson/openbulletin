@@ -117,7 +117,19 @@ enters with it. The delta was identified by diffing
 the `Cargo.lock` package lists at the 603 recount
 commit (`20439c2`, 603 entries) against this tip
 (604 entries): exactly one name added, `ob-runner`,
-none removed. The importer makes no network
+none removed. Recount for the fingerprint build
+(2026-11-04, `cargo metadata --locked --offline
+--format-version 1`, exit 0): 606 packages. The
+two-unit delta over 604 is `ob-fingerprint` 0.1.0,
+the first-party workspace crate created in batch A
+(workspace license, MIT OR Apache-2.0, a path
+dependency, not a new third-party package), and
+`unicode-normalization` 0.1.26, added in batch C
+for text normalisation, licensed `(MIT OR
+Apache-2.0) AND Unicode-3.0` — both families already
+in the tree's allowed set, and its only dependency,
+tinyvec, was already present. No new license family
+enters with this build. The importer makes no network
 calls: pictures are carried only when their bytes are
 inside the page itself (data: URIs), and web-addressed
 pictures are counted, never fetched.

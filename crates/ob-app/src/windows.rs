@@ -9,6 +9,9 @@ use crate::contribution::*;
 use crate::inserts::*;
 use crate::preview::*;
 use crate::settings::*;
+use crate::snippets::{
+    execute_keep, keepables_for_story, resolve_ask, AskChoice, KeepAction, KeepOutcome,
+};
 use crate::*;
 
 impl App {
@@ -7126,6 +7129,11 @@ impl App {
         let doc =
             ob_model::markdown::document_from_markdown(&text, self.doc.profile.clone(), &name);
         let count = doc.stories.first().map(|s| s.paragraphs.len()).unwrap_or(0);
+        // One keepable per paragraph of the "notes"
+        // story, derived by the tested helper (the md
+        // door's one review item covers that story).
+        let keep = keepables_for_story(&doc, "notes");
+        self.reset_keep_state();
         self.import_review = Some(ImportReview {
             doc,
             items: vec![ob_extract::draft::ImportItem {
@@ -7137,6 +7145,7 @@ impl App {
                      then use the draft and arrange the words where they belong.",
                     if count == 1 { "" } else { "s" }
                 ),
+                keep,
             }],
             workdir: None,
             source_name: name,
@@ -7166,6 +7175,7 @@ impl App {
         };
         match ob_extract::html_import::document_from_html(&bytes, &name, self.doc.profile.clone()) {
             Ok(out) => {
+                self.reset_keep_state();
                 self.import_review = Some(ImportReview {
                     doc: out.doc,
                     items: out.items,
@@ -7253,6 +7263,7 @@ impl App {
             Ok(Ok(review)) => {
                 self.import_rx = None;
                 self.import_armed = false;
+                self.reset_keep_state();
                 self.import_review = Some(review);
                 ctx.request_repaint();
             }
@@ -7276,6 +7287,7 @@ impl App {
             return;
         };
         self.import_armed = false;
+        self.reset_keep_state();
         self.asset_base = review.workdir.clone();
         self.adopt_document(review.doc, true);
         self.path = None;
@@ -8030,6 +8042,11 @@ impl App {
         }
         let mut choice: Option<bool> = None; // Some(edit) = use it
         let mut cancel = false;
+        // Tick and Ask clicks collected during render,
+        // executed after show() returns (the window
+        // holds a rendering borrow of the review, so
+        // the keep itself cannot run inside it).
+        let mut keep_actions: Vec<KeepAction> = Vec::new();
         let dirty = self.frame_snapshot != self.saved_snapshot;
         egui::Window::new("Your old bulletin, as a draft")
             .collapsible(false)
@@ -8056,7 +8073,7 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
                     .show(ui, |ui| {
-                        for item in &review.items {
+                        for (item_idx, item) in review.items.iter().enumerate() {
                             let (tag, color) = match item.badge {
                                 ob_extract::draft::Badge::Matched => {
                                     ("Good", self.theme.good)
@@ -8075,6 +8092,87 @@ impl App {
                                 ui.label(format!("Page {}: {}", item.panel + 1, item.label));
                             });
                             ui.small(&item.detail);
+                            // One keep row per keepable under
+                            // its review line: a tick, a name
+                            // field, and a status line. The
+                            // tick is NOT gated on the
+                            // dirty-work arm: the arm guards
+                            // adopting the draft, not keeping.
+                            for (keep_idx, keepable) in item.keep.iter().enumerate() {
+                                let key = (item_idx, keep_idx);
+                                let kept = self.kept_items.contains(&key);
+                                let pending = self.pending_keep_ask.as_ref().is_some_and(
+                                    |ask| ask.item == item_idx && ask.keep == keep_idx,
+                                );
+                                ui.horizontal(|ui| {
+                                    let mut checked = kept || pending;
+                                    if ui
+                                        .add_enabled(
+                                            !kept && !pending,
+                                            egui::Checkbox::new(
+                                                &mut checked,
+                                                "Keep in the library",
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        let name = self
+                                            .keep_names
+                                            .get(&key)
+                                            .cloned()
+                                            .unwrap_or_else(|| keepable.default_name.clone());
+                                        keep_actions.push(KeepAction::Tick {
+                                            item: item_idx,
+                                            keep: keep_idx,
+                                            name,
+                                        });
+                                    }
+                                    let name = self
+                                        .keep_names
+                                        .entry(key)
+                                        .or_insert_with(|| keepable.default_name.clone());
+                                    ui.add_enabled(
+                                        !kept && !pending,
+                                        egui::TextEdit::singleline(name),
+                                    );
+                                });
+                                if let Some(status) = self.keep_status.get(&key) {
+                                    ui.small(status);
+                                }
+                                if pending {
+                                    if let Some(ask) = self.pending_keep_ask.as_ref() {
+                                        for (proposal, entry_name) in &ask.proposals {
+                                            ui.small(format!(
+                                                "{} — {} ({})",
+                                                proposal.title, proposal.reason, entry_name
+                                            ));
+                                        }
+                                    }
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Keep anyway").clicked() {
+                                            keep_actions.push(KeepAction::AskResolve {
+                                                item: item_idx,
+                                                keep: keep_idx,
+                                                choice: AskChoice::KeepAnyway,
+                                            });
+                                        }
+                                        if ui.button("Not duplicates — remember").clicked() {
+                                            keep_actions.push(KeepAction::AskResolve {
+                                                item: item_idx,
+                                                keep: keep_idx,
+                                                choice: AskChoice::NotDuplicates,
+                                            });
+                                        }
+                                        if ui.button("Don't keep").clicked() {
+                                            keep_actions.push(KeepAction::AskResolve {
+                                                item: item_idx,
+                                                keep: keep_idx,
+                                                choice: AskChoice::DontKeep,
+                                            });
+                                        }
+                                    });
+                                }
+                            }
                         }
                     });
                 ui.separator();
@@ -8115,6 +8213,13 @@ impl App {
                     }
                 });
             });
+        // The deferred keep actions run now, after the
+        // window's show() returned and before the
+        // finalize/cancel handling: a tick executes
+        // immediately, so a keep survives Cancel.
+        for action in keep_actions {
+            self.apply_keep_action(action);
+        }
         if let Some(edit) = choice {
             self.finalize_import(edit);
         } else if cancel {
@@ -8124,7 +8229,106 @@ impl App {
                 }
             }
             self.import_armed = false;
+            self.reset_keep_state();
             self.note("Import cancelled; nothing changed.".into());
+        }
+    }
+
+    /// Clear the review window's keep state: a new
+    /// review starts with no names, no kept rows, and
+    /// no pending Ask. Called whenever a review is
+    /// installed, adopted, or cancelled.
+    fn reset_keep_state(&mut self) {
+        self.keep_names.clear();
+        self.kept_items.clear();
+        self.keep_status.clear();
+        self.pending_keep_ask = None;
+    }
+
+    /// Run one deferred keep action, collected during
+    /// the review window's render, against the library
+    /// store and index. A tick that asks leaves the
+    /// pending Ask in app state, under its row.
+    fn apply_keep_action(&mut self, action: KeepAction) {
+        match action {
+            KeepAction::Tick { item, keep, name } => {
+                let Some(review) = self.import_review.as_ref() else {
+                    return;
+                };
+                let Some(keepable) = review.items.get(item).and_then(|i| i.keep.get(keep)) else {
+                    return;
+                };
+                let outcome = execute_keep(
+                    review,
+                    item,
+                    keep,
+                    keepable,
+                    &name,
+                    &ob_snippets::default_store_path(),
+                    &ob_snippets::default_bytes_dir(),
+                    &ob_fingerprint::matching::default_index_path(),
+                );
+                match outcome {
+                    KeepOutcome::Kept => {
+                        self.kept_items.insert((item, keep));
+                        self.keep_status
+                            .insert((item, keep), "Kept in the library".to_string());
+                    }
+                    KeepOutcome::AlreadyKept => {
+                        self.kept_items.insert((item, keep));
+                        self.keep_status
+                            .insert((item, keep), "Already in the library".to_string());
+                    }
+                    KeepOutcome::Ask(ask) => {
+                        self.pending_keep_ask = Some(*ask);
+                    }
+                    KeepOutcome::NotKept => {
+                        self.keep_status
+                            .insert((item, keep), "Not kept.".to_string());
+                    }
+                    KeepOutcome::Failed(reason) => {
+                        self.keep_status.insert((item, keep), reason);
+                    }
+                }
+            }
+            KeepAction::AskResolve { item, keep, choice } => {
+                let Some(ask) = self.pending_keep_ask.take() else {
+                    return;
+                };
+                if ask.item != item || ask.keep != keep {
+                    self.pending_keep_ask = Some(ask);
+                    return;
+                }
+                let outcome = resolve_ask(
+                    &ask,
+                    choice,
+                    &ob_snippets::default_store_path(),
+                    &ob_snippets::default_bytes_dir(),
+                    &ob_fingerprint::matching::default_index_path(),
+                );
+                match outcome {
+                    KeepOutcome::Kept => {
+                        self.kept_items.insert((item, keep));
+                        self.keep_status
+                            .insert((item, keep), "Kept in the library".to_string());
+                    }
+                    KeepOutcome::AlreadyKept => {
+                        self.kept_items.insert((item, keep));
+                        self.keep_status
+                            .insert((item, keep), "Already in the library".to_string());
+                    }
+                    KeepOutcome::Ask(ask) => {
+                        self.pending_keep_ask = Some(*ask);
+                    }
+                    KeepOutcome::NotKept => {
+                        self.keep_status
+                            .insert((item, keep), "Not kept.".to_string());
+                    }
+                    KeepOutcome::Failed(reason) => {
+                        self.keep_status.insert((item, keep), reason);
+                    }
+                }
+            }
         }
     }
 

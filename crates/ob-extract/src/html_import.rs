@@ -44,7 +44,7 @@
 //! walk does not need; the licenses are recorded in
 //! docs/LEGAL.md.
 
-use crate::draft::{Badge, DraftOutcome, ImportItem};
+use crate::draft::{first_line, Badge, DraftOutcome, ImportItem, KeepKind, Keepable};
 use base64::Engine as _;
 use html5ever::tendril::TendrilSink as _;
 use markup5ever_rcdom::{Handle, NodeData};
@@ -1463,6 +1463,12 @@ fn document_from_html_with_budget(
     let mut first_words_panel = 0usize;
     let mut first_picture_panel: Option<usize> = None;
     let mut paragraph_total = 0usize;
+    // Keepables, collected where the content's identity
+    // is known: one Text keepable per paragraph of the
+    // stories the words landed in, one Picture keepable
+    // per carried picture.
+    let mut words_keepables: Vec<Keepable> = Vec::new();
+    let mut picture_keepables: Vec<Keepable> = Vec::new();
     let new_panel = |panels: &mut Vec<Panel>, frames: &mut Vec<Frame>| {
         let n = panels.len() + 1;
         panels.push(Panel {
@@ -1516,6 +1522,15 @@ fn document_from_html_with_budget(
                     paragraphs: paras.clone(),
                     keep_through: None,
                 });
+                for (idx, para) in paras.iter().enumerate() {
+                    words_keepables.push(Keepable {
+                        kind: KeepKind::Text {
+                            story_id: sid.clone(),
+                            paragraph: idx,
+                        },
+                        default_name: first_line(&para.text()),
+                    });
+                }
                 frames.push(Frame {
                     id: format!("web-frame-{frame_no}"),
                     name: "Words from the page".into(),
@@ -1542,6 +1557,10 @@ fn document_from_html_with_budget(
                         ..Default::default()
                     },
                 );
+                picture_keepables.push(Keepable {
+                    kind: KeepKind::Picture { sha: hash.clone() },
+                    default_name: format!("Picture {}", picture_keepables.len() + 1),
+                });
                 let mut placement = PicturePlacement::new(hash);
                 placement.fit = PictureFit::ShowWhole;
                 frames.push(Frame {
@@ -1585,6 +1604,7 @@ fn document_from_html_with_budget(
             page_total,
             if page_total == 1 { "" } else { "s" },
         ),
+        keep: words_keepables,
     });
     if !walker.pictures.is_empty() {
         let n = walker.pictures.len();
@@ -1599,6 +1619,7 @@ fn document_from_html_with_budget(
                 if n == 1 { "" } else { "s" },
                 if n == 1 { "it" } else { "them" },
             ),
+            keep: picture_keepables,
         });
     }
     if walker.counts.web_pictures > 0 {
@@ -1617,6 +1638,7 @@ fn document_from_html_with_budget(
                      around them are here."
                 )
             },
+            keep: Vec::new(),
         });
     }
     if walker.counts.size_left_out > 0 {
@@ -1639,6 +1661,7 @@ fn document_from_html_with_budget(
                      were left out. The words around them are here."
                 )
             },
+            keep: Vec::new(),
         });
     }
     if walker.counts.links > 0 {
@@ -1652,6 +1675,7 @@ fn document_from_html_with_budget(
             } else {
                 format!("{n} web addresses were left out; the words they were on are here.")
             },
+            keep: Vec::new(),
         });
     }
     if walker.counts.dropped_total() > 0 {
@@ -1685,6 +1709,7 @@ fn document_from_html_with_budget(
                 "The page had {}; those do not come into a bulletin and were left out.",
                 join_phrases(&phrases)
             ),
+            keep: Vec::new(),
         });
     }
     Ok(DraftOutcome { doc, items })
@@ -2327,5 +2352,74 @@ mod tests {
         assert!(!sniff_html(b"Plain notes about <html> tags"));
         assert!(!sniff_html(b"<htmlx>not a tag</htmlx>"));
         assert!(!sniff_html(b""));
+    }
+
+    #[test]
+    fn keepables_attach_to_words_and_carried_pictures_only() {
+        // Batch B: the words item offers one Text
+        // keepable per paragraph of the stories the
+        // words landed in; the pictures item offers one
+        // Picture keepable per carried picture; the
+        // left-out items offer nothing.
+        let out = document_from_html(
+            NEWSLETTER.as_bytes(),
+            "newsletter.html",
+            ChurchProfile::default(),
+        )
+        .expect("the newsletter imports");
+        let total_paragraphs: usize = out.doc.stories.iter().map(|s| s.paragraphs.len()).sum();
+        assert!(total_paragraphs > 0);
+        let words = out.items.first().expect("the words item");
+        assert_eq!(words.keep.len(), total_paragraphs);
+        for keepable in &words.keep {
+            match &keepable.kind {
+                KeepKind::Text {
+                    story_id,
+                    paragraph,
+                } => {
+                    let story = out
+                        .doc
+                        .stories
+                        .iter()
+                        .find(|s| s.id == *story_id)
+                        .unwrap_or_else(|| panic!("story {story_id} is in the draft"));
+                    let para = story
+                        .paragraphs
+                        .get(*paragraph)
+                        .unwrap_or_else(|| panic!("paragraph {paragraph} is in {story_id}"));
+                    assert_eq!(keepable.default_name, first_line(&para.text()));
+                }
+                other => panic!("text keepable expected, got {other:?}"),
+            }
+        }
+        let pictures = out
+            .items
+            .iter()
+            .find(|i| i.label == "Pictures from the page")
+            .expect("the pictures item");
+        assert_eq!(pictures.keep.len(), 1);
+        let pic_asset = out
+            .doc
+            .assets
+            .iter()
+            .find(|a| a.kind == AssetKind::Picture)
+            .expect("the carried picture is an asset");
+        match &pictures.keep[0].kind {
+            KeepKind::Picture { sha } => assert_eq!(sha, &pic_asset.sha256),
+            other => panic!("picture keepable expected, got {other:?}"),
+        }
+        assert_eq!(pictures.keep[0].default_name, "Picture 1");
+        for left_out in out.items.iter().filter(|i| {
+            i.label == "Pictures that stayed on the web"
+                || i.label == "Page machinery left out"
+                || i.label == "Web addresses"
+        }) {
+            assert!(
+                left_out.keep.is_empty(),
+                "{} offers nothing: {:?}",
+                left_out.label,
+                left_out.keep
+            );
+        }
     }
 }

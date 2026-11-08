@@ -24,6 +24,7 @@ pub mod inserts;
 pub mod preview;
 mod runsedit;
 pub mod settings;
+pub mod snippets;
 mod starter_clips;
 pub mod windows;
 
@@ -820,6 +821,21 @@ struct App {
     analyzer_armed: bool,
     import_review: Option<ImportReview>,
     import_armed: bool,
+    /// Review-window keep rows: the name typed per
+    /// keepable, keyed by (item index, keep index),
+    /// seeded from the keepable's default name on
+    /// first paint. The review itself is never mutated
+    /// to hold names.
+    keep_names: std::collections::HashMap<(usize, usize), String>,
+    /// Keep rows already kept in the library this
+    /// review: the checkbox shows checked-disabled.
+    kept_items: std::collections::HashSet<(usize, usize)>,
+    /// One-line outcome per keep row: "Kept in the
+    /// library", or the loud reason nothing was stored.
+    keep_status: std::collections::HashMap<(usize, usize), String>,
+    /// A keep whose dedupe decision asked the admin,
+    /// waiting for the answer under its row.
+    pending_keep_ask: Option<crate::snippets::PendingKeepAsk>,
     /// A contribution (from the inbox or the paste box)
     /// waiting for its Accept/Edit/Cancel answer (R-1).
     contribution_review: Option<ContributionReview>,
@@ -1084,6 +1100,10 @@ impl Default for App {
             analyzer_armed: false,
             import_review: None,
             import_armed: false,
+            keep_names: Default::default(),
+            kept_items: Default::default(),
+            keep_status: Default::default(),
+            pending_keep_ask: None,
             contribution_review: None,
             show_paste: false,
             paste_text: String::new(),

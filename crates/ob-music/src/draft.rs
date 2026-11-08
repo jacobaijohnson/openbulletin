@@ -21,7 +21,7 @@
 
 use crate::parse::MusicInfo;
 use crate::render::{RenderOutcome, FLOOR_STAFF_MM, TARGET_STAFF_MM};
-use ob_model::draft::{Badge, DraftOutcome, ImportItem};
+use ob_model::draft::{Badge, DraftOutcome, ImportItem, KeepKind, Keepable};
 use ob_model::{
     default_styles, AssetKind, ChurchProfile, ContentRole, Document, Frame, FrameKind, LicenseKind,
     MusicFrame, Panel, Paragraph, PictureFit, PicturePlacement, Rect, RightsRecord, SheetSpec,
@@ -153,6 +153,7 @@ fn item(panel: usize, label: &str, detail: String, badge: Badge) -> ImportItem {
         label: label.to_string(),
         badge,
         detail,
+        keep: Vec::new(),
     }
 }
 
@@ -299,7 +300,17 @@ pub fn build_music_draft(
     let mut cursor = MARGIN + HEADING_H + GAP;
     let mut here = 0usize; // current panel index
 
-    let mut items: Vec<ImportItem> = vec![item(
+    // The title item offers the song itself as a keep:
+    // the music file, under its title (or the source
+    // file name when the file names no title). The
+    // rendered-system pictures are renderings of the
+    // song, not keepable pictures, so no other item
+    // carries a keepable.
+    let title_name = info
+        .title
+        .clone()
+        .unwrap_or_else(|| source_name.to_string());
+    let mut title_item = item(
         0,
         "Title and composer",
         format!(
@@ -307,7 +318,14 @@ pub fn build_music_draft(
             info.title.as_deref().unwrap_or(source_name)
         ),
         Badge::Matched,
-    )];
+    );
+    title_item.keep = vec![Keepable {
+        kind: KeepKind::Music {
+            sha: source_hash.clone(),
+        },
+        default_name: title_name,
+    }];
+    let mut items: Vec<ImportItem> = vec![title_item];
 
     match render {
         Some(render) => {
@@ -709,5 +727,59 @@ mod tests {
             LicenseKind::Unknown
         );
         assert_eq!(license_from_rights(None), LicenseKind::Unknown);
+    }
+
+    #[test]
+    fn title_item_carries_the_song_keepable_and_nothing_else_does() {
+        // Batch B: the "Title and composer" item offers
+        // the music file itself as a keep, under the
+        // file's title; the rendered systems, counts,
+        // credit, and permission items offer nothing.
+        let out = outcome_for(Some(fake_render()));
+        let title = out
+            .items
+            .iter()
+            .find(|i| i.label == "Title and composer")
+            .expect("the title item");
+        assert_eq!(title.keep.len(), 1);
+        let source_sha = ob_model::sha256_hex(TINY_SCORE.as_bytes());
+        match &title.keep[0].kind {
+            KeepKind::Music { sha } => assert_eq!(sha, &source_sha),
+            other => panic!("music keepable expected, got {other:?}"),
+        }
+        assert_eq!(title.keep[0].default_name, "A Tiny Test Hymn");
+        for other in out.items.iter().filter(|i| i.label != "Title and composer") {
+            assert!(
+                other.keep.is_empty(),
+                "only the title item keeps: {} carries keepables",
+                other.label
+            );
+        }
+        // Without an engraver the title item still
+        // offers the song: the file itself is in the draft.
+        let out = outcome_for(None);
+        let title = out
+            .items
+            .iter()
+            .find(|i| i.label == "Title and composer")
+            .expect("the title item without a render");
+        assert_eq!(title.keep.len(), 1);
+        // A file with no title offers the source file name.
+        let mut info = parse_musicxml(TINY_SCORE).expect("tiny score parses");
+        info.title = None;
+        let out = build_music_draft(
+            &info,
+            TINY_SCORE.as_bytes(),
+            "untitled.musicxml",
+            "application/vnd.recordare.musicxml+xml",
+            ChurchProfile::default(),
+            None,
+        );
+        let title = out
+            .items
+            .iter()
+            .find(|i| i.label == "Title and composer")
+            .expect("the title item");
+        assert_eq!(title.keep[0].default_name, "untitled.musicxml");
     }
 }

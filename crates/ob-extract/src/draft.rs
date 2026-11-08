@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 // so crates that only speak about a draft need not link
 // this import stack; it is re-exported here so every
 // existing `ob_extract::draft::` path keeps resolving.
-pub use ob_model::draft::{Badge, DraftOutcome, ImportItem};
+pub use ob_model::draft::{first_line, Badge, DraftOutcome, ImportItem, KeepKind, Keepable};
 
 fn pt(v: f32) -> Mpt {
     (v * 1000.0).round() as Mpt
@@ -464,6 +464,7 @@ fn build_draft(
             label: "Part of the old file was left out".to_string(),
             badge: Badge::CheckThis,
             detail: note.clone(),
+            keep: Vec::new(),
         });
     }
     // Spans addressed to pages the dump does not list
@@ -485,6 +486,7 @@ fn build_draft(
                 label: "Part of the old file was left out".to_string(),
                 badge: Badge::CheckThis,
                 detail: crate::unlisted_page_spans_note(orphans),
+                keep: Vec::new(),
             });
         }
     }
@@ -565,6 +567,7 @@ fn build_draft(
                     if dropped == 1 { "" } else { "s" },
                     page.index + 1
                 ),
+                keep: Vec::new(),
             });
         }
         let mut panel = Panel {
@@ -583,6 +586,21 @@ fn build_draft(
             panel.background_image = Some(format!("assets/page-{:02}.png", page.index + 1));
         }
         if spans.is_empty() || page.picture_only {
+            // A picture-only page offers its tracing
+            // render as a keep, but only when the
+            // builder rendered backgrounds: an IDML
+            // import has no workdir pictures, so no
+            // tick there.
+            let page_picture_keep = if with_backgrounds {
+                vec![Keepable {
+                    kind: KeepKind::PagePicture {
+                        page: page.index as usize,
+                    },
+                    default_name: format!("Page {} picture", page.index + 1),
+                }]
+            } else {
+                Vec::new()
+            };
             items.push(ImportItem {
                 panel: pi,
                 label: format!("Page {} is a picture", page.index + 1),
@@ -590,6 +608,7 @@ fn build_draft(
                 detail:
                     "No readable words here. The page sits under the new one as a tracing guide."
                         .into(),
+                keep: page_picture_keep,
             });
             panels.push(panel);
             continue;
@@ -782,6 +801,26 @@ fn build_draft(
                 },
                 None => format!("rescue-{pi}-{bi}"),
             };
+            // One keepable per paragraph this block
+            // adds: the story's length BEFORE extending
+            // is the first new paragraph's index (a
+            // thread's later blocks keep counting up).
+            let story_base = stories
+                .iter()
+                .find(|s| s.id == sid)
+                .map(|s| s.paragraphs.len())
+                .unwrap_or(0);
+            let text_keepables: Vec<Keepable> = new_paras
+                .iter()
+                .enumerate()
+                .map(|(i, para)| Keepable {
+                    kind: KeepKind::Text {
+                        story_id: sid.clone(),
+                        paragraph: story_base + i,
+                    },
+                    default_name: ob_model::draft::first_line(&para.text()),
+                })
+                .collect();
             match stories.iter_mut().find(|s| s.id == sid) {
                 Some(existing) => existing.paragraphs.extend(new_paras),
                 None => stories.push(Story {
@@ -868,6 +907,7 @@ fn build_draft(
                         ),
                     }
                 },
+                keep: text_keepables,
             });
         }
         panels.push(panel);
@@ -882,6 +922,7 @@ fn build_draft(
             label: format!("Font we do not have: {}", w.name),
             badge: Badge::CheckThis,
             detail: ob_fonts::resolve::wanted_font_words(&w.name, &w.substituted_by),
+            keep: Vec::new(),
         });
     }
     let mut doc = Document {
@@ -913,7 +954,7 @@ fn build_draft(
         let Some(bytes) = image_bytes.get(&img.file) else {
             continue;
         };
-        doc.add_asset(
+        let sha = doc.add_asset(
             bytes,
             AssetKind::Picture,
             "image/png",
@@ -923,13 +964,19 @@ fn build_draft(
             },
         );
         let panel = img.page as usize;
-        if !picture_items.iter().any(|i| i.panel == panel) {
-            picture_items.push(ImportItem {
+        let keepable = Keepable {
+            kind: KeepKind::Picture { sha },
+            default_name: img.file.clone(),
+        };
+        match picture_items.iter_mut().find(|i| i.panel == panel) {
+            Some(existing) => existing.keep.push(keepable),
+            None => picture_items.push(ImportItem {
                 panel,
                 label: format!("Pictures from page {}", img.page + 1),
                 badge: Badge::CheckThis,
                 detail: "Pictures from the old file were brought into this bulletin. They are kept with it; placing them on the page comes with the picture tools.".into(),
-            });
+                keep: vec![keepable],
+            }),
         }
     }
     if !picture_items.is_empty() {
@@ -1704,5 +1751,169 @@ mod tests {
             .expect("the lone story");
         assert!(lone_story.paragraphs[0].text().contains("Standing alone"));
         assert_eq!(doc.frames_of_story(&lone_story.id).len(), 1);
+    }
+
+    #[test]
+    fn keepables_attach_to_text_picture_and_page_picture_items() {
+        // Batch B: the dump builder attaches keepables
+        // where the content's identity is known — one
+        // Text keepable per paragraph a block adds, one
+        // Picture keepable per carried picture, one
+        // PagePicture keepable for a picture-only page
+        // when backgrounds were rendered — and none to
+        // loss notes or wanted-font items.
+        let pic_bytes = b"fake-png-bytes-for-the-keep-pin".to_vec();
+        let mut image_bytes = HashMap::new();
+        image_bytes.insert("img1.png".to_string(), pic_bytes.clone());
+        let mut short_span = span(0, "A mighty fortress", 60.0, 104.0, 11.0, "Calibri", false);
+        short_span.italic = true;
+        short_span.w = Some(40.0); // a short line: its own paragraph, not a wrap join
+        let dump = ExtractionDump {
+            schema_version: 2,
+            source_kind: SourceKind::Pdf,
+            source_name: "old.pdf".into(),
+            source_bytes: 10,
+            extractor: "test".into(),
+            pages: vec![
+                PageInfo {
+                    index: 0,
+                    width_pt: 612.0,
+                    height_pt: 792.0,
+                    picture_only: false,
+                },
+                PageInfo {
+                    index: 1,
+                    width_pt: 612.0,
+                    height_pt: 792.0,
+                    picture_only: true,
+                },
+            ],
+            spans: vec![
+                span(0, "Welcome to worship", 60.0, 90.0, 11.0, "Calibri", false),
+                short_span,
+                span(0, "Mystery words", 60.0, 200.0, 11.0, "GillSansMT", false),
+            ],
+            images: vec![crate::DumpImage {
+                id: "img1".to_string(),
+                page: 0,
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+                file: "img1.png".to_string(),
+            }],
+            loss_notes: vec!["A part was too large to read whole.".to_string()],
+        };
+        let out = document_from_dump_with_assets(
+            &dump,
+            ChurchProfile::default(),
+            true,
+            &image_bytes,
+            &[],
+        );
+        // The first block's two paragraphs, in order,
+        // under the story the block created.
+        let welcome = out
+            .items
+            .iter()
+            .find(|i| i.label == "Welcome to worship")
+            .expect("the first block's item");
+        assert_eq!(welcome.keep.len(), 2, "one keepable per paragraph");
+        match &welcome.keep[0].kind {
+            KeepKind::Text {
+                story_id,
+                paragraph,
+            } => {
+                assert_eq!(story_id, "rescue-0-0");
+                assert_eq!(*paragraph, 0);
+            }
+            other => panic!("text keepable expected, got {other:?}"),
+        }
+        assert_eq!(welcome.keep[0].default_name, "Welcome to worship");
+        match &welcome.keep[1].kind {
+            KeepKind::Text {
+                story_id,
+                paragraph,
+            } => {
+                assert_eq!(story_id, "rescue-0-0");
+                assert_eq!(*paragraph, 1);
+            }
+            other => panic!("text keepable expected, got {other:?}"),
+        }
+        assert_eq!(welcome.keep[1].default_name, "A mighty fortress");
+        // The second block's one paragraph, under its own story.
+        let mystery = out
+            .items
+            .iter()
+            .find(|i| i.label == "Mystery words")
+            .expect("the second block's item");
+        assert_eq!(mystery.keep.len(), 1);
+        match &mystery.keep[0].kind {
+            KeepKind::Text {
+                story_id,
+                paragraph,
+            } => {
+                assert_eq!(story_id, "rescue-0-1");
+                assert_eq!(*paragraph, 0);
+            }
+            other => panic!("text keepable expected, got {other:?}"),
+        }
+        // The carried picture, under the sha the asset
+        // store filed it under.
+        let pictures = out
+            .items
+            .iter()
+            .find(|i| i.label == "Pictures from page 1")
+            .expect("the picture item");
+        assert_eq!(pictures.keep.len(), 1);
+        let pic_sha = ob_model::sha256_hex(&pic_bytes);
+        match &pictures.keep[0].kind {
+            KeepKind::Picture { sha } => assert_eq!(sha, &pic_sha),
+            other => panic!("picture keepable expected, got {other:?}"),
+        }
+        assert_eq!(pictures.keep[0].default_name, "img1.png");
+        assert!(out.doc.assets.iter().any(|a| a.sha256 == pic_sha));
+        // The picture-only page offers its tracing
+        // render when backgrounds were rendered.
+        let page_pic = out
+            .items
+            .iter()
+            .find(|i| i.label == "Page 2 is a picture")
+            .expect("the picture-only item");
+        assert_eq!(page_pic.keep.len(), 1);
+        match &page_pic.keep[0].kind {
+            KeepKind::PagePicture { page } => assert_eq!(*page, 1),
+            other => panic!("page-picture keepable expected, got {other:?}"),
+        }
+        assert_eq!(page_pic.keep[0].default_name, "Page 2 picture");
+        // Loss notes and wanted fonts offer nothing.
+        let loss = out
+            .items
+            .iter()
+            .find(|i| i.label == "Part of the old file was left out")
+            .expect("the loss item");
+        assert!(loss.keep.is_empty());
+        let wanted = out
+            .items
+            .iter()
+            .find(|i| i.label.starts_with("Font we do not have:"))
+            .expect("the wanted-font item");
+        assert!(wanted.keep.is_empty());
+        // Without backgrounds the picture-only page
+        // offers no tick; the words and pictures keep
+        // theirs.
+        let out_plain = document_from_dump(&dump, ChurchProfile::default(), false, &[]);
+        let page_pic = out_plain
+            .items
+            .iter()
+            .find(|i| i.label == "Page 2 is a picture")
+            .expect("the picture-only item without backgrounds");
+        assert!(page_pic.keep.is_empty());
+        let welcome = out_plain
+            .items
+            .iter()
+            .find(|i| i.label == "Welcome to worship")
+            .expect("the first block's item without backgrounds");
+        assert_eq!(welcome.keep.len(), 2);
     }
 }

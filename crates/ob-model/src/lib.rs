@@ -17,7 +17,7 @@ pub mod rights;
 pub mod serving;
 pub mod zip_directory;
 
-pub use draft::{Badge, DraftOutcome, ImportItem};
+pub use draft::{first_line, Badge, DraftOutcome, ImportItem, KeepKind, Keepable};
 
 pub use rights::{
     child_web_permission_granted, compose_permission_line, fold_duplicate_asset_records,

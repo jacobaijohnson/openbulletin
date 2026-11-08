@@ -261,6 +261,64 @@ impl App {
         self.status_error = false;
     }
 
+    /// Save a part proof for one filed contribution file
+    /// (roles step 6, Q0/Q1): re-read the FILED file at
+    /// proof time — the file is the part — compose the
+    /// proof, and offer it through the same save dialog
+    /// and reader-PDF funnel as the music proof. A filed
+    /// file that is gone, will not parse, or holds no
+    /// provable part is refused in plain words; the proof
+    /// is never guessed from the bulletin. The admin
+    /// sends the saved file herself, by the channel the
+    /// part came by — the status says so, and the app
+    /// never sends it.
+    fn save_part_proof(&mut self, filed_path: &std::path::Path) {
+        self.commit_if_editing();
+        self.save_announcements();
+        let file_name = file_name_of(filed_path);
+        let contribution = match read_filed_contribution(filed_path, today_simple()) {
+            Ok(c) => c,
+            Err(reason) => {
+                self.status = format!("Could not make a part proof: {reason}.");
+                return;
+            }
+        };
+        let (proof, counts) = part_proof_document(&self.doc, &contribution);
+        if counts.parts == 0 {
+            self.status = format!(
+                "Could not make a part proof: {file_name} holds only a loose sheet, and loose sheets have no part proof in this version."
+            );
+            return;
+        }
+        let default_name = filed_path
+            .file_stem()
+            .map(|s| format!("{}-proof.pdf", s.to_string_lossy()))
+            .unwrap_or_else(|| "part-proof.pdf".to_string());
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("PDF", &["pdf"])
+            .save_file()
+        {
+            self.pin_fonts();
+            let (bytes, _report) = ob_pdf::export_reader_pdf_report_with_cache(
+                &proof,
+                ob_pdf::ExportPurpose::ForPrinting,
+                &mut self.export_image_cache,
+            );
+            self.status = match write_file_atomically(&path, &bytes) {
+                Ok(()) => format!(
+                    "Part proof saved: {} part{}, {} paragraph{}.{} Send it yourself, by the channel the part came by.",
+                    counts.parts,
+                    if counts.parts == 1 { "" } else { "s" },
+                    counts.paragraphs,
+                    if counts.paragraphs == 1 { "" } else { "s" },
+                    ob_model::spoken_only_left_out_sentence(counts.spoken_only_left_out)
+                ),
+                Err(e) => format!("Could not save the part proof: {e}"),
+            };
+        }
+    }
+
     fn sync_buffers(&mut self) {
         self.announcements = weekly_body_text(&self.doc);
         self.announcements_dirty = false;
@@ -3269,6 +3327,52 @@ impl eframe::App for App {
                                         format!("Could not save the music proof: {e}")
                                     }
                                 };
+                            }
+                        }
+                        // Part proof (roles step 6, Q0/Q1/Q4):
+                        // one filed part's own words on their
+                        // own page, to read back to the person
+                        // who wrote them. The proof is a file
+                        // the admin sends herself, by the
+                        // channel the part came by; the app
+                        // never sends it, and no wording here
+                        // says it does.
+                        ui.label("Part proof: one filed part's own words on their own page, to read back to the person who wrote them. Save the file and send it yourself, by the channel the part came by — the app never sends it.");
+                        // Rescan on arrival, as the
+                        // Announcements step does: filing a
+                        // contribution sets `inbox_dirty`.
+                        if self.inbox_dirty {
+                            self.refresh_inbox();
+                        }
+                        let bulletin_sunday =
+                            self.doc.fields.get("occasion_date").and_then(|iso| {
+                                ob_model::parse_flexible_date(iso, today_simple())
+                            });
+                        let filed_here: Vec<std::path::PathBuf> = self
+                            .inbox_filed
+                            .iter()
+                            .filter(|i| match bulletin_sunday {
+                                Some(sunday) => i.filed_for == Some(sunday),
+                                None => true,
+                            })
+                            .map(|i| i.path.clone())
+                            .collect();
+                        if filed_here.is_empty() {
+                            ui.label(
+                                "No filed parts for this Sunday yet — a part proof is made from a filed part.",
+                            );
+                        } else {
+                            let mut proof_idx: Option<usize> = None;
+                            for (n, path) in filed_here.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(file_name_of(path));
+                                    if ui.button("Part proof...").clicked() {
+                                        proof_idx = Some(n);
+                                    }
+                                });
+                            }
+                            if let Some(n) = proof_idx {
+                                self.save_part_proof(&filed_here[n]);
                             }
                         }
                         ui.separator();
@@ -19353,6 +19457,225 @@ Prelude is at 9:25 this week.
         // And the proof exports through the reader path.
         let bytes = ob_pdf::export_reader_pdf(&proof, ob_pdf::ExportPurpose::ForPrinting);
         assert!(bytes.starts_with(b"%PDF"), "a real PDF comes out");
+    }
+
+    // ---- Roles step 6, batch A: part proofs ----
+
+    fn part_proof_texts(proof: &Document) -> Vec<String> {
+        proof
+            .stories
+            .iter()
+            .flat_map(|s| s.paragraphs.iter().map(|p| p.text()))
+            .collect()
+    }
+
+    #[test]
+    fn part_proof_carries_one_announcement_and_nothing_else() {
+        let mut doc = r1_template();
+        doc.profile.name = "Grace Lutheran Church".to_string();
+        let text = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\nBring a plate to share.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let (proof, counts) = part_proof_document(&doc, &c);
+        assert_eq!(counts.parts, 1);
+        assert_eq!(counts.paragraphs, 2);
+        assert_eq!(counts.spoken_only_left_out, 0);
+        assert_eq!(
+            part_proof_texts(&proof),
+            vec![
+                "Grace Lutheran Church: Sue's words for October 25, 2026".to_string(),
+                "Announcement".to_string(),
+                "Coffee morning after the service.".to_string(),
+                "Bring a plate to share.".to_string(),
+            ],
+            "exactly that part's words and nothing else"
+        );
+        assert_eq!(proof.title, "Part proof");
+        assert_eq!(proof.panels.len(), 1, "one page");
+        let bytes = ob_pdf::export_reader_pdf(&proof, ob_pdf::ExportPurpose::ForPrinting);
+        assert!(bytes.starts_with(b"%PDF"), "a real PDF comes out");
+    }
+
+    #[test]
+    fn part_proof_carries_a_sunday_school_part() {
+        let mut doc = r1_template();
+        doc.profile.name = "Grace Lutheran Church".to_string();
+        let text = "From: Jo\nFor Sunday: October 25, 2026\n\n## Sunday school\n\nThe children sing in the service.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let (proof, counts) = part_proof_document(&doc, &c);
+        assert_eq!(counts.parts, 1);
+        assert_eq!(counts.paragraphs, 1);
+        assert_eq!(
+            part_proof_texts(&proof),
+            vec![
+                "Grace Lutheran Church: Jo's words for October 25, 2026".to_string(),
+                "Sunday school".to_string(),
+                "The children sing in the service.".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn part_proof_carries_a_service_part_reading() {
+        let mut doc = r1_template();
+        doc.profile.name = "Grace Lutheran Church".to_string();
+        let text = "From: Pastor Lee\nFor Sunday: October 25, 2026\n\n## For the service\n\nThe reading is John 3:16.\nLet us pray for the sick.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let (proof, counts) = part_proof_document(&doc, &c);
+        assert_eq!(counts.parts, 1);
+        assert_eq!(counts.paragraphs, 2);
+        assert_eq!(
+            part_proof_texts(&proof),
+            vec![
+                "Grace Lutheran Church: Pastor Lee's words for October 25, 2026".to_string(),
+                "For the service".to_string(),
+                "The reading is John 3:16.".to_string(),
+                "Let us pray for the sick.".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn part_proof_of_a_file_with_several_parts_is_one_proof_of_the_whole_file() {
+        let mut doc = r1_template();
+        doc.profile.name = "Grace Lutheran Church".to_string();
+        let text = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\n\n## Youth\n\nThe youth group meets on Friday.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let (proof, counts) = part_proof_document(&doc, &c);
+        assert_eq!(counts.parts, 2, "one file, one part, one proof");
+        assert_eq!(counts.paragraphs, 2);
+        assert_eq!(
+            part_proof_texts(&proof),
+            vec![
+                "Grace Lutheran Church: Sue's words for October 25, 2026".to_string(),
+                "Announcement".to_string(),
+                "Coffee morning after the service.".to_string(),
+                "Youth".to_string(),
+                "The youth group meets on Friday.".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn part_proof_leaves_spoken_only_words_out() {
+        let mut doc = r1_template();
+        doc.profile.name = "Grace Lutheran Church".to_string();
+        let text = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\nBring a plate to share.\n";
+        let mut c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let mut spoken = ob_model::Paragraph::plain("body", "Wilhelmina Quietname");
+        spoken.spoken_only = true;
+        c.parts[0].paragraphs.push(spoken);
+        let (proof, counts) = part_proof_document(&doc, &c);
+        assert_eq!(
+            counts.spoken_only_left_out, 1,
+            "the one spoken-only name is counted, so the Print status can say it was left out"
+        );
+        assert_eq!(counts.paragraphs, 2);
+        let texts = part_proof_texts(&proof);
+        assert!(
+            !texts.iter().any(|t| t.contains("Quietname")),
+            "spoken-only words never reach the proof: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn part_proof_leaves_insert_words_out() {
+        let mut doc = r1_template();
+        doc.profile.name = "Grace Lutheran Church".to_string();
+        let text = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\n\n## Insert\n\nLoose sheet words for the handout.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let (proof, counts) = part_proof_document(&doc, &c);
+        assert_eq!(counts.parts, 1, "the insert is not a provable part in v1");
+        assert_eq!(counts.paragraphs, 1);
+        let texts = part_proof_texts(&proof);
+        assert!(
+            !texts.iter().any(|t| t.contains("Loose sheet")),
+            "an insert's words never ride a part proof: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("Coffee morning")),
+            "the announcement still rides: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn part_proof_of_an_insert_only_file_has_no_parts() {
+        let mut doc = r1_template();
+        doc.profile.name = "Grace Lutheran Church".to_string();
+        let text = "From: Sue\nFor Sunday: October 25, 2026\n\n## Insert\n\nLoose sheet words for the handout.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let (proof, counts) = part_proof_document(&doc, &c);
+        assert_eq!(counts.parts, 0);
+        assert_eq!(counts.paragraphs, 0);
+        assert_eq!(
+            part_proof_texts(&proof),
+            vec!["Grace Lutheran Church: Sue's words for October 25, 2026".to_string()],
+            "only the heading; the caller refuses a proof with no parts"
+        );
+    }
+
+    #[test]
+    fn part_proof_heading_falls_back_to_the_bulletin_date_and_no_sender() {
+        let mut doc = r1_template();
+        doc.profile.name = "Grace Lutheran Church".to_string();
+        // No For Sunday line: the bulletin's own date
+        // (October 18, 2026, in the template) stands in.
+        let text = "From: Sue\n\n## Announcement\n\nCoffee morning after the service.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let (proof, _) = part_proof_document(&doc, &c);
+        assert_eq!(
+            part_proof_texts(&proof)[0],
+            "Grace Lutheran Church: Sue's words for October 18, 2026"
+        );
+        // And no sender at all: the heading still reads.
+        let text = "For Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let (proof, _) = part_proof_document(&doc, &c);
+        assert_eq!(
+            part_proof_texts(&proof)[0],
+            "Grace Lutheran Church: words for October 25, 2026"
+        );
+    }
+
+    #[test]
+    fn read_filed_contribution_reads_the_filed_file_and_refuses_a_missing_one() {
+        let dir =
+            std::env::temp_dir().join(format!("openbulletin-r6a-filed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let name = filed_file_name(
+            Some("Sue"),
+            Some(ob_model::SimpleDate {
+                year: 2026,
+                month: 10,
+                day: 25,
+            }),
+            "abcd1234",
+        );
+        let path = dir.join(&name);
+        std::fs::write(
+            &path,
+            "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\n",
+        )
+        .expect("write");
+        let c = read_filed_contribution(&path, r1_today()).expect("reads the filed file");
+        assert_eq!(c.parts.len(), 1);
+        assert_eq!(c.from.as_deref(), Some("Sue"));
+        assert_eq!(
+            c.parts[0].paragraphs[0].text(),
+            "Coffee morning after the service."
+        );
+        let gone = dir.join("nobody - 2026-10-25 - 00000000.md");
+        let err = read_filed_contribution(&gone, r1_today()).expect_err("refuses the gone file");
+        assert!(
+            err.contains("no longer in the Filed folder"),
+            "refused in plain words: {err}"
+        );
+        assert!(err.contains("nobody - 2026-10-25 - 00000000.md"), "{err}");
+        assert!(
+            !err.contains("Coffee morning"),
+            "the refusal never guesses words from anywhere: {err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

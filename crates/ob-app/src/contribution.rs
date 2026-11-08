@@ -2141,6 +2141,43 @@ pub(crate) fn read_part_file(path: &std::path::Path) -> Result<Vec<u8>, String> 
     Ok(bytes)
 }
 
+/// Re-read one filed contribution file at proof time
+/// (roles step 6, Q0): the file is the part. The read
+/// goes through the same capped reader as the inbox
+/// scan, and the parse is the same anchored parse the
+/// scan uses, with the file's own modification date as
+/// the anchor, so the proof reads the words exactly as
+/// the inbox read them. A file that is gone is refused
+/// in plain words — the proof is never guessed from the
+/// bulletin — and so is a file that will not parse.
+pub(crate) fn read_filed_contribution(
+    path: &std::path::Path,
+    today: ob_model::SimpleDate,
+) -> Result<ob_extract::contribution::Contribution, String> {
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    if !path.exists() {
+        return Err(format!(
+            "the filed file {file_name} is no longer in the Filed folder, so there is nothing to read back"
+        ));
+    }
+    let bytes = read_part_file(path)?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        format!("the filed file {file_name} is not readable text, so there is nothing to read back")
+    })?;
+    let file_date = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| file_date_of(d.as_secs()))
+        .unwrap_or(None);
+    ob_extract::contribution::parse_contribution_anchored(&text, today, file_date).map_err(
+        |reason| format!("the filed file {file_name} could not be read as a part: {reason}"),
+    )
+}
+
 /// Read every `.md` file in a folder (the inbox, or the
 /// filed folder when arrivals are counted) and parse each
 /// as a contribution. Reading never moves a file. Filed

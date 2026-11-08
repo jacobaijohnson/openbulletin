@@ -748,6 +748,141 @@ pub(crate) fn music_proof_document(doc: &Document) -> (Document, MusicProofCount
     )
 }
 
+/// What a part proof carries, counted for its status
+/// line (roles step 6): how many of the filed file's
+/// parts it holds, how many of their paragraphs
+/// survived, and how many spoken-only paragraphs were
+/// left out, like the music proof's count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PartProofCounts {
+    pub(crate) parts: usize,
+    pub(crate) paragraphs: usize,
+    pub(crate) spoken_only_left_out: usize,
+}
+
+/// Compose the part proof document (roles step 6,
+/// Q0/Q4): a reading copy of ONE filed contribution
+/// file — one file, one part, one proof — holding
+/// exactly that file's words and nothing else.
+/// Announcements, Sunday school / youth parts, and
+/// service parts (readings, prayers) ride it; inserts
+/// are OUT of v1 (a loose sheet is its own small
+/// document with its own print path), so an insert's
+/// words never reach the proof. Composed the way
+/// `music_proof_document` composes the music proof: a
+/// heading, each part's paragraphs under their kind
+/// heading, one page, from a publication copy — the
+/// composed document goes through `without_spoken_only`
+/// last, so spoken-only words never reach it. Pure: the
+/// same document and contribution in, the same proof
+/// out. A file with no provable parts (an insert-only
+/// file, or an empty one) still composes, with zero
+/// parts; the caller refuses it in plain words.
+pub(crate) fn part_proof_document(
+    doc: &Document,
+    contribution: &ob_extract::contribution::Contribution,
+) -> (Document, PartProofCounts) {
+    use ob_extract::contribution::PartKind;
+    let page = ob_model::Size::LETTER_PORTRAIT;
+    let margin: ob_model::Mpt = 54_000; // 3/4 inch
+    let usable_w = page.w - 2 * margin;
+    let usable_h = page.h - 2 * margin;
+    let heading_style = if doc.style("heading").is_some() {
+        "heading"
+    } else {
+        "body"
+    };
+    let church = doc.profile.name.trim();
+    let date_long = match contribution.for_date {
+        Some(d) => {
+            let month_name = ob_model::MONTH_NAMES
+                .get(d.month.saturating_sub(1) as usize)
+                .copied()
+                .unwrap_or("");
+            format!("{month_name} {}, {}", d.day, d.year)
+        }
+        None => doc
+            .fields
+            .get("occasion_date_long")
+            .map(|s| s.trim())
+            .unwrap_or("")
+            .to_string(),
+    };
+    let sender = contribution.from.as_deref().map(str::trim).unwrap_or("");
+    let heading = match (church.is_empty(), sender.is_empty(), date_long.is_empty()) {
+        (false, false, false) => format!("{church}: {sender}'s words for {date_long}"),
+        (false, false, true) => format!("{church}: {sender}'s words"),
+        (false, true, false) => format!("{church}: words for {date_long}"),
+        (false, true, true) => format!("{church}: words to read back"),
+        (true, false, false) => format!("{sender}'s words for {date_long}"),
+        (true, false, true) => format!("{sender}'s words"),
+        (true, true, false) => format!("Words for {date_long}"),
+        (true, true, true) => "Words to read back".to_string(),
+    };
+    let mut word_paras = vec![ob_model::Paragraph::plain(heading_style, &heading)];
+    let mut parts = 0usize;
+    let mut word_paragraphs = 0usize;
+    for part in &contribution.parts {
+        // Inserts are OUT of v1 (Q4): a loose sheet is
+        // its own small document with its own print
+        // path, and its words never ride a part proof.
+        if part.kind == PartKind::Insert {
+            continue;
+        }
+        parts += 1;
+        word_paras.push(ob_model::Paragraph::plain(
+            heading_style,
+            part.kind.heading(),
+        ));
+        word_paragraphs += part.paragraphs.len();
+        word_paras.extend(part.paragraphs.iter().cloned());
+    }
+    let text_frame = |id: &str, name: &str, story: &str| ob_model::Frame {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: ob_model::FrameKind::Text,
+        rect: ob_model::Rect::new(margin, margin, usable_w, usable_h),
+        story_id: Some(story.to_string()),
+        role: ob_model::ContentRole::Standing,
+        picture: None,
+        music: None,
+    };
+    let mut out = doc.clone();
+    out.title = "Part proof".to_string();
+    out.stories = vec![ob_model::Story {
+        id: "proof-words".to_string(),
+        paragraphs: word_paras,
+        keep_through: None,
+    }];
+    out.panels = vec![ob_model::Panel {
+        id: "proof-page-1".to_string(),
+        name: "Part proof".to_string(),
+        size: page,
+        frames: vec![text_frame("proof-words-frame", "Part proof", "proof-words")],
+        guides: Vec::new(),
+        background_image: None,
+    }];
+    out.sheet = ob_model::SheetSpec {
+        preset: "letter-portrait".to_string(),
+        size: page,
+    };
+    // The publication rule, last (like the music proof's
+    // first step): spoken-only words never reach a proof.
+    // Only the part's own paragraphs can be spoken only
+    // — the heading and kind headings are plain — so
+    // every paragraph left out comes out of the counted
+    // words.
+    let (out, spoken_only_left_out) = out.without_spoken_only();
+    (
+        out,
+        PartProofCounts {
+            parts,
+            paragraphs: word_paragraphs - spoken_only_left_out,
+            spoken_only_left_out,
+        },
+    )
+}
+
 pub(crate) fn char_findings(doc: &Document) -> Vec<CharFinding> {
     let oracle = ob_pdf::FaceOracle::new(&ob_pdf::library_font_bytes());
     // One field table for the whole pass (see

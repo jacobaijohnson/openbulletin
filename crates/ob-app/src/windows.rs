@@ -781,6 +781,13 @@ impl App {
         // findings (not plain notes) so the Check step can put
         // a fix button under each one.
         self.char_findings = char_findings(&self.doc);
+        // Rescan on arrival, as the Print step does:
+        // filing a contribution sets `inbox_dirty`, and
+        // both the Check recording below and the summary
+        // note read the filed list.
+        if self.inbox_dirty {
+            self.refresh_inbox();
+        }
         self.notes = notes;
         // A check with nothing red is a state worth keeping
         // (J6): remember which snapshot passed, under this
@@ -793,7 +800,100 @@ impl App {
         if nothing_red {
             self.checked_fingerprint = Some(snapshot(&self.doc));
             self.store_doc_state();
+            // (roles step 6, Q2/Q10) Check approves the
+            // assembly: the same clean-check moment that
+            // records the whole-document checked mark
+            // records one Check mark per filed part for
+            // this Sunday, at each part's current
+            // fingerprint. A later edit to a part's words
+            // clears its mark by itself.
+            self.record_check_approvals();
         }
+        // The per-part approval summary (roles step 6,
+        // Q10): how many filed parts carry a live
+        // approval mark, and how many changed since one
+        // was recorded — beside the existing assembly
+        // checks, and nothing else. Silent when no filed
+        // part carries any record. It is computed AFTER
+        // the recording above, so the check that records
+        // the marks also says so in the same run.
+        if let Some(summary) = self.part_approval_summary_note() {
+            self.notes.push(CheckNote::plain(summary));
+        }
+    }
+
+    /// This Sunday's filed parts as (file name,
+    /// fingerprint) pairs (roles step 6, Q2/Q10): the
+    /// file name is the part's identity, the
+    /// fingerprint its current words. Filed parts for
+    /// another Sunday are not this bulletin's, and a
+    /// bulletin with no date takes them all, like the
+    /// Print step's filed list.
+    pub(crate) fn filed_parts_for_this_sunday(&self) -> Vec<(String, String)> {
+        let bulletin_sunday = self
+            .doc
+            .fields
+            .get("occasion_date")
+            .and_then(|iso| ob_model::parse_flexible_date(iso, today_simple()));
+        self.inbox_filed
+            .iter()
+            .filter(|i| match bulletin_sunday {
+                Some(sunday) => i.filed_for == Some(sunday),
+                None => true,
+            })
+            .map(|i| (i.file_name.clone(), i.fingerprint.clone()))
+            .collect()
+    }
+
+    /// The Check step's per-part approval summary note
+    /// (roles step 6, Q10), from this Sunday's filed
+    /// parts against the marks stored under the open
+    /// bulletin file. No open file means no stored
+    /// marks, so no note.
+    pub(crate) fn part_approval_summary_note(&self) -> Option<String> {
+        let key = self.path.as_ref()?.to_string_lossy().into_owned();
+        let approvals = self.settings.part_approvals_for(&key);
+        let parts = self.filed_parts_for_this_sunday();
+        let refs: Vec<(&str, &str)> = parts
+            .iter()
+            .map(|(name, fp)| (name.as_str(), fp.as_str()))
+            .collect();
+        part_approval_summary(&refs, approvals)
+    }
+
+    /// Record Check's approval of the assembly for
+    /// this Sunday's filed parts (roles step 6, Q2):
+    /// one Check mark per part at its current
+    /// fingerprint, stored under the open bulletin
+    /// file. No open file, or no filed parts, nothing
+    /// to remember. Best effort, like every settings
+    /// write: a settings file that will not write
+    /// never blocks the work itself.
+    pub(crate) fn record_check_approvals(&mut self) {
+        let Some(path) = &self.path else { return };
+        let key = path.to_string_lossy().into_owned();
+        let parts = self.filed_parts_for_this_sunday();
+        if parts.is_empty() {
+            return;
+        }
+        let mut approvals = self.settings.part_approvals_for(&key).to_vec();
+        let refs: Vec<(&str, &str)> = parts
+            .iter()
+            .map(|(name, fp)| (name.as_str(), fp.as_str()))
+            .collect();
+        record_check_part_approvals(&mut approvals, &refs, today_simple());
+        self.store_part_approvals(approvals);
+    }
+
+    /// Write this file's per-part approval marks back
+    /// under the current file's path (roles step 6,
+    /// Q2). No file open, nothing to remember under.
+    /// Best effort, like every settings write.
+    pub(crate) fn store_part_approvals(&mut self, approvals: Vec<PartApproval>) {
+        let Some(path) = &self.path else { return };
+        let key = path.to_string_lossy().into_owned();
+        self.settings.set_part_approvals(key, approvals);
+        let _ = save_settings(&self.settings);
     }
 
     pub(crate) fn next_sunday(&mut self) {

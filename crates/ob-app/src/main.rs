@@ -283,7 +283,23 @@ impl App {
                 return;
             }
         };
-        let (proof, counts) = part_proof_document(&self.doc, &contribution);
+        // The approval line (roles step 6, Q10): what
+        // was approved and when, derived from the stored
+        // fingerprint against the filed file's words as
+        // they stand now — never the word "verified". No
+        // open bulletin file means no stored marks to
+        // read, so the proof carries no line.
+        let approval_line = self.path.as_ref().and_then(|bulletin| {
+            let approvals = self
+                .settings
+                .part_approvals_for(&bulletin.to_string_lossy());
+            let current = read_part_file(filed_path)
+                .ok()
+                .map(|bytes| content_fingerprint(&bytes))?;
+            part_proof_approval_line(approvals, &file_name, &current)
+        });
+        let (proof, counts) =
+            part_proof_document(&self.doc, &contribution, approval_line.as_deref());
         if counts.parts == 0 {
             self.status = format!(
                 "Could not make a part proof: {file_name} holds only a loose sheet, and loose sheets have no part proof in this version."
@@ -317,6 +333,44 @@ impl App {
                 Err(e) => format!("Could not save the part proof: {e}"),
             };
         }
+    }
+
+    /// Record the contributor's approval of one filed
+    /// part (roles step 6, Q2): the admin records it
+    /// when the contributor says yes after reading the
+    /// proof — the app never approves a part on its
+    /// own. The stored fingerprint is the filed file's
+    /// words as they stand now, dated today; any later
+    /// edit to the part's words clears the mark by
+    /// itself. No open bulletin file means nowhere to
+    /// store the mark under.
+    fn record_contributor_approval(&mut self, filed_path: &std::path::Path) {
+        let Some(bulletin) = self.path.clone() else {
+            self.status = "No bulletin file is open, so the approval has nowhere to be remembered."
+                .to_string();
+            return;
+        };
+        let file_name = file_name_of(filed_path);
+        let current = match read_part_file(filed_path) {
+            Ok(bytes) => content_fingerprint(&bytes),
+            Err(reason) => {
+                self.status = format!("Could not record the approval: {reason}.");
+                return;
+            }
+        };
+        let today = today_simple();
+        let key = bulletin.to_string_lossy().into_owned();
+        let mut approvals = self.settings.part_approvals_for(&key).to_vec();
+        record_part_approval(
+            &mut approvals,
+            &file_name,
+            PartApprovalKind::Contributor,
+            &current,
+            today,
+        );
+        self.store_part_approvals(approvals);
+        let when = ob_extract::contribution::format_date_long(today);
+        self.status = format!("Recorded: the contributor approved {file_name} on {when}.");
     }
 
     fn sync_buffers(&mut self) {
@@ -3362,17 +3416,105 @@ impl eframe::App for App {
                                 "No filed parts for this Sunday yet — a part proof is made from a filed part.",
                             );
                         } else {
+                            // Each filed part shows its
+                            // approval marks (roles step 6,
+                            // Q10): approved, or changed
+                            // since approval, with the date
+                            // either way. The marks are
+                            // computed before the rows, from
+                            // the stored fingerprints against
+                            // each file's current words.
+                            let approvals: Vec<PartApproval> = self
+                                .path
+                                .as_ref()
+                                .map(|p| {
+                                    self.settings
+                                        .part_approvals_for(&p.to_string_lossy())
+                                        .to_vec()
+                                })
+                                .unwrap_or_default();
+                            let filed_rows: Vec<(
+                                std::path::PathBuf,
+                                Option<String>,
+                                Option<String>,
+                                bool,
+                            )> = filed_here
+                                .iter()
+                                .map(|path| {
+                                    let item =
+                                        self.inbox_filed.iter().find(|i| &i.path == path);
+                                    let (file_name, fingerprint) = match item {
+                                        Some(i) => {
+                                            (i.file_name.clone(), i.fingerprint.clone())
+                                        }
+                                        None => (file_name_of(path), String::new()),
+                                    };
+                                    let contributor = part_mark_line(
+                                        &approvals,
+                                        &file_name,
+                                        PartApprovalKind::Contributor,
+                                        &fingerprint,
+                                    );
+                                    let check = part_mark_line(
+                                        &approvals,
+                                        &file_name,
+                                        PartApprovalKind::Check,
+                                        &fingerprint,
+                                    );
+                                    let contributor_live = matches!(
+                                        part_approval_status(
+                                            &approvals,
+                                            &file_name,
+                                            PartApprovalKind::Contributor,
+                                            &fingerprint,
+                                        ),
+                                        Some((PartMark::Approved, _))
+                                    );
+                                    (
+                                        path.clone(),
+                                        contributor,
+                                        check,
+                                        contributor_live,
+                                    )
+                                })
+                                .collect();
                             let mut proof_idx: Option<usize> = None;
-                            for (n, path) in filed_here.iter().enumerate() {
+                            let mut approve_idx: Option<usize> = None;
+                            for (n, (path, contributor, check, contributor_live)) in
+                                filed_rows.iter().enumerate()
+                            {
                                 ui.horizontal(|ui| {
                                     ui.label(file_name_of(path));
+                                    if let Some(line) = contributor {
+                                        ui.label(line);
+                                    }
+                                    if let Some(line) = check {
+                                        ui.label(line);
+                                    }
                                     if ui.button("Part proof...").clicked() {
                                         proof_idx = Some(n);
+                                    }
+                                    // The contributor's approval
+                                    // is recorded by the admin
+                                    // when the contributor says
+                                    // yes after reading the
+                                    // proof — the app never
+                                    // approves a part on its
+                                    // own. Once the mark is
+                                    // live there is nothing to
+                                    // record.
+                                    if !contributor_live
+                                        && ui.button("Record contributor approval").clicked()
+                                    {
+                                        approve_idx = Some(n);
                                     }
                                 });
                             }
                             if let Some(n) = proof_idx {
-                                self.save_part_proof(&filed_here[n]);
+                                self.save_part_proof(&filed_rows[n].0);
+                            }
+                            if let Some(n) = approve_idx {
+                                self.record_contributor_approval(&filed_rows[n].0);
                             }
                         }
                         ui.separator();
@@ -7833,6 +7975,81 @@ mod settings_tests {
             .notes
             .iter()
             .any(|n| n.text.contains("not in") && n.text.contains("font")));
+    }
+
+    #[test]
+    fn clean_check_records_check_marks_and_summarises_them() {
+        // Roles step 6, Q2/Q10, at the App seam: a clean
+        // check records one Check mark per filed part for
+        // this Sunday and says so in the same run's
+        // notes, beside the whole-document checked mark
+        // recorded at the same moment — and never the
+        // word "verified".
+        let mut app = clean_app_with_template();
+        app.doc.profile.name = "Grace Lutheran Church".to_string();
+        app.doc
+            .fields
+            .insert("occasion_date".to_string(), "2026-11-08".to_string());
+        app.doc.no_announcements = true;
+        // The template's hymn lines carry numbers without
+        // titles, which Check flags on its own: empty
+        // them, so the only thing under test is the
+        // approval wiring. (An empty hymn line is skipped
+        // by the hymn pass.)
+        let sid = service_story_id(&app.doc).expect("service story");
+        {
+            let story = app.doc.story_mut(&sid).expect("story");
+            for p in story.paragraphs.iter_mut() {
+                if p.text().starts_with("Hymn of Praise") {
+                    p.set_text("Hymn of Praise\t");
+                } else if p.text().starts_with("Hymn of Response") {
+                    p.set_text("Hymn of Response\t");
+                }
+            }
+        }
+        app.inbox_filed = vec![InboxItem {
+            path: std::path::PathBuf::from("filed/sue - 2026-11-08 - abcd1234.md"),
+            file_name: "sue - 2026-11-08 - abcd1234.md".to_string(),
+            modified_secs: 0,
+            fingerprint: "abcd1234".to_string(),
+            text: String::new(),
+            parsed: Err("not parsed in this test".to_string()),
+            filed_for: Some(ob_model::SimpleDate {
+                year: 2026,
+                month: 11,
+                day: 8,
+            }),
+        }];
+        // The injected filed list stands as scanned:
+        // without this, the check's rescan would read
+        // the real Filed folder over it.
+        app.inbox_dirty = false;
+        app.path = Some(std::path::PathBuf::from("bulletin-r6b-test.obd"));
+        app.run_checks();
+        assert!(
+            app.checked_fingerprint.is_some(),
+            "the whole-document checked mark is recorded beside the part marks: {:?}",
+            app.notes
+        );
+        let marks = app.settings.part_approvals_for("bulletin-r6b-test.obd");
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        assert_eq!(marks[0].part_id, "sue - 2026-11-08 - abcd1234.md");
+        assert_eq!(marks[0].kind, PartApprovalKind::Check);
+        assert_eq!(marks[0].fingerprint, "abcd1234");
+        assert!(
+            app.notes
+                .iter()
+                .any(|n| n.text == "Part approvals: 1 part approved."),
+            "the same run's notes carry the summary: {:?}",
+            app.notes
+        );
+        assert!(
+            !app.notes
+                .iter()
+                .any(|n| n.text.to_ascii_lowercase().contains("verified")),
+            "never the word verified: {:?}",
+            app.notes
+        );
     }
 
     #[test]
@@ -14305,6 +14522,68 @@ mod settings_tests {
     }
 
     #[test]
+    fn part_approvals_are_capped_and_settings_round_trip() {
+        // Roles step 6, Q2: 20 files remembered, oldest
+        // dropped, like `doc_states`; a re-approval
+        // replaces the old mark; the marks survive a
+        // settings round trip; old settings files
+        // (without them) still load; and a new week's
+        // file starts without the old week's marks.
+        let date = ob_model::SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 8,
+        };
+        let mut st = Settings::default();
+        for i in 0..21 {
+            st.set_part_approvals(
+                format!("bulletin-{i}.obd"),
+                vec![PartApproval {
+                    part_id: "sue - 2026-11-08 - abcd1234.md".to_string(),
+                    kind: PartApprovalKind::Contributor,
+                    fingerprint: "abcd1234".to_string(),
+                    date,
+                }],
+            );
+        }
+        assert_eq!(st.part_approvals.len(), 20);
+        assert!(
+            st.part_approvals_for("bulletin-0.obd").is_empty(),
+            "oldest dropped"
+        );
+        assert_eq!(st.part_approvals_for("bulletin-20.obd").len(), 1);
+        // A new week's file starts without the mark.
+        assert!(st.part_approvals_for("bulletin-21.obd").is_empty());
+        // Re-approval replaces the old mark in place.
+        let mut marks = st.part_approvals_for("bulletin-20.obd").to_vec();
+        record_part_approval(
+            &mut marks,
+            "sue - 2026-11-08 - abcd1234.md",
+            PartApprovalKind::Contributor,
+            "99999999",
+            date,
+        );
+        st.set_part_approvals("bulletin-20.obd".into(), marks);
+        assert_eq!(st.part_approvals.len(), 20);
+        assert_eq!(st.part_approvals_for("bulletin-20.obd").len(), 1);
+        assert_eq!(
+            st.part_approvals_for("bulletin-20.obd")[0].fingerprint,
+            "99999999"
+        );
+        // Round trip, and an old file without the section.
+        let text = serde_json::to_string(&st).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.part_approvals.len(), 20);
+        assert_eq!(
+            back.part_approvals_for("bulletin-20.obd")[0].fingerprint,
+            "99999999"
+        );
+        let (old, read) = Settings::load_from_str("{}");
+        assert_eq!(read, SettingsRead::Clean);
+        assert!(old.part_approvals.is_empty());
+    }
+
+    #[test]
     fn service_lines_read_and_rewrite_the_order_of_service() {
         // J2: the template's order story carries tabbed lines;
         // the hymn numbers are their values.
@@ -19475,7 +19754,7 @@ Prelude is at 9:25 this week.
         doc.profile.name = "Grace Lutheran Church".to_string();
         let text = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\nBring a plate to share.\n";
         let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
-        let (proof, counts) = part_proof_document(&doc, &c);
+        let (proof, counts) = part_proof_document(&doc, &c, None);
         assert_eq!(counts.parts, 1);
         assert_eq!(counts.paragraphs, 2);
         assert_eq!(counts.spoken_only_left_out, 0);
@@ -19501,7 +19780,7 @@ Prelude is at 9:25 this week.
         doc.profile.name = "Grace Lutheran Church".to_string();
         let text = "From: Jo\nFor Sunday: October 25, 2026\n\n## Sunday school\n\nThe children sing in the service.\n";
         let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
-        let (proof, counts) = part_proof_document(&doc, &c);
+        let (proof, counts) = part_proof_document(&doc, &c, None);
         assert_eq!(counts.parts, 1);
         assert_eq!(counts.paragraphs, 1);
         assert_eq!(
@@ -19520,7 +19799,7 @@ Prelude is at 9:25 this week.
         doc.profile.name = "Grace Lutheran Church".to_string();
         let text = "From: Pastor Lee\nFor Sunday: October 25, 2026\n\n## For the service\n\nThe reading is John 3:16.\nLet us pray for the sick.\n";
         let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
-        let (proof, counts) = part_proof_document(&doc, &c);
+        let (proof, counts) = part_proof_document(&doc, &c, None);
         assert_eq!(counts.parts, 1);
         assert_eq!(counts.paragraphs, 2);
         assert_eq!(
@@ -19540,7 +19819,7 @@ Prelude is at 9:25 this week.
         doc.profile.name = "Grace Lutheran Church".to_string();
         let text = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\n\n## Youth\n\nThe youth group meets on Friday.\n";
         let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
-        let (proof, counts) = part_proof_document(&doc, &c);
+        let (proof, counts) = part_proof_document(&doc, &c, None);
         assert_eq!(counts.parts, 2, "one file, one part, one proof");
         assert_eq!(counts.paragraphs, 2);
         assert_eq!(
@@ -19564,7 +19843,7 @@ Prelude is at 9:25 this week.
         let mut spoken = ob_model::Paragraph::plain("body", "Wilhelmina Quietname");
         spoken.spoken_only = true;
         c.parts[0].paragraphs.push(spoken);
-        let (proof, counts) = part_proof_document(&doc, &c);
+        let (proof, counts) = part_proof_document(&doc, &c, None);
         assert_eq!(
             counts.spoken_only_left_out, 1,
             "the one spoken-only name is counted, so the Print status can say it was left out"
@@ -19583,7 +19862,7 @@ Prelude is at 9:25 this week.
         doc.profile.name = "Grace Lutheran Church".to_string();
         let text = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\n\n## Insert\n\nLoose sheet words for the handout.\n";
         let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
-        let (proof, counts) = part_proof_document(&doc, &c);
+        let (proof, counts) = part_proof_document(&doc, &c, None);
         assert_eq!(counts.parts, 1, "the insert is not a provable part in v1");
         assert_eq!(counts.paragraphs, 1);
         let texts = part_proof_texts(&proof);
@@ -19603,7 +19882,7 @@ Prelude is at 9:25 this week.
         doc.profile.name = "Grace Lutheran Church".to_string();
         let text = "From: Sue\nFor Sunday: October 25, 2026\n\n## Insert\n\nLoose sheet words for the handout.\n";
         let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
-        let (proof, counts) = part_proof_document(&doc, &c);
+        let (proof, counts) = part_proof_document(&doc, &c, None);
         assert_eq!(counts.parts, 0);
         assert_eq!(counts.paragraphs, 0);
         assert_eq!(
@@ -19621,7 +19900,7 @@ Prelude is at 9:25 this week.
         // (October 18, 2026, in the template) stands in.
         let text = "From: Sue\n\n## Announcement\n\nCoffee morning after the service.\n";
         let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
-        let (proof, _) = part_proof_document(&doc, &c);
+        let (proof, _) = part_proof_document(&doc, &c, None);
         assert_eq!(
             part_proof_texts(&proof)[0],
             "Grace Lutheran Church: Sue's words for October 18, 2026"
@@ -19629,10 +19908,44 @@ Prelude is at 9:25 this week.
         // And no sender at all: the heading still reads.
         let text = "For Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\n";
         let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
-        let (proof, _) = part_proof_document(&doc, &c);
+        let (proof, _) = part_proof_document(&doc, &c, None);
         assert_eq!(
             part_proof_texts(&proof)[0],
             "Grace Lutheran Church: words for October 25, 2026"
+        );
+    }
+
+    #[test]
+    fn part_proof_carries_the_approval_line_when_approved() {
+        // Roles step 6, Q10: the proof carries a line
+        // naming what was approved and when — never the
+        // word "verified" — as its last paragraph, and
+        // the paragraph count still counts only the
+        // part's own words.
+        let mut doc = r1_template();
+        doc.profile.name = "Grace Lutheran Church".to_string();
+        let text = "From: Sue\nFor Sunday: October 25, 2026\n\n## Announcement\n\nCoffee morning after the service.\n";
+        let c = ob_extract::contribution::parse_contribution(text, r1_today()).expect("parses");
+        let (proof, counts) = part_proof_document(
+            &doc,
+            &c,
+            Some("The contributor approved these words on Sunday, November 8, 2026."),
+        );
+        assert_eq!(counts.parts, 1);
+        assert_eq!(
+            counts.paragraphs, 1,
+            "the line is not one of the part's words"
+        );
+        let texts = part_proof_texts(&proof);
+        assert_eq!(
+            texts.last().map(String::as_str),
+            Some("The contributor approved these words on Sunday, November 8, 2026.")
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.to_ascii_lowercase().contains("verified")),
+            "never the word verified: {texts:?}"
         );
     }
 

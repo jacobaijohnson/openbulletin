@@ -781,6 +781,7 @@ pub(crate) struct PartProofCounts {
 pub(crate) fn part_proof_document(
     doc: &Document,
     contribution: &ob_extract::contribution::Contribution,
+    approval_line: Option<&str>,
 ) -> (Document, PartProofCounts) {
     use ob_extract::contribution::PartKind;
     let page = ob_model::Size::LETTER_PORTRAIT;
@@ -837,6 +838,16 @@ pub(crate) fn part_proof_document(
         word_paragraphs += part.paragraphs.len();
         word_paras.extend(part.paragraphs.iter().cloned());
     }
+    // The approval line (roles step 6, Q10): what was
+    // approved and when, derived from the stored
+    // fingerprint — never the word "verified". It is a
+    // plain paragraph, not one of the part's words, so
+    // it is not counted in the proof's paragraph count,
+    // and it rides after the words, like a signature
+    // under a letter.
+    if let Some(line) = approval_line {
+        word_paras.push(ob_model::Paragraph::plain("body", line));
+    }
     let text_frame = |id: &str, name: &str, story: &str| ob_model::Frame {
         id: id.to_string(),
         name: name.to_string(),
@@ -881,6 +892,205 @@ pub(crate) fn part_proof_document(
             spoken_only_left_out,
         },
     )
+}
+
+/// One part's approval state, derived from a stored
+/// fingerprint against the filed file's current one
+/// (roles step 6, Q2/Q10): a stored fingerprint that
+/// still matches the words is approved; one that no
+/// longer matches means the words changed since the
+/// approval was recorded; no stored mark means
+/// nothing to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PartMark {
+    Approved,
+    ChangedSince,
+}
+
+/// The live mark of one kind on one part, if a mark
+/// was ever recorded for it: the mark's state plus the
+/// day it was recorded. Pure: the same records and
+/// fingerprint in, the same verdict out. Nothing here
+/// is kept by hand, so it cannot go stale — an edit
+/// to the part's words changes the fingerprint and
+/// the mark clears by itself, the way `state_sentence`
+/// clears the whole-document checked mark.
+pub(crate) fn part_approval_status(
+    approvals: &[PartApproval],
+    part_id: &str,
+    kind: PartApprovalKind,
+    current_fingerprint: &str,
+) -> Option<(PartMark, ob_model::SimpleDate)> {
+    let mark = approvals
+        .iter()
+        .rev()
+        .find(|a| a.part_id == part_id && a.kind == kind)?;
+    let status = if mark.fingerprint == current_fingerprint {
+        PartMark::Approved
+    } else {
+        PartMark::ChangedSince
+    };
+    Some((status, mark.date))
+}
+
+/// Record one approval mark (roles step 6, Q2): the
+/// stored fingerprint is the filed file's current
+/// fingerprint, dated today. Re-recording the same
+/// part and kind replaces the old mark — there is
+/// ever one mark per part per kind, so a re-approval
+/// after an edit dates the new words, never the old
+/// ones.
+pub(crate) fn record_part_approval(
+    approvals: &mut Vec<PartApproval>,
+    part_id: &str,
+    kind: PartApprovalKind,
+    fingerprint: &str,
+    date: ob_model::SimpleDate,
+) {
+    approvals.retain(|a| !(a.part_id == part_id && a.kind == kind));
+    approvals.push(PartApproval {
+        part_id: part_id.to_string(),
+        kind,
+        fingerprint: fingerprint.to_string(),
+        date,
+    });
+}
+
+/// Record Check's approval of the assembly (roles
+/// step 6, Q2/Q10) for this Sunday's filed parts:
+/// one Check mark per part, at the part's current
+/// fingerprint. Called only when a check comes back
+/// with nothing red — the same moment the
+/// whole-document checked mark is recorded — so Check
+/// never approves an assembly it just flagged. A part
+/// with no readable words (an empty fingerprint)
+/// earns no mark: there is nothing to approve.
+pub(crate) fn record_check_part_approvals(
+    approvals: &mut Vec<PartApproval>,
+    parts: &[(&str, &str)],
+    date: ob_model::SimpleDate,
+) {
+    for (part_id, fingerprint) in parts {
+        if fingerprint.is_empty() {
+            continue;
+        }
+        record_part_approval(
+            approvals,
+            part_id,
+            PartApprovalKind::Check,
+            fingerprint,
+            date,
+        );
+    }
+}
+
+/// One part's mark in plain words for the Filed list
+/// (roles step 6, Q10): approved, or changed since
+/// approval, with the date either way — never the
+/// word "verified". Silent when no mark of that kind
+/// was ever recorded for the part.
+pub(crate) fn part_mark_line(
+    approvals: &[PartApproval],
+    part_id: &str,
+    kind: PartApprovalKind,
+    current_fingerprint: &str,
+) -> Option<String> {
+    let (status, date) = part_approval_status(approvals, part_id, kind, current_fingerprint)?;
+    let when = ob_extract::contribution::format_date_long(date);
+    let who = match kind {
+        PartApprovalKind::Contributor => "the contributor",
+        PartApprovalKind::Check => "Check",
+    };
+    let line = match status {
+        PartMark::Approved => format!("Approved by {who} on {when}."),
+        PartMark::ChangedSince => {
+            format!("Changed since {who} approved it on {when}.")
+        }
+    };
+    Some(line)
+}
+
+/// The approval line a part proof carries (roles step
+/// 6, Q10): what was approved and when, derived from
+/// the stored fingerprint — never the word
+/// "verified". The contributor's live mark names the
+/// contributor's words; otherwise a live Check mark
+/// names the assembly; no live mark, no line. A
+/// changed-since mark earns no line either: the proof
+/// must never claim words that have since changed.
+pub(crate) fn part_proof_approval_line(
+    approvals: &[PartApproval],
+    part_id: &str,
+    current_fingerprint: &str,
+) -> Option<String> {
+    for kind in [PartApprovalKind::Contributor, PartApprovalKind::Check] {
+        if let Some((PartMark::Approved, date)) =
+            part_approval_status(approvals, part_id, kind, current_fingerprint)
+        {
+            let when = ob_extract::contribution::format_date_long(date);
+            let line = match kind {
+                PartApprovalKind::Contributor => {
+                    format!("The contributor approved these words on {when}.")
+                }
+                PartApprovalKind::Check => {
+                    format!("Check approved this assembly on {when}.")
+                }
+            };
+            return Some(line);
+        }
+    }
+    None
+}
+
+/// The Check step's per-part approval summary note
+/// (roles step 6, Q10): how many filed parts carry a
+/// live approval mark, and how many changed since one
+/// was recorded — in the brief's words ("3 parts
+/// approved, 1 changed since approval"), beside the
+/// existing assembly checks, and nothing else. A part
+/// counts as approved when either kind's mark is
+/// live; it counts as changed when a mark was
+/// recorded but neither kind is live. Silent when no
+/// filed part carries any approval record at all.
+pub(crate) fn part_approval_summary(
+    parts: &[(&str, &str)],
+    approvals: &[PartApproval],
+) -> Option<String> {
+    let mut approved = 0usize;
+    let mut changed = 0usize;
+    for (part_id, fingerprint) in parts {
+        let live = [PartApprovalKind::Contributor, PartApprovalKind::Check]
+            .iter()
+            .any(|&kind| {
+                part_approval_status(approvals, part_id, kind, fingerprint)
+                    .is_some_and(|(status, _)| status == PartMark::Approved)
+            });
+        if live {
+            approved += 1;
+            continue;
+        }
+        let recorded = [PartApprovalKind::Contributor, PartApprovalKind::Check]
+            .iter()
+            .any(|&kind| part_approval_status(approvals, part_id, kind, fingerprint).is_some());
+        if recorded {
+            changed += 1;
+        }
+    }
+    if approved == 0 && changed == 0 {
+        return None;
+    }
+    let mut bits = Vec::new();
+    if approved > 0 {
+        bits.push(format!(
+            "{} part{} approved",
+            approved,
+            if approved == 1 { "" } else { "s" }
+        ));
+    }
+    if changed > 0 {
+        bits.push(format!("{} changed since approval", changed));
+    }
+    Some(format!("Part approvals: {}.", bits.join(", ")))
 }
 
 pub(crate) fn char_findings(doc: &Document) -> Vec<CharFinding> {
@@ -1775,5 +1985,224 @@ mod tests {
         let doc = doc_with_hymn_line("Hymn of Praise\tELW 432 · O Come, All Ye Faithful");
         let notes = license_usage_findings(&doc, &HymnMemory::default());
         assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    #[test]
+    fn part_approval_shows_when_words_unchanged_and_clears_on_edit() {
+        // Roles step 6, Q2/Q10: the mark is derived
+        // from the stored fingerprint against the filed
+        // file's current one — unchanged words show
+        // approved, an edit clears it by itself, and no
+        // record shows nothing at all.
+        let date = SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 8,
+        };
+        let part = "lee - 2026-11-08 - abcdef12.md";
+        let mut approvals = Vec::new();
+        assert_eq!(
+            part_approval_status(&approvals, part, PartApprovalKind::Contributor, "abcdef12"),
+            None
+        );
+        record_part_approval(
+            &mut approvals,
+            part,
+            PartApprovalKind::Contributor,
+            "abcdef12",
+            date,
+        );
+        assert_eq!(
+            part_approval_status(&approvals, part, PartApprovalKind::Contributor, "abcdef12"),
+            Some((PartMark::Approved, date))
+        );
+        // A later edit: the words changed, so the mark
+        // clears by itself — the record still names the
+        // day it was made.
+        assert_eq!(
+            part_approval_status(&approvals, part, PartApprovalKind::Contributor, "99999999"),
+            Some((PartMark::ChangedSince, date))
+        );
+        let line = part_mark_line(&approvals, part, PartApprovalKind::Contributor, "abcdef12")
+            .expect("approved line");
+        assert!(
+            line.contains("Approved by the contributor on Sunday, November 8, 2026"),
+            "{line}"
+        );
+        assert!(!line.to_ascii_lowercase().contains("verified"), "{line}");
+        let changed = part_mark_line(&approvals, part, PartApprovalKind::Contributor, "99999999")
+            .expect("changed line");
+        assert!(
+            changed
+                .contains("Changed since the contributor approved it on Sunday, November 8, 2026"),
+            "{changed}"
+        );
+        // Re-approval after the edit dates the new words.
+        record_part_approval(
+            &mut approvals,
+            part,
+            PartApprovalKind::Contributor,
+            "99999999",
+            date,
+        );
+        assert_eq!(
+            approvals.len(),
+            1,
+            "one mark per part per kind: {approvals:?}"
+        );
+        assert_eq!(
+            part_approval_status(&approvals, part, PartApprovalKind::Contributor, "99999999"),
+            Some((PartMark::Approved, date))
+        );
+    }
+
+    #[test]
+    fn part_approval_summary_counts_approved_and_changed() {
+        // Roles step 6, Q10: the Check note in the
+        // brief's words — "3 parts approved, 1 changed
+        // since approval" — counting a part once
+        // however many kinds approve it, and silent when
+        // no filed part carries any record.
+        let date = SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 8,
+        };
+        let parts: Vec<(&str, &str)> = vec![
+            ("a.md", "aaaa1111"),
+            ("b.md", "bbbb2222"),
+            ("c.md", "cccc3333"),
+            ("d.md", "dddd4444"),
+        ];
+        assert_eq!(part_approval_summary(&parts, &[]), None);
+        let mut approvals = Vec::new();
+        record_part_approval(
+            &mut approvals,
+            "a.md",
+            PartApprovalKind::Contributor,
+            "aaaa1111",
+            date,
+        );
+        record_part_approval(
+            &mut approvals,
+            "b.md",
+            PartApprovalKind::Check,
+            "bbbb2222",
+            date,
+        );
+        // c changed since its contributor approval; d
+        // carries no record and is not counted.
+        record_part_approval(
+            &mut approvals,
+            "c.md",
+            PartApprovalKind::Contributor,
+            "old00000",
+            date,
+        );
+        assert_eq!(
+            part_approval_summary(&parts, &approvals).as_deref(),
+            Some("Part approvals: 2 parts approved, 1 changed since approval.")
+        );
+        // One part approved by both kinds still counts once.
+        record_part_approval(
+            &mut approvals,
+            "a.md",
+            PartApprovalKind::Check,
+            "aaaa1111",
+            date,
+        );
+        assert_eq!(
+            part_approval_summary(&parts, &approvals).as_deref(),
+            Some("Part approvals: 2 parts approved, 1 changed since approval.")
+        );
+        // Singular forms.
+        let one: Vec<(&str, &str)> = vec![("a.md", "aaaa1111")];
+        assert_eq!(
+            part_approval_summary(&one, &approvals).as_deref(),
+            Some("Part approvals: 1 part approved.")
+        );
+        let changed_only: Vec<(&str, &str)> = vec![("c.md", "cccc3333")];
+        assert_eq!(
+            part_approval_summary(&changed_only, &approvals).as_deref(),
+            Some("Part approvals: 1 changed since approval.")
+        );
+    }
+
+    #[test]
+    fn part_proof_approval_line_names_what_was_approved_and_when() {
+        // Roles step 6, Q10: the proof's line names what
+        // was approved and when, derived from the
+        // fingerprint — never the word "verified". The
+        // contributor's live mark names the words;
+        // otherwise a live Check mark names the
+        // assembly; a changed-since mark earns no line.
+        let date = SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 8,
+        };
+        let mut approvals = Vec::new();
+        assert_eq!(
+            part_proof_approval_line(&approvals, "a.md", "aaaa1111"),
+            None
+        );
+        record_part_approval(
+            &mut approvals,
+            "a.md",
+            PartApprovalKind::Contributor,
+            "aaaa1111",
+            date,
+        );
+        let line = part_proof_approval_line(&approvals, "a.md", "aaaa1111").expect("line");
+        assert_eq!(
+            line,
+            "The contributor approved these words on Sunday, November 8, 2026."
+        );
+        assert!(!line.to_ascii_lowercase().contains("verified"));
+        // Words changed since: no line at all.
+        assert_eq!(
+            part_proof_approval_line(&approvals, "a.md", "bbbb2222"),
+            None
+        );
+        // Check-only approval names the assembly.
+        let mut check_only = Vec::new();
+        record_part_approval(
+            &mut check_only,
+            "a.md",
+            PartApprovalKind::Check,
+            "aaaa1111",
+            date,
+        );
+        assert_eq!(
+            part_proof_approval_line(&check_only, "a.md", "aaaa1111").as_deref(),
+            Some("Check approved this assembly on Sunday, November 8, 2026.")
+        );
+    }
+
+    #[test]
+    fn record_check_part_approvals_skips_unreadable_parts() {
+        // Roles step 6, Q2: a part with no readable
+        // words (an empty fingerprint) earns no Check
+        // mark — there is nothing to approve — while
+        // its readable neighbours do.
+        let date = SimpleDate {
+            year: 2026,
+            month: 11,
+            day: 8,
+        };
+        let mut approvals = Vec::new();
+        let parts: Vec<(&str, &str)> =
+            vec![("a.md", "aaaa1111"), ("bad.md", ""), ("c.md", "cccc3333")];
+        record_check_part_approvals(&mut approvals, &parts, date);
+        assert_eq!(approvals.len(), 2);
+        assert!(approvals.iter().all(|a| a.kind == PartApprovalKind::Check));
+        assert_eq!(
+            part_approval_status(&approvals, "a.md", PartApprovalKind::Check, "aaaa1111"),
+            Some((PartMark::Approved, date))
+        );
+        assert_eq!(
+            part_approval_status(&approvals, "bad.md", PartApprovalKind::Check, ""),
+            None
+        );
     }
 }

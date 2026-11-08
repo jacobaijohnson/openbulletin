@@ -157,6 +157,36 @@ pub struct DocState {
     pub checked_fingerprint: Option<String>,
 }
 
+/// Which approval a per-part mark records (roles
+/// step 6, Q2): the contributor approves their own
+/// words; Check approves the assembly. There is no
+/// pastor kind: Jacob declined the pastor mark
+/// 2026-11-08, so no pastor-mark code ships at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PartApprovalKind {
+    Contributor,
+    Check,
+}
+
+/// One recorded per-part approval mark (roles step 6,
+/// Q2): the mark is DERIVED, never a stored boolean —
+/// the stored fingerprint is compared against the
+/// filed file's current fingerprint, and any edit to
+/// the part's words clears the mark by itself. The
+/// part is one filed contribution file (Q0); `part_id`
+/// is that file's name. `date` is the day the mark
+/// was recorded, so the mark can say when it was
+/// made. At most one mark per part per kind: a
+/// re-approval replaces the old one.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PartApproval {
+    pub part_id: String,
+    pub kind: PartApprovalKind,
+    pub fingerprint: String,
+    pub date: ob_model::SimpleDate,
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -179,6 +209,15 @@ pub struct Settings {
     /// small enough to stay a memory, not an archive.
     #[serde(default)]
     pub doc_states: Vec<(String, DocState)>,
+    /// Per-file per-part approval marks (roles step 6,
+    /// Q2), beside `doc_states`: one entry per bulletin
+    /// file path, most recent last, capped at 20 files
+    /// like `doc_states`. A new week is a new file, so
+    /// Next Sunday starts without the old week's marks.
+    /// Missing from an older settings file means no
+    /// marks were recorded.
+    #[serde(default)]
+    pub part_approvals: Vec<(String, Vec<PartApproval>)>,
     /// The step the user left the app on, restored at launch
     /// (J6), clamped to the step list.
     #[serde(default)]
@@ -223,6 +262,27 @@ impl Settings {
         self.doc_states.push((path, state));
         while self.doc_states.len() > 20 {
             self.doc_states.remove(0);
+        }
+    }
+
+    /// The recorded per-part approval marks of one
+    /// bulletin file, if any (roles step 6, Q2).
+    pub fn part_approvals_for(&self, path: &str) -> &[PartApproval] {
+        self.part_approvals
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, a)| a.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Remember one file's per-part approval marks,
+    /// most recent last; beyond 20 files the oldest
+    /// memory is dropped, like `set_doc_state`.
+    pub fn set_part_approvals(&mut self, path: String, approvals: Vec<PartApproval>) {
+        self.part_approvals.retain(|(p, _)| p != &path);
+        self.part_approvals.push((path, approvals));
+        while self.part_approvals.len() > 20 {
+            self.part_approvals.remove(0);
         }
     }
 }
@@ -945,6 +1005,9 @@ impl Settings {
         }
         if let Some(v) = settings_section(obj, "doc_states", &mut salvaged) {
             s.doc_states = v;
+        }
+        if let Some(v) = settings_section(obj, "part_approvals", &mut salvaged) {
+            s.part_approvals = v;
         }
         if let Some(v) = settings_section(obj, "last_step", &mut salvaged) {
             s.last_step = v;
